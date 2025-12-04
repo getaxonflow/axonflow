@@ -23,14 +23,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// contextKey is a private type for context keys to avoid collisions
-type contextKey string
-
-const (
-	tenantIDContextKey contextKey = "tenant_id"
-	userIDContextKey   contextKey = "user_id"
-)
-
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
 const maxRequestBodySize = 1 << 20 // 1MB
 
@@ -439,7 +431,7 @@ func (h *PolicyAPIHandler) handleCORS(w http.ResponseWriter, r *http.Request) {
 func (h *PolicyAPIHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // writeError writes an error response

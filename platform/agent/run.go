@@ -134,7 +134,6 @@ type AgentMetrics struct {
 	errorTimestamps []time.Time // Track recent error timestamps for rate calculation
 
 	// Health status tracking
-	lastHealthCheck   time.Time
 	healthCheckPassed bool
 	consecutiveErrors int64
 }
