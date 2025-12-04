@@ -1,8 +1,8 @@
 # AxonFlow - The NewRelic of AI Orchestration
 
-> **The NewRelic of AI Orchestration** — Prevent AI failures before they happen with 9.5ms inline governance. Unlike passive monitoring that detects issues after damage, AxonFlow provides active prevention in real-time.
+> **The NewRelic of AI Orchestration** — Prevent AI failures before they happen with sub-10ms inline governance. Unlike passive monitoring that detects issues after damage, AxonFlow provides active prevention in real-time.
 >
-> **9.5ms inline governance • active prevention not passive detection • 420% ROI • EU AI Act ready • multi-model routing • audit-grade observability**
+> **Sub-10ms governance • active prevention not passive detection • EU AI Act ready • multi-model routing • audit-grade observability**
 
 ## 🚀 Quick Start
 
@@ -85,7 +85,7 @@ See `technical-docs/DEPLOYMENT_GUIDE.md` for detailed deployment guides and `tec
 
 | Feature | AxonFlow | LangChain/LangSmith |
 |---------|----------|---------------------|
-| **Governance** | ✅ Real-time policy enforcement (9.5ms) | ❌ Post-hoc monitoring only |
+| **Governance** | ✅ Real-time policy enforcement (sub-10ms) | ❌ Post-hoc monitoring only |
 | **Architecture** | Active prevention (inline) | Passive detection (observability) |
 | **Enterprise Focus** | Built for compliance & security first | Developer-first framework |
 | **Multi-Tenant** | ✅ Production-ready isolation | ❌ DIY multi-tenancy |
@@ -155,21 +155,21 @@ const response = await axonflow.protect({
 
 ## 🎯 Vision: The NewRelic of AI Orchestration
 
-**AxonFlow is the NewRelic of AI Orchestration** — preventing AI failures before they happen with industry-leading 9.5ms inline governance. While monitoring tools detect problems after damage is done, AxonFlow actively prevents hallucinations, data leaks, and compliance violations in real-time.
+**AxonFlow is the NewRelic of AI Orchestration** — preventing AI failures before they happen with <10ms inline governance. While monitoring tools detect problems after damage is done, AxonFlow actively prevents hallucinations, data leaks, and compliance violations in real-time.
 
 **Key Differentiator:** Active prevention (read-write) vs passive monitoring (read-only). Our architectural DNA enables real-time intervention that incumbents can't match without rebuilding from scratch.
 
 ### The Problem We Solve
 - **Prevention Gap:** Current tools detect AI failures after damage is done
 - **70%** of pilots stall without real-time governance
-- **9.5ms** performance makes inline prevention possible (industry first)
+- **<10ms** performance makes inline prevention possible
 - **420%** ROI through prevented incidents and operational efficiency
 - **11-month window** - EU AI Act enforcement creates urgency
 
 ### Why Now?
 - **EU AI Act enforcement** → 11-month first-mover window (August 2025)
 - **$45B precedent** → Observability market proves the model
-- **Performance breakthrough** → 9.5ms enables real-time prevention
+- **Performance breakthrough** → <10ms enables real-time prevention
 - **Innovator's Dilemma** → Monitoring companies can't pivot to prevention
 - **Next 12 months** = category-defining window
 
