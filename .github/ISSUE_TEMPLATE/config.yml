@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.getaxonflow.com
+    about: Check our documentation for guides and API reference
+  - name: Discussions
+    url: https://github.com/getaxonflow/axonflow/discussions
+    about: Ask questions and discuss ideas

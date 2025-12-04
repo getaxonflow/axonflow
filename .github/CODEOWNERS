@@ -1,0 +1,12 @@
+# Default owners for everything
+* @getaxonflow/maintainers
+
+# Platform code
+/platform/ @getaxonflow/maintainers
+
+# Documentation
+/docs/ @getaxonflow/maintainers
+*.md @getaxonflow/maintainers
+
+# CI/CD
+/.github/ @getaxonflow/maintainers

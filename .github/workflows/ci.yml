@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'platform/**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: platform/go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          working-directory: platform
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: platform/go.sum
+
+      - name: Install dependencies
+        run: |
+          cd platform
+          go mod download
+          go mod verify
+
+      - name: Set up database
+        env:
+          PGPASSWORD: test_password
+        run: |
+          echo "=== Applying core migrations ==="
+          for migration in migrations/core/*.sql; do
+            if [ -f "$migration" ] && [[ ! "$migration" =~ _down\.sql$ ]]; then
+              echo "Applying $migration..."
+              psql -h localhost -U test_user -d test_db -f "$migration" || true
+            fi
+          done
+
+      - name: Run tests
+        env:
+          TEST_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
+        run: |
+          cd platform
+          go test -v -race -cover -coverprofile=coverage.out ./...
+
+      - name: Check coverage
+        run: |
+          cd platform
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Coverage: $coverage%"
+          threshold=50.0
+          if (( $(echo "$coverage < $threshold" | bc -l) )); then
+            echo "❌ Coverage $coverage% is below threshold $threshold%"
+            exit 1
+          fi
+          echo "✅ Coverage $coverage% meets threshold $threshold%"
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: platform/go.sum
+
+      - name: Build Agent
+        run: |
+          cd platform
+          go build -o agent ./cmd/agent
+
+      - name: Build Orchestrator
+        run: |
+          cd platform
+          go build -o orchestrator ./cmd/orchestrator
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Agent Image
+        run: docker build -f platform/agent/Dockerfile -t axonflow-agent:test .
+
+      - name: Build Orchestrator Image
+        run: docker build -f platform/orchestrator/Dockerfile -t axonflow-orchestrator:test .
