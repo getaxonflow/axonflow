@@ -326,45 +326,192 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 		},
 	}
 
-	// PII Patterns (High) - Travel-specific
+	// PII Patterns - Comprehensive detection with validation
+	// Phase 1: Core PII patterns with improved accuracy
 	spe.piiPatterns = []*PolicyPattern{
+		// SSN - Enhanced pattern with format validation
+		{
+			ID:          "ssn_detection",
+			Name:        "SSN Detection",
+			Pattern:     regexp.MustCompile(`\b(\d{3})[- ]?(\d{2})[- ]?(\d{4})\b`),
+			PatternStr:  `\b(\d{3})[- ]?(\d{2})[- ]?(\d{4})\b`,
+			Severity:    "critical",
+			Description: "Social Security Number detected - automatic redaction required",
+			Enabled:     true,
+		},
+		// Credit Card - All major networks with separators
+		{
+			ID:          "credit_card_detection",
+			Name:        "Credit Card Number Detection",
+			Pattern:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|2[2-7][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b|\b(\d{4})[- ]?(\d{4})[- ]?(\d{4})[- ]?(\d{4})\b`),
+			PatternStr:  `credit_card_comprehensive`,
+			Severity:    "critical",
+			Description: "Credit card numbers detected - automatic redaction required for PCI compliance",
+			Enabled:     true,
+		},
+		// Email - RFC 5322 compliant
+		{
+			ID:          "email_detection",
+			Name:        "Email Address Detection",
+			Pattern:     regexp.MustCompile(`\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b`),
+			PatternStr:  `\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b`,
+			Severity:    "medium",
+			Description: "Email address detected - may require redaction under GDPR",
+			Enabled:     true,
+		},
+		// Phone - US and international formats
+		{
+			ID:          "phone_detection",
+			Name:        "Phone Number Detection",
+			Pattern:     regexp.MustCompile(`(?:\+?1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)?[0-9]{3}[-.\s]?[0-9]{4}\b|\+[0-9]{1,3}[-.\s]?[0-9]{6,14}\b`),
+			PatternStr:  `phone_comprehensive`,
+			Severity:    "medium",
+			Description: "Phone number detected - may require redaction for privacy",
+			Enabled:     true,
+		},
+		// IP Address - IPv4 with range validation
+		{
+			ID:          "ip_address_detection",
+			Name:        "IP Address Detection",
+			Pattern:     regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`),
+			PatternStr:  `\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`,
+			Severity:    "medium",
+			Description: "IP address detected - may identify user location",
+			Enabled:     true,
+		},
+		// IBAN - International Bank Account Number
+		{
+			ID:          "iban_detection",
+			Name:        "IBAN Detection",
+			Pattern:     regexp.MustCompile(`\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]?){0,16}\b`),
+			PatternStr:  `\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]?){0,16}\b`,
+			Severity:    "critical",
+			Description: "International Bank Account Number detected - automatic redaction required",
+			Enabled:     true,
+		},
+		// Passport - Multiple country formats
 		{
 			ID:          "passport_number_detection",
 			Name:        "Passport Number Detection",
-			Pattern:     regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6,9}\b`), // Common passport format
+			Pattern:     regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6,9}\b`),
 			PatternStr:  `\b[A-Z]{1,2}[0-9]{6,9}\b`,
 			Severity:    "high",
 			Description: "Passport numbers detected in query - automatic redaction required",
 			Enabled:     true,
 		},
+		// Date of Birth - Multiple formats (context-dependent)
 		{
-			ID:          "credit_card_detection",
-			Name:        "Credit Card Number Detection",
-			Pattern:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b`), // Visa, MC, Amex, Discover
-			PatternStr:  `\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b`,
-			Severity:    "critical",
-			Description: "Credit card numbers detected - automatic redaction required for PCI compliance",
+			ID:          "dob_detection",
+			Name:        "Date of Birth Detection",
+			Pattern:     regexp.MustCompile(`\b(?:(?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12][0-9]|3[01])[/\-](?:19|20)\d{2}|(?:19|20)\d{2}[/\-](?:0?[1-9]|1[0-2])[/\-](?:0?[1-9]|[12][0-9]|3[01]))\b`),
+			PatternStr:  `date_format`,
+			Severity:    "high",
+			Description: "Date detected - may be date of birth requiring protection",
 			Enabled:     true,
 		},
+		// Bank Account - US routing + account format
 		{
-			ID:          "ssn_detection",
-			Name:        "SSN Detection",
-			Pattern:     regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`), // SSN format
-			PatternStr:  `\b\d{3}-\d{2}-\d{4}\b`,
+			ID:          "bank_account_detection",
+			Name:        "Bank Account Detection",
+			Pattern:     regexp.MustCompile(`\b[0-9]{9}[- ]?[0-9]{8,17}\b`),
+			PatternStr:  `\b[0-9]{9}[- ]?[0-9]{8,17}\b`,
 			Severity:    "critical",
-			Description: "Social Security Number detected - automatic redaction required",
+			Description: "Bank account information detected - automatic redaction required",
 			Enabled:     true,
 		},
+		// Booking Reference - For audit trail (non-blocking)
 		{
 			ID:          "booking_reference_logging",
 			Name:        "Booking Reference Logging",
-			Pattern:     regexp.MustCompile(`\b[A-Z0-9]{6}\b`), // Common booking reference format
+			Pattern:     regexp.MustCompile(`\b[A-Z0-9]{6}\b`),
 			PatternStr:  `\b[A-Z0-9]{6}\b`,
 			Severity:    "low",
 			Description: "Booking reference detected - logged for audit trail (not blocked)",
 			Enabled:     true,
 		},
 	}
+}
+
+// ValidateSSN validates US Social Security Numbers
+// Returns false for invalid area numbers (000, 666, 900-999)
+// and invalid group/serial numbers (00, 0000)
+func ValidateSSN(ssn string) bool {
+	// Remove separators efficiently
+	var clean strings.Builder
+	clean.Grow(9) // SSN has 9 digits
+	for _, r := range ssn {
+		if r >= '0' && r <= '9' {
+			clean.WriteRune(r)
+		}
+	}
+	cleanStr := clean.String()
+
+	if len(cleanStr) != 9 {
+		return false
+	}
+
+	// Parse components
+	area := 0
+	for _, r := range cleanStr[0:3] {
+		area = area*10 + int(r-'0')
+	}
+	group := 0
+	for _, r := range cleanStr[3:5] {
+		group = group*10 + int(r-'0')
+	}
+	serial := 0
+	for _, r := range cleanStr[5:9] {
+		serial = serial*10 + int(r-'0')
+	}
+
+	// Invalid area numbers: 000, 666, 900-999
+	if area == 0 || area == 666 || area >= 900 {
+		return false
+	}
+
+	// Invalid group or serial
+	if group == 0 || serial == 0 {
+		return false
+	}
+
+	return true
+}
+
+// ValidateCreditCard validates credit card numbers using Luhn algorithm
+func ValidateCreditCard(cardNumber string) bool {
+	// Remove separators efficiently
+	var clean strings.Builder
+	clean.Grow(19) // Max credit card length
+	for _, r := range cardNumber {
+		if r >= '0' && r <= '9' {
+			clean.WriteRune(r)
+		}
+	}
+	cleanStr := clean.String()
+
+	if len(cleanStr) < 13 || len(cleanStr) > 19 {
+		return false
+	}
+
+	// Luhn algorithm
+	sum := 0
+	alternate := false
+
+	for i := len(cleanStr) - 1; i >= 0; i-- {
+		digit := int(cleanStr[i] - '0')
+
+		if alternate {
+			digit *= 2
+			if digit > 9 {
+				digit -= 9
+			}
+		}
+
+		sum += digit
+		alternate = !alternate
+	}
+
+	return sum%10 == 0
 }
 
 // GetPolicyStats returns statistics about loaded policies

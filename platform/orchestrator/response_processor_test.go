@@ -210,7 +210,7 @@ func TestDetectPII_MultiplePIITypes(t *testing.T) {
 		},
 		{
 			name:          "Credit card detection",
-			input:         "Card: 4532-1234-5678-9010",
+			input:         "Card: 4532-0151-1283-0366", // Valid Visa card (passes Luhn)
 			expectedTypes: []string{"credit_card"},
 		},
 		{
@@ -519,8 +519,8 @@ func TestMaskingStrategy_Redact(t *testing.T) {
 		{
 			name:        "credit card masking keeps last 4",
 			strategy:    &MaskingStrategy{keepLast: 4, placeholder: "****-****-****-"},
-			input:       "4532-1234-5678-9010",
-			wantContain: "9010",
+			input:       "4532-0151-1283-0366",
+			wantContain: "0366",
 		},
 		{
 			name:        "full masking (keepLast: 0)",

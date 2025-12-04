@@ -25,10 +25,12 @@ import (
 
 // ResponseProcessor handles PII detection and redaction in LLM responses
 type ResponseProcessor struct {
-	piiDetector     *PIIDetector
-	redactor        *Redactor
-	enricher        *ResponseEnricher
-	validationRules []ValidationRule
+	piiDetector         *PIIDetector
+	enhancedPIIDetector *EnhancedPIIDetector
+	redactor            *Redactor
+	enricher            *ResponseEnricher
+	validationRules     []ValidationRule
+	useEnhancedDetector bool
 }
 
 // RedactionInfo contains information about redactions made
@@ -74,11 +76,30 @@ type EnrichmentRule struct {
 // NewResponseProcessor creates a new response processor
 func NewResponseProcessor() *ResponseProcessor {
 	return &ResponseProcessor{
-		piiDetector:     NewPIIDetector(),
-		redactor:        NewRedactor(),
-		enricher:        NewResponseEnricher(),
-		validationRules: getDefaultValidationRules(),
+		piiDetector:         NewPIIDetector(),
+		enhancedPIIDetector: NewEnhancedPIIDetector(DefaultPIIDetectorConfig()),
+		redactor:            NewRedactor(),
+		enricher:            NewResponseEnricher(),
+		validationRules:     getDefaultValidationRules(),
+		useEnhancedDetector: true, // Use enhanced detector by default
 	}
+}
+
+// NewResponseProcessorWithConfig creates a response processor with custom configuration
+func NewResponseProcessorWithConfig(useEnhanced bool, piiConfig PIIDetectorConfig) *ResponseProcessor {
+	return &ResponseProcessor{
+		piiDetector:         NewPIIDetector(),
+		enhancedPIIDetector: NewEnhancedPIIDetector(piiConfig),
+		redactor:            NewRedactor(),
+		enricher:            NewResponseEnricher(),
+		validationRules:     getDefaultValidationRules(),
+		useEnhancedDetector: useEnhanced,
+	}
+}
+
+// SetUseEnhancedDetector enables or disables the enhanced PII detector
+func (p *ResponseProcessor) SetUseEnhancedDetector(enabled bool) {
+	p.useEnhancedDetector = enabled
 }
 
 // ProcessResponse processes an LLM response for PII and applies redactions
@@ -115,24 +136,43 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 // detectPII detects PII in the response data
 func (p *ResponseProcessor) detectPII(data interface{}) map[string][]string {
 	detected := make(map[string][]string)
-	
+
 	// Convert to string for analysis
 	dataStr := fmt.Sprint(data)
-	
-	// Check for different PII types
-	for piiType, pattern := range p.piiDetector.patterns {
-		matches := pattern.FindAllString(dataStr, -1)
-		if len(matches) > 0 {
-			detected[piiType] = matches
+
+	// Use enhanced detector if enabled
+	if p.useEnhancedDetector && p.enhancedPIIDetector != nil {
+		// DetectAll already filters by the detector's configured minConfidence
+		results := p.enhancedPIIDetector.DetectAll(dataStr)
+		for _, result := range results {
+			detected[string(result.Type)] = append(detected[string(result.Type)], result.Value)
+		}
+	} else {
+		// Fallback to legacy detector
+		for piiType, pattern := range p.piiDetector.patterns {
+			matches := pattern.FindAllString(dataStr, -1)
+			if len(matches) > 0 {
+				detected[piiType] = matches
+			}
 		}
 	}
-	
-	// Deep scan for structured data
+
+	// Deep scan for structured data (field names)
 	if mapData, ok := data.(map[string]interface{}); ok {
 		p.deepScanForPII(mapData, detected)
 	}
-	
+
 	return detected
+}
+
+// detectPIIEnhanced returns detailed PII detection results with confidence scores
+func (p *ResponseProcessor) detectPIIEnhanced(data interface{}) []PIIDetectionResult {
+	if p.enhancedPIIDetector == nil {
+		return nil
+	}
+
+	dataStr := fmt.Sprint(data)
+	return p.enhancedPIIDetector.DetectAll(dataStr)
 }
 
 // deepScanForPII recursively scans structured data for PII
