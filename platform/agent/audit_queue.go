@@ -28,7 +28,9 @@ import (
 	"github.com/lib/pq"
 )
 
-// AuditMode defines how audit logs are persisted
+// AuditMode defines how audit logs are persisted to the database.
+// The mode affects whether critical entries (like policy violations)
+// are written synchronously or asynchronously.
 type AuditMode string
 
 const (
@@ -36,7 +38,17 @@ const (
 	AuditModePerformance AuditMode = "performance" // Async for everything
 )
 
-// AuditEntry represents an audit log entry
+// AuditEntry represents an audit log entry for policy violations,
+// metrics, and Gateway Mode operations. The Type field determines
+// which database table the entry is persisted to.
+//
+// Fields:
+//   - Type: Entry type (violation, metric, gateway_context, llm_call_audit)
+//   - Timestamp: When the event occurred (UTC)
+//   - Severity: For violations: critical, high, medium, low
+//   - UserID: User who triggered the event (from JWT)
+//   - ClientID: Client application identifier
+//   - Details: Additional context (policy name, query, etc.)
 type AuditEntry struct {
 	Type      string                 `json:"type"`
 	Timestamp time.Time              `json:"timestamp"`
@@ -56,7 +68,18 @@ const (
 	AuditTypeLLMCallAudit    = "llm_call_audit"
 )
 
-// AuditQueue manages async audit logging with persistence guarantees
+// AuditQueue manages asynchronous audit logging with persistence guarantees.
+// It provides reliable logging for policy violations, metrics, and Gateway
+// Mode operations with the following guarantees:
+//
+//   - Violations: Written synchronously in compliance mode, with retry
+//   - Metrics: Always batched asynchronously for performance
+//   - Gateway operations: Respect audit mode setting
+//   - Fallback: JSONL file when database is unavailable
+//   - Recovery: Automatic replay from fallback on startup
+//
+// Thread Safety: AuditQueue is safe for concurrent use. Multiple goroutines
+// can call Log* methods simultaneously.
 type AuditQueue struct {
 	mode         AuditMode
 	queue        chan AuditEntry
@@ -74,7 +97,25 @@ type AuditQueue struct {
 	queued    uint64
 }
 
-// NewAuditQueue creates a new audit queue
+// NewAuditQueue creates a new audit queue with the specified configuration.
+//
+// Parameters:
+//   - mode: AuditModeCompliance for sync violation writes, AuditModePerformance for async
+//   - queueSize: Buffer size for the async queue (recommended: 10000)
+//   - workers: Number of worker goroutines (recommended: 4-8)
+//   - db: PostgreSQL database connection for persistence
+//   - fallbackPath: Path to JSONL fallback file (e.g., "/var/log/axonflow/audit_fallback.jsonl")
+//
+// The queue automatically starts worker goroutines and a metrics batcher.
+// Call Shutdown() during graceful shutdown to drain the queue.
+//
+// Example:
+//
+//	queue, err := NewAuditQueue(AuditModeCompliance, 10000, 4, db, "/var/log/audit.jsonl")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer queue.Shutdown(context.Background())
 func NewAuditQueue(mode AuditMode, queueSize int, workers int, db *sql.DB, fallbackPath string) (*AuditQueue, error) {
 	// Open fallback file
 	fallbackFile, err := os.OpenFile(
@@ -109,7 +150,14 @@ func NewAuditQueue(mode AuditMode, queueSize int, workers int, db *sql.DB, fallb
 	return aq, nil
 }
 
-// LogViolation logs a policy violation
+// LogViolation logs a policy violation. In compliance mode, violations are
+// written synchronously to ensure they are persisted before returning.
+// In performance mode, violations are queued for async processing.
+//
+// The entry.Details should include:
+//   - policy_name: Name of the violated policy
+//   - description: Human-readable violation description
+//   - query: The query that triggered the violation
 func (aq *AuditQueue) LogViolation(entry AuditEntry) error {
 	entry.Type = AuditTypeViolation
 	entry.Timestamp = time.Now()

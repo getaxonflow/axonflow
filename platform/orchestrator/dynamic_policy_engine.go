@@ -28,7 +28,18 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// DynamicPolicyEngine evaluates policies based on request content and context
+// DynamicPolicyEngine evaluates policies based on request content and context.
+// It supports both in-memory and database-backed policy storage with automatic
+// refresh. The engine calculates risk scores and can block, redact, or alert
+// based on policy conditions.
+//
+// Key features:
+//   - Risk scoring based on query patterns and user context
+//   - Tenant-specific policy support for multi-tenancy
+//   - Caching for performance (5-minute TTL by default)
+//   - Automatic policy reload from database every 30 seconds
+//
+// Thread Safety: DynamicPolicyEngine is safe for concurrent use.
 type DynamicPolicyEngine struct {
 	db             *sql.DB
 	policies       []DynamicPolicy
@@ -39,7 +50,12 @@ type DynamicPolicyEngine struct {
 	dbAvailable    bool
 }
 
-// DynamicPolicy represents a runtime policy that can be evaluated
+// DynamicPolicy represents a runtime policy that can be evaluated against
+// incoming requests. Policies are stored in the dynamic_policies database
+// table and can be created, updated, and deleted via the Policy Management API.
+//
+// Policy evaluation is performed in priority order (highest first).
+// All conditions must match for a policy to trigger (AND logic).
 type DynamicPolicy struct {
 	ID          string              `json:"id"`
 	Name        string              `json:"name"`
@@ -54,32 +70,74 @@ type DynamicPolicy struct {
 	UpdatedAt   time.Time           `json:"updated_at"`
 }
 
-// PolicyCondition defines when a policy should trigger
+// PolicyCondition defines when a policy should trigger.
+//
+// Supported operators:
+//   - contains: Field value contains the specified string (case-insensitive)
+//   - equals: Field value exactly matches the specified value
+//   - not_equals: Field value does not match the specified value
+//   - greater_than: Numeric field is greater than the specified value
+//   - less_than: Numeric field is less than the specified value
+//   - regex: Field value matches the specified regular expression
+//   - in: Field value is in the specified list
+//
+// Supported fields:
+//   - query: The raw query text
+//   - request_type: Type of request
+//   - user.role, user.email, user.tenant_id: User context
+//   - client.id, client.name: Client context
+//   - risk_score: Calculated risk score (0.0-1.0)
+//   - context.<key>: Custom context values
 type PolicyCondition struct {
 	Field    string      `json:"field"`    // "query", "user.role", "risk_score", etc.
 	Operator string      `json:"operator"` // "contains", "equals", "greater_than", etc.
 	Value    interface{} `json:"value"`
 }
 
-// PolicyAction defines what happens when a policy triggers
+// PolicyAction defines what happens when a policy triggers.
+//
+// Supported action types:
+//   - block: Deny the request (Config: {"reason": "string"})
+//   - redact: Mark fields for redaction (Config: {"fields": ["field1", "field2"]})
+//   - alert: Send alert to monitoring (Config varies by alerting system)
+//   - log: Enhanced logging for the request
+//   - modify_risk: Adjust the risk score (Config: {"modifier": 1.5})
 type PolicyAction struct {
 	Type   string                 `json:"type"` // "block", "redact", "alert", "log"
 	Config map[string]interface{} `json:"config"`
 }
 
-// RiskCalculator calculates risk scores for requests
+// RiskCalculator calculates risk scores for requests based on query patterns
+// and user context. Scores range from 0.0 (no risk) to 1.0 (maximum risk).
+//
+// Risk factors:
+//   - SQL injection patterns: +0.9
+//   - Sensitive data keywords: +0.7
+//   - Admin role: +0.5
+//   - SELECT * queries: +0.3
 type RiskCalculator struct {
 	sensitivePatterns []*regexp.Regexp
 	riskWeights       map[string]float64
 }
 
-// PolicyCache caches policy evaluation results
+// PolicyCache caches policy evaluation results to improve performance.
+// Cache entries expire based on TTL and are periodically cleaned up.
 type PolicyCache struct {
 	cache sync.Map
 	ttl   time.Duration
 }
 
-// NewDynamicPolicyEngine creates a new dynamic policy engine
+// NewDynamicPolicyEngine creates a new dynamic policy engine with in-memory
+// policy storage. If DATABASE_URL is set, it attempts to connect and load
+// policies from PostgreSQL. Policies are automatically refreshed every 30 seconds.
+//
+// Example:
+//
+//	engine := NewDynamicPolicyEngine()
+//	result := engine.EvaluateDynamicPolicies(ctx, request)
+//	if !result.Allowed {
+//	    return errors.New("request blocked by policy")
+//	}
 func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 	engine := &DynamicPolicyEngine{
 		policies:       loadDefaultDynamicPolicies(),
@@ -116,6 +174,15 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 }
 
 // EvaluateDynamicPolicies evaluates all applicable policies for a request
+// and returns the evaluation result. The evaluation includes:
+//
+//  1. Cache lookup for previously evaluated identical requests
+//  2. Risk score calculation based on query patterns
+//  3. Policy evaluation in priority order
+//  4. Action application (block, redact, alert, etc.)
+//
+// The result includes whether the request is allowed, applied policies,
+// risk score, and required actions (e.g., fields to redact).
 func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
 	startTime := time.Now()
 

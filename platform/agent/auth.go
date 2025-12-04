@@ -22,7 +22,19 @@ import (
 	"axonflow/platform/agent/license"
 )
 
-// ClientAuth represents authentication configuration for a known client
+// ClientAuth represents authentication configuration for a known client.
+// This structure holds the client's credentials, permissions, and rate limits.
+// In production, client configurations should be loaded from the database
+// via db_auth.go rather than using the in-memory whitelist.
+//
+// Fields:
+//   - ClientID: Unique identifier for the client
+//   - LicenseKey: V2 format license key (AXON-V2-...)
+//   - Name: Human-readable client name
+//   - TenantID: Tenant for multi-tenant isolation
+//   - Permissions: List of allowed operations (query, llm, connectors, planning)
+//   - RateLimit: Maximum requests per minute
+//   - Enabled: Whether the client is active
 type ClientAuth struct {
 	ClientID    string
 	LicenseKey  string
@@ -33,7 +45,9 @@ type ClientAuth struct {
 	Enabled     bool
 }
 
-// RateLimitEntry tracks request counts for rate limiting
+// RateLimitEntry tracks request counts for in-memory rate limiting.
+// Each client has an entry that tracks requests within a sliding window.
+// When the window expires (1 minute), the counter resets.
 type RateLimitEntry struct {
 	Count     int
 	ResetTime time.Time
