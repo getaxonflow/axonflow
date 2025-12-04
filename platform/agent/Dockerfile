@@ -49,12 +49,12 @@ RUN --mount=type=bind,source=.,target=/src \
       echo "=== OSS build: using stub implementations ==="; \
     fi
 
-# Build the agent binary from agent subdirectory
+# Build the agent binary from cmd/agent entry point
 # For enterprise builds, include the enterprise tag
 # For OSS builds, no tag is needed (uses OSS stubs)
-RUN cd agent && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
-    -o /app/agent .
+    -o /app/agent ./cmd/agent
 
 # Migration preparation stage (ADR-012: Multi-Edition Migration Architecture)
 # Directory structure: migrations/core/, migrations/enterprise/, migrations/industry/

@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package agent
 
 // RLS (Row-Level Security) Middleware for AxonFlow Agent
 // Purpose: Set PostgreSQL session variable for database-level tenant isolation

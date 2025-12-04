@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package orchestrator
 
 import (
 	"context"
@@ -54,22 +54,22 @@ var (
 	auditLogger        *AuditLogger
 	metricsCollector   *MetricsCollector
 	workflowEngine     *WorkflowEngine
-	planningEngine     *PlanningEngine     // Multi-Agent Planning v0.1
-	resultAggregator   *ResultAggregator   // Multi-Agent Planning v0.1
-	mcpQueryRouter     *MCPQueryRouter     // MCP query routing to agent
-	agentMCPEndpoint   string              // Agent MCP handler endpoint
-	usageDB            *sql.DB             // Database for usage metering
-	heartbeatService    *node_enforcement.HeartbeatService  // Node enforcement
-	nodeMonitor         *node_enforcement.NodeMonitor       // Node enforcement
-	policyAPIHandler    *PolicyAPIHandler                   // Policy CRUD API handler
-	templateAPIHandler  *TemplateAPIHandler                 // Policy Templates API handler
+	planningEngine     *PlanningEngine                    // Multi-Agent Planning v0.1
+	resultAggregator   *ResultAggregator                  // Multi-Agent Planning v0.1
+	mcpQueryRouter     *MCPQueryRouter                    // MCP query routing to agent
+	agentMCPEndpoint   string                             // Agent MCP handler endpoint
+	usageDB            *sql.DB                            // Database for usage metering
+	heartbeatService   *node_enforcement.HeartbeatService // Node enforcement
+	nodeMonitor        *node_enforcement.NodeMonitor      // Node enforcement
+	policyAPIHandler   *PolicyAPIHandler                  // Policy CRUD API handler
+	templateAPIHandler *TemplateAPIHandler                // Policy Templates API handler
 )
 
 // Per-stage metrics (similar to Agent)
 type OrchestratorMetrics struct {
-	mu                    sync.RWMutex
-	dynamicPolicyTimings []int64  // Dynamic policy evaluation time
-	llmTimings           []int64  // LLM routing + inference time
+	mu                   sync.RWMutex
+	dynamicPolicyTimings []int64 // Dynamic policy evaluation time
+	llmTimings           []int64 // LLM routing + inference time
 	startTime            time.Time
 
 	// Request counters
@@ -104,13 +104,13 @@ type RequestTypeOrchestratorMetrics struct {
 
 // LLMProviderMetrics tracks metrics per LLM provider
 type LLMProviderMetrics struct {
-	ProviderName    string
-	TotalCalls      int64
-	SuccessCalls    int64
-	FailedCalls     int64
-	TotalTokens     int64
-	TotalCost       float64
-	Latencies       []int64
+	ProviderName string
+	TotalCalls   int64
+	SuccessCalls int64
+	FailedCalls  int64
+	TotalTokens  int64
+	TotalCost    float64
+	Latencies    []int64
 }
 
 var orchestratorMetrics *OrchestratorMetrics
@@ -185,20 +185,20 @@ type UserContext struct {
 type ClientContext struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
-	OrgID    string `json:"org_id"`    // Organization ID for usage tracking
+	OrgID    string `json:"org_id"` // Organization ID for usage tracking
 	TenantID string `json:"tenant_id"`
 }
 
 type OrchestratorResponse struct {
-	RequestID       string                  `json:"request_id"`
-	Success         bool                    `json:"success"`
-	Data            interface{}             `json:"data,omitempty"`
-	Error           string                  `json:"error,omitempty"`
-	Redacted        bool                    `json:"redacted"`
-	RedactedFields  []string                `json:"redacted_fields,omitempty"`
-	PolicyInfo      *PolicyEvaluationResult `json:"policy_info"`
-	ProviderInfo    *ProviderInfo           `json:"provider_info"`
-	ProcessingTime  string                  `json:"processing_time"`
+	RequestID      string                  `json:"request_id"`
+	Success        bool                    `json:"success"`
+	Data           interface{}             `json:"data,omitempty"`
+	Error          string                  `json:"error,omitempty"`
+	Redacted       bool                    `json:"redacted"`
+	RedactedFields []string                `json:"redacted_fields,omitempty"`
+	PolicyInfo     *PolicyEvaluationResult `json:"policy_info"`
+	ProviderInfo   *ProviderInfo           `json:"provider_info"`
+	ProcessingTime string                  `json:"processing_time"`
 }
 
 type PolicyEvaluationResult struct {
@@ -270,7 +270,19 @@ func min(a, b int) int {
 	return b
 }
 
-func main() {
+// Run is the exported entry point for the orchestrator service.
+//
+// It initializes all components (database, LLM providers, policy engine),
+// sets up HTTP routes, and starts the server. The function blocks until
+// the server is shut down.
+//
+// Environment variables used:
+//   - PORT: HTTP server port (default: 8081)
+//   - DATABASE_URL: PostgreSQL connection string
+//   - OPENAI_API_KEY: OpenAI API key (optional)
+//   - BEDROCK_REGION: AWS Bedrock region (optional)
+//   - OLLAMA_ENDPOINT: Ollama endpoint URL (optional)
+func Run() {
 	log.Println("Starting AxonFlow Orchestrator...")
 
 	// Initialize components
@@ -299,25 +311,25 @@ func main() {
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 
 	// Metrics endpoints
-	r.HandleFunc("/metrics", simpleMetricsHandler).Methods("GET")      // JSON metrics (legacy)
-	r.Handle("/prometheus", promhttp.Handler()).Methods("GET")         // Prometheus native format
+	r.HandleFunc("/metrics", simpleMetricsHandler).Methods("GET") // JSON metrics (legacy)
+	r.Handle("/prometheus", promhttp.Handler()).Methods("GET")    // Prometheus native format
 
 	// Main processing endpoint
 	r.HandleFunc("/api/v1/process", processRequestHandler).Methods("POST")
-	
+
 	// Provider management
 	r.HandleFunc("/api/v1/providers/status", providerStatusHandler).Methods("GET")
 	r.HandleFunc("/api/v1/providers/weights", updateProviderWeightsHandler).Methods("PUT")
-	
+
 	// Dynamic policy endpoints
 	r.HandleFunc("/api/v1/policies/dynamic", listDynamicPoliciesHandler).Methods("GET")
 	r.HandleFunc("/api/v1/policies/test", testPolicyHandler).Methods("POST")
-	
+
 	// Metrics and monitoring
 	r.HandleFunc("/api/v1/metrics", metricsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tenant/{tenant_id}", tenantAuditLogsHandler).Methods("GET")
-	
+
 	// Workflow endpoints
 	r.HandleFunc("/api/v1/workflows/executions/tenant/{tenant_id}", tenantWorkflowExecutionsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/workflows/execute", executeWorkflowHandler).Methods("POST")
@@ -578,13 +590,13 @@ func initializeComponents() {
 
 	// Initialize per-stage metrics
 	orchestratorMetrics = &OrchestratorMetrics{
-		dynamicPolicyTimings:   make([]int64, 0, 1000),
-		llmTimings:             make([]int64, 0, 1000),
-		startTime:              time.Now(),
-		errorTimestamps:        make([]time.Time, 0, 1000),
-		healthCheckPassed:      true,
-		requestTypeMetrics:     make(map[string]*RequestTypeOrchestratorMetrics),
-		providerMetrics:        make(map[string]*LLMProviderMetrics),
+		dynamicPolicyTimings: make([]int64, 0, 1000),
+		llmTimings:           make([]int64, 0, 1000),
+		startTime:            time.Now(),
+		errorTimestamps:      make([]time.Time, 0, 1000),
+		healthCheckPassed:    true,
+		requestTypeMetrics:   make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:      make(map[string]*LLMProviderMetrics),
 	}
 	log.Println("Per-stage metrics initialized (comprehensive)")
 
@@ -664,10 +676,10 @@ func initializeComponents() {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	components := map[string]bool{
 		"policy_engine":      dynamicPolicyEngine.IsHealthy(),
-		"llm_router":        llmRouter.IsHealthy(),
+		"llm_router":         llmRouter.IsHealthy(),
 		"response_processor": responseProcessor.IsHealthy(),
-		"audit_logger":      auditLogger.IsHealthy(),
-		"workflow_engine":   workflowEngine.IsHealthy(),
+		"audit_logger":       auditLogger.IsHealthy(),
+		"workflow_engine":    workflowEngine.IsHealthy(),
 	}
 
 	// Add Multi-Agent Planning components (v0.1)
@@ -697,7 +709,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	
+
 	var req OrchestratorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
@@ -938,7 +950,7 @@ func updateProviderWeightsHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{
-		"status": "success",
+		"status":  "success",
 		"message": "Provider weights updated",
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -960,7 +972,7 @@ func testPolicyHandler(w http.ResponseWriter, r *http.Request) {
 		User        UserContext `json:"user"`
 		RequestType string      `json:"request_type"`
 	}
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&testReq); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -1236,8 +1248,8 @@ func simpleMetricsHandler(w http.ResponseWriter, r *http.Request) {
 			"error_rate_per_sec": errorRate,
 
 			// Legacy metric name for compatibility
-			"dynamic_policy_p99_ms": float64(dynamicP99.Milliseconds()),
-			"policy_evaluations":    metrics.PolicyMetrics.TotalEvaluations,
+			"dynamic_policy_p99_ms":  float64(dynamicP99.Milliseconds()),
+			"policy_evaluations":     metrics.PolicyMetrics.TotalEvaluations,
 			"avg_evaluation_time_ms": float64(metrics.PolicyMetrics.AvgEvaluationTime.Milliseconds()),
 
 			// Per-stage dynamic policy metrics (enhanced with P50/P95)
@@ -1273,7 +1285,7 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		RequestType string    `json:"request_type,omitempty"`
 		Limit       int       `json:"limit,omitempty"`
 	}
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&searchReq); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -1298,12 +1310,12 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tenantID := vars["tenant_id"]
-	
+
 	if tenantID == "" {
 		sendErrorResponse(w, "Tenant ID is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Search audit logs for specific tenant
 	searchReq := struct {
 		TenantID string `json:"tenant_id"`
@@ -1312,13 +1324,13 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 		TenantID: tenantID,
 		Limit:    50,
 	}
-	
+
 	results, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
 		sendErrorResponse(w, "Failed to fetch tenant audit logs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(results); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -1328,25 +1340,25 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 func tenantWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tenantID := vars["tenant_id"]
-	
+
 	if tenantID == "" {
 		sendErrorResponse(w, "Tenant ID is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Get workflow executions for specific tenant
 	executions, err := workflowEngine.GetExecutionsByTenant(tenantID)
 	if err != nil {
 		sendErrorResponse(w, "Failed to fetch tenant workflow executions: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	
+
 	response := map[string]interface{}{
 		"tenant_id":  tenantID,
 		"count":      len(executions),
 		"executions": executions,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -1459,32 +1471,32 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Workflow Workflow               `json:"workflow"`
 		Input    map[string]interface{} `json:"input"`
-		User     UserContext           `json:"user"`
+		User     UserContext            `json:"user"`
 	}
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Validate workflow definition
 	if req.Workflow.Metadata.Name == "" {
 		sendErrorResponse(w, "Workflow name is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	if len(req.Workflow.Spec.Steps) == 0 {
 		sendErrorResponse(w, "Workflow must have at least one step", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Execute workflow
 	execution, err := workflowEngine.ExecuteWorkflow(r.Context(), req.Workflow, req.Input, req.User)
 	if err != nil {
 		sendErrorResponse(w, "Workflow execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(execution); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -1494,18 +1506,18 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 func getWorkflowExecutionHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	executionID := vars["id"]
-	
+
 	if executionID == "" {
 		sendErrorResponse(w, "Execution ID is required", http.StatusBadRequest)
 		return
 	}
-	
+
 	execution, err := workflowEngine.GetExecution(executionID)
 	if err != nil {
 		sendErrorResponse(w, "Execution not found", http.StatusNotFound)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(execution); err != nil {
 		log.Printf("Error encoding response: %v", err)
@@ -1542,8 +1554,8 @@ func listWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 // PlanRequest represents a multi-agent planning request
 type PlanRequest struct {
 	Query         string                 `json:"query"`
-	Domain        string                 `json:"domain"`          // Optional: travel, healthcare, finance, generic
-	ExecutionMode string                 `json:"execution_mode"`  // auto, parallel, sequential
+	Domain        string                 `json:"domain"`         // Optional: travel, healthcare, finance, generic
+	ExecutionMode string                 `json:"execution_mode"` // auto, parallel, sequential
 	User          UserContext            `json:"user"`
 	Client        map[string]interface{} `json:"client,omitempty"` // Client info from Agent (for audit)
 	Context       map[string]interface{} `json:"context"`
@@ -1551,12 +1563,12 @@ type PlanRequest struct {
 
 // PlanResponse represents the response from a planning request
 type PlanResponse struct {
-	Success              bool                   `json:"success"`
-	PlanID               string                 `json:"plan_id"`
-	WorkflowExecutionID  string                 `json:"workflow_execution_id"`
-	Result               interface{}            `json:"result"`
-	Metadata             PlanMetadata           `json:"metadata"`
-	Error                string                 `json:"error,omitempty"`
+	Success             bool         `json:"success"`
+	PlanID              string       `json:"plan_id"`
+	WorkflowExecutionID string       `json:"workflow_execution_id"`
+	Result              interface{}  `json:"result"`
+	Metadata            PlanMetadata `json:"metadata"`
+	Error               string       `json:"error,omitempty"`
 }
 
 // PlanMetadata holds metadata about plan execution
@@ -1724,10 +1736,10 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := PlanResponse{
-		Success:              true,
-		PlanID:               fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8)),
-		WorkflowExecutionID:  execution.ID,
-		Result:               finalResult,
+		Success:             true,
+		PlanID:              fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		WorkflowExecutionID: execution.ID,
+		Result:              finalResult,
 		Metadata: PlanMetadata{
 			TasksExecuted:   len(execution.Steps),
 			ExecutionMode:   req.ExecutionMode,
@@ -1885,4 +1897,3 @@ func templateAPIStatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	templateAPIHandler.HandleGetUsageStats(w, r)
 }
-

@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package orchestrator
 
 import (
 	"context"
@@ -816,17 +816,17 @@ func TestRedactor_GetStrategy(t *testing.T) {
 		{
 			name:         "existing strategy - ssn",
 			piiType:      "ssn",
-			expectedType: "*main.MaskingStrategy",
+			expectedType: "*orchestrator.MaskingStrategy",
 		},
 		{
 			name:         "existing strategy - email",
 			piiType:      "email",
-			expectedType: "*main.HashingStrategy",
+			expectedType: "*orchestrator.HashingStrategy",
 		},
 		{
 			name:         "nonexistent strategy - falls back to default",
 			piiType:      "unknown_type",
-			expectedType: "*main.DefaultStrategy", // default is DefaultStrategy
+			expectedType: "*orchestrator.DefaultStrategy", // default is DefaultStrategy
 		},
 	}
 

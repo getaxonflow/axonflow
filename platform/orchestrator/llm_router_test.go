@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package orchestrator
 
 import (
 	"context"
@@ -1236,13 +1236,13 @@ func TestNewOpenAIProvider(t *testing.T) {
 		{
 			name:         "empty API key returns mock provider",
 			apiKey:       "",
-			expectedType: "*main.MockProvider",
+			expectedType: "*orchestrator.MockProvider",
 			checkClient:  false,
 		},
 		{
 			name:         "valid API key returns real provider",
 			apiKey:       "test-api-key-123",
-			expectedType: "*main.OpenAIProvider",
+			expectedType: "*orchestrator.OpenAIProvider",
 			checkClient:  true,
 		},
 	}
@@ -1305,13 +1305,13 @@ func TestNewAnthropicProvider(t *testing.T) {
 		{
 			name:         "empty API key returns mock provider",
 			apiKey:       "",
-			expectedType: "*main.MockProvider",
+			expectedType: "*orchestrator.MockProvider",
 			checkClient:  false,
 		},
 		{
 			name:         "valid API key returns real provider",
 			apiKey:       "test-anthropic-key-456",
-			expectedType: "*main.AnthropicProvider",
+			expectedType: "*orchestrator.AnthropicProvider",
 			checkClient:  true,
 		},
 	}

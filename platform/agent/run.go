@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package agent
 
 // Build trigger: Test AWS OIDC authentication for GitHub Actions
 
@@ -108,21 +108,21 @@ type AgentMetrics struct {
 	blockedRequests int64
 
 	// Latency tracking (in nanoseconds)
-	latencies       []int64
-	lastLatencies   []int64  // Keep last 1000 for P99 calculation
+	latencies     []int64
+	lastLatencies []int64 // Keep last 1000 for P99 calculation
 
 	// Throughput
-	startTime       time.Time
-	lastResetTime   time.Time
+	startTime     time.Time
+	lastResetTime time.Time
 
 	// Policy evaluation metrics (end-to-end by policy type)
-	staticPolicyLatencies []int64
+	staticPolicyLatencies  []int64
 	dynamicPolicyLatencies []int64
 
 	// Per-stage timing metrics (in milliseconds)
-	authTimings           []int64  // Client + user validation + tenant check
-	staticPolicyTimings   []int64  // Static policy evaluation only
-	networkTimings        []int64  // Agent → Orchestrator network time
+	authTimings         []int64 // Client + user validation + tenant check
+	staticPolicyTimings []int64 // Static policy evaluation only
+	networkTimings      []int64 // Agent → Orchestrator network time
 
 	// Request type breakdown (for detailed analysis)
 	requestTypeCounters map[string]*RequestTypeMetrics
@@ -167,21 +167,21 @@ type ClientRequest struct {
 	Query       string                 `json:"query"`
 	UserToken   string                 `json:"user_token"`
 	ClientID    string                 `json:"client_id"`
-	RequestType string                 `json:"request_type"` // "sql", "llm_chat", "rag_search"
+	RequestType string                 `json:"request_type"`       // "sql", "llm_chat", "rag_search"
 	SkipLLM     bool                   `json:"skip_llm,omitempty"` // Skip LLM calls for hourly tests
 	Context     map[string]interface{} `json:"context"`
 }
 
 type ClientResponse struct {
-	Success      bool                   `json:"success"`
-	Data         interface{}            `json:"data,omitempty"`
-	Result       string                 `json:"result,omitempty"`     // For multi-agent planning - MUST match SDK type
-	PlanID       string                 `json:"plan_id,omitempty"`    // For multi-agent planning
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`   // For multi-agent planning - MUST match SDK type
-	Error        string                 `json:"error,omitempty"`
-	Blocked      bool                   `json:"blocked"`
-	BlockReason  string                 `json:"block_reason,omitempty"`
-	PolicyInfo   *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
+	Success     bool                   `json:"success"`
+	Data        interface{}            `json:"data,omitempty"`
+	Result      string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
+	PlanID      string                 `json:"plan_id,omitempty"`  // For multi-agent planning
+	Metadata    map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
+	Error       string                 `json:"error,omitempty"`
+	Blocked     bool                   `json:"blocked"`
+	BlockReason string                 `json:"block_reason,omitempty"`
+	PolicyInfo  *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
 }
 
 type PolicyEvaluationInfo struct {
@@ -243,7 +243,7 @@ type Client struct {
 	Enabled       bool      `json:"enabled"`
 	LicenseTier   string    `json:"license_tier,omitempty"`
 	LicenseExpiry time.Time `json:"license_expiry,omitempty"`
-	APIKeyID      string    `json:"api_key_id,omitempty"` // For Option 3 usage tracking
+	APIKeyID      string    `json:"api_key_id,omitempty"`   // For Option 3 usage tracking
 	ServiceName   string    `json:"service_name,omitempty"` // For V2 service licenses
 }
 
@@ -323,7 +323,7 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// main is the entry point for the agent service.
+// Run is the exported entry point for the agent service.
 //
 // Testing Note: This function is currently at 0% test coverage because it:
 // 1. Calls log.Fatal() which exits the process (untestable)
@@ -339,7 +339,7 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 //
 // Refactoring planned for Phase 5 (Open Source Preparation).
 // Current architecture is functional but not ideal for testing.
-func main() {
+func Run() {
 	// Start server IMMEDIATELY with /health endpoint so ECS/ALB health checks pass
 	// during initialization. Other routes are added after initialization completes.
 	// The server NEVER shuts down - eliminating transition gaps.
@@ -431,7 +431,7 @@ func main() {
 		log.Println("✅ Built database connection string from separate env vars (12-Factor App)")
 	}
 
-	if dbURL != ""  {
+	if dbURL != "" {
 
 		log.Println("Running database migrations...")
 		migrationsPath := "/app/migrations/"
@@ -1076,11 +1076,11 @@ func validateClient(clientID string) (*Client, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("client ID required")
 	}
-	
+
 	return &Client{
 		ID:          clientID,
 		Name:        "Demo Client",
-		TenantID:    "tenant_1", 
+		TenantID:    "tenant_1",
 		Permissions: []string{"query", "llm"},
 		RateLimit:   100,
 		Enabled:     true,
@@ -1131,7 +1131,7 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 			Role:        "user",
 			Region:      "eu",
 			Permissions: []string{"query", "llm", "mcp_query", "amadeus"}, // Full MCP permissions
-			TenantID:    expectedTenantID, // Uses client's tenant (travel-eu, healthcare-eu, etc.)
+			TenantID:    expectedTenantID,                                 // Uses client's tenant (travel-eu, healthcare-eu, etc.)
 		}, nil
 	}
 
@@ -1234,7 +1234,7 @@ func listClientsHandler(w http.ResponseWriter, r *http.Request) {
 			Enabled:     true,
 		},
 		{
-			ID:          "client_2", 
+			ID:          "client_2",
 			Name:        "Healthcare Analytics",
 			TenantID:    "tenant_2",
 			Permissions: []string{"query", "llm", "rag"},
@@ -1242,7 +1242,7 @@ func listClientsHandler(w http.ResponseWriter, r *http.Request) {
 			Enabled:     true,
 		},
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(clients); err != nil {
 		log.Printf("Error encoding clients response: %v", err)
@@ -1255,10 +1255,10 @@ func createClientHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
-	
+
 	// In production, save to database
 	client.Enabled = true
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(client); err != nil {
@@ -1272,12 +1272,12 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		UserEmail   string `json:"user_email"`
 		RequestType string `json:"request_type"`
 	}
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&testReq); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
 		return
 	}
-	
+
 	// Mock user for testing
 	testUser := &User{
 		Email:       testReq.UserEmail,
@@ -1285,7 +1285,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		Permissions: []string{"query"},
 		TenantID:    "tenant_1",
 	}
-	
+
 	// Use DB engine if available for testing
 	var result *StaticPolicyResult
 	if dbPolicyEngine != nil {
@@ -1293,14 +1293,14 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		result = staticPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"blocked":             result.Blocked,
-		"reason":              result.Reason,
-		"triggered_policies":  result.TriggeredPolicies,
-		"checks_performed":    result.ChecksPerformed,
-		"processing_time_ms":  result.ProcessingTimeMs,
+		"blocked":            result.Blocked,
+		"reason":             result.Reason,
+		"triggered_policies": result.TriggeredPolicies,
+		"checks_performed":   result.ChecksPerformed,
+		"processing_time_ms": result.ProcessingTimeMs,
 	}); err != nil {
 		log.Printf("Error encoding policy test response: %v", err)
 	}
@@ -1313,7 +1313,7 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int, po
 		Error:      message,
 		PolicyInfo: policyInfo,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -1351,7 +1351,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	if agentMetrics == nil {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "Metrics not initialized",
+			"error":     "Metrics not initialized",
 			"timestamp": time.Now().UTC(),
 		}); err != nil {
 			log.Printf("Error encoding metrics error response: %v", err)
@@ -1446,9 +1446,9 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			"error_rate_per_sec": errorRate,
 
 			// Overall latency percentiles (NEW - complete distribution)
-			"p50_ms": overallP50,
-			"p95_ms": overallP95,
-			"p99_ms": overallP99,
+			"p50_ms":         overallP50,
+			"p95_ms":         overallP95,
+			"p99_ms":         overallP99,
 			"avg_latency_ms": avgLatency,
 
 			// Legacy static policy metrics (backward compatibility)

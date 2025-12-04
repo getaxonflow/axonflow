@@ -1,5 +1,5 @@
 // Copyright 2025 AxonFlow
-package main
+package orchestrator
 
 import (
 	"context"
