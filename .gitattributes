@@ -1,8 +1,0 @@
-# AxonFlow Git Attributes
-
-# Exclude session notes from git archives
-# This prevents CLAUDE.md from being included in release tarballs
-CLAUDE.md export-ignore
-CLAUDE*.md export-ignore
-**/CLAUDE.md export-ignore
-**/CLAUDE*.md export-ignore
