@@ -1320,3 +1320,316 @@ func TestStoreLLMCallAudit_WithError(t *testing.T) {
 		t.Error("Expected error, got nil")
 	}
 }
+
+// TestQueueGatewayContext_WithAuditQueue tests queueing gateway context with AuditQueue
+func TestQueueGatewayContext_WithAuditQueue(t *testing.T) {
+	// Setup mock DB for AuditQueue
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Create temp fallback file
+	fallbackPath := os.TempDir() + "/test-queue-gateway-context.log"
+	defer func() { _ = os.Remove(fallbackPath) }()
+
+	// Create AuditQueue
+	auditQueue, err := NewAuditQueue(AuditModeCompliance, 100, 1, db, fallbackPath)
+	if err != nil {
+		t.Fatalf("Failed to create audit queue: %v", err)
+	}
+
+	// Create mock policy engine with the audit queue
+	oldDbPolicyEngine := dbPolicyEngine
+	dbPolicyEngine = &DatabasePolicyEngine{
+		auditQueue: auditQueue,
+	}
+	defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+	// Setup mock expectation for gateway context insert
+	mock.ExpectExec("INSERT INTO gateway_contexts").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	req := PreCheckRequest{
+		UserToken:   "test-token",
+		ClientID:    "test-client",
+		DataSources: []string{"source1"},
+		Query:       "test query",
+	}
+
+	policyResult := &StaticPolicyResult{
+		Blocked:           false,
+		TriggeredPolicies: []string{"policy1"},
+	}
+
+	expiresAt := time.Now().Add(5 * time.Minute)
+
+	// Queue the context
+	err = queueGatewayContext("ctx-queue-test", "test-client", req, policyResult, expiresAt)
+	if err != nil {
+		t.Errorf("queueGatewayContext() error = %v", err)
+	}
+
+	// Shutdown queue to ensure processing
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = auditQueue.Shutdown(ctx)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestQueueLLMCallAudit_WithAuditQueue tests queueing LLM audit with AuditQueue
+func TestQueueLLMCallAudit_WithAuditQueue(t *testing.T) {
+	// Setup mock DB for AuditQueue
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Create temp fallback file
+	fallbackPath := os.TempDir() + "/test-queue-llm-audit.log"
+	defer func() { _ = os.Remove(fallbackPath) }()
+
+	// Create AuditQueue
+	auditQueue, err := NewAuditQueue(AuditModeCompliance, 100, 1, db, fallbackPath)
+	if err != nil {
+		t.Fatalf("Failed to create audit queue: %v", err)
+	}
+
+	// Create mock policy engine with the audit queue
+	oldDbPolicyEngine := dbPolicyEngine
+	dbPolicyEngine = &DatabasePolicyEngine{
+		auditQueue: auditQueue,
+	}
+	defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+	// Setup mock expectation for LLM audit insert
+	mock.ExpectExec("INSERT INTO llm_call_audits").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	req := AuditLLMCallRequest{
+		ContextID:       "ctx-123",
+		ClientID:        "client-1",
+		ResponseSummary: "Test response",
+		Provider:        "openai",
+		Model:           "gpt-4",
+		TokenUsage: TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 200,
+			TotalTokens:      300,
+		},
+		LatencyMs: 1500,
+	}
+
+	// Queue the audit
+	err = queueLLMCallAudit("audit-queue-test", req, 0.009)
+	if err != nil {
+		t.Errorf("queueLLMCallAudit() error = %v", err)
+	}
+
+	// Shutdown queue to ensure processing
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = auditQueue.Shutdown(ctx)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestQueueGatewayContext_FallbackToDirectDB tests fallback when no queue
+func TestQueueGatewayContext_FallbackToDirectDB(t *testing.T) {
+	// Setup mock DB for direct access
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Set authDB for direct fallback
+	oldAuthDB := authDB
+	authDB = db
+	defer func() { authDB = oldAuthDB }()
+
+	// Set dbPolicyEngine to nil to simulate no queue available
+	oldDbPolicyEngine := dbPolicyEngine
+	dbPolicyEngine = nil
+	defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+	// Expect direct DB insert via storeGatewayContext
+	mock.ExpectExec("INSERT INTO gateway_contexts").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	req := PreCheckRequest{
+		UserToken:   "test-token",
+		ClientID:    "test-client",
+		DataSources: []string{},
+		Query:       "test query",
+	}
+
+	policyResult := &StaticPolicyResult{
+		Blocked:           false,
+		TriggeredPolicies: []string{},
+	}
+
+	expiresAt := time.Now().Add(5 * time.Minute)
+
+	// Should fallback to direct DB write
+	err = queueGatewayContext("ctx-fallback-test", "test-client", req, policyResult, expiresAt)
+	if err != nil {
+		t.Errorf("queueGatewayContext() error = %v (expected fallback to direct DB)", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestQueueLLMCallAudit_FallbackToDirectDB tests fallback when no queue
+func TestQueueLLMCallAudit_FallbackToDirectDB(t *testing.T) {
+	// Setup mock DB for direct access
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Set authDB for direct fallback
+	oldAuthDB := authDB
+	authDB = db
+	defer func() { authDB = oldAuthDB }()
+
+	// Set dbPolicyEngine to nil to simulate no queue available
+	oldDbPolicyEngine := dbPolicyEngine
+	dbPolicyEngine = nil
+	defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+	// Expect direct DB insert via storeLLMCallAudit
+	mock.ExpectExec("INSERT INTO llm_call_audits").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	req := AuditLLMCallRequest{
+		ContextID: "ctx-123",
+		ClientID:  "client-1",
+		Provider:  "openai",
+		Model:     "gpt-4",
+		TokenUsage: TokenUsage{
+			TotalTokens: 100,
+		},
+	}
+
+	// Should fallback to direct DB write
+	err = queueLLMCallAudit("audit-fallback-test", req, 0.003)
+	if err != nil {
+		t.Errorf("queueLLMCallAudit() error = %v (expected fallback to direct DB)", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestQueueGatewayContext_NoStorageAvailable tests when no storage is available
+func TestQueueGatewayContext_NoStorageAvailable(t *testing.T) {
+	// Set both dbPolicyEngine and authDB to nil
+	oldDbPolicyEngine := dbPolicyEngine
+	oldAuthDB := authDB
+	dbPolicyEngine = nil
+	authDB = nil
+	defer func() {
+		dbPolicyEngine = oldDbPolicyEngine
+		authDB = oldAuthDB
+	}()
+
+	req := PreCheckRequest{
+		UserToken:   "test-token",
+		ClientID:    "test-client",
+		DataSources: []string{},
+		Query:       "test query",
+	}
+
+	policyResult := &StaticPolicyResult{
+		Blocked:           false,
+		TriggeredPolicies: []string{},
+	}
+
+	expiresAt := time.Now().Add(5 * time.Minute)
+
+	// Should not error even with no storage available
+	err := queueGatewayContext("ctx-no-storage", "test-client", req, policyResult, expiresAt)
+	if err != nil {
+		t.Errorf("queueGatewayContext() should not error with no storage, got: %v", err)
+	}
+}
+
+// TestQueueLLMCallAudit_NoStorageAvailable tests when no storage is available
+func TestQueueLLMCallAudit_NoStorageAvailable(t *testing.T) {
+	// Set both dbPolicyEngine and authDB to nil
+	oldDbPolicyEngine := dbPolicyEngine
+	oldAuthDB := authDB
+	dbPolicyEngine = nil
+	authDB = nil
+	defer func() {
+		dbPolicyEngine = oldDbPolicyEngine
+		authDB = oldAuthDB
+	}()
+
+	req := AuditLLMCallRequest{
+		ContextID: "ctx-123",
+		ClientID:  "client-1",
+		Provider:  "openai",
+		Model:     "gpt-4",
+	}
+
+	// Should not error even with no storage available
+	err := queueLLMCallAudit("audit-no-storage", req, 0.003)
+	if err != nil {
+		t.Errorf("queueLLMCallAudit() should not error with no storage, got: %v", err)
+	}
+}
+
+// TestGetGatewayAuditQueue tests retrieval of audit queue
+func TestGetGatewayAuditQueue(t *testing.T) {
+	t.Run("nil policy engine", func(t *testing.T) {
+		oldDbPolicyEngine := dbPolicyEngine
+		dbPolicyEngine = nil
+		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+		queue := getGatewayAuditQueue()
+		if queue != nil {
+			t.Error("Expected nil queue when policy engine is nil")
+		}
+	})
+
+	t.Run("with policy engine", func(t *testing.T) {
+		db, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("Failed to create mock DB: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		fallbackPath := os.TempDir() + "/test-get-queue.log"
+		defer func() { _ = os.Remove(fallbackPath) }()
+
+		auditQueue, _ := NewAuditQueue(AuditModePerformance, 10, 1, db, fallbackPath)
+
+		oldDbPolicyEngine := dbPolicyEngine
+		dbPolicyEngine = &DatabasePolicyEngine{
+			auditQueue: auditQueue,
+		}
+		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+
+		queue := getGatewayAuditQueue()
+		if queue == nil {
+			t.Error("Expected non-nil queue when policy engine has queue")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		_ = auditQueue.Shutdown(ctx)
+	})
+}

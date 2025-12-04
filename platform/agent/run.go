@@ -563,6 +563,14 @@ func Run() {
 		dbPolicyEngine = dbEngine
 		log.Println("AxonFlow Agent initialized with database-backed policy enforcement")
 		defer func() { _ = dbPolicyEngine.Close() }()
+
+		// Recover any failed audit entries from fallback file
+		// This ensures compliance audit trails are not lost even after crashes
+		if recovered, err := dbPolicyEngine.RecoverAuditEntries(); err != nil {
+			log.Printf("⚠️ Failed to recover audit entries: %v", err)
+		} else if recovered > 0 {
+			log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
+		}
 	}
 
 	// Initialize Option 3 authentication database

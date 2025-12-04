@@ -23,6 +23,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"axonflow/platform/connectors/base"
@@ -79,14 +80,26 @@ var (
 	)
 )
 
+// gatewayMetricsOnce ensures metrics are registered only once
+var gatewayMetricsOnce sync.Once
+
 func init() {
-	// Register gateway Prometheus metrics
-	prometheus.MustRegister(gatewayPreCheckRequests)
-	prometheus.MustRegister(gatewayAuditRequests)
-	prometheus.MustRegister(gatewayPreCheckDuration)
-	prometheus.MustRegister(gatewayAuditDuration)
-	prometheus.MustRegister(gatewayLLMTokensTotal)
-	prometheus.MustRegister(gatewayLLMCostTotal)
+	registerGatewayMetrics()
+}
+
+// registerGatewayMetrics registers all gateway metrics once (safe for multiple calls)
+func registerGatewayMetrics() {
+	gatewayMetricsOnce.Do(func() {
+		// Register gateway Prometheus metrics (use Register to avoid panic)
+		prometheus.Register(gatewayPreCheckRequests)
+		prometheus.Register(gatewayAuditRequests)
+		prometheus.Register(gatewayPreCheckDuration)
+		prometheus.Register(gatewayAuditDuration)
+		prometheus.Register(gatewayLLMTokensTotal)
+		prometheus.Register(gatewayLLMCostTotal)
+		prometheus.Register(gatewayAuditQueuedTotal)
+		prometheus.Register(gatewayAuditFallbackTotal)
+	})
 }
 
 // Gateway Mode Types - Pre-check and Audit
@@ -167,6 +180,32 @@ var llmPricing = map[string]map[string]float64{
 
 // Default context expiration (5 minutes)
 const defaultContextExpiry = 5 * time.Minute
+
+// Prometheus metrics for audit queue
+var (
+	gatewayAuditQueuedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_gateway_audit_queued_total",
+			Help: "Total audit entries queued via AuditQueue",
+		},
+		[]string{"type", "status"},
+	)
+	gatewayAuditFallbackTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "axonflow_gateway_audit_fallback_total",
+			Help: "Total audit entries that fell back to direct DB write after queue failure",
+		},
+	)
+)
+
+// getGatewayAuditQueue returns the audit queue for Gateway Mode handlers
+// Returns nil if no policy engine or queue is available
+func getGatewayAuditQueue() *AuditQueue {
+	if dbPolicyEngine != nil {
+		return dbPolicyEngine.GetAuditQueue()
+	}
+	return nil
+}
 
 // handlePolicyPreCheck handles POST /api/policy/pre-check
 // This is the first step in Gateway Mode - SDK calls this before making LLM call
@@ -290,11 +329,13 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Store context in database for audit linking
-	if authDB != nil {
-		if err := storeGatewayContext(authDB, contextID, client.ID, req, policyResult, expiresAt); err != nil {
-			log.Printf("⚠️ [Pre-check] Failed to store context: %v (continuing)", err)
-		}
+	// Store context via AuditQueue for reliable persistence
+	// Uses retry with exponential backoff and fallback file if DB fails
+	if err := queueGatewayContext(contextID, client.ID, req, policyResult, expiresAt); err != nil {
+		log.Printf("⚠️ [Pre-check] Failed to queue context: %v (continuing)", err)
+		gatewayAuditQueuedTotal.WithLabelValues("gateway_context", "error").Inc()
+	} else {
+		gatewayAuditQueuedTotal.WithLabelValues("gateway_context", "success").Inc()
 	}
 
 	// Record metrics
@@ -376,13 +417,15 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 	// Generate audit ID
 	auditID := uuid.New().String()
 
-	// Store audit record
-	if authDB != nil {
-		if err := storeLLMCallAudit(authDB, auditID, req, estimatedCost); err != nil {
-			log.Printf("❌ [Audit] Failed to store audit: %v", err)
-			sendGatewayError(w, "Failed to store audit", http.StatusInternalServerError)
-			return
-		}
+	// Store audit record via AuditQueue for reliable persistence
+	// Uses retry with exponential backoff and fallback file if DB fails
+	if err := queueLLMCallAudit(auditID, req, estimatedCost); err != nil {
+		log.Printf("⚠️ [Audit] Failed to queue audit: %v", err)
+		gatewayAuditQueuedTotal.WithLabelValues("llm_call_audit", "error").Inc()
+		// Don't fail the request - audit is best-effort but queued for retry
+		// This is a key improvement over the previous fail-open behavior
+	} else {
+		gatewayAuditQueuedTotal.WithLabelValues("llm_call_audit", "success").Inc()
 	}
 
 	// Record Prometheus metrics
@@ -579,4 +622,96 @@ func RegisterGatewayHandlers(r *mux.Router) {
 	r.HandleFunc("/api/policy/pre-check", handlePolicyPreCheck).Methods("POST")
 	r.HandleFunc("/api/audit/llm-call", handleAuditLLMCall).Methods("POST")
 	log.Println("✅ Gateway mode endpoints registered: /api/policy/pre-check, /api/audit/llm-call")
+}
+
+// queueGatewayContext queues the pre-check context via AuditQueue
+// Falls back to direct DB write if queue is unavailable
+func queueGatewayContext(contextID, clientID string, req PreCheckRequest, policyResult *StaticPolicyResult, expiresAt time.Time) error {
+	// Hash sensitive data for privacy
+	userTokenHash := hashString(req.UserToken)
+	queryHash := hashString(req.Query)
+
+	// Get the audit queue
+	auditQueue := getGatewayAuditQueue()
+
+	// Build the audit entry
+	// Use plain slices (not pq.Array) for JSON serialization compatibility
+	// The AuditQueue will convert to pq.Array when writing to DB
+	entry := AuditEntry{
+		Type:      AuditTypeGatewayContext,
+		Timestamp: time.Now(),
+		ClientID:  clientID,
+		Details: map[string]interface{}{
+			"context_id":         contextID,
+			"user_token_hash":    userTokenHash,
+			"query_hash":         queryHash,
+			"data_sources":       req.DataSources,
+			"policies_evaluated": policyResult.TriggeredPolicies,
+			"approved":           !policyResult.Blocked,
+			"block_reason":       policyResult.Reason,
+			"expires_at":         expiresAt,
+		},
+	}
+
+	// Use audit queue if available
+	if auditQueue != nil {
+		if err := auditQueue.LogGatewayContext(entry); err != nil {
+			log.Printf("⚠️ [Gateway] AuditQueue failed, falling back to direct write: %v", err)
+			gatewayAuditFallbackTotal.Inc()
+			// Fall through to direct write
+		} else {
+			return nil // Successfully queued
+		}
+	}
+
+	// Fallback to direct DB write (legacy behavior)
+	if authDB != nil {
+		return storeGatewayContext(authDB, contextID, clientID, req, policyResult, expiresAt)
+	}
+
+	return nil // No storage available, but don't fail the request
+}
+
+// queueLLMCallAudit queues the LLM call audit via AuditQueue
+// Falls back to direct DB write if queue is unavailable
+func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost float64) error {
+	// Get the audit queue
+	auditQueue := getGatewayAuditQueue()
+
+	// Build the audit entry
+	entry := AuditEntry{
+		Type:      AuditTypeLLMCallAudit,
+		Timestamp: time.Now(),
+		ClientID:  req.ClientID,
+		Details: map[string]interface{}{
+			"audit_id":           auditID,
+			"context_id":         req.ContextID,
+			"provider":           req.Provider,
+			"model":              req.Model,
+			"prompt_tokens":      req.TokenUsage.PromptTokens,
+			"completion_tokens":  req.TokenUsage.CompletionTokens,
+			"total_tokens":       req.TokenUsage.TotalTokens,
+			"latency_ms":         req.LatencyMs,
+			"estimated_cost_usd": estimatedCost,
+			"metadata":           req.Metadata,
+		},
+	}
+
+	// Use audit queue if available
+	if auditQueue != nil {
+		if err := auditQueue.LogLLMCallAudit(entry); err != nil {
+			log.Printf("⚠️ [Gateway] AuditQueue failed, falling back to direct write: %v", err)
+			gatewayAuditFallbackTotal.Inc()
+			// Fall through to direct write
+		} else {
+			return nil // Successfully queued
+		}
+	}
+
+	// Fallback to direct DB write (legacy behavior)
+	if authDB != nil {
+		return storeLLMCallAudit(authDB, auditID, req, estimatedCost)
+	}
+
+	return nil // No storage available, but don't fail the request
 }

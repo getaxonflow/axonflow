@@ -640,3 +640,24 @@ func (dpe *DatabasePolicyEngine) Close() error {
 	}
 	return nil
 }
+
+// GetAuditQueue returns the audit queue for use by other components (e.g., Gateway Mode handlers)
+// Returns nil if the audit queue is not initialized
+func (dpe *DatabasePolicyEngine) GetAuditQueue() *AuditQueue {
+	return dpe.auditQueue
+}
+
+// RecoverAuditEntries recovers any failed audit entries from the fallback file
+// This should be called during startup after the audit queue is initialized
+func (dpe *DatabasePolicyEngine) RecoverAuditEntries() (int, error) {
+	if dpe.auditQueue == nil {
+		return 0, nil
+	}
+
+	fallbackPath := dpe.auditQueue.GetFallbackPath()
+	if fallbackPath == "" {
+		return 0, nil
+	}
+
+	return dpe.auditQueue.RecoverFromFallback(fallbackPath)
+}
