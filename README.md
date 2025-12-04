@@ -111,6 +111,50 @@ AxonFlow **prevents** problems before they happen (read-write governance).
 
 **Best of Both Worlds:** Many teams use LangChain for orchestration logic with AxonFlow as the governance layer on top.
 
+## 🆓 OSS vs Enterprise Features
+
+AxonFlow is available in two editions:
+
+| Feature | OSS (Free) | Enterprise |
+|---------|------------|------------|
+| **Core Platform** | | |
+| Policy enforcement engine | ✅ | ✅ |
+| Sub-10ms inline governance | ✅ | ✅ |
+| PII detection (10 types) | ✅ | ✅ |
+| Audit logging | ✅ | ✅ |
+| **LLM Providers** | | |
+| OpenAI | ✅ | ✅ |
+| Anthropic (Claude) | ✅ | ✅ |
+| AWS Bedrock | ❌ | ✅ |
+| Ollama (local/air-gapped) | ❌ | ✅ |
+| **MCP Connectors** | | |
+| PostgreSQL | ✅ | ✅ |
+| MySQL | ✅ | ✅ |
+| MongoDB | ✅ | ✅ |
+| Redis | ✅ | ✅ |
+| HTTP/REST | ✅ | ✅ |
+| Cassandra | ✅ | ✅ |
+| Amadeus (Travel API) | ❌ | ✅ |
+| Salesforce | ❌ | ✅ |
+| Slack | ❌ | ✅ |
+| Snowflake | ❌ | ✅ |
+| **Advanced Features** | | |
+| Multi-Agent Parallel (MAP) | ✅ | ✅ |
+| Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
+| License validation | ❌ | ✅ |
+| AWS Marketplace integration | ❌ | ✅ |
+| Node enforcement & metering | ❌ | ✅ |
+| **Deployment** | | |
+| Docker Compose (local) | ✅ | ✅ |
+| AWS ECS/Fargate | Manual | One-click CloudFormation |
+| Multi-tenant isolation | ❌ | ✅ |
+| **Support** | | |
+| Community (GitHub Issues) | ✅ | ✅ |
+| Priority support | ❌ | ✅ |
+| SLA guarantees | ❌ | ✅ |
+
+**Get Enterprise:** Contact [sales@getaxonflow.com](mailto:sales@getaxonflow.com) or deploy via [AWS Marketplace](https://aws.amazon.com/marketplace).
+
 ## 📦 SDK Integration
 
 Add AxonFlow governance to your existing applications in 3 lines of code:
