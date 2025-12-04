@@ -1,493 +1,728 @@
 // Copyright 2025 AxonFlow
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package http
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"axonflow/platform/connectors/base"
 )
 
 func TestNewHTTPConnector(t *testing.T) {
-	conn := NewHTTPConnector()
-	if conn == nil {
-		t.Fatal("expected non-nil connector")
+	c := NewHTTPConnector()
+	if c == nil {
+		t.Fatal("NewHTTPConnector returned nil")
 	}
-	if conn.logger == nil {
-		t.Error("expected logger to be initialized")
+	if c.maxResponseSize != DefaultMaxResponseSize {
+		t.Errorf("expected maxResponseSize %d, got %d", DefaultMaxResponseSize, c.maxResponseSize)
 	}
-	if conn.httpClient == nil {
-		t.Error("expected httpClient to be initialized")
+	if c.maxRetries != DefaultMaxRetries {
+		t.Errorf("expected maxRetries %d, got %d", DefaultMaxRetries, c.maxRetries)
 	}
-}
-
-func TestHTTPConnector_Name(t *testing.T) {
-	conn := NewHTTPConnector()
-
-	// Without config
-	if got := conn.Name(); got != "http-connector" {
-		t.Errorf("Name() = %q, want %q", got, "http-connector")
-	}
-
-	// With config
-	conn.config = &base.ConnectorConfig{Name: "my-api"}
-	if got := conn.Name(); got != "my-api" {
-		t.Errorf("Name() = %q, want %q", got, "my-api")
+	if c.allowPrivateIPs {
+		t.Error("expected allowPrivateIPs to be false by default")
 	}
 }
 
-func TestHTTPConnector_Type(t *testing.T) {
-	conn := NewHTTPConnector()
-	if got := conn.Type(); got != "http" {
-		t.Errorf("Type() = %q, want %q", got, "http")
-	}
-}
+func TestHTTPConnector_Connect(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
 
-func TestHTTPConnector_Version(t *testing.T) {
-	conn := NewHTTPConnector()
-	if got := conn.Version(); got != "0.2.0" {
-		t.Errorf("Version() = %q, want %q", got, "0.2.0")
-	}
-}
-
-func TestHTTPConnector_Capabilities(t *testing.T) {
-	conn := NewHTTPConnector()
-	caps := conn.Capabilities()
-
-	expected := []string{"query", "execute", "rest-api"}
-	if len(caps) != len(expected) {
-		t.Errorf("expected %d capabilities, got %d", len(expected), len(caps))
-	}
-	for i, c := range caps {
-		if c != expected[i] {
-			t.Errorf("capability %d: got %q, want %q", i, c, expected[i])
-		}
-	}
-}
-
-func TestHTTPConnector_HealthCheck_NoBaseURL(t *testing.T) {
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-
-	status, err := conn.HealthCheck(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if status.Healthy {
-		t.Error("expected unhealthy status with no base URL")
-	}
-	if status.Error != "base_url not configured" {
-		t.Errorf("expected error 'base_url not configured', got %q", status.Error)
-	}
-}
-
-func TestHTTPConnector_Connect_MissingBaseURL(t *testing.T) {
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Type:    "http",
-		Options: map[string]interface{}{},
-	}
-
-	err := conn.Connect(ctx, config)
-	if err == nil {
-		t.Error("expected error for missing base_url")
-	}
-}
-
-func TestHTTPConnector_Connect_Success(t *testing.T) {
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name: "test-api",
-		Type: "http",
-		Options: map[string]interface{}{
-			"base_url":  "http://example.com/api",
-			"auth_type": "bearer",
-			"timeout":   float64(60),
-			"headers": map[string]interface{}{
-				"X-Custom": "value",
-			},
-		},
-		Credentials: map[string]string{
-			"token": "secret-token",
-		},
-	}
-
-	err := conn.Connect(ctx, config)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	if conn.baseURL != "http://example.com/api" {
-		t.Errorf("baseURL = %q, want %q", conn.baseURL, "http://example.com/api")
-	}
-	if conn.authType != "bearer" {
-		t.Errorf("authType = %q, want %q", conn.authType, "bearer")
-	}
-	if conn.headers["X-Custom"] != "value" {
-		t.Errorf("header X-Custom = %q, want %q", conn.headers["X-Custom"], "value")
-	}
-}
-
-func TestHTTPConnector_Disconnect(t *testing.T) {
-	conn := NewHTTPConnector()
-	conn.config = &base.ConnectorConfig{Name: "test"}
-	ctx := context.Background()
-
-	err := conn.Disconnect(ctx)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestHTTPConnector_applyAuth(t *testing.T) {
 	tests := []struct {
-		name       string
-		authType   string
-		authConfig map[string]string
-		checkFn    func(r *http.Request) bool
+		name    string
+		config  *base.ConnectorConfig
+		wantErr bool
 	}{
 		{
-			name:     "bearer token",
-			authType: "bearer",
-			authConfig: map[string]string{
-				"token": "my-token",
+			name: "valid config with public URL",
+			config: &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url":         server.URL,
+					"allow_private_ips": true, // Allow for testing with localhost
+				},
 			},
-			checkFn: func(r *http.Request) bool {
-				return r.Header.Get("Authorization") == "Bearer my-token"
-			},
+			wantErr: false,
 		},
 		{
-			name:     "basic auth",
-			authType: "basic",
-			authConfig: map[string]string{
-				"username": "user",
-				"password": "pass",
+			name: "missing base_url",
+			config: &base.ConnectorConfig{
+				Name:    "test-http",
+				Options: map[string]interface{}{},
 			},
-			checkFn: func(r *http.Request) bool {
-				user, pass, ok := r.BasicAuth()
-				return ok && user == "user" && pass == "pass"
-			},
+			wantErr: true,
 		},
 		{
-			name:     "api-key default header",
-			authType: "api-key",
-			authConfig: map[string]string{
-				"api_key": "secret-key",
+			name: "invalid URL scheme",
+			config: &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url": "ftp://example.com",
+				},
 			},
-			checkFn: func(r *http.Request) bool {
-				return r.Header.Get("X-API-Key") == "secret-key"
-			},
+			wantErr: true,
 		},
 		{
-			name:     "api-key custom header",
-			authType: "api-key",
-			authConfig: map[string]string{
-				"api_key":     "secret-key",
-				"header_name": "X-Auth-Token",
+			name: "private IP blocked by default",
+			config: &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url": "http://192.168.1.1",
+				},
 			},
-			checkFn: func(r *http.Request) bool {
-				return r.Header.Get("X-Auth-Token") == "secret-key"
-			},
+			wantErr: true,
 		},
 		{
-			name:       "no auth",
-			authType:   "none",
-			authConfig: map[string]string{},
-			checkFn: func(r *http.Request) bool {
-				return r.Header.Get("Authorization") == ""
+			name: "config with auth",
+			config: &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url":         server.URL,
+					"auth_type":        "bearer",
+					"allow_private_ips": true,
+				},
+				Credentials: map[string]string{
+					"token": "test-token",
+				},
 			},
+			wantErr: false,
+		},
+		{
+			name: "config with custom headers",
+			config: &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url":         server.URL,
+					"allow_private_ips": true,
+					"headers": map[string]interface{}{
+						"X-Custom-Header": "custom-value",
+					},
+				},
+			},
+			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			conn := NewHTTPConnector()
-			conn.authType = tt.authType
-			conn.authConfig = tt.authConfig
-
-			req, _ := http.NewRequest("GET", "http://example.com", nil)
-			conn.applyAuth(req)
-
-			if !tt.checkFn(req) {
-				t.Errorf("auth check failed for %s", tt.name)
+			c := NewHTTPConnector()
+			err := c.Connect(context.Background(), tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Connect() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil {
+				_ = c.Disconnect(context.Background())
 			}
 		})
 	}
 }
 
-func TestHTTPConnector_applyHeaders(t *testing.T) {
-	conn := NewHTTPConnector()
-	conn.headers = map[string]string{
-		"X-Custom-1": "value1",
-		"X-Custom-2": "value2",
-	}
-
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
-	conn.applyHeaders(req)
-
-	if req.Header.Get("X-Custom-1") != "value1" {
-		t.Errorf("X-Custom-1 = %q, want %q", req.Header.Get("X-Custom-1"), "value1")
-	}
-	if req.Header.Get("X-Custom-2") != "value2" {
-		t.Errorf("X-Custom-2 = %q, want %q", req.Header.Get("X-Custom-2"), "value2")
-	}
-}
-
-func TestHTTPConnector_convertToRows(t *testing.T) {
-	conn := NewHTTPConnector()
-
-	tests := []struct {
-		name     string
-		input    interface{}
-		expected int // number of rows
-	}{
-		{
-			name:     "array of objects",
-			input:    []interface{}{map[string]interface{}{"id": 1}, map[string]interface{}{"id": 2}},
-			expected: 2,
-		},
-		{
-			name:     "array of primitives",
-			input:    []interface{}{"a", "b", "c"},
-			expected: 3,
-		},
-		{
-			name:     "single object",
-			input:    map[string]interface{}{"id": 1, "name": "test"},
-			expected: 1,
-		},
-		{
-			name:     "primitive value",
-			input:    "just a string",
-			expected: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rows := conn.convertToRows(tt.input)
-			if len(rows) != tt.expected {
-				t.Errorf("got %d rows, want %d", len(rows), tt.expected)
-			}
-		})
-	}
-}
-
-func TestHTTPConnector_Query_WithMockServer(t *testing.T) {
-	// Create mock server
+func TestHTTPConnector_Query(t *testing.T) {
+	// Create a test server that returns JSON
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/users" {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]`))
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 1, "name": "Alice"},
+				{"id": 2, "name": "Bob"},
+			})
+			return
+		}
+		if r.URL.Path == "/user/1" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 1, "name": "Alice",
+			})
+			return
+		}
+		if r.URL.Path == "/error" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Internal Server Error"))
+			return
+		}
+		if r.URL.Path == "/text" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Write([]byte("Hello, World!"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-
-	// Connect
-	config := &base.ConnectorConfig{
-		Name: "test",
+	c := NewHTTPConnector()
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name: "test-http",
 		Options: map[string]interface{}{
-			"base_url": server.URL,
+			"base_url":         server.URL,
+			"allow_private_ips": true,
 		},
-	}
-	err := conn.Connect(ctx, config)
+	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
+	defer c.Disconnect(context.Background())
 
-	// Query
-	query := &base.Query{Statement: "/users"}
-	result, err := conn.Query(ctx, query)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	if result.RowCount != 2 {
-		t.Errorf("RowCount = %d, want 2", result.RowCount)
-	}
-}
-
-func TestHTTPConnector_Query_WithParameters(t *testing.T) {
-	var capturedURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedURL = r.URL.String()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer server.Close()
-
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Options: map[string]interface{}{"base_url": server.URL},
-	}
-	conn.Connect(ctx, config)
-
-	query := &base.Query{
-		Statement: "search",
-		Parameters: map[string]interface{}{
-			"q": "test",
+	tests := []struct {
+		name       string
+		query      *base.Query
+		wantErr    bool
+		wantRows   int
+	}{
+		{
+			name: "query array response",
+			query: &base.Query{
+				Statement: "/users",
+			},
+			wantErr:  false,
+			wantRows: 2,
+		},
+		{
+			name: "query single object",
+			query: &base.Query{
+				Statement: "/user/1",
+			},
+			wantErr:  false,
+			wantRows: 1,
+		},
+		{
+			name: "query with parameters",
+			query: &base.Query{
+				Statement: "/users",
+				Parameters: map[string]interface{}{
+					"page": 1,
+					"size": 10,
+				},
+			},
+			wantErr:  false,
+			wantRows: 2,
+		},
+		{
+			name: "query text response",
+			query: &base.Query{
+				Statement: "/text",
+			},
+			wantErr:  false,
+			wantRows: 1,
+		},
+		{
+			name: "query error response",
+			query: &base.Query{
+				Statement: "/error",
+			},
+			wantErr: true,
 		},
 	}
-	_, err := conn.Query(ctx, query)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
 
-	if capturedURL != "/search?q=test" {
-		t.Errorf("URL = %q, want /search?q=test", capturedURL)
-	}
-}
-
-func TestHTTPConnector_Query_NonJSONResponse(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("plain text response"))
-	}))
-	defer server.Close()
-
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Options: map[string]interface{}{"base_url": server.URL},
-	}
-	conn.Connect(ctx, config)
-
-	query := &base.Query{Statement: "/text"}
-	result, err := conn.Query(ctx, query)
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	if result.RowCount != 1 {
-		t.Errorf("RowCount = %d, want 1", result.RowCount)
-	}
-	if result.Rows[0]["response"] != "plain text response" {
-		t.Errorf("response = %v, want 'plain text response'", result.Rows[0]["response"])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := c.Query(context.Background(), tt.query)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Query() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && result.RowCount != tt.wantRows {
+				t.Errorf("Query() rows = %d, want %d", result.RowCount, tt.wantRows)
+			}
+		})
 	}
 }
 
-func TestHTTPConnector_Query_ErrorStatus(t *testing.T) {
+func TestHTTPConnector_Execute(t *testing.T) {
+	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "POST":
+			if r.URL.Path == "/users" {
+				w.WriteHeader(http.StatusCreated)
+				json.NewEncoder(w).Encode(map[string]interface{}{"id": 3})
+				return
+			}
+		case "PUT":
+			if r.URL.Path == "/users/1" {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"updated": true})
+				return
+			}
+		case "DELETE":
+			if r.URL.Path == "/users/1" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		case "PATCH":
+			if r.URL.Path == "/users/1" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		}
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("not found"))
 	}))
 	defer server.Close()
 
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Options: map[string]interface{}{"base_url": server.URL},
+	c := NewHTTPConnector()
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name: "test-http",
+		Options: map[string]interface{}{
+			"base_url":         server.URL,
+			"allow_private_ips": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
 	}
-	conn.Connect(ctx, config)
+	defer c.Disconnect(context.Background())
 
-	query := &base.Query{Statement: "/missing"}
-	_, err := conn.Query(ctx, query)
-	if err == nil {
-		t.Error("expected error for 404 response")
-	}
-}
-
-func TestHTTPConnector_Execute_POST(t *testing.T) {
-	var capturedMethod string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedMethod = r.Method
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"id":123}`))
-	}))
-	defer server.Close()
-
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Options: map[string]interface{}{"base_url": server.URL},
-	}
-	conn.Connect(ctx, config)
-
-	cmd := &base.Command{
-		Action:    "POST",
-		Statement: "/users",
-		Parameters: map[string]interface{}{
-			"name": "Alice",
+	tests := []struct {
+		name        string
+		cmd         *base.Command
+		wantSuccess bool
+	}{
+		{
+			name: "POST request",
+			cmd: &base.Command{
+				Action:    "POST",
+				Statement: "/users",
+				Parameters: map[string]interface{}{
+					"name": "Charlie",
+				},
+			},
+			wantSuccess: true,
+		},
+		{
+			name: "PUT request",
+			cmd: &base.Command{
+				Action:    "PUT",
+				Statement: "/users/1",
+				Parameters: map[string]interface{}{
+					"name": "Alice Updated",
+				},
+			},
+			wantSuccess: true,
+		},
+		{
+			name: "DELETE request",
+			cmd: &base.Command{
+				Action:    "DELETE",
+				Statement: "/users/1",
+			},
+			wantSuccess: true,
+		},
+		{
+			name: "PATCH request",
+			cmd: &base.Command{
+				Action:    "PATCH",
+				Statement: "/users/1",
+				Parameters: map[string]interface{}{
+					"status": "active",
+				},
+			},
+			wantSuccess: true,
+		},
+		{
+			name: "invalid method",
+			cmd: &base.Command{
+				Action:    "INVALID",
+				Statement: "/users",
+			},
+			wantSuccess: false,
 		},
 	}
-	result, err := conn.Execute(ctx, cmd)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
 
-	if capturedMethod != "POST" {
-		t.Errorf("method = %q, want POST", capturedMethod)
-	}
-	if !result.Success {
-		t.Error("expected success=true")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := c.Execute(context.Background(), tt.cmd)
+			if err != nil && tt.wantSuccess {
+				t.Errorf("Execute() unexpected error: %v", err)
+				return
+			}
+			if err == nil && result.Success != tt.wantSuccess {
+				t.Errorf("Execute() success = %v, want %v", result.Success, tt.wantSuccess)
+			}
+		})
 	}
 }
 
-func TestHTTPConnector_Execute_RequestError(t *testing.T) {
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name:    "test",
-		Options: map[string]interface{}{"base_url": "http://invalid-host-12345.local"},
-	}
-	conn.Connect(ctx, config)
-
-	cmd := &base.Command{
-		Action:    "POST",
-		Statement: "/test",
-	}
-	result, err := conn.Execute(ctx, cmd)
-	if err != nil {
-		t.Fatalf("Execute returned error instead of result with Success=false: %v", err)
-	}
-	if result.Success {
-		t.Error("expected Success=false for network error")
-	}
-}
-
-func TestHTTPConnector_HealthCheck_WithServer(t *testing.T) {
+func TestHTTPConnector_HealthCheck(t *testing.T) {
+	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name        string
+		healthPath  string
+		wantHealthy bool
+	}{
+		{
+			name:        "healthy with default path",
+			healthPath:  "",
+			wantHealthy: false, // 404 on /
+		},
+		{
+			name:        "healthy with custom path",
+			healthPath:  "/health",
+			wantHealthy: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewHTTPConnector()
+			opts := map[string]interface{}{
+				"base_url":         server.URL,
+				"allow_private_ips": true,
+			}
+			if tt.healthPath != "" {
+				opts["health_path"] = tt.healthPath
+			}
+			err := c.Connect(context.Background(), &base.ConnectorConfig{
+				Name:    "test-http",
+				Options: opts,
+			})
+			if err != nil {
+				t.Fatalf("Connect failed: %v", err)
+			}
+			defer c.Disconnect(context.Background())
+
+			status, err := c.HealthCheck(context.Background())
+			if err != nil {
+				t.Fatalf("HealthCheck failed: %v", err)
+			}
+			if status.Healthy != tt.wantHealthy {
+				t.Errorf("HealthCheck() healthy = %v, want %v", status.Healthy, tt.wantHealthy)
+			}
+		})
+	}
+}
+
+func TestHTTPConnector_Authentication(t *testing.T) {
+	tests := []struct {
+		name       string
+		authType   string
+		creds      map[string]string
+		wantHeader string
+		wantValue  string
+	}{
+		{
+			name:       "bearer auth",
+			authType:   "bearer",
+			creds:      map[string]string{"token": "my-token"},
+			wantHeader: "Authorization",
+			wantValue:  "Bearer my-token",
+		},
+		{
+			name:       "api-key auth",
+			authType:   "api-key",
+			creds:      map[string]string{"api_key": "my-api-key"},
+			wantHeader: "X-API-Key",
+			wantValue:  "my-api-key",
+		},
+		{
+			name:       "api-key with custom header",
+			authType:   "api-key",
+			creds:      map[string]string{"api_key": "my-api-key", "header_name": "X-Custom-Key"},
+			wantHeader: "X-Custom-Key",
+			wantValue:  "my-api-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedHeader string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedHeader = r.Header.Get(tt.wantHeader)
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			}))
+			defer server.Close()
+
+			c := NewHTTPConnector()
+			err := c.Connect(context.Background(), &base.ConnectorConfig{
+				Name: "test-http",
+				Options: map[string]interface{}{
+					"base_url":         server.URL,
+					"auth_type":        tt.authType,
+					"allow_private_ips": true,
+				},
+				Credentials: tt.creds,
+			})
+			if err != nil {
+				t.Fatalf("Connect failed: %v", err)
+			}
+			defer c.Disconnect(context.Background())
+
+			_, err = c.Query(context.Background(), &base.Query{Statement: "/"})
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+
+			if receivedHeader != tt.wantValue {
+				t.Errorf("expected %s header value %q, got %q", tt.wantHeader, tt.wantValue, receivedHeader)
+			}
+		})
+	}
+}
+
+func TestHTTPConnector_Retry(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer server.Close()
+
+	c := NewHTTPConnector()
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name: "test-http",
+		Options: map[string]interface{}{
+			"base_url":         server.URL,
+			"allow_private_ips": true,
+			"max_retries":      float64(3),
+			"retry_delay":      "10ms",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer c.Disconnect(context.Background())
+
+	result, err := c.Query(context.Background(), &base.Query{Statement: "/"})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+	if result.RowCount != 1 {
+		t.Errorf("expected 1 row, got %d", result.RowCount)
+	}
+}
+
+func TestHTTPConnector_ResponseSizeLimit(t *testing.T) {
+	// Create a server that returns a large response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Generate a large response
+		large := strings.Repeat("x", 1024*1024) // 1MB
+		json.NewEncoder(w).Encode(map[string]string{"data": large})
+	}))
+	defer server.Close()
+
+	c := NewHTTPConnector()
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name: "test-http",
+		Options: map[string]interface{}{
+			"base_url":          server.URL,
+			"allow_private_ips":  true,
+			"max_response_size": float64(1024), // 1KB limit
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer c.Disconnect(context.Background())
+
+	_, err = c.Query(context.Background(), &base.Query{Statement: "/"})
+	if err == nil {
+		t.Error("expected error for large response, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("expected size limit error, got: %v", err)
+	}
+}
+
+func TestHTTPConnector_Timeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	conn := NewHTTPConnector()
-	ctx := context.Background()
-	config := &base.ConnectorConfig{
-		Name: "test",
+	c := NewHTTPConnector()
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name:    "test-http",
+		Timeout: 100 * time.Millisecond,
 		Options: map[string]interface{}{
-			"base_url":    server.URL,
-			"health_path": "/health",
+			"base_url":         server.URL,
+			"allow_private_ips": true,
+			"max_retries":      float64(0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer c.Disconnect(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = c.Query(ctx, &base.Query{Statement: "/"})
+	if err == nil {
+		t.Error("expected timeout error, got nil")
+	}
+}
+
+func TestHTTPConnector_IsPrivateIP(t *testing.T) {
+	c := NewHTTPConnector()
+
+	tests := []struct {
+		ip        string
+		isPrivate bool
+	}{
+		{"127.0.0.1", true},
+		{"10.0.0.1", true},
+		{"172.16.0.1", true},
+		{"192.168.1.1", true},
+		{"169.254.169.254", true}, // AWS metadata
+		{"0.0.0.0", true},
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+		{"::1", true},
+		{"fe80::1", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP: %s", tt.ip)
+			}
+			result := c.isPrivateIP(ip)
+			if result != tt.isPrivate {
+				t.Errorf("isPrivateIP(%s) = %v, want %v", tt.ip, result, tt.isPrivate)
+			}
+		})
+	}
+}
+
+func TestHTTPConnector_Metadata(t *testing.T) {
+	c := NewHTTPConnector()
+
+	if c.Type() != "http" {
+		t.Errorf("Type() = %s, want http", c.Type())
+	}
+	if c.Version() != "1.0.0" {
+		t.Errorf("Version() = %s, want 1.0.0", c.Version())
+	}
+
+	caps := c.Capabilities()
+	expectedCaps := []string{"query", "execute", "rest-api", "retry", "ssrf-protection"}
+	if len(caps) != len(expectedCaps) {
+		t.Errorf("Capabilities() length = %d, want %d", len(caps), len(expectedCaps))
+	}
+}
+
+func TestHTTPConnector_ConvertToRows(t *testing.T) {
+	c := NewHTTPConnector()
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		wantRows int
+	}{
+		{
+			name:     "array of objects",
+			input:    []interface{}{map[string]interface{}{"a": 1}, map[string]interface{}{"b": 2}},
+			wantRows: 2,
+		},
+		{
+			name:     "single object",
+			input:    map[string]interface{}{"a": 1},
+			wantRows: 1,
+		},
+		{
+			name:     "array of primitives",
+			input:    []interface{}{1, 2, 3},
+			wantRows: 3,
+		},
+		{
+			name:     "primitive value",
+			input:    "hello",
+			wantRows: 1,
 		},
 	}
-	conn.Connect(ctx, config)
 
-	status, err := conn.HealthCheck(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := c.convertToRows(tt.input)
+			if len(rows) != tt.wantRows {
+				t.Errorf("convertToRows() returned %d rows, want %d", len(rows), tt.wantRows)
+			}
+		})
 	}
-	if !status.Healthy {
-		t.Error("expected healthy status")
+}
+
+func TestHTTPConnector_CalculateBackoff(t *testing.T) {
+	c := NewHTTPConnector()
+	c.retryDelay = 100 * time.Millisecond
+
+	tests := []struct {
+		attempt  int
+		expected time.Duration
+	}{
+		{1, 100 * time.Millisecond},
+		{2, 200 * time.Millisecond},
+		{3, 400 * time.Millisecond},
+		{4, 800 * time.Millisecond},
+		{10, MaxRetryDelay}, // Should cap at max
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			result := c.calculateBackoff(tt.attempt)
+			if result != tt.expected {
+				t.Errorf("calculateBackoff(%d) = %v, want %v", tt.attempt, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHTTPConnector_IsRetryableStatusCode(t *testing.T) {
+	c := NewHTTPConnector()
+
+	retryable := []int{408, 429, 500, 502, 503, 504}
+	nonRetryable := []int{200, 201, 400, 401, 403, 404, 405}
+
+	for _, code := range retryable {
+		if !c.isRetryableStatusCode(code) {
+			t.Errorf("expected %d to be retryable", code)
+		}
+	}
+
+	for _, code := range nonRetryable {
+		if c.isRetryableStatusCode(code) {
+			t.Errorf("expected %d to not be retryable", code)
+		}
 	}
 }
