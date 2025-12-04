@@ -448,3 +448,18 @@ We welcome contributions to AxonFlow! To maintain high quality standards:
 *AxonFlow: Like Kubernetes for containers, but for enterprise AI workflows*
 
 Built with support from Claude and other AI tools to accelerate development.
+
+## 📄 License
+
+AxonFlow is licensed under the [Business Source License 1.1](LICENSE).
+
+**What this means:**
+- ✅ **Free to use** for internal business operations
+- ✅ **Free to modify** and create derivative works
+- ✅ **Free to integrate** into your products (that don't compete with AxonFlow)
+- ✅ **Free for development**, testing, and education
+- ❌ **Cannot** offer AxonFlow as a competing commercial service
+
+**On January 1, 2029**, the license automatically converts to **Apache 2.0**.
+
+For commercial licensing options, contact [sales@getaxonflow.com](mailto:sales@getaxonflow.com).
