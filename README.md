@@ -178,8 +178,8 @@ const response = await axonflow.protect({
 The NewRelic of AI — prevent failures before they happen with real-time governance:
 
 ### 🔄 **Agentic Workflow Orchestration**
-- Visualise and deploy multi-step AI workflows across internal systems
-- Visual editor + code-first config (YAML/JSON/DSL)
+- Deploy multi-step AI workflows across internal systems
+- Code-first config (YAML/JSON/DSL) with programmatic API
 - Decision logic, retries, approvals, fallbacks
 - Multi-agent flows (LLM + human-in-the-loop)
 - Versioned rollouts & rollback support
