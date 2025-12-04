@@ -1,0 +1,61 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title
+        run: |
+          # Only check PR title (which becomes the squash commit message)
+          # This allows historical commits to remain unchanged
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          echo "Checking PR title: $PR_TITLE"
+
+          # Check if PR title follows Conventional Commits format
+          if ! echo "$PR_TITLE" | grep -qE '^(feat|fix|docs|style|refactor|test|chore|perf)(\(.+\))?: .{1,72}$'; then
+            echo ""
+            echo "❌ Invalid PR title: $PR_TITLE"
+            echo ""
+            echo "PR titles must follow Conventional Commits format:"
+            echo "  Format: <type>(<scope>): <subject>"
+            echo "  Types: feat, fix, docs, style, refactor, test, chore, perf"
+            echo "  Max length: 72 characters"
+            echo ""
+            echo "Examples:"
+            echo "  ✅ fix: resolve authentication bug"
+            echo "  ✅ feat(api): add user endpoint"
+            echo "  ✅ refactor(agent): improve error handling"
+            echo ""
+            echo "Why: PR title becomes the commit message when using 'Squash and merge'"
+            echo "See: https://www.conventionalcommits.org/"
+            exit 1
+          fi
+
+          echo "✅ PR title follows Conventional Commits format"
+
+      - name: Check for AI attribution in PR description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          echo "Checking PR description for AI attribution..."
+
+          # Check for AI attribution patterns
+          if echo "$PR_BODY" | grep -qE '🤖|Generated with.*Claude|Co-Authored-By:.*Claude|noreply@anthropic'; then
+            echo ""
+            echo "❌ AI attribution found in PR description"
+            echo ""
+            echo "Please remove the following from your PR description:"
+            echo "  - 🤖 Generated with Claude Code"
+            echo "  - Co-Authored-By: Claude <noreply@anthropic.com>"
+            echo "  - Any other AI attribution text"
+            echo ""
+            echo "Why: Company policy - no AI attribution in commits or PRs"
+            exit 1
+          fi
+
+          echo "✅ No AI attribution found in PR description"

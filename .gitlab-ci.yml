@@ -1,0 +1,233 @@
+# AxonFlow GitLab CI/CD Pipeline
+# Purpose: Automated build, test, and deployment
+# Author: AxonFlow Team
+# Created: November 12, 2025
+
+stages:
+  - validate
+  - build
+  - test
+  - deploy-staging
+  - deploy-production
+
+variables:
+  AWS_DEFAULT_REGION: eu-central-1
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+
+# Validation stage - runs on all branches
+validate:syntax:
+  stage: validate
+  image: bash:latest
+  script:
+    - echo "Validating bash scripts..."
+    - bash -n scripts/deployment/**/*.sh
+    - bash -n scripts/deployment/lib/*.sh
+    - echo "✅ Syntax validation passed"
+  only:
+    - branches
+  tags:
+    - docker
+
+validate:yaml:
+  stage: validate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache yq
+  script:
+    - echo "Validating YAML configuration files..."
+    - yq eval '.' config/environments/*.yaml > /dev/null
+    - yq eval '.' config/accounts/*.yaml > /dev/null
+    - echo "✅ YAML validation passed"
+  only:
+    - branches
+  tags:
+    - docker
+
+# Build stage - build Docker images
+build:agent:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache bash git aws-cli
+    - aws --version
+  script:
+    - echo "Building agent image..."
+    - export VERSION=$(git rev-parse --short HEAD)
+    - echo "Version: $VERSION"
+    # Login to ECR
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+    # Build image
+    - docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-agent:${VERSION} -f platform/agent/Dockerfile .
+    - docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-agent:latest -f platform/agent/Dockerfile .
+    # Push to ECR
+    - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-agent:${VERSION}
+    - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-agent:latest
+    - echo "✅ Agent image built and pushed"
+  only:
+    - main
+    - develop
+  tags:
+    - docker
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1 hour
+
+build:orchestrator:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - apk add --no-cache bash git aws-cli
+  script:
+    - echo "Building orchestrator image..."
+    - export VERSION=$(git rev-parse --short HEAD)
+    - echo "Version: $VERSION"
+    # Login to ECR
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+    # Build image
+    - docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-orchestrator:${VERSION} -f platform/orchestrator/Dockerfile .
+    - docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-orchestrator:latest -f platform/orchestrator/Dockerfile .
+    # Push to ECR
+    - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-orchestrator:${VERSION}
+    - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/axonflow-orchestrator:latest
+    - echo "✅ Orchestrator image built and pushed"
+  only:
+    - main
+    - develop
+  tags:
+    - docker
+
+# Test stage - run tests
+test:unit:
+  stage: test
+  image: golang:1.21
+  script:
+    - echo "Running unit tests..."
+    # Agent tests
+    - cd platform/agent
+    - go test -v -coverprofile=coverage.out ./...
+    - go tool cover -func=coverage.out
+    # Orchestrator tests
+    - cd ../orchestrator
+    - go test -v -coverprofile=coverage.out ./...
+    - go tool cover -func=coverage.out
+    - echo "✅ Unit tests passed"
+  coverage: '/total:.*?(\d+\.\d+)%/'
+  only:
+    - branches
+  tags:
+    - docker
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: platform/*/coverage.out
+    expire_in: 1 week
+
+test:integration:
+  stage: test
+  image: golang:1.21
+  services:
+    - postgres:15
+  variables:
+    POSTGRES_DB: axonflow_test
+    POSTGRES_USER: axonflow
+    POSTGRES_PASSWORD: test_password
+    DATABASE_URL: postgresql://axonflow:test_password@postgres:5432/axonflow_test
+  script:
+    - echo "Running integration tests..."
+    # Wait for postgres
+    - apt-get update && apt-get install -y postgresql-client
+    - until pg_isready -h postgres -U axonflow; do sleep 1; done
+    # Run integration tests
+    - cd platform/agent
+    - go test -v -tags=integration ./...
+    - cd ../orchestrator
+    - go test -v -tags=integration ./...
+    - echo "✅ Integration tests passed"
+  only:
+    - branches
+  tags:
+    - docker
+
+# Deploy to staging - automatic on main branch
+deploy:staging:
+  stage: deploy-staging
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache bash aws-cli yq
+  script:
+    - echo "Deploying to staging environment..."
+    - export VERSION=$(git rev-parse --short HEAD)
+    - echo "Version: $VERSION"
+    # Use deployment scripts
+    - cd scripts/deployment
+    - ./build-and-push.sh --environment staging --version $VERSION --skip-build
+    - ./deploy.sh --environment staging --version $VERSION
+    # Monitor deployment
+    - sleep 30
+    - echo "✅ Staging deployment complete"
+  environment:
+    name: staging
+    url: https://staging.axonflow.internal
+  only:
+    - main
+  tags:
+    - docker
+
+# Deploy to production - manual approval required
+deploy:production:
+  stage: deploy-production
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache bash aws-cli yq
+  script:
+    - echo "Deploying to production environment..."
+    - export VERSION=$(git rev-parse --short HEAD)
+    - echo "Version: $VERSION"
+    # Use deployment scripts
+    - cd scripts/deployment
+    - ./build-and-push.sh --environment production --version $VERSION --skip-build
+    - ./deploy.sh --environment production --version $VERSION
+    # Monitor deployment
+    - ./monitor.sh --environment production
+    - echo "✅ Production deployment complete"
+  environment:
+    name: production
+    url: https://axonflow.production
+  when: manual
+  only:
+    - main
+    - tags
+  tags:
+    - docker
+
+# Rollback production - manual trigger
+rollback:production:
+  stage: deploy-production
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache bash aws-cli yq jq
+  script:
+    - echo "Rolling back production deployment..."
+    # Source rollback library and execute
+    - cd scripts/deployment
+    - source lib/rollback.sh
+    - source lib/config-parser.sh
+    - load_environment_config production
+    - load_account_config $(env_config '.account')
+    - auto_rollback production $(cat /tmp/current-deployment-stack.txt)
+    - echo "✅ Rollback complete"
+  environment:
+    name: production
+  when: manual
+  only:
+    - main
+    - tags
+  tags:
+    - docker

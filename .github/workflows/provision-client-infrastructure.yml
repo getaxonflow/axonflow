@@ -1,0 +1,454 @@
+name: Provision Client Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'Client to provision'
+        required: true
+        type: choice
+        options:
+          - ecommerce
+          - travel
+          - healthcare
+          - support
+          - banking
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      deployment_mode:
+        description: 'Deployment mode'
+        required: true
+        type: choice
+        default: 'saas'
+        options:
+          - saas
+          - in-vpc
+      axonflow_endpoint:
+        description: 'AxonFlow backend endpoint (for SaaS mode: https://staging-eu.getaxonflow.com)'
+        required: true
+        type: string
+      instance_type:
+        description: 'EC2 instance type'
+        required: false
+        type: choice
+        default: 't3.small'
+        options:
+          - t3.micro
+          - t3.small
+          - t3.medium
+      region:
+        description: 'AWS Region (leave empty for auto: staging=eu-central-1, production=us-east-1)'
+        required: false
+        type: choice
+        default: 'auto'
+        options:
+          - auto
+          - eu-central-1
+          - us-east-1
+          - ap-south-1
+      vpc_id:
+        description: 'VPC ID for in-vpc mode (leave empty for default VPC)'
+        required: false
+        type: string
+        default: ''
+      axonflow_security_group_id:
+        description: 'AxonFlow ALB security group ID for in-vpc mode (leave empty for SaaS mode)'
+        required: false
+        type: string
+        default: ''
+      subnet_id:
+        description: 'Subnet ID for EC2 instance (required for in-vpc mode in non-default VPCs)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  provision:
+    name: Provision ${{ inputs.client }} ${{ inputs.environment }} infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine Region
+        id: region
+        run: |
+          if [ "${{ inputs.region }}" = "auto" ]; then
+            if [ "${{ inputs.environment }}" = "staging" ]; then
+              echo "region=eu-central-1" >> $GITHUB_OUTPUT
+            else
+              echo "region=us-east-1" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "region=${{ inputs.region }}" >> $GITHUB_OUTPUT
+          fi
+          echo "Selected region: $(grep region $GITHUB_OUTPUT | cut -d= -f2)"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ steps.region.outputs.region }}
+
+      - name: Validate CloudFormation Template
+        run: |
+          echo "🔍 Validating CloudFormation template..."
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/cloudformation/demo-clients-ec2.yaml \
+            --region ${{ steps.region.outputs.region }}
+          echo "✅ Template validation passed"
+
+      - name: Deploy CloudFormation Stack
+        id: deploy
+        run: |
+          REGION="${{ steps.region.outputs.region }}"
+          STACK_NAME="demo-client-${{ inputs.client }}-${{ inputs.environment }}-$(echo $REGION | tr -d '-')"
+
+          echo "🚀 Deploying stack: $STACK_NAME"
+          echo "Region: $REGION"
+          echo "Client: ${{ inputs.client }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Mode: ${{ inputs.deployment_mode }}"
+          echo "AxonFlow Endpoint: ${{ inputs.axonflow_endpoint }}"
+
+          # Build parameter overrides
+          PARAMS="ClientType=${{ inputs.client }} Environment=${{ inputs.environment }} DeploymentMode=${{ inputs.deployment_mode }} AxonFlowEndpoint=${{ inputs.axonflow_endpoint }} InstanceType=${{ inputs.instance_type }}"
+
+          # Add VPC parameters if provided (for in-vpc mode)
+          if [ -n "${{ inputs.vpc_id }}" ]; then
+            PARAMS="$PARAMS VpcId=${{ inputs.vpc_id }}"
+          fi
+          if [ -n "${{ inputs.axonflow_security_group_id }}" ]; then
+            PARAMS="$PARAMS AxonFlowSecurityGroupId=${{ inputs.axonflow_security_group_id }}"
+          fi
+          if [ -n "${{ inputs.subnet_id }}" ]; then
+            PARAMS="$PARAMS SubnetId=${{ inputs.subnet_id }}"
+          fi
+
+          echo "Parameters: $PARAMS"
+
+          # Deploy stack
+          aws cloudformation deploy \
+            --template-file infrastructure/cloudformation/demo-clients-ec2.yaml \
+            --stack-name "$STACK_NAME" \
+            --parameter-overrides $PARAMS \
+            --capabilities CAPABILITY_IAM \
+            --region "$REGION" \
+            --no-fail-on-empty-changeset
+
+          echo "stack_name=$STACK_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+
+      - name: Wait for Instance to be Ready
+        env:
+          STACK_NAME: ${{ steps.deploy.outputs.stack_name }}
+          REGION: ${{ steps.deploy.outputs.region }}
+        run: |
+          echo "⏳ Waiting for instance to be ready..."
+
+          # Get instance ID from stack
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text)
+
+          echo "Instance ID: $INSTANCE_ID"
+
+          # Wait for instance to be running
+          echo "Waiting for instance to reach 'running' state..."
+          aws ec2 wait instance-running \
+            --instance-ids "$INSTANCE_ID" \
+            --region "$REGION"
+
+          echo "✅ Instance is running"
+
+          # Wait for status checks (2/2 checks must pass)
+          echo "Waiting for status checks to pass..."
+          aws ec2 wait instance-status-ok \
+            --instance-ids "$INSTANCE_ID" \
+            --region "$REGION"
+
+          echo "✅ Status checks passed"
+
+      - name: Verify Docker Installation
+        env:
+          STACK_NAME: ${{ steps.deploy.outputs.stack_name }}
+          REGION: ${{ steps.deploy.outputs.region }}
+        run: |
+          echo "🔍 Verifying Docker installation..."
+
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text)
+
+          # Wait a bit for UserData to complete
+          echo "Waiting 60 seconds for UserData script to complete..."
+          sleep 60
+
+          # Check if Docker is installed via SSM
+          echo "Checking Docker version..."
+          DOCKER_VERSION=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["docker --version"]' \
+            --region "$REGION" \
+            --output text \
+            --query 'Command.CommandId')
+
+          sleep 5
+
+          # Get command output
+          aws ssm get-command-invocation \
+            --command-id "$DOCKER_VERSION" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION" \
+            --query 'StandardOutputContent' \
+            --output text
+
+          echo "✅ Docker is installed"
+
+      - name: Setup Go for license generation
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Generate and store V2 service license
+        env:
+          STACK_NAME: ${{ steps.deploy.outputs.stack_name }}
+          REGION: ${{ steps.deploy.outputs.region }}
+          CLIENT: ${{ inputs.client }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          echo "🔑 Generating V2 service license for $CLIENT ($ENVIRONMENT)..."
+
+          # Build keygen
+          cd ee/platform/agent/license/cmd/keygen
+          go build -o keygen main.go
+          chmod +x keygen
+
+          # Determine permissions based on client
+          case "$CLIENT" in
+            travel)
+              PERMISSIONS="mcp:amadeus:search_flights,mcp:amadeus:search_hotels,mcp:amadeus:lookup_airport"
+              ;;
+            ecommerce)
+              PERMISSIONS="mcp:salesforce:*"
+              ;;
+            healthcare)
+              PERMISSIONS="mcp:epic:*,mcp:fhir:*"
+              ;;
+            banking)
+              PERMISSIONS="mcp:plaid:*"
+              ;;
+            *)
+              echo "⚠️ Unknown client: $CLIENT, using default permissions"
+              PERMISSIONS="mcp:*:*"
+              ;;
+          esac
+
+          # Generate license
+          TENANT_ID="${CLIENT}-${ENVIRONMENT}-eu"
+          LICENSE_KEY=$(./keygen \
+            -tier PRO \
+            -org "$TENANT_ID" \
+            -service-name "$CLIENT" \
+            -service-type client-application \
+            -permissions "$PERMISSIONS" \
+            -days 365 \
+            -quiet)
+
+          echo "✅ License generated: ${LICENSE_KEY:0:50}..."
+
+          # Store in AWS Secrets Manager
+          SECRET_NAME="axonflow/clients/$CLIENT/$ENVIRONMENT/license"
+
+          aws secretsmanager create-secret \
+            --name "$SECRET_NAME" \
+            --secret-string "$LICENSE_KEY" \
+            --region "$REGION" 2>/dev/null || \
+          aws secretsmanager update-secret \
+            --secret-id "$SECRET_NAME" \
+            --secret-string "$LICENSE_KEY" \
+            --region "$REGION"
+
+          echo "✅ License stored in Secrets Manager: $SECRET_NAME"
+
+      - name: Get Stack Outputs
+        id: outputs
+        env:
+          STACK_NAME: ${{ steps.deploy.outputs.stack_name }}
+          REGION: ${{ steps.deploy.outputs.region }}
+        run: |
+          echo "📋 Getting stack outputs..."
+
+          # Get all outputs
+          PUBLIC_IP=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`PublicIP`].OutputValue' \
+            --output text)
+
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
+            --output text)
+
+          FRONTEND_URL=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`FrontendURL`].OutputValue' \
+            --output text)
+
+          HEALTH_CHECK_URL=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`HealthCheckURL`].OutputValue' \
+            --output text)
+
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
+          echo "health_check_url=$HEALTH_CHECK_URL" >> $GITHUB_OUTPUT
+
+      - name: Generate License Key and Onboard Organization
+        id: onboard
+        if: inputs.deployment_mode == 'saas'
+        env:
+          CLIENT: ${{ inputs.client }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REGION: ${{ steps.deploy.outputs.region }}
+        run: |
+          echo "🔐 Generating license key and onboarding organization..."
+
+          # Determine region abbreviation
+          case "$REGION" in
+            eu-central-1) REGION_ABBR="eu" ;;
+            us-east-1) REGION_ABBR="us" ;;
+            ap-south-1) REGION_ABBR="india" ;;
+            *) REGION_ABBR="unknown" ;;
+          esac
+
+          # Organization ID format: {client}-{environment}-{region}
+          ORG_ID="${CLIENT}-${ENVIRONMENT}-${REGION_ABBR}"
+          ORG_NAME="AxonFlow ${CLIENT^} Demo (${ENVIRONMENT^})"
+
+          # Determine tier based on environment
+          if [ "$ENVIRONMENT" = "production" ]; then
+            TIER="ENT"
+          else
+            TIER="PRO"
+          fi
+
+          echo "Organization: $ORG_ID"
+          echo "Name: $ORG_NAME"
+          echo "Tier: $TIER"
+
+          # Generate license key using keygen
+          cd ee/platform/agent/license/cmd/keygen
+          LICENSE_KEY=$(./keygen -tier "$TIER" -org "$ORG_ID" -days 365 -quiet)
+
+          if [ -z "$LICENSE_KEY" ]; then
+            echo "❌ Failed to generate license key"
+            exit 1
+          fi
+
+          echo "✅ License key generated: ${LICENSE_KEY:0:30}..."
+
+          # Store license key in AWS Secrets Manager
+          SECRET_NAME="axonflow/${ENVIRONMENT}/${CLIENT}/license-key"
+
+          aws secretsmanager create-secret \
+            --name "$SECRET_NAME" \
+            --secret-string "$LICENSE_KEY" \
+            --region "$REGION" \
+            --tags Key=Client,Value=$CLIENT Key=Environment,Value=$ENVIRONMENT \
+            2>/dev/null || \
+          aws secretsmanager update-secret \
+            --secret-id "$SECRET_NAME" \
+            --secret-string "$LICENSE_KEY" \
+            --region "$REGION"
+
+          echo "✅ License key stored in Secrets Manager: $SECRET_NAME"
+
+          # Output for next steps
+          echo "license_key=$LICENSE_KEY" >> $GITHUB_OUTPUT
+          echo "org_id=$ORG_ID" >> $GITHUB_OUTPUT
+          echo "org_name=$ORG_NAME" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "⚠️  MANUAL STEP REQUIRED:"
+          echo "Add organization to database using customer-onboard tool:"
+          echo "  cd platform/customer-portal/cmd/customer-onboard"
+          echo "  ./customer-onboard -name \"$ORG_NAME\" -org-id $ORG_ID -tier $TIER"
+
+      - name: Update Client Config
+        env:
+          PUBLIC_IP: ${{ steps.outputs.outputs.public_ip }}
+          INSTANCE_ID: ${{ steps.outputs.outputs.instance_id }}
+        run: |
+          echo "📝 Updating client configuration..."
+
+          CONFIG_FILE="configs/environments/clients/${{ inputs.client }}/${{ inputs.environment }}.env"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "⚠️  Config file not found: $CONFIG_FILE"
+            echo "Skipping config update - will create during application deployment"
+            exit 0
+          fi
+
+          # Update IP and instance ID in config
+          sed -i "s/^INSTANCE_IP=.*/INSTANCE_IP=\"$PUBLIC_IP\"/" "$CONFIG_FILE"
+          sed -i "s/^INSTANCE_ID=.*/INSTANCE_ID=\"$INSTANCE_ID\"/" "$CONFIG_FILE"
+
+          echo "✅ Updated config file"
+          cat "$CONFIG_FILE"
+
+      - name: Deployment Summary
+        if: always()
+        env:
+          STACK_NAME: ${{ steps.deploy.outputs.stack_name }}
+          PUBLIC_IP: ${{ steps.outputs.outputs.public_ip }}
+          INSTANCE_ID: ${{ steps.outputs.outputs.instance_id }}
+          FRONTEND_URL: ${{ steps.outputs.outputs.frontend_url }}
+          HEALTH_CHECK_URL: ${{ steps.outputs.outputs.health_check_url }}
+        run: |
+          echo "## 🎉 Infrastructure Provisioning Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Client:** ${{ inputs.client }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ inputs.deployment_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ steps.deploy.outputs.region }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure Details" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Stack Name:** \`$STACK_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID:** \`$INSTANCE_ID\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Public IP:** \`$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. Deploy application: Run \`deploy-clients.yml\` workflow" >> $GITHUB_STEP_SUMMARY
+          echo "2. Configure DNS: Point \`${{ inputs.client }}-${{ inputs.environment }}-eu.getaxonflow.com\` to \`$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test endpoint: \`$HEALTH_CHECK_URL\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "❌ Infrastructure provisioning failed"
+          echo "Check CloudFormation events for details"

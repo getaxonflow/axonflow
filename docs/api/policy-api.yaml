@@ -1,0 +1,872 @@
+openapi: 3.0.3
+info:
+  title: AxonFlow Policy Management API
+  description: |
+    REST API for managing dynamic policies in AxonFlow.
+
+    Policies define conditions and actions for request processing, enabling:
+    - Content filtering and DLP
+    - User-based access controls
+    - Risk scoring and blocking
+    - Cost management
+
+    ## Authentication
+    All endpoints require tenant identification via the `X-Tenant-ID` header.
+    User identification is provided via `X-User-ID` header for audit purposes.
+
+    ## Multi-tenancy
+    Policies are isolated per tenant. Each API call operates only on policies
+    belonging to the authenticated tenant.
+  version: 1.0.0
+  contact:
+    name: AxonFlow Support
+    url: https://getaxonflow.com/support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://api.getaxonflow.com
+    description: Production
+  - url: https://api-staging.getaxonflow.com
+    description: Staging
+
+tags:
+  - name: Policies
+    description: Policy CRUD operations
+  - name: Testing
+    description: Policy testing and validation
+  - name: Bulk Operations
+    description: Import and export policies
+
+paths:
+  /api/v1/policies:
+    get:
+      tags:
+        - Policies
+      summary: List policies
+      description: Retrieve a paginated list of policies with optional filtering
+      operationId: listPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: type
+          in: query
+          description: Filter by policy type
+          schema:
+            $ref: '#/components/schemas/PolicyType'
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          description: Search in policy name and description
+          schema:
+            type: string
+            maxLength: 100
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort_by
+          in: query
+          description: Sort field
+          schema:
+            type: string
+            enum: [name, created_at, updated_at, priority]
+            default: created_at
+        - name: sort_dir
+          in: query
+          description: Sort direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Policies
+      summary: Create a policy
+      description: Create a new policy with conditions and actions
+      operationId: createPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePolicyRequest'
+            examples:
+              contentFilter:
+                summary: Content filtering policy
+                value:
+                  name: Block PII Access
+                  description: Prevent unauthorized access to personally identifiable information
+                  type: content
+                  conditions:
+                    - field: query
+                      operator: contains_any
+                      value: ["ssn", "social security", "credit card"]
+                    - field: user.role
+                      operator: not_in
+                      value: ["admin", "compliance"]
+                  actions:
+                    - type: block
+                      config:
+                        message: "Access to PII requires admin or compliance role"
+                  priority: 100
+                  enabled: true
+              riskScoring:
+                summary: Risk-based blocking
+                value:
+                  name: High Risk Block
+                  description: Block requests with risk score above threshold
+                  type: risk
+                  conditions:
+                    - field: risk_score
+                      operator: greater_than
+                      value: 0.8
+                  actions:
+                    - type: block
+                      config:
+                        message: "Request blocked due to high risk score"
+                    - type: alert
+                      config:
+                        channel: security-alerts
+                  priority: 200
+                  enabled: true
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Policies
+      summary: Get a policy
+      description: Retrieve a single policy by ID
+      operationId: getPolicy
+      responses:
+        '200':
+          description: Policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags:
+        - Policies
+      summary: Update a policy
+      description: Update an existing policy. Only provided fields are updated.
+      operationId: updatePolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePolicyRequest'
+      responses:
+        '200':
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags:
+        - Policies
+      summary: Delete a policy
+      description: Soft-delete a policy. The policy is marked as deleted but retained for audit purposes.
+      operationId: deletePolicy
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204':
+          description: Policy deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    post:
+      tags:
+        - Testing
+      summary: Test a policy
+      description: |
+        Evaluate a policy against sample input without executing actions.
+        Useful for validating policy behavior before enabling.
+      operationId: testPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPolicyRequest'
+            example:
+              query: "Show me the customer's SSN and credit card"
+              user:
+                email: analyst@company.com
+                role: analyst
+                department: sales
+              request_type: query
+              context:
+                connector: salesforce
+      responses:
+        '200':
+          description: Test results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestPolicyResponse'
+              example:
+                matched: true
+                blocked: true
+                actions:
+                  - type: block
+                    config:
+                      message: "Access to PII requires admin or compliance role"
+                    message: "Access to PII requires admin or compliance role"
+                explanation: "Policy 'Block PII Access' matched: all 2 conditions evaluated to true"
+                eval_time_ms: 0.45
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PolicyID'
+      - $ref: '#/components/parameters/TenantID'
+
+    get:
+      tags:
+        - Policies
+      summary: Get policy version history
+      description: Retrieve the complete version history of a policy for audit purposes
+      operationId: getPolicyVersions
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/import:
+    post:
+      tags:
+        - Bulk Operations
+      summary: Import policies
+      description: |
+        Bulk import policies from JSON. Supports up to 100 policies per request.
+
+        Overwrite modes:
+        - `skip`: Skip policies that already exist (by name)
+        - `overwrite`: Update existing policies
+        - `error`: Fail if any policy already exists
+      operationId: importPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportPoliciesRequest'
+      responses:
+        '200':
+          description: Import results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPoliciesResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/policies/export:
+    get:
+      tags:
+        - Bulk Operations
+      summary: Export policies
+      description: Export all policies for the tenant as JSON
+      operationId: exportPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+      responses:
+        '200':
+          description: Exported policies
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Attachment filename
+              example: 'attachment; filename=policies-export.json'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportPoliciesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    TenantID:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      description: Tenant identifier for multi-tenancy isolation
+      schema:
+        type: string
+        example: tenant_abc123
+
+    UserID:
+      name: X-User-ID
+      in: header
+      required: false
+      description: User identifier for audit logging
+      schema:
+        type: string
+        example: user@company.com
+
+    PolicyID:
+      name: id
+      in: path
+      required: true
+      description: Policy unique identifier
+      schema:
+        type: string
+        example: pol_abc123def456
+
+  schemas:
+    PolicyType:
+      type: string
+      enum:
+        - content
+        - user
+        - risk
+        - cost
+      description: |
+        Policy type determines evaluation context:
+        - `content`: Evaluates request/response content
+        - `user`: Evaluates user attributes
+        - `risk`: Evaluates risk scores
+        - `cost`: Evaluates cost estimates
+
+    ConditionOperator:
+      type: string
+      enum:
+        - equals
+        - not_equals
+        - contains
+        - not_contains
+        - contains_any
+        - regex
+        - greater_than
+        - less_than
+        - in
+        - not_in
+      description: Comparison operator for conditions
+
+    ActionType:
+      type: string
+      enum:
+        - block
+        - redact
+        - alert
+        - log
+        - route
+        - modify_risk
+      description: |
+        Action to take when policy matches:
+        - `block`: Block the request with message
+        - `redact`: Redact sensitive content from response
+        - `alert`: Send alert to configured channel
+        - `log`: Log to audit trail
+        - `route`: Route to specific provider
+        - `modify_risk`: Adjust risk score
+
+    PolicyCondition:
+      type: object
+      required:
+        - field
+        - operator
+        - value
+      properties:
+        field:
+          type: string
+          description: Field to evaluate
+          enum:
+            - query
+            - response
+            - user.email
+            - user.role
+            - user.department
+            - user.tenant_id
+            - risk_score
+            - request_type
+            - connector
+            - cost_estimate
+        operator:
+          $ref: '#/components/schemas/ConditionOperator'
+        value:
+          oneOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: array
+              items:
+                type: string
+          description: Value to compare against
+
+    PolicyAction:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          $ref: '#/components/schemas/ActionType'
+        config:
+          type: object
+          additionalProperties: true
+          description: Action-specific configuration
+          example:
+            message: "Request blocked by policy"
+            channel: security-alerts
+
+    PolicyResource:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique policy identifier
+          example: pol_abc123def456
+        name:
+          type: string
+          description: Human-readable policy name
+          minLength: 3
+          maxLength: 100
+          example: Block PII Access
+        description:
+          type: string
+          description: Detailed policy description
+          maxLength: 500
+          example: Prevent unauthorized access to personally identifiable information
+        type:
+          $ref: '#/components/schemas/PolicyType'
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyCondition'
+          minItems: 1
+          description: Conditions that must all match (AND logic)
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyAction'
+          minItems: 1
+          description: Actions to execute when policy matches
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 0
+          description: Higher priority policies are evaluated first
+        enabled:
+          type: boolean
+          default: true
+          description: Whether the policy is active
+        version:
+          type: integer
+          minimum: 1
+          description: Policy version number, incremented on each update
+        tenant_id:
+          type: string
+          description: Owning tenant ID
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        created_by:
+          type: string
+          description: User who created the policy
+        updated_by:
+          type: string
+          description: User who last updated the policy
+
+    CreatePolicyRequest:
+      type: object
+      required:
+        - name
+        - type
+        - conditions
+        - actions
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        type:
+          $ref: '#/components/schemas/PolicyType'
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyCondition'
+          minItems: 1
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyAction'
+          minItems: 1
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 0
+        enabled:
+          type: boolean
+          default: true
+
+    UpdatePolicyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        type:
+          $ref: '#/components/schemas/PolicyType'
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyCondition'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyAction'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000
+        enabled:
+          type: boolean
+
+    TestPolicyRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: Sample query to test against
+        user:
+          type: object
+          additionalProperties: true
+          description: User context for testing
+          example:
+            email: user@company.com
+            role: analyst
+            department: sales
+        request_type:
+          type: string
+          description: Type of request being simulated
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for testing
+
+    TestPolicyResponse:
+      type: object
+      properties:
+        matched:
+          type: boolean
+          description: Whether the policy conditions matched
+        blocked:
+          type: boolean
+          description: Whether a block action would trigger
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              config:
+                type: object
+              message:
+                type: string
+          description: Actions that would be triggered
+        explanation:
+          type: string
+          description: Human-readable explanation of the result
+        eval_time_ms:
+          type: number
+          format: float
+          description: Evaluation time in milliseconds
+
+    ImportPoliciesRequest:
+      type: object
+      required:
+        - policies
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreatePolicyRequest'
+          minItems: 1
+          maxItems: 100
+        overwrite_mode:
+          type: string
+          enum:
+            - skip
+            - overwrite
+            - error
+          default: skip
+          description: How to handle existing policies
+
+    ImportPoliciesResponse:
+      type: object
+      properties:
+        created:
+          type: integer
+          description: Number of policies created
+        updated:
+          type: integer
+          description: Number of policies updated
+        skipped:
+          type: integer
+          description: Number of policies skipped
+        errors:
+          type: array
+          items:
+            type: string
+          description: Error messages for failed imports
+
+    ExportPoliciesResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyResource'
+        exported_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+
+    PolicyVersionResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              version:
+                type: integer
+              snapshot:
+                $ref: '#/components/schemas/PolicyResource'
+              changed_by:
+                type: string
+              changed_at:
+                type: string
+                format: date-time
+              change_type:
+                type: string
+                enum:
+                  - create
+                  - update
+                  - enable
+                  - disable
+                  - delete
+              change_summary:
+                type: string
+
+    PolicyResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/PolicyResource'
+
+    PoliciesListResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyResource'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            page_size:
+              type: integer
+            total_items:
+              type: integer
+            total_pages:
+              type: integer
+
+    APIError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code
+            message:
+              type: string
+              description: Human-readable error message
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+              description: Field-level validation errors
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid tenant ID
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Missing tenant ID
+
+    NotFound:
+      description: Policy not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+          example:
+            error:
+              code: NOT_FOUND
+              message: Policy not found
+
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details:
+                - field: name
+                  message: Name must be between 3 and 100 characters
+                - field: conditions[0].operator
+                  message: "Invalid operator: like. Must be one of: equals, contains, regex"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIError'
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred

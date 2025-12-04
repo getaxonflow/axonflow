@@ -1,0 +1,464 @@
+# AxonFlow Workflow Configuration Specification
+# Version: 1.0
+# This file defines the YAML specification for AxonFlow workflows
+
+# Example 1: Simple 2-step Customer Support Workflow
+apiVersion: axonflow.dev/v1
+kind: Workflow
+metadata:
+  name: customer-support-query
+  description: "Process customer support query with escalation"
+  version: "1.0"
+  tags: ["support", "customer-service"]
+  
+spec:
+  # Workflow configuration
+  timeout: 300s
+  retries: 2
+  
+  # Input schema
+  input:
+    type: object
+    properties:
+      query:
+        type: string
+        description: "Customer query text"
+        required: true
+      customer_id:
+        type: string
+        description: "Customer identifier"
+        required: true
+      priority:
+        type: string
+        enum: ["low", "medium", "high", "urgent"]
+        default: "medium"
+    
+  # Workflow steps (DAG-style execution)
+  steps:
+    - name: initial-analysis
+      type: llm-call
+      provider: anthropic  # or openai, local
+      model: claude-3-sonnet
+      prompt: |
+        Analyze this customer support query:
+        Query: {{input.query}}
+        Customer ID: {{input.customer_id}}
+        Priority: {{input.priority}}
+        
+        Determine:
+        1. Category (technical, billing, general)
+        2. Sentiment (positive, neutral, negative)
+        3. Urgency level (1-5)
+        4. Required escalation (yes/no)
+        
+        Respond in JSON format.
+      output_schema:
+        type: object
+        properties:
+          category: {type: string}
+          sentiment: {type: string}
+          urgency: {type: integer, minimum: 1, maximum: 5}
+          escalation_required: {type: boolean}
+      
+    - name: escalation-decision
+      type: conditional
+      condition: "{{steps.initial-analysis.output.escalation_required == true}}"
+      if_true:
+        - name: human-escalation
+          type: human-in-the-loop
+          assignee: "support-manager"
+          message: |
+            High-priority customer query requires attention:
+            Customer: {{input.customer_id}}
+            Category: {{steps.initial-analysis.output.category}}
+            Urgency: {{steps.initial-analysis.output.urgency}}/5
+            Original Query: {{input.query}}
+          timeout: 3600s  # 1 hour for human response
+          actions: ["approve", "reject", "modify"]
+      if_false:
+        - name: auto-response
+          type: llm-call
+          provider: openai
+          model: gpt-4
+          prompt: |
+            Generate a helpful response to this customer query:
+            Query: {{input.query}}
+            Category: {{steps.initial-analysis.output.category}}
+            Sentiment: {{steps.initial-analysis.output.sentiment}}
+            
+            Provide a professional, helpful response.
+          
+  # Output definition
+  output:
+    response: "{{steps.auto-response.output || steps.human-escalation.output}}"
+    category: "{{steps.initial-analysis.output.category}}"
+    handled_by: "{{steps.human-escalation ? 'human' : 'automated'}}"
+
+---
+
+# Example 2: Complex 3-step Data Analysis Workflow
+apiVersion: axonflow.dev/v1
+kind: Workflow
+metadata:
+  name: data-analysis-pipeline
+  description: "Analyze customer data with privacy protection"
+  version: "1.0"
+  tags: ["analytics", "privacy", "reporting"]
+  
+spec:
+  timeout: 600s
+  retries: 1
+  
+  # Environment configuration
+  environment:
+    compliance_mode: "strict"
+    data_retention: "30d"
+    
+  input:
+    type: object
+    properties:
+      dataset_id:
+        type: string
+        required: true
+      analysis_type:
+        type: string
+        enum: ["trend", "cohort", "segmentation"]
+        required: true
+      date_range:
+        type: object
+        properties:
+          start: {type: string, format: date}
+          end: {type: string, format: date}
+        required: true
+        
+  steps:
+    - name: data-extraction
+      type: connector-call
+      connector: database
+      connection: "postgres://analytics-db"
+      query: |
+        SELECT 
+          customer_id,
+          event_type,
+          timestamp,
+          CASE 
+            WHEN email IS NOT NULL THEN '[REDACTED_EMAIL]'
+            ELSE metadata
+          END as safe_metadata
+        FROM events 
+        WHERE timestamp BETWEEN '{{input.date_range.start}}' AND '{{input.date_range.end}}'
+        AND event_type = '{{input.analysis_type}}'
+      policies:
+        - pii-detection
+        - row-level-security
+      output_format: "json"
+      
+    - name: data-validation
+      type: function-call
+      function: "data-validator"
+      parameters:
+        data: "{{steps.data-extraction.output}}"
+        schema: "analytics-schema-v2"
+        compliance_checks: ["gdpr", "ccpa"]
+      retry_on_failure: true
+      
+    - name: analysis-generation
+      type: llm-call
+      provider: local  # Use local model for sensitive data
+      model: "llama2-70b"
+      system_prompt: |
+        You are a data analyst. Analyze the provided dataset and generate insights.
+        IMPORTANT: Never include any personal identifiers in your analysis.
+      prompt: |
+        Dataset: {{steps.data-extraction.output}}
+        Analysis Type: {{input.analysis_type}}
+        Date Range: {{input.date_range}}
+        Validation Status: {{steps.data-validation.output.status}}
+        
+        Generate a comprehensive analysis with:
+        1. Key trends and patterns
+        2. Statistical summary
+        3. Actionable insights
+        4. Recommendations
+        
+        Ensure all data is anonymized and compliant.
+      max_tokens: 2000
+      temperature: 0.3
+      
+  # Error handling
+  on_error:
+    - type: notification
+      target: "analytics-team@company.com"
+      message: "Workflow {{metadata.name}} failed at step {{error.step}}"
+    - type: cleanup
+      action: "delete-temporary-data"
+      
+  # Output definition  
+  output:
+    analysis: "{{steps.analysis-generation.output}}"
+    data_points: "{{steps.data-extraction.output | length}}"
+    validation_score: "{{steps.data-validation.output.score}}"
+    compliance_status: "{{steps.data-validation.output.compliance}}"
+
+---
+
+# Example 3: Advanced Multi-Branch Workflow
+apiVersion: axonflow.dev/v1
+kind: Workflow
+metadata:
+  name: content-moderation-pipeline
+  description: "Multi-stage content moderation with appeals process"
+  version: "1.0"
+  tags: ["moderation", "compliance", "safety"]
+  
+spec:
+  timeout: 900s
+  retries: 0  # No retries for moderation decisions
+  
+  input:
+    type: object
+    properties:
+      content:
+        type: string
+        required: true
+      content_type:
+        type: string
+        enum: ["text", "image", "video", "audio"]
+        required: true
+      user_id:
+        type: string
+        required: true
+      channel:
+        type: string
+        required: true
+        
+  steps:
+    - name: initial-screening
+      type: parallel
+      branches:
+        text-analysis:
+          type: llm-call
+          provider: openai
+          model: gpt-4
+          prompt: |
+            Analyze this content for policy violations:
+            Content: {{input.content}}
+            Type: {{input.content_type}}
+            
+            Check for:
+            - Hate speech
+            - Violence
+            - Harassment
+            - Spam
+            - Misinformation
+            
+            Return risk score (0-100) and categories.
+          output_schema:
+            type: object
+            properties:
+              risk_score: {type: integer, minimum: 0, maximum: 100}
+              violations: {type: array, items: {type: string}}
+              confidence: {type: number}
+              
+        pattern-matching:
+          type: function-call
+          function: "regex-scanner"
+          parameters:
+            content: "{{input.content}}"
+            patterns: ["profanity", "spam-keywords", "contact-info"]
+            
+        user-history:
+          type: connector-call
+          connector: database
+          query: |
+            SELECT 
+              violation_count,
+              last_violation_date,
+              user_reputation
+            FROM user_moderation_history 
+            WHERE user_id = '{{input.user_id}}'
+            LIMIT 1
+            
+    - name: risk-assessment
+      type: function-call
+      function: "risk-calculator"
+      parameters:
+        text_analysis: "{{steps.initial-screening.text-analysis.output}}"
+        pattern_matches: "{{steps.initial-screening.pattern-matching.output}}"
+        user_history: "{{steps.initial-screening.user-history.output}}"
+      output_schema:
+        type: object
+        properties:
+          final_risk_score: {type: integer}
+          recommendation: {type: string}
+          
+    - name: moderation-decision
+      type: conditional
+      condition: "{{steps.risk-assessment.output.final_risk_score >= 70}}"
+      if_true:
+        - name: high-risk-review
+          type: human-in-the-loop
+          assignee: "content-moderator"
+          priority: "high"
+          context:
+            content: "{{input.content}}"
+            risk_score: "{{steps.risk-assessment.output.final_risk_score}}"
+            violations: "{{steps.initial-screening.text-analysis.output.violations}}"
+          actions: ["approve", "reject", "flag-for-review"]
+          timeout: 1800s  # 30 minutes
+          
+      elif: "{{steps.risk-assessment.output.final_risk_score >= 30}}"
+      elif_true:
+        - name: moderate-risk-action
+          type: function-call
+          function: "auto-moderate"
+          parameters:
+            action: "shadow-ban"
+            duration: "24h"
+            reason: "{{steps.risk-assessment.output.recommendation}}"
+            
+      else:
+        - name: approve-content
+          type: function-call
+          function: "approve-content"
+          parameters:
+            content_id: "{{workflow.execution_id}}"
+            user_id: "{{input.user_id}}"
+            
+    - name: notification
+      type: parallel
+      branches:
+        user-notification:
+          type: connector-call
+          connector: email
+          parameters:
+            to: "{{user.email}}"
+            template: "moderation-decision"
+            variables:
+              decision: "{{steps.moderation-decision.output.action}}"
+              reason: "{{steps.moderation-decision.output.reason}}"
+              
+        audit-log:
+          type: connector-call
+          connector: audit-system
+          parameters:
+            event: "content-moderated"
+            user_id: "{{input.user_id}}"
+            content_hash: "{{input.content | hash}}"
+            decision: "{{steps.moderation-decision.output}}"
+            moderator: "{{steps.high-risk-review.output.moderator || 'system'}}"
+            
+  # Workflow metadata
+  policies:
+    - name: "gdpr-compliance"
+      enabled: true
+    - name: "audit-logging"
+      enabled: true
+    - name: "rate-limiting"
+      max_executions_per_user: 1000
+      time_window: "1h"
+      
+  output:
+    decision: "{{steps.moderation-decision.output.action}}"
+    risk_score: "{{steps.risk-assessment.output.final_risk_score}}"
+    violations: "{{steps.initial-screening.text-analysis.output.violations}}"
+    moderator: "{{steps.high-risk-review.output.moderator || 'automated'}}"
+    timestamp: "{{workflow.start_time}}"
+
+---
+
+# Schema Definitions for Workflow Steps
+
+# Step Types
+step_types:
+  llm-call:
+    description: "Call to Language Model (OpenAI, Anthropic, local)"
+    required_fields: [provider, prompt]
+    optional_fields: [model, temperature, max_tokens, system_prompt]
+    
+  function-call:
+    description: "Call to custom function or microservice"
+    required_fields: [function]
+    optional_fields: [parameters, retry_on_failure]
+    
+  connector-call:
+    description: "Call to external system via MCP connector"
+    required_fields: [connector]
+    optional_fields: [connection, query, parameters]
+    
+  human-in-the-loop:
+    description: "Require human intervention/approval"
+    required_fields: [assignee, actions]
+    optional_fields: [message, timeout, priority]
+    
+  conditional:
+    description: "Conditional execution based on previous steps"
+    required_fields: [condition]
+    optional_fields: [if_true, if_false, elif, elif_true, else]
+    
+  parallel:
+    description: "Execute multiple branches in parallel"
+    required_fields: [branches]
+    
+# Provider Configurations
+providers:
+  openai:
+    models: ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"]
+    default_model: "gpt-4"
+    
+  anthropic:
+    models: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]
+    default_model: "claude-3-sonnet"
+    
+  local:
+    models: ["llama2-70b", "llama2-13b", "ollama/custom"]
+    default_model: "llama2-13b"
+
+# Connector Types
+connectors:
+  database:
+    supported_types: ["postgres", "mysql", "snowflake", "bigquery"]
+    auth_methods: ["connection_string", "service_account", "oauth"]
+    
+  email:
+    supported_providers: ["sendgrid", "ses", "smtp"]
+    templates: ["moderation-decision", "workflow-notification", "error-alert"]
+    
+  audit-system:
+    supported_systems: ["splunk", "elasticsearch", "cloudwatch"]
+    event_types: ["workflow-start", "workflow-complete", "workflow-error", "content-moderated"]
+
+# Policy Framework
+policies:
+  gdpr-compliance:
+    description: "GDPR data protection compliance"
+    enforces: ["data-minimization", "consent-checking", "right-to-deletion"]
+    
+  pii-detection:
+    description: "Personally Identifiable Information detection"
+    patterns: ["email", "ssn", "phone", "credit-card", "ip-address"]
+    actions: ["redact", "mask", "alert", "block"]
+    
+  rate-limiting:
+    description: "API and workflow rate limiting"
+    limits: ["per-user", "per-workflow", "global"]
+    actions: ["throttle", "queue", "reject"]
+    
+  audit-logging:
+    description: "Comprehensive audit trail logging"
+    logs: ["input", "output", "errors", "timing", "policy-decisions"]
+    retention: "configurable"
+
+# Error Handling
+error_handling:
+  retry_strategies: ["exponential-backoff", "fixed-interval", "immediate"]
+  notification_targets: ["email", "slack", "webhook", "pager"]
+  cleanup_actions: ["delete-temp-data", "rollback-changes", "send-alerts"]
+
+# Security Considerations
+security:
+  authentication: "jwt-tokens"
+  authorization: "rbac"
+  encryption: "in-transit-and-at-rest"
+  secrets_management: "external-secret-store"
+  network_policies: "zero-trust"

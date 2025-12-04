@@ -1,0 +1,107 @@
+name: Manage Protected Docs Access
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - grant
+          - revoke
+          - list
+      email:
+        description: 'Email address (required for grant/revoke)'
+        required: false
+        type: string
+      reason:
+        description: 'Reason for access grant (for audit)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  manage-docs-access:
+    name: ${{ inputs.action }} docs access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ "${{ inputs.action }}" != "list" ] && [ -z "${{ inputs.email }}" ]; then
+            echo "❌ Email is required for ${{ inputs.action }} action"
+            exit 1
+          fi
+
+          # Validate email format if provided
+          if [ -n "${{ inputs.email }}" ]; then
+            if ! echo "${{ inputs.email }}" | grep -q "@"; then
+              echo "❌ Invalid email format: ${{ inputs.email }}"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build axonctl
+        run: |
+          cd platform/cmd/axonctl
+          go build -o axonctl .
+          echo "✅ Built axonctl CLI"
+
+      - name: Grant docs access
+        if: inputs.action == 'grant'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCESS_GROUP_ID: ${{ secrets.CF_ACCESS_GROUP_ID }}
+        run: |
+          echo "🔓 Granting access to ${{ inputs.email }}"
+          ./platform/cmd/axonctl/axonctl docs grant \
+            --email "${{ inputs.email }}" \
+            --reason "${{ inputs.reason }}"
+
+      - name: Revoke docs access
+        if: inputs.action == 'revoke'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCESS_GROUP_ID: ${{ secrets.CF_ACCESS_GROUP_ID }}
+        run: |
+          echo "🔒 Revoking access for ${{ inputs.email }}"
+          ./platform/cmd/axonctl/axonctl docs revoke \
+            --email "${{ inputs.email }}"
+
+      - name: List docs access
+        if: inputs.action == 'list'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_ACCESS_GROUP_ID: ${{ secrets.CF_ACCESS_GROUP_ID }}
+        run: |
+          echo "📋 Listing users with docs access"
+          ./platform/cmd/axonctl/axonctl docs list
+
+      - name: Summary
+        run: |
+          echo "## Documentation Access Management" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ inputs.email }}" ]; then
+            echo "**Email:** ${{ inputs.email }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -n "${{ inputs.reason }}" ]; then
+            echo "**Reason:** ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Performed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY

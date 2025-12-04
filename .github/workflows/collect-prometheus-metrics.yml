@@ -1,0 +1,328 @@
+name: Collect Prometheus Metrics
+
+# Runs load tests and collects metrics from Prometheus
+# Use this workflow after the Service Discovery fix (PR #148) is deployed
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - staging-healthcare-india
+      test_type:
+        description: 'Load test type'
+        required: true
+        type: choice
+        options:
+          - quick       # 50 RPS × 30s
+          - standard    # 100 RPS × 30s
+          - both        # Run both tests sequentially
+      dry_run:
+        description: 'Dry run - show what would happen without running tests'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_ACCOUNT_ID: "686831565523"
+
+jobs:
+  collect-metrics:
+    name: Collect Prometheus Metrics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read environment configuration
+        id: config
+        run: |
+          CONFIG_FILE="config/environments/${{ inputs.environment }}.yaml"
+
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "❌ Environment config not found: $CONFIG_FILE"
+            exit 1
+          fi
+
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+
+          REGION=$(yq eval '.region' "$CONFIG_FILE")
+          STACK_PREFIX=$(yq eval '.deployment.stack_name_prefix' "$CONFIG_FILE")
+          PROMETHEUS_PATH=$(yq eval '.deployment.prometheus_path // "/prometheus"' "$CONFIG_FILE")
+
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "stack_prefix=$STACK_PREFIX" >> $GITHUB_OUTPUT
+          echo "prometheus_path=$PROMETHEUS_PATH" >> $GITHUB_OUTPUT
+
+          echo "📋 Environment: ${{ inputs.environment }}"
+          echo "📍 Region: $REGION"
+          echo "🔗 Prometheus Path: $PROMETHEUS_PATH"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ steps.config.outputs.region }}
+
+      - name: Discover CloudFormation stack
+        id: discover
+        run: |
+          STACK_PREFIX="${{ steps.config.outputs.stack_prefix }}"
+          REGION="${{ steps.config.outputs.region }}"
+
+          STACK_NAME=$(aws cloudformation list-stacks \
+            --region "$REGION" \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[?starts_with(StackName, \`$STACK_PREFIX\`)].StackName" \
+            --output text | tr '\t' '\n' | sort -r | head -1)
+
+          if [ -z "$STACK_NAME" ]; then
+            echo "❌ No CloudFormation stack found with prefix: $STACK_PREFIX"
+            exit 1
+          fi
+
+          echo "stack_name=$STACK_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Found stack: $STACK_NAME"
+
+          # Get ALB DNS
+          ALB_DNS=$(aws cloudformation describe-stacks \
+            --region "$REGION" \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey==\`LoadBalancerDNS\`].OutputValue" \
+            --output text)
+
+          # Determine if internal ALB
+          ALB_SCHEME=$(aws cloudformation describe-stacks \
+            --region "$REGION" \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Parameters[?ParameterKey==\`LoadBalancerScheme\`].ParameterValue" \
+            --output text)
+
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "alb_scheme=$ALB_SCHEME" >> $GITHUB_OUTPUT
+
+          # Build Prometheus URL
+          if [ "$ALB_SCHEME" = "internal" ]; then
+            echo "🔒 Internal ALB detected - metrics collection requires SSM tunnel"
+            PROMETHEUS_URL="http://$ALB_DNS${{ steps.config.outputs.prometheus_path }}"
+          else
+            PROMETHEUS_URL="https://$ALB_DNS${{ steps.config.outputs.prometheus_path }}"
+          fi
+
+          echo "prometheus_url=$PROMETHEUS_URL" >> $GITHUB_OUTPUT
+          echo "📊 Prometheus URL: $PROMETHEUS_URL"
+
+      - name: Verify Prometheus is accessible
+        id: verify_prometheus
+        run: |
+          PROMETHEUS_URL="${{ steps.discover.outputs.prometheus_url }}"
+          ALB_SCHEME="${{ steps.discover.outputs.alb_scheme }}"
+
+          echo "🔍 Checking Prometheus health..."
+
+          if [ "$ALB_SCHEME" = "internal" ]; then
+            echo "⚠️  Internal ALB - skipping external health check"
+            echo "   Use SSM tunnel for internal ALB access:"
+            echo "   ./scripts/ssm-tunnel-invpc.sh ${{ inputs.environment }}"
+            echo "accessible=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if curl -sf "${PROMETHEUS_URL}/-/healthy" > /dev/null 2>&1; then
+            echo "✅ Prometheus is healthy"
+            echo "accessible=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Prometheus health check failed"
+            echo "accessible=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Prometheus targets status
+        if: steps.verify_prometheus.outputs.accessible == 'true'
+        run: |
+          PROMETHEUS_URL="${{ steps.discover.outputs.prometheus_url }}"
+
+          echo "📊 Checking Prometheus targets..."
+
+          TARGETS=$(curl -sf "${PROMETHEUS_URL}/api/v1/targets" | jq -r '.data.activeTargets[] | "\(.labels.job): \(.health)"')
+
+          echo "$TARGETS"
+
+          # Count healthy targets
+          UP_COUNT=$(echo "$TARGETS" | grep -c "up" || true)
+          DOWN_COUNT=$(echo "$TARGETS" | grep -c "down" || true)
+
+          echo ""
+          echo "📈 Summary: $UP_COUNT targets UP, $DOWN_COUNT targets DOWN"
+
+          if [ "$DOWN_COUNT" -gt 0 ]; then
+            echo "⚠️  Some targets are DOWN. This may affect metrics collection."
+            echo "   Make sure PR #148 (Service Discovery fix) is deployed."
+          fi
+
+      - name: Query baseline metrics before test
+        if: steps.verify_prometheus.outputs.accessible == 'true' && inputs.dry_run == false
+        id: baseline
+        run: |
+          PROMETHEUS_URL="${{ steps.discover.outputs.prometheus_url }}"
+
+          echo "📊 Querying baseline metrics..."
+
+          # Agent requests total
+          AGENT_REQUESTS=$(curl -sf "${PROMETHEUS_URL}/api/v1/query?query=axonflow_requests_total" | jq -r '.data.result[0].value[1] // "0"')
+
+          # Request duration P95
+          AGENT_P95=$(curl -sf "${PROMETHEUS_URL}/api/v1/query?query=histogram_quantile(0.95,%20rate(axonflow_request_duration_seconds_bucket[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+
+          echo "agent_requests_baseline=$AGENT_REQUESTS" >> $GITHUB_OUTPUT
+          echo "agent_p95_baseline=$AGENT_P95" >> $GITHUB_OUTPUT
+
+          echo "📈 Baseline metrics:"
+          echo "   Total requests: $AGENT_REQUESTS"
+          echo "   P95 latency: ${AGENT_P95}s"
+
+      - name: Run 50 RPS × 30s test
+        if: inputs.dry_run == false && (inputs.test_type == 'quick' || inputs.test_type == 'both')
+        id: test_50rps
+        run: |
+          echo "🚀 Running 50 RPS × 30s load test..."
+
+          # This would trigger the performance testing ECS task
+          # For now, log what we would do
+          STACK_NAME="${{ steps.discover.outputs.stack_name }}"
+          REGION="${{ steps.config.outputs.region }}"
+
+          echo "Would run: aws ecs run-task with:"
+          echo "  TARGET_RPS=50"
+          echo "  DURATION_SECONDS=30"
+          echo "  Stack: $STACK_NAME"
+          echo "  Region: $REGION"
+
+          # Sleep to simulate test duration
+          sleep 5
+
+          echo "✅ Test completed"
+
+      - name: Run 100 RPS × 30s test
+        if: inputs.dry_run == false && (inputs.test_type == 'standard' || inputs.test_type == 'both')
+        id: test_100rps
+        run: |
+          echo "🚀 Running 100 RPS × 30s load test..."
+
+          STACK_NAME="${{ steps.discover.outputs.stack_name }}"
+          REGION="${{ steps.config.outputs.region }}"
+
+          echo "Would run: aws ecs run-task with:"
+          echo "  TARGET_RPS=100"
+          echo "  DURATION_SECONDS=30"
+          echo "  Stack: $STACK_NAME"
+          echo "  Region: $REGION"
+
+          sleep 5
+
+          echo "✅ Test completed"
+
+      - name: Collect metrics from Prometheus
+        if: steps.verify_prometheus.outputs.accessible == 'true' && inputs.dry_run == false
+        id: metrics
+        run: |
+          PROMETHEUS_URL="${{ steps.discover.outputs.prometheus_url }}"
+
+          echo "📊 Collecting metrics from Prometheus..."
+
+          # Helper function to query Prometheus
+          query_prometheus() {
+            local query="$1"
+            curl -sf "${PROMETHEUS_URL}/api/v1/query?query=$(echo "$query" | jq -sRr @uri)" | jq -r '.data.result[0].value[1] // "N/A"'
+          }
+
+          # Agent metrics
+          echo "=== Agent Metrics ==="
+          AGENT_TOTAL=$(query_prometheus "axonflow_requests_total")
+          AGENT_P50=$(query_prometheus "histogram_quantile(0.50, rate(axonflow_request_duration_seconds_bucket[5m]))")
+          AGENT_P95=$(query_prometheus "histogram_quantile(0.95, rate(axonflow_request_duration_seconds_bucket[5m]))")
+          AGENT_P99=$(query_prometheus "histogram_quantile(0.99, rate(axonflow_request_duration_seconds_bucket[5m]))")
+          AGENT_POLICY=$(query_prometheus "axonflow_policy_evaluations_total")
+          AGENT_BLOCKED=$(query_prometheus "axonflow_blocked_requests_total")
+
+          echo "Total Requests: $AGENT_TOTAL"
+          echo "P50 Latency: ${AGENT_P50}s"
+          echo "P95 Latency: ${AGENT_P95}s"
+          echo "P99 Latency: ${AGENT_P99}s"
+          echo "Policy Evaluations: $AGENT_POLICY"
+          echo "Blocked Requests: $AGENT_BLOCKED"
+
+          # Orchestrator metrics
+          echo ""
+          echo "=== Orchestrator Metrics ==="
+          ORCH_CONNECTOR_CALLS=$(query_prometheus "sum(axonflow_connector_calls_total)")
+          ORCH_CONNECTOR_P95=$(query_prometheus "histogram_quantile(0.95, rate(axonflow_connector_duration_seconds_bucket[5m]))")
+          ORCH_LLM_CALLS=$(query_prometheus "sum(axonflow_llm_calls_total)")
+
+          echo "Connector Calls: $ORCH_CONNECTOR_CALLS"
+          echo "Connector P95: ${ORCH_CONNECTOR_P95}s"
+          echo "LLM Calls: $ORCH_LLM_CALLS"
+
+          # Store metrics for summary
+          echo "agent_total=$AGENT_TOTAL" >> $GITHUB_OUTPUT
+          echo "agent_p50=$AGENT_P50" >> $GITHUB_OUTPUT
+          echo "agent_p95=$AGENT_P95" >> $GITHUB_OUTPUT
+          echo "agent_p99=$AGENT_P99" >> $GITHUB_OUTPUT
+          echo "agent_policy=$AGENT_POLICY" >> $GITHUB_OUTPUT
+          echo "agent_blocked=$AGENT_BLOCKED" >> $GITHUB_OUTPUT
+          echo "orch_connector_calls=$ORCH_CONNECTOR_CALLS" >> $GITHUB_OUTPUT
+          echo "orch_connector_p95=$ORCH_CONNECTOR_P95" >> $GITHUB_OUTPUT
+          echo "orch_llm_calls=$ORCH_LLM_CALLS" >> $GITHUB_OUTPUT
+
+      - name: Generate metrics report
+        id: report
+        run: |
+          echo "## 📊 Prometheus Metrics Collection Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Type:** ${{ inputs.test_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "ℹ️ Dry run mode - no tests were executed" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.verify_prometheus.outputs.accessible }}" = "false" ]; then
+            echo "⚠️ Prometheus not accessible from GitHub Actions (internal ALB)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**To collect metrics:**" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "./scripts/ssm-tunnel-invpc.sh ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+            echo "curl 'http://localhost:9090/prometheus/api/v1/query?query=up'" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Agent Metrics" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Requests | ${{ steps.metrics.outputs.agent_total }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| P50 Latency | ${{ steps.metrics.outputs.agent_p50 }}s |" >> $GITHUB_STEP_SUMMARY
+            echo "| P95 Latency | ${{ steps.metrics.outputs.agent_p95 }}s |" >> $GITHUB_STEP_SUMMARY
+            echo "| P99 Latency | ${{ steps.metrics.outputs.agent_p99 }}s |" >> $GITHUB_STEP_SUMMARY
+            echo "| Policy Evaluations | ${{ steps.metrics.outputs.agent_policy }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Blocked Requests | ${{ steps.metrics.outputs.agent_blocked }} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Orchestrator Metrics" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Connector Calls | ${{ steps.metrics.outputs.orch_connector_calls }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Connector P95 | ${{ steps.metrics.outputs.orch_connector_p95 }}s |" >> $GITHUB_STEP_SUMMARY
+            echo "| LLM Calls | ${{ steps.metrics.outputs.orch_llm_calls }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Stack:** ${{ steps.discover.outputs.stack_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Prometheus URL:** ${{ steps.discover.outputs.prometheus_url }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,247 @@
+# GoReleaser configuration for AxonFlow
+# https://goreleaser.com/customization/
+
+version: 2
+
+before:
+  hooks:
+    # Run tests before building
+    - go test ./...
+    # Run linter
+    - golangci-lint run
+    # Ensure dependencies are tidy
+    - go mod tidy
+
+builds:
+  # Agent binary
+  - id: agent
+    binary: axonflow-agent
+    main: ./platform/agent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+      - -X main.BuiltBy=goreleaser
+    flags:
+      - -trimpath
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+  # Orchestrator binary
+  - id: orchestrator
+    binary: axonflow-orchestrator
+    main: ./platform/orchestrator
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+      - -X main.BuiltBy=goreleaser
+    flags:
+      - -trimpath
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+  # Customer Portal binary
+  - id: customer-portal
+    binary: axonflow-customer-portal
+    main: ./platform/customer-portal
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+      - -X main.BuiltBy=goreleaser
+    flags:
+      - -trimpath
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: 'axonflow_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - docs/*
+      - migrations/*
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  abbrev: 0
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'merge conflict'
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: 'New Features'
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: 'Security Updates'
+      regexp: '^.*?(sec|security)(\(.+\))??!?:.+$'
+      order: 3
+    - title: 'Dependency Updates'
+      regexp: '^.*?deps(\(.+\))??!?:.+$'
+      order: 4
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  github:
+    owner: getaxonflow
+    name: axonflow
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## AxonFlow {{ .Tag }} Release
+
+    This release includes {{ .Version }} of the AxonFlow platform.
+
+    ### Installation
+
+    Download the appropriate binary for your platform and follow the [installation guide](https://docs.getaxonflow.com/installation).
+
+    ### Quick Start
+
+    ```bash
+    # Extract archive
+    tar -xzf axonflow_{{ .Version }}_{{ .Os }}_{{ .Arch }}.tar.gz
+
+    # Run agent
+    ./axonflow-agent
+
+    # Run orchestrator
+    ./axonflow-orchestrator
+    ```
+
+    ### Docker Images
+
+    Docker images are also available:
+    ```bash
+    docker pull 686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-agent:{{ .Tag }}
+    docker pull 686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-orchestrator:{{ .Tag }}
+    ```
+
+  footer: |
+    ---
+
+    **Full Changelog**: https://github.com/getaxonflow/axonflow/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    **Need Help?** Check our [documentation](https://docs.getaxonflow.com) or [open an issue](https://github.com/getaxonflow/axonflow/issues/new).
+
+  name_template: "v{{ .Version }}"
+
+  extra_files:
+    - glob: ./migrations/*.sql
+    - glob: ./docker-compose.yml
+    - glob: ./docs/**/*
+
+dockers:
+  # Agent Docker image
+  - id: agent-docker
+    ids:
+      - agent
+    image_templates:
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-agent:{{ .Tag }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-agent:v{{ .Major }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-agent:v{{ .Major }}.{{ .Minor }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-agent:latest"
+    dockerfile: platform/agent/Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=axonflow-agent"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+
+  # Orchestrator Docker image
+  - id: orchestrator-docker
+    ids:
+      - orchestrator
+    image_templates:
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-orchestrator:{{ .Tag }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-orchestrator:v{{ .Major }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-orchestrator:v{{ .Major }}.{{ .Minor }}"
+      - "686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-orchestrator:latest"
+    dockerfile: platform/orchestrator/Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title=axonflow-orchestrator"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+
+announce:
+  skip: true
+
+# Disable features not needed for internal releases
+dist: dist
+signs:
+  - artifacts: none
+
+sboms:
+  - artifacts: none
+
+milestones:
+  - close: false
+
+nfpms:
+  - maintainer: AxonFlow Team <dev@getaxonflow.com>
+    description: AI Agent Platform with Governance and Orchestration
+    homepage: https://getaxonflow.com
+    license: Apache 2.0
+    formats:
+      - deb
+      - rpm

@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          retention-days: 90
+
+  release-notes:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+    needs: release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "# Release $TAG" > release-notes.md
+          echo "" >> release-notes.md
+          echo "## Changes" >> release-notes.md
+          git log --oneline --no-merges $(git describe --tags --abbrev=0 HEAD^)..HEAD >> release-notes.md
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 90
+
+  publish-docker:
+    name: Publish Docker Images
+    runs-on: ubuntu-latest
+    needs: release
+    strategy:
+      matrix:
+        component:
+          - agent
+          - orchestrator
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract tag
+        id: extract_tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG=${GITHUB_REF#refs/tags/}
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push ${{ matrix.component }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./platform/${{ matrix.component }}/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-${{ matrix.component }}:${{ steps.extract_tag.outputs.tag }}
+            686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-${{ matrix.component }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.extract_tag.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+
+  release-summary:
+    name: Release Summary
+    runs-on: ubuntu-latest
+    needs: [release, release-notes, publish-docker]
+    if: always()
+
+    steps:
+      - name: Check release results
+        run: |
+          echo "🚀 Release Complete"
+          echo ""
+          echo "Results:"
+          echo "  ✅ Release: ${{ needs.release.result }}"
+          echo "  ✅ Release Notes: ${{ needs.release-notes.result }}"
+          echo "  ✅ Docker Images: ${{ needs.publish-docker.result }}"
+          echo ""
+
+          if [[ "${{ needs.release.result }}" == "success" ]] && \
+             [[ "${{ needs.publish-docker.result }}" == "success" ]]; then
+            echo "✅ Release published successfully"
+            echo ""
+            echo "Download binaries: https://github.com/${{ github.repository }}/releases"
+            echo "Docker images: 686831565523.dkr.ecr.eu-central-1.amazonaws.com/axonflow-{agent,orchestrator}:${GITHUB_REF#refs/tags/}"
+          else
+            echo "❌ Release failed - check logs above"
+            exit 1
+          fi

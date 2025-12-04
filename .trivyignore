@@ -1,0 +1,52 @@
+# .trivyignore - Trivy Security Scanner Ignore Rules
+#
+# This file contains CVEs and vulnerabilities that have been:
+# 1. Reviewed and deemed not applicable to our use case
+# 2. Accepted as low risk
+# 3. Waiting for upstream fixes
+#
+# Format: CVE-ID or vulnerability ID (one per line)
+# Comments start with #
+#
+# IMPORTANT: Every entry must have a comment explaining why it's ignored
+# Example:
+# CVE-2024-1234  # Not applicable - we don't use the affected feature
+# CVE-2024-5678  # Low risk - requires physical access to exploit
+#
+# Review this file quarterly to remove fixed vulnerabilities
+
+# ------------------------------------------------------------------------------
+# Go Standard Library & Common Dependencies
+# ------------------------------------------------------------------------------
+
+# Add ignored CVEs here after review
+
+# ------------------------------------------------------------------------------
+# Node.js Dependencies (for demo clients)
+# ------------------------------------------------------------------------------
+
+# Add ignored CVEs here after review
+
+# ------------------------------------------------------------------------------
+# Alpine Linux Base Image
+# ------------------------------------------------------------------------------
+
+# Add ignored CVEs here after review
+
+# ------------------------------------------------------------------------------
+# AWS SDK & Cloud Dependencies
+# ------------------------------------------------------------------------------
+
+# Add ignored CVEs here after review
+
+# ------------------------------------------------------------------------------
+# Development Dependencies (Not in Production)
+# ------------------------------------------------------------------------------
+
+# Add ignored CVEs here after review
+
+# ------------------------------------------------------------------------------
+# False Positives
+# ------------------------------------------------------------------------------
+
+# Add confirmed false positives here after verification

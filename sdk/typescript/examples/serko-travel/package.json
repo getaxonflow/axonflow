@@ -1,0 +1,19 @@
+{
+  "name": "serko-travel-demo",
+  "version": "1.0.0",
+  "description": "Serko Travel Booking AI with AxonFlow governance",
+  "main": "demo.js",
+  "scripts": {
+    "start": "ts-node demo.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "file:../..",
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

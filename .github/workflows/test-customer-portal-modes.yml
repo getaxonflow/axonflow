@@ -1,0 +1,185 @@
+# Customer Portal Deployment Mode Testing
+# Tests both SaaS and In-VPC modes to ensure feature parity and correct behavior
+#
+# Triggered on:
+# - Pull requests affecting customer-portal code
+# - Changes to deployment configuration
+
+name: Test Customer Portal Modes
+
+on:
+  pull_request:
+    paths:
+      - 'ee/platform/customer-portal/**'
+      - 'ee/platform/customer-portal-ui/**'
+      - 'platform/shared/types/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'ee/platform/customer-portal/**'
+      - 'ee/platform/customer-portal-ui/**'
+      - 'platform/shared/types/**'
+
+jobs:
+  test-backend:
+    name: Backend Tests (${{ matrix.deployment_mode }} mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        deployment_mode: [saas, invpc]
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: |
+            ee/platform/customer-portal/go.sum
+            platform/shared/go.sum
+
+      - name: Run tests (${{ matrix.deployment_mode }} mode)
+        env:
+          DEPLOYMENT_MODE: ${{ matrix.deployment_mode }}
+        working-directory: ee/platform/customer-portal
+        run: |
+          echo "🧪 Testing in $DEPLOYMENT_MODE mode"
+          go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Check coverage threshold
+        working-directory: ee/platform/customer-portal
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "📊 Coverage: ${COVERAGE}%"
+
+          # Require at least 20% coverage
+          if (( $(echo "$COVERAGE < 20" | bc -l) )); then
+            echo "❌ Coverage ${COVERAGE}% is below 20% threshold"
+            exit 1
+          fi
+          echo "✅ Coverage meets threshold"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.deployment_mode }}
+          path: ee/platform/customer-portal/coverage.out
+          retention-days: 7
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ee/platform/customer-portal-ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ee/platform/customer-portal-ui
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ee/platform/customer-portal-ui
+        run: npm test -- --coverage --watchAll=false
+
+      - name: Build check
+        working-directory: ee/platform/customer-portal-ui
+        run: npm run build
+
+  lint-cloudformation:
+    name: Validate CloudFormation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation template
+        run: |
+          cfn-lint ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml \
+            --ignore-checks W3002 \
+            --non-zero-exit-code error
+
+      - name: Validate DeploymentMode parameter
+        run: |
+          python3 << 'EOF'
+          import yaml
+          import sys
+
+          # Add constructors for CloudFormation intrinsic functions
+          # These allow PyYAML to parse CFN templates without errors
+          CFN_TAGS = [
+              'And', 'Base64', 'Cidr', 'Condition', 'Equals', 'FindInMap',
+              'GetAtt', 'GetAZs', 'If', 'ImportValue', 'Join', 'Not', 'Or',
+              'Ref', 'Select', 'Split', 'Sub', 'Transform'
+          ]
+          for tag in CFN_TAGS:
+              yaml.SafeLoader.add_constructor(
+                  f'!{tag}',
+                  lambda loader, node: {'Fn::Intrinsic': tag}
+              )
+
+          TEMPLATE_PATH = "ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml"
+          REQUIRED_VALUES = {"saas", "invpc"}
+
+          with open(TEMPLATE_PATH, 'r') as f:
+              template = yaml.safe_load(f)
+
+          # Check Parameters section exists
+          if 'Parameters' not in template:
+              print("❌ Parameters section not found in CloudFormation template")
+              sys.exit(1)
+
+          # Check DeploymentMode parameter exists
+          if 'DeploymentMode' not in template['Parameters']:
+              print("❌ DeploymentMode parameter not found in CloudFormation template")
+              sys.exit(1)
+
+          param = template['Parameters']['DeploymentMode']
+
+          # Check AllowedValues exists
+          if 'AllowedValues' not in param:
+              print("❌ DeploymentMode missing AllowedValues")
+              sys.exit(1)
+
+          allowed = set(param['AllowedValues'])
+
+          # Check all required values are present
+          missing = REQUIRED_VALUES - allowed
+          if missing:
+              print(f"❌ DeploymentMode missing required values: {missing}")
+              sys.exit(1)
+
+          # Check Default is valid
+          default = param.get('Default')
+          if default and default not in allowed:
+              print(f"❌ DeploymentMode Default '{default}' not in AllowedValues")
+              sys.exit(1)
+
+          print(f"✅ DeploymentMode parameter validated")
+          print(f"   AllowedValues: {sorted(allowed)}")
+          print(f"   Default: {default}")
+          EOF

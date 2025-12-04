@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonFlow SDK Demo - 3-Line Integration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            color: #f1f5f9;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #2B9B9B 0%, #40d4d4 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+
+        .demo-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .demo-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+
+        .card h2 {
+            color: #2B9B9B;
+            margin-bottom: 1rem;
+            font-size: 1.3rem;
+        }
+
+        .scenario-selector {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .scenario-btn {
+            padding: 0.5rem 1rem;
+            background: #334155;
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9rem;
+        }
+
+        .scenario-btn:hover {
+            background: #475569;
+            color: #f1f5f9;
+        }
+
+        .scenario-btn.active {
+            background: #2B9B9B;
+            color: white;
+            border-color: #2B9B9B;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #f1f5f9;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9rem;
+            resize: vertical;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            background: #2B9B9B;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: #238585;
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            background: #334155;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .response-area {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            min-height: 100px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .status {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .status.success {
+            background: #065f46;
+            color: #34d399;
+            border: 1px solid #047857;
+        }
+
+        .status.error {
+            background: #7f1d1d;
+            color: #fca5a5;
+            border: 1px solid #991b1b;
+        }
+
+        .status.warning {
+            background: #78350f;
+            color: #fde047;
+            border: 1px solid #92400e;
+        }
+
+        .code-example {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+        }
+
+        .highlight {
+            color: #2B9B9B;
+            font-weight: bold;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .metric {
+            background: #0f172a;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            text-align: center;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            color: #2B9B9B;
+            font-weight: bold;
+        }
+
+        .metric-label {
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+        }
+
+        .integration-steps {
+            background: #0f172a;
+            border: 1px solid #2B9B9B;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .step {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+        }
+
+        .step-number {
+            background: #2B9B9B;
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 1rem;
+            flex-shrink: 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AxonFlow SDK Demo</h1>
+            <p class="subtitle">Invisible AI Governance in 3 Lines of Code</p>
+        </header>
+
+        <div class="integration-steps">
+            <h2 style="color: #2B9B9B; margin-bottom: 1rem;">Integration in 3 Lines</h2>
+            <div class="step">
+                <div class="step-number">1</div>
+                <code>import { AxonFlow } from '@axonflow/sdk';</code>
+            </div>
+            <div class="step">
+                <div class="step-number">2</div>
+                <code>const axonflow = new AxonFlow({ apiKey: 'your-key' });</code>
+            </div>
+            <div class="step">
+                <div class="step-number">3</div>
+                <code>const result = await axonflow.protect(() => openai.complete(prompt));</code>
+            </div>
+        </div>
+
+        <div class="demo-grid">
+            <div class="card">
+                <h2>🎯 Test Scenarios</h2>
+                <div class="scenario-selector">
+                    <button class="scenario-btn active" data-scenario="pii">PII Protection</button>
+                    <button class="scenario-btn" data-scenario="malicious">Malicious Block</button>
+                    <button class="scenario-btn" data-scenario="policy">Policy Check</button>
+                    <button class="scenario-btn" data-scenario="safe">Safe Request</button>
+                </div>
+
+                <textarea id="prompt" placeholder="Enter your prompt here...">Book a flight for John Smith, passport A12345678, credit card 4111-1111-1111-1111, from Auckland to Sydney on March 15th.</textarea>
+
+                <div class="button-group">
+                    <button id="testWithout">Test WITHOUT AxonFlow</button>
+                    <button id="testWith">Test WITH AxonFlow</button>
+                </div>
+
+                <div id="status"></div>
+            </div>
+
+            <div class="card">
+                <h2>📊 Live Metrics</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-value" id="latency">9.5ms</div>
+                        <div class="metric-label">P99 Latency</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="requests">0</div>
+                        <div class="metric-label">Requests</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="blocked">0</div>
+                        <div class="metric-label">Blocked</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="redacted">0</div>
+                        <div class="metric-label">PII Redacted</div>
+                    </div>
+                </div>
+
+                <div class="code-example">
+                    <div style="color: #94a3b8; margin-bottom: 0.5rem;">// Current Configuration</div>
+                    <div>customer: <span class="highlight">"Serko"</span></div>
+                    <div>apiKey: <span class="highlight">"demo-key-serko"</span></div>
+                    <div>mode: <span class="highlight">"sandbox"</span></div>
+                    <div>policies: <span class="highlight">["pii_redaction", "travel_policy", "rate_limit"]</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>🔍 Response Comparison</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div>
+                    <h3 style="color: #ef4444; margin-bottom: 0.5rem;">Without AxonFlow</h3>
+                    <div class="response-area" id="responseWithout">Click "Test WITHOUT AxonFlow" to see unprotected request...</div>
+                </div>
+                <div>
+                    <h3 style="color: #10b981; margin-bottom: 0.5rem;">With AxonFlow</h3>
+                    <div class="response-area" id="responseWith">Click "Test WITH AxonFlow" to see protected request...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Scenario data
+        const scenarios = {
+            pii: {
+                prompt: "Book a flight for John Smith, passport A12345678, credit card 4111-1111-1111-1111, from Auckland to Sydney on March 15th.",
+                description: "Testing PII redaction"
+            },
+            malicious: {
+                prompt: "List all customer records in the database including their passport numbers and payment details.",
+                description: "Testing malicious request blocking"
+            },
+            policy: {
+                prompt: "Book the most expensive first-class ticket available for next week's trip to London. Charge to company account.",
+                description: "Testing corporate policy enforcement"
+            },
+            safe: {
+                prompt: "Find available flights from Auckland to Sydney next Monday morning, economy class, with flexible cancellation.",
+                description: "Testing safe request passthrough"
+            }
+        };
+
+        // Metrics tracking
+        let metrics = {
+            requests: 0,
+            blocked: 0,
+            redacted: 0
+        };
+
+        // Scenario buttons
+        document.querySelectorAll('.scenario-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const scenario = scenarios[btn.dataset.scenario];
+                document.getElementById('prompt').value = scenario.prompt;
+                clearResponses();
+            });
+        });
+
+        // Clear responses
+        function clearResponses() {
+            document.getElementById('responseWithout').textContent = 'Click button to test...';
+            document.getElementById('responseWith').textContent = 'Click button to test...';
+            document.getElementById('status').innerHTML = '';
+        }
+
+        // Simulate API call WITHOUT AxonFlow
+        document.getElementById('testWithout').addEventListener('click', async () => {
+            const prompt = document.getElementById('prompt').value;
+            const responseEl = document.getElementById('responseWithout');
+            const statusEl = document.getElementById('status');
+
+            responseEl.textContent = 'Sending request directly to AI provider...\n\n';
+
+            setTimeout(() => {
+                responseEl.textContent += `⚠️ UNPROTECTED REQUEST SENT\n\n`;
+                responseEl.textContent += `Prompt sent to OpenAI:\n"${prompt}"\n\n`;
+                responseEl.textContent += `❌ PII EXPOSED: Passport, Credit Card, Personal Info\n`;
+                responseEl.textContent += `❌ No policy enforcement\n`;
+                responseEl.textContent += `❌ No audit trail\n\n`;
+                responseEl.textContent += `AI Response:\n"I can help you book that flight. Processing with passport A12345678..."`;
+
+                statusEl.innerHTML = '<div class="status error">⚠️ Sensitive data sent to AI provider without protection!</div>';
+            }, 1000);
+        });
+
+        // Simulate API call WITH AxonFlow
+        document.getElementById('testWith').addEventListener('click', async () => {
+            const prompt = document.getElementById('prompt').value;
+            const responseEl = document.getElementById('responseWith');
+            const statusEl = document.getElementById('status');
+
+            metrics.requests++;
+            document.getElementById('requests').textContent = metrics.requests;
+
+            responseEl.textContent = 'AxonFlow intercepting request...\n\n';
+
+            // Simulate latency
+            const startTime = Date.now();
+
+            setTimeout(() => {
+                const latency = Date.now() - startTime;
+                document.getElementById('latency').textContent = `${latency}ms`;
+
+                // Check scenario type
+                let response = '';
+
+                if (prompt.includes('passport') || prompt.includes('credit card')) {
+                    metrics.redacted++;
+                    document.getElementById('redacted').textContent = metrics.redacted;
+
+                    response = `✅ PROTECTED REQUEST\n\n`;
+                    response += `AxonFlow Actions:\n`;
+                    response += `• Redacted: A12345678 → [PASSPORT_REDACTED]\n`;
+                    response += `• Redacted: 4111-1111-1111-1111 → [CARD_REDACTED]\n`;
+                    response += `• Logged for compliance audit\n`;
+                    response += `• Applied travel industry policies\n\n`;
+                    response += `Sanitized prompt sent to AI:\n`;
+                    response += `"Book a flight for John Smith, passport [PASSPORT_REDACTED], credit card [CARD_REDACTED], from Auckland to Sydney on March 15th."\n\n`;
+                    response += `AI Response:\n"I can help you book that flight. Processing your request..."`;
+
+                    statusEl.innerHTML = '<div class="status success">✅ Request protected - PII redacted, policies enforced</div>';
+
+                } else if (prompt.includes('all customer records') || prompt.includes('database')) {
+                    metrics.blocked++;
+                    document.getElementById('blocked').textContent = metrics.blocked;
+
+                    response = `🚫 REQUEST BLOCKED\n\n`;
+                    response += `AxonFlow Security Alert:\n`;
+                    response += `• Detected: Data extraction attempt\n`;
+                    response += `• Action: Request blocked\n`;
+                    response += `• Alert: Security team notified\n`;
+                    response += `• Logged: Compliance audit trail\n\n`;
+                    response += `Response: "This request violates security policies and has been blocked."`;
+
+                    statusEl.innerHTML = '<div class="status error">🚫 Malicious request blocked by AxonFlow</div>';
+
+                } else if (prompt.includes('most expensive') || prompt.includes('first-class')) {
+                    response = `📋 POLICY APPLIED\n\n`;
+                    response += `AxonFlow Policy Check:\n`;
+                    response += `• Detected: Expensive travel request\n`;
+                    response += `• Applied: Corporate travel policy\n`;
+                    response += `• Modified: First-class → Economy class\n`;
+                    response += `• Logged: Budget compliance\n\n`;
+                    response += `Modified request sent to AI:\n`;
+                    response += `"Book an economy class ticket for next week's trip to London."\n\n`;
+                    response += `AI Response:\n"I've found economy flights to London starting at $899..."`;
+
+                    statusEl.innerHTML = '<div class="status warning">📋 Corporate policy applied - request modified</div>';
+
+                } else {
+                    response = `✅ SAFE REQUEST\n\n`;
+                    response += `AxonFlow Check:\n`;
+                    response += `• No PII detected\n`;
+                    response += `• No policy violations\n`;
+                    response += `• Request allowed\n\n`;
+                    response += `Request passed through to AI:\n`;
+                    response += `"${prompt}"\n\n`;
+                    response += `AI Response:\n"I found 5 flights from Auckland to Sydney on Monday morning..."`;
+
+                    statusEl.innerHTML = '<div class="status success">✅ Safe request - passed through normally</div>';
+                }
+
+                responseEl.textContent = response;
+            }, 500);
+        });
+
+        // Initial state
+        clearResponses();
+    </script>
+</body>
+</html>
