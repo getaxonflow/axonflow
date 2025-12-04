@@ -1,0 +1,127 @@
+name: Validate OpenAPI
+
+on:
+  push:
+    paths:
+      - 'docs/api/**/*.yaml'
+      - 'docs/api/**/*.yml'
+      - '.github/workflows/validate-openapi.yml'
+      - '.spectral.yaml'
+  pull_request:
+    paths:
+      - 'docs/api/**/*.yaml'
+      - 'docs/api/**/*.yml'
+      - '.github/workflows/validate-openapi.yml'
+      - '.spectral.yaml'
+
+jobs:
+  validate:
+    name: Validate OpenAPI Spec
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install validation tools
+        run: |
+          npm install -g @apidevtools/swagger-cli
+          npm install -g @stoplight/spectral-cli
+          npm install -g @redocly/cli
+
+      - name: Validate OpenAPI spec syntax
+        run: |
+          echo "Validating OpenAPI specification syntax..."
+          swagger-cli validate docs/api/policy-api.yaml
+          echo "✅ Syntax validation passed"
+
+      - name: Lint OpenAPI spec
+        run: |
+          echo "Linting OpenAPI specification..."
+          # Fail on errors, allow warnings
+          spectral lint docs/api/policy-api.yaml --ruleset .spectral.yaml --fail-severity error
+          echo "✅ Linting passed"
+
+      - name: Check for breaking changes
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Checking for breaking changes..."
+          git fetch origin ${{ github.base_ref }} --depth=1
+
+          # Check if base branch has the spec file
+          if git show origin/${{ github.base_ref }}:docs/api/policy-api.yaml > /tmp/base-spec.yaml 2>/dev/null; then
+            echo "Found base spec, comparing..."
+
+            # Install oasdiff binary (installs to /usr/local/bin automatically)
+            curl -sSL https://raw.githubusercontent.com/Tufin/oasdiff/main/install.sh | sudo sh
+
+            # Use oasdiff for semantic breaking change detection
+            oasdiff breaking /tmp/base-spec.yaml docs/api/policy-api.yaml --fail-on ERR || {
+              echo ""
+              echo "⚠️  Breaking changes detected!"
+              echo "Please review the changes above and ensure they are intentional."
+              echo "If these are expected breaking changes, document them in the PR description."
+              exit 1
+            }
+            echo "✅ No breaking changes detected"
+          else
+            echo "ℹ️  No previous spec found on base branch - skipping breaking change check"
+          fi
+
+      - name: Generate documentation preview
+        run: |
+          echo "Generating documentation preview..."
+          npx @redocly/cli build-docs docs/api/policy-api.yaml -o /tmp/api-docs.html
+          echo "✅ Documentation generated successfully"
+
+      - name: Upload documentation preview
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs-preview
+          path: /tmp/api-docs.html
+          retention-days: 7
+
+  bundle:
+    name: Bundle OpenAPI Spec
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install tools
+        run: npm install -g @redocly/cli
+
+      - name: Bundle specification
+        run: |
+          npx @redocly/cli bundle docs/api/policy-api.yaml -o docs/api/policy-api-bundled.yaml
+          echo "✅ Bundled specification created"
+
+      - name: Generate static documentation
+        run: |
+          npx @redocly/cli build-docs docs/api/policy-api.yaml -o docs/api/index.html
+          echo "✅ Static documentation generated"
+
+      - name: Upload bundled artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-bundle
+          path: |
+            docs/api/policy-api-bundled.yaml
+            docs/api/index.html
+          retention-days: 30

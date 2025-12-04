@@ -1,0 +1,198 @@
+name: Security Scanning
+
+# NOTE: SARIF uploads disabled (require GitHub Advanced Security for private repos)
+# When repository becomes public, re-enable SARIF uploads to get Security tab integration:
+# 1. Add back CodeQL upload steps after each Trivy scan
+# 2. Restore permissions: security-events: write, actions: read
+# 3. Change format from 'table' to 'sarif' in first scan step
+# 4. Add separate table output step for PR comments
+# See commit history for original SARIF configuration.
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  schedule:
+    # Run daily at 2 AM UTC to catch new vulnerabilities
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  trivy-filesystem-scan:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner (filesystem)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # Fail on critical/high vulnerabilities
+
+  trivy-config-scan:
+    name: Trivy Configuration Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy config scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+  trivy-secret-scan:
+    name: Trivy Secret Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy secret scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'secret'
+          format: 'table'
+          exit-code: '0'  # Informational only (demo tokens trigger false positives)
+
+  trivy-docker-agent:
+    name: Trivy Scan - Agent Docker Image
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'  # Only on push/PR, not scheduled
+    continue-on-error: true  # Don't fail PR if Docker build has issues
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build agent Docker image
+        run: |
+          docker build -t axonflow-agent:${{ github.sha }} -f platform/agent/Dockerfile .
+        continue-on-error: false  # Fail this step if build fails, but job continues
+
+      - name: Run Trivy vulnerability scanner (agent image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'axonflow-agent:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+        continue-on-error: true
+
+  trivy-docker-orchestrator:
+    name: Trivy Scan - Orchestrator Docker Image
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'  # Only on push/PR, not scheduled
+    continue-on-error: true  # Don't fail PR if Docker build has issues
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build orchestrator Docker image
+        run: |
+          docker build -t axonflow-orchestrator:${{ github.sha }} -f platform/orchestrator/Dockerfile .
+        continue-on-error: false  # Fail this step if build fails, but job continues
+
+      - name: Run Trivy vulnerability scanner (orchestrator image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'axonflow-orchestrator:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+        continue-on-error: true
+
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [trivy-filesystem-scan, trivy-config-scan, trivy-secret-scan, trivy-docker-agent, trivy-docker-orchestrator]
+    if: always()
+
+    steps:
+      - name: Check security scan results
+        run: |
+          echo "🔒 Security Scan Complete"
+          echo ""
+          echo "Scan Results:"
+          echo "  ✅ Filesystem Scan: ${{ needs.trivy-filesystem-scan.result }}"
+          echo "  ✅ Configuration Scan: ${{ needs.trivy-config-scan.result }}"
+          echo "  ✅ Secret Scan: ${{ needs.trivy-secret-scan.result }}"
+          echo "  ✅ Agent Docker Scan: ${{ needs.trivy-docker-agent.result }}"
+          echo "  ✅ Orchestrator Docker Scan: ${{ needs.trivy-docker-orchestrator.result }}"
+          echo ""
+          echo "📊 View detailed results in workflow logs above"
+          echo "ℹ️  SARIF uploads disabled (require GitHub Advanced Security)"
+          echo "ℹ️  When repo goes public, SARIF uploads will be re-enabled for free"
+
+      - name: Determine overall status
+        run: |
+          # Critical scans that MUST pass
+          CRITICAL_FAILED=0
+
+          if [[ "${{ needs.trivy-filesystem-scan.result }}" == "failure" ]]; then
+            echo "❌ Filesystem scan failed"
+            CRITICAL_FAILED=1
+          fi
+
+          if [[ "${{ needs.trivy-secret-scan.result }}" == "failure" ]]; then
+            echo "❌ Secret scan failed - CRITICAL"
+            CRITICAL_FAILED=1
+          fi
+
+          # Docker scans are informational (continue-on-error set)
+          if [[ "${{ needs.trivy-docker-agent.result }}" == "failure" ]]; then
+            echo "⚠️  Agent Docker scan had issues (informational)"
+          fi
+
+          if [[ "${{ needs.trivy-docker-orchestrator.result }}" == "failure" ]]; then
+            echo "⚠️  Orchestrator Docker scan had issues (informational)"
+          fi
+
+          if [[ $CRITICAL_FAILED -eq 1 ]]; then
+            echo ""
+            echo "❌ Critical security scans failed"
+            echo "⚠️  Review findings in workflow logs and address critical/high vulnerabilities"
+            exit 1
+          else
+            echo ""
+            echo "✅ All critical security scans passed"
+            echo "📊 View detailed results in workflow logs above"
+          fi

@@ -1,0 +1,43 @@
+# Spectral OpenAPI Linting Rules
+# https://docs.stoplight.io/docs/spectral/
+
+extends:
+  - spectral:oas
+
+rules:
+  # Require operation IDs for client generation (override severity to error)
+  operation-operationId: error
+
+  # Require descriptions for operations
+  operation-description: warn
+
+  # Require tags for operations
+  operation-tags: warn
+
+  # Require descriptions for parameters
+  oas3-parameter-description: warn
+
+  # Validate examples match schemas
+  oas3-valid-media-example: error
+
+  # Ensure consistent naming for operationIds
+  operation-operationId-valid-in-url: error
+
+  # Require info contact
+  info-contact: warn
+
+  # Require info license
+  info-license: warn
+
+  # Server URL should not have trailing slash
+  oas3-server-trailing-slash: warn
+
+  # Disable overly strict unused component check
+  # (components may be used by external tools or documentation)
+  oas3-unused-component: off
+
+  # Ensure paths don't have trailing slashes
+  path-keys-no-trailing-slash: error
+
+  # Require success response for operations
+  operation-success-response: warn
