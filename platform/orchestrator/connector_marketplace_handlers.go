@@ -26,6 +26,8 @@ import (
 
 	"axonflow/platform/connectors/base"
 	httpconnector "axonflow/platform/connectors/http"
+	"axonflow/platform/connectors/mongodb"
+	"axonflow/platform/connectors/mysql"
 	"axonflow/platform/connectors/postgres"
 	"axonflow/platform/connectors/redis"
 	"axonflow/platform/connectors/registry"
@@ -71,6 +73,10 @@ func createConnectorInstance(connectorType string) (base.Connector, error) {
 		return httpconnector.NewHTTPConnector(), nil
 	case "postgres":
 		return postgres.NewPostgresConnector(), nil
+	case "mysql":
+		return mysql.NewMySQLConnector(), nil
+	case "mongodb":
+		return mongodb.NewMongoDBConnector(), nil
 	default:
 		return nil, fmt.Errorf("unsupported connector type: %s", connectorType)
 	}

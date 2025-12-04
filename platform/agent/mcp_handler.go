@@ -32,7 +32,11 @@ import (
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/cassandra"
 	"axonflow/platform/connectors/config"
+	httpconnector "axonflow/platform/connectors/http"
+	"axonflow/platform/connectors/mongodb"
+	"axonflow/platform/connectors/mysql"
 	"axonflow/platform/connectors/postgres"
+	"axonflow/platform/connectors/redis"
 	"axonflow/platform/connectors/registry"
 	"axonflow/platform/connectors/salesforce"
 	"axonflow/platform/connectors/slack"
@@ -182,6 +186,14 @@ func registerConnectorFromConfig(cfg *base.ConnectorConfig) error {
 		connector = snowflake.NewSnowflakeConnector()
 	case "amadeus":
 		connector = amadeus.NewAmadeusConnector()
+	case "mysql":
+		connector = mysql.NewMySQLConnector()
+	case "mongodb":
+		connector = mongodb.NewMongoDBConnector()
+	case "http":
+		connector = httpconnector.NewHTTPConnector()
+	case "redis":
+		connector = redis.NewRedisConnector()
 	default:
 		return fmt.Errorf("unsupported connector type: %s", cfg.Type)
 	}
