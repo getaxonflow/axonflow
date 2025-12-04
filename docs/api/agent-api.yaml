@@ -1,0 +1,1291 @@
+openapi: 3.0.3
+info:
+  title: AxonFlow Agent API
+  description: |
+    REST API for the AxonFlow Agent service - Authentication, Authorization, and Static Policy Enforcement Gateway.
+
+    The Agent serves as the entry point for all client requests, providing:
+    - **Proxy Mode**: Full request interception and processing through the Orchestrator
+    - **Gateway Mode**: Pre-check and audit endpoints for SDK-managed LLM calls
+    - **MCP (Model Context Protocol)**: Data connector queries and commands
+    - **Authentication**: License and token validation
+    - **Static Policy Enforcement**: Fast regex-based content filtering
+
+    ## Authentication
+
+    All endpoints require authentication via:
+    - `X-License-Key`: Client/service license key for authorization
+    - `user_token`: JWT token for user identification (in request body)
+
+    ## Deployment Modes
+
+    - **SaaS**: Hosted by AxonFlow, multi-tenant
+    - **In-VPC**: Customer-deployed, single-tenant
+    - **Self-Hosted**: `SELF_HOSTED_MODE=true` bypasses license validation
+
+  version: 1.0.0
+  contact:
+    name: AxonFlow Support
+    url: https://getaxonflow.com/support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://agent.getaxonflow.com
+    description: Production (SaaS)
+  - url: https://agent-staging.getaxonflow.com
+    description: Staging
+  - url: http://localhost:8080
+    description: Local Development
+
+tags:
+  - name: Health
+    description: Service health and readiness checks
+  - name: Proxy Mode
+    description: Full request interception and processing
+  - name: Gateway Mode
+    description: Pre-check and audit for SDK-managed LLM calls
+  - name: MCP Connectors
+    description: Model Context Protocol data connector operations
+  - name: Metrics
+    description: Performance monitoring and observability
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: |
+        Returns service health status. During startup, returns `status: starting`.
+        Once fully initialized, returns `status: healthy`.
+
+        This endpoint responds immediately even during initialization, allowing
+        ECS/ALB health checks to pass while the service starts up.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: Healthy service
+                  value:
+                    status: healthy
+                    service: axonflow-agent
+                    timestamp: "2025-01-15T10:30:00Z"
+                    version: "1.0.0"
+                starting:
+                  summary: Service starting
+                  value:
+                    status: starting
+                    service: axonflow-agent
+                    timestamp: "2025-01-15T10:30:00Z"
+                    version: "1.0.0"
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Get performance metrics
+      description: |
+        Returns real-time performance metrics including:
+        - Request counts (total, success, failed, blocked)
+        - Latency percentiles (P50, P95, P99)
+        - Per-stage timing (auth, policy, network)
+        - Request type breakdown
+        - Connector metrics
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Performance metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+
+  /prometheus:
+    get:
+      tags:
+        - Metrics
+      summary: Prometheus metrics endpoint
+      description: Returns metrics in Prometheus exposition format for scraping
+      operationId: getPrometheusMetrics
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP axonflow_agent_requests_total Total requests
+                  # TYPE axonflow_agent_requests_total counter
+                  axonflow_agent_requests_total{status="success"} 1234
+
+  /api/request:
+    post:
+      tags:
+        - Proxy Mode
+      summary: Process client request
+      description: |
+        Main entry point for Proxy Mode. The Agent:
+        1. Validates client license key
+        2. Validates user JWT token
+        3. Verifies tenant isolation
+        4. Evaluates static policies (PII detection, etc.)
+        5. Forwards to Orchestrator if allowed
+        6. Returns response with policy metadata
+
+        **Use this endpoint when you want AxonFlow to intercept and process all LLM requests.**
+      operationId: processRequest
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - $ref: '#/components/parameters/ClientSecret'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRequest'
+            examples:
+              sqlQuery:
+                summary: SQL query request
+                value:
+                  query: "Show sales data for last quarter"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-app-prod"
+                  request_type: "sql"
+                  context:
+                    connector: "postgres"
+              llmChat:
+                summary: LLM chat request
+                value:
+                  query: "Summarize the customer feedback"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "support-bot"
+                  request_type: "llm_chat"
+                  context:
+                    model_preference: "gpt-4"
+              multiAgentPlan:
+                summary: Multi-agent planning request
+                value:
+                  query: "Find flights from NYC to LAX and book a hotel"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-planner"
+                  request_type: "multi-agent-plan"
+                  context:
+                    domain: "travel"
+                    execution_mode: "parallel"
+      responses:
+        '200':
+          description: Request processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+              example:
+                success: true
+                data:
+                  response: "Here is the summary of customer feedback..."
+                result: "Flight options found: UA123, AA456, DL789"
+                plan_id: "plan_1234567890_abc123"
+                metadata:
+                  tasks_executed: 3
+                  execution_time_ms: 2500
+                policy_info:
+                  policies_evaluated:
+                    - "pii-detection"
+                    - "rate-limit"
+                  static_checks:
+                    - "ssn_pattern"
+                    - "credit_card"
+                  processing_time: "45.2ms"
+                  tenant_id: "tenant-123"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Request blocked by policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+              example:
+                success: false
+                blocked: true
+                block_reason: "Query contains PII (SSN detected)"
+                policy_info:
+                  policies_evaluated:
+                    - "pii-ssn"
+                  static_checks:
+                    - "ssn_pattern"
+                  processing_time: "2.1ms"
+                  tenant_id: "tenant-123"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/policy/pre-check:
+    post:
+      tags:
+        - Gateway Mode
+      summary: Pre-check request before LLM call
+      description: |
+        Gateway Mode Step 1: Call this endpoint before making your own LLM API call.
+
+        The Agent validates the request against policies and returns:
+        - `approved: true` if the request is allowed
+        - `context_id` to link with the subsequent audit call
+        - Optional `approved_data` from MCP connectors
+        - Rate limit information
+
+        **Context expires after 5 minutes.**
+
+        ## Example Flow
+        ```
+        1. SDK calls pre-check → gets context_id, approved=true
+        2. SDK makes direct LLM call (OpenAI, Anthropic, etc.)
+        3. SDK calls audit with context_id and response metadata
+        ```
+      operationId: gatewayPreCheck
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreCheckRequest'
+            examples:
+              basic:
+                summary: Basic pre-check
+                value:
+                  query: "What is the customer's order status?"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "customer-portal"
+              withDataSources:
+                summary: Pre-check with data sources
+                value:
+                  query: "Find flights from NYC to LAX next week"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-app"
+                  data_sources:
+                    - "amadeus"
+                  context:
+                    departure_date: "2025-01-20"
+                    return_date: "2025-01-25"
+      responses:
+        '200':
+          description: Pre-check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreCheckResponse'
+              examples:
+                approved:
+                  summary: Request approved
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: true
+                    policies:
+                      - "pii-detection"
+                      - "rate-limit"
+                    rate_limit:
+                      limit: 1000
+                      remaining: 995
+                      reset_at: "2025-01-15T11:00:00Z"
+                    expires_at: "2025-01-15T10:35:00Z"
+                blocked:
+                  summary: Request blocked
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: false
+                    policies:
+                      - "pii-credit-card"
+                    block_reason: "Query contains credit card number"
+                    expires_at: "2025-01-15T10:35:00Z"
+                withData:
+                  summary: Approved with data
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: true
+                    approved_data:
+                      amadeus:
+                        rows:
+                          - flight_number: "UA123"
+                            departure: "2025-01-20T08:00:00Z"
+                            price: 299.99
+                        row_count: 5
+                        duration_ms: 450
+                    policies:
+                      - "pii-detection"
+                    expires_at: "2025-01-15T10:35:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/audit/llm-call:
+    post:
+      tags:
+        - Gateway Mode
+      summary: Audit LLM call after completion
+      description: |
+        Gateway Mode Step 2: Call this endpoint after your LLM API call completes.
+
+        Records:
+        - Token usage for billing and quotas
+        - Latency metrics
+        - Provider and model information
+        - Estimated cost
+
+        **Requires a valid context_id from pre-check (not expired).**
+      operationId: auditLLMCall
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditLLMCallRequest'
+            example:
+              context_id: "ctx_abc123def456"
+              client_id: "travel-app"
+              response_summary: "Found 5 flights matching criteria"
+              provider: "openai"
+              model: "gpt-4"
+              token_usage:
+                prompt_tokens: 150
+                completion_tokens: 200
+                total_tokens: 350
+              latency_ms: 1250
+              metadata:
+                request_type: "travel_search"
+                cache_hit: false
+      responses:
+        '200':
+          description: Audit recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLLMCallResponse'
+              example:
+                success: true
+                audit_id: "aud_xyz789"
+        '400':
+          description: Invalid or expired context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Invalid or expired context"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/policies/test:
+    post:
+      tags:
+        - Proxy Mode
+      summary: Test policy evaluation
+      description: |
+        Test how policies would evaluate a query without making an actual request.
+        Useful for debugging and policy development.
+      operationId: testPolicies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: Query to test
+                user_email:
+                  type: string
+                  description: User email for context
+                request_type:
+                  type: string
+                  description: Request type
+            example:
+              query: "Show me customer SSN 123-45-6789"
+              user_email: "analyst@company.com"
+              request_type: "sql"
+      responses:
+        '200':
+          description: Policy test result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocked:
+                    type: boolean
+                  reason:
+                    type: string
+                  triggered_policies:
+                    type: array
+                    items:
+                      type: string
+                  checks_performed:
+                    type: array
+                    items:
+                      type: string
+                  processing_time_ms:
+                    type: number
+              example:
+                blocked: true
+                reason: "PII detected: SSN pattern found in query"
+                triggered_policies:
+                  - "pii-ssn"
+                checks_performed:
+                  - "ssn_pattern"
+                  - "credit_card_pattern"
+                  - "email_pattern"
+                processing_time_ms: 0.8
+
+  /api/clients:
+    get:
+      tags:
+        - Proxy Mode
+      summary: List registered clients
+      description: Returns all registered client applications
+      operationId: listClients
+      responses:
+        '200':
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Client'
+
+    post:
+      tags:
+        - Proxy Mode
+      summary: Register a new client
+      description: Register a new client application
+      operationId: createClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Client'
+      responses:
+        '201':
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /mcp/connectors:
+    get:
+      tags:
+        - MCP Connectors
+      summary: List all MCP connectors
+      description: |
+        Returns all registered MCP connectors with their health status.
+
+        Connectors provide access to external data sources:
+        - PostgreSQL
+        - Cassandra
+        - Salesforce
+        - Snowflake
+        - Amadeus (travel API)
+        - Slack
+      operationId: listMCPConnectors
+      responses:
+        '200':
+          description: List of connectors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorListResponse'
+              example:
+                connectors:
+                  - name: "postgres_main"
+                    type: "postgres"
+                    version: "1.0.0"
+                    healthy: true
+                    latency_ms: 5
+                    capabilities:
+                      - "query"
+                      - "execute"
+                  - name: "amadeus"
+                    type: "amadeus"
+                    version: "1.0.0"
+                    healthy: true
+                    latency_ms: 120
+                    capabilities:
+                      - "search_flights"
+                      - "search_hotels"
+                count: 2
+        '503':
+          description: MCP registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/connectors/{name}/health:
+    get:
+      tags:
+        - MCP Connectors
+      summary: Check connector health
+      description: Returns health status for a specific connector
+      operationId: getMCPConnectorHealth
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Connector name
+          schema:
+            type: string
+          example: "postgres_main"
+      responses:
+        '200':
+          description: Connector health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorHealthResponse'
+              example:
+                healthy: true
+                latency_ms: 5
+                last_check: "2025-01-15T10:30:00Z"
+        '404':
+          description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/resources/query:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Execute MCP query (read-only)
+      description: |
+        Execute a read-only query via an MCP connector.
+
+        This follows the MCP Resource pattern for data retrieval.
+        For write operations, use `/mcp/tools/execute`.
+      operationId: mcpQuery
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPQueryRequest'
+            examples:
+              sqlQuery:
+                summary: SQL query
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  connector: "postgres_main"
+                  statement: "SELECT * FROM orders WHERE status = $1"
+                  parameters:
+                    "1": "completed"
+                  limit: 100
+                  timeout: "10s"
+              amadeusSearch:
+                summary: Flight search
+                value:
+                  client_id: "travel-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  connector: "amadeus"
+                  operation: "search_flights"
+                  parameters:
+                    origin: "NYC"
+                    destination: "LAX"
+                    departure_date: "2025-01-20"
+                  timeout: "15s"
+      responses:
+        '200':
+          description: Query executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPQueryResponse'
+              example:
+                success: true
+                connector: "amadeus"
+                data:
+                  - flight_number: "UA123"
+                    departure: "2025-01-20T08:00:00Z"
+                    arrival: "2025-01-20T11:00:00Z"
+                    price: 299.99
+                row_count: 5
+                duration_ms: 450
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /mcp/tools/execute:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Execute MCP command (write)
+      description: |
+        Execute a write command via an MCP connector.
+
+        This follows the MCP Tool pattern for data modification.
+        For read operations, use `/mcp/resources/query`.
+      operationId: mcpExecute
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPExecuteRequest'
+            example:
+              client_id: "order-service"
+              user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              connector: "postgres_main"
+              action: "UPDATE"
+              statement: "UPDATE orders SET status = $1 WHERE id = $2"
+              parameters:
+                "1": "shipped"
+                "2": "ord-12345"
+              timeout: "5s"
+      responses:
+        '200':
+          description: Command executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPExecuteResponse'
+              example:
+                success: true
+                connector: "postgres_main"
+                rows_affected: 1
+                duration_ms: 15
+                message: "Update successful"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /mcp/health:
+    get:
+      tags:
+        - MCP Connectors
+      summary: Overall MCP health
+      description: Returns aggregate health status for all MCP connectors
+      operationId: getMCPHealth
+      responses:
+        '200':
+          description: MCP system health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthy:
+                    type: boolean
+                    description: True if all connectors are healthy
+                  total_connectors:
+                    type: integer
+                  healthy_count:
+                    type: integer
+                  unhealthy_count:
+                    type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                healthy: true
+                total_connectors: 3
+                healthy_count: 3
+                unhealthy_count: 0
+                timestamp: "2025-01-15T10:30:00Z"
+
+components:
+  parameters:
+    LicenseKey:
+      name: X-License-Key
+      in: header
+      required: true
+      description: |
+        Client license key for authorization.
+        Not required when `SELF_HOSTED_MODE=true`.
+      schema:
+        type: string
+        example: "axf_live_abc123def456"
+
+    ClientSecret:
+      name: X-Client-Secret
+      in: header
+      required: false
+      description: Optional client secret for additional authentication
+      schema:
+        type: string
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, starting, unhealthy]
+          description: Service health status
+        service:
+          type: string
+          example: "axonflow-agent"
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: "1.0.0"
+
+    MetricsResponse:
+      type: object
+      properties:
+        agent_metrics:
+          type: object
+          properties:
+            uptime_seconds:
+              type: number
+            total_requests:
+              type: integer
+            success_requests:
+              type: integer
+            failed_requests:
+              type: integer
+            blocked_requests:
+              type: integer
+            success_rate:
+              type: number
+              description: Success rate percentage
+            rps:
+              type: number
+              description: Requests per second
+            error_rate_per_sec:
+              type: number
+            p50_ms:
+              type: number
+              description: 50th percentile latency
+            p95_ms:
+              type: number
+              description: 95th percentile latency
+            p99_ms:
+              type: number
+              description: 99th percentile latency
+            avg_latency_ms:
+              type: number
+            auth_p99_ms:
+              type: number
+              description: Authentication stage P99 latency
+            static_policy_eval_p99_ms:
+              type: number
+              description: Static policy evaluation P99 latency
+            network_p99_ms:
+              type: number
+              description: Network (Agent to Orchestrator) P99 latency
+        health:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, degraded, unhealthy]
+            healthy:
+              type: boolean
+            consecutive_errors:
+              type: integer
+            up:
+              type: integer
+              description: Always 1 if service is responding
+        request_types:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total_requests:
+                type: integer
+              success_requests:
+                type: integer
+              p99_ms:
+                type: number
+        connectors:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total_requests:
+                type: integer
+              success_rate:
+                type: number
+              p99_ms:
+                type: number
+        timestamp:
+          type: string
+          format: date-time
+
+    ClientRequest:
+      type: object
+      required:
+        - query
+        - client_id
+      properties:
+        query:
+          type: string
+          description: The query or prompt to process
+          minLength: 1
+          maxLength: 100000
+        user_token:
+          type: string
+          description: JWT token for user authentication
+        client_id:
+          type: string
+          description: Registered client application ID
+        request_type:
+          type: string
+          enum: [sql, llm_chat, rag_search, mcp-query, multi-agent-plan]
+          description: |
+            Type of request:
+            - `sql`: Database query
+            - `llm_chat`: LLM conversation
+            - `rag_search`: RAG retrieval
+            - `mcp-query`: MCP connector query
+            - `multi-agent-plan`: Multi-agent planning
+        skip_llm:
+          type: boolean
+          default: false
+          description: Skip LLM calls (for testing)
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for request processing
+
+    ClientResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          description: Response data (varies by request type)
+        result:
+          type: string
+          description: Result string for multi-agent planning
+        plan_id:
+          type: string
+          description: Plan ID for multi-agent planning
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Execution metadata for multi-agent planning
+        error:
+          type: string
+          description: Error message if success is false
+        blocked:
+          type: boolean
+          description: True if request was blocked by policy
+        block_reason:
+          type: string
+          description: Reason for blocking
+        policy_info:
+          $ref: '#/components/schemas/PolicyEvaluationInfo'
+
+    PolicyEvaluationInfo:
+      type: object
+      properties:
+        policies_evaluated:
+          type: array
+          items:
+            type: string
+          description: List of policies that were evaluated
+        static_checks:
+          type: array
+          items:
+            type: string
+          description: List of static checks performed
+        processing_time:
+          type: string
+          description: Time taken for policy evaluation
+          example: "2.5ms"
+        tenant_id:
+          type: string
+          description: Tenant ID for the request
+
+    PreCheckRequest:
+      type: object
+      required:
+        - query
+        - client_id
+      properties:
+        query:
+          type: string
+          description: Query to validate
+          minLength: 1
+        user_token:
+          type: string
+          description: JWT token for user authentication
+        client_id:
+          type: string
+          description: Client application ID
+        data_sources:
+          type: array
+          items:
+            type: string
+          description: MCP connectors to fetch data from
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context
+
+    PreCheckResponse:
+      type: object
+      properties:
+        context_id:
+          type: string
+          description: Context ID to use in audit call (valid for 5 minutes)
+        approved:
+          type: boolean
+          description: Whether the request is approved
+        approved_data:
+          type: object
+          additionalProperties: true
+          description: Data fetched from MCP connectors
+        policies:
+          type: array
+          items:
+            type: string
+          description: Policies that were evaluated
+        rate_limit:
+          $ref: '#/components/schemas/RateLimitInfo'
+        expires_at:
+          type: string
+          format: date-time
+          description: When the context expires
+        block_reason:
+          type: string
+          description: Reason if request was blocked
+
+    RateLimitInfo:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Rate limit per window
+        remaining:
+          type: integer
+          description: Remaining requests in current window
+        reset_at:
+          type: string
+          format: date-time
+          description: When the rate limit resets
+
+    AuditLLMCallRequest:
+      type: object
+      required:
+        - context_id
+        - client_id
+        - provider
+        - model
+        - token_usage
+      properties:
+        context_id:
+          type: string
+          description: Context ID from pre-check
+        client_id:
+          type: string
+          description: Client application ID
+        response_summary:
+          type: string
+          description: Brief summary of LLM response (for audit)
+          maxLength: 500
+        provider:
+          type: string
+          description: LLM provider name
+          enum: [openai, anthropic, bedrock, ollama]
+        model:
+          type: string
+          description: Model identifier
+          example: "gpt-4"
+        token_usage:
+          $ref: '#/components/schemas/TokenUsage'
+        latency_ms:
+          type: integer
+          description: LLM call latency in milliseconds
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata for audit
+
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Tokens in the prompt
+        completion_tokens:
+          type: integer
+          description: Tokens in the completion
+        total_tokens:
+          type: integer
+          description: Total tokens used
+
+    AuditLLMCallResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        audit_id:
+          type: string
+          description: Unique audit record ID
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique client identifier
+        name:
+          type: string
+          description: Client application name
+        org_id:
+          type: string
+          description: Organization ID for usage tracking
+        tenant_id:
+          type: string
+          description: Tenant ID for multi-tenancy
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Granted permissions
+        rate_limit:
+          type: integer
+          description: Requests per minute limit
+        enabled:
+          type: boolean
+          description: Whether client is active
+        license_tier:
+          type: string
+          enum: [OSS, starter, professional, enterprise]
+          description: License tier
+        license_expiry:
+          type: string
+          format: date-time
+          description: When license expires
+
+    MCPQueryRequest:
+      type: object
+      required:
+        - client_id
+        - connector
+      properties:
+        client_id:
+          type: string
+        license_key:
+          type: string
+          description: Can also be provided in X-License-Key header
+        user_token:
+          type: string
+        connector:
+          type: string
+          description: Connector name
+        operation:
+          type: string
+          description: Operation name (for API connectors like Amadeus)
+        statement:
+          type: string
+          description: SQL/CQL statement (for database connectors)
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Query parameters
+        limit:
+          type: integer
+          description: Maximum rows to return
+        timeout:
+          type: string
+          description: Timeout duration (e.g., "10s")
+
+    MCPQueryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        connector:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+          description: Query results
+        row_count:
+          type: integer
+        duration_ms:
+          type: integer
+
+    MCPExecuteRequest:
+      type: object
+      required:
+        - client_id
+        - connector
+        - action
+      properties:
+        client_id:
+          type: string
+        license_key:
+          type: string
+        user_token:
+          type: string
+        connector:
+          type: string
+        operation:
+          type: string
+        action:
+          type: string
+          enum: [INSERT, UPDATE, DELETE]
+        statement:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        timeout:
+          type: string
+
+    MCPExecuteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        connector:
+          type: string
+        rows_affected:
+          type: integer
+        duration_ms:
+          type: integer
+        message:
+          type: string
+
+    ConnectorListResponse:
+      type: object
+      properties:
+        connectors:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              version:
+                type: string
+              healthy:
+                type: boolean
+              latency_ms:
+                type: integer
+              capabilities:
+                type: array
+                items:
+                  type: string
+              error:
+                type: string
+        count:
+          type: integer
+
+    ConnectorHealthResponse:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        latency_ms:
+          type: integer
+        last_check:
+          type: string
+          format: date-time
+        error:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Invalid request body"
+
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "X-License-Key header required"
+
+    Forbidden:
+      description: Access denied by policy or tenant mismatch
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Tenant mismatch"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Internal server error"
