@@ -161,17 +161,9 @@ const response = await axonflow.protect({
 
 ### The Problem We Solve
 - **Prevention Gap:** Current tools detect AI failures after damage is done
-- **70%** of pilots stall without real-time governance
-- **<10ms** performance makes inline prevention possible
-- **420%** ROI through prevented incidents and operational efficiency
-- **11-month window** - EU AI Act enforcement creates urgency
-
-### Why Now?
-- **EU AI Act enforcement** → 11-month first-mover window (August 2025)
-- **$45B precedent** → Observability market proves the model
-- **Performance breakthrough** → <10ms enables real-time prevention
-- **Innovator's Dilemma** → Monitoring companies can't pivot to prevention
-- **Next 12 months** = category-defining window
+- **Post-hoc monitoring** tells you about the data leak yesterday; inline governance prevents it
+- **<10ms latency** makes real-time intervention possible without impacting UX
+- **Compliance requirements** (EU AI Act, HIPAA, PCI-DSS) demand audit trails and policy enforcement
 
 ## 🎯 Solution: Active AI Governance Platform
 
