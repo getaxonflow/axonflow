@@ -212,3 +212,195 @@ func TestParseConsistency(t *testing.T) {
 		})
 	}
 }
+
+func TestCassandraConnector_Connect_InvalidURL(t *testing.T) {
+	conn := NewCassandraConnector()
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "missing keyspace",
+			url:  "cassandra://localhost:9042",
+		},
+		{
+			name: "empty url",
+			url:  "",
+		},
+		{
+			name: "just scheme",
+			url:  "cassandra://",
+		},
+		{
+			name: "invalid format no slash",
+			url:  "cassandra://localhost:9042keyspace",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: tc.url,
+			}
+
+			err := conn.Connect(ctx, config)
+			if err == nil {
+				t.Error("expected error for invalid URL")
+			}
+		})
+	}
+}
+
+func TestParseConnectionURL_EmptyKeyspace(t *testing.T) {
+	_, _, err := parseConnectionURL("cassandra://localhost:9042/")
+	if err == nil {
+		t.Error("expected error for empty keyspace")
+	}
+}
+
+func TestParseConnectionURL_MultipleSlashes(t *testing.T) {
+	_, _, err := parseConnectionURL("cassandra://host/keyspace/extra")
+	if err == nil {
+		t.Error("expected error for multiple slashes")
+	}
+}
+
+func TestParseConsistency_AllCases(t *testing.T) {
+	// Test lowercase variants
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"any", "ANY"},
+		{"two", "TWO"},
+		{"three", "THREE"},
+		{"all", "ALL"},
+		{"local_quorum", "LOCAL_QUORUM"},
+		{"each_quorum", "EACH_QUORUM"},
+		{"local_one", "LOCAL_ONE"},
+		{"INVALID_VALUE", "QUORUM"}, // default
+		{"", "QUORUM"},              // empty string defaults to QUORUM
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := parseConsistency(tc.input)
+			if got.String() != tc.expected {
+				t.Errorf("parseConsistency(%q) = %v, want %v", tc.input, got.String(), tc.expected)
+			}
+		})
+	}
+}
+
+func TestCassandraConnector_ConfigOptions(t *testing.T) {
+	conn := NewCassandraConnector()
+
+	// Test with nil config
+	name := conn.Name()
+	if name != "cassandra" {
+		t.Errorf("expected default name 'cassandra', got '%s'", name)
+	}
+
+	// Test with empty config
+	conn.config = &base.ConnectorConfig{}
+	name = conn.Name()
+	if name != "" {
+		t.Errorf("expected empty name, got '%s'", name)
+	}
+}
+
+func TestParseConnectionURL_WithoutScheme(t *testing.T) {
+	// The function should handle URLs without the scheme prefix
+	hosts, keyspace, err := parseConnectionURL("localhost:9042/myks")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "localhost:9042" {
+		t.Errorf("expected single host 'localhost:9042', got %v", hosts)
+	}
+	if keyspace != "myks" {
+		t.Errorf("expected keyspace 'myks', got '%s'", keyspace)
+	}
+}
+
+func TestCassandraConnector_QueryWithParameters(t *testing.T) {
+	conn := NewCassandraConnector()
+	conn.config = &base.ConnectorConfig{Name: "test"}
+	ctx := context.Background()
+
+	query := &base.Query{
+		Statement: "SELECT * FROM test WHERE id = ?",
+		Parameters: map[string]interface{}{
+			"param1":       "value1",
+			"_consistency": "ONE",
+		},
+		Limit:   10,
+		Timeout: 0,
+	}
+
+	_, err := conn.Query(ctx, query)
+	if err == nil {
+		t.Error("expected error when querying with nil session")
+	}
+}
+
+func TestCassandraConnector_ExecuteWithParameters(t *testing.T) {
+	conn := NewCassandraConnector()
+	conn.config = &base.ConnectorConfig{Name: "test"}
+	ctx := context.Background()
+
+	cmd := &base.Command{
+		Action:    "INSERT",
+		Statement: "INSERT INTO test (id, name) VALUES (?, ?)",
+		Parameters: map[string]interface{}{
+			"id":   1,
+			"name": "test",
+		},
+		Timeout: 0,
+	}
+
+	_, err := conn.Execute(ctx, cmd)
+	if err == nil {
+		t.Error("expected error when executing with nil session")
+	}
+}
+
+// Integration test - skipped without Cassandra
+func TestCassandraConnector_Integration(t *testing.T) {
+	cassandraURL := "cassandra://localhost:9042/test_keyspace"
+
+	// Skip integration tests if no Cassandra is available
+	t.Skip("Skipping integration test - requires Cassandra")
+
+	conn := NewCassandraConnector()
+	ctx := context.Background()
+
+	config := &base.ConnectorConfig{
+		Name:          "test-cassandra",
+		Type:          "cassandra",
+		ConnectionURL: cassandraURL,
+		Options: map[string]interface{}{
+			"consistency": "ONE",
+			"num_conns":   1,
+		},
+	}
+
+	err := conn.Connect(ctx, config)
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Disconnect(ctx)
+
+	// Test health check
+	status, err := conn.HealthCheck(ctx)
+	if err != nil {
+		t.Fatalf("health check error: %v", err)
+	}
+	if !status.Healthy {
+		t.Errorf("expected healthy status, got error: %s", status.Error)
+	}
+}
