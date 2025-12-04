@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"axonflow/platform/common/usage"
+	"axonflow/platform/orchestrator/llm/anthropic"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -372,7 +373,11 @@ func (r *LLMRouter) selectModel(providerName string, req OrchestratorRequest) st
 		}
 		return "gpt-3.5-turbo"
 	case "anthropic":
-		return "claude-3-5-sonnet-20241022"
+		// Use Claude 4 Sonnet for complex tasks, Claude 3.5 Sonnet for standard
+		if req.RequestType == "complex_analysis" || req.RequestType == "code_generation" {
+			return anthropic.ModelClaude4Sonnet
+		}
+		return anthropic.ModelClaude35Sonnet
 	case "bedrock":
 		// Return empty string to use provider's configured model
 		// Bedrock model IDs must match format: provider.model-name-version
@@ -689,6 +694,103 @@ func (p *AnthropicProvider) GetCapabilities() []string {
 
 func (p *AnthropicProvider) EstimateCost(tokens int) float64 {
 	return float64(tokens) * 0.00003 // $0.03 per 1K tokens
+}
+
+// EnhancedAnthropicProvider wraps the new anthropic package provider
+// with full support for Claude 3.5 Sonnet, Claude 3 Opus, Claude 4, and streaming.
+type EnhancedAnthropicProvider struct {
+	provider *anthropic.Provider
+}
+
+func (p *EnhancedAnthropicProvider) Name() string {
+	return "anthropic"
+}
+
+func (p *EnhancedAnthropicProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
+	// Use the model from options, or default to Claude 3.5 Sonnet
+	model := options.Model
+	if model == "" {
+		model = anthropic.DefaultModel
+	}
+
+	req := anthropic.CompletionRequest{
+		Prompt:       prompt,
+		MaxTokens:    options.MaxTokens,
+		Temperature:  options.Temperature,
+		Model:        model,
+		SystemPrompt: options.SystemPrompt,
+	}
+
+	resp, err := p.provider.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LLMResponse{
+		Content:      resp.Content,
+		Model:        resp.Model,
+		TokensUsed:   resp.Usage.TotalTokens,
+		ResponseTime: resp.Latency, // Use latency from provider response
+		Metadata: map[string]interface{}{
+			"provider":      "anthropic",
+			"stop_reason":   resp.StopReason,
+			"input_tokens":  resp.Usage.InputTokens,
+			"output_tokens": resp.Usage.OutputTokens,
+		},
+	}, nil
+}
+
+func (p *EnhancedAnthropicProvider) IsHealthy() bool {
+	return p.provider.IsHealthy()
+}
+
+func (p *EnhancedAnthropicProvider) GetCapabilities() []string {
+	return p.provider.GetCapabilities()
+}
+
+func (p *EnhancedAnthropicProvider) EstimateCost(tokens int) float64 {
+	return p.provider.EstimateCost(tokens)
+}
+
+// QueryStream performs a streaming query using the enhanced provider
+func (p *EnhancedAnthropicProvider) QueryStream(ctx context.Context, prompt string, options QueryOptions, handler func(chunk string) error) (*LLMResponse, error) {
+	model := options.Model
+	if model == "" {
+		model = anthropic.DefaultModel
+	}
+
+	req := anthropic.CompletionRequest{
+		Prompt:       prompt,
+		MaxTokens:    options.MaxTokens,
+		Temperature:  options.Temperature,
+		Model:        model,
+		SystemPrompt: options.SystemPrompt,
+		Stream:       true,
+	}
+
+	resp, err := p.provider.CompleteStream(ctx, req, func(chunk anthropic.StreamChunk) error {
+		if chunk.Content != "" {
+			return handler(chunk.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &LLMResponse{
+		Content:      resp.Content,
+		Model:        resp.Model,
+		TokensUsed:   resp.Usage.TotalTokens,
+		ResponseTime: resp.Latency, // Use latency from provider response
+		Metadata: map[string]interface{}{
+			"provider":      "anthropic",
+			"stop_reason":   resp.StopReason,
+			"input_tokens":  resp.Usage.InputTokens,
+			"output_tokens": resp.Usage.OutputTokens,
+			"streamed":      true,
+		},
+	}, nil
 }
 
 // BedrockProvider implements LLMProvider for AWS Bedrock using AWS SDK v2.
@@ -1114,10 +1216,22 @@ func NewAnthropicProvider(apiKey string) LLMProvider {
 			apiKey:  apiKey,
 		}
 	}
-	return &AnthropicProvider{
-		apiKey:  apiKey,
-		healthy: true,
-		client:  &http.Client{Timeout: 30 * time.Second},
+
+	// Use the enhanced Anthropic provider from the anthropic package
+	provider, err := anthropic.NewProvider(anthropic.Config{
+		APIKey: apiKey,
+	})
+	if err != nil {
+		log.Printf("[LLMRouter] ERROR: Failed to initialize Anthropic provider: %v", err)
+		return &MockProvider{
+			name:    "anthropic",
+			healthy: false,
+			apiKey:  apiKey,
+		}
+	}
+
+	return &EnhancedAnthropicProvider{
+		provider: provider,
 	}
 }
 

@@ -1309,9 +1309,9 @@ func TestNewAnthropicProvider(t *testing.T) {
 			checkClient:  false,
 		},
 		{
-			name:         "valid API key returns real provider",
+			name:         "valid API key returns enhanced provider",
 			apiKey:       "test-anthropic-key-456",
-			expectedType: "*orchestrator.AnthropicProvider",
+			expectedType: "*orchestrator.EnhancedAnthropicProvider",
 			checkClient:  true,
 		},
 	}
@@ -1335,17 +1335,23 @@ func TestNewAnthropicProvider(t *testing.T) {
 				t.Error("Expected provider to be healthy after initialization")
 			}
 
-			// For real Anthropic provider, verify client was initialized
+			// For enhanced Anthropic provider, verify it's properly initialized
 			if tt.checkClient {
-				if anthropic, ok := provider.(*AnthropicProvider); ok {
-					if anthropic.client == nil {
-						t.Error("Expected HTTP client to be initialized")
+				if enhanced, ok := provider.(*EnhancedAnthropicProvider); ok {
+					if enhanced.provider == nil {
+						t.Error("Expected internal provider to be initialized")
 					}
-					if anthropic.apiKey != tt.apiKey {
-						t.Errorf("Expected API key %s, got %s", tt.apiKey, anthropic.apiKey)
+					// Verify provider name
+					if enhanced.Name() != "anthropic" {
+						t.Errorf("Expected provider name 'anthropic', got %s", enhanced.Name())
+					}
+					// Verify capabilities are returned
+					caps := enhanced.GetCapabilities()
+					if len(caps) == 0 {
+						t.Error("Expected non-empty capabilities")
 					}
 				} else {
-					t.Error("Failed to cast to AnthropicProvider")
+					t.Error("Failed to cast to EnhancedAnthropicProvider")
 				}
 			}
 
