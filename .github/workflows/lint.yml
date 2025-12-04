@@ -53,7 +53,7 @@ jobs:
           cache: false  # golangci-lint has its own cache
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           working-directory: ${{ matrix.module }}
