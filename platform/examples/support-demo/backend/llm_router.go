@@ -25,10 +25,23 @@ import (
 	"time"
 )
 
-// LLM Router - Core orchestration for multi-model routing
+// LLMRouter provides intelligent routing of LLM requests to different providers
+// based on data sensitivity, user permissions, and compliance requirements.
+//
+// Key Features:
+//   - GDPR Compliance: EU users automatically route to local/on-premise models
+//   - PII Protection: Queries containing sensitive data route to local models
+//   - Role-Based Routing: Different providers for agents vs managers/admins
+//   - Fallback Chain: Automatic failover when primary provider is unavailable
+//
+// Provider Priority (highest to lowest):
+//   1. EU Region → Local (GDPR compliance)
+//   2. PII Data → Local (data sovereignty)
+//   3. Confidential → Anthropic (safety-focused)
+//   4. Role-based → OpenAI (managers/admins) or Anthropic (agents)
 type LLMRouter struct {
-	providers map[string]LLMProvider
-	policies  *RoutingPolicy
+	providers map[string]LLMProvider // Available LLM providers (openai, anthropic, local)
+	policies  *RoutingPolicy         // Routing rules and fallback configuration
 }
 
 type LLMProvider interface {
@@ -585,7 +598,17 @@ func (r *LLMRouter) selectProvider(req *LLMRequest) string {
 	return r.selectProviderWithReason(req).Provider
 }
 
-// SelectProviderWithReason returns both provider and reasoning
+// selectProviderWithReason determines the appropriate LLM provider based on a
+// priority-ordered evaluation of compliance requirements, data sensitivity, and user role.
+//
+// Evaluation Order (first match wins):
+//   1. EU Region Check: GDPR requires EU data stay on-premise → "local"
+//   2. PII Detection: SSN, credit cards, phones, emails → "local"
+//   3. Confidential Data: Internal/proprietary content → "anthropic"
+//   4. Role-Based: Admin/Manager → "openai", Agent/Unknown → "anthropic"
+//
+// This function returns both the selected provider and a human-readable reason
+// explaining why that provider was chosen, useful for audit logs and debugging.
 func (r *LLMRouter) selectProviderWithReason(req *LLMRequest) struct {
 	Provider string
 	Reason   string
@@ -777,7 +800,7 @@ CRITICAL REQUIREMENTS:
 - support_tickets.assigned_to contains user EMAIL (not user ID)
 - "support issues" means tickets with status 'open' or 'in_progress'
 - permissions column is TEXT[] array - NEVER use LIKE operator with permissions
-- ALWAYS use 'value' = ANY(permissions) instead of permissions LIKE '%value%'
+- ALWAYS use 'value' = ANY(permissions) instead of permissions LIKE '%%value%%'
 - Do NOT use CURRENT_USER_PERMISSIONS() or other non-existent functions
 - Do NOT use LIKE operator on any array columns (PostgreSQL will error)
 - Keep queries simple and avoid complex CASE statements that may break parsing
@@ -802,7 +825,7 @@ PostgreSQL Syntax Requirements:
 Example correct queries:
 - Join customers with tickets: SELECT c.*, st.* FROM customers c JOIN support_tickets st ON c.id = st.customer_id
 - Filter by assigned user: WHERE st.assigned_to = 'user@email.com' (NOT st.assigned_to = user_id)  
-- Check array permissions: WHERE 'read_pii' = ANY(u.permissions) (NOT u.permissions LIKE '%read_pii%')
+- Check array permissions: WHERE 'read_pii' = ANY(u.permissions) (NOT u.permissions LIKE '%%read_pii%%')
 - Array contains check: WHERE u.permissions && ARRAY['read_pii', 'admin']
 - Simple enterprise customers: SELECT * FROM customers WHERE support_tier = 'enterprise'
 - Confidential data access: SELECT id, name, email, phone, credit_card, ssn FROM customers WHERE support_tier = 'enterprise'

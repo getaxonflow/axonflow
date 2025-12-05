@@ -22,11 +22,17 @@ import (
 	"time"
 )
 
-// PolicyEngine manages data loss prevention and security policies
+// PolicyEngine manages data loss prevention and security policies.
+// It provides three layers of protection:
+//   1. Blocked Query Rules - Prevents dangerous SQL operations (DROP, TRUNCATE, etc.)
+//   2. Security Policies - Enforces access control based on user roles and data sensitivity
+//   3. DLP Rules - Detects and redacts PII (SSN, credit cards, phone numbers, etc.)
+//
+// The engine evaluates queries in this order and can block, redact, or audit based on policy.
 type PolicyEngine struct {
-	policies    []SecurityPolicy
-	dlpRules    []DLPRule
-	blockedQueries []BlockedQueryRule
+	policies       []SecurityPolicy   // Role-based access control policies
+	dlpRules       []DLPRule          // Data Loss Prevention patterns (PII detection)
+	blockedQueries []BlockedQueryRule // SQL injection and dangerous query prevention
 }
 
 // SecurityPolicy defines a security policy with conditions and actions
@@ -118,7 +124,17 @@ func NewPolicyEngine() *PolicyEngine {
 	return engine
 }
 
-// EvaluateQuery evaluates a query against all security policies
+// EvaluateQuery evaluates a query against all security policies and returns the result.
+// It performs three checks in order:
+//   1. Blocked Queries - Checks for dangerous SQL patterns (highest priority, immediate block)
+//   2. Security Policies - Evaluates role-based access rules
+//   3. DLP Rules - Scans for PII patterns that may need redaction
+//
+// Returns a PolicyEvaluationResult containing:
+//   - Allowed: whether the query can proceed
+//   - BlockedBy: list of policy IDs that blocked the query
+//   - Violations: detailed violation records for audit
+//   - RedactionRequired: whether PII redaction is needed
 func (pe *PolicyEngine) EvaluateQuery(ctx context.Context, user User, query string, queryType string) *PolicyEvaluationResult {
 	result := &PolicyEvaluationResult{
 		Allowed:     true,
@@ -364,7 +380,17 @@ func (pe *PolicyEngine) containsPII(text string) bool {
 	return len(dlpResults) > 0
 }
 
-// RedactSensitiveData applies redaction rules to sensitive data
+// RedactSensitiveData applies DLP rules to redact PII based on user permissions.
+// It scans the text for sensitive patterns (SSN, credit cards, etc.) and replaces
+// them with redaction tokens if the user doesn't have permission to view them.
+//
+// Parameters:
+//   - text: The content to scan and potentially redact
+//   - user: The user whose permissions determine what gets redacted
+//
+// Returns:
+//   - redacted: The text with sensitive data replaced (e.g., "[REDACTED_SSN]")
+//   - detectedTypes: List of PII types that were found (e.g., ["ssn", "credit_card"])
 func (pe *PolicyEngine) RedactSensitiveData(text string, user User) (string, []string) {
 	redacted := text
 	var detectedTypes []string
