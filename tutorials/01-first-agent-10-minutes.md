@@ -421,7 +421,7 @@ import (
     "context"
     "fmt"
     "log"
-    "github.com/axonflow/axonflow-go"
+    "github.com/getaxonflow/axonflow-sdk-go"
 )
 
 func main() {

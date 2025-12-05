@@ -33,7 +33,7 @@ import (
 	"github.com/rs/cors"
 	_ "github.com/lib/pq"
 
-	axonflow "github.com/getaxonflow/axonflow-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go"
 )
 
 //go:embed migrations/*.sql

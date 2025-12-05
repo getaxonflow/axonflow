@@ -45,7 +45,7 @@ sequenceDiagram
 
 **Go:**
 ```go
-import "github.com/getaxonflow/axonflow-go"
+import "github.com/getaxonflow/axonflow-sdk-go"
 ```
 
 **TypeScript:**

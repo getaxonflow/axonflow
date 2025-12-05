@@ -1099,6 +1099,23 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		return nil, fmt.Errorf("token required")
 	}
 
+	// Self-hosted mode: Accept any token for local development
+	// SECURITY: This bypass is only active when SELF_HOSTED_MODE=true
+	// which is set only in docker-compose.yml for local development.
+	// Production deployments MUST NOT set this environment variable.
+	if os.Getenv("SELF_HOSTED_MODE") == "true" {
+		log.Printf("Self-hosted mode: accepting token for tenant %s", expectedTenantID)
+		return &User{
+			ID:          1,
+			Email:       "local-dev@axonflow.local",
+			Name:        "Local Development User",
+			Role:        "admin",
+			Region:      "local",
+			Permissions: []string{"query", "llm", "mcp_query", "admin"},
+			TenantID:    expectedTenantID,
+		}, nil
+	}
+
 	// Test mode: Tenant mismatch test token - user from trip_planner_tenant
 	if strings.HasPrefix(tokenString, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoy") {
 		testTenantID := "trip_planner_tenant" // Fixed user tenant for mismatch testing

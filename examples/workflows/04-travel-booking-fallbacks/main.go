@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-go"
+	"github.com/getaxonflow/axonflow-sdk-go"
 )
 
 func main() {

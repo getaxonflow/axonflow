@@ -39,7 +39,7 @@ docker-compose ps
 - ✅ Full AxonFlow platform (agent + orchestrator)
 - ✅ PostgreSQL database with automatic migrations
 - ✅ Redis for rate limiting and caching
-- ✅ No authentication or license required
+- ✅ No license validation required
 - ✅ Same core features as production
 - ✅ Perfect for local development and evaluation
 
@@ -66,6 +66,27 @@ docker-compose logs -f axonflow-orchestrator
 - **Test Coverage**: Raised CI threshold to 68% with 85+ test files
 - **OpenAPI Spec**: Full Policy API documented at `docs/api/policy-api.yaml`
 - **Go Project Layout**: Adopted standard `cmd/` directory structure
+
+**Authentication for SDK calls:**
+
+In self-hosted mode, use any non-empty credentials:
+- **Client ID:** Any string (e.g., `my-app`)
+- **User Token:** Any string (e.g., `dev-user`)
+
+```python
+from axonflow import AxonFlow
+
+async with AxonFlow(
+    agent_url="http://localhost:8080",
+    client_id="my-app",
+    client_secret="any-secret"
+) as ax:
+    response = await ax.execute_query(
+        user_token="dev-user",
+        query="Hello!",
+        request_type="chat"
+    )
+```
 
 ### Production Deployment (AWS)
 
@@ -199,14 +220,21 @@ npm install @axonflow/sdk
 
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
+import OpenAI from 'openai';
+
+// Initialize your AI client
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const axonflow = new AxonFlow({
   endpoint: 'http://localhost:8080'  // Points to AxonFlow agent
 });
 
-const response = await axonflow.protect({
-  model: 'gpt-4',
-  messages: [{ role: 'user', content: 'Analyze customer sentiment' }]
+// Wrap any AI call with AxonFlow protection
+const response = await axonflow.protect(async () => {
+  return openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: 'Analyze customer sentiment' }]
+  });
 });
 ```
 

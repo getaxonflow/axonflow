@@ -1,3 +1,3 @@
-module github.com/getaxonflow/axonflow-go
+module github.com/getaxonflow/axonflow-sdk-go
 
 go 1.23

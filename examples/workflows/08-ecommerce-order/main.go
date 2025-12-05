@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-go"
+	"github.com/getaxonflow/axonflow-sdk-go"
 )
 
 func main() {
