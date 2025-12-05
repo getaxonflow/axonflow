@@ -159,9 +159,13 @@ agents:
 ```
 
 **Temperature Guide:**
-- **0.0-0.3**: Factual, consistent responses (data retrieval, analysis)
-- **0.4-0.7**: Balanced creativity (recommendations, planning)
-- **0.8-2.0**: Creative, varied responses (brainstorming, content generation)
+
+| Range | Behavior | Use Cases |
+|-------|----------|-----------|
+| **0.0-0.3** | Highly deterministic, consistent, factual | Data retrieval, code generation, financial analysis, medical diagnosis |
+| **0.4-0.7** | Balanced creativity and consistency | Recommendations, travel planning, general assistance |
+| **0.8-1.2** | Creative, varied responses | Brainstorming, content writing, creative fiction |
+| **1.3-2.0** | Very creative, potentially unpredictable | Experimental use, artistic content (rarely needed) |
 
 ### Connector Call Agent
 
