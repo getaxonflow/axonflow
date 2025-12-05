@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -402,7 +403,7 @@ func TestPolicyRepository_Integration_List_Pagination(t *testing.T) {
 	// Create 10 policies
 	for i := 0; i < 10; i++ {
 		policy := &PolicyResource{
-			Name:        "Pagination Test " + string(rune('0'+i)),
+			Name:        fmt.Sprintf("Pagination Test %d", i),
 			Description: "Test policy",
 			Type:        "content",
 			Conditions: []PolicyCondition{

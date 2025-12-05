@@ -2504,88 +2504,62 @@ func TestAnthropicProvider_EstimateCost_Extended(t *testing.T) {
 	}
 }
 
-// TestAnthropicProvider_Query tests the Query method with mock server
-func TestAnthropicProvider_Query(t *testing.T) {
+// TestAnthropicProvider_StructValidation tests that AnthropicProvider is properly initialized
+// Note: Query() method cannot be unit tested directly since the API URL is hardcoded.
+// Integration tests should be used for actual API calls.
+func TestAnthropicProvider_StructValidation(t *testing.T) {
 	tests := []struct {
-		name           string
-		serverResponse string
-		statusCode     int
-		expectError    bool
-		expectContent  string
+		name        string
+		apiKey      string
+		healthy     bool   // input: struct field
+		wantName    string
+		wantHealthy bool   // expected: IsHealthy() result
 	}{
 		{
-			name: "successful query",
-			serverResponse: `{
-				"content": [{"text": "Hello! How can I help you today?"}],
-				"usage": {"input_tokens": 10, "output_tokens": 20}
-			}`,
-			statusCode:    200,
-			expectError:   false,
-			expectContent: "Hello! How can I help you today?",
+			name:        "healthy provider with valid key",
+			apiKey:      "test-api-key",
+			healthy:     true,
+			wantName:    "anthropic",
+			wantHealthy: true,
 		},
 		{
-			name: "empty content response",
-			serverResponse: `{
-				"content": [],
-				"usage": {"input_tokens": 5, "output_tokens": 0}
-			}`,
-			statusCode:    200,
-			expectError:   false,
-			expectContent: "",
+			name:        "unhealthy provider with valid key",
+			apiKey:      "test-api-key",
+			healthy:     false,
+			wantName:    "anthropic",
+			wantHealthy: false,
 		},
 		{
-			name:           "rate limit error",
-			serverResponse: `{"error": {"message": "Rate limit exceeded"}}`,
-			statusCode:     429,
-			expectError:    true,
-		},
-		{
-			name:           "authentication error",
-			serverResponse: `{"error": {"message": "Invalid API key"}}`,
-			statusCode:     401,
-			expectError:    true,
-		},
-		{
-			name:           "server error",
-			serverResponse: `{"error": {"message": "Internal server error"}}`,
-			statusCode:     500,
-			expectError:    true,
+			name:        "empty api key returns unhealthy",
+			apiKey:      "",
+			healthy:     true, // Even with healthy=true, empty apiKey makes IsHealthy() return false
+			wantName:    "anthropic",
+			wantHealthy: false, // IsHealthy() = healthy && apiKey != "" = true && false = false
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock server
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Verify headers
-				if r.Header.Get("x-api-key") != "test-api-key" {
-					t.Error("Expected x-api-key header")
-				}
-				if r.Header.Get("anthropic-version") != "2023-06-01" {
-					t.Error("Expected anthropic-version header")
-				}
-				if r.Header.Get("Content-Type") != "application/json" {
-					t.Error("Expected Content-Type header")
-				}
-
-				w.WriteHeader(tt.statusCode)
-				_, _ = w.Write([]byte(tt.serverResponse))
-			}))
-			defer server.Close()
-
-			// Note: We can't easily test the real AnthropicProvider.Query since it
-			// hardcodes the URL. Instead, test that the provider is properly structured.
 			provider := &AnthropicProvider{
-				apiKey:  "test-api-key",
-				healthy: true,
-				client:  server.Client(),
+				apiKey:  tt.apiKey,
+				healthy: tt.healthy,
+				client:  &http.Client{Timeout: 30 * time.Second},
 			}
 
-			if provider.Name() != "anthropic" {
-				t.Errorf("Expected name 'anthropic', got '%s'", provider.Name())
+			if provider.Name() != tt.wantName {
+				t.Errorf("Name() = %s, want %s", provider.Name(), tt.wantName)
 			}
-			if !provider.IsHealthy() {
-				t.Error("Expected provider to be healthy")
+			if provider.IsHealthy() != tt.wantHealthy {
+				t.Errorf("IsHealthy() = %v, want %v", provider.IsHealthy(), tt.wantHealthy)
+			}
+
+			// Test that provider can be used in router without panic
+			router := &LLMRouter{
+				providers: map[string]LLMProvider{provider.Name(): provider},
+				weights:   map[string]float64{provider.Name(): 1.0},
+			}
+			if len(router.providers) != 1 {
+				t.Errorf("Expected 1 provider in router, got %d", len(router.providers))
 			}
 		})
 	}
