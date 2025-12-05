@@ -431,7 +431,7 @@ We welcome contributions to AxonFlow! To maintain high quality standards:
 
 **Current Quality Status (Dec 5, 2025):**
 - Agent Package: 74.9% test coverage ✅ (threshold: 74%)
-- Orchestrator Package: 72.5% test coverage ✅ (threshold: 70%)
+- Orchestrator Package: 73.0% test coverage ✅ (threshold: 72%)
 - Connectors Package: 68.6% test coverage ✅ (threshold: 66%)
 - All tests passing, zero flaky tests
 - CI/CD pipeline enforces coverage thresholds per module
