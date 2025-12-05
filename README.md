@@ -56,6 +56,17 @@ docker-compose logs -f axonflow-agent
 docker-compose logs -f axonflow-orchestrator
 ```
 
+## 🆕 What's New (December 2025)
+
+- **MAP 0.5**: User-configurable agents via YAML - define your own agent workflows without code changes
+- **Python SDK**: First-class Python support (`pip install axonflow`) alongside TypeScript and Go
+- **Anthropic Provider**: Claude support in OSS core (OpenAI + Anthropic)
+- **Support Demo**: New `platform/examples/support-demo/` with customer support scenarios
+- **OSS Connectors**: MySQL, MongoDB, Redis, HTTP connectors registered in OSS builds
+- **Test Coverage**: Raised CI threshold to 68% with 85+ test files
+- **OpenAPI Spec**: Full Policy API documented at `docs/api/policy-api.yaml`
+- **Go Project Layout**: Adopted standard `cmd/` directory structure
+
 ### Production Deployment (AWS)
 
 For production deployments on AWS, we provide:
@@ -139,7 +150,7 @@ AxonFlow is available in two editions:
 | Slack | ❌ | ✅ |
 | Snowflake | ❌ | ✅ |
 | **Advanced Features** | | |
-| Multi-Agent Parallel (MAP) | ✅ | ✅ |
+| Multi-Agent Planning (MAP) | ✅ YAML configs | ✅ Full |
 | Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
 | License validation | ❌ | ✅ |
 | AWS Marketplace integration | ❌ | ✅ |
@@ -159,6 +170,29 @@ AxonFlow is available in two editions:
 
 Add AxonFlow governance to your existing applications in 3 lines of code:
 
+### Python (Primary)
+
+```bash
+pip install axonflow
+```
+
+```python
+from axonflow import AxonFlow
+
+async with AxonFlow(
+    agent_url="http://localhost:8080",
+    client_id="demo",
+    client_secret="demo"
+) as ax:
+    response = await ax.execute_query(
+        user_token="user-123",
+        query="Analyze customer sentiment",
+        request_type="chat"
+    )
+```
+
+### TypeScript
+
 ```bash
 npm install @axonflow/sdk
 ```
@@ -166,35 +200,33 @@ npm install @axonflow/sdk
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
 
-// Self-Hosted Mode (localhost - no license required)
 const axonflow = new AxonFlow({
   endpoint: 'http://localhost:8080'  // Points to AxonFlow agent
-  // No license key needed!
 });
 
-// Production (with license key)
-const axonflow = new AxonFlow({
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY,
-  endpoint: 'https://your-agent-url.com'
-});
-
-// Wrap any AI call with AxonFlow protection
 const response = await axonflow.protect({
   model: 'gpt-4',
   messages: [{ role: 'user', content: 'Analyze customer sentiment' }]
 });
 ```
 
+### Go
+
+```bash
+go get github.com/getaxonflow/axonflow-sdk-go
+```
+
 **SDK Features:**
 - ✅ Drop-in protection for OpenAI, Anthropic, and other LLM providers
 - ✅ MCP connector integration (Amadeus, Redis, PostgreSQL, HTTP, and more)
-- ✅ Multi-Agent Planning (MAP) for complex workflows
-- ✅ TypeScript + Go SDKs available
+- ✅ Multi-Agent Planning (MAP) with user-configurable agents via YAML
+- ✅ Python, TypeScript, and Go SDKs available
 - ✅ Zero UI changes required
 
 **Documentation:**
+- Python SDK: https://github.com/getaxonflow/axonflow-sdk-python
 - TypeScript SDK: https://github.com/getaxonflow/axonflow-sdk-typescript
-- npm package: https://www.npmjs.com/package/@axonflow/sdk
+- Go SDK: https://github.com/getaxonflow/axonflow-sdk-go
 - Full docs: https://docs.getaxonflow.com
 
 ## 🎯 Vision: The NewRelic of AI Orchestration
@@ -469,10 +501,12 @@ We welcome contributions to AxonFlow! To maintain high quality standards:
 
 ## 📝 Development Roadmap
 
-### Phase 0: Foundation (Current)
+### Phase 0: Foundation ✅ Complete
 - [x] Policy enforcement platform complete
 - [x] Basic workflow orchestration engine
-- [ ] Multi-tenant deployment to production
+- [x] Multi-tenant deployment to production (5 environments)
+- [x] Python, TypeScript, Go SDKs released
+- [x] Multi-Agent Planning (MAP) with YAML agent configs
 
 ### Phase 1: Workflow Engine (Q4 2025)
 - [ ] DAG-style workflow orchestration
