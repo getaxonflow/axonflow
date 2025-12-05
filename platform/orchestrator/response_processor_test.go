@@ -1102,3 +1102,208 @@ func TestDeepScanForPII_DeeplyNestedStructures(t *testing.T) {
 		})
 	}
 }
+
+// TestNewResponseProcessorWithConfig tests creating processor with custom configuration
+func TestNewResponseProcessorWithConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		useEnhanced bool
+		config      PIIDetectorConfig
+	}{
+		{
+			name:        "with enhanced detector enabled",
+			useEnhanced: true,
+			config:      DefaultPIIDetectorConfig(),
+		},
+		{
+			name:        "with enhanced detector disabled",
+			useEnhanced: false,
+			config:      DefaultPIIDetectorConfig(),
+		},
+		{
+			name:        "with custom confidence threshold",
+			useEnhanced: true,
+			config: PIIDetectorConfig{
+				MinConfidence:    0.9,
+				EnabledTypes:     []PIIType{PIITypeSSN, PIITypeCreditCard},
+				EnableValidation: true,
+				ContextWindow:    100,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor := NewResponseProcessorWithConfig(tt.useEnhanced, tt.config)
+
+			if processor == nil {
+				t.Fatal("NewResponseProcessorWithConfig should not return nil")
+			}
+
+			if processor.useEnhancedDetector != tt.useEnhanced {
+				t.Errorf("useEnhancedDetector = %v, want %v", processor.useEnhancedDetector, tt.useEnhanced)
+			}
+
+			if processor.piiDetector == nil {
+				t.Error("piiDetector should not be nil")
+			}
+
+			if processor.enhancedPIIDetector == nil {
+				t.Error("enhancedPIIDetector should not be nil")
+			}
+
+			if processor.redactor == nil {
+				t.Error("redactor should not be nil")
+			}
+
+			if processor.enricher == nil {
+				t.Error("enricher should not be nil")
+			}
+		})
+	}
+}
+
+// TestSetUseEnhancedDetector tests toggling the enhanced detector
+func TestSetUseEnhancedDetector(t *testing.T) {
+	processor := NewResponseProcessor()
+
+	// Default should be true
+	if !processor.useEnhancedDetector {
+		t.Error("Default useEnhancedDetector should be true")
+	}
+
+	// Disable enhanced detector
+	processor.SetUseEnhancedDetector(false)
+	if processor.useEnhancedDetector {
+		t.Error("After SetUseEnhancedDetector(false), should be false")
+	}
+
+	// Re-enable enhanced detector
+	processor.SetUseEnhancedDetector(true)
+	if !processor.useEnhancedDetector {
+		t.Error("After SetUseEnhancedDetector(true), should be true")
+	}
+}
+
+// TestDetectPIIEnhanced tests the enhanced PII detection method
+func TestDetectPIIEnhanced(t *testing.T) {
+	processor := NewResponseProcessor()
+
+	tests := []struct {
+		name           string
+		data           interface{}
+		expectResults  bool
+		minResultCount int
+	}{
+		{
+			name:           "string with SSN",
+			data:           "My SSN is 123-45-6789",
+			expectResults:  true,
+			minResultCount: 1,
+		},
+		{
+			name:           "string with credit card",
+			data:           "Pay with card 4532015112830366",
+			expectResults:  true,
+			minResultCount: 1,
+		},
+		{
+			name:           "string with multiple PII types",
+			data:           "SSN: 123-45-6789 and email: test@example.com",
+			expectResults:  true,
+			minResultCount: 2,
+		},
+		{
+			name:           "clean text - no PII",
+			data:           "This is a simple text without any sensitive data.",
+			expectResults:  false,
+			minResultCount: 0,
+		},
+		{
+			name:           "map data converted to string",
+			data:           map[string]string{"ssn": "123-45-6789"},
+			expectResults:  true,
+			minResultCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := processor.detectPIIEnhanced(tt.data)
+
+			hasResults := len(results) > 0
+			if hasResults != tt.expectResults {
+				t.Errorf("Expected results: %v, got: %v (count: %d)", tt.expectResults, hasResults, len(results))
+			}
+
+			if tt.expectResults && len(results) < tt.minResultCount {
+				t.Errorf("Expected at least %d results, got %d", tt.minResultCount, len(results))
+			}
+
+			// Verify result structure
+			for _, result := range results {
+				if result.Type == "" {
+					t.Error("Result type should not be empty")
+				}
+				if result.Value == "" {
+					t.Error("Result value should not be empty")
+				}
+				if result.Confidence <= 0 || result.Confidence > 1 {
+					t.Errorf("Confidence should be between 0 and 1, got %f", result.Confidence)
+				}
+			}
+		})
+	}
+}
+
+// TestDetectPIIEnhanced_NilDetector tests behavior when enhanced detector is nil
+func TestDetectPIIEnhanced_NilDetector(t *testing.T) {
+	processor := &ResponseProcessor{
+		enhancedPIIDetector: nil,
+	}
+
+	results := processor.detectPIIEnhanced("test data with SSN 123-45-6789")
+
+	if results != nil {
+		t.Error("Should return nil when enhanced detector is nil")
+	}
+}
+
+// TestDetectPII_WithEnhancedDisabled tests fallback to legacy detector
+func TestDetectPII_WithEnhancedDisabled(t *testing.T) {
+	processor := NewResponseProcessor()
+	processor.SetUseEnhancedDetector(false)
+
+	data := "My SSN is 123-45-6789 and email is test@example.com"
+	detected := processor.detectPII(data)
+
+	// Should still detect PII using legacy detector
+	if len(detected) == 0 {
+		t.Error("Legacy detector should still detect PII")
+	}
+}
+
+// TestDetectPII_WithEnhancedEnabled tests enhanced detector usage
+func TestDetectPII_WithEnhancedEnabled(t *testing.T) {
+	processor := NewResponseProcessor()
+	processor.SetUseEnhancedDetector(true)
+
+	data := "My SSN is 123-45-6789"
+	detected := processor.detectPII(data)
+
+	if len(detected) == 0 {
+		t.Error("Enhanced detector should detect SSN")
+	}
+
+	// Check that SSN was detected
+	foundSSN := false
+	for piiType := range detected {
+		if piiType == string(PIITypeSSN) || piiType == "ssn" {
+			foundSSN = true
+			break
+		}
+	}
+	if !foundSSN {
+		t.Errorf("Expected to find SSN type in detected PII: %v", detected)
+	}
+}

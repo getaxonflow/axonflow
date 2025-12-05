@@ -935,3 +935,146 @@ func TestGetPatternStats(t *testing.T) {
 		t.Error("Should have type counts")
 	}
 }
+
+// =============================================================================
+// Bank Account Validation Tests
+// =============================================================================
+
+func TestValidateBankAccount(t *testing.T) {
+	tests := []struct {
+		name           string
+		match          string
+		context        string
+		expectedValid  bool
+		minConfidence  float64
+		maxConfidence  float64
+	}{
+		{
+			name:           "valid routing and account with routing context",
+			match:          "021000021123456789", // Chase routing + account
+			context:        "routing number and account",
+			expectedValid:  true,
+			minConfidence:  0.9,
+			maxConfidence:  1.0,
+		},
+		{
+			name:           "valid routing and account with bank context",
+			match:          "021000021123456789",
+			context:        "bank account details",
+			expectedValid:  true,
+			minConfidence:  0.9,
+			maxConfidence:  1.0,
+		},
+		{
+			name:           "valid format no context",
+			match:          "021000021123456789",
+			context:        "some random text",
+			expectedValid:  true,
+			minConfidence:  0.6,
+			maxConfidence:  0.8,
+		},
+		{
+			name:           "too short",
+			match:          "1234567890123456", // 16 digits
+			context:        "bank account",
+			expectedValid:  false,
+			minConfidence:  0,
+			maxConfidence:  0.1,
+		},
+		{
+			name:           "too long",
+			match:          "123456789012345678901234567", // 27 digits
+			context:        "bank account",
+			expectedValid:  false,
+			minConfidence:  0,
+			maxConfidence:  0.1,
+		},
+		{
+			name:           "invalid routing checksum",
+			match:          "123456789123456789", // Invalid routing
+			context:        "routing number",
+			expectedValid:  false,
+			minConfidence:  0.2,
+			maxConfidence:  0.4,
+		},
+		{
+			name:           "with separators",
+			match:          "021-000-021-123456789",
+			context:        "ach transfer",
+			expectedValid:  true,
+			minConfidence:  0.9,
+			maxConfidence:  1.0,
+		},
+		{
+			name:           "wire context",
+			match:          "021000021123456789",
+			context:        "wire transfer details",
+			expectedValid:  true,
+			minConfidence:  0.9,
+			maxConfidence:  1.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, confidence := validateBankAccount(tt.match, tt.context)
+			if valid != tt.expectedValid {
+				t.Errorf("validateBankAccount(%q) valid = %v, want %v", tt.match, valid, tt.expectedValid)
+			}
+			if confidence < tt.minConfidence || confidence > tt.maxConfidence {
+				t.Errorf("validateBankAccount(%q) confidence = %f, want between %f and %f",
+					tt.match, confidence, tt.minConfidence, tt.maxConfidence)
+			}
+		})
+	}
+}
+
+func TestValidateABARoutingNumber_Extended(t *testing.T) {
+	tests := []struct {
+		name     string
+		routing  string
+		expected bool
+	}{
+		{"Chase", "021000021", true},
+		{"Bank of America", "026009593", true},
+		{"Wells Fargo", "121000248", true},
+		{"all zeros", "000000000", false},
+		{"wrong length short", "12345678", false},
+		{"wrong length long", "1234567890", false},
+		{"invalid checksum", "123456789", false},
+		{"another invalid", "111111111", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := validateABARoutingNumber(tt.routing)
+			if got != tt.expected {
+				t.Errorf("validateABARoutingNumber(%q) = %v, want %v", tt.routing, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsRepeatedDigits_Extended(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"", false},
+		{"1", true},
+		{"111111", true},
+		{"000000000", true},
+		{"123456789", false},
+		{"112233445", false},
+		{"999999999", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isRepeatedDigits(tt.input)
+			if got != tt.expected {
+				t.Errorf("isRepeatedDigits(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
