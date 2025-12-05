@@ -117,7 +117,6 @@ func (r *TemplateRepository) List(ctx context.Context, params ListTemplatesParam
 		tagsJSON, _ := json.Marshal(tags)
 		whereConditions = append(whereConditions, fmt.Sprintf("tags ?| $%d", argIndex))
 		args = append(args, string(tagsJSON))
-		// argIndex++ removed - not used after this point
 	}
 
 	whereClause := strings.Join(whereConditions, " AND ")

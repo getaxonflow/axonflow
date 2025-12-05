@@ -373,16 +373,15 @@ func (c *MetricsCollector) copySystemMetrics() *SystemMetrics {
 }
 
 // periodicAggregation performs periodic metric aggregation
+// TODO: Implement metric aggregation (rolling averages, data cleanup) when needed
 func (c *MetricsCollector) periodicAggregation() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		c.mu.Lock()
-		// Perform any periodic aggregation tasks
-		// For example, calculate rolling averages, clean old data, etc.
-		// Note: Currently a placeholder for future implementation
-		c.mu.Unlock() //nolint:staticcheck // SA2001: intentional placeholder
+		// Placeholder for future metric aggregation
+		// When implementing, add c.mu.Lock()/Unlock() around the actual work
+		_ = c // Reference collector to avoid unused warning
 	}
 }
 

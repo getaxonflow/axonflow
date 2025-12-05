@@ -590,8 +590,10 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		
 		// Update input for next step (pass output of current step)
 		// Merge step output into available context for template replacement
-		for key, value := range stepOutput {
-			input[fmt.Sprintf("step_%s_%s", step.Name, key)] = value
+		if stepOutput != nil {
+			for key, value := range stepOutput {
+				input[fmt.Sprintf("step_%s_%s", step.Name, key)] = value
+			}
 		}
 		
 		log.Printf("Completed step: %s in %s", step.Name, stepExecution.ProcessTime)

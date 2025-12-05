@@ -149,7 +149,6 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	if params.Search != "" {
 		whereConditions = append(whereConditions, fmt.Sprintf("(name ILIKE $%d OR description ILIKE $%d)", argIndex, argIndex))
 		args = append(args, "%"+params.Search+"%")
-		// argIndex++ removed - not used after this point
 	}
 
 	whereClause := strings.Join(whereConditions, " AND ")
