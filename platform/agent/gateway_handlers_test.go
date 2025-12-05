@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,9 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/registry"
 )
 
 // TestPreCheckHandler_SelfHostedMode tests pre-check in self-hosted mode
@@ -2111,6 +2115,278 @@ func TestValidateGatewayContext_DBError(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// ==================================================================
+// Mock Connector for fetchApprovedData Tests
+// ==================================================================
+
+// testMockConnector implements base.Connector for testing fetchApprovedData
+type testMockConnector struct {
+	name       string
+	connType   string
+	queryErr   error
+	queryRows  []map[string]interface{}
+}
+
+func (m *testMockConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	return nil
+}
+
+func (m *testMockConnector) Disconnect(ctx context.Context) error {
+	return nil
+}
+
+func (m *testMockConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
+	return &base.HealthStatus{
+		Healthy:   true,
+		Latency:   10 * time.Millisecond,
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (m *testMockConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
+	if m.queryErr != nil {
+		return nil, m.queryErr
+	}
+	return &base.QueryResult{
+		Rows:      m.queryRows,
+		RowCount:  len(m.queryRows),
+		Duration:  5 * time.Millisecond,
+		Cached:    false,
+		Connector: m.name,
+	}, nil
+}
+
+func (m *testMockConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
+	return &base.CommandResult{Success: true}, nil
+}
+
+func (m *testMockConnector) Name() string         { return m.name }
+func (m *testMockConnector) Type() string         { return m.connType }
+func (m *testMockConnector) Version() string      { return "1.0.0-test" }
+func (m *testMockConnector) Capabilities() []string { return []string{"query"} }
+
+// TestFetchApprovedData_WithMockConnector tests fetchApprovedData with a real connector
+func TestFetchApprovedData_WithMockConnector(t *testing.T) {
+	// Save original registry
+	oldRegistry := mcpRegistry
+	defer func() { mcpRegistry = oldRegistry }()
+
+	// Create a new registry and register mock connector
+	mcpRegistry = registry.NewRegistry()
+
+	mockConn := &testMockConnector{
+		name:     "test-postgres",
+		connType: "postgres",
+		queryRows: []map[string]interface{}{
+			{"id": 1, "name": "Alice"},
+			{"id": 2, "name": "Bob"},
+		},
+	}
+
+	config := &base.ConnectorConfig{
+		Name:    "test-postgres",
+		Type:    "postgres",
+		Timeout: 5 * time.Second,
+	}
+
+	err := mcpRegistry.Register("test-postgres", mockConn, config)
+	if err != nil {
+		t.Fatalf("Failed to register mock connector: %v", err)
+	}
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		TenantID:    "test-tenant",
+		Permissions: []string{"test-postgres"}, // Has permission for this source
+	}
+	client := &Client{ID: "test-client"}
+
+	result, err := fetchApprovedData(ctx, []string{"test-postgres"}, "SELECT * FROM users", user, client)
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	// Should have result for test-postgres
+	if len(result) != 1 {
+		t.Errorf("Expected 1 result, got: %d", len(result))
+	}
+
+	pgResult, ok := result["test-postgres"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map result for test-postgres")
+	}
+
+	// Check row count
+	if rowCount, ok := pgResult["row_count"].(int); !ok || rowCount != 2 {
+		t.Errorf("Expected row_count=2, got: %v", pgResult["row_count"])
+	}
+}
+
+// TestFetchApprovedData_ConnectorQueryError tests fetchApprovedData when connector query fails
+func TestFetchApprovedData_ConnectorQueryError(t *testing.T) {
+	// Save original registry
+	oldRegistry := mcpRegistry
+	defer func() { mcpRegistry = oldRegistry }()
+
+	// Create a new registry and register mock connector that returns error
+	mcpRegistry = registry.NewRegistry()
+
+	mockConn := &testMockConnector{
+		name:     "failing-connector",
+		connType: "postgres",
+		queryErr: errors.New("connection timeout"),
+	}
+
+	config := &base.ConnectorConfig{
+		Name:    "failing-connector",
+		Type:    "postgres",
+		Timeout: 5 * time.Second,
+	}
+
+	err := mcpRegistry.Register("failing-connector", mockConn, config)
+	if err != nil {
+		t.Fatalf("Failed to register mock connector: %v", err)
+	}
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		TenantID:    "test-tenant",
+		Permissions: []string{"failing-connector"},
+	}
+	client := &Client{ID: "test-client"}
+
+	result, err := fetchApprovedData(ctx, []string{"failing-connector"}, "SELECT * FROM users", user, client)
+	if err != nil {
+		t.Errorf("Expected no error even when query fails (should continue), got: %v", err)
+	}
+
+	// Result should be empty because query failed
+	if len(result) != 0 {
+		t.Errorf("Expected empty result when query fails, got: %v", result)
+	}
+}
+
+// TestFetchApprovedData_ConnectorNotFound tests fetchApprovedData when connector doesn't exist
+func TestFetchApprovedData_ConnectorNotFound(t *testing.T) {
+	// Save original registry
+	oldRegistry := mcpRegistry
+	defer func() { mcpRegistry = oldRegistry }()
+
+	// Create an empty registry (no connectors registered)
+	mcpRegistry = registry.NewRegistry()
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		TenantID:    "test-tenant",
+		Permissions: []string{"*"}, // Wildcard permission
+	}
+	client := &Client{ID: "test-client"}
+
+	result, err := fetchApprovedData(ctx, []string{"nonexistent-connector"}, "SELECT * FROM users", user, client)
+	if err != nil {
+		t.Errorf("Expected no error when connector not found, got: %v", err)
+	}
+
+	// Result should be empty because connector doesn't exist
+	if len(result) != 0 {
+		t.Errorf("Expected empty result for missing connector, got: %v", result)
+	}
+}
+
+// TestFetchApprovedData_MultipleConnectors tests with multiple data sources
+func TestFetchApprovedData_MultipleConnectors(t *testing.T) {
+	// Save original registry
+	oldRegistry := mcpRegistry
+	defer func() { mcpRegistry = oldRegistry }()
+
+	mcpRegistry = registry.NewRegistry()
+
+	// Register two connectors - one succeeds, one fails
+	mockConn1 := &testMockConnector{
+		name:     "pg1",
+		connType: "postgres",
+		queryRows: []map[string]interface{}{
+			{"id": 1, "data": "value1"},
+		},
+	}
+	mockConn2 := &testMockConnector{
+		name:     "pg2",
+		connType: "postgres",
+		queryErr: errors.New("error"),
+	}
+
+	_ = mcpRegistry.Register("pg1", mockConn1, &base.ConnectorConfig{Name: "pg1", Type: "postgres", Timeout: 5 * time.Second})
+	_ = mcpRegistry.Register("pg2", mockConn2, &base.ConnectorConfig{Name: "pg2", Type: "postgres", Timeout: 5 * time.Second})
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		TenantID:    "test-tenant",
+		Permissions: []string{"pg1", "pg2"},
+	}
+	client := &Client{ID: "test-client"}
+
+	result, err := fetchApprovedData(ctx, []string{"pg1", "pg2"}, "SELECT 1", user, client)
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	// Should have result for pg1 only (pg2 failed)
+	if len(result) != 1 {
+		t.Errorf("Expected 1 result (pg1 only), got: %d", len(result))
+	}
+
+	if _, ok := result["pg1"]; !ok {
+		t.Error("Expected result for pg1")
+	}
+	if _, ok := result["pg2"]; ok {
+		t.Error("Did not expect result for pg2 (should have failed)")
+	}
+}
+
+// TestFetchApprovedData_MCPQueryPermission tests with mcp_query permission
+func TestFetchApprovedData_MCPQueryPermission(t *testing.T) {
+	// Save original registry
+	oldRegistry := mcpRegistry
+	defer func() { mcpRegistry = oldRegistry }()
+
+	mcpRegistry = registry.NewRegistry()
+
+	mockConn := &testMockConnector{
+		name:     "test-db",
+		connType: "postgres",
+		queryRows: []map[string]interface{}{
+			{"value": 42},
+		},
+	}
+
+	_ = mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{
+		Name:    "test-db",
+		Type:    "postgres",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		TenantID:    "test-tenant",
+		Permissions: []string{"mcp_query"}, // Generic MCP query permission
+	}
+	client := &Client{ID: "test-client"}
+
+	result, err := fetchApprovedData(ctx, []string{"test-db"}, "SELECT 42 as value", user, client)
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("Expected 1 result with mcp_query permission, got: %d", len(result))
 	}
 }
 
