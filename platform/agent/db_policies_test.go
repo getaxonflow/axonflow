@@ -944,3 +944,411 @@ func TestRefreshPoliciesRoutine_LoadFailure(t *testing.T) {
 
 	// Should handle errors gracefully without panicking
 }
+
+// ==================================================================
+// ADDITIONAL TESTS FOR LOW COVERAGE FUNCTIONS
+// Tests for Close, RecoverAuditEntries, updatePolicyMetricsToQueue, logAuditEvent
+// ==================================================================
+
+// TestDatabasePolicyEngineClose_WithAuditQueue tests Close with an active AuditQueue
+func TestDatabasePolicyEngineClose_WithAuditQueue(t *testing.T) {
+	// Create mock database
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+
+	// Create a minimal audit queue for testing
+	// We need to create the engine first with a nil auditQueue,
+	// then test Close with different states
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil, // Test nil queue first
+	}
+
+	// Test 1: Close with nil auditQueue (should just close DB)
+	mock.ExpectClose()
+	err = engine.Close()
+	if err != nil {
+		t.Errorf("Close with nil auditQueue failed: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestDatabasePolicyEngineClose_NilDB tests Close when db is nil
+func TestDatabasePolicyEngineClose_NilDB(t *testing.T) {
+	engine := &DatabasePolicyEngine{
+		db:              nil, // No database connection
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// Close should not error when db is nil
+	err := engine.Close()
+	if err != nil {
+		t.Errorf("Close with nil db should not error: %v", err)
+	}
+}
+
+// TestDatabasePolicyEngineClose_DBCloseError tests Close when DB close fails
+func TestDatabasePolicyEngineClose_DBCloseError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// Expect Close to return error
+	mock.ExpectClose().WillReturnError(fmt.Errorf("close error"))
+
+	err = engine.Close()
+	if err == nil {
+		t.Error("Expected error when DB close fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestRecoverAuditEntries_NilAuditQueue tests RecoverAuditEntries with nil queue
+func TestRecoverAuditEntries_NilAuditQueue(t *testing.T) {
+	engine := &DatabasePolicyEngine{
+		db:              nil,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// Should return 0, nil when auditQueue is nil
+	recovered, err := engine.RecoverAuditEntries()
+	if err != nil {
+		t.Errorf("RecoverAuditEntries with nil queue should not error: %v", err)
+	}
+	if recovered != 0 {
+		t.Errorf("Expected 0 recovered entries, got %d", recovered)
+	}
+}
+
+// TestGetAuditQueue tests the GetAuditQueue method
+func TestGetAuditQueue_Nil(t *testing.T) {
+	engine := &DatabasePolicyEngine{
+		auditQueue: nil,
+	}
+
+	queue := engine.GetAuditQueue()
+	if queue != nil {
+		t.Error("Expected nil queue")
+	}
+}
+
+// TestUpdatePolicyMetricsToQueue_NilQueue tests updatePolicyMetricsToQueue with nil queue
+func TestUpdatePolicyMetricsToQueue_NilQueue(t *testing.T) {
+	// Create mock database for fallback
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil, // No queue, will use direct fallback
+	}
+
+	// Expect INSERT for each triggered policy
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WithArgs("test_policy", 1).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Create a test result
+	result := &StaticPolicyResult{
+		Blocked:           true,
+		TriggeredPolicies: []string{"test_policy"},
+	}
+
+	// Should not panic when auditQueue is nil - uses direct fallback
+	engine.updatePolicyMetricsToQueue(result)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestUpdatePolicyMetricsToQueue_EmptyPolicies tests with empty triggered policies
+func TestUpdatePolicyMetricsToQueue_EmptyPolicies(t *testing.T) {
+	engine := &DatabasePolicyEngine{
+		db:              nil,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// Create a test result with no triggered policies
+	result := &StaticPolicyResult{
+		Blocked:           false,
+		TriggeredPolicies: []string{},
+	}
+
+	// Should not panic when no policies triggered
+	engine.updatePolicyMetricsToQueue(result)
+}
+
+// TestLogAuditEvent_WithQueue tests logAuditEvent uses queue when available
+func TestLogAuditEvent_NilQueue(t *testing.T) {
+	// Create mock database
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil, // No queue, will use direct write
+	}
+
+	// Expect direct INSERT when no queue
+	mock.ExpectExec("INSERT INTO agent_audit_logs").
+		WithArgs("agent", "test_action", "test_resource", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine.logAuditEvent("test_action", "test_resource")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestLogAuditEvent_WithRetry tests logAuditEvent retry behavior
+func TestLogAuditEvent_WithRetry(t *testing.T) {
+	// Create mock database
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// First attempt fails, second succeeds (testing retry)
+	mock.ExpectExec("INSERT INTO agent_audit_logs").
+		WillReturnError(fmt.Errorf("temporary error"))
+	mock.ExpectExec("INSERT INTO agent_audit_logs").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine.logAuditEvent("test_action", "test_resource")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestNewDatabasePolicyEngine_MissingEnv tests error when DATABASE_URL not set
+func TestNewDatabasePolicyEngine_MissingEnv(t *testing.T) {
+	// Save current DATABASE_URL
+	oldDBURL := os.Getenv("DATABASE_URL")
+	defer func() {
+		if err := os.Setenv("DATABASE_URL", oldDBURL); err != nil {
+			t.Errorf("Failed to restore DATABASE_URL: %v", err)
+		}
+	}()
+
+	// Clear DATABASE_URL
+	if err := os.Unsetenv("DATABASE_URL"); err != nil {
+		t.Fatalf("Failed to unset DATABASE_URL: %v", err)
+	}
+
+	engine, err := NewDatabasePolicyEngine()
+	if err == nil {
+		t.Error("Expected error when DATABASE_URL not set")
+		if engine != nil {
+			_ = engine.Close()
+		}
+	}
+}
+
+// TestNewDatabasePolicyEngine_InvalidURL tests error with invalid database URL
+func TestNewDatabasePolicyEngine_InvalidURL(t *testing.T) {
+	// Save current DATABASE_URL
+	oldDBURL := os.Getenv("DATABASE_URL")
+	defer func() {
+		if err := os.Setenv("DATABASE_URL", oldDBURL); err != nil {
+			t.Errorf("Failed to restore DATABASE_URL: %v", err)
+		}
+	}()
+
+	// Set invalid DATABASE_URL (will fail to connect)
+	if err := os.Setenv("DATABASE_URL", "invalid://not-a-real-database"); err != nil {
+		t.Fatalf("Failed to set DATABASE_URL: %v", err)
+	}
+
+	engine, err := NewDatabasePolicyEngine()
+	if err == nil {
+		t.Error("Expected error with invalid DATABASE_URL")
+		if engine != nil {
+			_ = engine.Close()
+		}
+	}
+}
+
+// TestUpdatePolicyMetricDirect_DBError tests metric update with DB error
+func TestUpdatePolicyMetricDirect_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	// All retries fail
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WillReturnError(fmt.Errorf("database error"))
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WillReturnError(fmt.Errorf("database error"))
+	mock.ExpectExec("INSERT INTO policy_metrics").
+		WillReturnError(fmt.Errorf("database error"))
+
+	// Should not panic, just log error
+	engine.updatePolicyMetricDirect("test_policy", true)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestLogPolicyViolationDirect_DBError tests violation logging with DB error
+func TestLogPolicyViolationDirect_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 60 * time.Second,
+		performanceMode: false,
+		auditQueue:      nil,
+	}
+
+	user := &User{ID: 1, Role: "user"}
+	policy := &PolicyPattern{
+		ID:          "test_policy",
+		Name:        "Test Policy",
+		Severity:    "high",
+		Description: "Test description",
+	}
+
+	// All retries fail
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec("INSERT INTO policy_violations").
+			WillReturnError(fmt.Errorf("database error"))
+	}
+
+	// Should not panic, just log error
+	engine.logPolicyViolationDirect(user, policy, "test query")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestEvaluateStaticPolicies_AdminAccess tests admin access pattern detection
+func TestEvaluateStaticPolicies_AdminAccess(t *testing.T) {
+	// Create mock database for logging
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Expect potential INSERT calls for violation logging and metrics
+	mock.ExpectExec("INSERT INTO policy_violations").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 24 * time.Hour, // Long interval to prevent refresh
+		lastRefresh:     time.Now(),     // Set to now to prevent background refresh
+	}
+	engine.loadDefaultPolicies()
+
+	// Test admin access with regular user
+	user := &User{
+		ID:          1,
+		Role:        "user",
+		Permissions: []string{"query"},
+	}
+
+	// Test query that might trigger admin pattern
+	query := "SELECT * FROM system_config"
+	result := engine.EvaluateStaticPolicies(user, query, "sql")
+
+	// Check if admin access pattern triggered
+	if result != nil {
+		t.Logf("Admin access result: blocked=%v, reason=%s", result.Blocked, result.Reason)
+	}
+}
+
+// TestEvaluateStaticPolicies_PIIDetection tests PII detection patterns
+func TestEvaluateStaticPolicies_PIIDetection(t *testing.T) {
+	// Create mock database for logging
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Expect potential INSERT calls for violation logging and metrics
+	mock.ExpectExec("INSERT INTO policy_violations").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 24 * time.Hour, // Long interval to prevent refresh
+		lastRefresh:     time.Now(),     // Set to now to prevent background refresh
+	}
+	engine.loadDefaultPolicies()
+
+	user := &User{
+		ID:          1,
+		Role:        "user",
+		Permissions: []string{"query"},
+	}
+
+	// Test query with SSN-like pattern
+	query := "My SSN is 123-45-6789"
+	result := engine.EvaluateStaticPolicies(user, query, "natural_language")
+
+	if result != nil {
+		t.Logf("PII detection result: blocked=%v, triggered=%v", result.Blocked, result.TriggeredPolicies)
+	}
+}

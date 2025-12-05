@@ -1633,3 +1633,483 @@ func TestGetGatewayAuditQueue(t *testing.T) {
 		_ = auditQueue.Shutdown(ctx)
 	})
 }
+
+// ==================================================================
+// ADDITIONAL TESTS FOR LOW COVERAGE FUNCTIONS
+// Tests for fetchApprovedData and related gateway functionality
+// ==================================================================
+
+// TestFetchApprovedData_NilRegistry tests fetchApprovedData with nil MCP registry
+func TestFetchApprovedData_NilRegistry(t *testing.T) {
+	// Save and clear mcpRegistry
+	oldRegistry := mcpRegistry
+	mcpRegistry = nil
+	defer func() { mcpRegistry = oldRegistry }()
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		Permissions: []string{"mcp_query"},
+	}
+	client := &Client{
+		ID: "test-client",
+	}
+
+	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client)
+	if err != nil {
+		t.Errorf("Expected no error with nil registry, got: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("Expected empty result with nil registry, got: %v", result)
+	}
+}
+
+// TestFetchApprovedData_EmptyDataSources tests fetchApprovedData with empty data sources
+func TestFetchApprovedData_EmptyDataSources(t *testing.T) {
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		Permissions: []string{"mcp_query"},
+	}
+	client := &Client{
+		ID: "test-client",
+	}
+
+	result, err := fetchApprovedData(ctx, []string{}, "test query", user, client)
+	if err != nil {
+		t.Errorf("Expected no error with empty sources, got: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("Expected empty result with empty sources, got: %v", result)
+	}
+}
+
+// TestFetchApprovedData_NoPermission tests fetchApprovedData when user lacks permission
+func TestFetchApprovedData_NoPermission(t *testing.T) {
+	// Save and clear mcpRegistry
+	oldRegistry := mcpRegistry
+	mcpRegistry = nil
+	defer func() { mcpRegistry = oldRegistry }()
+
+	ctx := context.Background()
+	user := &User{
+		ID:          1,
+		Permissions: []string{"read_only"}, // No mcp_query permission
+	}
+	client := &Client{
+		ID: "test-client",
+	}
+
+	// Should not fetch because user lacks permission
+	result, err := fetchApprovedData(ctx, []string{"test-source"}, "test query", user, client)
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	// Result should be empty because user lacks permission
+	if len(result) != 0 {
+		t.Errorf("Expected empty result without permission, got: %v", result)
+	}
+}
+
+// TestStoreGatewayContext_Success tests successful context storage
+func TestStoreGatewayContext_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	req := PreCheckRequest{
+		UserToken:   "test-token",
+		Query:       "test query",
+		DataSources: []string{"source1"},
+	}
+
+	policyResult := &StaticPolicyResult{
+		Blocked:           false,
+		TriggeredPolicies: []string{"policy1"},
+	}
+
+	// Expect INSERT
+	mock.ExpectExec("INSERT INTO gateway_contexts").
+		WithArgs(
+			"test-context-id",
+			"test-client",
+			sqlmock.AnyArg(), // user token hash
+			sqlmock.AnyArg(), // query hash
+			sqlmock.AnyArg(), // data sources array
+			sqlmock.AnyArg(), // policies evaluated array
+			true,             // approved
+			"",               // block reason (empty for approved)
+			sqlmock.AnyArg(), // expires_at
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err = storeGatewayContext(db, "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
+	if err != nil {
+		t.Errorf("storeGatewayContext failed: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestStoreGatewayContext_DBError tests context storage with DB error
+func TestStoreGatewayContext_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	req := PreCheckRequest{
+		UserToken:   "test-token",
+		Query:       "test query",
+		DataSources: []string{},
+	}
+
+	policyResult := &StaticPolicyResult{
+		Blocked: false,
+	}
+
+	mock.ExpectExec("INSERT INTO gateway_contexts").
+		WillReturnError(fmt.Errorf("database error"))
+
+	err = storeGatewayContext(db, "test-context-id", "test-client", req, policyResult, time.Now().Add(5*time.Minute))
+	if err == nil {
+		t.Error("Expected error when DB insert fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestValidateGatewayContext_NotFound tests context validation when not found
+func TestValidateGatewayContext_NotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+		WithArgs("nonexistent-context").
+		WillReturnError(sql.ErrNoRows)
+
+	valid, err := validateGatewayContext(db, "nonexistent-context", "test-client")
+	if err != nil {
+		t.Errorf("Expected no error for not found, got: %v", err)
+	}
+	if valid {
+		t.Error("Expected invalid for not found context")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestValidateGatewayContext_Expired tests context validation when expired
+func TestValidateGatewayContext_Expired(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
+		AddRow("test-client", time.Now().Add(-1*time.Hour)) // Expired 1 hour ago
+
+	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+		WithArgs("expired-context").
+		WillReturnRows(rows)
+
+	valid, err := validateGatewayContext(db, "expired-context", "test-client")
+	if err != nil {
+		t.Errorf("Expected no error for expired, got: %v", err)
+	}
+	if valid {
+		t.Error("Expected invalid for expired context")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestValidateGatewayContext_ClientMismatch tests context validation with wrong client
+func TestValidateGatewayContext_ClientMismatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
+		AddRow("different-client", time.Now().Add(5*time.Minute))
+
+	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+		WithArgs("test-context").
+		WillReturnRows(rows)
+
+	_, err = validateGatewayContext(db, "test-context", "wrong-client")
+	if err == nil {
+		t.Error("Expected error for client mismatch")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestValidateGatewayContext_Valid tests successful context validation
+func TestValidateGatewayContext_Valid(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"client_id", "expires_at"}).
+		AddRow("test-client", time.Now().Add(5*time.Minute))
+
+	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+		WithArgs("valid-context").
+		WillReturnRows(rows)
+
+	valid, err := validateGatewayContext(db, "valid-context", "test-client")
+	if err != nil {
+		t.Errorf("Expected no error for valid context, got: %v", err)
+	}
+	if !valid {
+		t.Error("Expected valid for valid context")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestStoreLLMCallAudit_Success tests successful LLM call audit storage
+func TestStoreLLMCallAudit_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	req := AuditLLMCallRequest{
+		ContextID: "test-context",
+		ClientID:  "test-client",
+		Provider:  "openai",
+		Model:     "gpt-4",
+		TokenUsage: TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+		LatencyMs: 1500,
+		Metadata:  map[string]interface{}{"key": "value"},
+	}
+
+	mock.ExpectExec("INSERT INTO llm_call_audits").
+		WithArgs(
+			"test-audit-id",
+			"test-context",
+			"test-client",
+			"openai",
+			"gpt-4",
+			int64(100),
+			int64(50),
+			int64(150),
+			int64(1500),
+			sqlmock.AnyArg(), // estimated cost
+			sqlmock.AnyArg(), // metadata JSON
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005)
+	if err != nil {
+		t.Errorf("storeLLMCallAudit failed: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestStoreLLMCallAudit_DBError tests LLM call audit storage with DB error
+func TestStoreLLMCallAudit_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	req := AuditLLMCallRequest{
+		ContextID: "test-context",
+		ClientID:  "test-client",
+		Provider:  "openai",
+		Model:     "gpt-4",
+		TokenUsage: TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+		LatencyMs: 1500,
+	}
+
+	mock.ExpectExec("INSERT INTO llm_call_audits").
+		WillReturnError(fmt.Errorf("database error"))
+
+	err = storeLLMCallAudit(db, "test-audit-id", req, 0.005)
+	if err == nil {
+		t.Error("Expected error when DB insert fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestCalculateLLMCost_KnownProviders tests cost calculation for known providers
+func TestCalculateLLMCost_KnownProviders(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		model    string
+		usage    TokenUsage
+	}{
+		{
+			name:     "OpenAI GPT-4",
+			provider: "openai",
+			model:    "gpt-4",
+			usage:    TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+		},
+		{
+			name:     "OpenAI GPT-3.5",
+			provider: "openai",
+			model:    "gpt-3.5-turbo",
+			usage:    TokenUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+		},
+		{
+			name:     "Anthropic Claude",
+			provider: "anthropic",
+			model:    "claude-3-opus",
+			usage:    TokenUsage{PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300},
+		},
+		{
+			name:     "Unknown provider",
+			provider: "unknown",
+			model:    "some-model",
+			usage:    TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost := calculateLLMCost(tt.provider, tt.model, tt.usage)
+			if cost < 0 {
+				t.Errorf("Cost should not be negative, got: %f", cost)
+			}
+			t.Logf("Cost for %s/%s: $%.6f", tt.provider, tt.model, cost)
+		})
+	}
+}
+
+// TestHashString_Extended tests the hash function with more cases
+func TestHashString_Extended(t *testing.T) {
+	tests := []struct {
+		input string
+	}{
+		{""},
+		{"hello"},
+		{"test input with spaces"},
+		{"special chars: !@#$%^&*()"},
+		{"unicode: 你好世界"},
+		{"very long string " + string(make([]byte, 1000))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input[:min(len(tt.input), 20)], func(t *testing.T) {
+			hash := hashString(tt.input)
+			if hash == "" {
+				t.Error("Hash should not be empty")
+			}
+			// Hash should be consistent
+			hash2 := hashString(tt.input)
+			if hash != hash2 {
+				t.Error("Hash should be deterministic")
+			}
+		})
+	}
+}
+
+// TestSendGatewayError_Extended tests error response function with more cases
+func TestSendGatewayError_Extended(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		message    string
+	}{
+		{
+			name:       "Bad Request Extended",
+			statusCode: http.StatusBadRequest,
+			message:    "Invalid request format",
+		},
+		{
+			name:       "Forbidden",
+			statusCode: http.StatusForbidden,
+			message:    "Access denied",
+		},
+		{
+			name:       "Not Found",
+			statusCode: http.StatusNotFound,
+			message:    "Resource not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			sendGatewayError(rr, tt.message, tt.statusCode)
+
+			if rr.Code != tt.statusCode {
+				t.Errorf("Expected status %d, got %d", tt.statusCode, rr.Code)
+			}
+
+			var resp map[string]interface{}
+			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+				t.Errorf("Failed to parse response: %v", err)
+			}
+
+			if resp["error"] != tt.message {
+				t.Errorf("Expected error message %q, got %q", tt.message, resp["error"])
+			}
+		})
+	}
+}
+
+// TestValidateGatewayContext_DBError tests context validation with DB error
+func TestValidateGatewayContext_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock DB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT client_id, expires_at FROM gateway_contexts").
+		WithArgs("test-context").
+		WillReturnError(fmt.Errorf("database error"))
+
+	_, err = validateGatewayContext(db, "test-context", "test-client")
+	if err == nil {
+		t.Error("Expected error when DB query fails")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}

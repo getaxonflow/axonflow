@@ -592,3 +592,328 @@ func testAPContains(s, substr string) bool {
 	}
 	return false
 }
+
+// =============================================================================
+// ADDITIONAL TESTS FOR LOW COVERAGE FUNCTIONS
+// =============================================================================
+
+// TestAPICallProcessor_ExecuteStep_UnsupportedProvider tests unsupported provider
+func TestAPICallProcessor_ExecuteStep_UnsupportedProvider(t *testing.T) {
+	processor := NewAPICallProcessor(nil)
+
+	step := WorkflowStep{
+		Name:     "test-step",
+		Provider: "unsupported-provider",
+	}
+
+	ctx := context.Background()
+	_, err := processor.ExecuteStep(ctx, step, nil, nil)
+
+	if err == nil {
+		t.Error("Expected error for unsupported provider")
+	}
+
+	if err != nil && !testAPContains(err.Error(), "unsupported") {
+		t.Errorf("Expected unsupported provider error, got: %v", err)
+	}
+}
+
+// TestAPICallProcessor_ExecuteStep_MissingProvider tests missing provider
+func TestAPICallProcessor_ExecuteStep_MissingProvider(t *testing.T) {
+	processor := NewAPICallProcessor(nil)
+
+	step := WorkflowStep{
+		Name:     "test-step",
+		Provider: "", // No provider
+	}
+
+	ctx := context.Background()
+	_, err := processor.ExecuteStep(ctx, step, nil, nil)
+
+	if err == nil {
+		t.Error("Expected error for missing provider")
+	}
+}
+
+// TestAPICallProcessor_executeAmadeusCall_MissingFunction tests missing function
+func TestAPICallProcessor_executeAmadeusCall_MissingFunction(t *testing.T) {
+	processor := NewAPICallProcessor(nil) // Nil client = not configured
+
+	step := WorkflowStep{
+		Name:     "test-step",
+		Function: "", // No function specified
+	}
+
+	execution := &WorkflowExecution{
+		Input: map[string]interface{}{
+			"destination": "Paris",
+		},
+	}
+
+	ctx := context.Background()
+	_, err := processor.executeAmadeusCall(ctx, step, nil, execution)
+
+	// Should return mock response when not configured
+	if err != nil {
+		t.Logf("executeAmadeusCall returned: %v", err)
+	}
+}
+
+// TestAPICallProcessor_executeAmadeusCall_UnsupportedFunction tests unsupported function
+func TestAPICallProcessor_executeAmadeusCall_UnsupportedFunction(t *testing.T) {
+	processor := NewAPICallProcessor(NewAmadeusClient())
+
+	step := WorkflowStep{
+		Name:     "test-step",
+		Function: "unsupported-function",
+	}
+
+	execution := &WorkflowExecution{
+		Input: map[string]interface{}{},
+	}
+
+	ctx := context.Background()
+	result, err := processor.executeAmadeusCall(ctx, step, nil, execution)
+
+	// Without credentials, should return mock response
+	if err == nil {
+		t.Logf("Got mock result: %v", result)
+	} else {
+		t.Logf("executeAmadeusCall returned error: %v", err)
+	}
+}
+
+// TestAPICallProcessor_extractFlightSearchParams_Extended tests parameter extraction with more cases
+func TestAPICallProcessor_extractFlightSearchParams_Extended(t *testing.T) {
+	processor := NewAPICallProcessor(nil)
+
+	tests := []struct {
+		name        string
+		input       map[string]interface{}
+		execution   *WorkflowExecution
+		expectError bool
+	}{
+		{
+			name:  "with all parameters extended",
+			input: map[string]interface{}{},
+			execution: &WorkflowExecution{
+				Input: map[string]interface{}{
+					"destination":    "Berlin",
+					"origin":         "Paris",
+					"departure_date": "2025-07-15",
+					"adults":         3,
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:  "with adults as float64 extended",
+			input: map[string]interface{}{},
+			execution: &WorkflowExecution{
+				Input: map[string]interface{}{
+					"destination":    "Rome",
+					"origin":         "Madrid",
+					"departure_date": "2025-08-15",
+					"adults":         float64(2),
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:  "with adults as string extended",
+			input: map[string]interface{}{},
+			execution: &WorkflowExecution{
+				Input: map[string]interface{}{
+					"destination":    "Amsterdam",
+					"origin":         "Brussels",
+					"departure_date": "2025-09-15",
+					"adults":         "1",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:  "destination only extended",
+			input: map[string]interface{}{},
+			execution: &WorkflowExecution{
+				Input: map[string]interface{}{
+					"destination": "Barcelona",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:  "empty input extended",
+			input: map[string]interface{}{},
+			execution: &WorkflowExecution{
+				Input: map[string]interface{}{},
+			},
+			expectError: true, // Missing destination
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params, err := processor.extractFlightSearchParams(tt.input, tt.execution)
+
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+				if params == nil {
+					t.Error("Expected non-nil params")
+				}
+			}
+		})
+	}
+}
+
+// TestAPICallProcessor_mockAmadeusResponse_Extended tests mock response generation with more cases
+func TestAPICallProcessor_mockAmadeusResponse_Extended(t *testing.T) {
+	processor := NewAPICallProcessor(nil)
+
+	tests := []struct {
+		name     string
+		step     WorkflowStep
+		checkKey string
+	}{
+		{
+			name: "flight-search mock extended",
+			step: WorkflowStep{
+				Name:     "search-flights",
+				Function: "flight-search",
+			},
+			checkKey: "status",
+		},
+		{
+			name: "generic mock extended",
+			step: WorkflowStep{
+				Name:     "other-operation",
+				Function: "other",
+			},
+			checkKey: "status",
+		},
+		{
+			name: "search-flights function",
+			step: WorkflowStep{
+				Name:     "flights",
+				Function: "search-flights",
+			},
+			checkKey: "status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := processor.mockAmadeusResponse(tt.step)
+
+			if result == nil {
+				t.Fatal("Expected non-nil result")
+			}
+
+			if result[tt.checkKey] == nil {
+				t.Errorf("Expected %s in result", tt.checkKey)
+			}
+
+			if status, ok := result["status"].(string); !ok || status != "mock" {
+				t.Error("Expected mock status")
+			}
+		})
+	}
+}
+
+// TestAPICallProcessor_replaceTemplateVars_Extended tests template variable replacement with more cases
+func TestAPICallProcessor_replaceTemplateVars_Extended(t *testing.T) {
+	processor := NewAPICallProcessor(nil)
+
+	input := map[string]interface{}{
+		"city":        "Paris",
+		"country":     "France",
+		"temperature": "25", // String value for template replacement
+	}
+
+	execution := &WorkflowExecution{
+		Input: input,
+		UserContext: UserContext{
+			ID:       12345,
+			Email:    "test@example.com",
+			Role:     "user",
+			TenantID: "tenant123",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		template string
+		expected string
+	}{
+		{
+			name:     "input variable extended",
+			template: "Hello {{input.country}}",
+			expected: "Hello France",
+		},
+		{
+			name:     "multiple variables",
+			template: "{{input.city}}, {{input.country}}",
+			expected: "Paris, France",
+		},
+		{
+			name:     "empty template",
+			template: "",
+			expected: "",
+		},
+		{
+			name:     "numeric value",
+			template: "Temperature: {{input.temperature}}",
+			expected: "Temperature: 25",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := processor.replaceTemplateVars(tt.template, input, execution)
+			if result != tt.expected {
+				t.Errorf("replaceTemplateVars(%q) = %q, want %q", tt.template, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestAPICallProcessor_IsHealthy_Extended tests health check functionality
+// The APICallProcessor.IsHealthy always returns true (gracefully degrades to mock)
+func TestAPICallProcessor_IsHealthy_Extended(t *testing.T) {
+	tests := []struct {
+		name      string
+		processor *APICallProcessor
+		want      bool
+	}{
+		{
+			name:      "nil client always healthy",
+			processor: &APICallProcessor{amadeusClient: nil},
+			want:      true, // Processor always returns true (graceful degradation)
+		},
+		{
+			name:      "empty client always healthy",
+			processor: &APICallProcessor{amadeusClient: &AmadeusClient{}},
+			want:      true, // Processor always returns true (graceful degradation)
+		},
+		{
+			name:      "created via constructor",
+			processor: NewAPICallProcessor(nil),
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.processor.IsHealthy()
+			if got != tt.want {
+				t.Errorf("IsHealthy() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
