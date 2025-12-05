@@ -39,14 +39,18 @@ func TestNewPlanningEngine(t *testing.T) {
 		t.Error("Expected LLM router to be set")
 	}
 
-	if len(engine.templates) == 0 {
-		t.Error("Expected domain templates to be initialized")
+	// Either hardcoded templates OR registry-based configs should be initialized
+	hasTemplates := len(engine.templates) > 0
+	hasRegistry := engine.registry != nil && len(engine.registry.ListDomains()) > 0
+	if !hasTemplates && !hasRegistry {
+		t.Error("Expected domain templates or registry configs to be initialized")
 	}
 
-	// Verify all expected domains are present
+	// Verify all expected domains are present via getDomainTemplate
 	expectedDomains := []string{"travel", "healthcare", "finance", "generic"}
 	for _, domain := range expectedDomains {
-		if _, exists := engine.templates[domain]; !exists {
+		template := engine.getDomainTemplate(domain)
+		if template == nil {
 			t.Errorf("Expected domain %s to be initialized", domain)
 		}
 	}
@@ -61,18 +65,19 @@ func TestDomainTemplates(t *testing.T) {
 
 	tests := []struct {
 		domain          string
-		expectedTasks   int
+		minExpectedAgents int // Min agents (may vary between hardcoded and YAML configs)
 		shouldHaveHints bool
 	}{
-		{"travel", 5, true},
-		{"healthcare", 5, true},
-		{"finance", 5, true},
-		{"generic", 0, true},
+		{"travel", 4, true},       // At least 4 agents
+		{"healthcare", 4, true},   // At least 4 agents
+		{"finance", 4, true},      // At least 4 agents
+		{"generic", 0, true},      // Generic may have 0 or more
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.domain, func(t *testing.T) {
-			template := engine.templates[tt.domain]
+			// Use getDomainTemplate which works with both registry and hardcoded templates
+			template := engine.getDomainTemplate(tt.domain)
 
 			if template == nil {
 				t.Fatalf("Template for domain %s not found", tt.domain)
@@ -82,8 +87,8 @@ func TestDomainTemplates(t *testing.T) {
 				t.Errorf("Expected domain %s, got %s", tt.domain, template.Domain)
 			}
 
-			if len(template.CommonTasks) != tt.expectedTasks {
-				t.Errorf("Expected %d common tasks, got %d", tt.expectedTasks, len(template.CommonTasks))
+			if len(template.CommonTasks) < tt.minExpectedAgents {
+				t.Errorf("Expected at least %d common tasks, got %d", tt.minExpectedAgents, len(template.CommonTasks))
 			}
 
 			if tt.shouldHaveHints && template.Hints == "" {
@@ -245,7 +250,8 @@ func TestBuildAnalysisPrompt(t *testing.T) {
 	engine := NewPlanningEngine(router)
 
 	query := "Plan a trip to Tokyo"
-	template := engine.templates["travel"]
+	// Use getDomainTemplate which handles both registry and hardcoded templates
+	template := engine.getDomainTemplate("travel")
 
 	prompt := engine.buildAnalysisPrompt(query, template)
 

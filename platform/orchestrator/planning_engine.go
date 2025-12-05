@@ -29,6 +29,7 @@ import (
 type PlanningEngine struct {
 	llmRouter *LLMRouter
 	templates map[string]*DomainTemplate
+	registry  *AgentRegistry // Config-based agent registry (MAP 0.5)
 	logger    *logger.Logger
 }
 
@@ -63,13 +64,97 @@ func NewPlanningEngine(router *LLMRouter) *PlanningEngine {
 	engine := &PlanningEngine{
 		llmRouter: router,
 		templates: make(map[string]*DomainTemplate),
+		registry:  NewAgentRegistry(),
 		logger:    logger.New("orchestrator"),
 	}
 
-	// Initialize domain templates
-	engine.initializeTemplates()
+	// Try to load agent configs from standard locations (MAP 0.5)
+	configLoaded := engine.tryLoadAgentConfigs()
+
+	if !configLoaded {
+		// Fallback: Initialize hardcoded domain templates for backward compatibility
+		engine.initializeTemplates()
+		log.Printf("[PlanningEngine] Using hardcoded domain templates (no agent configs found)")
+	}
 
 	return engine
+}
+
+// NewPlanningEngineWithConfigDir creates a planning engine with configs from a specific directory
+func NewPlanningEngineWithConfigDir(router *LLMRouter, configDir string) (*PlanningEngine, error) {
+	engine := &PlanningEngine{
+		llmRouter: router,
+		templates: make(map[string]*DomainTemplate),
+		registry:  NewAgentRegistry(),
+		logger:    logger.New("orchestrator"),
+	}
+
+	if configDir != "" {
+		if err := engine.registry.LoadFromDirectory(configDir); err != nil {
+			return nil, fmt.Errorf("failed to load agent configs from %s: %w", configDir, err)
+		}
+		log.Printf("[PlanningEngine] Loaded %d domain configs from %s",
+			len(engine.registry.ListDomains()), configDir)
+	} else {
+		// No config dir specified, use hardcoded templates
+		engine.initializeTemplates()
+	}
+
+	return engine, nil
+}
+
+// tryLoadAgentConfigs attempts to load agent configurations from standard locations
+func (e *PlanningEngine) tryLoadAgentConfigs() bool {
+	// Standard config locations to check (in order of priority)
+	configPaths := []string{
+		os.Getenv("AXONFLOW_AGENT_CONFIG_DIR"), // Environment variable override
+		"./agents",                              // Current directory
+		"./platform/orchestrator/agents",        // Platform relative path
+		"/etc/axonflow/agents",                  // System-wide config
+	}
+
+	for _, path := range configPaths {
+		if path == "" {
+			continue
+		}
+
+		// Check if directory exists
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			if err := e.registry.LoadFromDirectory(path); err != nil {
+				log.Printf("[PlanningEngine] Failed to load configs from %s: %v", path, err)
+				continue
+			}
+
+			// Successfully loaded configs
+			if !e.registry.IsEmpty() {
+				log.Printf("[PlanningEngine] Loaded agent configs from %s: %v",
+					path, e.registry.ListDomains())
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// ReloadAgentConfigs reloads agent configurations from the configured directory
+// This can be called to pick up config changes without restarting
+func (e *PlanningEngine) ReloadAgentConfigs() error {
+	if e.registry == nil {
+		return fmt.Errorf("agent registry not initialized")
+	}
+
+	if err := e.registry.Reload(); err != nil {
+		return fmt.Errorf("failed to reload agent configs: %w", err)
+	}
+
+	log.Printf("[PlanningEngine] Reloaded agent configs: %v", e.registry.ListDomains())
+	return nil
+}
+
+// GetAgentRegistry returns the agent registry for external access
+func (e *PlanningEngine) GetAgentRegistry() *AgentRegistry {
+	return e.registry
 }
 
 // Initialize domain-specific templates
@@ -121,11 +206,51 @@ func (e *PlanningEngine) initializeTemplates() {
 	}
 }
 
+// getDomainTemplate returns the domain template, preferring registry configs over hardcoded templates
+func (e *PlanningEngine) getDomainTemplate(domain string) *DomainTemplate {
+	// First try registry-based configs (MAP 0.5)
+	if e.registry != nil && !e.registry.IsEmpty() {
+		if template := e.registry.GetDomainTemplateOrDefault(domain); template != nil {
+			return template
+		}
+	}
+
+	// Fallback to hardcoded templates
+	if template, exists := e.templates[domain]; exists {
+		return template
+	}
+
+	// Ultimate fallback to generic
+	if template, exists := e.templates["generic"]; exists {
+		return template
+	}
+
+	// Absolute fallback
+	return &DomainTemplate{
+		Domain:      "generic",
+		CommonTasks: []string{"task-1", "task-2", "task-3"},
+		Hints:       "Analyze the query to determine logical task breakdown and dependencies.",
+	}
+}
+
+// getConfigSynthesisPrompt returns the synthesis prompt from config, if available
+func (e *PlanningEngine) getConfigSynthesisPrompt(domain string) string {
+	if e.registry != nil && !e.registry.IsEmpty() {
+		return e.registry.GetSynthesisPrompt(domain)
+	}
+	return ""
+}
+
 // GeneratePlan creates a workflow from a natural language query
 func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationRequest) (*Workflow, error) {
 	startTime := time.Now()
+	clientID := req.ClientID
+	requestID := req.RequestID
 
-	log.Printf("[PlanningEngine] Generating plan for query: %s", req.Query)
+	e.logger.Info(clientID, requestID, "Generating plan", map[string]interface{}{
+		"query":  req.Query,
+		"domain": req.Domain,
+	})
 
 	// 1. Analyze query
 	analysis, err := e.analyzeQuery(ctx, req.Query, req.Domain)
@@ -133,8 +258,11 @@ func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationReq
 		return nil, fmt.Errorf("query analysis failed: %w", err)
 	}
 
-	log.Printf("[PlanningEngine] Query analysis: domain=%s, complexity=%d, parallel=%v",
-		analysis.Domain, analysis.Complexity, analysis.RequiresParallel)
+	e.logger.Debug(clientID, requestID, "Query analysis complete", map[string]interface{}{
+		"domain":     analysis.Domain,
+		"complexity": analysis.Complexity,
+		"parallel":   analysis.RequiresParallel,
+	})
 
 	// 2. Generate workflow definition
 	workflow, err := e.generateWorkflowDefinition(ctx, req, analysis)
@@ -151,18 +279,17 @@ func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationReq
 	}
 
 	elapsed := time.Since(startTime)
-	log.Printf("[PlanningEngine] Plan generated in %s: %d steps", elapsed, len(workflow.Spec.Steps))
+	e.logger.InfoWithDuration(clientID, requestID, "Plan generated", float64(elapsed.Milliseconds()), map[string]interface{}{
+		"steps": len(workflow.Spec.Steps),
+	})
 
 	return workflow, nil
 }
 
 // Analyze query to determine decomposition strategy
 func (e *PlanningEngine) analyzeQuery(ctx context.Context, query string, domainHint string) (*QueryAnalysis, error) {
-	// Get domain template
-	template, exists := e.templates[domainHint]
-	if !exists {
-		template = e.templates["generic"]
-	}
+	// Get domain template - prefer registry configs over hardcoded templates
+	template := e.getDomainTemplate(domainHint)
 
 	// Build analysis prompt
 	prompt := e.buildAnalysisPrompt(query, template)
@@ -459,6 +586,13 @@ func (e *PlanningEngine) generateTemplateWorkflow(query string, analysis *QueryA
 
 // Build domain-specific synthesis prompt
 func (e *PlanningEngine) buildSynthesisPrompt(query string, domain string) string {
+	// First check for config-based synthesis prompt (MAP 0.5)
+	if configPrompt := e.getConfigSynthesisPrompt(domain); configPrompt != "" {
+		// Use Go text/template style variable substitution
+		return strings.ReplaceAll(configPrompt, "{{.query}}", query)
+	}
+
+	// Fallback to hardcoded prompts for backward compatibility
 	switch domain {
 	case "travel":
 		return fmt.Sprintf(`You are a travel planning assistant. Based on the research from previous steps, create a COMPLETE trip plan for: %s
