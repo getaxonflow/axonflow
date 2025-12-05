@@ -101,8 +101,9 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 
 	t.Run("Pre-check approved request", func(t *testing.T) {
 		// Create test request
+		// Use test mode token that bypasses JWT parsing (see run.go:validateUserToken)
 		reqBody := PreCheckRequest{
-			UserToken:   "test-user-token",
+			UserToken:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjox.test",
 			ClientID:    "test-client-integration",
 			Query:       "What is the capital of France?",
 			DataSources: []string{"postgres"},
@@ -156,8 +157,9 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 
 	t.Run("Audit LLM call after pre-check", func(t *testing.T) {
 		// First, do a pre-check to get context ID
+		// Use test mode token that bypasses JWT parsing (see run.go:validateUserToken)
 		preCheckReq := PreCheckRequest{
-			UserToken: "test-user-token-audit",
+			UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjox.audit-test",
 			ClientID:  "test-client-audit",
 			Query:     "Test query for audit flow",
 		}

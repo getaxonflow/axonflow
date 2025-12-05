@@ -1352,3 +1352,52 @@ func TestEvaluateStaticPolicies_PIIDetection(t *testing.T) {
 		t.Logf("PII detection result: blocked=%v, triggered=%v", result.Blocked, result.TriggeredPolicies)
 	}
 }
+
+// TestRecoverAuditEntries_NilQueue tests RecoverAuditEntries with nil audit queue
+func TestRecoverAuditEntries_NilQueue(t *testing.T) {
+	engine := &DatabasePolicyEngine{
+		auditQueue: nil,
+	}
+
+	count, err := engine.RecoverAuditEntries()
+	if err != nil {
+		t.Errorf("Expected nil error, got: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected count 0, got: %d", count)
+	}
+}
+
+// TestGetAuditQueue tests the GetAuditQueue method
+func TestGetAuditQueue(t *testing.T) {
+	// Test with nil queue
+	engine := &DatabasePolicyEngine{
+		auditQueue: nil,
+	}
+	queue := engine.GetAuditQueue()
+	if queue != nil {
+		t.Error("Expected nil queue")
+	}
+}
+
+// TestDatabasePolicyEngine_Close_WithNilQueue tests Close method with nil audit queue
+func TestDatabasePolicyEngine_Close_WithNilQueue(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+
+	// Expect the DB close
+	mock.ExpectClose()
+
+	engine := &DatabasePolicyEngine{
+		db:         db,
+		auditQueue: nil,
+	}
+
+	err = engine.Close()
+	if err != nil {
+		t.Errorf("Close failed: %v", err)
+	}
+}
+
