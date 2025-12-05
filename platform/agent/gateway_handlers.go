@@ -90,15 +90,15 @@ func init() {
 // registerGatewayMetrics registers all gateway metrics once (safe for multiple calls)
 func registerGatewayMetrics() {
 	gatewayMetricsOnce.Do(func() {
-		// Register gateway Prometheus metrics (use Register to avoid panic)
-		prometheus.Register(gatewayPreCheckRequests)
-		prometheus.Register(gatewayAuditRequests)
-		prometheus.Register(gatewayPreCheckDuration)
-		prometheus.Register(gatewayAuditDuration)
-		prometheus.Register(gatewayLLMTokensTotal)
-		prometheus.Register(gatewayLLMCostTotal)
-		prometheus.Register(gatewayAuditQueuedTotal)
-		prometheus.Register(gatewayAuditFallbackTotal)
+		// Register gateway Prometheus metrics (ignore errors - duplicate registration is OK)
+		_ = prometheus.Register(gatewayPreCheckRequests)
+		_ = prometheus.Register(gatewayAuditRequests)
+		_ = prometheus.Register(gatewayPreCheckDuration)
+		_ = prometheus.Register(gatewayAuditDuration)
+		_ = prometheus.Register(gatewayLLMTokensTotal)
+		_ = prometheus.Register(gatewayLLMCostTotal)
+		_ = prometheus.Register(gatewayAuditQueuedTotal)
+		_ = prometheus.Register(gatewayAuditFallbackTotal)
 	})
 }
 

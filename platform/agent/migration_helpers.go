@@ -396,6 +396,8 @@ func extractMigrationName(filename string) string {
 }
 
 // calculateFileChecksum calculates SHA-256 checksum of a file
+//
+//nolint:unused // Used in tests
 func calculateFileChecksum(filepath string) string {
 	data, err := os.ReadFile(filepath)
 	if err != nil {
@@ -457,6 +459,8 @@ func recordMigrationFailure(db *sql.DB, version, filename string, migrationErr e
 }
 
 // getMigrationStatus returns a status message about applied migrations for debugging
+//
+//nolint:unused // Used in tests
 func getMigrationStatus(db *sql.DB) string {
 	var count int
 	var lastVersion string

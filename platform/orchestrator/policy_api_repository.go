@@ -149,7 +149,7 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	if params.Search != "" {
 		whereConditions = append(whereConditions, fmt.Sprintf("(name ILIKE $%d OR description ILIKE $%d)", argIndex, argIndex))
 		args = append(args, "%"+params.Search+"%")
-		argIndex++
+		// argIndex++ removed - not used after this point
 	}
 
 	whereClause := strings.Join(whereConditions, " AND ")
@@ -201,7 +201,7 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list policies: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var policies []PolicyResource
 	for rows.Next() {
@@ -390,7 +390,7 @@ func (r *PolicyRepository) GetVersions(ctx context.Context, tenantID, policyID s
 	if err != nil {
 		return nil, fmt.Errorf("failed to get versions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var versions []PolicyVersionEntry
 	for rows.Next() {
@@ -452,7 +452,7 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, poli
 	}
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 
@@ -650,6 +650,8 @@ func (r *PolicyRepository) createVersionEntryTx(ctx context.Context, tx *sql.Tx,
 }
 
 // findByName finds a policy by name within a tenant
+//
+//nolint:unused // Used in tests
 func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string) (*PolicyResource, error) {
 	query := `
 		SELECT policy_id, name, description, policy_type, conditions, actions,
@@ -679,7 +681,7 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 		return nil, err
 	}
 
-	policy.Type = string(policyType)
+	policy.Type = policyType
 	_ = json.Unmarshal(conditionsJSON, &policy.Conditions)
 	_ = json.Unmarshal(actionsJSON, &policy.Actions)
 

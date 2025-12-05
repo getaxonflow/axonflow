@@ -468,7 +468,6 @@ func (c *MySQLConnector) buildArgs(statement string, params map[string]interface
 	if len(matches) > 0 {
 		// Named parameters - extract values in order they appear and replace with ?
 		args := make([]interface{}, 0, len(matches))
-		modifiedStatement := statement
 		for _, match := range matches {
 			paramName := match[1]
 			if val, ok := params[paramName]; ok {
@@ -478,7 +477,7 @@ func (c *MySQLConnector) buildArgs(statement string, params map[string]interface
 			}
 		}
 		// Replace all :name with ? for MySQL
-		modifiedStatement = namedParamRegex.ReplaceAllString(statement, "?")
+		modifiedStatement := namedParamRegex.ReplaceAllString(statement, "?")
 		return modifiedStatement, args, nil
 	}
 

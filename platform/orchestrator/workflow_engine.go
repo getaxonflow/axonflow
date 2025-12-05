@@ -589,11 +589,9 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		execution.Steps[len(execution.Steps)-1] = stepExecution
 		
 		// Update input for next step (pass output of current step)
-		if stepOutput != nil {
-			// Merge step output into available context for template replacement
-			for key, value := range stepOutput {
-				input[fmt.Sprintf("step_%s_%s", step.Name, key)] = value
-			}
+		// Merge step output into available context for template replacement
+		for key, value := range stepOutput {
+			input[fmt.Sprintf("step_%s_%s", step.Name, key)] = value
 		}
 		
 		log.Printf("Completed step: %s in %s", step.Name, stepExecution.ProcessTime)
@@ -686,6 +684,8 @@ func (e *WorkflowEngine) IsHealthy() bool {
 }
 
 // isSynthesisStep checks if a step name indicates a synthesis/final step
+//
+//nolint:unused // Used in tests
 func (e *WorkflowEngine) isSynthesisStep(stepName string) bool {
 	stepNameLower := strings.ToLower(stepName)
 	return strings.Contains(stepNameLower, "synthesize") ||

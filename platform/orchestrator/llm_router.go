@@ -1185,10 +1185,9 @@ func (p *OllamaProvider) EstimateCost(tokens int) float64 {
 
 // MockProvider is a mock implementation for testing
 type MockProvider struct {
-	name       string
-	healthy    bool
-	apiKey     string
-	endpoint   string
+	name    string
+	healthy bool
+	apiKey  string
 }
 
 func NewOpenAIProvider(apiKey string) LLMProvider {
@@ -1335,9 +1334,7 @@ func (m *MockProvider) EstimateCost(tokens int) float64 {
 
 // Supporting components
 
-type HealthChecker struct {
-	mu sync.Mutex
-}
+type HealthChecker struct{}
 
 func NewHealthChecker() *HealthChecker {
 	return &HealthChecker{}

@@ -52,6 +52,8 @@ func initRedis(redisURL string) error {
 
 // checkRateLimitRedis checks rate limit using Redis with sliding window algorithm
 // Returns error if rate limit exceeded, nil if within limit
+//
+//nolint:unused // Used in tests
 func checkRateLimitRedis(ctx context.Context, customerID string, limitPerMinute int) error {
 	if redisClient == nil {
 		// Fallback to in-memory rate limiting if Redis unavailable
@@ -99,6 +101,8 @@ func checkRateLimitRedis(ctx context.Context, customerID string, limitPerMinute 
 }
 
 // getRateLimitStatusRedis returns current rate limit status from Redis
+//
+//nolint:unused // Used in tests
 func getRateLimitStatusRedis(ctx context.Context, customerID string) (int, time.Time, error) {
 	if redisClient == nil {
 		count, _, resetTime := getRateLimitStatus(customerID)
@@ -122,6 +126,8 @@ func getRateLimitStatusRedis(ctx context.Context, customerID string) (int, time.
 }
 
 // getRateLimitStatsRedis retrieves detailed rate limit statistics for monitoring
+//
+//nolint:unused // Used in tests
 func getRateLimitStatsRedis(ctx context.Context, customerID string, duration time.Duration) (*RateLimitStats, error) {
 	if redisClient == nil {
 		return nil, fmt.Errorf("redis not initialized")
@@ -160,6 +166,8 @@ type RateLimitStats struct {
 }
 
 // flushRateLimitRedis removes all rate limit data for a customer (admin operation)
+//
+//nolint:unused // Used in tests
 func flushRateLimitRedis(ctx context.Context, customerID string) error {
 	if redisClient == nil {
 		return fmt.Errorf("redis not initialized")

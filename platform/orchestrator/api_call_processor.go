@@ -212,6 +212,8 @@ func (p *APICallProcessor) mockAmadeusResponse(step WorkflowStep) map[string]int
 }
 
 // Utility: Replace template variables in strings
+//
+//nolint:unused // Used in tests
 func (p *APICallProcessor) replaceTemplateVars(template string, input map[string]interface{}, execution *WorkflowExecution) string {
 	result := template
 

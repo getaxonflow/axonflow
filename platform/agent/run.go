@@ -737,6 +737,7 @@ func Run() {
 	select {}
 }
 
+//nolint:unused // Used in tests
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1621,6 +1622,8 @@ func calculateErrorRate(errorTimestamps []time.Time) float64 {
 }
 
 // recordError records an error timestamp for error rate calculation
+//
+//nolint:unused // Used in tests
 func (m *AgentMetrics) recordError() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1637,6 +1640,8 @@ func (m *AgentMetrics) recordError() {
 }
 
 // recordSuccess resets consecutive error counter
+//
+//nolint:unused // Used in tests
 func (m *AgentMetrics) recordSuccess() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1644,6 +1649,8 @@ func (m *AgentMetrics) recordSuccess() {
 }
 
 // recordRequestTypeMetrics records metrics for a specific request type
+//
+//nolint:unused // Used in tests
 func (m *AgentMetrics) recordRequestTypeMetrics(requestType string, latencyMs int64, success bool, blocked bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1677,6 +1684,8 @@ func (m *AgentMetrics) recordRequestTypeMetrics(requestType string, latencyMs in
 }
 
 // recordConnectorMetrics records metrics for a specific MCP connector
+//
+//nolint:unused // Used in tests
 func (m *AgentMetrics) recordConnectorMetrics(connector string, latencyMs int64, success bool, errMsg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1817,6 +1826,8 @@ func getKeys(m map[string]interface{}) []string {
 //
 // We cannot use url.Parse() directly because it fails when the password contains unencoded special chars.
 // Instead, we manually extract the password, encode it, and reconstruct the URL.
+//
+//nolint:unused // Used in tests
 func encodePostgreSQLPassword(dbURL string) string {
 	// Find the scheme end (://)
 	schemeEnd := strings.Index(dbURL, "://")

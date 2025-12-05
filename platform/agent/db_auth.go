@@ -325,6 +325,8 @@ func updateAPIKeyLastUsed(ctx context.Context, db *sql.DB, apiKeyID string) {
 
 // trackRequestUsage records a request in the usage metrics
 // This should be called for every request to track usage for billing
+//
+//nolint:unused // Used in tests
 func trackRequestUsage(ctx context.Context, db *sql.DB, customerID, apiKeyID string, requestType string, success bool, latencyMS float64) error {
 	// For real-time tracking, we'll use INSERT with ON CONFLICT to aggregate hourly
 	query := `
@@ -371,6 +373,8 @@ func trackRequestUsage(ctx context.Context, db *sql.DB, customerID, apiKeyID str
 }
 
 // getCustomerUsageForMonth retrieves usage statistics for a customer in a given month
+//
+//nolint:unused // Used in tests
 func getCustomerUsageForMonth(ctx context.Context, db *sql.DB, customerID string, month time.Time) (*UsageStats, error) {
 	monthStart := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, month.Location())
 
@@ -420,6 +424,8 @@ type UsageStats struct {
 }
 
 // createAPIKey creates a new API key for a customer
+//
+//nolint:unused // Used in tests
 func createAPIKey(ctx context.Context, db *sql.DB, customerID, keyName string, expiryDays int) (string, error) {
 	// Get customer info
 	var orgID, tier string
@@ -469,6 +475,8 @@ func createAPIKey(ctx context.Context, db *sql.DB, customerID, keyName string, e
 }
 
 // revokeAPIKey revokes an API key
+//
+//nolint:unused // Used in tests
 func revokeAPIKey(ctx context.Context, db *sql.DB, apiKeyID, revokedBy, reason string) error {
 	query := `
 		UPDATE api_keys

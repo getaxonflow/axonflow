@@ -219,9 +219,10 @@ func (a *ResultAggregator) GetAggregationStats(results []StepExecution) Aggregat
 	}
 
 	for _, result := range results {
-		if result.Status == "completed" {
+		switch result.Status {
+		case "completed":
 			stats.SuccessfulTasks++
-		} else if result.Status == "failed" {
+		case "failed":
 			stats.FailedTasks++
 		}
 

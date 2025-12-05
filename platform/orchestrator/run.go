@@ -42,6 +42,15 @@ import (
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
 // This service handles intelligent request routing and response processing
 
+// contextKey is a private type for context keys to avoid collisions
+type contextKey string
+
+const (
+	ctxKeyRequestID contextKey = "request_id"
+	ctxKeyUser      contextKey = "user"
+	ctxKeyClient    contextKey = "client"
+)
+
 // Configuration
 var (
 	dynamicPolicyEngine interface {
@@ -82,7 +91,6 @@ type OrchestratorMetrics struct {
 	errorTimestamps []time.Time
 
 	// Health status tracking
-	lastHealthCheck   time.Time
 	healthCheckPassed bool
 	consecutiveErrors int64
 
@@ -722,9 +730,9 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create processing context
-	ctx := context.WithValue(r.Context(), "request_id", req.RequestID)
-	ctx = context.WithValue(ctx, "user", req.User)
-	ctx = context.WithValue(ctx, "client", req.Client)
+	ctx := context.WithValue(r.Context(), ctxKeyRequestID, req.RequestID)
+	ctx = context.WithValue(ctx, ctxKeyUser, req.User)
+	ctx = context.WithValue(ctx, ctxKeyClient, req.Client)
 
 	// 1. Evaluate dynamic policies
 	policyStartTime := time.Now()
@@ -1413,6 +1421,8 @@ func generateRandomString(length int) string {
 
 // encodePostgreSQLPassword manually parses a PostgreSQL URL and encodes the password
 // This is needed because CloudFormation passes passwords unencoded in connection strings
+//
+//nolint:unused // Used in tests
 func encodePostgreSQLPassword(dbURL string) string {
 	// Find the scheme end (://)
 	schemeEnd := strings.Index(dbURL, "://")

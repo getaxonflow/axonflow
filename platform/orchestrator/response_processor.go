@@ -166,6 +166,8 @@ func (p *ResponseProcessor) detectPII(data interface{}) map[string][]string {
 }
 
 // detectPIIEnhanced returns detailed PII detection results with confidence scores
+//
+//nolint:unused // Used in tests only
 func (p *ResponseProcessor) detectPIIEnhanced(data interface{}) []PIIDetectionResult {
 	if p.enhancedPIIDetector == nil {
 		return nil

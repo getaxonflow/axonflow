@@ -117,7 +117,7 @@ func (r *TemplateRepository) List(ctx context.Context, params ListTemplatesParam
 		tagsJSON, _ := json.Marshal(tags)
 		whereConditions = append(whereConditions, fmt.Sprintf("tags ?| $%d", argIndex))
 		args = append(args, string(tagsJSON))
-		argIndex++
+		// argIndex++ removed - not used after this point
 	}
 
 	whereClause := strings.Join(whereConditions, " AND ")
@@ -154,7 +154,7 @@ func (r *TemplateRepository) List(ctx context.Context, params ListTemplatesParam
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list templates: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var templates []PolicyTemplate
 	for rows.Next() {
@@ -240,7 +240,7 @@ func (r *TemplateRepository) GetUsageStats(ctx context.Context, tenantID string)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stats []TemplateUsageStatsResponse
 	for rows.Next() {
@@ -276,7 +276,7 @@ func (r *TemplateRepository) GetUsageByTenant(ctx context.Context, tenantID stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage by tenant: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var usages []PolicyTemplateUsage
 	for rows.Next() {
@@ -304,7 +304,7 @@ func (r *TemplateRepository) GetCategories(ctx context.Context) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get categories: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var categories []string
 	for rows.Next() {

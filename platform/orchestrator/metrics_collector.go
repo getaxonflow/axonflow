@@ -381,7 +381,8 @@ func (c *MetricsCollector) periodicAggregation() {
 		c.mu.Lock()
 		// Perform any periodic aggregation tasks
 		// For example, calculate rolling averages, clean old data, etc.
-		c.mu.Unlock()
+		// Note: Currently a placeholder for future implementation
+		c.mu.Unlock() //nolint:staticcheck // SA2001: intentional placeholder
 	}
 }
 

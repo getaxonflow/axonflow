@@ -204,6 +204,8 @@ func checkRateLimit(clientID string, limitPerMinute int) error {
 }
 
 // getRateLimitStatus returns current rate limit status for a client
+//
+//nolint:unused // Used in tests
 func getRateLimitStatus(clientID string) (count int, limit int, resetTime time.Time) {
 	rateLimitMu.RLock()
 	defer rateLimitMu.RUnlock()
