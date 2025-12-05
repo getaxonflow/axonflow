@@ -429,12 +429,12 @@ We welcome contributions to AxonFlow! To maintain high quality standards:
 2. Check `technical-docs/` for architecture and testing standards
 3. Run `go test -cover` to verify coverage before submitting PRs
 
-**Current Quality Status:**
-- Agent Package: 70.3% test coverage ✅
-- Orchestrator Package: 70.4% test coverage ✅
-- Customer Portal: 97.5% test coverage ✅
+**Current Quality Status (Dec 5, 2025):**
+- Agent Package: 74.9% test coverage ✅ (threshold: 74%)
+- Orchestrator Package: 72.5% test coverage ✅ (threshold: 70%)
+- Connectors Package: 68.6% test coverage ✅ (threshold: 66%)
 - All tests passing, zero flaky tests
-- CI/CD pipeline enforces 70% minimum coverage
+- CI/CD pipeline enforces coverage thresholds per module
 
 ## 📚 Documentation
 
