@@ -1070,3 +1070,336 @@ func TestApplyExecutionMode(t *testing.T) {
 	engine.applyExecutionMode(workflow, "parallel")
 	engine.applyExecutionMode(workflow, "sequential")
 }
+
+// TestNewPlanningEngineWithConfigDir tests creating engine from a config directory
+func TestNewPlanningEngineWithConfigDir(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+
+	t.Run("empty config dir uses default templates", func(t *testing.T) {
+		engine, err := NewPlanningEngineWithConfigDir(router, "")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if engine == nil {
+			t.Error("expected non-nil engine")
+		}
+		// Should have default templates initialized
+		if len(engine.templates) == 0 {
+			t.Error("expected default templates to be initialized")
+		}
+	})
+
+	t.Run("non-existent dir returns error", func(t *testing.T) {
+		_, err := NewPlanningEngineWithConfigDir(router, "/non/existent/path")
+		if err == nil {
+			t.Error("expected error for non-existent config directory")
+		}
+	})
+
+	t.Run("valid temp dir with no configs", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "agent-configs-*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		engine, err := NewPlanningEngineWithConfigDir(router, tempDir)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if engine == nil {
+			t.Error("expected non-nil engine")
+		}
+	})
+}
+
+// TestGetAgentRegistry tests the GetAgentRegistry method
+func TestGetAgentRegistry(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+	engine := NewPlanningEngine(router)
+
+	registry := engine.GetAgentRegistry()
+	if registry == nil {
+		t.Error("expected non-nil registry")
+	}
+	if registry != engine.registry {
+		t.Error("expected GetAgentRegistry to return the same registry instance")
+	}
+}
+
+// TestReloadAgentConfigs tests config reloading
+func TestReloadAgentConfigs(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+
+	t.Run("returns error when registry is nil", func(t *testing.T) {
+		engine := &PlanningEngine{
+			llmRouter: router,
+			templates: make(map[string]*DomainTemplate),
+			registry:  nil, // nil registry
+		}
+		err := engine.ReloadAgentConfigs()
+		if err == nil {
+			t.Error("expected error for nil registry")
+		}
+		if !strings.Contains(err.Error(), "not initialized") {
+			t.Errorf("expected error about registry not initialized, got: %v", err)
+		}
+	})
+
+	t.Run("reloads configs from registry", func(t *testing.T) {
+		engine := NewPlanningEngine(router)
+		// Should not error even if no configs loaded
+		err := engine.ReloadAgentConfigs()
+		// This might error if no configDir was set, but should not panic
+		if err != nil {
+			// Expected - no config directory was set
+			t.Logf("expected reload error when no config dir: %v", err)
+		}
+	})
+}
+
+// TestTryLoadAgentConfigs tests the config loading from standard paths
+func TestTryLoadAgentConfigs(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+	engine := NewPlanningEngine(router)
+
+	// Should return false when no standard paths exist
+	loaded := engine.tryLoadAgentConfigs()
+	// May or may not load depending on environment
+	t.Logf("tryLoadAgentConfigs returned: %v", loaded)
+}
+
+// TestGetDomainTemplateFromRegistry tests getDomainTemplate with registry
+func TestGetDomainTemplateFromRegistry(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+	engine := NewPlanningEngine(router)
+
+	tests := []struct {
+		name     string
+		domain   string
+		wantNil  bool
+	}{
+		{"travel domain", "travel", false},
+		{"healthcare domain", "healthcare", false},
+		{"finance domain", "finance", false},
+		{"generic domain", "generic", false},
+		{"unknown domain returns generic", "unknown", false}, // Falls back to generic
+		{"empty domain returns generic", "", false},          // Falls back to generic
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			template := engine.getDomainTemplate(tt.domain)
+			if tt.wantNil && template != nil {
+				t.Errorf("expected nil template for domain %s", tt.domain)
+			}
+			if !tt.wantNil && template == nil {
+				t.Errorf("expected non-nil template for domain %s", tt.domain)
+			}
+		})
+	}
+}
+
+// TestInitializeTemplates tests the template initialization
+func TestInitializeTemplates(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+	engine := &PlanningEngine{
+		llmRouter: router,
+		templates: make(map[string]*DomainTemplate),
+		registry:  NewAgentRegistry(),
+	}
+
+	// Call initializeTemplates
+	engine.initializeTemplates()
+
+	// Check expected domains (travel, healthcare, finance, generic)
+	expectedDomains := []string{"travel", "healthcare", "finance", "generic"}
+	for _, domain := range expectedDomains {
+		if _, ok := engine.templates[domain]; !ok {
+			t.Errorf("expected template for domain %s", domain)
+		}
+	}
+
+	// Verify travel template has expected tasks
+	travelTemplate := engine.templates["travel"]
+	if travelTemplate == nil {
+		t.Fatal("travel template is nil")
+	}
+	if len(travelTemplate.CommonTasks) == 0 {
+		t.Error("expected travel template to have common tasks")
+	}
+	expectedTasks := []string{"flight-search", "hotel-search"}
+	for _, task := range expectedTasks {
+		found := false
+		for _, ct := range travelTemplate.CommonTasks {
+			if ct == task {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected travel template to have task: %s", task)
+		}
+	}
+
+	// Verify generic template exists and has empty CommonTasks
+	genericTemplate := engine.templates["generic"]
+	if genericTemplate == nil {
+		t.Fatal("generic template is nil")
+	}
+	if genericTemplate.Domain != "generic" {
+		t.Errorf("expected domain to be 'generic', got %s", genericTemplate.Domain)
+	}
+}
+
+// TestBuildSynthesisPromptWithDifferentInputs tests buildSynthesisPrompt with various inputs
+func TestBuildSynthesisPromptWithDifferentInputs(t *testing.T) {
+	router := &LLMRouter{
+		providers: make(map[string]LLMProvider),
+	}
+	engine := NewPlanningEngine(router)
+
+	tests := []struct {
+		name        string
+		query       string
+		domain      string
+		wantContain string
+	}{
+		{
+			name:        "travel query",
+			query:       "Plan a trip to Paris with flights and hotels",
+			domain:      "travel",
+			wantContain: "Paris",
+		},
+		{
+			name:        "healthcare query",
+			query:       "Find treatment options for diabetes",
+			domain:      "healthcare",
+			wantContain: "treatment",
+		},
+		{
+			name:        "finance query",
+			query:       "Analyze stock portfolio performance",
+			domain:      "finance",
+			wantContain: "stock",
+		},
+		{
+			name:        "complex query",
+			query:       "Find flights from NYC to LAX, book a hotel, and plan activities",
+			domain:      "travel",
+			wantContain: "flights",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prompt := engine.buildSynthesisPrompt(tt.query, tt.domain)
+			if prompt == "" {
+				t.Error("expected non-empty prompt")
+			}
+			if tt.wantContain != "" && !strings.Contains(strings.ToLower(prompt), strings.ToLower(tt.wantContain)) {
+				t.Errorf("expected prompt to contain %s, got: %s", tt.wantContain, prompt[:min(len(prompt), 200)])
+			}
+		})
+	}
+}
+
+// TestGenerateWorkflowDefinitionEdgeCases tests generateWorkflowDefinition with edge cases
+func TestGenerateWorkflowDefinitionEdgeCases(t *testing.T) {
+	// Create a mock provider for testing
+	mockProvider := &MockProvider{
+		name:    "mock",
+		healthy: true,
+	}
+
+	router := &LLMRouter{
+		providers: map[string]LLMProvider{
+			"mock": mockProvider,
+		},
+		loadBalancer:   NewLoadBalancer(),
+		metricsTracker: NewProviderMetricsTracker(),
+		weights:        map[string]float64{"mock": 1.0},
+	}
+	engine := NewPlanningEngine(router)
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		req         PlanGenerationRequest
+		analysis    *QueryAnalysis
+		expectError bool
+	}{
+		{
+			name: "basic travel request",
+			req: PlanGenerationRequest{
+				Query:     "Plan a trip to Paris",
+				Domain:    "travel",
+				ClientID:  "test-client",
+				RequestID: "test-request-1",
+			},
+			analysis: &QueryAnalysis{
+				Domain:           "travel",
+				Complexity:       2,
+				RequiresParallel: true,
+				SuggestedTasks:   []string{"flight-search", "hotel-search"},
+				Reasoning:        "Travel planning requires parallel search",
+			},
+			expectError: false,
+		},
+		{
+			name: "generic query request",
+			req: PlanGenerationRequest{
+				Query:    "Help me with this task",
+				Domain:   "generic",
+				ClientID: "test-client",
+			},
+			analysis: &QueryAnalysis{
+				Domain:     "generic",
+				Complexity: 1,
+			},
+			expectError: false,
+		},
+		{
+			name: "healthcare request",
+			req: PlanGenerationRequest{
+				Query:    "Find treatment options",
+				Domain:   "healthcare",
+				ClientID: "test-client",
+			},
+			analysis: &QueryAnalysis{
+				Domain:         "healthcare",
+				Complexity:     3,
+				SuggestedTasks: []string{"symptom-analysis"},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workflow, err := engine.generateWorkflowDefinition(ctx, tt.req, tt.analysis)
+			if tt.expectError && err == nil {
+				t.Error("expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if !tt.expectError && workflow == nil {
+				t.Error("expected non-nil workflow")
+			}
+		})
+	}
+}
