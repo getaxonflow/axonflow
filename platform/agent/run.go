@@ -47,6 +47,13 @@ import (
 // AxonFlow Agent - Authentication, Authorization & Static Policy Enforcement Gateway
 // This service sits between clients and the AxonFlow Orchestrator
 
+// Security constants
+const (
+	// SelfHostedModeAcknowledgment is the required value for SELF_HOSTED_MODE_ACKNOWLEDGED
+	// to explicitly confirm understanding that authentication is bypassed in self-hosted mode
+	SelfHostedModeAcknowledgment = "I_UNDERSTAND_NO_AUTH"
+)
+
 // Configuration
 var (
 	jwtSecret          = []byte(os.Getenv("JWT_SECRET"))
@@ -355,29 +362,39 @@ func Run() {
 	if selfHostedMode {
 		log.Println("🏠 SELF_HOSTED_MODE enabled - skipping license validation")
 		log.Println("   Perfect for OSS contributors and local development")
-	} else if licenseKey == "" {
-		log.Println("⚠️  AXONFLOW_LICENSE_KEY not set - running in central agent mode")
-		log.Println("   Central agents validate client license keys during request processing")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		result, err := license.ValidateWithRetry(ctx, licenseKey, 3)
-		if err != nil {
-			log.Fatalf("License validation failed: %v", err)
+		// Validate HMAC secret is properly configured before any license operations
+		// This is required for BOTH:
+		// 1. Agent-level license validation (when AXONFLOW_LICENSE_KEY is set)
+		// 2. Client license validation in central agent mode (during request processing)
+		if err := license.ValidateHMACSecretAtStartup(); err != nil {
+			log.Fatalf("[SECURITY] HMAC secret validation failed: %v", err)
 		}
 
-		if !result.Valid {
-			log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
-		}
+		if licenseKey == "" {
+			log.Println("⚠️  AXONFLOW_LICENSE_KEY not set - running in central agent mode")
+			log.Println("   Central agents validate client license keys during request processing")
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-		log.Printf("✅ License validated successfully")
-		log.Printf("   Tier: %s", result.Tier)
-		log.Printf("   Max Nodes: %d", result.MaxNodes)
-		log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
+			result, err := license.ValidateWithRetry(ctx, licenseKey, 3)
+			if err != nil {
+				log.Fatalf("License validation failed: %v", err)
+			}
 
-		if result.DaysUntilExpiry <= 30 {
-			log.Printf("   ⚠️  License expires in %d days - contact sales for renewal", result.DaysUntilExpiry)
+			if !result.Valid {
+				log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
+			}
+
+			log.Printf("✅ License validated successfully")
+			log.Printf("   Tier: %s", result.Tier)
+			log.Printf("   Max Nodes: %d", result.MaxNodes)
+			log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
+
+			if result.DaysUntilExpiry <= 30 {
+				log.Printf("   ⚠️  License expires in %d days - contact sales for renewal", result.DaysUntilExpiry)
+			}
 		}
 	}
 
@@ -1101,11 +1118,24 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 	}
 
 	// Self-hosted mode: Accept any token for local development
-	// SECURITY: This bypass is only active when SELF_HOSTED_MODE=true
-	// which is set only in docker-compose.yml for local development.
-	// Production deployments MUST NOT set this environment variable.
+	// SECURITY: This bypass requires explicit safeguards
 	if os.Getenv("SELF_HOSTED_MODE") == "true" {
-		log.Printf("Self-hosted mode: accepting token for tenant %s", expectedTenantID)
+		// Safeguard 1: Block in production environment (case-insensitive)
+		env := strings.ToLower(os.Getenv("ENVIRONMENT"))
+		if env == "production" || env == "prod" {
+			log.Printf("[SECURITY] CRITICAL: SELF_HOSTED_MODE blocked in production environment")
+			return nil, fmt.Errorf("self-hosted mode is not allowed in production environment")
+		}
+
+		// Safeguard 2: Require explicit acknowledgment
+		acknowledgment := os.Getenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+		if acknowledgment != SelfHostedModeAcknowledgment {
+			log.Printf("[SECURITY] SELF_HOSTED_MODE requires explicit acknowledgment")
+			return nil, fmt.Errorf("self-hosted mode requires SELF_HOSTED_MODE_ACKNOWLEDGED=%s environment variable", SelfHostedModeAcknowledgment)
+		}
+
+		// Safeguard 3: Clear warning in logs
+		log.Printf("[SECURITY] WARNING: Self-hosted mode active - ALL AUTHENTICATION BYPASSED for tenant %s", expectedTenantID)
 		return &User{
 			ID:          1,
 			Email:       "local-dev@axonflow.local",

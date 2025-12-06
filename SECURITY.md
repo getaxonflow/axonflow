@@ -403,11 +403,12 @@ We would like to thank the following security researchers for responsibly disclo
 - [Changelog](./CHANGELOG.md) - Security updates and fixes
 - [AxonFlow Security Architecture](technical-docs/THREAT_MODEL_AND_DATA_FLOW.md)
 - [Deployment Security Guide](technical-docs/DEPLOYMENT_SCRIPTS_REFERENCE.md)
+- [Enterprise Security Configuration](ee/docs/ENTERPRISE_SECURITY.md) - HMAC secrets, self-hosted mode
 - [RLS Architecture](technical-docs/RLS_ARCHITECTURE.md)
 - [Audit Logging Architecture](technical-docs/AUDIT_LOGGING_ARCHITECTURE.md)
 - [Service Identity Architecture](technical-docs/SERVICE_IDENTITY_ARCHITECTURE.md)
 
 ---
 
-**Last Updated:** November 18, 2025
-**Version:** 2.0
+**Last Updated:** December 5, 2025
+**Version:** 2.1

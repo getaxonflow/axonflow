@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -71,6 +72,13 @@ type ServiceLicensePayload struct {
 	ExpiresAt   string   `json:"expires_at"` // Format: YYYYMMDD
 }
 
+// ValidateHMACSecretAtStartup is a no-op in OSS builds.
+// OSS builds don't require HMAC secret validation since they don't generate
+// or strictly validate licenses.
+func ValidateHMACSecretAtStartup() error {
+	return nil
+}
+
 // ValidateLicense validates an AxonFlow license key.
 // OSS stub: Parses V2 licenses to extract metadata, but doesn't enforce strict validation.
 // For non-V2 licenses or parse errors, returns a default OSS result.
@@ -78,7 +86,7 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 	// Try to parse as V2 license
 	if strings.HasPrefix(licenseKey, "AXON-V2-") {
 		result, err := parseV2License(licenseKey)
-		if err == nil {
+		if err == nil && result != nil {
 			return result, nil
 		}
 		// If V2 parsing fails, fall through to default OSS result
@@ -195,36 +203,18 @@ func getOSSFeatures() map[string]bool {
 	}
 }
 
-// GenerateLicenseKey generates a license key for the given tier and organization.
-// OSS stub: Generates a V2 format license key using the default HMAC secret.
-// This allows tests to generate and validate licenses in OSS mode.
+// GenerateLicenseKey is not available in OSS builds.
+// License generation is an enterprise-only feature to prevent exposure of the
+// license key format and signing algorithm.
 func GenerateLicenseKey(tier Tier, orgID string, expiryDays int) (string, error) {
-	// Calculate expiry date
-	expiry := time.Now().AddDate(0, 0, expiryDays)
-	expiryStr := expiry.Format("20060102")
+	return "", fmt.Errorf("license generation is not available in OSS builds - " +
+		"upgrade to Enterprise at https://getaxonflow.com/enterprise for license management")
+}
 
-	// Create payload
-	payload := ServiceLicensePayload{
-		Tier:      string(tier),
-		TenantID:  orgID,
-		ExpiresAt: expiryStr,
-	}
-
-	// Encode payload as JSON
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-
-	// Base64 encode the payload
-	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
-
-	// Generate HMAC-SHA256 signature
-	h := hmac.New(sha256.New, []byte(defaultHMACSecret))
-	h.Write([]byte(payloadBase64))
-	fullSignature := hex.EncodeToString(h.Sum(nil))
-	signature := fullSignature[:8] // First 8 chars of hex hash
-
-	// Return V2 format license key
-	return "AXON-V2-" + payloadBase64 + "-" + signature, nil
+// GenerateServiceLicenseKey is not available in OSS builds.
+// License generation is an enterprise-only feature to prevent exposure of the
+// license key format and signing algorithm.
+func GenerateServiceLicenseKey(tier Tier, tenantID, serviceName, serviceType string, permissions []string, expiryDays int) (string, error) {
+	return "", fmt.Errorf("license generation is not available in OSS builds - " +
+		"upgrade to Enterprise at https://getaxonflow.com/enterprise for license management")
 }

@@ -319,6 +319,58 @@ cp .env.example .env
 
 ---
 
+## Self-Hosted Mode Security
+
+When running in self-hosted mode (`SELF_HOSTED_MODE=true`), authentication is bypassed for local development convenience. This mode has security safeguards to prevent accidental misuse.
+
+### Required Environment Variables
+
+For self-hosted mode to work, you MUST set:
+
+```bash
+SELF_HOSTED_MODE=true
+SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH
+ENVIRONMENT=development  # MUST NOT be "production" or "prod"
+```
+
+### Security Safeguards
+
+1. **Production Block**: Self-hosted mode is completely blocked when `ENVIRONMENT=production` or `ENVIRONMENT=prod`. This prevents accidental deployment without authentication.
+
+2. **Explicit Acknowledgment**: You must set `SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH` to confirm you understand that all authentication is bypassed.
+
+3. **Log Warnings**: Clear warnings are logged when self-hosted mode is active to ensure operators are aware.
+
+### What Self-Hosted Mode Does
+
+When properly configured, self-hosted mode:
+- Accepts **any** token value (no JWT validation)
+- Returns a local dev user with admin permissions
+- Grants access to all features (query, llm, mcp_query, admin)
+
+### docker-compose.yml Configuration
+
+The included `docker-compose.yml` already has the correct configuration:
+
+```yaml
+environment:
+  SELF_HOSTED_MODE: "true"
+  SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
+  ENVIRONMENT: "development"
+```
+
+### Disabling Self-Hosted Mode
+
+For production or secure environments, simply remove or set to false:
+
+```yaml
+environment:
+  SELF_HOSTED_MODE: "false"  # or remove entirely
+  # Use real JWT authentication
+```
+
+---
+
 ## Troubleshooting
 
 ### Services won't start

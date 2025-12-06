@@ -91,6 +91,8 @@ services:
       # Service configuration
       PORT: 8080
       SELF_HOSTED_MODE: "true"
+      SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
+      ENVIRONMENT: "development"
       LOG_LEVEL: debug
 
       # Redis (optional)

@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"axonflow/platform/agent/license"
 )
 
 // TestValidateViaOrganizations_Success tests successful organization validation with V2 license
@@ -556,6 +558,12 @@ func TestGetCustomerUsageForMonth_NoData(t *testing.T) {
 
 // TestCreateAPIKey_Success tests successful API key creation
 func TestCreateAPIKey_Success(t *testing.T) {
+	// Skip this test in OSS builds as it requires GenerateLicenseKey
+	_, err := license.GenerateLicenseKey(license.TierProfessional, "test", 1)
+	if err != nil {
+		t.Skip("GenerateLicenseKey not available in OSS builds")
+	}
+
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create mock: %v", err)

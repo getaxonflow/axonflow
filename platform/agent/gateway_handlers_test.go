@@ -35,9 +35,13 @@ import (
 
 // TestPreCheckHandler_SelfHostedMode tests pre-check in self-hosted mode
 func TestPreCheckHandler_SelfHostedMode(t *testing.T) {
-	// Enable self-hosted mode
+	// Enable self-hosted mode with required safeguards
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	// Initialize policy engine for testing
 	staticPolicyEngine = NewStaticPolicyEngine()
@@ -87,7 +91,11 @@ func TestPreCheckHandler_SelfHostedMode(t *testing.T) {
 // TestPreCheckHandler_PolicyBlock tests pre-check blocking by policy
 func TestPreCheckHandler_PolicyBlock(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
 
@@ -169,7 +177,11 @@ func TestPreCheckHandler_MissingLicenseKey(t *testing.T) {
 // TestAuditLLMCallHandler_SelfHostedMode tests audit in self-hosted mode
 func TestAuditLLMCallHandler_SelfHostedMode(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID:       "test-context-123",
@@ -565,7 +577,11 @@ func TestPreCheckHandler_NoSelfHostedNoLicense(t *testing.T) {
 // TestAuditHandler_InvalidJSON tests handling of invalid JSON
 func TestAuditHandler_InvalidJSON(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBufferString("not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -655,7 +671,11 @@ func TestLLMPricing(t *testing.T) {
 // TestPreCheckHandler_MissingQuery tests pre-check with missing query
 func TestPreCheckHandler_MissingQuery(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := PreCheckRequest{
 		UserToken: "test-token",
@@ -685,7 +705,11 @@ func TestPreCheckHandler_MissingQuery(t *testing.T) {
 // TestPreCheckHandler_MissingClientID tests pre-check with missing client_id
 func TestPreCheckHandler_MissingClientID(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := PreCheckRequest{
 		UserToken: "test-token",
@@ -715,7 +739,11 @@ func TestPreCheckHandler_MissingClientID(t *testing.T) {
 // TestAuditHandler_MissingContextID tests audit with missing context_id
 func TestAuditHandler_MissingContextID(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ClientID: "test-client",
@@ -746,7 +774,11 @@ func TestAuditHandler_MissingContextID(t *testing.T) {
 // TestAuditHandler_MissingClientID tests audit with missing client_id
 func TestAuditHandler_MissingClientID(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID: "ctx-123",
@@ -777,7 +809,11 @@ func TestAuditHandler_MissingClientID(t *testing.T) {
 // TestAuditHandler_MissingProvider tests audit with missing provider
 func TestAuditHandler_MissingProvider(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID: "ctx-123",
@@ -808,7 +844,11 @@ func TestAuditHandler_MissingProvider(t *testing.T) {
 // TestAuditHandler_MissingModel tests audit with missing model
 func TestAuditHandler_MissingModel(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID: "ctx-123",
@@ -839,7 +879,11 @@ func TestAuditHandler_MissingModel(t *testing.T) {
 // TestPreCheckHandler_WithDataSources tests pre-check with data sources
 func TestPreCheckHandler_WithDataSources(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
 
@@ -877,7 +921,11 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 // TestPreCheckHandler_PIIDetection tests PII detection (allowed with redaction flag)
 func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
 
@@ -925,7 +973,11 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 // TestPreCheckHandler_DangerousQuery tests dangerous query blocking (DROP TABLE)
 func TestPreCheckHandler_DangerousQuery(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
 
@@ -964,7 +1016,11 @@ func TestPreCheckHandler_DangerousQuery(t *testing.T) {
 // TestAuditHandler_WithMetadata tests audit with metadata
 func TestAuditHandler_WithMetadata(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID:       "ctx-with-metadata",
@@ -1047,7 +1103,11 @@ func TestPreCheckHandler_EmptyBody(t *testing.T) {
 // TestAuditHandler_EmptyBody tests audit with empty body
 func TestAuditHandler_EmptyBody(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
 
 	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBuffer([]byte{}))
 	req.Header.Set("Content-Type", "application/json")
