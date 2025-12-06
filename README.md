@@ -173,9 +173,9 @@ AxonFlow is available in two editions:
 | **Advanced Features** | | |
 | Multi-Agent Planning (MAP) | ✅ YAML configs | ✅ Full |
 | Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
-| License validation | ❌ | ✅ |
-| AWS Marketplace integration | ❌ | ✅ |
-| Node enforcement & metering | ❌ | ✅ |
+| Customer dashboard UI | ❌ | ✅ |
+| Usage analytics & reporting | ❌ | ✅ |
+| Multi-provider LLM routing | ❌ | ✅ |
 | **Deployment** | | |
 | Docker Compose (local) | ✅ | ✅ |
 | AWS ECS/Fargate | Manual | One-click CloudFormation |
