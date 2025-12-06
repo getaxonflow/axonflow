@@ -1,0 +1,22 @@
+# CODEOWNERS - Auto-assign reviewers for pull requests
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything
+* @saurabhjain1592
+
+# Platform components
+/platform/agent/ @saurabhjain1592
+/platform/orchestrator/ @saurabhjain1592
+/platform/connectors/ @saurabhjain1592
+/platform/shared/ @saurabhjain1592
+
+# SDKs
+/sdk/ @saurabhjain1592
+
+# Documentation
+/docs/ @saurabhjain1592
+*.md @saurabhjain1592
+
+# CI/CD and infrastructure
+/.github/ @saurabhjain1592
+/migrations/ @saurabhjain1592
