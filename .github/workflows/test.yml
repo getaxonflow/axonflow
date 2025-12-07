@@ -117,7 +117,7 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Orchestrator Coverage: $coverage%"
 
-          threshold=72.0
+          threshold=73.5
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "❌ Orchestrator coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -137,7 +137,7 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Agent Coverage: $coverage%"
 
-          threshold=74.0
+          threshold=76.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "❌ Agent coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -160,10 +160,7 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Connector Coverage: $coverage%"
 
-          # Threshold lowered to 55% temporarily after adding S3/GCS/Azure Blob connectors
-          # These cloud storage connectors need mock-based or integration tests
-          # TODO: Raise threshold back to 66% after adding proper test infrastructure
-          threshold=55.0
+          threshold=62.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "❌ Connector coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -329,6 +326,6 @@ jobs:
           echo "✅ All tests passed!"
           echo ""
           echo "Coverage thresholds verified:"
-          echo "  - Orchestrator: 72%"
-          echo "  - Agent: 74%"
-          echo "  - Connectors: 66%"
+          echo "  - Orchestrator: 73.5%"
+          echo "  - Agent: 76%"
+          echo "  - Connectors: 62%"
