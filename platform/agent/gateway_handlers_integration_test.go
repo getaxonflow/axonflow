@@ -35,13 +35,21 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 	}
 
 	// Enable self-hosted mode for testing (no license validation)
+	// Both env vars are required after security hardening in PR #302
 	originalSelfHosted := os.Getenv("SELF_HOSTED_MODE")
+	originalAcknowledged := os.Getenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
 	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
 	defer func() {
 		if originalSelfHosted != "" {
 			os.Setenv("SELF_HOSTED_MODE", originalSelfHosted)
 		} else {
 			os.Unsetenv("SELF_HOSTED_MODE")
+		}
+		if originalAcknowledged != "" {
+			os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", originalAcknowledged)
+		} else {
+			os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
 		}
 	}()
 

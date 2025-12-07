@@ -26,16 +26,25 @@ import (
 )
 
 // AgentRegistry manages agent configurations with thread-safe access
-// and supports hot reload for development environments
+// and supports hot reload for development environments.
+//
+// MAP 0.8: Supports hybrid mode with both file and database sources.
+// Database-sourced configurations take priority over file-based ones.
 type AgentRegistry struct {
-	configs       map[string]*AgentConfigFile   // domain -> config
-	agents        map[string]*AgentDef          // agent_name -> definition
-	routing       []CompiledRoutingRule         // Pre-compiled regex rules
-	configDir     string                        // Directory containing config files
-	mu            sync.RWMutex                  // Protects configs, agents, routing
-	lastReload    time.Time                     // Last reload timestamp
-	reloadCount   int64                         // Atomic counter for reload operations
-	defaultDomain string                        // Fallback domain when no match
+	configs          map[string]*AgentConfigFile // domain -> config
+	agents           map[string]*AgentDef        // agent_name -> definition
+	routing          []CompiledRoutingRule       // Pre-compiled regex rules
+	configDir        string                      // Directory containing config files
+	mu               sync.RWMutex                // Protects configs, agents, routing
+	lastReload       time.Time                   // Last reload timestamp
+	reloadCount      int64                       // Atomic counter for reload operations
+	defaultDomain    string                      // Fallback domain when no match
+
+	// MAP 0.8: Database integration fields
+	dbSource         DatabaseAgentSource         // Database source for hybrid mode
+	orgID            string                      // Organization ID for database queries
+	mode             RegistryMode                // Operating mode (file/database/hybrid)
+	dbSourcedDomains map[string]bool             // Tracks which domains came from DB
 }
 
 // RegistryStats provides statistics about the registry
@@ -52,10 +61,12 @@ type RegistryStats struct {
 // NewAgentRegistry creates a new agent registry instance
 func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{
-		configs:       make(map[string]*AgentConfigFile),
-		agents:        make(map[string]*AgentDef),
-		routing:       make([]CompiledRoutingRule, 0),
-		defaultDomain: "generic",
+		configs:          make(map[string]*AgentConfigFile),
+		agents:           make(map[string]*AgentDef),
+		routing:          make([]CompiledRoutingRule, 0),
+		defaultDomain:    "generic",
+		mode:             RegistryModeFile, // Default to file mode
+		dbSourcedDomains: make(map[string]bool),
 	}
 }
 

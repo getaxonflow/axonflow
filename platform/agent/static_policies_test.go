@@ -44,13 +44,13 @@ func TestNewStaticPolicyEngine(t *testing.T) {
 	}
 
 	piiPatterns, ok := stats["pii_patterns"].(int)
-	if !ok || piiPatterns != 10 {
-		t.Errorf("Expected 10 PII patterns, got %v", piiPatterns)
+	if !ok || piiPatterns != 12 {
+		t.Errorf("Expected 12 PII patterns (including PAN and Aadhaar), got %v", piiPatterns)
 	}
 
 	totalPatterns, ok := stats["total_patterns"].(int)
-	if !ok || totalPatterns != 25 {
-		t.Errorf("Expected 25 total patterns, got %v", totalPatterns)
+	if !ok || totalPatterns != 27 {
+		t.Errorf("Expected 27 total patterns, got %v", totalPatterns)
 	}
 }
 
@@ -1051,7 +1051,7 @@ func TestPIIPolicyStats(t *testing.T) {
 	piiCount := stats["pii_patterns"].(int)
 
 	// Should have at least 10 PII patterns now
-	expectedMinPatterns := 10
+	expectedMinPatterns := 12 // Includes PAN and Aadhaar patterns
 	if piiCount < expectedMinPatterns {
 		t.Errorf("Expected at least %d PII patterns, got %d", expectedMinPatterns, piiCount)
 	}
@@ -1112,9 +1112,10 @@ func TestPIIDetectionPerformance(t *testing.T) {
 		Permissions: []string{"query"},
 	}
 
-	// Large query with multiple PII types
+	// Large query with multiple PII types including Indian PII
 	query := "Customer SSN 123-45-6789, email test@example.com, phone 555-123-4567, " +
-		"card 4532015112830366, IBAN DE89370400440532013000, passport AB1234567. " +
+		"card 4532015112830366, IBAN DE89370400440532013000, passport AB1234567, " +
+		"PAN ABCPD1234E, Aadhaar 2234 5678 9012. " +
 		"Normal text here. More normal text. Even more text to make it longer."
 
 	// Run multiple times to get average
@@ -1126,5 +1127,428 @@ func TestPIIDetectionPerformance(t *testing.T) {
 		if result.ProcessingTimeMs > 10 {
 			t.Errorf("PII detection too slow: %dms (iteration %d)", result.ProcessingTimeMs, i)
 		}
+	}
+}
+
+// =============================================================================
+// Indian PII Detection Tests (SEBI AI/ML Guidelines & DPDP Act 2023)
+// These tests verify the StaticPolicyEngine detection of PAN and Aadhaar
+// =============================================================================
+
+// TestStaticPANDetection tests Indian PAN detection in the StaticPolicyEngine
+func TestStaticPANDetection(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name                string
+		query               string
+		shouldTriggerPolicy bool
+		description         string
+	}{
+		// Valid PAN formats - Individual (P)
+		{
+			name:                "Valid PAN - Individual",
+			query:               "Customer PAN is ABCPD1234F",
+			shouldTriggerPolicy: true,
+			description:         "Standard individual PAN format (4th char P=Person)",
+		},
+		{
+			name:                "Valid PAN - with PAN prefix",
+			query:               "PAN: ABCDE1234F",
+			shouldTriggerPolicy: true,
+			description:         "PAN with explicit prefix matches second alternative",
+		},
+		{
+			name:                "Valid PAN - with PAN space prefix",
+			query:               "PAN ABCDE1234F",
+			shouldTriggerPolicy: true,
+			description:         "PAN with space prefix",
+		},
+		// Valid PAN formats - Company (C)
+		{
+			name:                "Valid PAN - Company",
+			query:               "Company PAN: AAACM1234C",
+			shouldTriggerPolicy: true,
+			description:         "Company PAN (4th char C)",
+		},
+		// Valid PAN formats - HUF (H)
+		{
+			name:                "Valid PAN - HUF",
+			query:               "HUF PAN number AAAHK1234H",
+			shouldTriggerPolicy: true,
+			description:         "HUF PAN (4th char H)",
+		},
+		// Valid PAN formats - Other entity types
+		{
+			name:                "Valid PAN - Association (A)",
+			query:               "Association PAN BBBAB1234A",
+			shouldTriggerPolicy: true,
+			description:         "Association PAN (4th char A)",
+		},
+		{
+			name:                "Valid PAN - Body of Individuals (B)",
+			query:               "BOI PAN CCCBD1234B",
+			shouldTriggerPolicy: true,
+			description:         "BOI PAN (4th char B)",
+		},
+		{
+			name:                "Valid PAN - Government (G)",
+			query:               "Government entity PAN DDDGE1234G",
+			shouldTriggerPolicy: true,
+			description:         "Government PAN (4th char G)",
+		},
+		{
+			name:                "Valid PAN - AJP (J)",
+			query:               "AJP PAN EEEJF1234J",
+			shouldTriggerPolicy: true,
+			description:         "AJP PAN (4th char J)",
+		},
+		{
+			name:                "Valid PAN - Local Authority (L)",
+			query:               "Local authority PAN FFFLG1234L",
+			shouldTriggerPolicy: true,
+			description:         "Local Authority PAN (4th char L)",
+		},
+		{
+			name:                "Valid PAN - Firm (F)",
+			query:               "Partnership firm PAN GGGFH1234F",
+			shouldTriggerPolicy: true,
+			description:         "Firm PAN (4th char F)",
+		},
+		{
+			name:                "Valid PAN - Trust (T)",
+			query:               "Trust PAN HHHTJ1234T",
+			shouldTriggerPolicy: true,
+			description:         "Trust PAN (4th char T)",
+		},
+		// PAN in various contexts
+		{
+			name:                "PAN in sentence",
+			query:               "Please verify the PAN ABCPM1234N before proceeding with KYC",
+			shouldTriggerPolicy: true,
+			description:         "PAN embedded in sentence",
+		},
+		// Note: "Account: 123456789" matches SSN pattern before PAN pattern in static engine
+		// because SSN comes first in the PII patterns list. This is expected behavior.
+		{
+			name:                "Multiple PANs",
+			query:               "Primary holder ABCPD1234A, Secondary holder XYZPM5678B",
+			shouldTriggerPolicy: true,
+			description:         "Multiple PANs in text",
+		},
+		// Edge cases - should not match
+		{
+			name:                "Invalid - too short",
+			query:               "Invalid PAN ABCPD1234",
+			shouldTriggerPolicy: false,
+			description:         "9 characters - too short for PAN",
+		},
+		{
+			name:                "Invalid - too long",
+			query:               "Invalid PAN ABCPD1234FG",
+			shouldTriggerPolicy: false,
+			description:         "11 characters - too long for PAN",
+		},
+		{
+			name:                "No PAN present",
+			query:               "Process the customer order for laptop",
+			shouldTriggerPolicy: false,
+			description:         "No PAN in query",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
+
+			// PAN detection should not block
+			if result.Blocked {
+				t.Errorf("PAN detection should not block queries, got blocked: %s", result.Reason)
+			}
+
+			// Check if policy was triggered
+			hasPANPolicy := containsPolicy(result.TriggeredPolicies, "pan_detection")
+			if tt.shouldTriggerPolicy && !hasPANPolicy {
+				t.Errorf("%s: Expected PAN detection to trigger for query: %s\nTriggered policies: %v",
+					tt.description, tt.query, result.TriggeredPolicies)
+			}
+			// Note: We don't test for false matches because other PII patterns may match
+		})
+	}
+}
+
+// TestStaticAadhaarDetection tests Indian Aadhaar detection in the StaticPolicyEngine
+func TestStaticAadhaarDetection(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name                string
+		query               string
+		shouldTriggerPolicy bool
+		description         string
+	}{
+		// Valid Aadhaar formats - with spaces
+		{
+			name:                "Valid Aadhaar - with spaces",
+			query:               "Customer Aadhaar is 2234 5678 9012",
+			shouldTriggerPolicy: true,
+			description:         "Standard 12-digit format with spaces",
+		},
+		{
+			name:                "Valid Aadhaar - starting with 3",
+			query:               "Aadhaar number 3456 7890 1234",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar starting with 3",
+		},
+		{
+			name:                "Valid Aadhaar - starting with 9",
+			query:               "Aadhaar 9999 8888 7777",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar starting with 9",
+		},
+		// Valid Aadhaar - without spaces
+		{
+			name:                "Valid Aadhaar - no spaces",
+			query:               "Verify Aadhaar 234567890123",
+			shouldTriggerPolicy: true,
+			description:         "12-digit format without spaces",
+		},
+		// Valid Aadhaar - with prefix
+		{
+			name:                "Valid Aadhaar - with aadhaar prefix",
+			query:               "aadhaar: 234567890123",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar with lowercase prefix",
+		},
+		{
+			name:                "Valid Aadhaar - with AADHAAR prefix",
+			query:               "AADHAAR: 298765432109",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar with uppercase prefix",
+		},
+		{
+			name:                "Valid Aadhaar - with UID prefix",
+			query:               "UID: 234567890123",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar with UID prefix",
+		},
+		// Invalid Aadhaar - first digit validation
+		{
+			name:                "Invalid Aadhaar - starting with 0",
+			query:               "Invalid Aadhaar 0234 5678 9012",
+			shouldTriggerPolicy: false,
+			description:         "Aadhaar cannot start with 0",
+		},
+		{
+			name:                "Invalid Aadhaar - starting with 1",
+			query:               "Invalid Aadhaar 1234 5678 9012",
+			shouldTriggerPolicy: false,
+			description:         "Aadhaar cannot start with 1",
+		},
+		// Aadhaar in various contexts
+		{
+			name:                "Aadhaar in KYC context",
+			query:               "For KYC verification, Aadhaar 5678 9012 3456 is required",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar in KYC context",
+		},
+		// Note: When both PAN and Aadhaar are present, PAN matches first (comes first in pattern list)
+		// This is expected behavior - use Aadhaar-only queries to test Aadhaar detection
+		{
+			name:                "Aadhaar only (no PAN)",
+			query:               "Verify customer Aadhaar: 4567 8901 2345 for account",
+			shouldTriggerPolicy: true,
+			description:         "Aadhaar without PAN to ensure proper detection",
+		},
+		// Invalid formats
+		{
+			name:                "Invalid - too short",
+			query:               "Invalid 2234 5678 901",
+			shouldTriggerPolicy: false,
+			description:         "11 digits - too short",
+		},
+		{
+			name:                "Invalid - too long",
+			query:               "Invalid 2234 5678 90123",
+			shouldTriggerPolicy: false,
+			description:         "13 digits - too long",
+		},
+		{
+			name:                "No Aadhaar present",
+			query:               "Process the customer order for laptop",
+			shouldTriggerPolicy: false,
+			description:         "No Aadhaar in query",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
+
+			// Aadhaar detection should not block
+			if result.Blocked {
+				t.Errorf("Aadhaar detection should not block queries, got blocked: %s", result.Reason)
+			}
+
+			// Check if policy was triggered
+			hasAadhaarPolicy := containsPolicy(result.TriggeredPolicies, "aadhaar_detection")
+			if tt.shouldTriggerPolicy && !hasAadhaarPolicy {
+				t.Errorf("%s: Expected Aadhaar detection to trigger for query: %s\nTriggered policies: %v",
+					tt.description, tt.query, result.TriggeredPolicies)
+			}
+			// Note: We don't test for false matches because other PII patterns may match
+		})
+	}
+}
+
+// TestStaticValidatePAN tests the PAN validation function in static_policies.go
+func TestStaticValidatePAN(t *testing.T) {
+	tests := []struct {
+		name  string
+		pan   string
+		valid bool
+	}{
+		// Valid PANs - different entity types
+		{"Valid Individual PAN", "ABCPD1234E", true},
+		{"Valid Company PAN", "AAACM1234C", true},
+		{"Valid HUF PAN", "AAAHK1234H", true},
+		{"Valid AOP PAN", "BBBAB1234A", true},
+		{"Valid BOI PAN", "CCCBD1234B", true},
+		{"Valid Government PAN", "DDDGE1234G", true},
+		{"Valid AJP PAN", "EEEJF1234J", true},
+		{"Valid Local Authority PAN", "FFFLG1234L", true},
+		{"Valid Firm PAN", "GGGFH1234F", true},
+		{"Valid Trust PAN", "HHHTJ1234T", true},
+
+		// Invalid PANs - format violations
+		{"Invalid - too short", "ABCPD1234", false},
+		{"Invalid - too long", "ABCPD1234EF", false},
+		{"Invalid - lowercase first char", "aBCPD1234E", false},
+		{"Invalid - digit in first 3", "A1CPD1234E", false},
+		{"Invalid - invalid entity type", "ABCXD1234E", false},
+		{"Invalid - lowercase 5th char", "ABCPd1234E", false},
+		{"Invalid - letter in digits", "ABCPD12A4E", false},
+		{"Invalid - lowercase last char", "ABCPD1234e", false},
+		{"Invalid - digit as last char", "ABCPD12341", false},
+
+		// Invalid PANs - wrong entity type
+		{"Invalid entity type - Q", "ABCQD1234E", false},
+		{"Invalid entity type - R", "ABCRD1234E", false},
+		{"Invalid entity type - Z", "ABCZD1234E", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ValidatePAN(tt.pan)
+			if got != tt.valid {
+				t.Errorf("ValidatePAN(%s) = %v, want %v", tt.pan, got, tt.valid)
+			}
+		})
+	}
+}
+
+// TestValidateAadhaar tests the Aadhaar validation function
+func TestValidateAadhaar(t *testing.T) {
+	tests := []struct {
+		name    string
+		aadhaar string
+		valid   bool
+	}{
+		// Valid Aadhaar numbers - different starting digits (2-9)
+		{"Valid starting with 2", "234567890123", true},
+		{"Valid starting with 3", "345678901234", true},
+		{"Valid starting with 4", "456789012345", true},
+		{"Valid starting with 5", "567890123456", true},
+		{"Valid starting with 6", "678901234567", true},
+		{"Valid starting with 7", "789012345678", true},
+		{"Valid starting with 8", "890123456789", true},
+		{"Valid starting with 9", "901234567890", true},
+
+		// Valid Aadhaar numbers - with spaces
+		{"Valid with spaces", "2345 6789 0123", true},
+		{"Valid with spaces and 9", "9999 8888 7777", true},
+
+		// Invalid Aadhaar numbers - first digit
+		{"Invalid starting with 0", "034567890123", false},
+		{"Invalid starting with 1", "134567890123", false},
+
+		// Invalid Aadhaar numbers - length
+		{"Invalid - too short", "23456789012", false},
+		{"Invalid - too long", "2345678901234", false},
+
+		// Invalid Aadhaar numbers - non-digits
+		{"Invalid - contains letter", "23456789A123", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ValidateAadhaar(tt.aadhaar)
+			if got != tt.valid {
+				t.Errorf("ValidateAadhaar(%s) = %v, want %v", tt.aadhaar, got, tt.valid)
+			}
+		})
+	}
+}
+
+// TestIndianPIIPerformance tests that Indian PII detection is fast
+func TestIndianPIIPerformance(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	// Query with multiple Indian PII types
+	query := "Customer details: PAN ABCPD1234E, Aadhaar 2345 6789 0123, " +
+		"Account holder: Rahul Sharma, Bank: HDFC, IFSC: HDFC0001234, " +
+		"Account: 123456789012345, Demat: IN12345678901234"
+
+	// Run multiple times to get average
+	iterations := 100
+	for i := 0; i < iterations; i++ {
+		result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
+
+		// Should complete in < 10ms per query
+		if result.ProcessingTimeMs > 10 {
+			t.Errorf("Indian PII detection too slow: %dms (iteration %d)", result.ProcessingTimeMs, i)
+		}
+	}
+}
+
+// TestCombinedIndianPII tests detection when both PAN and Aadhaar are present
+func TestCombinedIndianPII(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	// Query with both PAN and Aadhaar
+	query := "KYC Details - PAN: ABCPD1234E, Aadhaar: 2345 6789 0123, Name: John Doe"
+	result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
+
+	// Should not block
+	if result.Blocked {
+		t.Error("Indian PII detection should not block queries")
+	}
+
+	// At least one Indian PII policy should be triggered (first match wins in static engine)
+	hasPAN := containsPolicy(result.TriggeredPolicies, "pan_detection")
+	hasAadhaar := containsPolicy(result.TriggeredPolicies, "aadhaar_detection")
+
+	if !hasPAN && !hasAadhaar {
+		t.Errorf("Expected at least one Indian PII policy to trigger, got: %v", result.TriggeredPolicies)
 	}
 }

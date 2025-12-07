@@ -48,6 +48,8 @@ tags:
     description: Main request processing pipeline
   - name: Multi-Agent Planning
     description: LLM-powered task decomposition and execution
+  - name: Agents
+    description: Agent configuration management (MAP 0.8)
   - name: LLM Providers
     description: LLM provider management
   - name: Dynamic Policies
@@ -58,6 +60,10 @@ tags:
     description: Connector marketplace
   - name: Audit
     description: Audit log search and retrieval
+  - name: SEBI Compliance
+    description: |
+      SEBI AI/ML Guidelines compliance and DPDP Act 2023 audit exports.
+      Enterprise feature for Indian financial services compliance.
   - name: Metrics
     description: Performance monitoring
 
@@ -396,6 +402,435 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  # ============================================================================
+  # Agent Management API (MAP 0.8)
+  # ============================================================================
+
+  /api/v1/agents:
+    get:
+      tags:
+        - Agents
+      summary: List all agents
+      description: |
+        Returns a paginated list of all agents from the registry.
+        In hybrid mode, includes both file-based and database-backed agents.
+        Database agents take priority over file agents with the same name.
+
+        **OSS:** Returns agents loaded from YAML files.
+        **Enterprise:** Returns agents from both files and database.
+      operationId: listAgents
+      parameters:
+        - name: page
+          in: query
+          description: Page number (1-based)
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          description: Number of agents per page
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: domain
+          in: query
+          description: Filter by domain
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+              example:
+                agents:
+                  - id: "travel/flight-booking"
+                    name: "flight-booking"
+                    domain: "travel"
+                    description: "Flight search and booking agent"
+                    version: 1
+                    is_active: true
+                  - id: "healthcare/patient-assistant"
+                    name: "patient-assistant"
+                    domain: "healthcare"
+                    description: "Patient query assistant"
+                    version: 2
+                    is_active: true
+                pagination:
+                  page: 1
+                  page_size: 20
+                  total: 2
+                  total_pages: 1
+    post:
+      tags:
+        - Agents
+      summary: Create new agent (Enterprise)
+      description: |
+        Create a new agent configuration in the database.
+        **Enterprise only** - requires database-backed storage.
+
+        The agent is created with version 1 and marked as active by default.
+        A version history entry is automatically created.
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+            example:
+              name: "travel-planner"
+              domain: "travel"
+              description: "Travel planning and booking assistant"
+              is_active: true
+              config:
+                execution:
+                  default_mode: "auto"
+                  max_parallel_tasks: 5
+                  timeout_seconds: 300
+                agents:
+                  - name: "flight-search"
+                    type: "llm-call"
+                    llm:
+                      provider: "anthropic"
+                      model: "claude-3-sonnet"
+                routing:
+                  - pattern: "flight|fly"
+                    agent: "flight-search"
+                    priority: 10
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid request or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Agent with same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/agents/{id}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent by ID
+      description: |
+        Returns detailed information about a specific agent.
+        The ID format is `domain/name` (e.g., `travel/flight-booking`).
+      operationId: getAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID in format domain/name
+          schema:
+            type: string
+          example: "travel/flight-booking"
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResource'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Agents
+      summary: Update agent (Enterprise)
+      description: |
+        Update an existing agent configuration.
+        **Enterprise only** - requires database-backed storage.
+
+        Updates increment the version number automatically.
+        A version history entry is created for the change.
+      operationId: updateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        '200':
+          description: Agent updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Agents
+      summary: Delete agent (Enterprise)
+      description: |
+        Delete an agent configuration.
+        **Enterprise only** - requires database-backed storage.
+
+        The deletion is recorded in the version history before removal.
+      operationId: deleteAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Agent deleted
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/agents/domain/{domain}:
+    get:
+      tags:
+        - Agents
+      summary: List agents by domain
+      description: Returns all agents for a specific domain (e.g., travel, healthcare)
+      operationId: listAgentsByDomain
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          description: Domain name
+          schema:
+            type: string
+          example: "travel"
+      responses:
+        '200':
+          description: List of agents in domain
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+
+  /api/v1/agents/validate:
+    post:
+      tags:
+        - Agents
+      summary: Validate agent configuration
+      description: |
+        Validates an agent configuration without creating it.
+        Useful for dry-run validation before deployment.
+
+        Checks:
+        - Required fields present
+        - Name/domain format valid
+        - Agent types valid (llm-call, connector-call)
+        - LLM config complete for llm-call agents
+        - Routing rules reference defined agents
+      operationId: validateAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateAgentRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+              example:
+                valid: true
+                errors: []
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+              example:
+                valid: false
+                errors:
+                  - "field 'name' is required"
+                  - "routing rule references undefined agent 'unknown-agent'"
+
+  /api/v1/agents/{id}/activate:
+    post:
+      tags:
+        - Agents
+      summary: Activate agent (Enterprise)
+      description: |
+        Activate a deactivated agent.
+        **Enterprise only** - requires database-backed storage.
+      operationId: activateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/deactivate:
+    post:
+      tags:
+        - Agents
+      summary: Deactivate agent (Enterprise)
+      description: |
+        Deactivate an agent without deleting it.
+        **Enterprise only** - requires database-backed storage.
+      operationId: deactivateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/test:
+    post:
+      tags:
+        - Agents
+      summary: Test agent in sandbox (Enterprise)
+      description: |
+        Test an agent configuration in a sandbox environment.
+        **Enterprise only** - requires database-backed storage.
+
+        Executes a test query against the agent without affecting production.
+      operationId: testAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestAgentRequest'
+            example:
+              query: "Search for flights from NYC to LAX"
+              context:
+                departure_date: "2025-01-15"
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestAgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/versions:
+    get:
+      tags:
+        - Agents
+      summary: Get agent version history (Enterprise)
+      description: |
+        Returns the version history for an agent.
+        **Enterprise only** - requires database-backed storage.
+
+        Includes all changes: create, update, delete, activate, deactivate.
+      operationId: getAgentVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          description: Maximum number of versions to return
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionsResponse'
+              example:
+                versions:
+                  - version: 2
+                    change_type: "update"
+                    changed_at: "2025-12-07T12:00:00Z"
+                    change_summary: "Updated routing rules"
+                  - version: 1
+                    change_type: "create"
+                    changed_at: "2025-12-06T10:00:00Z"
+                    change_summary: "Initial creation"
+        '404':
+          description: Agent not found
+
   /api/v1/providers/status:
     get:
       tags:
@@ -633,6 +1068,236 @@ paths:
                   $ref: '#/components/schemas/AuditLogEntry'
         '400':
           $ref: '#/components/responses/BadRequest'
+
+  # =============================================================================
+  # SEBI Compliance APIs (Enterprise)
+  # Indian Financial Services - SEBI AI/ML Guidelines & DPDP Act 2023
+  # =============================================================================
+
+  /api/v1/sebi/dashboard:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get SEBI compliance dashboard
+      description: |
+        Returns a comprehensive SEBI compliance dashboard including:
+        - Overall compliance score and status
+        - 5-year retention status
+        - PII detection/redaction metrics (PAN, Aadhaar)
+        - Policy violation summary with trend
+        - HITL review queue
+
+        **Enterprise Feature**: Available only for Indian financial services deployments.
+      operationId: getSEBIDashboard
+      responses:
+        '200':
+          description: SEBI compliance dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIDashboard'
+              example:
+                framework: "SEBI_DPDP_COMBINED"
+                overall_score: 85
+                overall_status: "COMPLIANT"
+                last_audit_export: "2024-12-01T10:00:00Z"
+                retention_status:
+                  org_id: 123
+                  framework: "SEBI_AI_ML"
+                  compliance_status: "COMPLIANT"
+                violations_summary:
+                  total: 142
+                  by_severity:
+                    critical: 2
+                    high: 15
+                    medium: 45
+                    low: 80
+                  trend: "improving"
+                pii_summary:
+                  total_detections: 5420
+                  total_redactions: 5350
+                  redaction_rate_percent: 98.7
+                hitl_reviews_pending: 3
+        '403':
+          description: Not authorized for SEBI compliance features
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/sebi/audit/export:
+    post:
+      tags:
+        - SEBI Compliance
+      summary: Export SEBI audit data
+      description: |
+        Export audit data for SEBI regulatory submission. Supports:
+        - Multiple compliance frameworks (SEBI AI/ML, DPDP, Combined)
+        - Various data types (policy violations, LLM calls, decision chain, HITL, PII redactions)
+        - Multiple export formats (JSON, CSV, XML)
+        - Optional PII redaction for external auditors
+
+        Large exports are processed asynchronously. Poll the export status endpoint
+        to check completion and get the download URL.
+
+        **5-Year Retention**: Per SEBI AI/ML Guidelines, all audit data is retained
+        for minimum 5 years (1825 days).
+      operationId: exportSEBIAuditData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SEBIAuditExportRequest'
+            example:
+              start_date: "2024-01-01T00:00:00Z"
+              end_date: "2024-12-31T23:59:59Z"
+              data_types:
+                - policy_violations
+                - llm_calls
+                - pii_redactions
+              format: json
+              framework: SEBI_DPDP_COMBINED
+              redact_pii: false
+      responses:
+        '200':
+          description: Export started (sync) or queued (async)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIAuditExportResponse'
+              example:
+                export_id: "exp_abc123"
+                status: "processing"
+                framework: "SEBI_DPDP_COMBINED"
+                metadata:
+                  export_version: "1.0"
+                  generated_by: "axonflow-orchestrator"
+                  org_id: 123
+                  retention_days: 1825
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/sebi/audit/export/{export_id}:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get export status
+      description: |
+        Get the status of an asynchronous SEBI audit export.
+        When status is "completed", the download_url will be provided.
+      operationId: getSEBIExportStatus
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          description: Export ID from the export request
+          schema:
+            type: string
+          example: "exp_abc123"
+      responses:
+        '200':
+          description: Export status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIAuditExportResponse'
+              example:
+                export_id: "exp_abc123"
+                status: "completed"
+                framework: "SEBI_DPDP_COMBINED"
+                download_url: "/api/v1/sebi/audit/export/exp_abc123/download"
+                expires_at: "2024-12-08T14:00:00Z"
+                summary:
+                  total_records: 15420
+                  compliance_score: 85.5
+        '404':
+          description: Export not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/sebi/audit/retention:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get retention status
+      description: |
+        Get the 5-year retention compliance status for all audit data types.
+
+        SEBI AI/ML Guidelines require:
+        - All AI/ML decisions retained for 5 years
+        - Audit trail for human oversight
+        - Decision chain tracing
+
+        This endpoint reports compliance status for each data type.
+      operationId: getSEBIRetentionStatus
+      responses:
+        '200':
+          description: Retention status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIRetentionResponse'
+              example:
+                org_id: 123
+                framework: "SEBI_AI_ML"
+                compliance_status: "COMPLIANT"
+                status:
+                  - data_type: "policy_violations"
+                    retention_days: 1825
+                    total_records: 15420
+                    oldest_record: "2020-01-15T10:30:00Z"
+                    compliance_status: "COMPLIANT"
+                  - data_type: "llm_calls"
+                    retention_days: 1825
+                    total_records: 250000
+                    oldest_record: "2020-06-01T08:00:00Z"
+                    compliance_status: "COMPLIANT"
+
+  /api/v1/sebi/audit/readiness:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Check compliance readiness
+      description: |
+        Validate organization readiness for SEBI regulatory audit.
+
+        Checks include:
+        - Retention configuration (5-year minimum)
+        - PII detection policies
+        - Human oversight mechanisms
+        - Audit logging completeness
+        - Decision chain tracing
+
+        Returns a score (0-100) and actionable recommendations.
+      operationId: getSEBIComplianceReadiness
+      responses:
+        '200':
+          description: Compliance readiness assessment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIComplianceReadiness'
+              example:
+                ready: true
+                score: 85
+                checks:
+                  - name: "Retention Configuration"
+                    status: "pass"
+                    message: null
+                  - name: "PII Detection Policies"
+                    status: "pass"
+                    message: null
+                  - name: "Human Oversight"
+                    status: "pass"
+                    message: null
+                  - name: "Decision Chain Tracing"
+                    status: "warning"
+                    message: "Consider enabling for full audit trail"
+                recommendations:
+                  - "Enable decision chain tracing to maintain full audit trail of AI decisions"
 
   /api/v1/workflows/execute:
     post:
@@ -1398,6 +2063,617 @@ components:
           example: false
         error:
           type: string
+
+    # ============================================================================
+    # Agent Management Schemas (MAP 0.8)
+    # ============================================================================
+
+    AgentResource:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Qualified ID (domain/name)
+          example: "travel/flight-booking"
+        name:
+          type: string
+          description: Agent name
+          example: "flight-booking"
+        domain:
+          type: string
+          description: Agent domain
+          example: "travel"
+        description:
+          type: string
+          description: Agent description
+        version:
+          type: integer
+          description: Version number
+        is_active:
+          type: boolean
+          description: Whether agent is active
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentConfigSpec:
+      type: object
+      description: Agent configuration specification
+      properties:
+        execution:
+          type: object
+          properties:
+            default_mode:
+              type: string
+              enum: [auto, parallel, sequential]
+            max_parallel_tasks:
+              type: integer
+            timeout_seconds:
+              type: integer
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentDefinition'
+        routing:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingRule'
+
+    AgentDefinition:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [llm-call, connector-call]
+        llm:
+          type: object
+          description: LLM config (required for llm-call type)
+          properties:
+            provider:
+              type: string
+            model:
+              type: string
+        connector:
+          type: object
+          description: Connector config (required for connector-call type)
+          properties:
+            name:
+              type: string
+            operation:
+              type: string
+
+    RoutingRule:
+      type: object
+      required:
+        - pattern
+        - agent
+      properties:
+        pattern:
+          type: string
+          description: Regex pattern to match
+        agent:
+          type: string
+          description: Target agent name
+        priority:
+          type: integer
+          description: Higher priority rules match first
+
+    AgentListResponse:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentResource'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            page_size:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+
+    AgentResponse:
+      type: object
+      properties:
+        agent:
+          $ref: '#/components/schemas/AgentResource'
+
+    CreateAgentRequest:
+      type: object
+      required:
+        - name
+        - config
+      properties:
+        name:
+          type: string
+          description: Agent name (lowercase, alphanumeric, hyphens, underscores)
+        domain:
+          type: string
+          description: Agent domain
+        description:
+          type: string
+        is_active:
+          type: boolean
+          default: true
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        domain:
+          type: string
+        description:
+          type: string
+        is_active:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    ValidateAgentRequest:
+      type: object
+      required:
+        - config
+      properties:
+        name:
+          type: string
+        domain:
+          type: string
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    ValidationResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: string
+
+    TestAgentRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: Test query to execute
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for the query
+
+    TestAgentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        result:
+          description: Test execution result
+        execution_time_ms:
+          type: integer
+        tasks_executed:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    AgentVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              version:
+                type: integer
+              change_type:
+                type: string
+                enum: [create, update, delete, activate, deactivate]
+              changed_at:
+                type: string
+                format: date-time
+              changed_by:
+                type: string
+                format: uuid
+              change_summary:
+                type: string
+
+    # =========================================================================
+    # SEBI Compliance Schemas (Enterprise)
+    # =========================================================================
+
+    SEBIComplianceFramework:
+      type: string
+      description: SEBI compliance framework identifier
+      enum:
+        - SEBI_AI_ML
+        - DPDP_ACT_2023
+        - SEBI_DPDP_COMBINED
+
+    SEBIExportFormat:
+      type: string
+      description: Export output format
+      enum:
+        - json
+        - csv
+        - xml
+
+    SEBIAuditDataType:
+      type: string
+      description: Type of audit data
+      enum:
+        - policy_violations
+        - llm_calls
+        - decision_chain
+        - hitl_oversight
+        - pii_redactions
+        - all
+
+    SEBIComplianceStatus:
+      type: string
+      description: Compliance status indicator
+      enum:
+        - COMPLIANT
+        - NON_COMPLIANT
+        - WARNING
+
+    SEBIDashboard:
+      type: object
+      description: SEBI compliance dashboard data
+      properties:
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        overall_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Overall compliance score (0-100)
+        overall_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        last_audit_export:
+          type: string
+          format: date-time
+          description: Timestamp of last audit export
+        retention_status:
+          $ref: '#/components/schemas/SEBIRetentionResponse'
+        readiness:
+          $ref: '#/components/schemas/SEBIComplianceReadiness'
+        violations_summary:
+          $ref: '#/components/schemas/SEBIViolationsSummary'
+        pii_summary:
+          $ref: '#/components/schemas/SEBIPIISummary'
+        hitl_reviews_pending:
+          type: integer
+          description: Number of HITL reviews awaiting action
+        last_updated:
+          type: string
+          format: date-time
+
+    SEBIAuditExportRequest:
+      type: object
+      description: Request to export SEBI audit data
+      required:
+        - start_date
+        - end_date
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          description: Start of export period (inclusive)
+        end_date:
+          type: string
+          format: date-time
+          description: End of export period (inclusive)
+        data_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIAuditDataType'
+          description: Types of audit data to export (defaults to all)
+        format:
+          $ref: '#/components/schemas/SEBIExportFormat'
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        include_archived:
+          type: boolean
+          default: false
+          description: Include records from cold storage
+        redact_pii:
+          type: boolean
+          default: false
+          description: Redact PII in export (for external auditors)
+        filters:
+          $ref: '#/components/schemas/SEBIAuditExportFilters'
+
+    SEBIAuditExportFilters:
+      type: object
+      description: Optional filters for audit exports
+      properties:
+        agent_ids:
+          type: array
+          items:
+            type: string
+          description: Filter by agent IDs
+        user_ids:
+          type: array
+          items:
+            type: integer
+          description: Filter by user IDs
+        severity:
+          type: string
+          description: Minimum severity level
+        policy_types:
+          type: array
+          items:
+            type: string
+          description: Filter by policy types
+        violation_types:
+          type: array
+          items:
+            type: string
+          description: Filter by violation types
+        include_model_info:
+          type: boolean
+          description: Include detailed model information
+
+    SEBIAuditExportResponse:
+      type: object
+      description: Response for audit export requests
+      properties:
+        export_id:
+          type: string
+          description: Unique export identifier
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: Export status
+        exported_at:
+          type: string
+          format: date-time
+          description: When the export was completed
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        summary:
+          $ref: '#/components/schemas/SEBIAuditExportSummary'
+        download_url:
+          type: string
+          description: URL to download the export (for async exports)
+        expires_at:
+          type: string
+          format: date-time
+          description: When the download URL expires
+        metadata:
+          $ref: '#/components/schemas/SEBIExportMetadata'
+
+    SEBIAuditExportSummary:
+      type: object
+      description: Statistics about the export
+      properties:
+        total_records:
+          type: integer
+          description: Total records exported
+        records_by_type:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Records by data type
+        date_range:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        violations_summary:
+          $ref: '#/components/schemas/SEBIViolationsSummary'
+        compliance_score:
+          type: number
+          format: float
+          description: Compliance score for the period
+
+    SEBIExportMetadata:
+      type: object
+      description: Export metadata for audit trail
+      properties:
+        export_version:
+          type: string
+          description: Schema version
+        generated_by:
+          type: string
+          description: System that generated the export
+        generated_at:
+          type: string
+          format: date-time
+        org_id:
+          type: integer
+        org_name:
+          type: string
+        requested_by:
+          type: string
+          description: User who requested the export
+        compliance_framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        retention_days:
+          type: integer
+          description: Retention period (1825 days = 5 years)
+        checksum:
+          type: string
+          description: SHA-256 checksum of export data
+        signed_by:
+          type: string
+          description: Signing authority (for signed exports)
+
+    SEBIRetentionResponse:
+      type: object
+      description: 5-year retention compliance status
+      properties:
+        org_id:
+          type: integer
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        compliance_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        status:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIDataTypeRetentionStatus'
+        next_cleanup:
+          type: string
+          format: date-time
+          description: Next scheduled cleanup
+
+    SEBIDataTypeRetentionStatus:
+      type: object
+      description: Retention status for a data type
+      properties:
+        data_type:
+          $ref: '#/components/schemas/SEBIAuditDataType'
+        retention_days:
+          type: integer
+          description: Configured retention period
+        oldest_record:
+          type: string
+          format: date-time
+        newest_record:
+          type: string
+          format: date-time
+        total_records:
+          type: integer
+          format: int64
+        archived_records:
+          type: integer
+          format: int64
+        storage_bytes:
+          type: integer
+          format: int64
+        compliance_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        last_cleanup:
+          type: string
+          format: date-time
+
+    SEBIComplianceReadiness:
+      type: object
+      description: SEBI audit readiness assessment
+      properties:
+        ready:
+          type: boolean
+          description: Organization is ready for audit
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Readiness score (0-100)
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIComplianceCheck'
+        recommendations:
+          type: array
+          items:
+            type: string
+          description: Improvement recommendations
+
+    SEBIComplianceCheck:
+      type: object
+      description: Individual compliance check result
+      properties:
+        name:
+          type: string
+          description: Check name
+        description:
+          type: string
+          description: What the check verifies
+        status:
+          type: string
+          enum: [pass, fail, warning]
+        details:
+          type: string
+          description: Additional information
+        message:
+          type: string
+          description: Status message (null if pass)
+
+    SEBIViolationsSummary:
+      type: object
+      description: Policy violations summary
+      properties:
+        total:
+          type: integer
+          description: Total violations
+        by_severity:
+          type: object
+          properties:
+            critical:
+              type: integer
+            high:
+              type: integer
+            medium:
+              type: integer
+            low:
+              type: integer
+        by_type:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Violations by type
+        trend:
+          type: string
+          enum: [improving, stable, degrading]
+          description: Trend direction
+
+    SEBIPIISummary:
+      type: object
+      description: PII detection and redaction metrics
+      properties:
+        total_detections:
+          type: integer
+          description: Total PII detections
+        total_redactions:
+          type: integer
+          description: Total PII redactions
+        by_type:
+          type: object
+          properties:
+            pan:
+              type: integer
+              description: Indian PAN card detections
+            aadhaar:
+              type: integer
+              description: Indian Aadhaar card detections
+            email:
+              type: integer
+            phone:
+              type: integer
+            other:
+              type: integer
+        redaction_rate_percent:
+          type: number
+          format: float
+          description: Percentage of detections that were redacted
 
   responses:
     BadRequest:

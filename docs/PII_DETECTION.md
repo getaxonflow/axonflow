@@ -26,6 +26,8 @@ AxonFlow's PII (Personally Identifiable Information) detection system provides c
 | Date of Birth | High | Context-dependent | `01/15/1990` |
 | Bank Account | Critical | ABA routing checksum | `021000021-123456789012` |
 | Driver's License | High | Context-dependent | `D12345678` |
+| **PAN (India)** | Critical | Entity type, format | `ABCPD1234E` |
+| **Aadhaar (India)** | Critical | Starting digit, format | `1234 5678 9012` |
 
 ## Architecture
 

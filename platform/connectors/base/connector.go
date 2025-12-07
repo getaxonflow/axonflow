@@ -66,6 +66,7 @@ type QueryResult struct {
 	Duration  time.Duration            `json:"duration"`   // Query execution time
 	Cached    bool                     `json:"cached"`     // Was result served from cache?
 	Connector string                   `json:"connector"`  // Connector name that executed query
+	Metadata  map[string]interface{}   `json:"metadata,omitempty"` // Additional metadata
 }
 
 // Command represents a write operation (MCP Tool pattern)
@@ -78,11 +79,12 @@ type Command struct {
 
 // CommandResult contains the results of a Command execution
 type CommandResult struct {
-	Success      bool          `json:"success"`       // Was command successful?
-	RowsAffected int           `json:"rows_affected"` // Number of rows affected
-	Duration     time.Duration `json:"duration"`      // Execution time
-	Message      string        `json:"message"`       // Status message
-	Connector    string        `json:"connector"`     // Connector name
+	Success      bool                   `json:"success"`       // Was command successful?
+	RowsAffected int                    `json:"rows_affected"` // Number of rows affected
+	Duration     time.Duration          `json:"duration"`      // Execution time
+	Message      string                 `json:"message"`       // Status message
+	Connector    string                 `json:"connector"`     // Connector name
+	Metadata     map[string]interface{} `json:"metadata,omitempty"` // Additional metadata
 }
 
 // HealthStatus represents the health of a connector

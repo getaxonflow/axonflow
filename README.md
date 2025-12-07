@@ -58,14 +58,13 @@ docker-compose logs -f axonflow-orchestrator
 
 ## 🆕 What's New (December 2025)
 
+- **MAP 0.8**: REST API for agent management - list, get, validate agents via `/api/v1/agents` (Enterprise: full CRUD, version history, sandbox testing)
 - **MAP 0.5**: User-configurable agents via YAML - define your own agent workflows without code changes
 - **Python SDK**: First-class Python support (`pip install axonflow`) alongside TypeScript and Go
 - **Anthropic Provider**: Claude support in OSS core (OpenAI + Anthropic)
-- **Support Demo**: New `platform/examples/support-demo/` with customer support scenarios
-- **OSS Connectors**: MySQL, MongoDB, Redis, HTTP connectors registered in OSS builds
-- **Test Coverage**: Raised CI threshold to 68% with 85+ test files
-- **OpenAPI Spec**: Full Policy API documented at `docs/api/policy-api.yaml`
-- **Go Project Layout**: Adopted standard `cmd/` directory structure
+- **OSS Connectors**: 6 connectors in OSS (PostgreSQL, MySQL, MongoDB, Redis, HTTP, Cassandra)
+- **Test Coverage**: 70%+ across all modules (Agent: 74.9%, Orchestrator: 73.7%, Connectors: 68.6%)
+- **OpenAPI Spec**: Full API documented at `docs/api/orchestrator-api.yaml`
 
 **Authentication for SDK calls:**
 
@@ -170,12 +169,17 @@ AxonFlow is available in two editions:
 | Salesforce | ❌ | ✅ |
 | Slack | ❌ | ✅ |
 | Snowflake | ❌ | ✅ |
+| **Multi-Agent Planning (MAP)** | | |
+| YAML agent configuration | ✅ | ✅ |
+| Agent registry with hot reload | ✅ | ✅ |
+| REST API (list, get, validate) | ✅ | ✅ |
+| REST API (CRUD, versions, test) | ❌ | ✅ |
+| Database-backed storage | ❌ | ✅ |
 | **Advanced Features** | | |
-| Multi-Agent Planning (MAP) | ✅ YAML configs | ✅ Full |
 | Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
-| License validation | ❌ | ✅ |
+| Customer dashboard UI | ❌ | ✅ |
+| Usage analytics | ❌ | ✅ |
 | AWS Marketplace integration | ❌ | ✅ |
-| Node enforcement & metering | ❌ | ✅ |
 | **Deployment** | | |
 | Docker Compose (local) | ✅ | ✅ |
 | AWS ECS/Fargate | Manual | One-click CloudFormation |

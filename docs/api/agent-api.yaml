@@ -1249,6 +1249,179 @@ components:
           type: string
           description: Error message
 
+    # ==========================================================================
+    # Decision Chain Tracing (EU AI Act Article 12)
+    # ==========================================================================
+
+    DecisionEntry:
+      type: object
+      description: |
+        A single decision step in an AI decision chain.
+        EU AI Act Article 12 requires automatic recording of AI system events.
+      required:
+        - chain_id
+        - request_id
+        - org_id
+        - tenant_id
+        - decision_type
+        - decision_outcome
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for this decision entry
+        chain_id:
+          type: string
+          format: uuid
+          description: |
+            Links related decisions in a multi-step workflow.
+            All decisions in the same workflow share this ID.
+        request_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the specific request
+        parent_request_id:
+          type: string
+          format: uuid
+          description: Previous request in the chain (null for first step)
+        step_number:
+          type: integer
+          description: Order within the chain (starts at 1)
+          minimum: 1
+        org_id:
+          type: string
+          format: uuid
+          description: Organization identifier
+        tenant_id:
+          type: string
+          description: Tenant identifier
+        client_id:
+          type: string
+          description: Client application identifier
+        user_id:
+          type: string
+          description: User identifier
+        decision_type:
+          type: string
+          enum:
+            - policy_enforcement
+            - llm_generation
+            - data_retrieval
+            - human_review
+            - system_action
+          description: |
+            Type of AI decision:
+            - policy_enforcement: Static policy evaluation
+            - llm_generation: LLM model invocation
+            - data_retrieval: Data source query
+            - human_review: HITL decision
+            - system_action: Automated action
+        decision_outcome:
+          type: string
+          enum:
+            - approved
+            - blocked
+            - modified
+            - pending_review
+            - error
+          description: |
+            Result of the decision:
+            - approved: Request allowed
+            - blocked: Denied by policy
+            - modified: Content filtered
+            - pending_review: Awaiting human review
+            - error: Processing error
+        system_id:
+          type: string
+          description: AI system identifier (e.g., "axonflow-agent/1.0.0")
+        model_provider:
+          type: string
+          description: LLM provider (if applicable)
+        model_id:
+          type: string
+          description: Specific model identifier
+        policies_evaluated:
+          type: array
+          items:
+            type: string
+          description: List of policy IDs that were evaluated
+        policy_triggered:
+          type: string
+          description: Policy that caused block/modify (if any)
+        risk_level:
+          type: string
+          enum:
+            - minimal
+            - limited
+            - high
+            - unacceptable
+          description: |
+            EU AI Act risk classification:
+            - minimal: No significant risk
+            - limited: Transparency obligations
+            - high: Conformity assessment required
+            - unacceptable: Prohibited AI use
+        requires_human_review:
+          type: boolean
+          description: Whether human review is required
+        processing_time_ms:
+          type: integer
+          description: Processing time in milliseconds
+        data_sources:
+          type: array
+          items:
+            type: string
+          description: Data sources queried
+        audit_hash:
+          type: string
+          description: SHA-256 hash for tamper detection
+        created_at:
+          type: string
+          format: date-time
+          description: When the decision was recorded
+
+    ChainSummary:
+      type: object
+      description: Aggregate statistics for a decision chain
+      properties:
+        chain_id:
+          type: string
+          format: uuid
+        total_steps:
+          type: integer
+          description: Number of decisions in the chain
+        total_processing_time_ms:
+          type: integer
+          description: Sum of all processing times
+        has_blocked:
+          type: boolean
+          description: Whether any decision was blocked
+        requires_review:
+          type: boolean
+          description: Whether human review is required
+        highest_risk_level:
+          type: string
+          enum:
+            - minimal
+            - limited
+            - high
+            - unacceptable
+          description: Highest risk level in the chain
+        first_decision_at:
+          type: string
+          format: date-time
+        last_decision_at:
+          type: string
+          format: date-time
+        decision_types:
+          type: array
+          items:
+            type: string
+          description: Unique decision types in the chain
+        total_policies_applied:
+          type: integer
+          description: Count of unique policies evaluated
+
   responses:
     BadRequest:
       description: Invalid request body or parameters
@@ -1289,3 +1462,139 @@ components:
           example:
             success: false
             error: "Internal server error"
+
+  # =============================================================================
+  # EU AI Act Transparency Headers (Article 13)
+  # =============================================================================
+  # These headers are returned on all AI-processed responses for compliance.
+  headers:
+    X-AI-Request-ID:
+      description: |
+        Unique identifier for this AI interaction (UUID v4).
+        Use this to link to the full audit trail for EU AI Act Article 12 compliance.
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    X-AI-Timestamp:
+      description: |
+        When the AI system processed this request (RFC3339 with nanoseconds).
+        Required for EU AI Act Article 12 temporal audit evidence.
+      schema:
+        type: string
+        format: date-time
+      example: "2025-01-15T10:30:00.123456789Z"
+
+    X-AI-System-ID:
+      description: |
+        Identifies the AI system that processed the request.
+        Format: "axonflow-agent/{version}" or "axonflow-orchestrator/{version}"
+      schema:
+        type: string
+      example: "axonflow-agent/1.0.0"
+
+    X-AI-Chain-ID:
+      description: |
+        Links related AI decisions in a multi-step workflow (UUID v4).
+        Same across all related requests for EU AI Act Article 12 decision chain traceability.
+      schema:
+        type: string
+        format: uuid
+      example: "660e8400-e29b-41d4-a716-446655440001"
+
+    X-AI-Processing-Type:
+      description: |
+        Type of AI processing performed.
+        - policy-enforcement: Only policy rules applied
+        - llm-generation: LLM model generated content
+        - data-retrieval: MCP connector data fetch
+        - hybrid: Combination of above
+      schema:
+        type: string
+        enum: [policy-enforcement, llm-generation, data-retrieval, hybrid]
+      example: "hybrid"
+
+    X-AI-Model-Provider:
+      description: |
+        LLM provider used (if any). EU AI Act Article 13 transparency requirement.
+      schema:
+        type: string
+        enum: [openai, anthropic, bedrock, ollama, none]
+      example: "anthropic"
+
+    X-AI-Model-ID:
+      description: |
+        Specific model version used. EU AI Act Article 13 model traceability.
+      schema:
+        type: string
+      example: "claude-3-opus"
+
+    X-AI-Policies-Applied:
+      description: |
+        Comma-separated list of policies evaluated.
+        EU AI Act Article 14 human oversight indicator.
+      schema:
+        type: string
+      example: "pii-detection,rate-limit,eu-ai-act-article-14"
+
+    X-AI-Decision-Blocked:
+      description: |
+        Whether the request was blocked by policy.
+        EU AI Act Article 14 intervention indicator.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Processing-Time-Ms:
+      description: |
+        Total AI processing time in milliseconds.
+        EU AI Act Article 12 performance monitoring.
+      schema:
+        type: integer
+      example: 150
+
+    X-AI-Risk-Level:
+      description: |
+        Assessed risk level of the operation.
+        EU AI Act Article 6 risk classification transparency.
+      schema:
+        type: string
+        enum: [minimal, limited, high, unacceptable]
+      example: "limited"
+
+    X-AI-Human-Oversight-Required:
+      description: |
+        Whether this request requires human review.
+        EU AI Act Article 14 human oversight flagging.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Content-Filtered:
+      description: |
+        Whether content filtering/redaction was applied.
+        EU AI Act Article 13 modification transparency.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Data-Sources:
+      description: |
+        Comma-separated list of data sources queried.
+        EU AI Act Article 10 data lineage transparency.
+      schema:
+        type: string
+      example: "postgres,amadeus"
+
+    X-AI-Audit-Hash:
+      description: |
+        SHA-256 hash of the audit record for tamper-evident verification.
+        EU AI Act Article 12 record integrity.
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      example: "a1b2c3d4e5f6..."

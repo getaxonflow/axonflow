@@ -328,7 +328,47 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 
 	// PII Patterns - Comprehensive detection with validation
 	// Phase 1: Core PII patterns with improved accuracy
+	// Note: Order matters - more specific patterns should come first to avoid
+	// generic patterns (like phone) matching region-specific IDs (like Aadhaar)
 	spe.piiPatterns = []*PolicyPattern{
+		// =============================================================================
+		// Indian PII Detection (SEBI AI/ML Guidelines & DPDP Act 2023)
+		// These patterns are placed first because they're more specific than generic
+		// patterns like phone detection, which could otherwise match Aadhaar numbers.
+		// =============================================================================
+
+		// PAN - Indian Permanent Account Number (Income Tax ID)
+		// Format: 5 letters + 4 digits + 1 letter (e.g., ABCPD1234E)
+		// 4th character indicates entity type: P=Person, C=Company, H=HUF,
+		// A=AOP, B=BOI, G=Government, J=AJP, L=Local Authority, F=Firm, T=Trust
+		// Reference: SEBI AI/ML Guidelines - Data Privacy Pillar
+		{
+			ID:          "pan_detection",
+			Name:        "Indian PAN Detection",
+			Pattern:     regexp.MustCompile(`\b[A-Z]{3}[PCHABGJLFT][A-Z][0-9]{4}[A-Z]\b|(?i)PAN[:\s]+\b[A-Z0-9]{10}\b`),
+			PatternStr:  `\b[A-Z]{3}[PCHABGJLFT][A-Z][0-9]{4}[A-Z]\b|(?i)PAN[:\s]+\b[A-Z0-9]{10}\b`,
+			Severity:    "critical",
+			Description: "Indian Permanent Account Number (PAN) detected - automatic redaction required under SEBI guidelines",
+			Enabled:     true,
+		},
+		// Aadhaar - Indian Unique Identification Number
+		// Format: 12 digits, first digit 2-9 (never 0 or 1), often written with spaces
+		// Verhoeff checksum validated by UIDAI
+		// Reference: DPDP Act 2023, SEBI AI/ML Guidelines - Data Privacy Pillar
+		{
+			ID:          "aadhaar_detection",
+			Name:        "Indian Aadhaar Detection",
+			Pattern:     regexp.MustCompile(`\b[2-9][0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b|(?i)aadhaar[:\s]+[2-9][0-9]{11}|(?i)UID[:\s]+[2-9][0-9]{11}`),
+			PatternStr:  `\b[2-9][0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b|(?i)aadhaar[:\s]+[2-9][0-9]{11}|(?i)UID[:\s]+[2-9][0-9]{11}`,
+			Severity:    "critical",
+			Description: "Indian Aadhaar number detected - automatic redaction required under DPDP Act 2023",
+			Enabled:     true,
+		},
+
+		// =============================================================================
+		// Global PII Patterns
+		// =============================================================================
+
 		// SSN - Enhanced pattern with format validation
 		{
 			ID:          "ssn_detection",
@@ -430,6 +470,79 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 			Enabled:     true,
 		},
 	}
+}
+
+// ValidatePAN validates Indian Permanent Account Number format
+// Returns true if the PAN matches the valid format with correct entity type
+func ValidatePAN(pan string) bool {
+	if len(pan) != 10 {
+		return false
+	}
+
+	// First 3 characters must be uppercase letters
+	for i := 0; i < 3; i++ {
+		if pan[i] < 'A' || pan[i] > 'Z' {
+			return false
+		}
+	}
+
+	// 4th character must be valid entity type
+	entityTypes := "PCHABGJLFT"
+	validEntity := false
+	for _, c := range entityTypes {
+		if rune(pan[3]) == c {
+			validEntity = true
+			break
+		}
+	}
+	if !validEntity {
+		return false
+	}
+
+	// 5th character must be uppercase letter
+	if pan[4] < 'A' || pan[4] > 'Z' {
+		return false
+	}
+
+	// Characters 6-9 must be digits
+	for i := 5; i < 9; i++ {
+		if pan[i] < '0' || pan[i] > '9' {
+			return false
+		}
+	}
+
+	// 10th character must be uppercase letter
+	if pan[9] < 'A' || pan[9] > 'Z' {
+		return false
+	}
+
+	return true
+}
+
+// ValidateAadhaar validates Indian Aadhaar number format
+// Returns true if the Aadhaar matches the basic format validation
+// Note: Full Verhoeff checksum validation requires additional logic
+func ValidateAadhaar(aadhaar string) bool {
+	// Remove spaces efficiently
+	var clean strings.Builder
+	clean.Grow(12)
+	for _, r := range aadhaar {
+		if r >= '0' && r <= '9' {
+			clean.WriteRune(r)
+		}
+	}
+	cleanStr := clean.String()
+
+	if len(cleanStr) != 12 {
+		return false
+	}
+
+	// First digit must be 2-9 (never 0 or 1)
+	if cleanStr[0] < '2' || cleanStr[0] > '9' {
+		return false
+	}
+
+	return true
 }
 
 // ValidateSSN validates US Social Security Numbers

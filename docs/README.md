@@ -6,24 +6,26 @@ Public documentation for AxonFlow - synced to the open source repository.
 
 - [Getting Started](./getting-started.md) - First steps with AxonFlow
 - [Local Development](./LOCAL_DEVELOPMENT.md) - Run AxonFlow locally
-- [Deployment Guide](./DEPLOYMENT_GUIDE.md) - Deploy to production
+- [Tutorials](./tutorials/) - Step-by-step tutorials
 
 ## Guides
 
 | Guide | Description |
 |-------|-------------|
 | [OSS Configuration](./OSS_CONFIGURATION_GUIDE.md) | Configure AxonFlow OSS edition |
-| [LLM Providers](./LLM_PROVIDER_CONFIGURATION.md) | Configure LLM providers (OpenAI, Bedrock, Ollama) |
+| [LLM Providers](./LLM_PROVIDER_CONFIGURATION.md) | Configure LLM providers (OpenAI) |
 | [Connector Development](./CONNECTOR_DEVELOPMENT_GUIDE.md) | Build custom MCP connectors |
+| [Configurable Agents](./CONFIGURABLE_AGENTS.md) | Configure agents via YAML (MAP 0.5) |
 | [Gateway Mode Migration](./GATEWAY_MODE_MIGRATION_GUIDE.md) | Migrate to Gateway Mode SDK |
 | [Policy Templates API](./POLICY_TEMPLATES_API.md) | Use policy templates |
+| [PII Detection](./PII_DETECTION.md) | Configure PII detection |
+
+## SDK Documentation
+
+| Document | Description |
+|----------|-------------|
 | [SDK Comparison](./SDK_COMPARISON.md) | Compare Go vs TypeScript SDKs |
-
-## Setup Guides
-
-| Guide | Description |
-|-------|-------------|
-| [Cloudflare Access](./CLOUDFLARE_ACCESS_SETUP.md) | Set up Cloudflare Access for security |
+| [sdk/](./sdk/) | SDK architecture and specifications |
 
 ## Reference
 
@@ -31,19 +33,23 @@ Public documentation for AxonFlow - synced to the open source repository.
 |----------|-------------|
 | [Agent Definition](./agent-definition.md) | Agent architecture and configuration |
 | [MCP v0.2 Release Notes](./MCP_V02_RELEASE_NOTES.md) | MCP protocol v0.2 changes |
-| [Secrets & Logging](./SECRETS_AND_LOGGING_CHECKLIST.md) | Security checklist |
 
 ## Subdirectories
 
 | Directory | Description |
 |-----------|-------------|
-| [api/](./api/) | OpenAPI specifications |
-| [deployment/](./deployment/) | Deployment-specific guides |
-| [security/](./security/) | Security documentation |
+| [api/](./api/) | OpenAPI specifications and error codes |
+| [sdk/](./sdk/) | SDK architecture documentation |
+| [security/](./security/) | Security documentation (RLS) |
+| [tutorials/](./tutorials/) | Step-by-step tutorials |
 
 ## Enterprise Documentation
 
-Enterprise-only features (Bedrock, Ollama, AWS Marketplace) are documented in `/ee/docs/`.
+Enterprise-only features are documented in `/ee/docs/`:
+- AWS Bedrock and Ollama LLM providers
+- AWS Marketplace metering
+- Internal deployment guides
+- Dashboard configuration
 
 ## Internal Documentation
 

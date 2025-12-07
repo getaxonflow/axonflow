@@ -94,7 +94,6 @@ func NewMetricsCollector() *MetricsCollector {
 	}
 
 	// Start background tasks
-	go collector.periodicAggregation()
 	go collector.systemMetricsUpdater()
 
 	return collector
@@ -369,19 +368,6 @@ func (c *MetricsCollector) copySystemMetrics() *SystemMetrics {
 		QueueDepth:        c.metrics.SystemMetrics.QueueDepth,
 		LastHealthCheck:   c.metrics.SystemMetrics.LastHealthCheck,
 		HealthCheckPassed: c.metrics.SystemMetrics.HealthCheckPassed,
-	}
-}
-
-// periodicAggregation performs periodic metric aggregation
-// TODO: Implement metric aggregation (rolling averages, data cleanup) when needed
-func (c *MetricsCollector) periodicAggregation() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Placeholder for future metric aggregation
-		// When implementing, add c.mu.Lock()/Unlock() around the actual work
-		_ = c // Reference collector to avoid unused warning
 	}
 }
 
