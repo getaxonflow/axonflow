@@ -58,6 +58,7 @@ docker-compose logs -f axonflow-orchestrator
 
 ## 🆕 What's New (December 2025)
 
+- **EU AI Act Compliance**: Full Article 43 conformity assessment APIs, HITL workflows, accuracy metrics, bias detection, and emergency circuit breaker
 - **MAP 0.8**: REST API for agent management - list, get, validate agents via `/api/v1/agents` (Enterprise: full CRUD, version history, sandbox testing)
 - **MAP 0.5**: User-configurable agents via YAML - define your own agent workflows without code changes
 - **Python SDK**: First-class Python support (`pip install axonflow`) alongside TypeScript and Go
@@ -65,6 +66,22 @@ docker-compose logs -f axonflow-orchestrator
 - **OSS Connectors**: 6 connectors in OSS (PostgreSQL, MySQL, MongoDB, Redis, HTTP, Cassandra)
 - **Test Coverage**: 70%+ across all modules (Agent: 74.9%, Orchestrator: 73.7%, Connectors: 68.6%)
 - **OpenAPI Spec**: Full API documented at `docs/api/orchestrator-api.yaml`
+
+### 🇪🇺 EU AI Act Compliance (Enterprise)
+
+AxonFlow Enterprise provides comprehensive EU AI Act compliance features:
+
+| Feature | Article | Description |
+|---------|---------|-------------|
+| Decision Chain Tracing | 12, 13 | Full audit trail with transparency headers |
+| Human-in-the-Loop (HITL) | 14 | Workflow queues for human oversight |
+| Conformity Assessment | 43 | Self-assessment and third-party assessment APIs |
+| Accuracy Metrics | 9, 15 | Performance tracking and threshold alerts |
+| Bias Detection | 9, 10 | Category-based bias scoring and monitoring |
+| Emergency Circuit Breaker | 15 | Immediate halt on critical issues |
+| Audit Export | 11, 12 | EU AI Act compliant export format |
+
+See [EU AI Act Compliance Guide](docs/EU_AI_ACT_COMPLIANCE.md) for complete documentation.
 
 **Authentication for SDK calls:**
 
@@ -175,6 +192,14 @@ AxonFlow is available in two editions:
 | REST API (list, get, validate) | ✅ | ✅ |
 | REST API (CRUD, versions, test) | ❌ | ✅ |
 | Database-backed storage | ❌ | ✅ |
+| **EU AI Act Compliance** | | |
+| Decision chain tracing | ✅ | ✅ |
+| Transparency headers (X-AI-*) | ✅ | ✅ |
+| Human-in-the-Loop (HITL) | ❌ | ✅ |
+| Conformity assessment APIs | ❌ | ✅ |
+| Accuracy metrics & bias detection | ❌ | ✅ |
+| Emergency circuit breaker | ❌ | ✅ |
+| EU AI Act export format | ❌ | ✅ |
 | **Advanced Features** | | |
 | Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
 | Customer dashboard UI | ❌ | ✅ |
