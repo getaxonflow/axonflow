@@ -1,0 +1,85 @@
+name: Check Protected Changes
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/test.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-coverage-thresholds:
+    name: Check Coverage Threshold Changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for coverage threshold changes
+        id: check
+        run: |
+          # Get the diff for test.yml
+          DIFF=$(git diff origin/main...HEAD -- .github/workflows/test.yml || true)
+
+          # Check if threshold values were modified (lowered)
+          if echo "$DIFF" | grep -E '^\-.*threshold=[0-9]' | grep -v '^\+' > /dev/null; then
+            OLD_THRESHOLDS=$(echo "$DIFF" | grep -E '^\-.*threshold=' | sed 's/.*threshold=//' | tr '\n' ' ')
+            NEW_THRESHOLDS=$(echo "$DIFF" | grep -E '^\+.*threshold=' | sed 's/.*threshold=//' | tr '\n' ' ')
+            echo "⚠️ Coverage threshold changes detected!"
+            echo "Old values: $OLD_THRESHOLDS"
+            echo "New values: $NEW_THRESHOLDS"
+            echo "threshold_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No coverage threshold changes detected"
+            echo "threshold_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Add warning comment
+        if: steps.check.outputs.threshold_changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ⚠️ Coverage Threshold Change Detected
+
+            This PR modifies coverage thresholds in \`.github/workflows/test.yml\`.
+
+            **This requires explicit approval from @saurabhjain1592.**
+
+            Per project policy:
+            - Coverage thresholds should NOT be lowered without explicit approval
+            - If coverage is failing, add more tests instead of lowering thresholds
+            - Current thresholds: Agent 74%, Orchestrator 72%, Connectors 55%
+
+            If this change is intentional and approved, please add a comment confirming.`;
+
+            // Check if we already commented
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const existingComment = comments.data.find(c =>
+              c.body.includes('Coverage Threshold Change Detected')
+            );
+
+            if (!existingComment) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Fail if thresholds lowered without approval
+        if: steps.check.outputs.threshold_changed == 'true'
+        run: |
+          echo "::error::Coverage thresholds were modified. This requires explicit approval."
+          echo "Please ensure @saurabhjain1592 has approved this change."
+          exit 1

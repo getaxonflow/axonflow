@@ -1,0 +1,61 @@
+# golangci-lint configuration for AxonFlow
+# Version 2.x compatible configuration
+# https://golangci-lint.run/docs/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+linters:
+  # Replace disable-all with default: none
+  default: none
+  enable:
+    # Essential linters
+    - errcheck      # Check for unchecked errors
+    - govet         # Go vet
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Go static analysis (includes gosimple, stylecheck in v2)
+    - unused        # Check for unused code
+
+  # Settings moved under linters in v2
+  settings:
+    errcheck:
+      check-type-assertions: false  # Type assertions are typically intentional
+      check-blank: false  # Allow explicit _ = ignores
+
+    govet:
+      disable:
+        - fieldalignment  # Too pedantic, optimizing struct layout isn't worth the noise
+
+  # Exclusion rules (moved from issues.exclude-rules in v2)
+  exclusions:
+    presets: []  # No default exclusions
+    paths:
+      - ".*_test\\.go$"  # Skip test files
+    rules:
+      # Exclude errcheck for rows.Close in defer - error is typically logged/ignored
+      - linters:
+          - errcheck
+        text: "Error return value of .*(r|R)ows\\.Close.* is not checked"
+
+      # Exclude errcheck for tx.Rollback in error handling - we're already in error path
+      - linters:
+          - errcheck
+        text: "Error return value of .*\\.(Rollback|rollback).* is not checked"
+
+      # Exclude errcheck for response body Close - standard pattern
+      - linters:
+          - errcheck
+        text: "Error return value of .*Body\\.Close.* is not checked"
+
+      # Allow defensive nil checks before range (S1031) - more explicit/consistent
+      - linters:
+          - staticcheck
+        text: "S1031"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
