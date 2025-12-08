@@ -4,6 +4,7 @@ Thank you for your interest in contributing to AxonFlow! This guide will help yo
 
 ## Table of Contents
 
+- [Contributor License Agreement](#contributor-license-agreement)
 - [Quick Start](#quick-start)
 - [Development Environment](#development-environment)
 - [Making Changes](#making-changes)
@@ -13,6 +14,32 @@ Thank you for your interest in contributing to AxonFlow! This guide will help yo
 - [Submitting Changes](#submitting-changes)
 - [Code Style](#code-style)
 - [Getting Help](#getting-help)
+
+## Contributor License Agreement
+
+Before your first contribution can be merged, you must sign our [Contributor License Agreement (CLA)](.github/CLA.md).
+
+### Why We Require a CLA
+
+The CLA protects both you and AxonFlow:
+- **For you**: Confirms you have the right to submit the code and protects your rights as the author
+- **For the project**: Ensures we can legally distribute your contributions under the Apache 2.0 license
+- **For users**: Provides assurance that the code they're using has clear legal provenance
+
+### How to Sign
+
+When you open your first pull request:
+
+1. The CLA Assistant bot will automatically check if you've signed
+2. If you haven't signed, it will post a comment with instructions
+3. Simply reply with: `I have read the CLA Document and I hereby sign the CLA`
+4. That's it! Your signature is recorded and applies to all future contributions
+
+**This is a one-time process** - once signed, all your future PRs are covered.
+
+### Corporate Contributors
+
+If you're contributing on behalf of your employer, please ensure you have authorization to do so. The CLA includes provisions for corporate contributions.
 
 ## Quick Start
 
@@ -578,7 +605,7 @@ make start
 
 ## License
 
-By contributing to AxonFlow, you agree that your contributions will be licensed under the project's license.
+By contributing to AxonFlow, you agree that your contributions will be licensed under the Apache 2.0 license. All contributors must sign our [Contributor License Agreement (CLA)](.github/CLA.md) before their first contribution can be merged.
 
 ## Recognition
 
