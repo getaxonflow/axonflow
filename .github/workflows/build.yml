@@ -10,28 +10,31 @@ on:
       - 'platform/*/Dockerfile'
       - 'platform/monitoring/Dockerfile'
       - 'grafana/Dockerfile'
-      # Go source code that gets compiled into images
-      - 'platform/**/*.go'
+      # Go source code that gets compiled into images (excluding test files)
+      # Note: GitHub Actions doesn't support negation in paths, so we list specific directories
+      - 'platform/agent/*.go'
+      - 'platform/agent/**/*.go'
+      - 'platform/orchestrator/*.go'
+      - 'platform/orchestrator/**/*.go'
+      - 'platform/connectors/**/*.go'
+      - 'platform/common/**/*.go'
+      - 'platform/cmd/**/*.go'
       - 'platform/**/go.mod'
       - 'platform/**/go.sum'
       # Enterprise overlay (critical for Agent build)
-      - 'ee/platform/**/*.go'
+      - 'ee/platform/agent/**/*.go'
+      - 'ee/platform/orchestrator/**/*.go'
+      - 'ee/platform/connectors/**/*.go'
+      - 'ee/platform/customer-portal/**'
+      - 'ee/platform/customer-portal-ui/**'
       - 'ee/platform/**/go.mod'
       - 'ee/platform/**/go.sum'
       # Migrations baked into images
-      - 'migrations/**'
+      - 'migrations/**/*.sql'
       # Grafana dashboards and config
       - 'grafana/**'
       # Build workflow itself
       - '.github/workflows/build.yml'
-    paths-ignore:
-      # Test files don't affect built images
-      - '**/*_test.go'
-      - '**/testdata/**'
-      # Documentation
-      - '**/*.md'
-      - 'docs/**'
-      - 'ee/docs/**'
   # Merge queue: Docker builds run when PR is ready to merge
   # This provides 83% reduction in Docker build jobs while ensuring main stays clean
   # See: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue
