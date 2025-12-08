@@ -93,6 +93,7 @@ services:
       SELF_HOSTED_MODE: "true"
       SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
       ENVIRONMENT: "development"
+      # DEPLOYMENT_MODE defaults to "oss" - enterprise deployments set via GitHub workflow
       LOG_LEVEL: debug
 
       # Redis (optional)

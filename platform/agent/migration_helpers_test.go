@@ -480,10 +480,10 @@ func TestGetMigrationPaths_DefaultMode(t *testing.T) {
 	basePath := "/test/migrations"
 	paths := getMigrationPaths(basePath)
 
-	// Should default to saas mode
-	expectedCount := 4 // core + enterprise + 2 industry
+	// Should default to oss mode (core only) for docker-compose and OSS users
+	expectedCount := 1 // core only
 	if len(paths) != expectedCount {
-		t.Errorf("Expected %d paths for default mode, got %d", expectedCount, len(paths))
+		t.Errorf("Expected %d paths for default mode (oss), got %d", expectedCount, len(paths))
 	}
 
 	// First path should be core

@@ -33,9 +33,15 @@ import (
 //   migrations/
 //   ├── core/        (001-099) Always run
 //   ├── enterprise/  (100-199) Enterprise deployments
-//   └── industry/    (200-299) Industry-specific
-//       ├── healthcare/ (200-249)
-//       └── banking/    (250-299)
+//   └── industry/    (200+) Industry-specific verticals
+//       ├── travel/     (200-249) Travel vertical (EU AI Act)
+//       ├── healthcare/ (250-299) Healthcare vertical
+//       ├── banking/    (300-349) Banking vertical (SEBI)
+//       └── (future)    (350+) Additional verticals
+//
+// IMPORTANT: Industry migrations MUST use numbers >= 200 to ensure they run
+// AFTER all core and enterprise migrations. Using 001-099 will cause failures
+// because dependencies (like static_policies) won't exist yet.
 //
 // DEPLOYMENT_MODE controls which paths are included:
 //   - oss:               core/
@@ -57,7 +63,7 @@ type MigrationFile struct {
 func getMigrationPaths(basePath string) []string {
 	mode := os.Getenv("DEPLOYMENT_MODE")
 	if mode == "" {
-		mode = "saas" // Default to full SaaS mode for backward compatibility
+		mode = "oss" // Default to OSS mode for local development and docker-compose
 	}
 
 	// Handle legacy 'invpc' value (backwards compatibility)

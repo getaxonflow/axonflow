@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS decision_chain (
     step_number INTEGER NOT NULL DEFAULT 1,  -- Order within the chain
 
     -- Tenant context
-    org_id UUID NOT NULL,
+    org_id VARCHAR(255) NOT NULL,
     tenant_id TEXT NOT NULL,
     client_id TEXT,
     user_id TEXT,
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS decision_chain (
 
     -- Indexes for efficient querying
     CONSTRAINT fk_decision_chain_org FOREIGN KEY (org_id)
-        REFERENCES organizations(id) ON DELETE CASCADE
+        REFERENCES organizations(org_id) ON DELETE CASCADE
 );
 
 -- Indexes for common query patterns

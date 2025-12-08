@@ -15,7 +15,7 @@
 
 CREATE TABLE IF NOT EXISTS audit_retention_config (
     id SERIAL PRIMARY KEY,
-    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    org_id VARCHAR(255) NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
 
     -- Data type being configured (e.g., 'policy_violations', 'llm_calls', 'decision_chain')
     data_type VARCHAR(100) NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS audit_archive (
     id BIGSERIAL PRIMARY KEY,
 
     -- Source information
-    org_id INTEGER NOT NULL,
+    org_id VARCHAR(255) NOT NULL,
     source_table VARCHAR(100) NOT NULL,
     source_id BIGINT NOT NULL,
 
@@ -130,7 +130,7 @@ COMMENT ON TABLE audit_archive IS 'Archive table for audit records that have exc
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION get_effective_retention_days(
-    p_org_id INTEGER,
+    p_org_id VARCHAR(255),
     p_data_type VARCHAR(100)
 ) RETURNS INTEGER AS $$
 DECLARE
@@ -169,7 +169,7 @@ CREATE OR REPLACE FUNCTION cleanup_expired_audit_records(
     p_data_type VARCHAR(100),
     p_batch_size INTEGER DEFAULT 1000
 ) RETURNS TABLE (
-    org_id INTEGER,
+    org_id VARCHAR(255),
     records_archived INTEGER,
     records_deleted INTEGER
 ) AS $$
@@ -183,12 +183,12 @@ DECLARE
 BEGIN
     -- Process each organization
     FOR v_org IN
-        SELECT DISTINCT o.id as org_id,
+        SELECT DISTINCT o.org_id as org_id,
                COALESCE(arc.archive_before_delete, true) as archive_before_delete,
                COALESCE(arc.retention_days, ard.retention_days, 1825) as retention_days
         FROM organizations o
         LEFT JOIN audit_retention_config arc
-            ON arc.org_id = o.id
+            ON arc.org_id = o.org_id
             AND arc.data_type = p_data_type
             AND arc.is_active = true
         LEFT JOIN audit_retention_defaults ard
@@ -276,7 +276,7 @@ $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE VIEW audit_retention_summary AS
 SELECT
-    o.id as org_id,
+    o.org_id as org_id,
     o.name as org_name,
     dt.data_type,
     COALESCE(arc.retention_days, ard.retention_days, 1825) as retention_days,
@@ -295,7 +295,7 @@ CROSS JOIN (
     SELECT DISTINCT data_type FROM audit_retention_defaults
 ) dt
 LEFT JOIN audit_retention_config arc
-    ON arc.org_id = o.id AND arc.data_type = dt.data_type
+    ON arc.org_id = o.org_id AND arc.data_type = dt.data_type
 LEFT JOIN audit_retention_defaults ard
     ON ard.data_type = dt.data_type;
 
@@ -308,7 +308,7 @@ ALTER TABLE audit_retention_config ENABLE ROW LEVEL SECURITY;
 -- Policy: Users can only see their organization's config
 CREATE POLICY audit_retention_config_org_isolation ON audit_retention_config
     FOR ALL
-    USING (org_id = current_setting('app.current_org_id', true)::INTEGER);
+    USING (org_id = current_setting('app.current_org_id', true)::VARCHAR);
 
 -- Policy: System admin can see all configs
 CREATE POLICY audit_retention_config_admin_access ON audit_retention_config
@@ -316,18 +316,25 @@ CREATE POLICY audit_retention_config_admin_access ON audit_retention_config
     USING (current_setting('app.is_admin', true)::BOOLEAN = true);
 
 -- =============================================================================
--- Grant Permissions
+-- Grant Permissions (only if role exists - enterprise deployments)
 -- =============================================================================
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON audit_retention_config TO axonflow_app;
-GRANT SELECT ON audit_retention_defaults TO axonflow_app;
-GRANT SELECT, INSERT ON audit_archive TO axonflow_app;
-GRANT SELECT ON audit_retention_summary TO axonflow_app;
-
--- Allow app to use sequences
-GRANT USAGE, SELECT ON SEQUENCE audit_retention_config_id_seq TO axonflow_app;
-GRANT USAGE, SELECT ON SEQUENCE audit_retention_defaults_id_seq TO axonflow_app;
-GRANT USAGE, SELECT ON SEQUENCE audit_archive_id_seq TO axonflow_app;
+DO $$
+BEGIN
+    -- Only grant permissions if the axonflow_app role exists (enterprise deployments)
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'axonflow_app') THEN
+        EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON audit_retention_config TO axonflow_app';
+        EXECUTE 'GRANT SELECT ON audit_retention_defaults TO axonflow_app';
+        EXECUTE 'GRANT SELECT, INSERT ON audit_archive TO axonflow_app';
+        EXECUTE 'GRANT SELECT ON audit_retention_summary TO axonflow_app';
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE audit_retention_config_id_seq TO axonflow_app';
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE audit_retention_defaults_id_seq TO axonflow_app';
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE audit_archive_id_seq TO axonflow_app';
+        RAISE NOTICE 'Permissions granted to axonflow_app role';
+    ELSE
+        RAISE NOTICE 'Skipping permission grants - axonflow_app role does not exist (OSS deployment)';
+    END IF;
+END $$;
 
 -- =============================================================================
 -- Success Message
