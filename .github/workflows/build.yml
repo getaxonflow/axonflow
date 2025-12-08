@@ -125,7 +125,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push agent image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./platform/agent/Dockerfile
@@ -214,7 +214,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push orchestrator image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./platform/orchestrator/Dockerfile
@@ -299,7 +299,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push customer-portal image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./ee/platform/customer-portal/Dockerfile
@@ -375,7 +375,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push customer-portal-ui image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./ee/platform/customer-portal-ui
           file: ./ee/platform/customer-portal-ui/Dockerfile
@@ -453,7 +453,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push prometheus image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./platform/monitoring
           file: ./platform/monitoring/Dockerfile
@@ -531,7 +531,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push grafana image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./grafana
           file: ./grafana/Dockerfile
@@ -607,7 +607,7 @@ jobs:
           [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
 
       - name: Build and push performance-testing image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./ee/platform/performance-testing/Dockerfile

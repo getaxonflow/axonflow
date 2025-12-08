@@ -130,7 +130,7 @@ jobs:
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Build and push ${{ matrix.component }} image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./platform/${{ matrix.component }}/Dockerfile
