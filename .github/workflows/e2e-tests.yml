@@ -1,0 +1,155 @@
+name: E2E Tests
+
+on:
+  # Run on PRs that touch frontend code
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'ee/platform/customer-portal-ui/**'
+      - 'ee/platform/clients/**'
+      - '.github/workflows/e2e-tests.yml'
+
+  # Run on push to main (after merge)
+  push:
+    branches:
+      - main
+    paths:
+      - 'ee/platform/customer-portal-ui/**'
+      - 'ee/platform/clients/**'
+
+  # Manual trigger with environment selection
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+  # Scheduled daily run against staging
+  schedule:
+    - cron: '0 6 * * *'  # 6 AM UTC daily
+
+env:
+  # Default to staging for scheduled/push runs
+  # NOTE: customer.getaxonflow.com redirects to marketing site, use ALB URL for staging
+  # The ALB URL is stored in secrets.E2E_BASE_URL for security
+  BASE_URL: ${{ secrets.E2E_BASE_URL || 'https://customer.getaxonflow.com' }}
+
+jobs:
+  e2e-customer-portal:
+    name: Customer Portal E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'ee/platform/customer-portal-ui/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ee/platform/customer-portal-ui
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ee/platform/customer-portal-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: ee/platform/customer-portal-ui
+        run: npm run test:e2e -- --project=chromium
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-customer-portal
+          path: ee/platform/customer-portal-ui/playwright-report/
+          retention-days: 14
+
+      - name: Upload test screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-screenshots
+          path: ee/platform/customer-portal-ui/test-results/
+          retention-days: 7
+
+  visual-regression:
+    name: Visual Regression Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only run on PRs (to compare against baseline)
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'ee/platform/customer-portal-ui/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ee/platform/customer-portal-ui
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ee/platform/customer-portal-ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Run visual regression tests
+        working-directory: ee/platform/customer-portal-ui
+        run: npx playwright test e2e/visual.spec.ts --project=chromium
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+
+      - name: Upload visual diff artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: visual-diff-report
+          path: ee/platform/customer-portal-ui/test-results/
+          retention-days: 14
+
+  e2e-summary:
+    name: E2E Test Summary
+    runs-on: ubuntu-latest
+    needs: [e2e-customer-portal]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "E2E Test Results Summary"
+          echo "========================"
+          echo "Customer Portal: ${{ needs.e2e-customer-portal.result }}"
+
+          if [[ "${{ needs.e2e-customer-portal.result }}" == "failure" ]]; then
+            echo ""
+            echo "E2E tests failed - check artifacts for details"
+            exit 1
+          fi
+
+          echo ""
+          echo "All E2E tests passed"
