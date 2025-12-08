@@ -246,9 +246,162 @@ jobs:
             echo "Validation build - image not pushed to ECR"
           fi
 
-  # NOTE: customer-portal and customer-portal-ui are enterprise components
-  # Located in ee/platform/customer-portal/ and ee/platform/customer-portal-ui/
-  # To build enterprise edition, run this workflow manually with edition=enterprise
+  build-customer-portal:
+    name: Build Customer Portal Image
+    runs-on: ubuntu-latest
+    # Only build enterprise components when edition is enterprise (default)
+    # Note: github.event.inputs only exists for workflow_dispatch, so we must handle all cases:
+    # - push/merge_group: always build enterprise (inputs is empty, default to enterprise)
+    # - workflow_dispatch: only build if edition != 'oss'
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.edition != 'oss' }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Note: No "Set up Go" step needed - Docker multi-stage build uses golang:1.25-alpine
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate build metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [[ "$GITHUB_REF" == refs/pull/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|refs/pull/\([0-9]*\)/.*|\1|')
+            BRANCH="pr-${PR_NUM}"
+          elif [[ "$GITHUB_REF" == refs/heads/gh-readonly-queue/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|.*/pr-\([0-9]*\)-.*|\1|')
+            BRANCH="mq-${PR_NUM}"
+          else
+            BRANCH=${GITHUB_REF#refs/heads/}
+          fi
+          SAFE_BRANCH=$(echo "$BRANCH" | sed 's/\//-/g' | tr '[:upper:]' '[:lower:]')
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
+
+      - name: Build and push customer-portal image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./ee/platform/customer-portal/Dockerfile
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.short_sha }}
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.branch }}-latest
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.timestamp }}
+            ${{ steps.meta.outputs.is_main == 'true' && format('{0}/axonflow-customer-portal:latest', env.ECR_REGISTRY) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image tags
+        run: |
+          echo "✅ Customer Portal image built successfully"
+          if [[ "${{ github.event_name }}" == "push" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Tags:"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.short_sha }}"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.branch }}-latest"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal:${{ steps.meta.outputs.timestamp }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "Merge queue build - validating before merge (image not pushed)"
+          else
+            echo "Validation build - image not pushed to ECR"
+          fi
+
+  build-customer-portal-ui:
+    name: Build Customer Portal UI Image
+    runs-on: ubuntu-latest
+    # See build-customer-portal for explanation of this condition
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.edition != 'oss' }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate build metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [[ "$GITHUB_REF" == refs/pull/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|refs/pull/\([0-9]*\)/.*|\1|')
+            BRANCH="pr-${PR_NUM}"
+          elif [[ "$GITHUB_REF" == refs/heads/gh-readonly-queue/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|.*/pr-\([0-9]*\)-.*|\1|')
+            BRANCH="mq-${PR_NUM}"
+          else
+            BRANCH=${GITHUB_REF#refs/heads/}
+          fi
+          SAFE_BRANCH=$(echo "$BRANCH" | sed 's/\//-/g' | tr '[:upper:]' '[:lower:]')
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
+
+      - name: Build and push customer-portal-ui image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ee/platform/customer-portal-ui
+          file: ./ee/platform/customer-portal-ui/Dockerfile
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.short_sha }}
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.branch }}-latest
+            ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.timestamp }}
+            ${{ steps.meta.outputs.is_main == 'true' && format('{0}/axonflow-customer-portal-ui:latest', env.ECR_REGISTRY) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image tags
+        run: |
+          echo "✅ Customer Portal UI image built successfully"
+          if [[ "${{ github.event_name }}" == "push" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Tags:"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.short_sha }}"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.branch }}-latest"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-customer-portal-ui:${{ steps.meta.outputs.timestamp }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "Merge queue build - validating before merge (image not pushed)"
+          else
+            echo "Validation build - image not pushed to ECR"
+          fi
 
   build-prometheus:
     name: Build Prometheus Image
@@ -406,40 +559,127 @@ jobs:
             echo "Validation build - image not pushed to ECR"
           fi
 
-  # NOTE: performance-testing is an enterprise component
-  # Located in ee/platform/performance-testing/
-  # To build enterprise edition, run this workflow manually with edition=enterprise
+  build-performance-testing:
+    name: Build Performance Testing Image
+    runs-on: ubuntu-latest
+    # See build-customer-portal for explanation of this condition
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.edition != 'oss' }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate build metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [[ "$GITHUB_REF" == refs/pull/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|refs/pull/\([0-9]*\)/.*|\1|')
+            BRANCH="pr-${PR_NUM}"
+          elif [[ "$GITHUB_REF" == refs/heads/gh-readonly-queue/* ]]; then
+            PR_NUM=$(echo "$GITHUB_REF" | sed 's|.*/pr-\([0-9]*\)-.*|\1|')
+            BRANCH="mq-${PR_NUM}"
+          else
+            BRANCH=${GITHUB_REF#refs/heads/}
+          fi
+          SAFE_BRANCH=$(echo "$BRANCH" | sed 's/\//-/g' | tr '[:upper:]' '[:lower:]')
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          [[ "$SAFE_BRANCH" == "main" ]] && echo "is_main=true" >> $GITHUB_OUTPUT || echo "is_main=false" >> $GITHUB_OUTPUT
+
+      - name: Build and push performance-testing image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./ee/platform/performance-testing/Dockerfile
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          platforms: linux/amd64
+          tags: |
+            ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.short_sha }}
+            ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.branch }}-latest
+            ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.timestamp }}
+            ${{ steps.meta.outputs.is_main == 'true' && format('{0}/axonflow-performance-testing:latest', env.ECR_REGISTRY) || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image tags
+        run: |
+          echo "✅ Performance Testing image built successfully"
+          if [[ "${{ github.event_name }}" == "push" ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Tags:"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.short_sha }}"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.branch }}-latest"
+            echo "  - ${{ env.ECR_REGISTRY }}/axonflow-performance-testing:${{ steps.meta.outputs.timestamp }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "Merge queue build - validating before merge (image not pushed)"
+          else
+            echo "Validation build - image not pushed to ECR"
+          fi
 
   build-summary:
     name: Build Summary
     runs-on: ubuntu-latest
-    needs: [build-agent, build-orchestrator, build-prometheus, build-grafana]
+    needs: [build-agent, build-orchestrator, build-customer-portal, build-customer-portal-ui, build-prometheus, build-grafana, build-performance-testing]
     if: always()
 
     steps:
       - name: Check build results
         run: |
           echo "🐋 Docker Build Complete (edition: ${{ env.EDITION }})"
+          echo ""
+          echo "=== Core Components ==="
           echo "Agent: ${{ needs.build-agent.result }}"
           echo "Orchestrator: ${{ needs.build-orchestrator.result }}"
           echo "Prometheus: ${{ needs.build-prometheus.result }}"
           echo "Grafana: ${{ needs.build-grafana.result }}"
           echo ""
-          if [[ "${{ env.EDITION }}" == "oss" ]]; then
-            echo "Note: This is an OSS build. Enterprise components (customer-portal,"
-            echo "      customer-portal-ui, performance-testing) are in ee/ directory."
-            echo "      To build enterprise edition, run this workflow manually with edition=enterprise."
-          else
-            echo "Note: This is an Enterprise build with all features enabled."
-          fi
+          echo "=== Enterprise Components ==="
+          echo "Customer Portal: ${{ needs.build-customer-portal.result }}"
+          echo "Customer Portal UI: ${{ needs.build-customer-portal-ui.result }}"
+          echo "Performance Testing: ${{ needs.build-performance-testing.result }}"
+          echo ""
 
-          # Check if any builds failed - this is critical for merge queue
+          # Check if any core builds failed - this is critical for merge queue
+          FAILED=false
           if [[ "${{ needs.build-agent.result }}" != "success" ]] || \
              [[ "${{ needs.build-orchestrator.result }}" != "success" ]] || \
              [[ "${{ needs.build-prometheus.result }}" != "success" ]] || \
              [[ "${{ needs.build-grafana.result }}" != "success" ]]; then
-            echo ""
-            echo "❌ One or more builds failed"
+            echo "❌ One or more core builds failed"
+            FAILED=true
+          fi
+
+          # For enterprise builds, also check enterprise components
+          # Note: skipped jobs return 'skipped' result when edition=oss
+          if [[ "${{ env.EDITION }}" != "oss" ]]; then
+            if [[ "${{ needs.build-customer-portal.result }}" != "success" ]] || \
+               [[ "${{ needs.build-customer-portal-ui.result }}" != "success" ]] || \
+               [[ "${{ needs.build-performance-testing.result }}" != "success" ]]; then
+              echo "❌ One or more enterprise builds failed"
+              FAILED=true
+            fi
+          fi
+
+          if [[ "$FAILED" == "true" ]]; then
             if [[ "${{ github.event_name }}" == "merge_group" ]]; then
               echo "⚠️  Merge queue build failed - PR will not be merged"
             fi
