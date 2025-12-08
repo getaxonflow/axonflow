@@ -12,14 +12,20 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
+# Prevent concurrent CLA checks on the same PR
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
 permissions:
   actions: write
-  contents: read
+  contents: write  # Need write to create cla-signatures branch
   pull-requests: write
   statuses: write
 
 jobs:
-  cla-check:
+  check-cla:
+    name: Check CLA Signature
     runs-on: ubuntu-latest
     if: |
       (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') ||
