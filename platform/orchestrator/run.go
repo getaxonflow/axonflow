@@ -561,6 +561,12 @@ func initializeComponents() {
 		}
 	}
 
+	// Initialize RuntimeConfigService for ADR-007 three-tier config
+	// Priority: Database > Config File > Env Vars
+	selfHosted := os.Getenv("AXONFLOW_SELF_HOSTED") == "true"
+	InitRuntimeConfigService(usageDB, selfHosted)
+	log.Println("RuntimeConfigService initialized (ADR-007 compliant)")
+
 	// Initialize Dynamic Policy Engine (try database-backed first)
 	dbEngine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
@@ -573,9 +579,15 @@ func initializeComponents() {
 		log.Println("Dynamic Policy Engine initialized with DATABASE backing ✅")
 	}
 
-	// Initialize LLM Router
-	llmRouter = NewLLMRouter(LoadLLMConfig())
-	log.Println("LLM Router initialized with multi-provider support")
+	// Initialize LLM Router using RuntimeConfigService (ADR-007)
+	// Falls back to env vars if database not available
+	ctx := context.Background()
+	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
+	if tenantID == "" {
+		tenantID = "default" // Fallback for single-tenant deployments
+	}
+	SetLLMRouter(NewLLMRouter(LoadLLMConfigFromService(ctx, tenantID)))
+	log.Println("LLM Router initialized with multi-provider support (ADR-007 compliant)")
 
 	// Initialize Amadeus API Client
 	amadeusClient := NewAmadeusClient()
@@ -615,14 +627,14 @@ func initializeComponents() {
 	if workflowEngine == nil {
 		log.Println("WARNING: Workflow Engine failed to initialize - workflow endpoints will not be available")
 	} else {
-		workflowEngine.InitializeWithDependencies(llmRouter, amadeusClient)
+		workflowEngine.InitializeWithDependencies(GetLLMRouter(), amadeusClient)
 		log.Println("Workflow Engine initialized successfully with API call support")
 	}
 
 	// Initialize Planning Engine (Multi-Agent Planning v0.1)
 	log.Println("Initializing Planning Engine...")
-	if llmRouter != nil {
-		planningEngine = NewPlanningEngine(llmRouter)
+	if router := GetLLMRouter(); router != nil {
+		planningEngine = NewPlanningEngine(router)
 		log.Println("Planning Engine initialized with LLM-based decomposition")
 	} else {
 		log.Println("WARNING: Planning Engine not initialized - LLM Router unavailable")
@@ -630,8 +642,8 @@ func initializeComponents() {
 
 	// Initialize Result Aggregator (Multi-Agent Planning v0.1)
 	log.Println("Initializing Result Aggregator...")
-	if llmRouter != nil {
-		resultAggregator = NewResultAggregator(llmRouter)
+	if router := GetLLMRouter(); router != nil {
+		resultAggregator = NewResultAggregator(router)
 		log.Println("Result Aggregator initialized with LLM synthesis")
 	} else {
 		log.Println("WARNING: Result Aggregator not initialized - LLM Router unavailable")
@@ -683,9 +695,10 @@ func initializeComponents() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	router := GetLLMRouter()
 	components := map[string]bool{
 		"policy_engine":      dynamicPolicyEngine.IsHealthy(),
-		"llm_router":         llmRouter.IsHealthy(),
+		"llm_router":         router != nil && router.IsHealthy(),
 		"response_processor": responseProcessor.IsHealthy(),
 		"audit_logger":       auditLogger.IsHealthy(),
 		"workflow_engine":    workflowEngine.IsHealthy(),
@@ -850,7 +863,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("[LLM] CALLING: Routing to LLM provider (skip_llm=false)")
 		llmStartTime := time.Now()
-		llmResponse, providerInfo, err = llmRouter.RouteRequest(ctx, req)
+		llmResponse, providerInfo, err = GetLLMRouter().RouteRequest(ctx, req)
 		providerName := "unknown"
 		if providerInfo != nil {
 			providerName = providerInfo.Provider
@@ -937,7 +950,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func providerStatusHandler(w http.ResponseWriter, r *http.Request) {
-	status := llmRouter.GetProviderStatus()
+	status := GetLLMRouter().GetProviderStatus()
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
@@ -952,7 +965,7 @@ func updateProviderWeightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := llmRouter.UpdateProviderWeights(weights); err != nil {
+	if err := GetLLMRouter().UpdateProviderWeights(weights); err != nil {
 		sendErrorResponse(w, "Failed to update weights: "+err.Error(), http.StatusBadRequest)
 		return
 	}

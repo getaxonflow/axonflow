@@ -157,8 +157,8 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Orchestrator Coverage: $coverage%"
 
-          # Threshold temporarily lowered from 73.5% to 72% - see issue #414
-          threshold=72.0
+          # Threshold restored to 73.5% after coverage improvements (PR #437)
+          threshold=73.5
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "❌ Orchestrator coverage $coverage% is below threshold $threshold%"
             exit 1
