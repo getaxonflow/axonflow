@@ -720,6 +720,36 @@ func Run() {
 		}()
 	}
 
+	// Initialize TenantConnectorRegistry for per-tenant connector management (ADR-007)
+	// This provides dynamic connector loading with three-tier configuration:
+	// Database > Config File > Environment Variables
+	tenantConnectorEnabled := os.Getenv("TENANT_CONNECTOR_REGISTRY_ENABLED") != "false"
+	if tenantConnectorEnabled {
+		runtimeConfigSvc := GetRuntimeConfigService()
+		if runtimeConfigSvc == nil {
+			log.Println("Warning: RuntimeConfigService not available, per-tenant connector registry disabled")
+			tenantConnectorEnabled = false
+		} else {
+			connectorFactory := DefaultConnectorFactory()
+			tenantRegistry := InitTenantConnectorRegistry(runtimeConfigSvc, connectorFactory)
+			if tenantRegistry != nil {
+				log.Println("AxonFlow Agent initialized with per-tenant connector registry (ADR-007)")
+				// Start periodic cleanup of expired connectors (StartPeriodicCleanup spawns its own goroutine)
+				tenantRegistry.StartPeriodicCleanup(context.Background(), 5*time.Minute)
+				// Ensure tenant connectors are properly disconnected on shutdown
+				defer func() {
+					if reg := GetTenantConnectorRegistry(); reg != nil {
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer cancel()
+						reg.DisconnectAll(ctx)
+					}
+				}()
+			}
+		}
+	} else {
+		log.Println("Per-tenant connector registry disabled via TENANT_CONNECTOR_REGISTRY_ENABLED=false")
+	}
+
 	// Register all routes on the global router (server is already running with /health)
 	// /health was registered in initServerImmediately() - now add all other routes
 
@@ -741,6 +771,12 @@ func Run() {
 
 	// Register MCP connector endpoints
 	RegisterMCPHandlers(globalRouter)
+
+	// Register connector refresh API endpoints (ADR-007)
+	// These endpoints allow manual cache invalidation for connector configurations
+	if tenantConnectorEnabled {
+		RegisterConnectorRefreshHandlers(globalRouter)
+	}
 
 	// Register Gateway Mode endpoints (pre-check and audit)
 	RegisterGatewayHandlers(globalRouter)

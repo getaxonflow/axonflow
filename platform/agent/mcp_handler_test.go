@@ -636,3 +636,76 @@ func TestRegisterCassandraConnector(t *testing.T) {
 		t.Errorf("registerCassandraConnector() should return nil for missing config, got: %v", err)
 	}
 }
+
+// --- GetConnectorForTenant Tests ---
+
+func TestGetConnectorForTenant_StaticRegistryFallback(t *testing.T) {
+	// Clear TenantConnectorRegistry to ensure fallback to static
+	clearTenantConnectorRegistry()
+
+	// Set up static registry
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{}
+	cfg := &base.ConnectorConfig{Name: "test-db", Type: "postgres"}
+	if err := mcpRegistry.Register("test-db", mockConn, cfg); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	ctx := context.Background()
+	conn, err := GetConnectorForTenant(ctx, "tenant-123", "test-db")
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if conn != mockConn {
+		t.Error("Expected static registry connector to be returned")
+	}
+}
+
+func TestGetConnectorForTenant_NoRegistries(t *testing.T) {
+	// Clear both registries
+	clearTenantConnectorRegistry()
+	mcpRegistry = nil
+
+	ctx := context.Background()
+	_, err := GetConnectorForTenant(ctx, "tenant-123", "test-db")
+
+	if err == nil {
+		t.Fatal("Expected error when no registries available")
+	}
+}
+
+func TestGetConnectorForTenant_ConnectorNotFound(t *testing.T) {
+	// Clear TenantConnectorRegistry
+	clearTenantConnectorRegistry()
+
+	// Set up empty static registry
+	mcpRegistry = registry.NewRegistry()
+
+	ctx := context.Background()
+	_, err := GetConnectorForTenant(ctx, "tenant-123", "nonexistent")
+
+	if err == nil {
+		t.Fatal("Expected error when connector not found")
+	}
+}
+
+func TestIsTenantConnectorRegistryEnabled(t *testing.T) {
+	// Clear registry
+	clearTenantConnectorRegistry()
+
+	if IsTenantConnectorRegistryEnabled() {
+		t.Error("Expected false when registry not initialized")
+	}
+
+	// Initialize registry
+	factory := func(connectorType string) (base.Connector, error) {
+		return &mockConnector{}, nil
+	}
+	InitTenantConnectorRegistry(nil, factory)
+	t.Cleanup(clearTenantConnectorRegistry)
+
+	if !IsTenantConnectorRegistryEnabled() {
+		t.Error("Expected true when registry is initialized")
+	}
+}
