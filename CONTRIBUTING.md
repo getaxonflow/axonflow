@@ -591,10 +591,4 @@ Contributors are recognized in:
 - Release notes for significant contributions
 - GitHub contributor graph
 
-## Community
-
-Join our growing community of developers building AI governance solutions:
-- [GitHub Discussions](https://github.com/getaxonflow/axonflow/discussions) - Ask questions and share ideas
-- [Issue Tracker](https://github.com/getaxonflow/axonflow/issues) - Report bugs and request features
-
 Thank you for contributing to AxonFlow!
