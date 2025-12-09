@@ -1,0 +1,4 @@
+# Exclude go.work file to prevent workspace conflicts during Docker build
+../go.work
+go.work
+*.work

@@ -1,0 +1,119 @@
+# Generic Domain Agent Configuration
+# This is the fallback configuration for queries that don't match a specific domain
+apiVersion: axonflow.io/v1
+kind: AgentConfig
+metadata:
+  name: generic-domain
+  domain: generic
+  description: "Generic fallback agents for unspecified domains"
+
+spec:
+  execution:
+    default_mode: auto
+    max_parallel_tasks: 3
+    timeout_seconds: 300
+    hints: |
+      Analyze the query to determine logical task breakdown and dependencies.
+      Use heuristics to decide between parallel and sequential execution based
+      on the nature of the subtasks. Default to parallel when tasks are independent.
+
+  agents:
+    - name: research-assistant
+      description: "General purpose research and information gathering"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.5
+        max_tokens: 2500
+      prompt_template: |
+        Research the following topic: {{.query}}
+
+        Provide:
+        1. Key facts and information
+        2. Different perspectives or approaches
+        3. Relevant data and statistics
+        4. Sources and references
+        5. Related topics to explore
+
+    - name: analysis-assistant
+      description: "Performs analysis and evaluation"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.3
+        max_tokens: 2500
+      prompt_template: |
+        Analyze the following: {{.query}}
+
+        Provide:
+        1. Key insights and observations
+        2. Strengths and weaknesses
+        3. Patterns and trends
+        4. Comparisons where relevant
+        5. Data-driven conclusions
+
+    - name: planning-assistant
+      description: "Creates plans and strategies"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.4
+        max_tokens: 3000
+      prompt_template: |
+        Create a plan for: {{.query}}
+
+        Include:
+        1. Clear objectives
+        2. Step-by-step action items
+        3. Timeline estimates
+        4. Resource requirements
+        5. Potential challenges and mitigations
+        6. Success metrics
+
+    - name: task-executor
+      description: "Executes specific tasks and provides results"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-haiku
+        temperature: 0.2
+        max_tokens: 1500
+      prompt_template: |
+        Execute the following task: {{.query}}
+
+        Provide:
+        1. Task completion status
+        2. Results or output
+        3. Any issues encountered
+        4. Recommendations for follow-up
+
+  routing:
+    - pattern: "research|find|discover|learn|information"
+      agent: research-assistant
+      priority: 5
+    - pattern: "analyze|evaluate|assess|compare|review"
+      agent: analysis-assistant
+      priority: 5
+    - pattern: "plan|strategy|roadmap|steps|how to"
+      agent: planning-assistant
+      priority: 5
+    - pattern: ".*"
+      agent: task-executor
+      priority: 1
+
+  synthesis:
+    enabled: true
+    prompt_template: |
+      Synthesize the results from all previous steps into a comprehensive answer for: {{.query}}
+
+      Provide:
+      - Clear summary of findings
+      - Specific recommendations with details
+      - Action items with priorities
+      - Any relevant data, metrics, or numbers
+      - Next steps
+
+      Be specific and actionable.

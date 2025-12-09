@@ -1,0 +1,71 @@
+{
+  "client": {
+    "id": "support-demo-client",
+    "name": "Customer Support Demo",
+    "tenant_id": "tenant_1",
+    "description": "SaaS/Technology company customer support operations demo",
+    "industry": "saas_technology",
+    "deployment": "demo"
+  },
+  "axonflow": {
+    "agent": {
+      "url": "http://localhost:8080",
+      "endpoints": {
+        "request": "/api/request",
+        "health": "/health"
+      }
+    },
+    "orchestrator": {
+      "url": "http://localhost:8081",
+      "fallback_direct": false
+    },
+    "authentication": {
+      "method": "jwt",
+      "jwt_secret_env": "JWT_SECRET",
+      "token_expiry": "24h"
+    }
+  },
+  "policies": {
+    "static_enforcement": true,
+    "dynamic_enforcement": true,
+    "pii_redaction": true,
+    "audit_logging": true,
+    "rate_limiting": {
+      "enabled": true,
+      "requests_per_minute": 100
+    }
+  },
+  "database": {
+    "provider": "postgresql",
+    "connection_env": "DATABASE_URL",
+    "row_level_security": true,
+    "audit_table": "audit_logs"
+  },
+  "llm_providers": {
+    "primary": "anthropic",
+    "fallback": "openai"
+  },
+  "demo_users": [
+    {
+      "email": "john.doe@company.com",
+      "role": "agent",
+      "region": "us_west",
+      "permissions": ["query", "basic_pii"],
+      "department": "support"
+    },
+    {
+      "email": "sarah.manager@company.com", 
+      "role": "manager",
+      "region": "global",
+      "permissions": ["query", "full_pii", "escalation"],
+      "department": "support"
+    },
+    {
+      "email": "admin@company.com",
+      "role": "admin", 
+      "region": "global",
+      "permissions": ["query", "full_pii", "admin", "system"],
+      "department": "it"
+    }
+  ]
+}

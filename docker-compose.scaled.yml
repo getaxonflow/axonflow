@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  # Load Balancer for Agent
+  agent-lb:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx-lb-agent.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+
+  # AxonFlow Agent (scaled)
+  agent:
+    build:
+      context: ./platform
+      dockerfile: agent/Dockerfile
+    environment:
+      - PORT=8080
+      - DATABASE_URL=${DATABASE_URL}
+      - ORCHESTRATOR_URL=http://orchestrator-lb:80
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+      - AGENT_PERFORMANCE_MODE=${AGENT_PERFORMANCE_MODE}
+      - POLICY_CACHE_TIMEOUT=${POLICY_CACHE_TIMEOUT}
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+    deploy:
+      replicas: 10
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Load Balancer for Orchestrator
+  orchestrator-lb:
+    image: nginx:alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./nginx-lb-orchestrator.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - orchestrator
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+
+  # AxonFlow Orchestrator (scaled)
+  orchestrator:
+    build:
+      context: ./platform
+      dockerfile: orchestrator/Dockerfile
+    environment:
+      - PORT=8081
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AMADEUS_API_KEY=${AMADEUS_API_KEY}
+      - AMADEUS_API_SECRET=${AMADEUS_API_SECRET}
+      - AMADEUS_ENV=${AMADEUS_ENV}
+      - NODE_ENV=production
+      - POLICY_CACHE_TIMEOUT=${POLICY_CACHE_TIMEOUT}
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+    deploy:
+      replicas: 10
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Platform Dashboard (single instance)
+  dashboard-frontend:
+    build:
+      context: ./platform/internal-dashboard/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "9000:80"
+    environment:
+      - REACT_APP_API_URL=https://staging-eu.getaxonflow.com/platform-api
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+
+  dashboard-backend:
+    build:
+      context: ./platform/internal-dashboard/backend
+      dockerfile: Dockerfile
+    ports:
+      - "9001:9001"
+    environment:
+      - PORT=9001
+      - DATABASE_URL=${DATABASE_URL}
+      - NODE_ENV=production
+    networks:
+      - axonflow-network
+    restart: unless-stopped
+
+networks:
+  axonflow-network:
+    driver: bridge

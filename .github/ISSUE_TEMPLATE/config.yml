@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.getaxonflow.com
+    about: Check our documentation for guides, API reference, and deployment instructions
+  - name: GitHub Discussions
+    url: https://github.com/getaxonflow/axonflow/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Security Vulnerability
+    url: https://github.com/getaxonflow/axonflow/security/advisories/new
+    about: Report security vulnerabilities privately following our security policy

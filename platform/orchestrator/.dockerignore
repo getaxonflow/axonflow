@@ -1,0 +1,10 @@
+# Exclude Go workspace files (causes build errors in Docker)
+go.work
+go.work.sum
+
+# Exclude development/testing files
+*.test
+*.out
+coverage.txt
+.vscode
+.idea
