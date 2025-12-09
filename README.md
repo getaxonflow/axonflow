@@ -48,10 +48,11 @@ docker-compose ps
 |----------|:---:|:----------:|-------|
 | **OpenAI** | ✅ | ✅ | GPT-4, GPT-4o, GPT-3.5 |
 | **Anthropic** | ✅ | ✅ | Claude 3.5 Sonnet, Claude 3 Opus |
-| **Ollama** | ❌ | ✅ | Local/air-gapped deployments |
+| **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
+| **Google Gemini** | ❌ | ✅ | Gemini Pro, Gemini Ultra |
 
-> **Note:** OSS users can use OpenAI or Anthropic. Enterprise providers (Ollama, Bedrock) require a license. Setting an unsupported provider in OSS will show a helpful error message.
+> **Note:** OSS users can use OpenAI, Anthropic, or Ollama. Enterprise providers (Bedrock, Gemini) require a license. Setting an unsupported provider in OSS will show a helpful error message.
 
 **Test it's working:**
 ```bash
@@ -244,8 +245,9 @@ AxonFlow is available in two editions:
 | **LLM Providers** | | |
 | OpenAI | ✅ | ✅ |
 | Anthropic (Claude) | ✅ | ✅ |
+| Ollama (local/air-gapped) | ✅ | ✅ |
 | AWS Bedrock | ❌ | ✅ |
-| Ollama (local/air-gapped) | ❌ | ✅ |
+| Google Gemini | ❌ | ✅ |
 | **MCP Connectors** | | |
 | PostgreSQL | ✅ | ✅ |
 | MySQL | ✅ | ✅ |
