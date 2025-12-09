@@ -21,7 +21,9 @@
 
 services:
   # PostgreSQL Database - Core platform storage
-  # Creates both 'axonflow' and 'grafana' databases
+  # Creates both 'axonflow' and 'grafana' databases on first run
+  # The grafana user/database is created via POSTGRES_INITDB_ARGS for OSS compatibility
+  # (Enterprise uses migration 107 instead, but OSS needs inline setup)
   postgres:
     image: postgres:15-alpine
     container_name: axonflow-postgres
@@ -32,7 +34,6 @@ services:
       POSTGRES_DB: axonflow
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/local-dev/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -43,6 +44,35 @@ services:
       start_period: 30s  # Grace period for first-run initialization
     networks:
       - axonflow-network
+
+  # PostgreSQL Init Job - Creates Grafana database and user
+  # This runs once on first startup (docker-compose up) to initialize additional databases
+  # Uses depends_on with service_healthy to wait for PostgreSQL to be ready
+  postgres-init:
+    image: postgres:15-alpine
+    container_name: axonflow-postgres-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: axonflow
+      PGPASSWORD: localdev123
+      PGDATABASE: axonflow
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Initializing Grafana database and user..."
+        # Create grafana user if not exists
+        psql -c "SELECT 1 FROM pg_user WHERE usename = 'grafana'" | grep -q 1 || \
+          psql -c "CREATE USER grafana WITH PASSWORD 'grafana_localdev456';"
+        # Create grafana database if not exists
+        psql -c "SELECT 1 FROM pg_database WHERE datname = 'grafana'" | grep -q 1 || \
+          psql -c "CREATE DATABASE grafana OWNER grafana;"
+        echo "✅ Grafana database initialized"
+    networks:
+      - axonflow-network
+    restart: "no"
 
   # Redis - Rate limiting and caching (optional but recommended)
   redis:
@@ -233,6 +263,8 @@ services:
 
   # Grafana - Metrics visualization and dashboards
   # Login: admin / grafana_localdev456
+  # Note: Grafana dashboard provisioning removed for OSS (uses Grafana's built-in SQLite by default)
+  # For custom dashboards, manually import them via Grafana UI or mount a local dashboards folder
   grafana:
     image: grafana/grafana:10.2.2
     container_name: axonflow-grafana
@@ -252,17 +284,18 @@ services:
 
       # Server configuration
       GF_SERVER_ROOT_URL: http://localhost:3000
+
+      # Auto-configure Prometheus datasource
+      GF_INSTALL_PLUGINS: ""
     ports:
       - "3000:3000"
     depends_on:
-      axonflow-agent:
-        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       prometheus:
         condition: service_healthy
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
       interval: 10s
