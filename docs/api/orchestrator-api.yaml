@@ -1,0 +1,3161 @@
+openapi: 3.0.3
+info:
+  title: AxonFlow Orchestrator API
+  description: |
+    REST API for the AxonFlow Orchestrator service - Dynamic Policy Enforcement, LLM Routing, and Multi-Agent Planning.
+
+    The Orchestrator handles:
+    - **Dynamic Policy Evaluation**: Database-backed policy rules with risk scoring
+    - **LLM Routing**: Intelligent routing across OpenAI, Anthropic, Bedrock, Ollama
+    - **Multi-Agent Planning (MAP)**: LLM-powered task decomposition and parallel execution
+    - **Response Processing**: PII detection and redaction
+    - **Workflow Execution**: Step-based workflow orchestration
+    - **Audit Logging**: Comprehensive request/response logging
+
+    ## Architecture
+
+    ```
+    Client → Agent → Orchestrator → LLM Providers
+                  ↘ MCP Connectors
+    ```
+
+    The Orchestrator receives pre-authenticated requests from the Agent and handles
+    complex processing including LLM calls and dynamic policy evaluation.
+
+    ## Internal API
+
+    These endpoints are typically called by the Agent service, not directly by clients.
+    For client-facing APIs, see the Agent API specification.
+
+  version: 1.0.0
+  contact:
+    name: AxonFlow Support
+    url: https://getaxonflow.com/support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://orchestrator.getaxonflow.com
+    description: Production (SaaS)
+  - url: http://localhost:8081
+    description: Local Development
+
+tags:
+  - name: Health
+    description: Service health and readiness
+  - name: Processing
+    description: Main request processing pipeline
+  - name: Multi-Agent Planning
+    description: LLM-powered task decomposition and execution
+  - name: Agents
+    description: Agent configuration management (MAP 0.8)
+  - name: LLM Providers
+    description: LLM provider management
+  - name: Dynamic Policies
+    description: Runtime policy management
+  - name: Workflows
+    description: Workflow execution engine
+  - name: Connectors
+    description: Connector marketplace
+  - name: Audit
+    description: Audit log search and retrieval
+  - name: SEBI Compliance
+    description: |
+      SEBI AI/ML Guidelines compliance and DPDP Act 2023 audit exports.
+      Enterprise feature for Indian financial services compliance.
+  - name: Metrics
+    description: Performance monitoring
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: |
+        Returns service health status including component health:
+        - Policy Engine
+        - LLM Router
+        - Response Processor
+        - Audit Logger
+        - Workflow Engine
+        - Planning Engine (MAP)
+        - Result Aggregator (MAP)
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                service: axonflow-orchestrator
+                version: "1.0.0"
+                timestamp: "2025-01-15T10:30:00Z"
+                components:
+                  policy_engine: true
+                  llm_router: true
+                  response_processor: true
+                  audit_logger: true
+                  workflow_engine: true
+                  planning_engine: true
+                  result_aggregator: true
+                features:
+                  multi_agent_planning: true
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Get performance metrics (JSON)
+      description: |
+        Returns comprehensive JSON metrics including:
+        - Request counts and rates
+        - Latency percentiles (P50, P95, P99)
+        - Per-stage timing (dynamic policy, LLM)
+        - Per-provider metrics (tokens, cost)
+        - Health status
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Performance metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+              example:
+                orchestrator_metrics:
+                  uptime_seconds: 3600
+                  total_requests: 5000
+                  success_requests: 4800
+                  failed_requests: 100
+                  blocked_requests: 100
+                  success_rate: 96.0
+                  rps: 1.38
+                  error_rate_per_sec: 0.027
+                  dynamic_policy_eval_p50_ms: 2.5
+                  dynamic_policy_eval_p95_ms: 8.0
+                  dynamic_policy_eval_p99_ms: 15.0
+                  llm_routing_p50_ms: 500
+                  llm_routing_p95_ms: 1500
+                  llm_routing_p99_ms: 3000
+                health:
+                  up: 1
+                  consecutive_errors: 0
+                providers:
+                  openai:
+                    total_calls: 3000
+                    success_calls: 2950
+                    failed_calls: 50
+                    total_tokens: 1500000
+                    total_cost: 45.50
+                    p99_ms: 2500
+                  bedrock:
+                    total_calls: 2000
+                    success_calls: 1990
+                    failed_calls: 10
+                    total_tokens: 800000
+                    total_cost: 12.00
+                    p99_ms: 1800
+                timestamp: "2025-01-15T10:30:00Z"
+
+  /prometheus:
+    get:
+      tags:
+        - Metrics
+      summary: Prometheus metrics endpoint
+      description: Returns metrics in Prometheus exposition format
+      operationId: getPrometheusMetrics
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/process:
+    post:
+      tags:
+        - Processing
+      summary: Process orchestrator request
+      description: |
+        Main processing endpoint. Handles:
+        1. Dynamic policy evaluation
+        2. LLM provider routing
+        3. Response processing (PII detection)
+        4. Audit logging
+        5. Metrics collection
+
+        **Note**: This endpoint is typically called by the Agent, not directly by clients.
+        For MCP queries (`request_type: mcp-query`), routes to the Agent MCP handler.
+      operationId: processRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrchestratorRequest'
+            examples:
+              llmChat:
+                summary: LLM chat request
+                value:
+                  request_id: "req_12345"
+                  query: "Summarize the quarterly report"
+                  request_type: "llm_chat"
+                  user:
+                    id: 123
+                    email: "analyst@company.com"
+                    role: "analyst"
+                    permissions: ["query", "llm_chat"]
+                    tenant_id: "tenant-abc"
+                  client:
+                    id: "analytics-app"
+                    name: "Analytics Dashboard"
+                    org_id: "org-123"
+                    tenant_id: "tenant-abc"
+                  context:
+                    model_preference: "gpt-4"
+                  timestamp: "2025-01-15T10:30:00Z"
+              skipLLM:
+                summary: Skip LLM (testing)
+                value:
+                  request_id: "test_001"
+                  query: "Test query"
+                  request_type: "llm_chat"
+                  skip_llm: true
+                  user:
+                    id: 1
+                    email: "test@test.com"
+                    role: "tester"
+                    tenant_id: "test-tenant"
+                  client:
+                    id: "test-client"
+                    name: "Test"
+                    tenant_id: "test-tenant"
+                  timestamp: "2025-01-15T10:30:00Z"
+      responses:
+        '200':
+          description: Request processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorResponse'
+              example:
+                request_id: "req_12345"
+                success: true
+                data: "Here is the quarterly report summary..."
+                redacted: false
+                policy_info:
+                  allowed: true
+                  applied_policies:
+                    - "rate-limit"
+                    - "content-filter"
+                  risk_score: 0.15
+                  processing_time_ms: 5
+                provider_info:
+                  provider: "openai"
+                  model: "gpt-4"
+                  response_time_ms: 1250
+                  tokens_used: 350
+                  cost: 0.021
+                processing_time: "1.3s"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: Blocked by dynamic policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestratorResponse'
+              example:
+                request_id: "req_12345"
+                success: false
+                error: "Request blocked by dynamic policy"
+                policy_info:
+                  allowed: false
+                  applied_policies:
+                    - "high-risk-content"
+                  risk_score: 0.85
+                  required_actions:
+                    - "approval_required"
+                processing_time: "8ms"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/plan:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Execute multi-agent plan
+      description: |
+        Multi-Agent Planning (MAP) endpoint for complex, multi-step tasks.
+
+        ## How MAP Works
+        1. **Decomposition**: LLM analyzes query and breaks into sub-tasks
+        2. **Planning**: Creates workflow with dependencies
+        3. **Execution**: Runs tasks (parallel when possible)
+        4. **Aggregation**: Synthesizes results into final response
+
+        ## Execution Modes
+        - `auto`: Automatically determines parallel/sequential (recommended)
+        - `parallel`: Force parallel execution
+        - `sequential`: Force sequential execution
+
+        ## Domains
+        - `travel`: Flights, hotels, itineraries
+        - `healthcare`: Medical queries
+        - `finance`: Financial analysis
+        - `generic`: General-purpose tasks
+
+        **Requires authentication**: Requests must come through the Agent.
+      operationId: executePlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanRequest'
+            examples:
+              travelPlan:
+                summary: Travel planning
+                value:
+                  query: "Find flights from NYC to LAX next week and suggest hotels"
+                  domain: "travel"
+                  execution_mode: "auto"
+                  user:
+                    id: 123
+                    email: "traveler@company.com"
+                    role: "employee"
+                    permissions: ["query", "mcp_query"]
+                    tenant_id: "tenant-abc"
+                  client:
+                    id: "travel-planner"
+                    name: "Travel Planning App"
+                  context:
+                    departure_date: "2025-01-20"
+                    return_date: "2025-01-25"
+                    budget: 1500
+              genericPlan:
+                summary: Generic task
+                value:
+                  query: "Research competitor pricing and create a summary report"
+                  domain: "generic"
+                  execution_mode: "sequential"
+                  user:
+                    id: 456
+                    email: "analyst@company.com"
+                    role: "analyst"
+                    permissions: ["query", "llm_chat"]
+                    tenant_id: "tenant-xyz"
+      responses:
+        '200':
+          description: Plan executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanResponse'
+              example:
+                success: true
+                plan_id: "plan_1705312200_abc123"
+                workflow_execution_id: "exec_xyz789"
+                result:
+                  flights:
+                    - flight_number: "UA123"
+                      price: 299
+                      departure: "2025-01-20T08:00:00Z"
+                  hotels:
+                    - name: "Hilton LAX"
+                      price_per_night: 189
+                      rating: 4.5
+                  summary: "Found 5 flights and 3 hotels within budget"
+                metadata:
+                  tasks_executed: 3
+                  execution_mode: "parallel"
+                  execution_time_ms: 3500
+                  tasks:
+                    - name: "search_flights"
+                      status: "completed"
+                      time_ms: 1200
+                    - name: "search_hotels"
+                      status: "completed"
+                      time_ms: 1100
+                    - name: "synthesize_results"
+                      status: "completed"
+                      time_ms: 800
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Authentication required: requests must be routed through AxonFlow Agent"
+        '503':
+          description: Planning engine unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ============================================================================
+  # Agent Management API (MAP 0.8)
+  # ============================================================================
+
+  /api/v1/agents:
+    get:
+      tags:
+        - Agents
+      summary: List all agents
+      description: |
+        Returns a paginated list of all agents from the registry.
+        In hybrid mode, includes both file-based and database-backed agents.
+        Database agents take priority over file agents with the same name.
+
+        **OSS:** Returns agents loaded from YAML files.
+        **Enterprise:** Returns agents from both files and database.
+      operationId: listAgents
+      parameters:
+        - name: page
+          in: query
+          description: Page number (1-based)
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          description: Number of agents per page
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: domain
+          in: query
+          description: Filter by domain
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+              example:
+                agents:
+                  - id: "travel/flight-booking"
+                    name: "flight-booking"
+                    domain: "travel"
+                    description: "Flight search and booking agent"
+                    version: 1
+                    is_active: true
+                  - id: "healthcare/patient-assistant"
+                    name: "patient-assistant"
+                    domain: "healthcare"
+                    description: "Patient query assistant"
+                    version: 2
+                    is_active: true
+                pagination:
+                  page: 1
+                  page_size: 20
+                  total: 2
+                  total_pages: 1
+    post:
+      tags:
+        - Agents
+      summary: Create new agent (Enterprise)
+      description: |
+        Create a new agent configuration in the database.
+        **Enterprise only** - requires database-backed storage.
+
+        The agent is created with version 1 and marked as active by default.
+        A version history entry is automatically created.
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+            example:
+              name: "travel-planner"
+              domain: "travel"
+              description: "Travel planning and booking assistant"
+              is_active: true
+              config:
+                execution:
+                  default_mode: "auto"
+                  max_parallel_tasks: 5
+                  timeout_seconds: 300
+                agents:
+                  - name: "flight-search"
+                    type: "llm-call"
+                    llm:
+                      provider: "anthropic"
+                      model: "claude-3-sonnet"
+                routing:
+                  - pattern: "flight|fly"
+                    agent: "flight-search"
+                    priority: 10
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid request or validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Agent with same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/agents/{id}:
+    get:
+      tags:
+        - Agents
+      summary: Get agent by ID
+      description: |
+        Returns detailed information about a specific agent.
+        The ID format is `domain/name` (e.g., `travel/flight-booking`).
+      operationId: getAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID in format domain/name
+          schema:
+            type: string
+          example: "travel/flight-booking"
+      responses:
+        '200':
+          description: Agent details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResource'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Agents
+      summary: Update agent (Enterprise)
+      description: |
+        Update an existing agent configuration.
+        **Enterprise only** - requires database-backed storage.
+
+        Updates increment the version number automatically.
+        A version history entry is created for the change.
+      operationId: updateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        '200':
+          description: Agent updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Agents
+      summary: Delete agent (Enterprise)
+      description: |
+        Delete an agent configuration.
+        **Enterprise only** - requires database-backed storage.
+
+        The deletion is recorded in the version history before removal.
+      operationId: deleteAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Agent deleted
+        '404':
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/agents/domain/{domain}:
+    get:
+      tags:
+        - Agents
+      summary: List agents by domain
+      description: Returns all agents for a specific domain (e.g., travel, healthcare)
+      operationId: listAgentsByDomain
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          description: Domain name
+          schema:
+            type: string
+          example: "travel"
+      responses:
+        '200':
+          description: List of agents in domain
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+
+  /api/v1/agents/validate:
+    post:
+      tags:
+        - Agents
+      summary: Validate agent configuration
+      description: |
+        Validates an agent configuration without creating it.
+        Useful for dry-run validation before deployment.
+
+        Checks:
+        - Required fields present
+        - Name/domain format valid
+        - Agent types valid (llm-call, connector-call)
+        - LLM config complete for llm-call agents
+        - Routing rules reference defined agents
+      operationId: validateAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateAgentRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+              example:
+                valid: true
+                errors: []
+        '400':
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+              example:
+                valid: false
+                errors:
+                  - "field 'name' is required"
+                  - "routing rule references undefined agent 'unknown-agent'"
+
+  /api/v1/agents/{id}/activate:
+    post:
+      tags:
+        - Agents
+      summary: Activate agent (Enterprise)
+      description: |
+        Activate a deactivated agent.
+        **Enterprise only** - requires database-backed storage.
+      operationId: activateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/deactivate:
+    post:
+      tags:
+        - Agents
+      summary: Deactivate agent (Enterprise)
+      description: |
+        Deactivate an agent without deleting it.
+        **Enterprise only** - requires database-backed storage.
+      operationId: deactivateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Agent deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/test:
+    post:
+      tags:
+        - Agents
+      summary: Test agent in sandbox (Enterprise)
+      description: |
+        Test an agent configuration in a sandbox environment.
+        **Enterprise only** - requires database-backed storage.
+
+        Executes a test query against the agent without affecting production.
+      operationId: testAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestAgentRequest'
+            example:
+              query: "Search for flights from NYC to LAX"
+              context:
+                departure_date: "2025-01-15"
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestAgentResponse'
+        '404':
+          description: Agent not found
+
+  /api/v1/agents/{id}/versions:
+    get:
+      tags:
+        - Agents
+      summary: Get agent version history (Enterprise)
+      description: |
+        Returns the version history for an agent.
+        **Enterprise only** - requires database-backed storage.
+
+        Includes all changes: create, update, delete, activate, deactivate.
+      operationId: getAgentVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Agent ID (UUID)
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          description: Maximum number of versions to return
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersionsResponse'
+              example:
+                versions:
+                  - version: 2
+                    change_type: "update"
+                    changed_at: "2025-12-07T12:00:00Z"
+                    change_summary: "Updated routing rules"
+                  - version: 1
+                    change_type: "create"
+                    changed_at: "2025-12-06T10:00:00Z"
+                    change_summary: "Initial creation"
+        '404':
+          description: Agent not found
+
+  /api/v1/providers/status:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get LLM provider status
+      description: Returns status and availability of all configured LLM providers
+      operationId: getProviderStatus
+      responses:
+        '200':
+          description: Provider status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderStatusResponse'
+              example:
+                providers:
+                  - name: "openai"
+                    available: true
+                    models:
+                      - "gpt-4"
+                      - "gpt-4-turbo"
+                      - "gpt-3.5-turbo"
+                    weight: 0.4
+                    avg_latency_ms: 1200
+                  - name: "bedrock"
+                    available: true
+                    models:
+                      - "anthropic.claude-v2"
+                      - "amazon.titan-text"
+                    weight: 0.4
+                    avg_latency_ms: 900
+                  - name: "ollama"
+                    available: true
+                    models:
+                      - "llama2"
+                      - "mistral"
+                    weight: 0.2
+                    avg_latency_ms: 500
+
+  /api/v1/providers/weights:
+    put:
+      tags:
+        - LLM Providers
+      summary: Update provider routing weights
+      description: |
+        Update the routing weights for LLM providers.
+        Weights determine the probability of routing to each provider.
+        Weights must sum to 1.0.
+      operationId: updateProviderWeights
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: number
+                minimum: 0
+                maximum: 1
+            example:
+              openai: 0.5
+              bedrock: 0.3
+              ollama: 0.2
+      responses:
+        '200':
+          description: Weights updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+              example:
+                status: success
+                message: "Provider weights updated"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # New Pluggable LLM Provider Management API (Issue #388)
+  /api/v1/llm-providers:
+    get:
+      tags:
+        - LLM Providers
+      summary: List LLM providers
+      description: |
+        Returns a paginated list of configured LLM providers.
+        Supports filtering by type and enabled status.
+      operationId: listLLMProviders
+      parameters:
+        - name: type
+          in: query
+          description: Filter by provider type
+          schema:
+            type: string
+            enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: List of LLM providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - LLM Providers
+      summary: Create LLM provider
+      description: |
+        Register a new LLM provider. API keys can be provided directly
+        or via AWS Secrets Manager ARN for secure credential storage.
+      operationId: createLLMProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLLMProviderRequest'
+      responses:
+        '201':
+          description: Provider created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Provider already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+
+  /api/v1/llm-providers/{name}:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get LLM provider
+      description: Returns details for a specific LLM provider
+      operationId: getLLMProvider
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Provider name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+
+    put:
+      tags:
+        - LLM Providers
+      summary: Update LLM provider
+      description: |
+        Update an existing LLM provider configuration.
+        Only provided fields are updated (partial update).
+      operationId: updateLLMProvider
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Provider name
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLLMProviderRequest'
+      responses:
+        '200':
+          description: Provider updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+
+    delete:
+      tags:
+        - LLM Providers
+      summary: Delete LLM provider
+      description: Remove an LLM provider configuration
+      operationId: deleteLLMProvider
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Provider name
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Provider deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+
+  /api/v1/llm-providers/{name}/health:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get provider health
+      description: Check health status of a specific LLM provider
+      operationId: getLLMProviderHealth
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Provider name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderHealthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+
+  /api/v1/llm-providers/health:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get all providers health
+      description: Check health status of all configured LLM providers
+      operationId: getAllLLMProvidersHealth
+      responses:
+        '200':
+          description: All providers health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderHealthAllResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/llm-providers/routing:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get routing configuration
+      description: Get current LLM provider routing weights
+      operationId: getLLMRoutingConfig
+      responses:
+        '200':
+          description: Routing configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMRoutingConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags:
+        - LLM Providers
+      summary: Update routing weights
+      description: |
+        Update LLM provider routing weights.
+        Weights are integers representing relative priority.
+      operationId: updateLLMRoutingWeights
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLLMRoutingRequest'
+      responses:
+        '200':
+          description: Routing weights updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMRoutingConfigResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/policies/dynamic:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: List active dynamic policies
+      description: Returns all active dynamic policies
+      operationId: listDynamicPolicies
+      responses:
+        '200':
+          description: List of dynamic policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DynamicPolicy'
+              example:
+                - id: "pol_001"
+                  name: "High Risk Content Filter"
+                  description: "Block requests with high risk scores"
+                  enabled: true
+                  conditions:
+                    - field: "risk_score"
+                      operator: ">"
+                      value: 0.8
+                  actions:
+                    - type: "block"
+                      reason: "High risk content detected"
+                - id: "pol_002"
+                  name: "Rate Limit Premium Users"
+                  description: "Apply premium rate limits"
+                  enabled: true
+                  conditions:
+                    - field: "user.role"
+                      operator: "=="
+                      value: "premium"
+                  actions:
+                    - type: "rate_limit"
+                      limit: 10000
+
+  /api/v1/policies/test:
+    post:
+      tags:
+        - Dynamic Policies
+      summary: Test policy evaluation
+      description: Test how dynamic policies evaluate a sample request
+      operationId: testPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                user:
+                  $ref: '#/components/schemas/UserContext'
+                request_type:
+                  type: string
+            example:
+              query: "SELECT * FROM customers WHERE credit_score < 500"
+              user:
+                id: 123
+                email: "analyst@company.com"
+                role: "analyst"
+              request_type: "sql"
+      responses:
+        '200':
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluationResult'
+              example:
+                allowed: true
+                applied_policies:
+                  - "sql-injection-filter"
+                  - "pii-protection"
+                risk_score: 0.25
+                required_actions: []
+                processing_time_ms: 3
+
+  /api/v1/metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Get detailed metrics
+      description: Returns detailed metrics from the metrics collector
+      operationId: getDetailedMetrics
+      responses:
+        '200':
+          description: Detailed metrics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/audit/search:
+    post:
+      tags:
+        - Audit
+      summary: Search audit logs
+      description: Search audit logs by various criteria
+      operationId: searchAuditLogs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditSearchRequest'
+            example:
+              user_email: "analyst@company.com"
+              client_id: "analytics-app"
+              start_time: "2025-01-01T00:00:00Z"
+              end_time: "2025-01-15T23:59:59Z"
+              request_type: "llm_chat"
+              limit: 100
+      responses:
+        '200':
+          description: Audit search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLogEntry'
+
+  /api/v1/audit/tenant/{tenant_id}:
+    get:
+      tags:
+        - Audit
+      summary: Get tenant audit logs
+      description: Get recent audit logs for a specific tenant
+      operationId: getTenantAuditLogs
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          description: Tenant identifier
+          schema:
+            type: string
+          example: "tenant-abc"
+      responses:
+        '200':
+          description: Tenant audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLogEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # =============================================================================
+  # SEBI Compliance APIs (Enterprise)
+  # Indian Financial Services - SEBI AI/ML Guidelines & DPDP Act 2023
+  # =============================================================================
+
+  /api/v1/sebi/dashboard:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get SEBI compliance dashboard
+      description: |
+        Returns a comprehensive SEBI compliance dashboard including:
+        - Overall compliance score and status
+        - 5-year retention status
+        - PII detection/redaction metrics (PAN, Aadhaar)
+        - Policy violation summary with trend
+        - HITL review queue
+
+        **Enterprise Feature**: Available only for Indian financial services deployments.
+      operationId: getSEBIDashboard
+      responses:
+        '200':
+          description: SEBI compliance dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIDashboard'
+              example:
+                framework: "SEBI_DPDP_COMBINED"
+                overall_score: 85
+                overall_status: "COMPLIANT"
+                last_audit_export: "2024-12-01T10:00:00Z"
+                retention_status:
+                  org_id: 123
+                  framework: "SEBI_AI_ML"
+                  compliance_status: "COMPLIANT"
+                violations_summary:
+                  total: 142
+                  by_severity:
+                    critical: 2
+                    high: 15
+                    medium: 45
+                    low: 80
+                  trend: "improving"
+                pii_summary:
+                  total_detections: 5420
+                  total_redactions: 5350
+                  redaction_rate_percent: 98.7
+                hitl_reviews_pending: 3
+        '403':
+          description: Not authorized for SEBI compliance features
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/sebi/audit/export:
+    post:
+      tags:
+        - SEBI Compliance
+      summary: Export SEBI audit data
+      description: |
+        Export audit data for SEBI regulatory submission. Supports:
+        - Multiple compliance frameworks (SEBI AI/ML, DPDP, Combined)
+        - Various data types (policy violations, LLM calls, decision chain, HITL, PII redactions)
+        - Multiple export formats (JSON, CSV, XML)
+        - Optional PII redaction for external auditors
+
+        Large exports are processed asynchronously. Poll the export status endpoint
+        to check completion and get the download URL.
+
+        **5-Year Retention**: Per SEBI AI/ML Guidelines, all audit data is retained
+        for minimum 5 years (1825 days).
+      operationId: exportSEBIAuditData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SEBIAuditExportRequest'
+            example:
+              start_date: "2024-01-01T00:00:00Z"
+              end_date: "2024-12-31T23:59:59Z"
+              data_types:
+                - policy_violations
+                - llm_calls
+                - pii_redactions
+              format: json
+              framework: SEBI_DPDP_COMBINED
+              redact_pii: false
+      responses:
+        '200':
+          description: Export started (sync) or queued (async)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIAuditExportResponse'
+              example:
+                export_id: "exp_abc123"
+                status: "processing"
+                framework: "SEBI_DPDP_COMBINED"
+                metadata:
+                  export_version: "1.0"
+                  generated_by: "axonflow-orchestrator"
+                  org_id: 123
+                  retention_days: 1825
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/sebi/audit/export/{export_id}:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get export status
+      description: |
+        Get the status of an asynchronous SEBI audit export.
+        When status is "completed", the download_url will be provided.
+      operationId: getSEBIExportStatus
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          description: Export ID from the export request
+          schema:
+            type: string
+          example: "exp_abc123"
+      responses:
+        '200':
+          description: Export status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIAuditExportResponse'
+              example:
+                export_id: "exp_abc123"
+                status: "completed"
+                framework: "SEBI_DPDP_COMBINED"
+                download_url: "/api/v1/sebi/audit/export/exp_abc123/download"
+                expires_at: "2024-12-08T14:00:00Z"
+                summary:
+                  total_records: 15420
+                  compliance_score: 85.5
+        '404':
+          description: Export not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/sebi/audit/retention:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Get retention status
+      description: |
+        Get the 5-year retention compliance status for all audit data types.
+
+        SEBI AI/ML Guidelines require:
+        - All AI/ML decisions retained for 5 years
+        - Audit trail for human oversight
+        - Decision chain tracing
+
+        This endpoint reports compliance status for each data type.
+      operationId: getSEBIRetentionStatus
+      responses:
+        '200':
+          description: Retention status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIRetentionResponse'
+              example:
+                org_id: 123
+                framework: "SEBI_AI_ML"
+                compliance_status: "COMPLIANT"
+                status:
+                  - data_type: "policy_violations"
+                    retention_days: 1825
+                    total_records: 15420
+                    oldest_record: "2020-01-15T10:30:00Z"
+                    compliance_status: "COMPLIANT"
+                  - data_type: "llm_calls"
+                    retention_days: 1825
+                    total_records: 250000
+                    oldest_record: "2020-06-01T08:00:00Z"
+                    compliance_status: "COMPLIANT"
+
+  /api/v1/sebi/audit/readiness:
+    get:
+      tags:
+        - SEBI Compliance
+      summary: Check compliance readiness
+      description: |
+        Validate organization readiness for SEBI regulatory audit.
+
+        Checks include:
+        - Retention configuration (5-year minimum)
+        - PII detection policies
+        - Human oversight mechanisms
+        - Audit logging completeness
+        - Decision chain tracing
+
+        Returns a score (0-100) and actionable recommendations.
+      operationId: getSEBIComplianceReadiness
+      responses:
+        '200':
+          description: Compliance readiness assessment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SEBIComplianceReadiness'
+              example:
+                ready: true
+                score: 85
+                checks:
+                  - name: "Retention Configuration"
+                    status: "pass"
+                    message: null
+                  - name: "PII Detection Policies"
+                    status: "pass"
+                    message: null
+                  - name: "Human Oversight"
+                    status: "pass"
+                    message: null
+                  - name: "Decision Chain Tracing"
+                    status: "warning"
+                    message: "Consider enabling for full audit trail"
+                recommendations:
+                  - "Enable decision chain tracing to maintain full audit trail of AI decisions"
+
+  /api/v1/workflows/execute:
+    post:
+      tags:
+        - Workflows
+      summary: Execute a workflow
+      description: Execute a defined workflow with input parameters
+      operationId: executeWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowExecuteRequest'
+            example:
+              workflow:
+                metadata:
+                  name: "data-analysis-workflow"
+                  description: "Analyze sales data"
+                spec:
+                  steps:
+                    - name: "fetch_data"
+                      type: "mcp_query"
+                      connector: "postgres"
+                      query: "SELECT * FROM sales"
+                    - name: "analyze"
+                      type: "llm"
+                      prompt: "Analyze the sales data: {{fetch_data.result}}"
+              input:
+                start_date: "2025-01-01"
+                end_date: "2025-01-15"
+              user:
+                id: 123
+                email: "analyst@company.com"
+                role: "analyst"
+                tenant_id: "tenant-abc"
+      responses:
+        '200':
+          description: Workflow execution started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowExecution'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/workflows/executions/{id}:
+    get:
+      tags:
+        - Workflows
+      summary: Get workflow execution
+      description: Get details of a specific workflow execution
+      operationId: getWorkflowExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Workflow execution ID
+          schema:
+            type: string
+          example: "exec_abc123"
+      responses:
+        '200':
+          description: Workflow execution details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowExecution'
+        '404':
+          description: Execution not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/workflows/executions:
+    get:
+      tags:
+        - Workflows
+      summary: List workflow executions
+      description: List recent workflow executions
+      operationId: listWorkflowExecutions
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of executions to return
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: List of executions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  executions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowExecution'
+                  count:
+                    type: integer
+
+  /api/v1/workflows/executions/tenant/{tenant_id}:
+    get:
+      tags:
+        - Workflows
+      summary: Get tenant workflow executions
+      description: Get workflow executions for a specific tenant
+      operationId: getTenantWorkflowExecutions
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          description: Tenant identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tenant workflow executions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                  count:
+                    type: integer
+                  executions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WorkflowExecution'
+
+  /api/v1/connectors:
+    get:
+      tags:
+        - Connectors
+      summary: List available connectors
+      description: List connectors from the marketplace
+      operationId: listConnectors
+      responses:
+        '200':
+          description: List of connectors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConnectorInfo'
+
+  /api/v1/connectors/{id}:
+    get:
+      tags:
+        - Connectors
+      summary: Get connector details
+      description: Get detailed information about a connector
+      operationId: getConnectorDetails
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Connector identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorInfo'
+        '404':
+          description: Connector not found
+
+  /api/v1/connectors/{id}/install:
+    post:
+      tags:
+        - Connectors
+      summary: Install a connector
+      description: Install a connector from the marketplace
+      operationId: installConnector
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Connector identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector installed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/connectors/{id}/uninstall:
+    delete:
+      tags:
+        - Connectors
+      summary: Uninstall a connector
+      description: Uninstall an installed connector
+      operationId: uninstallConnector
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Connector identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector uninstalled
+        '404':
+          description: Connector not found
+
+  /api/v1/connectors/{id}/health:
+    get:
+      tags:
+        - Connectors
+      summary: Check connector health
+      description: Check health status of a connector
+      operationId: getConnectorHealth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Connector identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthy:
+                    type: boolean
+                  latency_ms:
+                    type: integer
+        '404':
+          description: Connector not found
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        service:
+          type: string
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        components:
+          type: object
+          properties:
+            policy_engine:
+              type: boolean
+            llm_router:
+              type: boolean
+            response_processor:
+              type: boolean
+            audit_logger:
+              type: boolean
+            workflow_engine:
+              type: boolean
+            planning_engine:
+              type: boolean
+            result_aggregator:
+              type: boolean
+        features:
+          type: object
+          properties:
+            multi_agent_planning:
+              type: boolean
+
+    MetricsResponse:
+      type: object
+      properties:
+        orchestrator_metrics:
+          type: object
+          properties:
+            uptime_seconds:
+              type: number
+            total_requests:
+              type: integer
+            success_requests:
+              type: integer
+            failed_requests:
+              type: integer
+            blocked_requests:
+              type: integer
+            success_rate:
+              type: number
+            rps:
+              type: number
+            error_rate_per_sec:
+              type: number
+            dynamic_policy_eval_p50_ms:
+              type: number
+            dynamic_policy_eval_p95_ms:
+              type: number
+            dynamic_policy_eval_p99_ms:
+              type: number
+            llm_routing_p50_ms:
+              type: number
+            llm_routing_p95_ms:
+              type: number
+            llm_routing_p99_ms:
+              type: number
+        health:
+          type: object
+          properties:
+            up:
+              type: integer
+            consecutive_errors:
+              type: integer
+        request_types:
+          type: object
+          additionalProperties:
+            type: object
+        providers:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total_calls:
+                type: integer
+              success_calls:
+                type: integer
+              failed_calls:
+                type: integer
+              total_tokens:
+                type: integer
+              total_cost:
+                type: number
+              p99_ms:
+                type: number
+        timestamp:
+          type: string
+          format: date-time
+
+    OrchestratorRequest:
+      type: object
+      required:
+        - query
+        - user
+        - client
+      properties:
+        request_id:
+          type: string
+          description: Unique request identifier
+        query:
+          type: string
+          description: Query to process
+        request_type:
+          type: string
+          description: Type of request
+        skip_llm:
+          type: boolean
+          default: false
+          description: Skip LLM calls (for testing)
+        user:
+          $ref: '#/components/schemas/UserContext'
+        client:
+          $ref: '#/components/schemas/ClientContext'
+        context:
+          type: object
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+
+    UserContext:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        role:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        tenant_id:
+          type: string
+
+    ClientContext:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+
+    OrchestratorResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+        success:
+          type: boolean
+        data:
+          description: Response data
+        error:
+          type: string
+        redacted:
+          type: boolean
+        redacted_fields:
+          type: array
+          items:
+            type: string
+        policy_info:
+          $ref: '#/components/schemas/PolicyEvaluationResult'
+        provider_info:
+          $ref: '#/components/schemas/ProviderInfo'
+        processing_time:
+          type: string
+
+    PolicyEvaluationResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        applied_policies:
+          type: array
+          items:
+            type: string
+        risk_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        required_actions:
+          type: array
+          items:
+            type: string
+        processing_time_ms:
+          type: integer
+        database_accessed:
+          type: boolean
+
+    ProviderInfo:
+      type: object
+      properties:
+        provider:
+          type: string
+          enum: [openai, anthropic, bedrock, ollama, mock]
+        model:
+          type: string
+        response_time_ms:
+          type: integer
+        tokens_used:
+          type: integer
+        cost:
+          type: number
+
+    PlanRequest:
+      type: object
+      required:
+        - query
+        - user
+      properties:
+        query:
+          type: string
+          description: Natural language task description
+        domain:
+          type: string
+          enum: [travel, healthcare, finance, generic]
+          default: generic
+          description: Task domain for specialized handling
+        execution_mode:
+          type: string
+          enum: [auto, parallel, sequential]
+          default: auto
+          description: How to execute sub-tasks
+        user:
+          $ref: '#/components/schemas/UserContext'
+        client:
+          type: object
+          additionalProperties: true
+        context:
+          type: object
+          additionalProperties: true
+
+    PlanResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        plan_id:
+          type: string
+        workflow_execution_id:
+          type: string
+        result:
+          description: Final aggregated result
+        metadata:
+          type: object
+          properties:
+            tasks_executed:
+              type: integer
+            execution_mode:
+              type: string
+            execution_time_ms:
+              type: integer
+            tasks:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  status:
+                    type: string
+                  time_ms:
+                    type: integer
+        error:
+          type: string
+
+    ProviderStatusResponse:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              available:
+                type: boolean
+              models:
+                type: array
+                items:
+                  type: string
+              weight:
+                type: number
+              avg_latency_ms:
+                type: integer
+
+    DynamicPolicy:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              operator:
+                type: string
+                enum: ["==", "!=", ">", "<", ">=", "<=", "contains", "matches"]
+              value:
+                description: Comparison value
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [block, allow, rate_limit, redact, alert]
+              reason:
+                type: string
+              limit:
+                type: integer
+
+    AuditSearchRequest:
+      type: object
+      properties:
+        user_email:
+          type: string
+        client_id:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        request_type:
+          type: string
+        limit:
+          type: integer
+          default: 100
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        request_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        user_email:
+          type: string
+        client_id:
+          type: string
+        tenant_id:
+          type: string
+        request_type:
+          type: string
+        query_summary:
+          type: string
+        success:
+          type: boolean
+        blocked:
+          type: boolean
+        risk_score:
+          type: number
+        provider:
+          type: string
+        tokens_used:
+          type: integer
+        latency_ms:
+          type: integer
+
+    WorkflowExecuteRequest:
+      type: object
+      required:
+        - workflow
+      properties:
+        workflow:
+          $ref: '#/components/schemas/Workflow'
+        input:
+          type: object
+          additionalProperties: true
+        user:
+          $ref: '#/components/schemas/UserContext'
+
+    Workflow:
+      type: object
+      required:
+        - metadata
+        - spec
+      properties:
+        metadata:
+          type: object
+          required:
+            - name
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+        spec:
+          type: object
+          required:
+            - steps
+          properties:
+            steps:
+              type: array
+              items:
+                $ref: '#/components/schemas/WorkflowStep'
+
+    WorkflowStep:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [mcp_query, llm, api_call, transform]
+        connector:
+          type: string
+        query:
+          type: string
+        prompt:
+          type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+
+    WorkflowExecution:
+      type: object
+      properties:
+        id:
+          type: string
+        workflow_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              status:
+                type: string
+              process_time:
+                type: string
+        output:
+          type: object
+          additionalProperties: true
+
+    ConnectorInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        installed:
+          type: boolean
+        healthy:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+
+    # ============================================================================
+    # Agent Management Schemas (MAP 0.8)
+    # ============================================================================
+
+    AgentResource:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Qualified ID (domain/name)
+          example: "travel/flight-booking"
+        name:
+          type: string
+          description: Agent name
+          example: "flight-booking"
+        domain:
+          type: string
+          description: Agent domain
+          example: "travel"
+        description:
+          type: string
+          description: Agent description
+        version:
+          type: integer
+          description: Version number
+        is_active:
+          type: boolean
+          description: Whether agent is active
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentConfigSpec:
+      type: object
+      description: Agent configuration specification
+      properties:
+        execution:
+          type: object
+          properties:
+            default_mode:
+              type: string
+              enum: [auto, parallel, sequential]
+            max_parallel_tasks:
+              type: integer
+            timeout_seconds:
+              type: integer
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentDefinition'
+        routing:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingRule'
+
+    AgentDefinition:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [llm-call, connector-call]
+        llm:
+          type: object
+          description: LLM config (required for llm-call type)
+          properties:
+            provider:
+              type: string
+            model:
+              type: string
+        connector:
+          type: object
+          description: Connector config (required for connector-call type)
+          properties:
+            name:
+              type: string
+            operation:
+              type: string
+
+    RoutingRule:
+      type: object
+      required:
+        - pattern
+        - agent
+      properties:
+        pattern:
+          type: string
+          description: Regex pattern to match
+        agent:
+          type: string
+          description: Target agent name
+        priority:
+          type: integer
+          description: Higher priority rules match first
+
+    AgentListResponse:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentResource'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            page_size:
+              type: integer
+            total:
+              type: integer
+            total_pages:
+              type: integer
+
+    AgentResponse:
+      type: object
+      properties:
+        agent:
+          $ref: '#/components/schemas/AgentResource'
+
+    CreateAgentRequest:
+      type: object
+      required:
+        - name
+        - config
+      properties:
+        name:
+          type: string
+          description: Agent name (lowercase, alphanumeric, hyphens, underscores)
+        domain:
+          type: string
+          description: Agent domain
+        description:
+          type: string
+        is_active:
+          type: boolean
+          default: true
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        domain:
+          type: string
+        description:
+          type: string
+        is_active:
+          type: boolean
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    ValidateAgentRequest:
+      type: object
+      required:
+        - config
+      properties:
+        name:
+          type: string
+        domain:
+          type: string
+        config:
+          $ref: '#/components/schemas/AgentConfigSpec'
+
+    ValidationResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: string
+
+    TestAgentRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          description: Test query to execute
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for the query
+
+    TestAgentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        result:
+          description: Test execution result
+        execution_time_ms:
+          type: integer
+        tasks_executed:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    AgentVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              version:
+                type: integer
+              change_type:
+                type: string
+                enum: [create, update, delete, activate, deactivate]
+              changed_at:
+                type: string
+                format: date-time
+              changed_by:
+                type: string
+                format: uuid
+              change_summary:
+                type: string
+
+    # =========================================================================
+    # SEBI Compliance Schemas (Enterprise)
+    # =========================================================================
+
+    SEBIComplianceFramework:
+      type: string
+      description: SEBI compliance framework identifier
+      enum:
+        - SEBI_AI_ML
+        - DPDP_ACT_2023
+        - SEBI_DPDP_COMBINED
+
+    SEBIExportFormat:
+      type: string
+      description: Export output format
+      enum:
+        - json
+        - csv
+        - xml
+
+    SEBIAuditDataType:
+      type: string
+      description: Type of audit data
+      enum:
+        - policy_violations
+        - llm_calls
+        - decision_chain
+        - hitl_oversight
+        - pii_redactions
+        - all
+
+    SEBIComplianceStatus:
+      type: string
+      description: Compliance status indicator
+      enum:
+        - COMPLIANT
+        - NON_COMPLIANT
+        - WARNING
+
+    SEBIDashboard:
+      type: object
+      description: SEBI compliance dashboard data
+      properties:
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        overall_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Overall compliance score (0-100)
+        overall_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        last_audit_export:
+          type: string
+          format: date-time
+          description: Timestamp of last audit export
+        retention_status:
+          $ref: '#/components/schemas/SEBIRetentionResponse'
+        readiness:
+          $ref: '#/components/schemas/SEBIComplianceReadiness'
+        violations_summary:
+          $ref: '#/components/schemas/SEBIViolationsSummary'
+        pii_summary:
+          $ref: '#/components/schemas/SEBIPIISummary'
+        hitl_reviews_pending:
+          type: integer
+          description: Number of HITL reviews awaiting action
+        last_updated:
+          type: string
+          format: date-time
+
+    SEBIAuditExportRequest:
+      type: object
+      description: Request to export SEBI audit data
+      required:
+        - start_date
+        - end_date
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          description: Start of export period (inclusive)
+        end_date:
+          type: string
+          format: date-time
+          description: End of export period (inclusive)
+        data_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIAuditDataType'
+          description: Types of audit data to export (defaults to all)
+        format:
+          $ref: '#/components/schemas/SEBIExportFormat'
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        include_archived:
+          type: boolean
+          default: false
+          description: Include records from cold storage
+        redact_pii:
+          type: boolean
+          default: false
+          description: Redact PII in export (for external auditors)
+        filters:
+          $ref: '#/components/schemas/SEBIAuditExportFilters'
+
+    SEBIAuditExportFilters:
+      type: object
+      description: Optional filters for audit exports
+      properties:
+        agent_ids:
+          type: array
+          items:
+            type: string
+          description: Filter by agent IDs
+        user_ids:
+          type: array
+          items:
+            type: integer
+          description: Filter by user IDs
+        severity:
+          type: string
+          description: Minimum severity level
+        policy_types:
+          type: array
+          items:
+            type: string
+          description: Filter by policy types
+        violation_types:
+          type: array
+          items:
+            type: string
+          description: Filter by violation types
+        include_model_info:
+          type: boolean
+          description: Include detailed model information
+
+    SEBIAuditExportResponse:
+      type: object
+      description: Response for audit export requests
+      properties:
+        export_id:
+          type: string
+          description: Unique export identifier
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: Export status
+        exported_at:
+          type: string
+          format: date-time
+          description: When the export was completed
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        summary:
+          $ref: '#/components/schemas/SEBIAuditExportSummary'
+        download_url:
+          type: string
+          description: URL to download the export (for async exports)
+        expires_at:
+          type: string
+          format: date-time
+          description: When the download URL expires
+        metadata:
+          $ref: '#/components/schemas/SEBIExportMetadata'
+
+    SEBIAuditExportSummary:
+      type: object
+      description: Statistics about the export
+      properties:
+        total_records:
+          type: integer
+          description: Total records exported
+        records_by_type:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Records by data type
+        date_range:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        violations_summary:
+          $ref: '#/components/schemas/SEBIViolationsSummary'
+        compliance_score:
+          type: number
+          format: float
+          description: Compliance score for the period
+
+    SEBIExportMetadata:
+      type: object
+      description: Export metadata for audit trail
+      properties:
+        export_version:
+          type: string
+          description: Schema version
+        generated_by:
+          type: string
+          description: System that generated the export
+        generated_at:
+          type: string
+          format: date-time
+        org_id:
+          type: integer
+        org_name:
+          type: string
+        requested_by:
+          type: string
+          description: User who requested the export
+        compliance_framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        retention_days:
+          type: integer
+          description: Retention period (1825 days = 5 years)
+        checksum:
+          type: string
+          description: SHA-256 checksum of export data
+        signed_by:
+          type: string
+          description: Signing authority (for signed exports)
+
+    SEBIRetentionResponse:
+      type: object
+      description: 5-year retention compliance status
+      properties:
+        org_id:
+          type: integer
+        framework:
+          $ref: '#/components/schemas/SEBIComplianceFramework'
+        compliance_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        status:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIDataTypeRetentionStatus'
+        next_cleanup:
+          type: string
+          format: date-time
+          description: Next scheduled cleanup
+
+    SEBIDataTypeRetentionStatus:
+      type: object
+      description: Retention status for a data type
+      properties:
+        data_type:
+          $ref: '#/components/schemas/SEBIAuditDataType'
+        retention_days:
+          type: integer
+          description: Configured retention period
+        oldest_record:
+          type: string
+          format: date-time
+        newest_record:
+          type: string
+          format: date-time
+        total_records:
+          type: integer
+          format: int64
+        archived_records:
+          type: integer
+          format: int64
+        storage_bytes:
+          type: integer
+          format: int64
+        compliance_status:
+          $ref: '#/components/schemas/SEBIComplianceStatus'
+        last_cleanup:
+          type: string
+          format: date-time
+
+    SEBIComplianceReadiness:
+      type: object
+      description: SEBI audit readiness assessment
+      properties:
+        ready:
+          type: boolean
+          description: Organization is ready for audit
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Readiness score (0-100)
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/SEBIComplianceCheck'
+        recommendations:
+          type: array
+          items:
+            type: string
+          description: Improvement recommendations
+
+    SEBIComplianceCheck:
+      type: object
+      description: Individual compliance check result
+      properties:
+        name:
+          type: string
+          description: Check name
+        description:
+          type: string
+          description: What the check verifies
+        status:
+          type: string
+          enum: [pass, fail, warning]
+        details:
+          type: string
+          description: Additional information
+        message:
+          type: string
+          description: Status message (null if pass)
+
+    SEBIViolationsSummary:
+      type: object
+      description: Policy violations summary
+      properties:
+        total:
+          type: integer
+          description: Total violations
+        by_severity:
+          type: object
+          properties:
+            critical:
+              type: integer
+            high:
+              type: integer
+            medium:
+              type: integer
+            low:
+              type: integer
+        by_type:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Violations by type
+        trend:
+          type: string
+          enum: [improving, stable, degrading]
+          description: Trend direction
+
+    SEBIPIISummary:
+      type: object
+      description: PII detection and redaction metrics
+      properties:
+        total_detections:
+          type: integer
+          description: Total PII detections
+        total_redactions:
+          type: integer
+          description: Total PII redactions
+        by_type:
+          type: object
+          properties:
+            pan:
+              type: integer
+              description: Indian PAN card detections
+            aadhaar:
+              type: integer
+              description: Indian Aadhaar card detections
+            email:
+              type: integer
+            phone:
+              type: integer
+            other:
+              type: integer
+        redaction_rate_percent:
+          type: number
+          format: float
+          description: Percentage of detections that were redacted
+
+    # LLM Provider Management Schemas (Issue #388)
+    LLMProviderResource:
+      type: object
+      description: LLM provider configuration
+      properties:
+        name:
+          type: string
+          description: Unique provider name
+        type:
+          type: string
+          enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+          description: Provider type
+        endpoint:
+          type: string
+          description: API endpoint URL
+        model:
+          type: string
+          description: Default model name
+        region:
+          type: string
+          description: AWS region (for Bedrock)
+        enabled:
+          type: boolean
+          description: Whether provider is enabled
+        priority:
+          type: integer
+          description: Routing priority (lower = higher priority)
+        weight:
+          type: integer
+          description: Routing weight for load balancing
+        rate_limit:
+          type: integer
+          description: Max requests per second
+        timeout_seconds:
+          type: integer
+          description: Request timeout in seconds
+        has_api_key:
+          type: boolean
+          description: Whether API key is configured (key not exposed)
+        settings:
+          type: object
+          additionalProperties: true
+          description: Provider-specific settings
+        health:
+          $ref: '#/components/schemas/LLMProviderHealthInfo'
+
+    LLMProviderHealthInfo:
+      type: object
+      description: Provider health status
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy, unknown]
+        message:
+          type: string
+          description: Health check message
+        last_checked:
+          type: string
+          format: date-time
+          description: Last health check timestamp
+
+    CreateLLMProviderRequest:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+          description: Unique provider name
+        type:
+          type: string
+          enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+        api_key:
+          type: string
+          description: API key (mutually exclusive with api_key_secret_arn)
+        api_key_secret_arn:
+          type: string
+          description: AWS Secrets Manager ARN for API key
+        endpoint:
+          type: string
+          description: API endpoint URL
+        model:
+          type: string
+          description: Default model name
+        region:
+          type: string
+          description: AWS region (for Bedrock)
+        enabled:
+          type: boolean
+          default: true
+        priority:
+          type: integer
+          default: 100
+        weight:
+          type: integer
+          default: 100
+        rate_limit:
+          type: integer
+          description: Max requests per second
+        timeout_seconds:
+          type: integer
+          default: 30
+        settings:
+          type: object
+          additionalProperties: true
+
+    UpdateLLMProviderRequest:
+      type: object
+      description: Partial update - only provided fields are updated
+      properties:
+        api_key:
+          type: string
+        api_key_secret_arn:
+          type: string
+        endpoint:
+          type: string
+        model:
+          type: string
+        region:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        weight:
+          type: integer
+        rate_limit:
+          type: integer
+        timeout_seconds:
+          type: integer
+        settings:
+          type: object
+          additionalProperties: true
+
+    LLMProviderResponse:
+      type: object
+      properties:
+        provider:
+          $ref: '#/components/schemas/LLMProviderResource'
+
+    LLMProviderListResponse:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/LLMProviderResource'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    LLMProviderHealthResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        health:
+          $ref: '#/components/schemas/LLMProviderHealthInfo'
+
+    LLMProviderHealthAllResponse:
+      type: object
+      properties:
+        providers:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LLMProviderHealthInfo'
+
+    LLMRoutingConfigResponse:
+      type: object
+      properties:
+        weights:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Provider name to weight mapping
+          example:
+            openai: 100
+            anthropic: 80
+            bedrock: 60
+
+    UpdateLLMRoutingRequest:
+      type: object
+      required:
+        - weights
+      properties:
+        weights:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Provider name to weight mapping
+
+    LLMProviderAPIError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [NOT_FOUND, ALREADY_EXISTS, INVALID_REQUEST, UNAUTHORIZED, INTERNAL_ERROR]
+            message:
+              type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Invalid request body"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Internal server error"

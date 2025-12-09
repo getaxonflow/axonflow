@@ -1,0 +1,76 @@
+name: Enforce Branch Workflow
+
+# Ensures PRs to main follow the feature branch workflow (ADR-017)
+# Only allows: feature/*, release/*, hotfix/* branches to merge to main
+# Escape hatch: 'direct-to-main' label for simple fixes
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  check-branch-pattern:
+    name: Check Branch Pattern
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check if allowed to merge to main
+        env:
+          BRANCH: ${{ github.head_ref }}
+          HAS_DIRECT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'direct-to-main') }}
+        run: |
+          echo "Branch: $BRANCH"
+          echo "Has direct-to-main label: $HAS_DIRECT_LABEL"
+          echo ""
+
+          # Allow feature branches
+          if [[ "$BRANCH" =~ ^feature/ ]]; then
+            echo "✅ Feature branch - allowed to merge to main"
+            exit 0
+          fi
+
+          # Allow release branches
+          if [[ "$BRANCH" =~ ^release/ ]]; then
+            echo "✅ Release branch - allowed to merge to main"
+            exit 0
+          fi
+
+          # Allow hotfix branches
+          if [[ "$BRANCH" =~ ^hotfix/ ]]; then
+            echo "✅ Hotfix branch - allowed to merge to main"
+            exit 0
+          fi
+
+          # Check for escape hatch label
+          if [[ "$HAS_DIRECT_LABEL" == "true" ]]; then
+            echo "⚠️  WARNING: Using 'direct-to-main' escape hatch"
+            echo ""
+            echo "This PR is bypassing the feature branch workflow."
+            echo "Only use this for simple fixes, documentation, or urgent hotfixes."
+            echo ""
+            echo "✅ Allowed with warning"
+            exit 0
+          fi
+
+          # Block all other branches
+          echo "❌ ERROR: PRs to main must come from feature/*, release/*, or hotfix/* branches"
+          echo ""
+          echo "Your branch: $BRANCH"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "HOW TO FIX:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "Option 1: Create a feature branch (recommended for multi-PR work)"
+          echo "  git checkout main"
+          echo "  git checkout -b feature/your-feature-name"
+          echo "  git merge $BRANCH"
+          echo "  # Then create PR from feature/your-feature-name to main"
+          echo ""
+          echo "Option 2: Add 'direct-to-main' label (for simple fixes only)"
+          echo "  Add the 'direct-to-main' label to this PR"
+          echo ""
+          echo "See ADR-017 for details on the feature branch workflow."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 1

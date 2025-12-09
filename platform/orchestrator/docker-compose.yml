@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for audit logging and metrics storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: axonflow-orchestrator-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=axonflow_orchestrator
+      - POSTGRES_USER=axonflow
+      - POSTGRES_PASSWORD=orchestrator123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow_orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # AxonFlow Orchestrator
+  axonflow-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: axonflow-orchestrator
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgres://axonflow:orchestrator123@postgres:5432/axonflow_orchestrator?sslmode=disable
+      - PORT=8081
+      - ENV=development
+      - LOG_LEVEL=info
+      # LLM Provider Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LOCAL_LLM_ENDPOINT=http://localhost:11434
+      # Policy Configuration
+      - POLICY_CACHE_TTL=300
+      - DYNAMIC_POLICY_ENABLED=true
+      - PII_REDACTION_ENABLED=true
+      # Audit Configuration
+      - AUDIT_RETENTION_DAYS=90
+      - AUDIT_BATCH_SIZE=100
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ./logs:/app/logs
+
+volumes:
+  postgres-data:
+
+networks:
+  default:
+    name: axonflow-orchestrator-network

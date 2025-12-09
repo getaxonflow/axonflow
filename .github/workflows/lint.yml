@@ -1,0 +1,151 @@
+name: Lint
+
+on:
+  # Pull requests: Run detect-changes and Lint Summary only
+  # This ensures the required Lint Summary check is present for merge queue entry.
+  # Actual linting is skipped on PRs - only run in merge queue.
+  pull_request:
+    branches:
+      - main
+      - develop
+  # Push to main/develop: Run lint with path filters
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
+      - '.github/workflows/lint.yml'
+  # Merge queue: re-run lint against the merged code with path filtering
+  merge_group:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+
+# Consolidated lint job to reduce CI costs
+# Reduced from 6 parallel matrix jobs to 1 sequential job (~80% reduction in billable minutes)
+# See: https://github.com/getaxonflow/axonflow-enterprise/issues/305
+
+jobs:
+  # =============================================================================
+  # Change Detection (pull_request and merge_group only)
+  # =============================================================================
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go-code: ${{ steps.filter.outputs.go-code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect Go code changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go-code:
+              - '**.go'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '.golangci.yml'
+              - '.github/workflows/lint.yml'
+
+  golangci-lint:
+    name: Lint All Modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [detect-changes]
+    # Run if: push/workflow_dispatch OR (PR/merge_group with Go changes)
+    if: |
+      always() &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true'))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false  # golangci-lint has its own cache
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.0.2
+
+      - name: Lint Agent
+        run: |
+          echo "🔍 Linting platform/agent..."
+          cd platform/agent
+          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+
+      - name: Lint Orchestrator
+        run: |
+          echo "🔍 Linting platform/orchestrator..."
+          cd platform/orchestrator
+          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+
+      - name: Lint Connectors
+        run: |
+          echo "🔍 Linting platform/connectors..."
+          cd platform/connectors
+          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+
+      - name: Lint Shared
+        run: |
+          echo "🔍 Linting platform/shared..."
+          cd platform/shared
+          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+
+      - name: Lint Go SDK
+        run: |
+          echo "🔍 Linting sdk/golang..."
+          cd sdk/golang
+          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+
+  lint-summary:
+    name: Lint Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, golangci-lint]
+    if: always()
+
+    steps:
+      - name: Check lint results
+        run: |
+          echo "🔍 Lint Complete"
+          echo ""
+          echo "Results:"
+          echo "  Detect Changes: ${{ needs.detect-changes.result }}"
+          echo "  golangci-lint: ${{ needs.golangci-lint.result }}"
+
+      - name: Fail if lint failed
+        # Accept 'success' or 'skipped' (skipped = no Go code changes)
+        # detect-changes is 'skipped' for push/workflow_dispatch events
+        if: |
+          needs.detect-changes.result == 'failure' ||
+          (needs.golangci-lint.result != 'success' && needs.golangci-lint.result != 'skipped')
+        run: |
+          echo "❌ Linting failed - please fix issues before merging"
+          exit 1
+
+      - name: Success message
+        if: success()
+        run: |
+          echo "✅ All linting checks passed!"

@@ -1,0 +1,154 @@
+# Finance Domain Agent Configuration
+# This configuration replaces the hardcoded finance templates in planning_engine.go
+apiVersion: axonflow.io/v1
+kind: AgentConfig
+metadata:
+  name: finance-domain
+  domain: finance
+  description: "Financial analysis and investment planning workflow agents"
+
+spec:
+  execution:
+    default_mode: parallel
+    max_parallel_tasks: 5
+    timeout_seconds: 180
+    hints: |
+      Financial analysis typically involves parallel data gathering (market data,
+      news, financials) followed by synthesis into investment recommendations.
+      Multiple data sources can be queried simultaneously to minimize latency.
+      Risk assessment should consider all gathered data before final recommendations.
+
+  agents:
+    - name: market-data-analysis
+      description: "Analyzes current market data and trends"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.2
+        max_tokens: 2500
+      prompt_template: |
+        Analyze the current market conditions for: {{.query}}
+
+        Provide:
+        1. Current market trends and momentum
+        2. Key technical indicators
+        3. Sector performance analysis
+        4. Volume and volatility assessment
+        5. Support and resistance levels
+
+    - name: company-financials-review
+      description: "Reviews company financial statements and metrics"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.1
+        max_tokens: 3000
+      prompt_template: |
+        Review the financial health and metrics for: {{.query}}
+
+        Analyze:
+        1. Revenue and earnings trends
+        2. Profitability ratios (ROE, ROA, margins)
+        3. Balance sheet strength (debt ratios, liquidity)
+        4. Cash flow analysis
+        5. Valuation metrics (P/E, P/B, EV/EBITDA)
+        6. Comparison to industry peers
+
+    - name: news-sentiment-analysis
+      description: "Analyzes news and sentiment around the investment"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.3
+        max_tokens: 2000
+      prompt_template: |
+        Analyze recent news and market sentiment for: {{.query}}
+
+        Provide:
+        1. Recent significant news events
+        2. Overall sentiment (bullish/bearish/neutral)
+        3. Analyst ratings and price targets
+        4. Social media and retail investor sentiment
+        5. Upcoming catalysts or events
+
+    - name: competitor-analysis
+      description: "Analyzes competitive landscape"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.3
+        max_tokens: 2000
+      prompt_template: |
+        Analyze the competitive landscape for: {{.query}}
+
+        Include:
+        1. Key competitors and market share
+        2. Competitive advantages/disadvantages
+        3. Industry trends and disruption risks
+        4. Barriers to entry
+        5. Relative valuation vs competitors
+
+    - name: risk-assessment
+      description: "Assesses investment risks and develops risk mitigation strategies"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.2
+        max_tokens: 2500
+      prompt_template: |
+        Perform a comprehensive risk assessment for: {{.query}}
+
+        Analyze:
+        1. Market risk exposure
+        2. Company-specific risks
+        3. Regulatory and compliance risks
+        4. Macroeconomic risk factors
+        5. Liquidity risk
+        6. Concentration risk
+        7. Risk mitigation strategies
+
+  routing:
+    - pattern: "market|trend|technical|chart|price action|stock"
+      agent: market-data-analysis
+      priority: 10
+    - pattern: "financial|earnings|revenue|balance sheet|income|profit"
+      agent: company-financials-review
+      priority: 10
+    - pattern: "news|sentiment|analyst|rating|headline|report"
+      agent: news-sentiment-analysis
+      priority: 8
+    - pattern: "competitor|industry|peer|market share|comparison"
+      agent: competitor-analysis
+      priority: 7
+    - pattern: "risk|volatility|downside|exposure|hedge"
+      agent: risk-assessment
+      priority: 9
+    - pattern: ".*"
+      agent: market-data-analysis
+      priority: 1
+
+  synthesis:
+    enabled: true
+    prompt_template: |
+      Based on the market data and analysis from all previous steps, provide
+      investment recommendations for: {{.query}}
+
+      Include:
+      - Investment thesis with supporting data
+      - Specific asset recommendations with target allocations
+      - Entry and exit strategy
+      - Risk analysis and mitigation strategies
+      - Expected returns and timeframes
+      - Action items with priorities
+      - Position sizing recommendations
+
+      Be specific with numbers, tickers, and percentages.
+
+      DISCLAIMER: This is for educational/research purposes only and does not
+      constitute financial advice. Consult a qualified financial advisor before
+      making investment decisions.
