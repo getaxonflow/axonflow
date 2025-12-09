@@ -1,0 +1,31 @@
+# <type>(<scope>): <subject> (max 72 chars)
+# |<----  Using a Maximum Of 72 Characters  ---->|
+
+# Body: Explain *what* and *why* (not *how*)
+# Wrap at 72 characters
+
+# Footer: Reference issues, PRs, breaking changes
+# Example: Closes #123, Fixes #456
+
+# --- COMMIT END ---
+# Type can be:
+#   feat     (new feature)
+#   fix      (bug fix)
+#   docs     (documentation)
+#   style    (formatting, missing semicolons, etc.)
+#   refactor (refactoring production code)
+#   test     (adding tests, refactoring tests)
+#   chore    (updating build tasks, package manager configs, etc.)
+#   perf     (performance improvement)
+# --------------------
+# Scope examples:
+#   agent, orchestrator, dashboard, deploy, policy, audit, security, docs
+# --------------------
+# Remember to:
+#   - Use imperative mood ("Add feature" not "Added feature")
+#   - Don't end the subject line with a period
+#   - Separate subject from body with a blank line
+#   - Use the body to explain what and why vs. how
+#   - Keep detailed bodies (AxonFlow strength!)
+#   - Reference issues and PRs in the footer
+# --------------------

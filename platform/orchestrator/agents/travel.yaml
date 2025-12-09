@@ -1,0 +1,158 @@
+# Travel Domain Agent Configuration
+# This configuration replaces the hardcoded travel templates in planning_engine.go
+apiVersion: axonflow.io/v1
+kind: AgentConfig
+metadata:
+  name: travel-domain
+  domain: travel
+  description: "Travel planning and booking workflow agents"
+
+spec:
+  execution:
+    default_mode: parallel
+    max_parallel_tasks: 5
+    timeout_seconds: 300
+    hints: |
+      Travel planning typically involves independent research tasks that can be
+      parallelized (flights, hotels, activities) followed by synthesis into an itinerary.
+      Flight and hotel searches can run in parallel, but final itinerary creation
+      must wait for all search results.
+
+  agents:
+    - name: flight-search
+      description: "Searches for available flights using Amadeus API or LLM fallback"
+      type: connector-call
+      connector:
+        name: amadeus-travel
+        operation: query
+      parameters:
+        statement: search_flights
+        max_results: 5
+
+    - name: hotel-search
+      description: "Searches for available hotels using Amadeus API or LLM fallback"
+      type: connector-call
+      connector:
+        name: amadeus-travel
+        operation: query
+      parameters:
+        statement: search_hotels
+        max_results: 10
+
+    - name: activities-search
+      description: "Finds activities and attractions at the destination"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.5
+        max_tokens: 2000
+      prompt_template: |
+        Find activities and attractions for: {{.query}}
+
+        Provide specific recommendations including:
+        - Activity/attraction names
+        - Locations and how to get there
+        - Entry fees/costs in USD
+        - Best times to visit
+        - Duration needed
+        - Insider tips
+
+    - name: restaurant-recommendations
+      description: "Recommends restaurants at the destination"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.6
+        max_tokens: 1500
+      prompt_template: |
+        Recommend restaurants for: {{.query}}
+
+        Include:
+        - Restaurant names and cuisines
+        - Price ranges
+        - Locations/neighborhoods
+        - Specialties and must-try dishes
+        - Reservation recommendations
+
+    - name: transportation-planning
+      description: "Plans local transportation at the destination"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-haiku
+        temperature: 0.3
+        max_tokens: 1000
+      prompt_template: |
+        Plan local transportation for: {{.query}}
+
+        Include:
+        - Best ways to get from airport to city center
+        - Public transit options and costs
+        - Taxi/rideshare estimates
+        - Walking distances between attractions
+        - Day pass or transit card recommendations
+
+  routing:
+    - pattern: "flight|fly|airplane|air travel|airport"
+      agent: flight-search
+      priority: 10
+    - pattern: "hotel|accommodation|stay|lodging|resort"
+      agent: hotel-search
+      priority: 10
+    - pattern: "activit.*|attraction|things to do|sightseeing|tour|visit"
+      agent: activities-search
+      priority: 8
+    - pattern: "restaurant|eat|food|dining|cuisine|meal"
+      agent: restaurant-recommendations
+      priority: 8
+    - pattern: "transport|taxi|metro|bus|getting around|uber|lyft"
+      agent: transportation-planning
+      priority: 7
+    - pattern: ".*"
+      agent: activities-search
+      priority: 1
+
+  synthesis:
+    enabled: true
+    prompt_template: |
+      You are a travel planning assistant. Based on the research from previous steps,
+      create a COMPLETE trip plan for: {{.query}}
+
+      IMPORTANT: Create a detailed sample itinerary with realistic estimates.
+      Do NOT ask clarifying questions or mention limitations about real-time data.
+      Generate the plan directly using typical prices and popular options for this destination.
+
+      Your response MUST include ALL of these sections:
+
+      1. **Flights**
+         - Outbound flight: Airline, flight number, departure time, arrival time, estimated price
+         - Return flight: Airline, flight number, departure time, arrival time, estimated price
+         - Example: "Lufthansa LH1234, Depart 10:30 AM, Arrive 1:45 PM, ~$450"
+
+      2. **Hotels** (provide 2-3 options)
+         - Hotel name, location/neighborhood, star rating
+         - Nightly rate and total cost for the stay
+         - Key amenities (WiFi, breakfast, pool, etc.)
+
+      3. **Day-by-Day Itinerary** (for EACH day)
+         - Morning (9 AM - 12 PM): Specific attraction with address
+         - Lunch (12 PM - 2 PM): Restaurant recommendation with cuisine type
+         - Afternoon (2 PM - 6 PM): Activities with entry fees
+         - Evening (6 PM - 10 PM): Dinner spot and evening activity
+
+      4. **Activities & Attractions**
+         - Must-see landmarks with entry fees
+         - Local experiences (cooking class, bike tour, etc.) with prices
+         - Transportation options (metro pass: $X, taxi estimates)
+
+      5. **Budget Summary**
+         - Flights: $X
+         - Hotels: $X (breakdown per night)
+         - Activities/Entry Fees: $X
+         - Food (estimated per day): $X
+         - Transportation: $X
+         - **TOTAL ESTIMATED COST: $X**
+
+      Format as a complete, actionable itinerary. Use specific names, addresses, prices, and times.

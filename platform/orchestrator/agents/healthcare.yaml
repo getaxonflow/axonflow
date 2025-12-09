@@ -1,0 +1,158 @@
+# Healthcare Domain Agent Configuration
+# This configuration replaces the hardcoded healthcare templates in planning_engine.go
+apiVersion: axonflow.io/v1
+kind: AgentConfig
+metadata:
+  name: healthcare-domain
+  domain: healthcare
+  description: "Medical diagnosis and treatment planning workflow agents"
+
+spec:
+  execution:
+    default_mode: sequential
+    max_parallel_tasks: 2
+    timeout_seconds: 600
+    hints: |
+      Medical diagnosis often requires sequential analysis where each step informs
+      the next (symptoms -> labs -> imaging -> diagnosis). Patient data access must
+      never be parallelized for compliance and accuracy reasons. Treatment plans
+      should only be generated after diagnosis is complete.
+
+  agents:
+    - name: symptom-analysis
+      description: "Analyzes patient symptoms and medical history"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.2
+        max_tokens: 3000
+      prompt_template: |
+        You are a medical symptom analyzer. Analyze the following patient presentation:
+
+        {{.query}}
+
+        Provide:
+        1. Primary symptoms identified
+        2. Duration and severity assessment
+        3. Potential differential diagnoses (ranked by likelihood)
+        4. Red flags or urgent findings
+        5. Recommended next diagnostic steps
+
+    - name: lab-result-review
+      description: "Reviews and interprets laboratory results"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.1
+        max_tokens: 2500
+      prompt_template: |
+        Review and interpret the following laboratory results in clinical context:
+
+        {{.query}}
+
+        Provide:
+        1. Abnormal values identified
+        2. Clinical significance of each abnormality
+        3. Correlation with suspected diagnoses
+        4. Recommended follow-up tests
+
+    - name: imaging-review
+      description: "Reviews and interprets diagnostic imaging results"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.1
+        max_tokens: 2000
+      prompt_template: |
+        Review the following imaging study findings:
+
+        {{.query}}
+
+        Provide:
+        1. Key findings identified
+        2. Clinical correlation
+        3. Comparison with prior studies (if available)
+        4. Recommendations for additional imaging
+
+    - name: specialist-consultation
+      description: "Generates specialist consultation recommendations"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.3
+        max_tokens: 1500
+      prompt_template: |
+        Based on the clinical presentation and findings, recommend specialist consultations:
+
+        {{.query}}
+
+        Provide:
+        1. Recommended specialties
+        2. Urgency level for each consultation
+        3. Specific questions for the consultant
+        4. Expected timeline
+
+    - name: treatment-plan-generation
+      description: "Generates comprehensive treatment plans"
+      type: llm-call
+      llm:
+        provider: anthropic
+        model: claude-3-sonnet
+        temperature: 0.2
+        max_tokens: 4000
+      prompt_template: |
+        Generate a comprehensive treatment plan based on the diagnosis:
+
+        {{.query}}
+
+        Include:
+        1. Primary treatment recommendations
+        2. Medication regimen with dosages and schedules
+        3. Non-pharmacological interventions
+        4. Monitoring parameters
+        5. Expected timeline for improvement
+        6. Warning signs requiring immediate attention
+
+  routing:
+    - pattern: "symptom|present|complain|pain|discomfort|feel"
+      agent: symptom-analysis
+      priority: 10
+    - pattern: "lab|blood|urine|test result|chemistry|cbc|panel"
+      agent: lab-result-review
+      priority: 9
+    - pattern: "imaging|x-ray|ct|mri|ultrasound|scan|radiology"
+      agent: imaging-review
+      priority: 9
+    - pattern: "specialist|consult|refer|opinion|second opinion"
+      agent: specialist-consultation
+      priority: 7
+    - pattern: "treatment|therapy|medication|manage|plan|prescri"
+      agent: treatment-plan-generation
+      priority: 8
+    - pattern: ".*"
+      agent: symptom-analysis
+      priority: 1
+
+  synthesis:
+    enabled: true
+    prompt_template: |
+      Based on the clinical data and research from all previous steps, provide a
+      comprehensive medical analysis for: {{.query}}
+
+      Include:
+      - Patient assessment summary
+      - Primary diagnosis with supporting evidence
+      - Differential diagnoses to consider
+      - Recommended treatments with dosages and timing
+      - Expected outcomes and timelines
+      - Follow-up care plan
+      - Risk factors and monitoring needs
+
+      Be specific and clinically detailed. Include evidence-based recommendations.
+
+      IMPORTANT: This is for educational/research purposes. Always recommend
+      consultation with qualified healthcare providers for actual patient care.

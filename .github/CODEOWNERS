@@ -1,0 +1,36 @@
+# CODEOWNERS - Auto-assign reviewers for pull requests
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything
+* @saurabhjain1592
+
+# Platform components (OSS)
+/platform/agent/ @saurabhjain1592
+/platform/orchestrator/ @saurabhjain1592
+/platform/connectors/ @saurabhjain1592
+/platform/shared/ @saurabhjain1592
+
+# Enterprise components
+/ee/ @saurabhjain1592
+/ee/platform/customer-portal/ @saurabhjain1592
+/ee/platform/license-server/ @saurabhjain1592
+/ee/platform/connectors/ @saurabhjain1592
+
+# SDKs
+/sdk/ @saurabhjain1592
+
+# Documentation
+/docs/ @saurabhjain1592
+/technical-docs/ @saurabhjain1592
+*.md @saurabhjain1592
+
+# CI/CD and infrastructure
+/.github/ @saurabhjain1592
+/migrations/ @saurabhjain1592
+/scripts/ @saurabhjain1592
+/config/ @saurabhjain1592
+
+# Security-sensitive files (require explicit review)
+/platform/agent/license/ @saurabhjain1592
+/platform/orchestrator/policy/ @saurabhjain1592
+SECURITY.md @saurabhjain1592
