@@ -45,35 +45,6 @@ services:
     networks:
       - axonflow-network
 
-  # PostgreSQL Init Job - Creates Grafana database and user
-  # This runs once on first startup (docker-compose up) to initialize additional databases
-  # Uses depends_on with service_healthy to wait for PostgreSQL to be ready
-  postgres-init:
-    image: postgres:15-alpine
-    container_name: axonflow-postgres-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: postgres
-      PGUSER: axonflow
-      PGPASSWORD: localdev123
-      PGDATABASE: axonflow
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "Initializing Grafana database and user..."
-        # Create grafana user if not exists
-        psql -c "SELECT 1 FROM pg_user WHERE usename = 'grafana'" | grep -q 1 || \
-          psql -c "CREATE USER grafana WITH PASSWORD 'grafana_localdev456';"
-        # Create grafana database if not exists
-        psql -c "SELECT 1 FROM pg_database WHERE datname = 'grafana'" | grep -q 1 || \
-          psql -c "CREATE DATABASE grafana OWNER grafana;"
-        echo "✅ Grafana database initialized"
-    networks:
-      - axonflow-network
-    restart: "no"
-
   # Redis - Rate limiting and caching (optional but recommended)
   redis:
     image: redis:7-alpine
@@ -290,8 +261,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      postgres-init:
-        condition: service_completed_successfully
+      axonflow-agent:
+        condition: service_healthy
       prometheus:
         condition: service_healthy
     volumes:
