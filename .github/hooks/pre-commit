@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Pre-commit hook to update documentation if code changes
+# Install with: ln -s ../../.github/hooks/pre-commit .git/hooks/pre-commit
+
+set -e
+
+echo "🔍 Checking for documentation updates needed..."
+
+# Check if Go files changed
+if git diff --cached --name-only | grep -q "\.go$"; then
+    echo "📝 Go files changed, updating API documentation..."
+    ./scripts/extract-api-docs.sh
+    git add docs/generated/api-documentation.md docs/generated/openapi-spec.yaml
+fi
+
+# Check if policy files changed
+if git diff --cached --name-only | grep -q "policy.*\.go$"; then
+    echo "🛡️ Policy files changed, updating compliance matrix..."
+    ./scripts/update-compliance-matrix.sh  
+    git add docs/generated/compliance-matrix.md
+fi
+
+# Check if significant code changes warrant metrics update
+changed_files=$(git diff --cached --name-only | wc -l)
+if [ "$changed_files" -gt 5 ]; then
+    echo "📊 Significant changes detected, updating code metrics..."
+    ./scripts/generate-code-metrics.sh
+    git add docs/generated/code-metrics.md docs/generated/metrics-summary.env
+fi
+
+echo "✅ Documentation updates complete"
