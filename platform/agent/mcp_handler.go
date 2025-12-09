@@ -207,6 +207,51 @@ func GetRuntimeConfigService() *config.RuntimeConfigService {
 	return runtimeConfigService
 }
 
+// GetConnectorForTenant retrieves a connector for a specific tenant.
+// It uses the TenantConnectorRegistry for dynamic loading (ADR-007 compliant).
+// Falls back to the static registry if TenantConnectorRegistry is not initialized.
+//
+// Parameters:
+//   - ctx: Context for timeout/cancellation
+//   - tenantID: The tenant ID for multi-tenant isolation
+//   - connectorName: The name of the connector to retrieve
+//
+// Returns:
+//   - The connector if found
+//   - An error if connector not found or loading fails
+func GetConnectorForTenant(ctx context.Context, tenantID, connectorName string) (base.Connector, error) {
+	// Try TenantConnectorRegistry first (dynamic, per-tenant)
+	tenantReg := GetTenantConnectorRegistry()
+	if tenantReg != nil {
+		connector, err := tenantReg.GetConnector(ctx, tenantID, connectorName)
+		if err == nil {
+			log.Printf("[MCP] Retrieved connector '%s' for tenant '%s' from TenantConnectorRegistry", connectorName, tenantID)
+			return connector, nil
+		}
+		// Log the error but fall back to static registry
+		log.Printf("[MCP] TenantConnectorRegistry lookup failed for '%s' (tenant: %s): %v, falling back to static registry",
+			connectorName, tenantID, err)
+	}
+
+	// Fall back to static registry (backward compatibility)
+	if mcpRegistry == nil {
+		return nil, fmt.Errorf("MCP registry not initialized")
+	}
+
+	connector, err := mcpRegistry.Get(connectorName)
+	if err != nil {
+		return nil, fmt.Errorf("connector '%s' not found: %w", connectorName, err)
+	}
+
+	log.Printf("[MCP] Retrieved connector '%s' from static registry (fallback)", connectorName)
+	return connector, nil
+}
+
+// IsTenantConnectorRegistryEnabled returns true if dynamic per-tenant connector loading is available.
+func IsTenantConnectorRegistryEnabled() bool {
+	return GetTenantConnectorRegistry() != nil
+}
+
 // registerPostgresConnector registers a PostgreSQL connector
 func registerPostgresConnector() error {
 	cfg, err := config.LoadPostgresConfig("axonflow_rds")
@@ -508,9 +553,10 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 6. Get connector
-	connector, err := mcpRegistry.Get(req.Connector)
+	// 6. Get connector (uses TenantConnectorRegistry with fallback to static registry)
+	connector, err := GetConnectorForTenant(ctx, user.TenantID, req.Connector)
 	if err != nil {
+		log.Printf("[MCP] Connector not found: %v", err)
 		sendErrorResponse(w, "Connector not found", http.StatusNotFound, nil)
 		return
 	}
@@ -668,9 +714,10 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get connector
-	connector, err := mcpRegistry.Get(req.Connector)
+	// Get connector (uses TenantConnectorRegistry with fallback to static registry)
+	connector, err := GetConnectorForTenant(ctx, user.TenantID, req.Connector)
 	if err != nil {
+		log.Printf("[MCP] Connector not found: %v", err)
 		sendErrorResponse(w, "Connector not found", http.StatusNotFound, nil)
 		return
 	}

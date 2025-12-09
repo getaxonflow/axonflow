@@ -3077,6 +3077,27 @@ components:
         provider:
           $ref: '#/components/schemas/LLMProviderResource'
 
+    PaginationMeta:
+      type: object
+      description: Pagination metadata for list responses
+      properties:
+        page:
+          type: integer
+          description: Current page number (1-indexed)
+          example: 1
+        page_size:
+          type: integer
+          description: Number of items per page
+          example: 20
+        total_items:
+          type: integer
+          description: Total number of items across all pages
+          example: 42
+        total_pages:
+          type: integer
+          description: Total number of pages
+          example: 3
+
     LLMProviderListResponse:
       type: object
       properties:
@@ -3149,6 +3170,17 @@ components:
           example:
             success: false
             error: "Invalid request body"
+
+    Unauthorized:
+      description: Unauthorized - missing or invalid tenant ID
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LLMProviderAPIError'
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: "missing tenant ID"
 
     InternalError:
       description: Internal server error

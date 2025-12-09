@@ -758,6 +758,173 @@ paths:
                 timestamp: "2025-01-15T10:30:00Z"
 
   # ==========================================================================
+  # Connector Cache Management (ADR-007)
+  # ==========================================================================
+
+  /api/v1/connectors/refresh:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Refresh all connector caches
+      description: |
+        Invalidates and refreshes all cached connector instances across all tenants.
+        Use this after bulk configuration changes or deployments.
+
+        **Performance Impact:** This operation clears all cached connectors.
+        The next request for each connector will incur factory creation overhead.
+      operationId: refreshAllConnectors
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: All connectors refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorRefreshResponse'
+              example:
+                success: true
+                message: "All connector caches refreshed"
+                scope: "all"
+                duration: "12.345ms"
+                stats:
+                  cached_connectors: 0
+                  hits: 12345
+                  misses: 234
+                  evictions: 15
+                  hit_rate_percent: 98.1
+        '503':
+          description: Registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "TenantConnectorRegistry not initialized"
+
+  /api/v1/connectors/refresh/{tenant_id}:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Refresh tenant connector caches
+      description: |
+        Invalidates and refreshes all cached connector instances for a specific tenant.
+        Use this after updating a tenant's connector configuration.
+      operationId: refreshTenantConnectors
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: tenant_id
+          in: path
+          required: true
+          description: The tenant ID whose connectors should be refreshed
+          schema:
+            type: string
+          example: "tenant-123"
+      responses:
+        '200':
+          description: Tenant connectors refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorRefreshResponse'
+              example:
+                success: true
+                message: "Tenant connector caches refreshed"
+                scope: "tenant"
+                tenant_id: "tenant-123"
+                duration: "2.456ms"
+                stats:
+                  cached_connectors: 12
+                  evictions: 3
+        '400':
+          description: Missing tenant_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Registry not initialized
+
+  /api/v1/connectors/refresh/{tenant_id}/{connector_name}:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Refresh specific connector cache
+      description: |
+        Invalidates and refreshes a specific connector instance for a tenant.
+        Use this after updating a single connector's credentials or configuration.
+      operationId: refreshConnector
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: tenant_id
+          in: path
+          required: true
+          description: The tenant ID
+          schema:
+            type: string
+          example: "tenant-123"
+        - name: connector_name
+          in: path
+          required: true
+          description: The connector name to refresh
+          schema:
+            type: string
+          example: "customer-db"
+      responses:
+        '200':
+          description: Connector refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorRefreshResponse'
+              example:
+                success: true
+                message: "Connector cache refreshed"
+                scope: "connector"
+                tenant_id: "tenant-123"
+                connector: "customer-db"
+                duration: "0.789ms"
+        '400':
+          description: Missing required parameters
+        '503':
+          description: Registry not initialized
+
+  /api/v1/connectors/cache/stats:
+    get:
+      tags:
+        - MCP Connectors
+      summary: Get connector cache statistics
+      description: |
+        Returns cache performance statistics including hit rate, miss count,
+        evictions, and factory operation counts. Useful for monitoring cache health.
+      operationId: getConnectorCacheStats
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Cache statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorCacheStats'
+              example:
+                cached_connectors: 15
+                hits: 12345
+                misses: 234
+                evictions: 12
+                factory_creations: 246
+                factory_failures: 0
+                connection_errors: 2
+                hit_rate_percent: 98.1
+                last_eviction: "2025-12-09T10:30:00Z"
+                last_factory_create: "2025-12-09T14:20:00Z"
+                registry_enabled: true
+                timestamp: "2025-12-09T14:25:00Z"
+        '503':
+          description: Registry not initialized
+
+  # ==========================================================================
   # HITL - Human-in-the-Loop (EU AI Act Article 14)
   # ==========================================================================
 
@@ -2063,6 +2230,104 @@ components:
           type: integer
         message:
           type: string
+
+    ConnectorRefreshResponse:
+      type: object
+      description: Response from connector cache refresh operations
+      properties:
+        success:
+          type: boolean
+          description: Whether the refresh operation succeeded
+        message:
+          type: string
+          description: Human-readable status message
+        scope:
+          type: string
+          enum: [all, tenant, connector]
+          description: Scope of the refresh operation
+        tenant_id:
+          type: string
+          description: Tenant ID (when scope is tenant or connector)
+        connector:
+          type: string
+          description: Connector name (when scope is connector)
+        duration:
+          type: string
+          description: Duration of the refresh operation
+          example: "12.345ms"
+        stats:
+          $ref: '#/components/schemas/ConnectorRefreshStats'
+      required:
+        - success
+        - message
+        - scope
+        - duration
+
+    ConnectorRefreshStats:
+      type: object
+      description: Cache statistics after refresh
+      properties:
+        cached_connectors:
+          type: integer
+          description: Number of connectors currently cached
+        hits:
+          type: integer
+          description: Total cache hits
+        misses:
+          type: integer
+          description: Total cache misses
+        evictions:
+          type: integer
+          description: Total manual evictions
+        hit_rate_percent:
+          type: number
+          format: float
+          description: Cache hit rate percentage
+
+    ConnectorCacheStats:
+      type: object
+      description: Full connector cache statistics
+      properties:
+        cached_connectors:
+          type: integer
+          description: Number of connectors currently cached
+        hits:
+          type: integer
+          description: Total cache hits
+        misses:
+          type: integer
+          description: Total cache misses
+        evictions:
+          type: integer
+          description: Total manual evictions
+        factory_creations:
+          type: integer
+          description: Successful connector factory creations
+        factory_failures:
+          type: integer
+          description: Failed connector factory creations
+        connection_errors:
+          type: integer
+          description: Connector initialization errors
+        hit_rate_percent:
+          type: number
+          format: float
+          description: Cache hit rate percentage
+        last_eviction:
+          type: string
+          format: date-time
+          description: Timestamp of last eviction
+        last_factory_create:
+          type: string
+          format: date-time
+          description: Timestamp of last factory creation
+        registry_enabled:
+          type: boolean
+          description: Whether the registry is enabled
+        timestamp:
+          type: string
+          format: date-time
+          description: Current timestamp
 
     ConnectorListResponse:
       type: object
