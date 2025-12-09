@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Logs
+*.log
+
+# Local development
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (in case they exist locally)
+main
+*.exe
+
+# Test coverage
+*.out
+coverage.html
+
+# Dependencies that might exist locally
+vendor/

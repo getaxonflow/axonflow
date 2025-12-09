@@ -1,0 +1,285 @@
+# AxonFlow Local Development Environment
+# Fast feedback loop for testing changes locally before deploying to AWS
+# Replaces 2-4 hour AWS test cycle with 5-10 minute local cycle
+#
+# Usage:
+#   docker-compose up -d                              # Start OSS services (agent, orchestrator)
+#   docker-compose --profile enterprise up -d         # Start all services including enterprise
+#   docker-compose logs -f axonflow-agent             # Follow agent logs
+#   docker-compose down -v                            # Stop and remove volumes
+#
+# OSS Services (always started):
+#   - PostgreSQL: localhost:5432 (axonflow, grafana databases)
+#   - Redis: localhost:6379 (caching)
+#   - Agent: localhost:8080
+#   - Orchestrator: localhost:8081
+#   - Prometheus: localhost:9090
+#   - Grafana: localhost:3000 (admin/grafana_localdev456)
+#
+# Enterprise Services (--profile enterprise):
+#   - Customer Portal: localhost:8082
+
+services:
+  # PostgreSQL Database - Core platform storage
+  # Creates both 'axonflow' and 'grafana' databases
+  postgres:
+    image: postgres:15-alpine
+    container_name: axonflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: axonflow
+      POSTGRES_PASSWORD: localdev123
+      POSTGRES_DB: axonflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/local-dev/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s  # Grace period for first-run initialization
+    networks:
+      - axonflow-network
+
+  # Redis - Rate limiting and caching (optional but recommended)
+  redis:
+    image: redis:7-alpine
+    container_name: axonflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s  # Grace period for Redis startup
+    networks:
+      - axonflow-network
+
+  # AxonFlow Agent
+  # Runs database migrations and handles MCP queries
+  axonflow-agent:
+    build:
+      context: .
+      dockerfile: platform/agent/Dockerfile
+      args:
+        EDITION: oss
+    container_name: axonflow-agent
+    restart: unless-stopped
+    environment:
+      # Database Configuration (matches AWS deployment format)
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+
+      # Grafana Password (for migration 017_grafana_database.sql)
+      GRAFANA_PASSWORD: grafana_localdev456
+
+      # License (test key for local development)
+      AXONFLOW_LICENSE_KEY: AXON-LOCAL-testorg-20250101-testkey12345
+      ORG_ID: local-dev-org
+
+      # Optional: LLM API Keys (can be set in .env file)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+      # Service configuration
+      PORT: 8080
+      SELF_HOSTED_MODE: "true"
+      SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
+      ENVIRONMENT: "development"
+      # DEPLOYMENT_MODE defaults to "oss" - enterprise deployments set via GitHub workflow
+      LOG_LEVEL: debug
+
+      # Redis (optional)
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - axonflow-network
+
+  # AxonFlow Orchestrator
+  # Handles LLM orchestration and policy enforcement
+  axonflow-orchestrator:
+    build:
+      context: .
+      dockerfile: platform/orchestrator/Dockerfile
+      args:
+        EDITION: oss
+    container_name: axonflow-orchestrator
+    restart: unless-stopped
+    environment:
+      # Database Configuration (matches AWS deployment format)
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+
+      # License
+      AXONFLOW_LICENSE_KEY: AXON-LOCAL-testorg-20250101-testkey12345
+      ORG_ID: local-dev-org
+
+      # LLM API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LOCAL_LLM_ENDPOINT: ${LOCAL_LLM_ENDPOINT:-}
+
+      # Service configuration
+      PORT: 8081
+      LOG_LEVEL: debug
+
+      # Agent MCP endpoint for MCP query routing
+      AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
+    ports:
+      - "8081:8081"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - axonflow-network
+
+  # AxonFlow Customer Portal (Enterprise only)
+  # API for customer onboarding and management
+  # Requires: --profile enterprise
+  axonflow-customer-portal:
+    profiles:
+      - enterprise
+    build:
+      context: .
+      dockerfile: ee/platform/customer-portal/Dockerfile
+      args:
+        EDITION: enterprise
+    container_name: axonflow-customer-portal
+    restart: unless-stopped
+    environment:
+      # Database Configuration (matches AWS deployment format)
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: axonflow
+      DATABASE_USER: axonflow
+      DATABASE_PASSWORD: localdev123
+      DATABASE_SSLMODE: disable
+
+      # Organization
+      ORG_ID: local-dev-org
+      TIER: Professional
+
+      # Service configuration
+      PORT: 8080
+      LOG_LEVEL: debug
+    ports:
+      - "8082:8080"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - axonflow-network
+
+  # Prometheus - Metrics collection and monitoring
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: axonflow-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./config/prometheus-local.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - axonflow-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Grafana - Metrics visualization and dashboards
+  # Login: admin / grafana_localdev456
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: axonflow-grafana
+    restart: unless-stopped
+    environment:
+      # Admin credentials
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: grafana_localdev456
+
+      # Database configuration (use grafana database in PostgreSQL)
+      GF_DATABASE_TYPE: postgres
+      GF_DATABASE_HOST: postgres:5432
+      GF_DATABASE_NAME: grafana
+      GF_DATABASE_USER: grafana
+      GF_DATABASE_PASSWORD: grafana_localdev456
+      GF_DATABASE_SSL_MODE: disable
+
+      # Server configuration
+      GF_SERVER_ROOT_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - axonflow-network
+
+volumes:
+  postgres-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  axonflow-network:
+    driver: bridge

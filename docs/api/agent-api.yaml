@@ -1,0 +1,3159 @@
+openapi: 3.0.3
+info:
+  title: AxonFlow Agent API
+  description: |
+    REST API for the AxonFlow Agent service - Authentication, Authorization, and Static Policy Enforcement Gateway.
+
+    The Agent serves as the entry point for all client requests, providing:
+    - **Proxy Mode**: Full request interception and processing through the Orchestrator
+    - **Gateway Mode**: Pre-check and audit endpoints for SDK-managed LLM calls
+    - **MCP (Model Context Protocol)**: Data connector queries and commands
+    - **Authentication**: License and token validation
+    - **Static Policy Enforcement**: Fast regex-based content filtering
+
+    ## Authentication
+
+    All endpoints require authentication via:
+    - `X-License-Key`: Client/service license key for authorization
+    - `user_token`: JWT token for user identification (in request body)
+
+    ## Deployment Modes
+
+    - **SaaS**: Hosted by AxonFlow, multi-tenant
+    - **In-VPC**: Customer-deployed, single-tenant
+    - **Self-Hosted**: `SELF_HOSTED_MODE=true` bypasses license validation
+
+  version: 1.0.0
+  contact:
+    name: AxonFlow Support
+    url: https://getaxonflow.com/support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://agent.getaxonflow.com
+    description: Production (SaaS)
+  - url: https://agent-staging.getaxonflow.com
+    description: Staging
+  - url: http://localhost:8080
+    description: Local Development
+
+tags:
+  - name: Health
+    description: Service health and readiness checks
+  - name: Proxy Mode
+    description: Full request interception and processing
+  - name: Gateway Mode
+    description: Pre-check and audit for SDK-managed LLM calls
+  - name: MCP Connectors
+    description: Model Context Protocol data connector operations
+  - name: Metrics
+    description: Performance monitoring and observability
+  - name: HITL
+    description: |
+      Human-in-the-Loop decision queue (EU AI Act Article 14).
+      Route high-risk AI decisions for human review before execution.
+  - name: Circuit Breaker
+    description: |
+      Emergency circuit breaker for AI operations (EU AI Act Article 14).
+      Instantly halt AI operations with two-person deactivation requirement.
+  - name: Accuracy
+    description: |
+      Accuracy metrics and bias detection (EU AI Act Article 15).
+      Track model accuracy, detect demographic bias, and manage alerts.
+  - name: Conformity
+    description: |
+      Conformity assessment workflow (EU AI Act Article 43).
+      Manage compliance assessments from draft through approval.
+  - name: EU AI Act
+    description: |
+      EU AI Act compliance data export and reporting.
+      Export compliance data in EU regulatory format.
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: |
+        Returns service health status. During startup, returns `status: starting`.
+        Once fully initialized, returns `status: healthy`.
+
+        This endpoint responds immediately even during initialization, allowing
+        ECS/ALB health checks to pass while the service starts up.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: Healthy service
+                  value:
+                    status: healthy
+                    service: axonflow-agent
+                    timestamp: "2025-01-15T10:30:00Z"
+                    version: "1.0.0"
+                starting:
+                  summary: Service starting
+                  value:
+                    status: starting
+                    service: axonflow-agent
+                    timestamp: "2025-01-15T10:30:00Z"
+                    version: "1.0.0"
+
+  /metrics:
+    get:
+      tags:
+        - Metrics
+      summary: Get performance metrics
+      description: |
+        Returns real-time performance metrics including:
+        - Request counts (total, success, failed, blocked)
+        - Latency percentiles (P50, P95, P99)
+        - Per-stage timing (auth, policy, network)
+        - Request type breakdown
+        - Connector metrics
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Performance metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+
+  /prometheus:
+    get:
+      tags:
+        - Metrics
+      summary: Prometheus metrics endpoint
+      description: Returns metrics in Prometheus exposition format for scraping
+      operationId: getPrometheusMetrics
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP axonflow_agent_requests_total Total requests
+                  # TYPE axonflow_agent_requests_total counter
+                  axonflow_agent_requests_total{status="success"} 1234
+
+  /api/request:
+    post:
+      tags:
+        - Proxy Mode
+      summary: Process client request
+      description: |
+        Main entry point for Proxy Mode. The Agent:
+        1. Validates client license key
+        2. Validates user JWT token
+        3. Verifies tenant isolation
+        4. Evaluates static policies (PII detection, etc.)
+        5. Forwards to Orchestrator if allowed
+        6. Returns response with policy metadata
+
+        **Use this endpoint when you want AxonFlow to intercept and process all LLM requests.**
+      operationId: processRequest
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - $ref: '#/components/parameters/ClientSecret'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRequest'
+            examples:
+              sqlQuery:
+                summary: SQL query request
+                value:
+                  query: "Show sales data for last quarter"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-app-prod"
+                  request_type: "sql"
+                  context:
+                    connector: "postgres"
+              llmChat:
+                summary: LLM chat request
+                value:
+                  query: "Summarize the customer feedback"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "support-bot"
+                  request_type: "llm_chat"
+                  context:
+                    model_preference: "gpt-4"
+              multiAgentPlan:
+                summary: Multi-agent planning request
+                value:
+                  query: "Find flights from NYC to LAX and book a hotel"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-planner"
+                  request_type: "multi-agent-plan"
+                  context:
+                    domain: "travel"
+                    execution_mode: "parallel"
+      responses:
+        '200':
+          description: Request processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+              example:
+                success: true
+                data:
+                  response: "Here is the summary of customer feedback..."
+                result: "Flight options found: UA123, AA456, DL789"
+                plan_id: "plan_1234567890_abc123"
+                metadata:
+                  tasks_executed: 3
+                  execution_time_ms: 2500
+                policy_info:
+                  policies_evaluated:
+                    - "pii-detection"
+                    - "rate-limit"
+                  static_checks:
+                    - "ssn_pattern"
+                    - "credit_card"
+                  processing_time: "45.2ms"
+                  tenant_id: "tenant-123"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Request blocked by policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientResponse'
+              example:
+                success: false
+                blocked: true
+                block_reason: "Query contains PII (SSN detected)"
+                policy_info:
+                  policies_evaluated:
+                    - "pii-ssn"
+                  static_checks:
+                    - "ssn_pattern"
+                  processing_time: "2.1ms"
+                  tenant_id: "tenant-123"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/policy/pre-check:
+    post:
+      tags:
+        - Gateway Mode
+      summary: Pre-check request before LLM call
+      description: |
+        Gateway Mode Step 1: Call this endpoint before making your own LLM API call.
+
+        The Agent validates the request against policies and returns:
+        - `approved: true` if the request is allowed
+        - `context_id` to link with the subsequent audit call
+        - Optional `approved_data` from MCP connectors
+        - Rate limit information
+
+        **Context expires after 5 minutes.**
+
+        ## Example Flow
+        ```
+        1. SDK calls pre-check → gets context_id, approved=true
+        2. SDK makes direct LLM call (OpenAI, Anthropic, etc.)
+        3. SDK calls audit with context_id and response metadata
+        ```
+      operationId: gatewayPreCheck
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreCheckRequest'
+            examples:
+              basic:
+                summary: Basic pre-check
+                value:
+                  query: "What is the customer's order status?"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "customer-portal"
+              withDataSources:
+                summary: Pre-check with data sources
+                value:
+                  query: "Find flights from NYC to LAX next week"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  client_id: "travel-app"
+                  data_sources:
+                    - "amadeus"
+                  context:
+                    departure_date: "2025-01-20"
+                    return_date: "2025-01-25"
+      responses:
+        '200':
+          description: Pre-check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreCheckResponse'
+              examples:
+                approved:
+                  summary: Request approved
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: true
+                    policies:
+                      - "pii-detection"
+                      - "rate-limit"
+                    rate_limit:
+                      limit: 1000
+                      remaining: 995
+                      reset_at: "2025-01-15T11:00:00Z"
+                    expires_at: "2025-01-15T10:35:00Z"
+                blocked:
+                  summary: Request blocked
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: false
+                    policies:
+                      - "pii-credit-card"
+                    block_reason: "Query contains credit card number"
+                    expires_at: "2025-01-15T10:35:00Z"
+                withData:
+                  summary: Approved with data
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: true
+                    approved_data:
+                      amadeus:
+                        rows:
+                          - flight_number: "UA123"
+                            departure: "2025-01-20T08:00:00Z"
+                            price: 299.99
+                        row_count: 5
+                        duration_ms: 450
+                    policies:
+                      - "pii-detection"
+                    expires_at: "2025-01-15T10:35:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/audit/llm-call:
+    post:
+      tags:
+        - Gateway Mode
+      summary: Audit LLM call after completion
+      description: |
+        Gateway Mode Step 2: Call this endpoint after your LLM API call completes.
+
+        Records:
+        - Token usage for billing and quotas
+        - Latency metrics
+        - Provider and model information
+        - Estimated cost
+
+        **Requires a valid context_id from pre-check (not expired).**
+      operationId: auditLLMCall
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditLLMCallRequest'
+            example:
+              context_id: "ctx_abc123def456"
+              client_id: "travel-app"
+              response_summary: "Found 5 flights matching criteria"
+              provider: "openai"
+              model: "gpt-4"
+              token_usage:
+                prompt_tokens: 150
+                completion_tokens: 200
+                total_tokens: 350
+              latency_ms: 1250
+              metadata:
+                request_type: "travel_search"
+                cache_hit: false
+      responses:
+        '200':
+          description: Audit recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLLMCallResponse'
+              example:
+                success: true
+                audit_id: "aud_xyz789"
+        '400':
+          description: Invalid or expired context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Invalid or expired context"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/policies/test:
+    post:
+      tags:
+        - Proxy Mode
+      summary: Test policy evaluation
+      description: |
+        Test how policies would evaluate a query without making an actual request.
+        Useful for debugging and policy development.
+      operationId: testPolicies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: Query to test
+                user_email:
+                  type: string
+                  description: User email for context
+                request_type:
+                  type: string
+                  description: Request type
+            example:
+              query: "Show me customer SSN 123-45-6789"
+              user_email: "analyst@company.com"
+              request_type: "sql"
+      responses:
+        '200':
+          description: Policy test result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocked:
+                    type: boolean
+                  reason:
+                    type: string
+                  triggered_policies:
+                    type: array
+                    items:
+                      type: string
+                  checks_performed:
+                    type: array
+                    items:
+                      type: string
+                  processing_time_ms:
+                    type: number
+              example:
+                blocked: true
+                reason: "PII detected: SSN pattern found in query"
+                triggered_policies:
+                  - "pii-ssn"
+                checks_performed:
+                  - "ssn_pattern"
+                  - "credit_card_pattern"
+                  - "email_pattern"
+                processing_time_ms: 0.8
+
+  /api/clients:
+    get:
+      tags:
+        - Proxy Mode
+      summary: List registered clients
+      description: Returns all registered client applications
+      operationId: listClients
+      responses:
+        '200':
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Client'
+
+    post:
+      tags:
+        - Proxy Mode
+      summary: Register a new client
+      description: Register a new client application
+      operationId: createClient
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Client'
+      responses:
+        '201':
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /mcp/connectors:
+    get:
+      tags:
+        - MCP Connectors
+      summary: List all MCP connectors
+      description: |
+        Returns all registered MCP connectors with their health status.
+
+        Connectors provide access to external data sources:
+        - PostgreSQL
+        - Cassandra
+        - Salesforce
+        - Snowflake
+        - Amadeus (travel API)
+        - Slack
+      operationId: listMCPConnectors
+      responses:
+        '200':
+          description: List of connectors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorListResponse'
+              example:
+                connectors:
+                  - name: "postgres_main"
+                    type: "postgres"
+                    version: "1.0.0"
+                    healthy: true
+                    latency_ms: 5
+                    capabilities:
+                      - "query"
+                      - "execute"
+                  - name: "amadeus"
+                    type: "amadeus"
+                    version: "1.0.0"
+                    healthy: true
+                    latency_ms: 120
+                    capabilities:
+                      - "search_flights"
+                      - "search_hotels"
+                count: 2
+        '503':
+          description: MCP registry not initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/connectors/{name}/health:
+    get:
+      tags:
+        - MCP Connectors
+      summary: Check connector health
+      description: Returns health status for a specific connector
+      operationId: getMCPConnectorHealth
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Connector name
+          schema:
+            type: string
+          example: "postgres_main"
+      responses:
+        '200':
+          description: Connector health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorHealthResponse'
+              example:
+                healthy: true
+                latency_ms: 5
+                last_check: "2025-01-15T10:30:00Z"
+        '404':
+          description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/resources/query:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Execute MCP query (read-only)
+      description: |
+        Execute a read-only query via an MCP connector.
+
+        This follows the MCP Resource pattern for data retrieval.
+        For write operations, use `/mcp/tools/execute`.
+      operationId: mcpQuery
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPQueryRequest'
+            examples:
+              sqlQuery:
+                summary: SQL query
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  connector: "postgres_main"
+                  statement: "SELECT * FROM orders WHERE status = $1"
+                  parameters:
+                    "1": "completed"
+                  limit: 100
+                  timeout: "10s"
+              amadeusSearch:
+                summary: Flight search
+                value:
+                  client_id: "travel-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  connector: "amadeus"
+                  operation: "search_flights"
+                  parameters:
+                    origin: "NYC"
+                    destination: "LAX"
+                    departure_date: "2025-01-20"
+                  timeout: "15s"
+      responses:
+        '200':
+          description: Query executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPQueryResponse'
+              example:
+                success: true
+                connector: "amadeus"
+                data:
+                  - flight_number: "UA123"
+                    departure: "2025-01-20T08:00:00Z"
+                    arrival: "2025-01-20T11:00:00Z"
+                    price: 299.99
+                row_count: 5
+                duration_ms: 450
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /mcp/tools/execute:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Execute MCP command (write)
+      description: |
+        Execute a write command via an MCP connector.
+
+        This follows the MCP Tool pattern for data modification.
+        For read operations, use `/mcp/resources/query`.
+      operationId: mcpExecute
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPExecuteRequest'
+            example:
+              client_id: "order-service"
+              user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              connector: "postgres_main"
+              action: "UPDATE"
+              statement: "UPDATE orders SET status = $1 WHERE id = $2"
+              parameters:
+                "1": "shipped"
+                "2": "ord-12345"
+              timeout: "5s"
+      responses:
+        '200':
+          description: Command executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPExecuteResponse'
+              example:
+                success: true
+                connector: "postgres_main"
+                rows_affected: 1
+                duration_ms: 15
+                message: "Update successful"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /mcp/health:
+    get:
+      tags:
+        - MCP Connectors
+      summary: Overall MCP health
+      description: Returns aggregate health status for all MCP connectors
+      operationId: getMCPHealth
+      responses:
+        '200':
+          description: MCP system health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthy:
+                    type: boolean
+                    description: True if all connectors are healthy
+                  total_connectors:
+                    type: integer
+                  healthy_count:
+                    type: integer
+                  unhealthy_count:
+                    type: integer
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                healthy: true
+                total_connectors: 3
+                healthy_count: 3
+                unhealthy_count: 0
+                timestamp: "2025-01-15T10:30:00Z"
+
+  # ==========================================================================
+  # HITL - Human-in-the-Loop (EU AI Act Article 14)
+  # ==========================================================================
+
+  /api/v1/hitl/decisions:
+    post:
+      tags:
+        - HITL
+      summary: Create HITL decision request
+      description: |
+        Route a high-risk AI decision for human review.
+        EU AI Act Article 14 requires human oversight for high-risk AI systems.
+      operationId: createHITLDecision
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HITLDecisionRequest'
+      responses:
+        '201':
+          description: Decision request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HITLDecision'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    get:
+      tags:
+        - HITL
+      summary: List pending HITL decisions
+      description: Retrieve pending decisions awaiting human review
+      operationId: listHITLDecisions
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of decisions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HITLDecision'
+                  count:
+                    type: integer
+
+  /api/v1/hitl/decisions/{id}:
+    get:
+      tags:
+        - HITL
+      summary: Get HITL decision
+      operationId: getHITLDecision
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Decision details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HITLDecision'
+        '404':
+          description: Decision not found
+
+  /api/v1/hitl/decisions/{id}/approve:
+    post:
+      tags:
+        - HITL
+      summary: Approve HITL decision
+      description: Approve a pending decision to allow AI execution
+      operationId: approveHITLDecision
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reviewer_id
+              properties:
+                reviewer_id:
+                  type: string
+                comments:
+                  type: string
+      responses:
+        '200':
+          description: Decision approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HITLDecision'
+        '400':
+          description: Invalid status transition
+        '404':
+          description: Decision not found
+
+  /api/v1/hitl/decisions/{id}/reject:
+    post:
+      tags:
+        - HITL
+      summary: Reject HITL decision
+      description: Reject a pending decision to block AI execution
+      operationId: rejectHITLDecision
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reviewer_id
+                - reason
+              properties:
+                reviewer_id:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Decision rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HITLDecision'
+        '400':
+          description: Invalid status transition
+        '404':
+          description: Decision not found
+
+  # ==========================================================================
+  # Circuit Breaker (EU AI Act Article 14)
+  # ==========================================================================
+
+  /api/v1/circuit-breaker/activate:
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Activate circuit breaker
+      description: |
+        Immediately halt all AI operations for an organization.
+        EU AI Act Article 14 requires ability to interrupt AI systems.
+      operationId: activateCircuitBreaker
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerActivateRequest'
+      responses:
+        '200':
+          description: Circuit breaker activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CircuitBreaker'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/circuit-breaker/deactivate:
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Deactivate circuit breaker
+      description: |
+        Restore AI operations. Requires two-person authorization for high-risk systems.
+      operationId: deactivateCircuitBreaker
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerDeactivateRequest'
+      responses:
+        '200':
+          description: Circuit breaker deactivated or pending second approval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CircuitBreaker'
+        '400':
+          description: Invalid request or unauthorized
+
+  /api/v1/circuit-breaker/status:
+    get:
+      tags:
+        - Circuit Breaker
+      summary: Get circuit breaker status
+      operationId: getCircuitBreakerStatus
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Circuit breaker status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CircuitBreaker'
+
+  # ==========================================================================
+  # Accuracy & Bias Detection (EU AI Act Article 15)
+  # ==========================================================================
+
+  /api/v1/accuracy/metrics:
+    post:
+      tags:
+        - Accuracy
+      summary: Record accuracy metric
+      description: Record an accuracy metric for a model
+      operationId: recordAccuracyMetric
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccuracyMetricInput'
+      responses:
+        '201':
+          description: Metric recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccuracyMetric'
+
+    get:
+      tags:
+        - Accuracy
+      summary: Get accuracy metrics
+      operationId: getAccuracyMetrics
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: model_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: metric_type
+          in: query
+          schema:
+            type: string
+            enum: [accuracy, precision, recall, f1_score, confidence, latency]
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Accuracy metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccuracyMetric'
+
+  /api/v1/accuracy/bias:
+    post:
+      tags:
+        - Accuracy
+      summary: Record bias detection
+      description: Record bias detection results for demographic groups
+      operationId: recordBiasDetection
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BiasRecordInput'
+      responses:
+        '201':
+          description: Bias record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BiasRecord'
+
+    get:
+      tags:
+        - Accuracy
+      summary: Get bias records
+      operationId: getBiasRecords
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: model_id
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [gender, age, ethnicity, geography, language, socioeconomic, disability]
+      responses:
+        '200':
+          description: Bias records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BiasRecord'
+
+  /api/v1/accuracy/alerts:
+    get:
+      tags:
+        - Accuracy
+      summary: Get accuracy/bias alerts
+      operationId: getAccuracyAlerts
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: active_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccuracyAlert'
+
+  /api/v1/accuracy/alerts/{id}/acknowledge:
+    post:
+      tags:
+        - Accuracy
+      summary: Acknowledge alert
+      operationId: acknowledgeAccuracyAlert
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+              properties:
+                user_id:
+                  type: string
+      responses:
+        '200':
+          description: Alert acknowledged
+
+  /api/v1/accuracy/alerts/{id}/resolve:
+    post:
+      tags:
+        - Accuracy
+      summary: Resolve alert
+      operationId: resolveAccuracyAlert
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+              properties:
+                user_id:
+                  type: string
+                resolution_notes:
+                  type: string
+      responses:
+        '200':
+          description: Alert resolved
+
+  /api/v1/accuracy/thresholds:
+    post:
+      tags:
+        - Accuracy
+      summary: Set accuracy threshold
+      operationId: setAccuracyThreshold
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccuracyThreshold'
+      responses:
+        '201':
+          description: Threshold set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccuracyThreshold'
+
+    get:
+      tags:
+        - Accuracy
+      summary: Get accuracy thresholds
+      operationId: getAccuracyThresholds
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Thresholds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  thresholds:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccuracyThreshold'
+
+  # ==========================================================================
+  # Conformity Assessment (EU AI Act Article 43)
+  # ==========================================================================
+
+  /api/v1/conformity/assessments:
+    post:
+      tags:
+        - Conformity
+      summary: Create conformity assessment
+      description: Create a new EU AI Act conformity assessment
+      operationId: createConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConformityAssessmentInput'
+      responses:
+        '201':
+          description: Assessment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+
+    get:
+      tags:
+        - Conformity
+      summary: List conformity assessments
+      operationId: listConformityAssessments
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Assessments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assessments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConformityAssessment'
+                  count:
+                    type: integer
+
+  /api/v1/conformity/assessments/{id}:
+    get:
+      tags:
+        - Conformity
+      summary: Get conformity assessment
+      operationId: getConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+        '404':
+          description: Assessment not found
+
+  /api/v1/conformity/assessments/{id}/start:
+    post:
+      tags:
+        - Conformity
+      summary: Start conformity assessment
+      description: Transition assessment from draft to in_progress
+      operationId: startConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+        '400':
+          description: Invalid status transition
+
+  /api/v1/conformity/assessments/{id}/submit:
+    post:
+      tags:
+        - Conformity
+      summary: Submit assessment for review
+      description: Submit completed assessment for approval
+      operationId: submitConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+        '400':
+          description: Invalid status transition or incomplete checks
+
+  /api/v1/conformity/assessments/{id}/approve:
+    post:
+      tags:
+        - Conformity
+      summary: Approve conformity assessment
+      operationId: approveConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - approved_by
+              properties:
+                approved_by:
+                  type: string
+                comments:
+                  type: string
+      responses:
+        '200':
+          description: Assessment approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+
+  /api/v1/conformity/assessments/{id}/reject:
+    post:
+      tags:
+        - Conformity
+      summary: Reject conformity assessment
+      operationId: rejectConformityAssessment
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - rejected_by
+                - reason
+              properties:
+                rejected_by:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Assessment rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityAssessment'
+
+  /api/v1/conformity/assessments/{id}/checks/{checkId}:
+    put:
+      tags:
+        - Conformity
+      summary: Update compliance check
+      operationId: updateConformityCheck
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: checkId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceCheckUpdate'
+      responses:
+        '200':
+          description: Check updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceCheck'
+
+  /api/v1/conformity/assessments/{id}/findings:
+    post:
+      tags:
+        - Conformity
+      summary: Add finding to assessment
+      operationId: addConformityFinding
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConformityFindingInput'
+      responses:
+        '201':
+          description: Finding added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformityFinding'
+
+  /api/v1/conformity/summary:
+    get:
+      tags:
+        - Conformity
+      summary: Get compliance summary
+      operationId: getConformitySummary
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compliance summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConformitySummary'
+
+  # ==========================================================================
+  # EU AI Act Export
+  # ==========================================================================
+
+  /api/v1/euaiact/export:
+    post:
+      tags:
+        - EU AI Act
+      summary: Export EU AI Act compliance data
+      description: |
+        Generate compliance export in EU regulatory format.
+        Includes decision chains, HITL records, accuracy metrics, and assessments.
+      operationId: exportEUAIActData
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EUAIActExportRequest'
+      responses:
+        '200':
+          description: Export generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EUAIActExportResponse'
+
+  /api/v1/euaiact/summary:
+    get:
+      tags:
+        - EU AI Act
+      summary: Get EU AI Act compliance summary
+      operationId: getEUAIActSummary
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compliance summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EUAIActSummary'
+
+components:
+  parameters:
+    LicenseKey:
+      name: X-License-Key
+      in: header
+      required: true
+      description: |
+        Client license key for authorization.
+        Not required when `SELF_HOSTED_MODE=true`.
+      schema:
+        type: string
+        example: "axf_live_abc123def456"
+
+    ClientSecret:
+      name: X-Client-Secret
+      in: header
+      required: false
+      description: Optional client secret for additional authentication
+      schema:
+        type: string
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, starting, unhealthy]
+          description: Service health status
+        service:
+          type: string
+          example: "axonflow-agent"
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: "1.0.0"
+
+    MetricsResponse:
+      type: object
+      properties:
+        agent_metrics:
+          type: object
+          properties:
+            uptime_seconds:
+              type: number
+            total_requests:
+              type: integer
+            success_requests:
+              type: integer
+            failed_requests:
+              type: integer
+            blocked_requests:
+              type: integer
+            success_rate:
+              type: number
+              description: Success rate percentage
+            rps:
+              type: number
+              description: Requests per second
+            error_rate_per_sec:
+              type: number
+            p50_ms:
+              type: number
+              description: 50th percentile latency
+            p95_ms:
+              type: number
+              description: 95th percentile latency
+            p99_ms:
+              type: number
+              description: 99th percentile latency
+            avg_latency_ms:
+              type: number
+            auth_p99_ms:
+              type: number
+              description: Authentication stage P99 latency
+            static_policy_eval_p99_ms:
+              type: number
+              description: Static policy evaluation P99 latency
+            network_p99_ms:
+              type: number
+              description: Network (Agent to Orchestrator) P99 latency
+        health:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [healthy, degraded, unhealthy]
+            healthy:
+              type: boolean
+            consecutive_errors:
+              type: integer
+            up:
+              type: integer
+              description: Always 1 if service is responding
+        request_types:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total_requests:
+                type: integer
+              success_requests:
+                type: integer
+              p99_ms:
+                type: number
+        connectors:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total_requests:
+                type: integer
+              success_rate:
+                type: number
+              p99_ms:
+                type: number
+        timestamp:
+          type: string
+          format: date-time
+
+    ClientRequest:
+      type: object
+      required:
+        - query
+        - client_id
+      properties:
+        query:
+          type: string
+          description: The query or prompt to process
+          minLength: 1
+          maxLength: 100000
+        user_token:
+          type: string
+          description: JWT token for user authentication
+        client_id:
+          type: string
+          description: Registered client application ID
+        request_type:
+          type: string
+          enum: [sql, llm_chat, rag_search, mcp-query, multi-agent-plan]
+          description: |
+            Type of request:
+            - `sql`: Database query
+            - `llm_chat`: LLM conversation
+            - `rag_search`: RAG retrieval
+            - `mcp-query`: MCP connector query
+            - `multi-agent-plan`: Multi-agent planning
+        skip_llm:
+          type: boolean
+          default: false
+          description: Skip LLM calls (for testing)
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for request processing
+
+    ClientResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          description: Response data (varies by request type)
+        result:
+          type: string
+          description: Result string for multi-agent planning
+        plan_id:
+          type: string
+          description: Plan ID for multi-agent planning
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Execution metadata for multi-agent planning
+        error:
+          type: string
+          description: Error message if success is false
+        blocked:
+          type: boolean
+          description: True if request was blocked by policy
+        block_reason:
+          type: string
+          description: Reason for blocking
+        policy_info:
+          $ref: '#/components/schemas/PolicyEvaluationInfo'
+
+    PolicyEvaluationInfo:
+      type: object
+      properties:
+        policies_evaluated:
+          type: array
+          items:
+            type: string
+          description: List of policies that were evaluated
+        static_checks:
+          type: array
+          items:
+            type: string
+          description: List of static checks performed
+        processing_time:
+          type: string
+          description: Time taken for policy evaluation
+          example: "2.5ms"
+        tenant_id:
+          type: string
+          description: Tenant ID for the request
+
+    PreCheckRequest:
+      type: object
+      required:
+        - query
+        - client_id
+      properties:
+        query:
+          type: string
+          description: Query to validate
+          minLength: 1
+        user_token:
+          type: string
+          description: JWT token for user authentication
+        client_id:
+          type: string
+          description: Client application ID
+        data_sources:
+          type: array
+          items:
+            type: string
+          description: MCP connectors to fetch data from
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context
+
+    PreCheckResponse:
+      type: object
+      properties:
+        context_id:
+          type: string
+          description: Context ID to use in audit call (valid for 5 minutes)
+        approved:
+          type: boolean
+          description: Whether the request is approved
+        approved_data:
+          type: object
+          additionalProperties: true
+          description: Data fetched from MCP connectors
+        policies:
+          type: array
+          items:
+            type: string
+          description: Policies that were evaluated
+        rate_limit:
+          $ref: '#/components/schemas/RateLimitInfo'
+        expires_at:
+          type: string
+          format: date-time
+          description: When the context expires
+        block_reason:
+          type: string
+          description: Reason if request was blocked
+
+    RateLimitInfo:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Rate limit per window
+        remaining:
+          type: integer
+          description: Remaining requests in current window
+        reset_at:
+          type: string
+          format: date-time
+          description: When the rate limit resets
+
+    AuditLLMCallRequest:
+      type: object
+      required:
+        - context_id
+        - client_id
+        - provider
+        - model
+        - token_usage
+      properties:
+        context_id:
+          type: string
+          description: Context ID from pre-check
+        client_id:
+          type: string
+          description: Client application ID
+        response_summary:
+          type: string
+          description: Brief summary of LLM response (for audit)
+          maxLength: 500
+        provider:
+          type: string
+          description: LLM provider name
+          enum: [openai, anthropic, bedrock, ollama]
+        model:
+          type: string
+          description: Model identifier
+          example: "gpt-4"
+        token_usage:
+          $ref: '#/components/schemas/TokenUsage'
+        latency_ms:
+          type: integer
+          description: LLM call latency in milliseconds
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata for audit
+
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Tokens in the prompt
+        completion_tokens:
+          type: integer
+          description: Tokens in the completion
+        total_tokens:
+          type: integer
+          description: Total tokens used
+
+    AuditLLMCallResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        audit_id:
+          type: string
+          description: Unique audit record ID
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique client identifier
+        name:
+          type: string
+          description: Client application name
+        org_id:
+          type: string
+          description: Organization ID for usage tracking
+        tenant_id:
+          type: string
+          description: Tenant ID for multi-tenancy
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Granted permissions
+        rate_limit:
+          type: integer
+          description: Requests per minute limit
+        enabled:
+          type: boolean
+          description: Whether client is active
+        license_tier:
+          type: string
+          enum: [OSS, starter, professional, enterprise]
+          description: License tier
+        license_expiry:
+          type: string
+          format: date-time
+          description: When license expires
+
+    MCPQueryRequest:
+      type: object
+      required:
+        - client_id
+        - connector
+      properties:
+        client_id:
+          type: string
+        license_key:
+          type: string
+          description: Can also be provided in X-License-Key header
+        user_token:
+          type: string
+        connector:
+          type: string
+          description: Connector name
+        operation:
+          type: string
+          description: Operation name (for API connectors like Amadeus)
+        statement:
+          type: string
+          description: SQL/CQL statement (for database connectors)
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Query parameters
+        limit:
+          type: integer
+          description: Maximum rows to return
+        timeout:
+          type: string
+          description: Timeout duration (e.g., "10s")
+
+    MCPQueryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        connector:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+          description: Query results
+        row_count:
+          type: integer
+        duration_ms:
+          type: integer
+
+    MCPExecuteRequest:
+      type: object
+      required:
+        - client_id
+        - connector
+        - action
+      properties:
+        client_id:
+          type: string
+        license_key:
+          type: string
+        user_token:
+          type: string
+        connector:
+          type: string
+        operation:
+          type: string
+        action:
+          type: string
+          enum: [INSERT, UPDATE, DELETE]
+        statement:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: true
+        timeout:
+          type: string
+
+    MCPExecuteResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        connector:
+          type: string
+        rows_affected:
+          type: integer
+        duration_ms:
+          type: integer
+        message:
+          type: string
+
+    ConnectorListResponse:
+      type: object
+      properties:
+        connectors:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              version:
+                type: string
+              healthy:
+                type: boolean
+              latency_ms:
+                type: integer
+              capabilities:
+                type: array
+                items:
+                  type: string
+              error:
+                type: string
+        count:
+          type: integer
+
+    ConnectorHealthResponse:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        latency_ms:
+          type: integer
+        last_check:
+          type: string
+          format: date-time
+        error:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+
+    # ==========================================================================
+    # Decision Chain Tracing (EU AI Act Article 12)
+    # ==========================================================================
+
+    DecisionEntry:
+      type: object
+      description: |
+        A single decision step in an AI decision chain.
+        EU AI Act Article 12 requires automatic recording of AI system events.
+      required:
+        - chain_id
+        - request_id
+        - org_id
+        - tenant_id
+        - decision_type
+        - decision_outcome
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for this decision entry
+        chain_id:
+          type: string
+          format: uuid
+          description: |
+            Links related decisions in a multi-step workflow.
+            All decisions in the same workflow share this ID.
+        request_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the specific request
+        parent_request_id:
+          type: string
+          format: uuid
+          description: Previous request in the chain (null for first step)
+        step_number:
+          type: integer
+          description: Order within the chain (starts at 1)
+          minimum: 1
+        org_id:
+          type: string
+          format: uuid
+          description: Organization identifier
+        tenant_id:
+          type: string
+          description: Tenant identifier
+        client_id:
+          type: string
+          description: Client application identifier
+        user_id:
+          type: string
+          description: User identifier
+        decision_type:
+          type: string
+          enum:
+            - policy_enforcement
+            - llm_generation
+            - data_retrieval
+            - human_review
+            - system_action
+          description: |
+            Type of AI decision:
+            - policy_enforcement: Static policy evaluation
+            - llm_generation: LLM model invocation
+            - data_retrieval: Data source query
+            - human_review: HITL decision
+            - system_action: Automated action
+        decision_outcome:
+          type: string
+          enum:
+            - approved
+            - blocked
+            - modified
+            - pending_review
+            - error
+          description: |
+            Result of the decision:
+            - approved: Request allowed
+            - blocked: Denied by policy
+            - modified: Content filtered
+            - pending_review: Awaiting human review
+            - error: Processing error
+        system_id:
+          type: string
+          description: AI system identifier (e.g., "axonflow-agent/1.0.0")
+        model_provider:
+          type: string
+          description: LLM provider (if applicable)
+        model_id:
+          type: string
+          description: Specific model identifier
+        policies_evaluated:
+          type: array
+          items:
+            type: string
+          description: List of policy IDs that were evaluated
+        policy_triggered:
+          type: string
+          description: Policy that caused block/modify (if any)
+        risk_level:
+          type: string
+          enum:
+            - minimal
+            - limited
+            - high
+            - unacceptable
+          description: |
+            EU AI Act risk classification:
+            - minimal: No significant risk
+            - limited: Transparency obligations
+            - high: Conformity assessment required
+            - unacceptable: Prohibited AI use
+        requires_human_review:
+          type: boolean
+          description: Whether human review is required
+        processing_time_ms:
+          type: integer
+          description: Processing time in milliseconds
+        data_sources:
+          type: array
+          items:
+            type: string
+          description: Data sources queried
+        audit_hash:
+          type: string
+          description: SHA-256 hash for tamper detection
+        created_at:
+          type: string
+          format: date-time
+          description: When the decision was recorded
+
+    ChainSummary:
+      type: object
+      description: Aggregate statistics for a decision chain
+      properties:
+        chain_id:
+          type: string
+          format: uuid
+        total_steps:
+          type: integer
+          description: Number of decisions in the chain
+        total_processing_time_ms:
+          type: integer
+          description: Sum of all processing times
+        has_blocked:
+          type: boolean
+          description: Whether any decision was blocked
+        requires_review:
+          type: boolean
+          description: Whether human review is required
+        highest_risk_level:
+          type: string
+          enum:
+            - minimal
+            - limited
+            - high
+            - unacceptable
+          description: Highest risk level in the chain
+        first_decision_at:
+          type: string
+          format: date-time
+        last_decision_at:
+          type: string
+          format: date-time
+        decision_types:
+          type: array
+          items:
+            type: string
+          description: Unique decision types in the chain
+        total_policies_applied:
+          type: integer
+          description: Count of unique policies evaluated
+
+    # ==========================================================================
+    # HITL Schemas (EU AI Act Article 14)
+    # ==========================================================================
+
+    HITLDecisionRequest:
+      type: object
+      required:
+        - org_id
+        - request_id
+        - decision_type
+        - content
+      properties:
+        org_id:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+          enum: [policy_override, content_approval, high_risk_action, data_access]
+        content:
+          type: object
+          description: Decision content requiring review
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          default: medium
+        expires_in_minutes:
+          type: integer
+          default: 60
+        metadata:
+          type: object
+          additionalProperties: true
+
+    HITLDecision:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        content:
+          type: object
+        priority:
+          type: string
+        reviewer_id:
+          type: string
+        reviewer_comments:
+          type: string
+        rejection_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        reviewed_at:
+          type: string
+          format: date-time
+
+    # ==========================================================================
+    # Circuit Breaker Schemas (EU AI Act Article 14)
+    # ==========================================================================
+
+    CircuitBreakerActivateRequest:
+      type: object
+      required:
+        - org_id
+        - activated_by
+        - reason
+      properties:
+        org_id:
+          type: string
+        activated_by:
+          type: string
+          description: User ID activating the circuit breaker
+        reason:
+          type: string
+          description: Reason for emergency stop
+        scope:
+          type: string
+          enum: [all, policy, model, tenant]
+          default: all
+        scope_id:
+          type: string
+          description: ID for targeted scope (policy_id, model_id, tenant_id)
+
+    CircuitBreakerDeactivateRequest:
+      type: object
+      required:
+        - org_id
+        - deactivated_by
+      properties:
+        org_id:
+          type: string
+        deactivated_by:
+          type: string
+          description: User ID requesting deactivation
+        justification:
+          type: string
+          description: Reason for restoring operations
+
+    CircuitBreaker:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        state:
+          type: string
+          enum: [closed, open, pending_deactivation]
+          description: |
+            - closed: Normal operation
+            - open: AI operations blocked
+            - pending_deactivation: Awaiting second approver
+        scope:
+          type: string
+        scope_id:
+          type: string
+        activated_by:
+          type: string
+        activation_reason:
+          type: string
+        activated_at:
+          type: string
+          format: date-time
+        first_approver_id:
+          type: string
+          description: First person to approve deactivation (two-person rule)
+        first_approved_at:
+          type: string
+          format: date-time
+        deactivated_by:
+          type: string
+        deactivated_at:
+          type: string
+          format: date-time
+        requires_two_person:
+          type: boolean
+          description: Whether two-person authorization is required
+
+    # ==========================================================================
+    # Accuracy & Bias Schemas (EU AI Act Article 15)
+    # ==========================================================================
+
+    AccuracyMetricInput:
+      type: object
+      required:
+        - org_id
+        - model_id
+        - metric_type
+        - value
+      properties:
+        org_id:
+          type: string
+        model_id:
+          type: string
+        metric_type:
+          type: string
+          enum: [accuracy, precision, recall, f1_score, confidence, latency, throughput, error_rate]
+        value:
+          type: number
+          format: double
+        sample_size:
+          type: integer
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AccuracyMetric:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        model_id:
+          type: string
+        metric_type:
+          type: string
+        value:
+          type: number
+          format: double
+        sample_size:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+
+    BiasRecordInput:
+      type: object
+      required:
+        - org_id
+        - model_id
+        - category
+        - group_a
+        - group_b
+        - group_a_rate
+        - group_b_rate
+      properties:
+        org_id:
+          type: string
+        model_id:
+          type: string
+        category:
+          type: string
+          enum: [gender, age, ethnicity, geography, language, socioeconomic, disability, other]
+        group_a:
+          type: string
+          description: Reference group name
+        group_b:
+          type: string
+          description: Comparison group name
+        group_a_rate:
+          type: number
+          format: double
+          description: Positive outcome rate for group A
+        group_b_rate:
+          type: number
+          format: double
+          description: Positive outcome rate for group B
+        sample_size:
+          type: integer
+        metadata:
+          type: object
+
+    BiasRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        model_id:
+          type: string
+        category:
+          type: string
+        score:
+          type: number
+          format: double
+          description: Calculated bias score (0.0 = no bias, 1.0 = maximum)
+        threshold:
+          type: number
+          format: double
+        is_violation:
+          type: boolean
+        group_a:
+          type: string
+        group_b:
+          type: string
+        group_a_rate:
+          type: number
+          format: double
+        group_b_rate:
+          type: number
+          format: double
+        sample_size:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+
+    AccuracyAlert:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        model_id:
+          type: string
+        alert_type:
+          type: string
+          enum: [accuracy_degradation, bias_detected, threshold_breach, fairness_degradation]
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        title:
+          type: string
+        description:
+          type: string
+        metric_type:
+          type: string
+        bias_category:
+          type: string
+        current_value:
+          type: number
+          format: double
+        threshold:
+          type: number
+          format: double
+        triggered_at:
+          type: string
+          format: date-time
+        acked_at:
+          type: string
+          format: date-time
+        acked_by:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+        resolved_by:
+          type: string
+
+    AccuracyThreshold:
+      type: object
+      required:
+        - org_id
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        model_id:
+          type: string
+          description: Optional - empty means org-wide default
+        metric_type:
+          type: string
+        bias_category:
+          type: string
+        min_value:
+          type: number
+          format: double
+          description: Alert if value falls below
+        max_value:
+          type: number
+          format: double
+          description: Alert if value exceeds
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        enabled:
+          type: boolean
+
+    # ==========================================================================
+    # Conformity Assessment Schemas (EU AI Act Article 43)
+    # ==========================================================================
+
+    ConformityAssessmentInput:
+      type: object
+      required:
+        - org_id
+        - name
+        - type
+        - risk_category
+      properties:
+        org_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [initial, periodic, change_based]
+        risk_category:
+          type: string
+          enum: [minimal, limited, high, unacceptable]
+        metadata:
+          type: object
+
+    ConformityAssessment:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        risk_category:
+          type: string
+        status:
+          type: string
+          enum: [draft, in_progress, under_review, approved, rejected]
+        overall_score:
+          type: number
+          format: double
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceCheck'
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConformityFinding'
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConformityRecommendation'
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        rejected_by:
+          type: string
+        rejection_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    ComplianceCheck:
+      type: object
+      properties:
+        id:
+          type: string
+        article:
+          type: string
+          description: EU AI Act article reference (e.g., "Article 9")
+        requirement:
+          type: string
+        status:
+          type: string
+          enum: [pending, pass, fail, partial, not_applicable]
+        score:
+          type: number
+          format: double
+        evidence:
+          type: string
+        notes:
+          type: string
+        checked_by:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+
+    ComplianceCheckUpdate:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [pass, fail, partial, not_applicable]
+        score:
+          type: number
+          format: double
+        evidence:
+          type: string
+        notes:
+          type: string
+        checked_by:
+          type: string
+
+    ConformityFindingInput:
+      type: object
+      required:
+        - title
+        - severity
+      properties:
+        check_id:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        title:
+          type: string
+        description:
+          type: string
+        article:
+          type: string
+        impact:
+          type: string
+        remediation:
+          type: string
+
+    ConformityFinding:
+      type: object
+      properties:
+        id:
+          type: string
+        check_id:
+          type: string
+        severity:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        article:
+          type: string
+        impact:
+          type: string
+        remediation:
+          type: string
+        status:
+          type: string
+          enum: [open, resolved]
+        resolved_by:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+        resolution:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ConformityRecommendation:
+      type: object
+      properties:
+        id:
+          type: string
+        article:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+        title:
+          type: string
+        description:
+          type: string
+        benefit:
+          type: string
+        effort:
+          type: string
+          enum: [low, medium, high]
+        created_at:
+          type: string
+          format: date-time
+
+    ConformitySummary:
+      type: object
+      properties:
+        org_id:
+          type: string
+        total_assessments:
+          type: integer
+        approved_assessments:
+          type: integer
+        pending_assessments:
+          type: integer
+        overall_compliance_score:
+          type: number
+          format: double
+        open_findings:
+          type: integer
+        critical_findings:
+          type: integer
+        last_assessment_date:
+          type: string
+          format: date-time
+        next_assessment_due:
+          type: string
+          format: date-time
+
+    # ==========================================================================
+    # EU AI Act Export Schemas
+    # ==========================================================================
+
+    EUAIActExportRequest:
+      type: object
+      required:
+        - org_id
+      properties:
+        org_id:
+          type: string
+        from_date:
+          type: string
+          format: date-time
+        to_date:
+          type: string
+          format: date-time
+        include_decision_chains:
+          type: boolean
+          default: true
+        include_hitl_records:
+          type: boolean
+          default: true
+        include_accuracy_metrics:
+          type: boolean
+          default: true
+        include_bias_records:
+          type: boolean
+          default: true
+        include_assessments:
+          type: boolean
+          default: true
+        format:
+          type: string
+          enum: [json, xml, csv]
+          default: json
+
+    EUAIActExportResponse:
+      type: object
+      properties:
+        export_id:
+          type: string
+        org_id:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+        period:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+        statistics:
+          type: object
+          properties:
+            total_decisions:
+              type: integer
+            blocked_decisions:
+              type: integer
+            hitl_reviews:
+              type: integer
+            bias_violations:
+              type: integer
+            conformity_score:
+              type: number
+              format: double
+        data:
+          type: object
+          description: Export data based on requested sections
+
+    EUAIActSummary:
+      type: object
+      properties:
+        org_id:
+          type: string
+        compliance_status:
+          type: string
+          enum: [compliant, partial, non_compliant]
+        risk_category:
+          type: string
+        overall_score:
+          type: number
+          format: double
+        article_compliance:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+              score:
+                type: number
+        active_circuit_breakers:
+          type: integer
+        pending_hitl_decisions:
+          type: integer
+        active_bias_alerts:
+          type: integer
+        last_conformity_assessment:
+          type: string
+          format: date-time
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Invalid request body"
+
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "X-License-Key header required"
+
+    Forbidden:
+      description: Access denied by policy or tenant mismatch
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Tenant mismatch"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Internal server error"
+
+  # =============================================================================
+  # EU AI Act Transparency Headers (Article 13)
+  # =============================================================================
+  # These headers are returned on all AI-processed responses for compliance.
+  headers:
+    X-AI-Request-ID:
+      description: |
+        Unique identifier for this AI interaction (UUID v4).
+        Use this to link to the full audit trail for EU AI Act Article 12 compliance.
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    X-AI-Timestamp:
+      description: |
+        When the AI system processed this request (RFC3339 with nanoseconds).
+        Required for EU AI Act Article 12 temporal audit evidence.
+      schema:
+        type: string
+        format: date-time
+      example: "2025-01-15T10:30:00.123456789Z"
+
+    X-AI-System-ID:
+      description: |
+        Identifies the AI system that processed the request.
+        Format: "axonflow-agent/{version}" or "axonflow-orchestrator/{version}"
+      schema:
+        type: string
+      example: "axonflow-agent/1.0.0"
+
+    X-AI-Chain-ID:
+      description: |
+        Links related AI decisions in a multi-step workflow (UUID v4).
+        Same across all related requests for EU AI Act Article 12 decision chain traceability.
+      schema:
+        type: string
+        format: uuid
+      example: "660e8400-e29b-41d4-a716-446655440001"
+
+    X-AI-Processing-Type:
+      description: |
+        Type of AI processing performed.
+        - policy-enforcement: Only policy rules applied
+        - llm-generation: LLM model generated content
+        - data-retrieval: MCP connector data fetch
+        - hybrid: Combination of above
+      schema:
+        type: string
+        enum: [policy-enforcement, llm-generation, data-retrieval, hybrid]
+      example: "hybrid"
+
+    X-AI-Model-Provider:
+      description: |
+        LLM provider used (if any). EU AI Act Article 13 transparency requirement.
+      schema:
+        type: string
+        enum: [openai, anthropic, bedrock, ollama, none]
+      example: "anthropic"
+
+    X-AI-Model-ID:
+      description: |
+        Specific model version used. EU AI Act Article 13 model traceability.
+      schema:
+        type: string
+      example: "claude-3-opus"
+
+    X-AI-Policies-Applied:
+      description: |
+        Comma-separated list of policies evaluated.
+        EU AI Act Article 14 human oversight indicator.
+      schema:
+        type: string
+      example: "pii-detection,rate-limit,eu-ai-act-article-14"
+
+    X-AI-Decision-Blocked:
+      description: |
+        Whether the request was blocked by policy.
+        EU AI Act Article 14 intervention indicator.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Processing-Time-Ms:
+      description: |
+        Total AI processing time in milliseconds.
+        EU AI Act Article 12 performance monitoring.
+      schema:
+        type: integer
+      example: 150
+
+    X-AI-Risk-Level:
+      description: |
+        Assessed risk level of the operation.
+        EU AI Act Article 6 risk classification transparency.
+      schema:
+        type: string
+        enum: [minimal, limited, high, unacceptable]
+      example: "limited"
+
+    X-AI-Human-Oversight-Required:
+      description: |
+        Whether this request requires human review.
+        EU AI Act Article 14 human oversight flagging.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Content-Filtered:
+      description: |
+        Whether content filtering/redaction was applied.
+        EU AI Act Article 13 modification transparency.
+      schema:
+        type: string
+        enum: ["true", "false"]
+      example: "false"
+
+    X-AI-Data-Sources:
+      description: |
+        Comma-separated list of data sources queried.
+        EU AI Act Article 10 data lineage transparency.
+      schema:
+        type: string
+      example: "postgres,amadeus"
+
+    X-AI-Audit-Hash:
+      description: |
+        SHA-256 hash of the audit record for tamper-evident verification.
+        EU AI Act Article 12 record integrity.
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      example: "a1b2c3d4e5f6..."

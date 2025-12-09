@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonFlow - Policy Overview</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.15);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff 0%, #e2e8f0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p {
+            margin: 15px 0 0 0;
+            opacity: 0.95;
+            font-size: 1.2rem;
+            font-weight: 300;
+        }
+        .content {
+            padding: 50px;
+        }
+        .explanation {
+            background: linear-gradient(135deg, #e6fffa 0%, #f0fff4 100%);
+            border-left: 5px solid #38b2ac;
+            padding: 25px;
+            margin: 25px 0;
+            border-radius: 0 12px 12px 0;
+            box-shadow: 0 4px 15px rgba(56, 178, 172, 0.1);
+        }
+        .explanation h3 {
+            margin-top: 0;
+            color: #2c7a7b;
+            font-size: 1.3rem;
+        }
+
+        /* Policy Rules Grid */
+        .policies-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 25px;
+            margin: 40px 0;
+        }
+        
+        .policy-card {
+            background: #f8fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 25px;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .policy-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            border-color: #3182ce;
+        }
+        
+        .policy-card h4 {
+            margin: 0 0 15px 0;
+            color: #2d3748;
+            font-size: 1.2rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .policy-card .emoji {
+            font-size: 1.4rem;
+        }
+        
+        .condition {
+            background: #ebf8ff;
+            border: 1px solid #90cdf4;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.9rem;
+            margin: 10px 0;
+            color: #2b6cb0;
+            font-weight: 500;
+        }
+        
+        .action {
+            background: #f0fff4;
+            border: 1px solid #9ae6b4;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.9rem;
+            margin: 10px 0;
+            color: #2f855a;
+            font-weight: 500;
+        }
+        
+        .priority-badge {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: #805ad5;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .priority-1 { background: #e53e3e; }
+        .priority-2 { background: #dd6b20; }
+        .priority-3 { background: #d69e2e; }
+
+        /* LLM Routing Tree */
+        .routing-tree {
+            background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
+            border: 2px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 40px;
+            margin: 40px 0;
+            text-align: center;
+        }
+        
+        .routing-tree h3 {
+            color: #2d3748;
+            margin-bottom: 30px;
+            font-size: 1.5rem;
+        }
+        
+        .flow-step {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 20px 0;
+            gap: 15px;
+        }
+        
+        .flow-box {
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px 20px;
+            min-width: 200px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .flow-box.check {
+            background: #ebf8ff;
+            border-color: #3182ce;
+            color: #2c5282;
+        }
+        
+        .flow-box.result {
+            font-weight: 600;
+        }
+        
+        .flow-box.local { 
+            background: #f0fff4; 
+            border-color: #48bb78;
+            color: #2f855a;
+        }
+        .flow-box.anthropic { 
+            background: #faf5ff; 
+            border-color: #805ad5;
+            color: #553c9a;
+        }
+        .flow-box.openai { 
+            background: #ebf8ff; 
+            border-color: #4299e1;
+            color: #2b6cb0;
+        }
+        
+        .arrow {
+            font-size: 1.5rem;
+            color: #718096;
+        }
+
+        /* Demo Examples */
+        .demo-examples {
+            background: linear-gradient(135deg, #fffaf0 0%, #fef5e7 100%);
+            border: 2px solid #fed7a1;
+            border-radius: 12px;
+            padding: 30px;
+            margin: 30px 0;
+        }
+        
+        .demo-examples h4 {
+            color: #c05621;
+            margin-top: 0;
+            font-size: 1.3rem;
+        }
+        
+        .example {
+            display: flex;
+            align-items: center;
+            margin: 15px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .example-number {
+            background: #ed8936;
+            color: white;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 15px;
+            font-size: 0.9rem;
+            flex-shrink: 0;
+        }
+        
+        .example-text {
+            flex-grow: 1;
+        }
+        
+        .example-result {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .demo-link {
+            text-align: center;
+            margin: 40px 0;
+        }
+        .demo-link a {
+            display: inline-block;
+            background: linear-gradient(135deg, #4299e1 0%, #3182ce 100%);
+            color: white;
+            padding: 15px 35px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: all 0.3s;
+            margin: 0 15px;
+            box-shadow: 0 4px 15px rgba(66, 153, 225, 0.3);
+        }
+        .demo-link a:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(66, 153, 225, 0.4);
+        }
+        .demo-link a.secondary {
+            background: linear-gradient(135deg, #718096 0%, #4a5568 100%);
+            box-shadow: 0 4px 15px rgba(113, 128, 150, 0.3);
+        }
+        .demo-link a.secondary:hover {
+            box-shadow: 0 8px 25px rgba(113, 128, 150, 0.4);
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin: 40px 0;
+        }
+        .feature {
+            background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
+            padding: 25px;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+            text-align: center;
+            transition: transform 0.2s;
+        }
+        .feature:hover {
+            transform: translateY(-3px);
+        }
+        .feature h4 {
+            margin: 0 0 15px 0;
+            color: #2d3748;
+            font-size: 1.2rem;
+        }
+        .feature p {
+            margin: 0;
+            color: #4a5568;
+            line-height: 1.6;
+        }
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            display: block;
+        }
+        
+        @media (max-width: 768px) {
+            .policies-grid {
+                grid-template-columns: 1fr;
+            }
+            .flow-step {
+                flex-direction: column;
+            }
+            .arrow {
+                transform: rotate(90deg);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔒 AxonFlow Enterprise Policies</h1>
+            <p>Your AI governance rules in action – secure, compliant, and scalable</p>
+        </div>
+        
+        <div class="content">
+            <div class="explanation">
+                <h3>🎯 Enterprise-Controlled AI Governance</h3>
+                <p><strong>You define the policies, AxonFlow enforces them automatically.</strong> These are the live production policies currently running in our demo environment. Each query is evaluated in real-time against these rules to ensure security, compliance, and appropriate access control.</p>
+            </div>
+
+            <h2 style="text-align: center; color: #2d3748; margin: 40px 0;">📋 Active Policy Rules</h2>
+            
+            <div class="policies-grid">
+                <div class="policy-card">
+                    <div class="priority-badge priority-1">PRIORITY 1</div>
+                    <h4><span class="emoji">🇪🇺</span> EU GDPR Compliance</h4>
+                    <div class="condition">IF: user.region.startsWith("eu")</div>
+                    <div class="action">THEN: route to LOCAL model</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        <strong>GDPR Article 44:</strong> EU user data must be processed locally to ensure data residency compliance.
+                    </p>
+                </div>
+                
+                <div class="policy-card">
+                    <div class="priority-badge priority-1">PRIORITY 1</div>
+                    <h4><span class="emoji">🛡️</span> High-Security PII Protection</h4>
+                    <div class="condition">IF: query.contains("ssn|credit|phone") OR query.hasPII()</div>
+                    <div class="action">THEN: route to LOCAL model</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        Sensitive personal data never leaves your infrastructure. Automatic PII detection with local processing.
+                    </p>
+                </div>
+                
+                <div class="policy-card">
+                    <div class="priority-badge priority-2">PRIORITY 2</div>
+                    <h4><span class="emoji">🔐</span> Confidential Data Routing</h4>
+                    <div class="condition">IF: query.contains("confidential|internal|proprietary")</div>
+                    <div class="action">THEN: route to ANTHROPIC (safety-focused)</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        Confidential business data uses Anthropic's safety-focused models for enhanced security.
+                    </p>
+                </div>
+                
+                <div class="policy-card">
+                    <div class="priority-badge priority-3">PRIORITY 3</div>
+                    <h4><span class="emoji">🎭</span> Role-Based Model Access</h4>
+                    <div class="condition">IF: user.role == "agent"</div>
+                    <div class="action">THEN: route to ANTHROPIC (restricted)</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        Support agents have restricted access to Anthropic only, while managers get full OpenAI access.
+                    </p>
+                </div>
+                
+                <div class="policy-card">
+                    <div class="priority-badge priority-3">PRIORITY 3</div>
+                    <h4><span class="emoji">🌍</span> Regional Data Access</h4>
+                    <div class="condition">IF: !"admin" IN user.permissions AND user.region != "global"</div>
+                    <div class="action">THEN: filter data by user.region</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        Non-admin users only see data from their geographic region for compliance and security.
+                    </p>
+                </div>
+                
+                <div class="policy-card">
+                    <div class="priority-badge priority-3">PRIORITY 3</div>
+                    <h4><span class="emoji">🔍</span> PII Auto-Redaction</h4>
+                    <div class="condition">IF: !"read_pii" IN user.permissions</div>
+                    <div class="action">THEN: redact SSN, phone, email in results</div>
+                    <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
+                        Users without PII permissions see masked data (XXX-XX-XXXX) for privacy protection.
+                    </p>
+                </div>
+            </div>
+
+            <div class="routing-tree">
+                <h3>🎯 Query Processing Flow</h3>
+                
+                <div class="flow-step">
+                    <div class="flow-box check">Query Received</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box check">Check EU Region</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box result local">LOCAL if EU</div>
+                </div>
+                
+                <div class="flow-step">
+                    <div class="flow-box check">Non-EU Query</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box check">Scan for PII</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box result local">LOCAL if PII Found</div>
+                </div>
+                
+                <div class="flow-step">
+                    <div class="flow-box check">Clean Query</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box check">Check Confidential</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box result anthropic">ANTHROPIC if Confidential</div>
+                </div>
+                
+                <div class="flow-step">
+                    <div class="flow-box check">Regular Query</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box check">Check User Role</div>
+                    <span class="arrow">→</span>
+                    <div class="flow-box result openai">OPENAI for Managers+</div>
+                </div>
+            </div>
+
+            <div class="demo-examples">
+                <h4>🎬 Live Demo Examples</h4>
+                
+                <div class="example">
+                    <div class="example-number">1</div>
+                    <div class="example-text">
+                        <strong>Any User:</strong> "Show customer with SSN 123-45-6789"<br>
+                        <small style="color: #666;">PII detected → Highest priority rule activated</small>
+                    </div>
+                    <div class="example-result local">🔒 LOCAL</div>
+                </div>
+                
+                <div class="example">
+                    <div class="example-number">2</div>
+                    <div class="example-text">
+                        <strong>EU Agent:</strong> "Find all premium customers"<br>
+                        <small style="color: #666;">EU region → GDPR compliance enforced</small>
+                    </div>
+                    <div class="example-result local">🔒 LOCAL</div>
+                </div>
+                
+                <div class="example">
+                    <div class="example-number">3</div>
+                    <div class="example-text">
+                        <strong>Any User:</strong> "Show confidential enterprise data"<br>
+                        <small style="color: #666;">Confidential keyword → Safety-focused routing</small>
+                    </div>
+                    <div class="example-result anthropic">🧠 ANTHROPIC</div>
+                </div>
+                
+                <div class="example">
+                    <div class="example-number">4</div>
+                    <div class="example-text">
+                        <strong>John (Agent):</strong> "Show high priority tickets"<br>
+                        <small style="color: #666;">Agent role → Restricted model access</small>
+                    </div>
+                    <div class="example-result anthropic">🧠 ANTHROPIC</div>
+                </div>
+                
+                <div class="example">
+                    <div class="example-number">5</div>
+                    <div class="example-text">
+                        <strong>Sarah (Manager):</strong> "Generate customer report"<br>
+                        <small style="color: #666;">Manager role → Full model access</small>
+                    </div>
+                    <div class="example-result openai">⚡ OPENAI</div>
+                </div>
+            </div>
+
+            <div class="features">
+                <div class="feature">
+                    <span class="feature-icon">🛡️</span>
+                    <h4>Zero Trust Security</h4>
+                    <p>Every query evaluated against comprehensive security rules before processing. No exceptions, no bypasses.</p>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">⚖️</span>
+                    <h4>Regulatory Compliance</h4>
+                    <p>GDPR, HIPAA, SOX compliance built-in with automatic data residency and access controls.</p>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">🎯</span>
+                    <h4>Dynamic Policy Engine</h4>
+                    <p>Real-time policy evaluation with millisecond decision making and complete audit trails.</p>
+                </div>
+                <div class="feature">
+                    <span class="feature-icon">📊</span>
+                    <h4>Complete Visibility</h4>
+                    <p>Every policy decision logged with full context for compliance reporting and security auditing.</p>
+                </div>
+            </div>
+
+            <div class="explanation">
+                <h3>💡 Your Custom Governance Canvas</h3>
+                <p>These policies are just <strong>one example</strong> of how an organization might configure AxonFlow. Your industry, regulations, and risk profile are unique. AxonFlow becomes your canvas for defining exactly how AI should work within your enterprise – with the confidence that every rule will be enforced automatically.</p>
+            </div>
+
+            <div class="demo-link">
+                <a href="/">← Back to Dashboard</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

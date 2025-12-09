@@ -1,0 +1,295 @@
+name: Build Docker Images (OSS)
+
+# OSS build workflow - builds and tests Docker images locally
+# Does NOT push to any registry - OSS users build and run locally
+#
+# This workflow syncs to the OSS repo and runs there.
+# For enterprise builds with ECR push, see build.yml (enterprise-only, not synced)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'platform/*/Dockerfile'
+      - 'platform/agent/**/*.go'
+      - 'platform/orchestrator/**/*.go'
+      - 'platform/connectors/**/*.go'
+      - 'platform/common/**/*.go'
+      - 'platform/cmd/**/*.go'
+      - 'platform/**/go.mod'
+      - 'platform/**/go.sum'
+      - 'migrations/core/**/*.sql'
+      - '.github/workflows/build-oss.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'platform/*/Dockerfile'
+      - 'platform/agent/**/*.go'
+      - 'platform/orchestrator/**/*.go'
+      - 'platform/connectors/**/*.go'
+      - 'platform/common/**/*.go'
+      - 'platform/cmd/**/*.go'
+      - 'platform/**/go.mod'
+      - 'platform/**/go.sum'
+      - 'migrations/core/**/*.sql'
+  merge_group:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # =============================================================================
+  # Change Detection (merge_group only)
+  # =============================================================================
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'merge_group'
+    outputs:
+      agent: ${{ steps.filter.outputs.agent }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect file changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            agent:
+              - 'platform/agent/**'
+              - 'platform/common/**'
+              - 'platform/cmd/**'
+              - 'platform/connectors/**'
+              - 'platform/**/go.mod'
+              - 'platform/**/go.sum'
+              - 'migrations/core/**/*.sql'
+              - '.github/workflows/build-oss.yml'
+            orchestrator:
+              - 'platform/orchestrator/**'
+              - 'platform/common/**'
+              - 'platform/cmd/**'
+              - 'platform/**/go.mod'
+              - 'platform/**/go.sum'
+              - 'migrations/core/**/*.sql'
+              - '.github/workflows/build-oss.yml'
+
+  # =============================================================================
+  # Build Jobs (OSS - Local Only)
+  # =============================================================================
+  build-agent:
+    name: Build Agent Image
+    needs: [detect-changes]
+    if: |
+      always() &&
+      needs.detect-changes.result != 'failure' &&
+      (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.agent == 'true')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Agent Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: platform/agent/Dockerfile
+          push: false
+          load: true
+          tags: axonflow/agent:local
+          build-args: |
+            EDITION=oss
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Agent Image
+        run: |
+          docker run --rm axonflow/agent:local --version || echo "Version check complete"
+          echo "Agent image built successfully"
+
+  build-orchestrator:
+    name: Build Orchestrator Image
+    needs: [detect-changes]
+    if: |
+      always() &&
+      needs.detect-changes.result != 'failure' &&
+      (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.orchestrator == 'true')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Orchestrator Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: platform/orchestrator/Dockerfile
+          push: false
+          load: true
+          tags: axonflow/orchestrator:local
+          build-args: |
+            EDITION=oss
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Orchestrator Image
+        run: |
+          docker run --rm axonflow/orchestrator:local --version || echo "Version check complete"
+          echo "Orchestrator image built successfully"
+
+  # =============================================================================
+  # Docker Compose Integration Test
+  # =============================================================================
+  docker-compose-test:
+    name: Test Docker Compose Stack
+    runs-on: ubuntu-latest
+    needs: [build-agent, build-orchestrator]
+    if: |
+      always() &&
+      (needs.build-agent.result == 'success' || needs.build-agent.result == 'skipped') &&
+      (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Start Stack
+        run: |
+          docker compose build
+          docker compose up -d
+
+      - name: Wait for Services
+        run: |
+          echo "Waiting for services to be healthy..."
+          sleep 30
+
+      - name: Health Check - Agent
+        run: |
+          for i in {1..10}; do
+            if curl -sf http://localhost:8080/health; then
+              echo "Agent is healthy"
+              exit 0
+            fi
+            echo "Waiting for agent... ($i/10)"
+            sleep 5
+          done
+          echo "Agent health check failed"
+          docker compose logs axonflow-agent
+          exit 1
+
+      - name: Health Check - Orchestrator
+        run: |
+          for i in {1..10}; do
+            if curl -sf http://localhost:8081/health; then
+              echo "Orchestrator is healthy"
+              exit 0
+            fi
+            echo "Waiting for orchestrator... ($i/10)"
+            sleep 5
+          done
+          echo "Orchestrator health check failed"
+          docker compose logs axonflow-orchestrator
+          exit 1
+
+      - name: Run Demo Script
+        run: |
+          if [ -f "platform/examples/demo/demo.sh" ]; then
+            chmod +x platform/examples/demo/demo.sh
+            ./platform/examples/demo/demo.sh || echo "Demo completed"
+          else
+            echo "Demo script not found, skipping"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
+
+  # =============================================================================
+  # Build Summary
+  # =============================================================================
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-agent, build-orchestrator, docker-compose-test]
+    if: always()
+
+    steps:
+      - name: Check Results
+        run: |
+          echo "=============================================="
+          echo "OSS Docker Build Summary"
+          echo "=============================================="
+          echo ""
+
+          if [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "=== Change Detection ==="
+            echo "Status: ${{ needs.detect-changes.result }}"
+            if [[ "${{ needs.detect-changes.result }}" == "failure" ]]; then
+              echo "ERROR: Change detection failed"
+              exit 1
+            fi
+            echo ""
+            echo "=== Changes Detected ==="
+            echo "Agent:        ${{ needs.detect-changes.outputs.agent }}"
+            echo "Orchestrator: ${{ needs.detect-changes.outputs.orchestrator }}"
+            echo ""
+          fi
+
+          echo "=== Build Results ==="
+          echo "Agent:          ${{ needs.build-agent.result }}"
+          echo "Orchestrator:   ${{ needs.build-orchestrator.result }}"
+          echo "Docker Compose: ${{ needs.docker-compose-test.result }}"
+          echo ""
+
+          # Check for failures
+          check_result() {
+            local result="$1"
+            local name="$2"
+            if [[ "$result" == "success" ]] || [[ "$result" == "skipped" ]]; then
+              return 0
+            fi
+            echo "FAILED: $name (result: $result)"
+            return 1
+          }
+
+          FAILED=false
+          check_result "${{ needs.build-agent.result }}" "Agent" || FAILED=true
+          check_result "${{ needs.build-orchestrator.result }}" "Orchestrator" || FAILED=true
+          check_result "${{ needs.docker-compose-test.result }}" "Docker Compose" || FAILED=true
+
+          echo ""
+          if [[ "$FAILED" == "true" ]]; then
+            echo "=============================================="
+            echo "BUILD FAILED"
+            echo "=============================================="
+            exit 1
+          fi
+
+          echo "=============================================="
+          if [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            echo "MERGE QUEUE VALIDATION PASSED"
+          else
+            echo "BUILD SUCCESSFUL"
+          fi
+          echo "=============================================="
+          echo ""
+          echo "To run locally:"
+          echo "  docker compose up -d"
+          echo ""
+          echo "Images built:"
+          echo "  - axonflow/agent:local"
+          echo "  - axonflow/orchestrator:local"
