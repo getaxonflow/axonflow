@@ -319,16 +319,16 @@ llm_providers:
 
 ## Built-in Provider Support
 
-All these providers are available in OSS:
+| Provider | Type | Edition | Description |
+|----------|------|---------|-------------|
+| OpenAI | `openai` | OSS | GPT-4, GPT-3.5-turbo |
+| Anthropic | `anthropic` | OSS | Claude 3.5 Sonnet, Claude 3 Opus |
+| Ollama | `ollama` | OSS | Self-hosted open-source models |
+| AWS Bedrock | `bedrock` | Enterprise | Claude on AWS, Llama, Titan |
+| Google Gemini | `gemini` | Enterprise | Gemini Pro, Gemini Ultra |
+| Custom | `custom` | Enterprise | Your own implementations |
 
-| Provider | Type | Description |
-|----------|------|-------------|
-| OpenAI | `openai` | GPT-4, GPT-3.5-turbo |
-| Anthropic | `anthropic` | Claude 3.5 Sonnet, Claude 3 Opus |
-| AWS Bedrock | `bedrock` | Claude on AWS, Llama, Titan |
-| Ollama | `ollama` | Self-hosted open-source models |
-| Google Gemini | `gemini` | Gemini Pro, Gemini Ultra |
-| Custom | `custom` | Your own implementations |
+> **Note:** OSS edition includes OpenAI, Anthropic, and Ollama providers. Enterprise providers (Bedrock, Gemini, Custom) require a license.
 
 ## Best Practices
 

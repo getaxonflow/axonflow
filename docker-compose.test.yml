@@ -95,6 +95,8 @@ services:
     build:
       context: .
       dockerfile: platform/agent/Dockerfile
+      args:
+        EDITION: enterprise
     container_name: axonflow-test-agent
     environment:
       # Database Configuration
@@ -110,6 +112,10 @@ services:
 
       # License Configuration
       LICENSE_KEY: AXON-TEST-local-testing-20251120-test
+
+      # HMAC Secret (required for enterprise builds)
+      # Generate with: openssl rand -hex 32
+      AXONFLOW_LICENSE_HMAC_SECRET: d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
 
       # Redis Configuration
       REDIS_URL: redis://redis:6379
@@ -143,6 +149,8 @@ services:
     build:
       context: .
       dockerfile: platform/orchestrator/Dockerfile
+      args:
+        EDITION: enterprise
     container_name: axonflow-test-orchestrator
     environment:
       # Database Configuration
@@ -177,10 +185,13 @@ services:
 
   # Customer Portal (Optional - can disable for faster testing)
   # Purpose: Web UI for customers to manage policies, view metrics
+  # Note: This is an enterprise-only component
   customer-portal:
     build:
       context: .
-      dockerfile: platform/customer-portal/Dockerfile
+      dockerfile: ee/platform/customer-portal/Dockerfile
+      args:
+        EDITION: enterprise
     container_name: axonflow-test-customer-portal
     environment:
       # Database Configuration
