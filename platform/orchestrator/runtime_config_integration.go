@@ -264,3 +264,97 @@ func SetLLMRouter(router *LLMRouter) {
 	defer llmRouterMu.Unlock()
 	llmRouter = router
 }
+
+// SetConfigFileLoaderFromEnv initializes a config file loader from environment variables.
+// This completes the ADR-007 three-tier configuration: Database > Config File > Env Vars
+//
+// Environment variables checked (in order of precedence):
+//   - AXONFLOW_CONFIG_FILE: Path to YAML/JSON config file (unified config)
+//   - AXONFLOW_LLM_CONFIG_FILE: Path to LLM-specific config file (alternative)
+//
+// Returns the path to the loaded config file, or empty string if:
+//   - No config file environment variable is set (normal case)
+//   - Config file path is invalid or inaccessible
+//   - RuntimeConfigService is not initialized
+//
+// Thread-safe: uses mutex to protect access to runtimeConfigService.
+func SetConfigFileLoaderFromEnv() string {
+	// Check environment variables for config file path
+	configFile := os.Getenv("AXONFLOW_CONFIG_FILE")
+	if configFile == "" {
+		configFile = os.Getenv("AXONFLOW_LLM_CONFIG_FILE")
+	}
+
+	if configFile == "" {
+		log.Println("[Config File] No config file specified, using env vars only (set AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE to enable)")
+		return ""
+	}
+
+	// Security: Validate config file path is not empty after trimming
+	// Note: Path traversal protection is handled by the OS file system permissions
+	if len(configFile) == 0 {
+		log.Println("[Config File] WARNING: Config file path is empty")
+		return ""
+	}
+
+	// Verify file exists and is accessible
+	fileInfo, err := os.Stat(configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("[Config File] WARNING: Config file not found: %s", configFile)
+		} else if os.IsPermission(err) {
+			log.Printf("[Config File] WARNING: Permission denied reading config file: %s", configFile)
+		} else {
+			log.Printf("[Config File] WARNING: Cannot access config file %s: %v", configFile, err)
+		}
+		return ""
+	}
+
+	// Verify it's a regular file, not a directory or special file
+	if fileInfo.IsDir() {
+		log.Printf("[Config File] WARNING: Config path is a directory, not a file: %s", configFile)
+		return ""
+	}
+
+	// Create the YAML config file loader
+	fileLoader, err := config.NewYAMLConfigFileLoader(configFile)
+	if err != nil {
+		log.Printf("[Config File] WARNING: Failed to parse config file %s: %v", configFile, err)
+		return ""
+	}
+
+	// Set the loader on the RuntimeConfigService
+	runtimeConfigMu.RLock()
+	svc := runtimeConfigService
+	runtimeConfigMu.RUnlock()
+
+	if svc == nil {
+		log.Println("[Config File] WARNING: RuntimeConfigService not initialized, cannot set config file loader")
+		return ""
+	}
+
+	svc.SetConfigFileLoader(fileLoader)
+	log.Printf("[Config File] Config file loader initialized: %s", configFile)
+
+	return configFile
+}
+
+// ReloadConfigFile invalidates the config cache to reload configuration on next access.
+// This is useful for picking up changes to the config file without restarting.
+// Returns nil always (error return kept for future extensibility and API consistency).
+// No-op if RuntimeConfigService is not initialized.
+func ReloadConfigFile() error {
+	runtimeConfigMu.RLock()
+	svc := runtimeConfigService
+	runtimeConfigMu.RUnlock()
+
+	if svc == nil {
+		return nil // No-op if service not initialized
+	}
+
+	// The RuntimeConfigService will handle reloading through cache invalidation
+	svc.RefreshAllConfigs()
+	log.Println("[Config File] Config cache invalidated, will reload on next access")
+
+	return nil
+}

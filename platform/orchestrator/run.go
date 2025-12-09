@@ -567,6 +567,10 @@ func initializeComponents() {
 	InitRuntimeConfigService(usageDB, selfHosted)
 	log.Println("RuntimeConfigService initialized (ADR-007 compliant)")
 
+	// Wire config file loader for Priority 2 (OSS config file support)
+	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
+	SetConfigFileLoaderFromEnv() // Logs its own success/failure messages
+
 	// Initialize Dynamic Policy Engine (try database-backed first)
 	dbEngine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
