@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -11,37 +10,39 @@ import (
 
 func main() {
 	// Initialize AxonFlow client
-	client, err := axonflow.NewClient(axonflow.Config{
-		Endpoint:           getEnv("AXONFLOW_ENDPOINT", "https://YOUR_AGENT_ENDPOINT"),
-		LicenseKey:         getEnv("AXONFLOW_LICENSE_KEY", "YOUR_LICENSE_KEY"),
-		OrganizationID:     getEnv("AXONFLOW_ORG_ID", "my-org"),
-		InsecureSkipVerify: true, // For self-signed certs in development
+	client := axonflow.NewClient(axonflow.AxonFlowConfig{
+		AgentURL:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Debug:        true,
 	})
-	if err != nil {
-		log.Fatal("Failed to create client:", err)
-	}
-
-	ctx := context.Background()
 
 	fmt.Println("🔌 Connecting to AxonFlow...")
 
 	// Send query with simple policy
-	response, err := client.ExecuteQuery(ctx, &axonflow.QueryRequest{
-		Query: "What is the capital of France?",
-		Policy: `
-			package axonflow.policy
-			default allow = true
-		`,
-	})
+	response, err := client.ExecuteQuery(
+		"demo-user",                       // userToken
+		"What is the capital of France?",  // query
+		"chat",                            // requestType
+		map[string]interface{}{            // context
+			"user_role": "agent",
+		},
+	)
 	if err != nil {
 		log.Fatal("❌ Error:", err)
 	}
 
 	// Display results
 	fmt.Println("✅ Query successful!")
-	fmt.Println("Response:", response.Result)
-	fmt.Printf("Latency: %dms\n", response.Metadata.LatencyMS)
-	fmt.Println("Policy Decision:", response.Metadata.PolicyDecision)
+	fmt.Printf("Result: %v\n", response.Result)
+	fmt.Printf("Blocked: %v\n", response.Blocked)
+	if response.Blocked {
+		fmt.Printf("Block Reason: %s\n", response.BlockReason)
+	}
+	if response.PolicyInfo != nil {
+		fmt.Printf("Policies Evaluated: %v\n", response.PolicyInfo.PoliciesEvaluated)
+	}
 }
 
 func getEnv(key, defaultValue string) string {
