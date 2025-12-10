@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -60,6 +61,173 @@ type ConnectorInstallRequest struct {
 	TenantID    string                 `json:"tenant_id"`
 	Options     map[string]interface{} `json:"options"`
 	Credentials map[string]string      `json:"credentials"`
+}
+
+// buildConnectionURL constructs a connection URL from options and credentials for database connectors.
+// Credentials are properly URL-encoded to handle special characters like @, :, /, etc.
+func buildConnectionURL(connectorType string, options map[string]interface{}, credentials map[string]string) string {
+	// If connection_url is explicitly provided, use it
+	if connURL, ok := options["connection_url"].(string); ok && connURL != "" {
+		return connURL
+	}
+
+	// Extract common fields with nil safety
+	host := getStringOption(options, "host", "localhost")
+	database := getStringOption(options, "database", "")
+
+	// Safely extract credentials (nil map safe)
+	var username, password string
+	if credentials != nil {
+		username = credentials["username"]
+		password = credentials["password"]
+	}
+
+	switch connectorType {
+	case "postgres":
+		port := getIntOption(options, "port", 5432)
+		// Support both ssl_mode and sslmode for flexibility
+		sslMode := getStringOption(options, "ssl_mode", "")
+		if sslMode == "" {
+			sslMode = getStringOption(options, "sslmode", "disable")
+		}
+		return buildPostgresURL(host, port, database, username, password, sslMode)
+
+	case "mysql":
+		port := getIntOption(options, "port", 3306)
+		return buildMySQLURL(host, port, database, username, password)
+
+	case "mongodb":
+		port := getIntOption(options, "port", 27017)
+		authSource := getStringOption(options, "auth_source", "")
+		return buildMongoDBURL(host, port, database, username, password, authSource)
+
+	case "redis":
+		port := getIntOption(options, "port", 6379)
+		db := getIntOption(options, "db", 0)
+		return buildRedisURL(host, port, db, password)
+
+	case "cassandra":
+		port := getIntOption(options, "port", 9042)
+		keyspace := getStringOption(options, "keyspace", database)
+		return buildCassandraURL(host, port, keyspace, username, password)
+
+	default:
+		// For HTTP and other connectors, use base_url if provided
+		if baseURL, ok := options["base_url"].(string); ok {
+			return baseURL
+		}
+		return ""
+	}
+}
+
+// buildPostgresURL constructs a PostgreSQL connection URL with proper encoding
+func buildPostgresURL(host string, port int, database, username, password, sslMode string) string {
+	u := &url.URL{
+		Scheme: "postgres",
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "/" + database,
+	}
+	if username != "" && password != "" {
+		u.User = url.UserPassword(username, password)
+	} else if username != "" {
+		u.User = url.User(username)
+	}
+	q := u.Query()
+	q.Set("sslmode", sslMode)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// buildMySQLURL constructs a MySQL DSN with proper encoding
+// MySQL DSN format: [username[:password]@][protocol[(address)]]/dbname[?param1=value1&...]
+func buildMySQLURL(host string, port int, database, username, password string) string {
+	// MySQL driver uses a different format than standard URLs
+	// We need to escape special characters in username/password
+	if username != "" && password != "" {
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+			url.QueryEscape(username),
+			url.QueryEscape(password),
+			host, port, database)
+	}
+	if username != "" {
+		return fmt.Sprintf("%s@tcp(%s:%d)/%s", url.QueryEscape(username), host, port, database)
+	}
+	return fmt.Sprintf("tcp(%s:%d)/%s", host, port, database)
+}
+
+// buildMongoDBURL constructs a MongoDB connection URL with proper encoding
+func buildMongoDBURL(host string, port int, database, username, password, authSource string) string {
+	u := &url.URL{
+		Scheme: "mongodb",
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "/" + database,
+	}
+	if username != "" && password != "" {
+		u.User = url.UserPassword(username, password)
+	} else if username != "" {
+		u.User = url.User(username)
+	}
+	if authSource != "" {
+		q := u.Query()
+		q.Set("authSource", authSource)
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+// buildRedisURL constructs a Redis connection URL with proper encoding
+func buildRedisURL(host string, port, db int, password string) string {
+	u := &url.URL{
+		Scheme: "redis",
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   fmt.Sprintf("/%d", db),
+	}
+	if password != "" {
+		// Redis uses empty username with password
+		u.User = url.UserPassword("", password)
+	}
+	return u.String()
+}
+
+// buildCassandraURL constructs a Cassandra connection URL
+// Cassandra typically uses host:port/keyspace format
+func buildCassandraURL(host string, port int, keyspace, username, password string) string {
+	u := &url.URL{
+		Scheme: "cassandra",
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "/" + keyspace,
+	}
+	if username != "" && password != "" {
+		u.User = url.UserPassword(username, password)
+	} else if username != "" {
+		u.User = url.User(username)
+	}
+	return u.String()
+}
+
+// getStringOption safely extracts a string from options map (nil-safe)
+func getStringOption(options map[string]interface{}, key, defaultVal string) string {
+	if options == nil {
+		return defaultVal
+	}
+	if val, ok := options[key].(string); ok {
+		return val
+	}
+	return defaultVal
+}
+
+// getIntOption safely extracts an int from options map (handles float64 from JSON, nil-safe)
+func getIntOption(options map[string]interface{}, key string, defaultVal int) int {
+	if options == nil {
+		return defaultVal
+	}
+	if val, ok := options[key].(float64); ok {
+		return int(val)
+	}
+	if val, ok := options[key].(int); ok {
+		return val
+	}
+	return defaultVal
 }
 
 // createConnectorInstance is a factory function that creates connector instances by type
@@ -402,14 +570,15 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create config
+	// Create config with properly constructed ConnectionURL
 	config := &base.ConnectorConfig{
-		Name:        req.Name,
-		Type:        connectorType,
-		TenantID:    req.TenantID,
-		Options:     req.Options,
-		Credentials: req.Credentials,
-		Timeout:     30 * time.Second,
+		Name:          req.Name,
+		Type:          connectorType,
+		ConnectionURL: buildConnectionURL(connectorType, req.Options, req.Credentials),
+		TenantID:      req.TenantID,
+		Options:       req.Options,
+		Credentials:   req.Credentials,
+		Timeout:       30 * time.Second,
 	}
 
 	// Register connector
