@@ -90,12 +90,22 @@ func InitializeMCPRegistryWithDB(db *sql.DB) error {
 
 	// If config file exists, try loading connectors from it
 	if configFilePath != "" {
-		if err := initializeFromConfigFile(configFilePath); err != nil {
-			log.Printf("[MCP] Config file loading failed, falling back to env vars: %v", err)
-		} else {
+		err := initializeFromConfigFile(configFilePath)
+		if err != nil {
+			// Check if this is a "no connectors" error vs a real parsing error
+			if err.Error() == "no enabled connectors found in config file" {
+				// Config file loaded successfully but no connectors were configured
+				// This is likely user error (empty file or no connectors section)
+				// Fall back to env vars to prevent silent failure
+				log.Printf("[MCP] WARNING: Config file %s loaded but contains no connectors, falling back to env vars", configFilePath)
+			} else {
+				log.Printf("[MCP] Config file loading failed, falling back to env vars: %v", err)
+			}
+		} else if mcpRegistry.Count() > 0 {
 			log.Printf("[MCP] Registry initialized from config file: %s (%d connectors)", configFilePath, mcpRegistry.Count())
 			return nil
 		}
+		// If we get here, fall through to env var configuration
 	}
 
 	// Fallback to environment variable based configuration
