@@ -718,3 +718,204 @@ func (m *mockMarketplaceConnector) Version() string {
 func (m *mockMarketplaceConnector) Capabilities() []string {
 	return []string{"query", "execute"}
 }
+
+// Test buildConnectionURL for PostgreSQL
+func TestBuildConnectionURL_Postgres(t *testing.T) {
+	tests := []struct {
+		name        string
+		options     map[string]interface{}
+		credentials map[string]string
+		want        string
+	}{
+		{
+			name: "full credentials",
+			options: map[string]interface{}{
+				"host":     "db.example.com",
+				"port":     float64(5432), // JSON numbers are float64
+				"database": "mydb",
+			},
+			credentials: map[string]string{
+				"username": "admin",
+				"password": "secret123",
+			},
+			want: "postgres://admin:secret123@db.example.com:5432/mydb?sslmode=disable",
+		},
+		{
+			name: "with ssl_mode",
+			options: map[string]interface{}{
+				"host":     "secure.db.com",
+				"port":     float64(5432),
+				"database": "proddb",
+				"ssl_mode": "require",
+			},
+			credentials: map[string]string{
+				"username": "user",
+				"password": "pass",
+			},
+			want: "postgres://user:pass@secure.db.com:5432/proddb?sslmode=require",
+		},
+		{
+			name: "explicit connection_url takes precedence",
+			options: map[string]interface{}{
+				"connection_url": "postgres://custom:url@host:1234/db",
+				"host":           "ignored.com",
+			},
+			credentials: map[string]string{
+				"username": "ignored",
+				"password": "ignored",
+			},
+			want: "postgres://custom:url@host:1234/db",
+		},
+		{
+			name: "default port",
+			options: map[string]interface{}{
+				"host":     "localhost",
+				"database": "test",
+			},
+			credentials: map[string]string{
+				"username": "user",
+				"password": "pass",
+			},
+			want: "postgres://user:pass@localhost:5432/test?sslmode=disable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildConnectionURL("postgres", tt.options, tt.credentials)
+			if got != tt.want {
+				t.Errorf("buildConnectionURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Test buildConnectionURL for Redis
+func TestBuildConnectionURL_Redis(t *testing.T) {
+	tests := []struct {
+		name        string
+		options     map[string]interface{}
+		credentials map[string]string
+		want        string
+	}{
+		{
+			name: "with password",
+			options: map[string]interface{}{
+				"host": "redis.example.com",
+				"port": float64(6379),
+				"db":   float64(1),
+			},
+			credentials: map[string]string{
+				"password": "redispass",
+			},
+			want: "redis://:redispass@redis.example.com:6379/1",
+		},
+		{
+			name: "without password",
+			options: map[string]interface{}{
+				"host": "localhost",
+			},
+			credentials: map[string]string{},
+			want:        "redis://localhost:6379/0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildConnectionURL("redis", tt.options, tt.credentials)
+			if got != tt.want {
+				t.Errorf("buildConnectionURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Test buildConnectionURL for MySQL
+func TestBuildConnectionURL_MySQL(t *testing.T) {
+	options := map[string]interface{}{
+		"host":     "mysql.example.com",
+		"port":     float64(3306),
+		"database": "app",
+	}
+	credentials := map[string]string{
+		"username": "root",
+		"password": "secret",
+	}
+
+	got := buildConnectionURL("mysql", options, credentials)
+	want := "root:secret@tcp(mysql.example.com:3306)/app"
+
+	if got != want {
+		t.Errorf("buildConnectionURL(mysql) = %q, want %q", got, want)
+	}
+}
+
+// Test buildConnectionURL for MongoDB
+func TestBuildConnectionURL_MongoDB(t *testing.T) {
+	options := map[string]interface{}{
+		"host":     "mongo.example.com",
+		"port":     float64(27017),
+		"database": "docs",
+	}
+	credentials := map[string]string{
+		"username": "mongouser",
+		"password": "mongopass",
+	}
+
+	got := buildConnectionURL("mongodb", options, credentials)
+	want := "mongodb://mongouser:mongopass@mongo.example.com:27017/docs"
+
+	if got != want {
+		t.Errorf("buildConnectionURL(mongodb) = %q, want %q", got, want)
+	}
+}
+
+// Test buildConnectionURL for HTTP connector
+func TestBuildConnectionURL_HTTP(t *testing.T) {
+	options := map[string]interface{}{
+		"base_url": "https://api.example.com/v1",
+	}
+
+	got := buildConnectionURL("http", options, nil)
+	want := "https://api.example.com/v1"
+
+	if got != want {
+		t.Errorf("buildConnectionURL(http) = %q, want %q", got, want)
+	}
+}
+
+// Test helper functions
+func TestGetStringOption(t *testing.T) {
+	options := map[string]interface{}{
+		"host":   "example.com",
+		"number": 123,
+	}
+
+	if got := getStringOption(options, "host", "default"); got != "example.com" {
+		t.Errorf("getStringOption(host) = %q, want %q", got, "example.com")
+	}
+
+	if got := getStringOption(options, "missing", "default"); got != "default" {
+		t.Errorf("getStringOption(missing) = %q, want %q", got, "default")
+	}
+}
+
+func TestGetIntOption(t *testing.T) {
+	options := map[string]interface{}{
+		"float_port": float64(5432),
+		"int_port":   3306,
+		"string":     "not a number",
+	}
+
+	if got := getIntOption(options, "float_port", 0); got != 5432 {
+		t.Errorf("getIntOption(float_port) = %d, want %d", got, 5432)
+	}
+
+	if got := getIntOption(options, "int_port", 0); got != 3306 {
+		t.Errorf("getIntOption(int_port) = %d, want %d", got, 3306)
+	}
+
+	if got := getIntOption(options, "missing", 9999); got != 9999 {
+		t.Errorf("getIntOption(missing) = %d, want %d", got, 9999)
+	}
+}

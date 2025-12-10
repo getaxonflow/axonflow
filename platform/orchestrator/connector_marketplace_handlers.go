@@ -62,6 +62,78 @@ type ConnectorInstallRequest struct {
 	Credentials map[string]string      `json:"credentials"`
 }
 
+// buildConnectionURL constructs a connection URL from options and credentials for database connectors
+func buildConnectionURL(connectorType string, options map[string]interface{}, credentials map[string]string) string {
+	// If connection_url is explicitly provided, use it
+	if url, ok := options["connection_url"].(string); ok && url != "" {
+		return url
+	}
+
+	// Extract common fields
+	host := getStringOption(options, "host", "localhost")
+	database := getStringOption(options, "database", "")
+	username := credentials["username"]
+	password := credentials["password"]
+
+	switch connectorType {
+	case "postgres":
+		port := getIntOption(options, "port", 5432)
+		sslMode := getStringOption(options, "ssl_mode", "disable")
+		if username != "" && password != "" {
+			return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s", username, password, host, port, database, sslMode)
+		}
+		return fmt.Sprintf("postgres://%s:%d/%s?sslmode=%s", host, port, database, sslMode)
+
+	case "mysql":
+		port := getIntOption(options, "port", 3306)
+		if username != "" && password != "" {
+			return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", username, password, host, port, database)
+		}
+		return fmt.Sprintf("tcp(%s:%d)/%s", host, port, database)
+
+	case "mongodb":
+		port := getIntOption(options, "port", 27017)
+		if username != "" && password != "" {
+			return fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", username, password, host, port, database)
+		}
+		return fmt.Sprintf("mongodb://%s:%d/%s", host, port, database)
+
+	case "redis":
+		port := getIntOption(options, "port", 6379)
+		db := getIntOption(options, "db", 0)
+		if password != "" {
+			return fmt.Sprintf("redis://:%s@%s:%d/%d", password, host, port, db)
+		}
+		return fmt.Sprintf("redis://%s:%d/%d", host, port, db)
+
+	default:
+		// For HTTP and other connectors, use base_url if provided
+		if baseURL, ok := options["base_url"].(string); ok {
+			return baseURL
+		}
+		return ""
+	}
+}
+
+// getStringOption safely extracts a string from options map
+func getStringOption(options map[string]interface{}, key, defaultVal string) string {
+	if val, ok := options[key].(string); ok {
+		return val
+	}
+	return defaultVal
+}
+
+// getIntOption safely extracts an int from options map (handles float64 from JSON)
+func getIntOption(options map[string]interface{}, key string, defaultVal int) int {
+	if val, ok := options[key].(float64); ok {
+		return int(val)
+	}
+	if val, ok := options[key].(int); ok {
+		return val
+	}
+	return defaultVal
+}
+
 // createConnectorInstance is a factory function that creates connector instances by type
 func createConnectorInstance(connectorType string) (base.Connector, error) {
 	switch connectorType {
@@ -402,14 +474,15 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create config
+	// Create config with properly constructed ConnectionURL
 	config := &base.ConnectorConfig{
-		Name:        req.Name,
-		Type:        connectorType,
-		TenantID:    req.TenantID,
-		Options:     req.Options,
-		Credentials: req.Credentials,
-		Timeout:     30 * time.Second,
+		Name:          req.Name,
+		Type:          connectorType,
+		ConnectionURL: buildConnectionURL(connectorType, req.Options, req.Credentials),
+		TenantID:      req.TenantID,
+		Options:       req.Options,
+		Credentials:   req.Credentials,
+		Timeout:       30 * time.Second,
 	}
 
 	// Register connector
