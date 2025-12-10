@@ -704,7 +704,11 @@ func Run() {
 		defer meteringService.Stop()
 	}
 
-	// Initialize MCP connector registry
+	// Initialize MCP connector registry (ADR-007: three-tier configuration)
+	// Configuration priority: Database > Config File (AXONFLOW_CONFIG_FILE) > Environment Variables
+	if configFile := os.Getenv("AXONFLOW_CONFIG_FILE"); configFile != "" {
+		log.Printf("[MCP] Using config file from AXONFLOW_CONFIG_FILE: %s", configFile)
+	}
 	if err := InitializeMCPRegistry(); err != nil {
 		log.Printf("Warning: Failed to initialize MCP registry: %v", err)
 		log.Println("Agent will run without MCP connector support")
