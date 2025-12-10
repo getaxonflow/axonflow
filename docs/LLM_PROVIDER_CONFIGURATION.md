@@ -10,7 +10,8 @@
   - [Provider Selection](#provider-selection)
 - [Connector Deployment Configuration](#connector-deployment-configuration)
   - [EnabledConnectors Parameter](#enabledconnectors-parameter)
-  - [Available Connectors](#available-connectors)
+  - [Available MCP Connectors](#available-mcp-connectors)
+  - [Available LLM Providers](#available-llm-providers)
   - [Deployment Examples](#deployment-examples)
 - [LLM Providers](#llm-providers)
   - [AWS Bedrock](#aws-bedrock)
@@ -289,7 +290,9 @@ AxonFlow uses an array-based `EnabledConnectors` parameter to control which MCP 
 - No redeployment needed to add connectors dynamically
 - Pre-flight validation checks only enabled connector secrets
 
-### Available Connectors
+### Available MCP Connectors
+
+Use `EnabledConnectors` parameter for these data integrations:
 
 | Connector ID | Purpose | Secrets Count | Fields |
 |--------------|---------|---------------|--------|
@@ -297,10 +300,17 @@ AxonFlow uses an array-based `EnabledConnectors` parameter to control which MCP 
 | `salesforce` | CRM integration | 4 | client_id, client_secret, username, password |
 | `slack` | Team messaging | 1 | bot_token |
 | `snowflake` | Data warehouse | 6 | account, username, warehouse, database, schema, role |
-| `openai` | Server-side LLM provider | 1 | api_key |
-| `anthropic` | Server-side LLM provider | 1 | api_key |
-| `client-openai` | Client-side LLM provider | 1 | api_key |
-| `client-anthropic` | Client-side LLM provider | 1 | api_key |
+
+### Available LLM Providers
+
+Use `EnabledLLMProviders` parameter for these AI model providers:
+
+| Provider ID | Purpose | Secret Name | Fields |
+|-------------|---------|-------------|--------|
+| `openai` | OpenAI GPT models | `openai-api-key` | (plain string) |
+| `anthropic` | Anthropic Claude models | `anthropic-api-key` | (plain string) |
+| `bedrock` | AWS Bedrock (IAM auth) | N/A | Uses IAM role |
+| `ollama` | Self-hosted Ollama | N/A | Uses endpoint URL |
 
 ### Deployment Examples
 
@@ -308,30 +318,34 @@ AxonFlow uses an array-based `EnabledConnectors` parameter to control which MCP 
 ```yaml
 # config/environments/staging.yaml
 EnabledConnectors: ""
+EnabledLLMProviders: ""
 ```
 
-**Travel Demo (Amadeus + OpenAI):**
+**Travel Demo (Amadeus connector + OpenAI LLM):**
 ```yaml
 # config/environments/travel.yaml
-EnabledConnectors: "amadeus,openai"
+EnabledConnectors: "amadeus"
+EnabledLLMProviders: "openai"
 ```
 
-**E-commerce Demo (Salesforce + Anthropic):**
+**E-commerce Demo (Salesforce connector + Anthropic LLM):**
 ```yaml
 # config/environments/ecommerce.yaml
-EnabledConnectors: "salesforce,anthropic"
+EnabledConnectors: "salesforce"
+EnabledLLMProviders: "anthropic"
 ```
 
-**Full Production (All Connectors):**
+**Full Production (All Connectors + All LLM Providers):**
 ```yaml
 # config/environments/production-us.yaml
-EnabledConnectors: "amadeus,salesforce,slack,snowflake,openai,anthropic,client-openai,client-anthropic"
+EnabledConnectors: "amadeus,salesforce,slack,snowflake"
+EnabledLLMProviders: "openai,anthropic"
 ```
 
 **Dynamic Addition:**
-Connectors can be added after deployment by:
-1. Creating the connector secret in AWS Secrets Manager
-2. Updating the `EnabledConnectors` config
+Connectors and LLM providers can be added after deployment by:
+1. Creating the secret in AWS Secrets Manager
+2. Updating the `EnabledConnectors` or `EnabledLLMProviders` config
 3. Restarting ECS services (no stack update needed)
 
 ---
@@ -404,7 +418,7 @@ OpenAI GPT models for general-purpose AI tasks.
 **Configuration:**
 ```yaml
 # config/environments/staging.yaml
-EnabledConnectors: "openai"
+EnabledLLMProviders: "openai"
 ```
 
 **Environment Variables:**
@@ -426,7 +440,7 @@ Anthropic Claude models optimized for safety and helpfulness.
 **Configuration:**
 ```yaml
 # config/environments/staging.yaml
-EnabledConnectors: "anthropic"
+EnabledLLMProviders: "anthropic"
 ```
 
 **Environment Variables:**
