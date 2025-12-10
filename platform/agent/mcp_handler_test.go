@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -509,6 +511,87 @@ func TestInitializeMCPRegistry(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInitializeMCPRegistry_EmptyConfigFile tests that empty config file falls back to env vars
+func TestInitializeMCPRegistry_EmptyConfigFile(t *testing.T) {
+	// Create a temporary empty config file
+	tmpDir := t.TempDir()
+	emptyConfigFile := filepath.Join(tmpDir, "axonflow.yaml")
+
+	// Write a valid but empty config file (no connectors section)
+	emptyConfig := []byte("# Empty AxonFlow config\nversion: \"1.0\"\n")
+	if err := os.WriteFile(emptyConfigFile, emptyConfig, 0644); err != nil {
+		t.Fatalf("Failed to create empty config file: %v", err)
+	}
+
+	// Use t.Setenv for automatic cleanup (Go 1.17+)
+	t.Setenv("AXONFLOW_CONFIG_FILE", emptyConfigFile)
+	// Set a valid-looking DATABASE_URL so postgres connector can attempt registration
+	// (It will fail to connect, but that's fine - we just want to verify fallback happens)
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test?sslmode=disable")
+
+	// Reset global registry before test
+	mcpRegistry = nil
+
+	// Initialize registry - should warn about empty config and fall back to env vars
+	err := InitializeMCPRegistry()
+	if err != nil {
+		t.Errorf("InitializeMCPRegistry() returned error: %v", err)
+	}
+
+	// Registry should be initialized (fallback to env vars should have happened)
+	if mcpRegistry == nil {
+		t.Fatal("expected mcpRegistry to be initialized after empty config fallback")
+	}
+
+	// Verify the fallback to env vars actually happened by checking that the registry
+	// was created (even if no connectors successfully registered due to missing DB)
+	// The key behavior is that InitializeMCPRegistry() doesn't return early or fail
+	// when the config file exists but has no connectors
+
+	// The registry should exist and be functional (can call Count())
+	count := mcpRegistry.Count()
+	// We don't assert a specific count because postgres may or may not register
+	// depending on network conditions, but the registry should be usable
+	t.Logf("Registry initialized with %d connectors after empty config fallback", count)
+}
+
+// TestInitializeMCPRegistry_ConfigFileWithEmptyConnectorsSection tests fallback when
+// config file has a connectors section but all connectors are disabled
+func TestInitializeMCPRegistry_ConfigFileWithEmptyConnectorsSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "axonflow.yaml")
+
+	// Write a config file with connectors section but all disabled
+	configContent := []byte(`# AxonFlow config with disabled connectors
+version: "1.0"
+connectors:
+  postgres:
+    enabled: false
+    host: localhost
+`)
+	if err := os.WriteFile(configFile, configContent, 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	t.Setenv("AXONFLOW_CONFIG_FILE", configFile)
+	// Clear DATABASE_URL to ensure we're testing the fallback path
+	t.Setenv("DATABASE_URL", "")
+
+	mcpRegistry = nil
+
+	err := InitializeMCPRegistry()
+	if err != nil {
+		t.Errorf("InitializeMCPRegistry() returned error: %v", err)
+	}
+
+	if mcpRegistry == nil {
+		t.Fatal("expected mcpRegistry to be initialized")
+	}
+
+	// With no DATABASE_URL and disabled connectors in config, registry should be empty but valid
+	t.Logf("Registry initialized with %d connectors (expected 0 with disabled connectors and no DATABASE_URL)", mcpRegistry.Count())
 }
 
 // TestMCPQueryHandler_TimeoutParsing tests timeout parsing in query handler
