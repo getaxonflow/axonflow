@@ -20,109 +20,120 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gorilla/mux"
+
 	"axonflow/platform/orchestrator/llm"
 )
 
+// Note: maxRequestBodySize and allowedOrigins are defined in policy_api_handlers.go
+// to avoid duplicate declarations within the same package.
+
 // LLMProviderAPIHandler handles HTTP requests for LLM provider management.
-// Note: tenantID is extracted and logged for future multi-tenancy support,
-// but filtering by tenant is not yet implemented in the registry.
+// This is the gorilla/mux compatible version that integrates with the orchestrator router.
 type LLMProviderAPIHandler struct {
 	registry *llm.Registry
 	router   *llm.Router
+	logger   *log.Logger
 }
 
 // NewLLMProviderAPIHandler creates a new LLM provider API handler.
+// Deprecated: Use NewLLMProviderAPIHandlerWithRouter for new llm.Router integration.
 func NewLLMProviderAPIHandler(registry *llm.Registry, router *llm.Router) *LLMProviderAPIHandler {
 	return &LLMProviderAPIHandler{
 		registry: registry,
 		router:   router,
+		logger:   log.Default(),
 	}
 }
 
-// RegisterRoutes registers LLM provider API routes with the provided mux.
-func (h *LLMProviderAPIHandler) RegisterRoutes(mux *http.ServeMux) {
-	// Provider CRUD endpoints
-	mux.HandleFunc("/api/v1/llm-providers", h.handleProviders)
-	mux.HandleFunc("/api/v1/llm-providers/", h.handleProviderByName)
-
-	// Health endpoints
-	mux.HandleFunc("/api/v1/llm-providers/health", h.handleHealthAll)
-
-	// Routing configuration
-	mux.HandleFunc("/api/v1/llm-providers/routing", h.handleRouting)
+// NewLLMProviderAPIHandlerWithRouter creates a new LLM provider API handler using the new Router.
+// This constructor is used when the bootstrap system has been initialized.
+// Returns nil if router is nil or router's registry is nil.
+func NewLLMProviderAPIHandlerWithRouter(router *llm.Router, logger *log.Logger) *LLMProviderAPIHandler {
+	if router == nil {
+		return nil
+	}
+	registry := router.Registry()
+	if registry == nil {
+		return nil
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &LLMProviderAPIHandler{
+		registry: registry,
+		router:   router,
+		logger:   logger,
+	}
 }
 
-// handleProviders handles GET (list) and POST (create) for /api/v1/llm-providers.
-func (h *LLMProviderAPIHandler) handleProviders(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing tenant ID")
+// RegisterRoutesWithMux registers LLM provider API routes with a gorilla/mux router.
+// This is the primary method for wiring the LLM provider API into the orchestrator.
+//
+// IMPORTANT: Route order matters in gorilla/mux! More specific routes (like /routing, /status)
+// MUST be registered BEFORE parameterized routes (like /{name}) to avoid the parameter
+// capturing literal path segments.
+func (h *LLMProviderAPIHandler) RegisterRoutesWithMux(r *mux.Router) {
+	// Factory info (available provider types) - no path params
+	r.HandleFunc("/api/v1/llm-provider-types", h.handleListProviderTypes).Methods("GET", "OPTIONS")
+
+	// Provider collection endpoints - no path params
+	r.HandleFunc("/api/v1/llm-providers", h.handleListOrCreate).Methods("GET", "POST", "OPTIONS")
+
+	// IMPORTANT: These specific paths MUST come BEFORE /{name} to prevent
+	// the {name} parameter from capturing "routing" or "status" as provider names
+	r.HandleFunc("/api/v1/llm-providers/routing", h.handleRoutingMux).Methods("GET", "PUT", "OPTIONS")
+	r.HandleFunc("/api/v1/llm-providers/status", h.handleAllProvidersStatusMux).Methods("GET", "OPTIONS")
+
+	// Parameterized routes - MUST come AFTER specific literal paths
+	r.HandleFunc("/api/v1/llm-providers/{name}", h.handleGetUpdateDelete).Methods("GET", "PUT", "DELETE", "OPTIONS")
+	r.HandleFunc("/api/v1/llm-providers/{name}/health", h.handleProviderHealthMux).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/llm-providers/{name}/test", h.handleTestProvider).Methods("POST", "OPTIONS")
+}
+
+// handleListOrCreate handles GET (list) and POST (create) for /api/v1/llm-providers.
+func (h *LLMProviderAPIHandler) handleListOrCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		h.listProviders(w, r, tenantID)
+		h.handleListProvidersMux(w, r)
 	case http.MethodPost:
-		h.createProvider(w, r, tenantID)
-	case http.MethodOptions:
-		h.handleCORS(w, r)
+		h.handleCreateProviderMux(w, r)
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
 }
 
-// handleProviderByName handles individual provider operations.
-func (h *LLMProviderAPIHandler) handleProviderByName(w http.ResponseWriter, r *http.Request) {
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing tenant ID")
-		return
-	}
-
-	// Extract provider name and subpath from URL
-	path := strings.TrimPrefix(r.URL.Path, "/api/v1/llm-providers/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "provider name is required")
-		return
-	}
-
-	providerName := parts[0]
-
-	// Handle special paths
-	if providerName == "health" {
-		h.handleHealthAll(w, r)
-		return
-	}
-	if providerName == "routing" {
-		h.handleRouting(w, r)
-		return
-	}
-
-	subpath := ""
-	if len(parts) > 1 {
-		subpath = parts[1]
-	}
-
-	switch {
-	case subpath == "health" && r.Method == http.MethodGet:
-		h.healthCheckProvider(w, r, tenantID, providerName)
-	case subpath == "" && r.Method == http.MethodGet:
-		h.getProvider(w, r, tenantID, providerName)
-	case subpath == "" && r.Method == http.MethodPut:
-		h.updateProvider(w, r, tenantID, providerName)
-	case subpath == "" && r.Method == http.MethodDelete:
-		h.deleteProvider(w, r, tenantID, providerName)
-	case r.Method == http.MethodOptions:
+// handleGetUpdateDelete handles GET/PUT/DELETE for /api/v1/llm-providers/{name}.
+// Note: Routes for /routing and /status are registered separately with higher priority,
+// so {name} will never capture those literal values.
+func (h *LLMProviderAPIHandler) handleGetUpdateDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
+		return
+	}
+
+	vars := mux.Vars(r)
+	providerName := vars["name"]
+
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetProviderMux(w, r, providerName)
+	case http.MethodPut:
+		h.handleUpdateProviderMux(w, r, providerName)
+	case http.MethodDelete:
+		h.handleDeleteProviderMux(w, r, providerName)
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
 }
 
-// listProviders handles GET /api/v1/llm-providers.
-func (h *LLMProviderAPIHandler) listProviders(w http.ResponseWriter, r *http.Request, tenantID string) {
+// handleListProvidersMux handles GET /api/v1/llm-providers.
+func (h *LLMProviderAPIHandler) handleListProvidersMux(w http.ResponseWriter, r *http.Request) {
 	params := LLMProviderListParams{
 		Page:     1,
 		PageSize: 20,
@@ -206,8 +217,8 @@ func (h *LLMProviderAPIHandler) listProviders(w http.ResponseWriter, r *http.Req
 	h.writeJSON(w, http.StatusOK, response)
 }
 
-// createProvider handles POST /api/v1/llm-providers.
-func (h *LLMProviderAPIHandler) createProvider(w http.ResponseWriter, r *http.Request, tenantID string) {
+// handleCreateProviderMux handles POST /api/v1/llm-providers.
+func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req CreateLLMProviderRequest
@@ -226,10 +237,10 @@ func (h *LLMProviderAPIHandler) createProvider(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Validate provider type
+	// Validate provider type using factory
 	providerType := llm.ProviderType(req.Type)
-	if !isValidProviderType(providerType) {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid provider type: "+req.Type)
+	if !llm.HasFactory(providerType) {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "unsupported provider type: "+req.Type)
 		return
 	}
 
@@ -242,7 +253,7 @@ func (h *LLMProviderAPIHandler) createProvider(w http.ResponseWriter, r *http.Re
 	// Build config
 	config := &llm.ProviderConfig{
 		Name:            req.Name,
-		Type:            llm.ProviderType(req.Type),
+		Type:            providerType,
 		APIKey:          req.APIKey,
 		APIKeySecretARN: req.APIKeySecretARN,
 		Endpoint:        req.Endpoint,
@@ -258,10 +269,19 @@ func (h *LLMProviderAPIHandler) createProvider(w http.ResponseWriter, r *http.Re
 
 	// Register the provider
 	if err := h.registry.Register(r.Context(), config); err != nil {
-		log.Printf("[LLMProviderAPI] register error for tenant %s: %v", tenantID, err)
+		h.logger.Printf("[LLMProviderAPI] register error: %v", err)
+
+		// Check if it's a license error
+		if strings.Contains(err.Error(), "license") {
+			h.writeError(w, http.StatusForbidden, "LICENSE_ERROR", err.Error())
+			return
+		}
+
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to register provider")
 		return
 	}
+
+	h.logger.Printf("[LLMProviderAPI] Created provider: %s (type: %s)", req.Name, req.Type)
 
 	healthResult := h.registry.GetHealthResult(req.Name)
 	resource := toProviderResource(config, healthResult)
@@ -269,8 +289,8 @@ func (h *LLMProviderAPIHandler) createProvider(w http.ResponseWriter, r *http.Re
 	h.writeJSON(w, http.StatusCreated, LLMProviderResponse{Provider: &resource})
 }
 
-// getProvider handles GET /api/v1/llm-providers/{name}.
-func (h *LLMProviderAPIHandler) getProvider(w http.ResponseWriter, r *http.Request, tenantID, providerName string) {
+// handleGetProviderMux handles GET /api/v1/llm-providers/{name}.
+func (h *LLMProviderAPIHandler) handleGetProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
 	if !h.registry.Has(providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
@@ -288,8 +308,8 @@ func (h *LLMProviderAPIHandler) getProvider(w http.ResponseWriter, r *http.Reque
 	h.writeJSON(w, http.StatusOK, LLMProviderResponse{Provider: &resource})
 }
 
-// updateProvider handles PUT /api/v1/llm-providers/{name}.
-func (h *LLMProviderAPIHandler) updateProvider(w http.ResponseWriter, r *http.Request, tenantID, providerName string) {
+// handleUpdateProviderMux handles PUT /api/v1/llm-providers/{name}.
+func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	if !h.registry.Has(providerName) {
@@ -347,15 +367,17 @@ func (h *LLMProviderAPIHandler) updateProvider(w http.ResponseWriter, r *http.Re
 
 	// Update in registry by unregister + re-register
 	if err := h.registry.Unregister(r.Context(), providerName); err != nil {
-		log.Printf("[LLMProviderAPI] update error (unregister) for tenant %s, provider %s: %v", tenantID, providerName, err)
+		h.logger.Printf("[LLMProviderAPI] update error (unregister) provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update provider")
 		return
 	}
 	if err := h.registry.Register(r.Context(), config); err != nil {
-		log.Printf("[LLMProviderAPI] update error (register) for tenant %s, provider %s: %v", tenantID, providerName, err)
+		h.logger.Printf("[LLMProviderAPI] update error (register) provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update provider")
 		return
 	}
+
+	h.logger.Printf("[LLMProviderAPI] Updated provider: %s", providerName)
 
 	healthResult := h.registry.GetHealthResult(providerName)
 	resource := toProviderResource(config, healthResult)
@@ -363,24 +385,34 @@ func (h *LLMProviderAPIHandler) updateProvider(w http.ResponseWriter, r *http.Re
 	h.writeJSON(w, http.StatusOK, LLMProviderResponse{Provider: &resource})
 }
 
-// deleteProvider handles DELETE /api/v1/llm-providers/{name}.
-func (h *LLMProviderAPIHandler) deleteProvider(w http.ResponseWriter, r *http.Request, tenantID, providerName string) {
+// handleDeleteProviderMux handles DELETE /api/v1/llm-providers/{name}.
+func (h *LLMProviderAPIHandler) handleDeleteProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
 	if !h.registry.Has(providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 
 	if err := h.registry.Unregister(r.Context(), providerName); err != nil {
-		log.Printf("[LLMProviderAPI] delete error for tenant %s, provider %s: %v", tenantID, providerName, err)
+		h.logger.Printf("[LLMProviderAPI] delete error provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to delete provider")
 		return
 	}
 
+	h.logger.Printf("[LLMProviderAPI] Deleted provider: %s", providerName)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// healthCheckProvider handles GET /api/v1/llm-providers/{name}/health.
-func (h *LLMProviderAPIHandler) healthCheckProvider(w http.ResponseWriter, r *http.Request, tenantID, providerName string) {
+// handleProviderHealthMux handles GET /api/v1/llm-providers/{name}/health.
+func (h *LLMProviderAPIHandler) handleProviderHealthMux(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	vars := mux.Vars(r)
+	providerName := vars["name"]
+
 	if !h.registry.Has(providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
@@ -388,7 +420,7 @@ func (h *LLMProviderAPIHandler) healthCheckProvider(w http.ResponseWriter, r *ht
 
 	result, err := h.registry.HealthCheckSingle(r.Context(), providerName)
 	if err != nil {
-		log.Printf("[LLMProviderAPI] health check error for tenant %s, provider %s: %v", tenantID, providerName, err)
+		h.logger.Printf("[LLMProviderAPI] health check error provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to perform health check")
 		return
 	}
@@ -399,63 +431,78 @@ func (h *LLMProviderAPIHandler) healthCheckProvider(w http.ResponseWriter, r *ht
 	})
 }
 
-// handleHealthAll handles GET /api/v1/llm-providers/health.
-func (h *LLMProviderAPIHandler) handleHealthAll(w http.ResponseWriter, r *http.Request) {
+// handleTestProvider handles POST /api/v1/llm-providers/{name}/test.
+func (h *LLMProviderAPIHandler) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
 		return
 	}
 
-	if r.Method != http.MethodGet {
-		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	vars := mux.Vars(r)
+	providerName := vars["name"]
+
+	provider, err := h.registry.Get(r.Context(), providerName)
+	if err != nil {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
 
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing tenant ID")
+	// Parse optional test prompt from body
+	var testReq struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&testReq); err != nil {
+		testReq.Prompt = "Say 'Hello, AxonFlow!' in exactly 3 words."
+	}
+	if testReq.Prompt == "" {
+		testReq.Prompt = "Say 'Hello, AxonFlow!' in exactly 3 words."
+	}
+
+	// Execute test request
+	req := llm.CompletionRequest{
+		Prompt:    testReq.Prompt,
+		MaxTokens: 50,
+	}
+
+	resp, err := provider.Complete(r.Context(), req)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "TEST_FAILED", "test failed: "+err.Error())
 		return
 	}
 
-	// Perform health check on all providers
-	h.registry.HealthCheck(r.Context())
-
-	// Collect results
-	results := make(map[string]*llm.HealthCheckResult)
-	for _, name := range h.registry.List() {
-		results[name] = h.registry.GetHealthResult(name)
-	}
-
-	h.writeJSON(w, http.StatusOK, LLMProviderHealthAllResponse{
-		Providers: results,
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "success",
+		"provider": providerName,
+		"response": resp.Content,
+		"model":    resp.Model,
+		"usage": map[string]int{
+			"prompt_tokens":     resp.Usage.PromptTokens,
+			"completion_tokens": resp.Usage.CompletionTokens,
+			"total_tokens":      resp.Usage.TotalTokens,
+		},
+		"latency_ms": resp.Latency.Milliseconds(),
 	})
 }
 
-// handleRouting handles PUT /api/v1/llm-providers/routing.
-func (h *LLMProviderAPIHandler) handleRouting(w http.ResponseWriter, r *http.Request) {
+// handleRoutingMux handles GET/PUT /api/v1/llm-providers/routing.
+func (h *LLMProviderAPIHandler) handleRoutingMux(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
-		return
-	}
-
-	tenantID := h.getTenantID(r)
-	if tenantID == "" {
-		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing tenant ID")
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		h.getRoutingConfig(w, r, tenantID)
+		h.getRoutingConfigMux(w, r)
 	case http.MethodPut:
-		h.updateRoutingConfig(w, r, tenantID)
+		h.updateRoutingConfigMux(w, r)
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
 }
 
-// getRoutingConfig handles GET /api/v1/llm-providers/routing.
-func (h *LLMProviderAPIHandler) getRoutingConfig(w http.ResponseWriter, r *http.Request, tenantID string) {
+// getRoutingConfigMux handles GET /api/v1/llm-providers/routing.
+func (h *LLMProviderAPIHandler) getRoutingConfigMux(w http.ResponseWriter, r *http.Request) {
 	// Build weights from provider configs
 	weights := make(map[string]int)
 	for _, name := range h.registry.List() {
@@ -470,8 +517,8 @@ func (h *LLMProviderAPIHandler) getRoutingConfig(w http.ResponseWriter, r *http.
 	})
 }
 
-// updateRoutingConfig handles PUT /api/v1/llm-providers/routing.
-func (h *LLMProviderAPIHandler) updateRoutingConfig(w http.ResponseWriter, r *http.Request, tenantID string) {
+// updateRoutingConfigMux handles PUT /api/v1/llm-providers/routing.
+func (h *LLMProviderAPIHandler) updateRoutingConfigMux(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	var req UpdateLLMRoutingRequest
@@ -489,7 +536,7 @@ func (h *LLMProviderAPIHandler) updateRoutingConfig(w http.ResponseWriter, r *ht
 
 		config, err := h.registry.GetConfig(name)
 		if err != nil {
-			log.Printf("[LLMProviderAPI] get config error for tenant %s, provider %s: %v", tenantID, name, err)
+			h.logger.Printf("[LLMProviderAPI] get config error provider %s: %v", name, err)
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get provider config")
 			return
 		}
@@ -497,34 +544,79 @@ func (h *LLMProviderAPIHandler) updateRoutingConfig(w http.ResponseWriter, r *ht
 			config.Weight = weight
 			// Registry doesn't have Update - must unregister and re-register
 			if err := h.registry.Unregister(r.Context(), name); err != nil {
-				log.Printf("[LLMProviderAPI] unregister error for tenant %s, provider %s: %v", tenantID, name, err)
+				h.logger.Printf("[LLMProviderAPI] unregister error provider %s: %v", name, err)
 				h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update routing")
 				return
 			}
 			if err := h.registry.Register(r.Context(), config); err != nil {
-				log.Printf("[LLMProviderAPI] re-register error for tenant %s, provider %s: %v", tenantID, name, err)
+				h.logger.Printf("[LLMProviderAPI] re-register error provider %s: %v", name, err)
 				h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update routing")
 				return
 			}
 		}
 	}
 
+	h.logger.Printf("[LLMProviderAPI] Updated routing for %d providers", len(req.Weights))
+
 	// Return updated config
-	h.getRoutingConfig(w, r, tenantID)
+	h.getRoutingConfigMux(w, r)
+}
+
+// handleAllProvidersStatusMux handles GET /api/v1/llm-providers/status.
+func (h *LLMProviderAPIHandler) handleAllProvidersStatusMux(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	// Perform health check on all providers
+	h.registry.HealthCheck(r.Context())
+
+	// Collect results
+	results := make(map[string]*llm.HealthCheckResult)
+	for _, name := range h.registry.List() {
+		results[name] = h.registry.GetHealthResult(name)
+	}
+
+	h.writeJSON(w, http.StatusOK, LLMProviderHealthAllResponse{
+		Providers: results,
+	})
+}
+
+// handleListProviderTypes handles GET /api/v1/llm-provider-types.
+func (h *LLMProviderAPIHandler) handleListProviderTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	factories := llm.ListFactories()
+
+	types := make([]map[string]interface{}, 0, len(factories))
+	for _, pt := range factories {
+		info := map[string]interface{}{
+			"type": string(pt),
+			"oss":  llm.IsOSSProvider(pt),
+		}
+
+		// Add tier info
+		tier := llm.GetTierForProvider(pt)
+		info["required_tier"] = string(tier)
+
+		types = append(types, info)
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"provider_types": types,
+		"count":          len(types),
+	})
 }
 
 // Helper methods
 
-func (h *LLMProviderAPIHandler) getTenantID(r *http.Request) string {
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		return tenantID
-	}
-	if tenantID, ok := r.Context().Value("tenant_id").(string); ok {
-		return tenantID
-	}
-	return ""
-}
-
+// handleCORS handles OPTIONS preflight requests.
+// Note: The main router uses github.com/rs/cors middleware which handles CORS globally.
+// This handler is kept for explicit OPTIONS method handling in route registration.
 func (h *LLMProviderAPIHandler) handleCORS(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
 	if origin != "" && allowedOrigins[origin] {
@@ -551,35 +643,21 @@ func (h *LLMProviderAPIHandler) writeError(w http.ResponseWriter, status int, co
 	})
 }
 
-// isValidProviderType checks if the provider type is a known valid type.
-func isValidProviderType(t llm.ProviderType) bool {
-	switch t {
-	case llm.ProviderTypeAnthropic,
-		llm.ProviderTypeOpenAI,
-		llm.ProviderTypeOllama,
-		llm.ProviderTypeBedrock,
-		llm.ProviderTypeCustom:
-		return true
-	default:
-		return false
-	}
-}
-
 // toProviderResource converts ProviderConfig to API resource.
 func toProviderResource(config *llm.ProviderConfig, health *llm.HealthCheckResult) LLMProviderResource {
 	resource := LLMProviderResource{
-		Name:            config.Name,
-		Type:            string(config.Type),
-		Endpoint:        config.Endpoint,
-		Model:           config.Model,
-		Region:          config.Region,
-		Enabled:         config.Enabled,
-		Priority:        config.Priority,
-		Weight:          config.Weight,
-		RateLimit:       config.RateLimit,
-		TimeoutSeconds:  config.TimeoutSeconds,
-		HasAPIKey:       config.APIKey != "" || config.APIKeySecretARN != "",
-		Settings:        config.Settings,
+		Name:           config.Name,
+		Type:           string(config.Type),
+		Endpoint:       config.Endpoint,
+		Model:          config.Model,
+		Region:         config.Region,
+		Enabled:        config.Enabled,
+		Priority:       config.Priority,
+		Weight:         config.Weight,
+		RateLimit:      config.RateLimit,
+		TimeoutSeconds: config.TimeoutSeconds,
+		HasAPIKey:      config.APIKey != "" || config.APIKeySecretARN != "",
+		Settings:       config.Settings,
 	}
 
 	if health != nil {
