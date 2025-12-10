@@ -271,17 +271,11 @@ BEGIN
 END $$;
 
 -- =============================================================================
--- Sample Data for Testing (Optional - Comment out for production)
--- =============================================================================
-
--- Test organization
-INSERT INTO organizations (org_id, name, license_key, tier, status)
-VALUES ('test-org-001', 'Test Organization', 'test-license-key-hash', 'DEVELOPER', 'ACTIVE')
-ON CONFLICT (org_id) DO NOTHING;
-
--- =============================================================================
 -- Migration Complete
 -- =============================================================================
+-- NOTE: Test data seeding is handled by the seed-test-data.yml workflow, not migrations.
+-- This keeps migrations focused on schema changes only and prevents test data
+-- from accidentally being created in production databases.
 
 -- Display success message
 DO $$

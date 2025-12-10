@@ -50,20 +50,22 @@ call_api() {
         }" 2>&1
 }
 
-# Demo 1: PII Detection
+# Demo 1: SQL Injection Blocking
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}${BOLD}Demo 1: PII Detection & Blocking${NC}"
+echo -e "${YELLOW}${BOLD}Demo 1: SQL Injection Blocking${NC}"
 echo -e "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BLUE}Sending prompt with SSN:${NC}"
-echo -e "  \"Process payment for John Smith, SSN 123-45-6789\""
+echo -e "${BLUE}Sending malicious SQL query:${NC}"
+echo -e "  \"SELECT * FROM users WHERE id=1 UNION SELECT password FROM admin\""
 echo ""
 
-RESPONSE=$(call_api "Process payment for John Smith, SSN 123-45-6789")
+RESPONSE=$(call_api "SELECT * FROM users WHERE id=1 UNION SELECT password FROM admin")
 
-if echo "$RESPONSE" | grep -q -i "pii\|blocked\|denied\|violation\|false"; then
-    echo -e "${RED}${BOLD}🛡️  BLOCKED${NC} - PII Detected"
-    echo -e "   ${RED}SSN pattern detected and blocked in real-time${NC}"
+# Check if request was blocked (approved: false)
+if echo "$RESPONSE" | grep -q '"approved":false'; then
+    REASON=$(echo "$RESPONSE" | sed -n 's/.*"block_reason":"\([^"]*\)".*/\1/p')
+    echo -e "${RED}${BOLD}🛡️  BLOCKED${NC} - SQL Injection Detected"
+    echo -e "   ${RED}Reason: ${REASON}${NC}"
 else
     echo -e "${GREEN}Response:${NC} $RESPONSE"
 fi
@@ -98,9 +100,12 @@ echo ""
 
 RESPONSE=$(call_api "Charge my card 4111-1111-1111-1111 for the order")
 
-if echo "$RESPONSE" | grep -q -i "pii\|blocked\|denied\|violation\|credit\|false"; then
-    echo -e "${RED}${BOLD}🛡️  BLOCKED${NC} - Credit Card Detected"
-    echo -e "   ${RED}Credit card pattern detected and blocked${NC}"
+# Check if any policies were triggered (non-empty policies array)
+# The response contains "policies":["policy_name"] when triggered
+if echo "$RESPONSE" | grep -q '"policies":\["[^"]*"\]'; then
+    POLICY=$(echo "$RESPONSE" | sed -n 's/.*"policies":\["\([^"]*\)"\].*/\1/p')
+    echo -e "${RED}${BOLD}🛡️  POLICY TRIGGERED${NC} - Credit Card Detected"
+    echo -e "   ${RED}Matched policy: ${POLICY}${NC}"
 else
     echo -e "${GREEN}Response:${NC} $RESPONSE"
 fi
@@ -142,16 +147,15 @@ echo -e "${CYAN}${BOLD}║                        Demo Complete!                
 echo -e "${CYAN}${BOLD}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${BOLD}What you just saw:${NC}"
-echo -e "  ${GREEN}✓${NC} Real-time PII detection (SSN, Credit Card)"
+echo -e "  ${GREEN}✓${NC} SQL injection blocking (malicious queries rejected)"
+echo -e "  ${GREEN}✓${NC} PII detection (credit card patterns flagged for redaction)"
 echo -e "  ${GREEN}✓${NC} Policy-as-code enforcement"
 echo -e "  ${GREEN}✓${NC} Sub-10ms inline governance"
-echo -e "  ${GREEN}✓${NC} Request auditing & logging"
 echo ""
 echo -e "${BOLD}Next Steps:${NC}"
-echo -e "  1. ${CYAN}Try the Support Demo:${NC} cd platform/examples/support-demo && docker-compose up"
-echo -e "  2. ${CYAN}Explore Examples:${NC} See examples/hello-world for SDK usage"
-echo -e "  3. ${CYAN}Read the Docs:${NC} https://docs.getaxonflow.com"
-echo -e "  4. ${CYAN}View Metrics:${NC} Open http://localhost:3000 (Grafana)"
+echo -e "  1. ${CYAN}Explore Examples:${NC} See examples/hello-world for SDK usage"
+echo -e "  2. ${CYAN}Read the Docs:${NC} https://docs.getaxonflow.com"
+echo -e "  3. ${CYAN}View Metrics:${NC} Open http://localhost:3000 (Grafana)"
 echo ""
 echo -e "${BLUE}View audit logs:${NC} docker-compose logs axonflow-agent | grep -i audit"
 echo ""
