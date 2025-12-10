@@ -13,6 +13,7 @@ Thank you for your interest in contributing to AxonFlow! This guide will help yo
 - [Submitting Changes](#submitting-changes)
 - [Code Style](#code-style)
 - [Getting Help](#getting-help)
+- [Community](#community)
 
 ## Quick Start
 
@@ -590,5 +591,11 @@ Contributors are recognized in:
 - CONTRIBUTORS.md file
 - Release notes for significant contributions
 - GitHub contributor graph
+
+## Community
+
+Join our growing community of developers building AI governance solutions:
+- [GitHub Discussions](https://github.com/getaxonflow/axonflow/discussions) - Ask questions and share ideas
+- [Issue Tracker](https://github.com/getaxonflow/axonflow/issues) - Report bugs and request features
 
 Thank you for contributing to AxonFlow!
