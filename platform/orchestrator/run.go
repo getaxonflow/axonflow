@@ -37,6 +37,7 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/node_enforcement"
+	"axonflow/platform/orchestrator/llm"
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -70,8 +71,10 @@ var (
 	usageDB            *sql.DB                            // Database for usage metering
 	heartbeatService   *node_enforcement.HeartbeatService // Node enforcement
 	nodeMonitor        *node_enforcement.NodeMonitor      // Node enforcement
-	policyAPIHandler   *PolicyAPIHandler                  // Policy CRUD API handler
-	templateAPIHandler *TemplateAPIHandler                // Policy Templates API handler
+	policyAPIHandler      *PolicyAPIHandler                  // Policy CRUD API handler
+	templateAPIHandler    *TemplateAPIHandler                // Policy Templates API handler
+	llmProviderRouter     *llm.Router                        // New pluggable LLM provider router (ADR-007)
+	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
 )
 
 // Per-stage metrics (similar to Agent)
@@ -370,6 +373,13 @@ func Run() {
 	r.HandleFunc("/api/v1/templates/{id}", templateAPIGetHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/templates/{id}/apply", templateAPIApplyHandler).Methods("POST", "OPTIONS")
 
+	// LLM Provider Management API (ADR-007 - Pluggable LLM Providers)
+	// Register routes only if bootstrap was successful
+	if llmProviderAPIHandler != nil {
+		llmProviderAPIHandler.RegisterRoutesWithMux(r)
+		log.Println("LLM Provider API routes registered (/api/v1/llm-providers)")
+	}
+
 	// Start server
 	port := getEnv("PORT", "8081")
 	handler := c.Handler(r)
@@ -592,6 +602,47 @@ func initializeComponents() {
 	}
 	SetLLMRouter(NewLLMRouter(LoadLLMConfigFromService(ctx, tenantID)))
 	log.Println("LLM Router initialized with multi-provider support (ADR-007 compliant)")
+
+	// Initialize new pluggable LLM provider system (ADR-007 Phase 2)
+	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
+	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
+	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
+		SkipHealthCheck: false, // Perform health checks on startup
+	})
+	if err != nil {
+		log.Printf("⚠️  LLM bootstrap warning: %v (falling back to legacy router)", err)
+	} else if len(bootstrapResult.ProvidersBootstrapped) == 0 {
+		log.Println("ℹ️  No LLM providers bootstrapped (check ANTHROPIC_API_KEY, OPENAI_API_KEY, or OLLAMA_ENDPOINT)")
+	} else {
+		log.Printf("✅ Bootstrapped %d LLM provider(s): %v", len(bootstrapResult.ProvidersBootstrapped), bootstrapResult.ProvidersBootstrapped)
+		if len(bootstrapResult.Warnings) > 0 {
+			for _, w := range bootstrapResult.Warnings {
+				log.Printf("⚠️  LLM bootstrap warning: %s", w)
+			}
+		}
+
+		// Create the new router from the already-bootstrapped registry
+		// Note: We use the registry from bootstrapResult directly instead of calling
+		// QuickBootstrap() which would bootstrap providers again.
+		weights := make(map[string]float64)
+		equalWeight := 1.0 / float64(len(bootstrapResult.ProvidersBootstrapped))
+		for _, name := range bootstrapResult.ProvidersBootstrapped {
+			weights[name] = equalWeight
+		}
+
+		llmProviderRouter = llm.NewRouter(
+			llm.WithRouterRegistry(bootstrapResult.Registry),
+			llm.WithDefaultWeights(weights),
+		)
+
+		// Create API handler for the new router
+		llmProviderAPIHandler = NewLLMProviderAPIHandlerWithRouter(llmProviderRouter, log.Default())
+		if llmProviderAPIHandler != nil {
+			log.Println("✅ LLM Provider API handler initialized (ADR-007 Phase 2)")
+		} else {
+			log.Println("⚠️  Failed to create LLM Provider API handler (router registry issue)")
+		}
+	}
 
 	// Initialize Amadeus API Client
 	amadeusClient := NewAmadeusClient()
