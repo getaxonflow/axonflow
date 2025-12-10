@@ -15,7 +15,7 @@ func main() {
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
 		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
-		Debug:        true,
+		Debug:        getEnv("AXONFLOW_DEBUG", "") != "",
 	})
 
 	fmt.Println("🔌 Connecting to AxonFlow...")
