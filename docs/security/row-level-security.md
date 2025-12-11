@@ -80,8 +80,8 @@ RLS protects **all your tenant-specific data**:
 
 **Good news:** RLS has **minimal performance impact**.
 
-- **Average query latency:** < 5ms additional overhead
-- **P95 latency:** < 10ms additional overhead
+- **Average query latency:** Minimal additional overhead
+- **P95 latency:** <10ms additional overhead
 - **Tested:** 1,000 queries/second with no degradation
 
 Your application performance remains the same. The security benefit far outweighs the tiny latency cost.
@@ -198,7 +198,7 @@ Row-Level Security (RLS) provides **database-level tenant isolation** to ensure 
 **Key Benefits:**
 - ✅ Enhanced security (defense-in-depth)
 - ✅ Automatic enforcement (no human error)
-- ✅ Minimal performance impact (< 10ms)
+- ✅ Minimal performance impact (<10ms)
 - ✅ Compliance-ready (SOC 2, HIPAA, GDPR)
 - ✅ Zero configuration (it just works)
 
