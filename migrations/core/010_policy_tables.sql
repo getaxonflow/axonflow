@@ -258,7 +258,9 @@ INSERT INTO static_policies (policy_id, name, category, pattern, severity, descr
 ('sql_injection_union', 'SQL Injection - UNION Attack', 'sql_injection', 'union\s+select', 'critical', 'UNION-based SQL injection attempt', 'block', 'global'),
 ('sql_injection_or', 'SQL Injection - OR Condition', 'sql_injection', '(\bor\b|\band\b).*[''"]?\s*[=<>].*[''"]?\s*(or|and)\s*[''"]?\s*[=<>]', 'critical', 'Boolean-based SQL injection attempt', 'block', 'global'),
 ('drop_table_prevention', 'DROP TABLE Prevention', 'dangerous_queries', 'drop\s+table', 'critical', 'DROP TABLE operations are not allowed', 'block', 'global'),
-('truncate_prevention', 'TRUNCATE Prevention', 'dangerous_queries', 'truncate\s+table', 'critical', 'TRUNCATE operations are not allowed', 'block', 'global')
+('truncate_prevention', 'TRUNCATE Prevention', 'dangerous_queries', 'truncate\s+table', 'critical', 'TRUNCATE operations are not allowed', 'block', 'global'),
+-- PII Detection policy (credit card detection is in 014_eu_ai_act_templates.sql as eu_gdpr_credit_card_detection)
+('pii_ssn_detection', 'SSN Detection', 'pii_detection', '\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b', 'high', 'US Social Security Number pattern detected', 'redact', 'global')
 ON CONFLICT (policy_id) DO NOTHING;
 
 -- Insert essential default dynamic policies
