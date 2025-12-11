@@ -785,6 +785,10 @@ func Run() {
 	// Register Gateway Mode endpoints (pre-check and audit)
 	RegisterGatewayHandlers(globalRouter)
 
+	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
+	// This enables the Customer Portal to list static policies from the Agent
+	RegisterStaticPolicyHandlers(globalRouter, usageDB)
+
 	// Mark application as ready - /health will now return "healthy"
 	appReady.Store(true)
 	log.Println("✅ All initialization complete - application ready")

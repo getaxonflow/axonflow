@@ -47,32 +47,26 @@ jobs:
           spectral lint docs/api/policy-api.yaml --ruleset .spectral.yaml --fail-severity error
           echo "✅ Linting passed"
 
-      - name: Check for breaking changes
+      - name: Get base spec for comparison
         if: github.event_name == 'pull_request'
+        id: base-spec
         run: |
-          echo "Checking for breaking changes..."
           git fetch origin ${{ github.base_ref }} --depth=1
-
-          # Check if base branch has the spec file
-          if git show origin/${{ github.base_ref }}:docs/api/policy-api.yaml > /tmp/base-spec.yaml 2>/dev/null; then
-            echo "Found base spec, comparing..."
-
-            # Install oasdiff binary (pinned version for reproducibility)
-            OASDIFF_VERSION="1.10.25"
-            curl -sSL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin oasdiff
-
-            # Use oasdiff for semantic breaking change detection
-            oasdiff breaking /tmp/base-spec.yaml docs/api/policy-api.yaml --fail-on ERR || {
-              echo ""
-              echo "⚠️  Breaking changes detected!"
-              echo "Please review the changes above and ensure they are intentional."
-              echo "If these are expected breaking changes, document them in the PR description."
-              exit 1
-            }
-            echo "✅ No breaking changes detected"
+          # Save base spec in workspace (not /tmp) so Docker action can access it
+          if git show origin/${{ github.base_ref }}:docs/api/policy-api.yaml > base-spec.yaml 2>/dev/null; then
+            echo "has_base=true" >> $GITHUB_OUTPUT
           else
+            echo "has_base=false" >> $GITHUB_OUTPUT
             echo "ℹ️  No previous spec found on base branch - skipping breaking change check"
           fi
+
+      - name: Check for breaking changes
+        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_base == 'true'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-spec.yaml
+          revision: docs/api/policy-api.yaml
+          fail-on: ERR
 
       - name: Generate documentation preview
         run: |
