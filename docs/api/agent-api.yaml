@@ -70,6 +70,11 @@ tags:
     description: |
       EU AI Act compliance data export and reporting.
       Export compliance data in EU regulatory format.
+  - name: Static Policies
+    description: |
+      Static policy management (ADR-018).
+      Read-only access to system-managed policies for SQL injection detection,
+      PII detection, and other pattern-based enforcement rules.
 
 paths:
   /health:
@@ -1769,6 +1774,125 @@ paths:
               schema:
                 $ref: '#/components/schemas/EUAIActSummary'
 
+  # =============================================================================
+  # Static Policies API (ADR-018)
+  # =============================================================================
+
+  /api/v1/static-policies:
+    get:
+      tags:
+        - Static Policies
+      summary: List static policies
+      description: |
+        Returns all static (system-managed) policies for the tenant.
+        Static policies are read-only and managed via database migrations.
+
+        Categories include:
+        - `sql_injection` - SQL injection detection patterns
+        - `pii_detection` - PII/PHI data protection patterns
+        - `dangerous_queries` - Potentially harmful query patterns
+        - `admin_access` - Administrative access controls
+
+        Part of ADR-018: Unified Policy Management System.
+      operationId: listStaticPolicies
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for multi-tenant policy filtering
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          description: Number of policies per page
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: category
+          in: query
+          description: Filter by category
+          schema:
+            type: string
+            enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+        - name: severity
+          in: query
+          description: Filter by severity level
+          schema:
+            type: string
+            enum: [critical, high, medium, low]
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of static policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPoliciesListResponse'
+        '400':
+          description: Missing or invalid X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/{id}:
+    get:
+      tags:
+        - Static Policies
+      summary: Get static policy by ID
+      description: |
+        Returns a single static policy by its UUID.
+
+        The policy ID is the `id` field from the static_policies table,
+        not the `policy_id` (human-readable identifier like 'sql_injection_union').
+      operationId: getStaticPolicy
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for authorization
+          schema:
+            type: string
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Static policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Missing or invalid X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 components:
   parameters:
     LicenseKey:
@@ -1807,6 +1931,104 @@ components:
         version:
           type: string
           example: "1.0.0"
+
+    # =========================================================================
+    # Static Policies Schemas (ADR-018)
+    # =========================================================================
+
+    StaticPolicy:
+      type: object
+      description: A system-managed static policy (read-only)
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique policy UUID
+        policy_id:
+          type: string
+          description: Human-readable policy identifier
+          example: "sql_injection_union"
+        name:
+          type: string
+          description: Display name of the policy
+          example: "SQL Injection - UNION Attack"
+        description:
+          type: string
+          description: Detailed policy description
+          example: "Detects SQL injection attempts using UNION keyword"
+        category:
+          type: string
+          enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+          description: Policy category
+        pattern:
+          type: string
+          description: Regex pattern for detection
+          example: "(?i)\\bunion\\b.*\\bselect\\b"
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Policy severity level
+        action:
+          type: string
+          enum: [block, warn, log, redact]
+          description: Action to take when pattern matches
+        enabled:
+          type: boolean
+          description: Whether policy is active
+        tenant_id:
+          type: string
+          description: Tenant scope (use 'global' for all tenants)
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional policy configuration
+        created_at:
+          type: string
+          format: date-time
+          description: When policy was created
+        updated_at:
+          type: string
+          format: date-time
+          description: When policy was last modified
+      required:
+        - id
+        - policy_id
+        - name
+        - category
+        - pattern
+        - severity
+        - action
+        - enabled
+        - tenant_id
+        - created_at
+        - updated_at
+
+    StaticPoliciesListResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaticPolicy'
+          description: List of static policies
+        pagination:
+          $ref: '#/components/schemas/StaticPolicyPagination'
+
+    StaticPolicyPagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          description: Current page number (1-indexed)
+        page_size:
+          type: integer
+          description: Number of items per page
+        total:
+          type: integer
+          description: Total number of policies
+        total_pages:
+          type: integer
+          description: Total number of pages
 
     MetricsResponse:
       type: object

@@ -39,7 +39,7 @@ Build dynamic workflows that make decisions based on runtime data.
 ## Real-World Scenarios
 
 ### 4. Travel Booking with Fallbacks
-**File:** `04-travel-booking-fallback/`
+**File:** `04-travel-booking-fallbacks/`
 **Lines:** ~50 lines
 **What it shows:** Try Amadeus API → if fails, use mock data
 
@@ -53,7 +53,7 @@ Handle API failures gracefully with automatic fallback mechanisms.
 Build multi-step data pipelines with different connector types.
 
 ### 6. Multi-Step Approval Workflow
-**File:** `06-approval-workflow/`
+**File:** `06-multi-step-approval/`
 **Lines:** ~70 lines
 **What it shows:** Submit → manager approval → execute → audit log
 

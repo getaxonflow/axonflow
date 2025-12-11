@@ -32,8 +32,14 @@ servers:
     description: Staging
 
 tags:
+  - name: Unified Policies
+    description: |
+      Unified view of policies from both Agent (static) and Orchestrator (dynamic).
+      Static policies are read-only security patterns. Dynamic policies support full CRUD.
   - name: Policies
-    description: Policy CRUD operations
+    description: Dynamic policy CRUD operations (Orchestrator)
+  - name: Static Policies
+    description: Read-only static policies from Agent
   - name: Testing
     description: Policy testing and validation
   - name: Bulk Operations
@@ -42,6 +48,179 @@ tags:
     description: Policy templates for quick policy creation
 
 paths:
+  /api/v1/unified-policies:
+    get:
+      tags:
+        - Unified Policies
+      summary: List all policies (unified view)
+      description: |
+        Retrieves a unified view of policies from both Agent (static) and Orchestrator (dynamic).
+
+        Static policies are pre-configured security patterns (SQL injection, PII detection)
+        managed by AxonFlow and cannot be modified.
+
+        Dynamic policies are customer-created rules that can be managed through CRUD operations.
+
+        The response aggregates policies from both sources and provides a summary count.
+      operationId: listUnifiedPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: type
+          in: query
+          description: Filter by policy type (content, user, risk, cost for dynamic; sql_injection, pii_detection, etc. for static)
+          schema:
+            type: string
+        - name: source
+          in: query
+          description: Filter by policy source
+          schema:
+            type: string
+            enum: [agent, orchestrator, all]
+            default: all
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          description: Search in policy name and description
+          schema:
+            type: string
+            maxLength: 100
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: Items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sort_by
+          in: query
+          description: Sort field
+          schema:
+            type: string
+            enum: [name, created_at, updated_at, priority, source]
+            default: priority
+        - name: sort_dir
+          in: query
+          description: Sort direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Unified policy list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedPolicyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/unified-policies/{policy_id}:
+    get:
+      tags:
+        - Unified Policies
+      summary: Get unified policy by ID
+      description: |
+        Retrieves a single policy by its ID from either Agent (static) or Orchestrator (dynamic).
+        The policy_id format indicates the source:
+        - `static-*`: Static policy from Agent
+        - UUID format: Dynamic policy from Orchestrator
+      operationId: getUnifiedPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: policy_id
+          in: path
+          required: true
+          description: Policy ID (static-* for static policies, UUID for dynamic)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Policy retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedPolicy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/static-policies:
+    get:
+      tags:
+        - Static Policies
+      summary: List static policies
+      description: |
+        Retrieves static policies from the Agent service.
+        These are pre-configured security patterns that cannot be modified.
+      operationId: listStaticPolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: category
+          in: query
+          description: Filter by policy category
+          schema:
+            type: string
+            enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Static policy list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/static-policies/{policy_id}:
+    get:
+      tags:
+        - Static Policies
+      summary: Get static policy by ID
+      description: Retrieves a single static policy from the Agent service
+      operationId: getStaticPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: policy_id
+          in: path
+          required: true
+          description: Static policy ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Static policy retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/policies:
     get:
       tags:
@@ -1237,6 +1416,173 @@ components:
               last_used_at:
                 type: string
                 format: date-time
+
+    # Unified Policy Schemas
+    UnifiedPolicy:
+      type: object
+      description: A policy from either Agent (static) or Orchestrator (dynamic)
+      properties:
+        policy_id:
+          type: string
+          description: Unique policy identifier (static-* for static, UUID for dynamic)
+          example: static-sql-injection-1
+        name:
+          type: string
+          description: Policy name
+          example: SQL Injection Detection
+        description:
+          type: string
+          description: Human-readable description
+        type:
+          type: string
+          description: Policy type (category for static, type for dynamic)
+          example: sql_injection
+        source:
+          type: string
+          enum: [agent, orchestrator]
+          description: Source service for this policy
+        priority:
+          type: integer
+          description: Evaluation priority (higher = evaluated first)
+          example: 1000
+        enabled:
+          type: boolean
+          description: Whether the policy is enabled
+        is_static:
+          type: boolean
+          description: Whether this is a static (read-only) policy
+        pattern:
+          type: string
+          description: Detection pattern (for static policies)
+        action:
+          type: string
+          description: Action type (block, redact, alert, log)
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Severity level
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyCondition'
+          description: Conditions (for dynamic policies)
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyAction'
+          description: Actions (for dynamic policies)
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional policy metadata
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UnifiedPolicySummary:
+      type: object
+      description: Summary counts for unified policy view
+      properties:
+        total_static:
+          type: integer
+          description: Count of static policies from Agent
+          example: 18
+        total_dynamic:
+          type: integer
+          description: Count of dynamic policies from Orchestrator
+          example: 5
+        total_enabled:
+          type: integer
+          description: Count of enabled policies
+          example: 20
+
+    UnifiedPolicyListResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnifiedPolicy'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+        summary:
+          $ref: '#/components/schemas/UnifiedPolicySummary'
+
+    StaticPolicy:
+      type: object
+      description: A static policy from Agent service (read-only)
+      properties:
+        policy_id:
+          type: string
+          description: Static policy identifier
+          example: static-sql-injection-1
+        name:
+          type: string
+          description: Policy name
+          example: SQL Injection Detection
+        description:
+          type: string
+          description: What the policy protects against
+        category:
+          type: string
+          enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+          description: Policy category
+        pattern:
+          type: string
+          description: Detection pattern (regex)
+          example: "(?i)(union\\s+select|insert\\s+into|delete\\s+from)"
+        action:
+          type: string
+          enum: [block, redact, alert, log]
+          description: Action to take when pattern matches
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Severity level
+        enabled:
+          type: boolean
+          description: Whether the policy is enabled
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StaticPolicyListResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaticPolicy'
+        total:
+          type: integer
+          description: Total count of static policies
+
+    PaginationMeta:
+      type: object
+      description: Pagination metadata
+      properties:
+        page:
+          type: integer
+          description: Current page number
+          example: 1
+        page_size:
+          type: integer
+          description: Items per page
+          example: 20
+        total_items:
+          type: integer
+          description: Total number of items
+          example: 45
+        total_pages:
+          type: integer
+          description: Total number of pages
+          example: 3
 
   responses:
     Unauthorized:
