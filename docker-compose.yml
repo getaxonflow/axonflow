@@ -101,6 +101,9 @@ services:
 
       # Redis (optional)
       REDIS_URL: redis://redis:6379
+
+      # Orchestrator URL (required for Proxy Mode to forward requests)
+      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
     ports:
       - "8080:8080"
     depends_on:
