@@ -75,12 +75,13 @@ curl http://localhost:8081/health
 ```
 ╔═══════════════════════════════════════════════════════════════╗
 ║               AxonFlow Interactive Demo                       ║
+║          Real-time AI Governance in Action                    ║
 ╚═══════════════════════════════════════════════════════════════╝
 
-Demo 1: PII Detection & Blocking
+Demo 1: SQL Injection Blocking
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Sending: "Process payment for John Smith, SSN 123-45-6789"
-🛡️  BLOCKED - PII Detected (SSN pattern blocked in real-time)
+Sending: "SELECT * FROM users WHERE id=1 UNION SELECT password FROM admin"
+🛡️  BLOCKED - SQL Injection Detected
 
 Demo 2: Safe Query (Allowed)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -89,15 +90,15 @@ Sending: "What is the weather forecast for tomorrow?"
 
 Demo 3: Credit Card Detection
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Sending: "Charge my card 4111-1111-1111-1111"
-🛡️  BLOCKED - Credit Card Detected
+Sending: "Charge my card 4111-1111-1111-1111 for the order"
+🛡️  POLICY TRIGGERED - Credit Card Detected
 
 Demo 4: Sub-10ms Policy Evaluation
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ Average latency: 4ms (Sub-10ms inline governance!)
+⚡ Average latency: 3ms (Sub-10ms inline governance achieved!)
 ```
 
-**That's AxonFlow** - blocking sensitive data in real-time, under 10ms.
+**That's AxonFlow** - blocking malicious queries and detecting sensitive data in real-time, under 10ms.
 
 ### Want More? Try These Examples
 
@@ -115,15 +116,15 @@ Want to try from code? Here's the Python equivalent of the demo:
 # pip install requests
 import requests
 
-# Test PII detection using the Gateway Mode pre-check endpoint
+# Test SQL injection detection using the Gateway Mode pre-check endpoint
 response = requests.post("http://localhost:8080/api/policy/pre-check", json={
     "client_id": "demo",
     "user_token": "demo-user",
-    "query": "My SSN is 123-45-6789",
+    "query": "SELECT * FROM users WHERE id=1 UNION SELECT password FROM admin",
     "context": {"user_role": "agent"}
 })
 
-print(response.json())  # Shows approved: false for PII violation
+print(response.json())  # Shows approved: false, block_reason: "SQL injection detected"
 ```
 
 ---
