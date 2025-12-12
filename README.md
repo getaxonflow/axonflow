@@ -4,6 +4,10 @@
 >
 > **Sub-10ms inline governance • active prevention not passive detection • 420% ROI • EU AI Act ready • multi-model routing • audit-grade observability**
 
+📘 **Documentation** → https://docs.getaxonflow.com
+🚀 **Quickstart** → https://docs.getaxonflow.com/docs/getting-started
+🔌 **API Reference** → [docs/api/](./docs/api/)
+
 ## 🚀 Quick Start
 
 ### Self-Hosted (OSS - No License Required)
@@ -241,43 +245,59 @@ AxonFlow is available in two editions:
 | **Core Platform** | | |
 | Policy enforcement engine | ✅ | ✅ |
 | Sub-10ms inline governance | ✅ | ✅ |
-| PII detection (10 types) | ✅ | ✅ |
+| PII detection (SSN, credit cards, etc.) | ✅ | ✅ |
 | Audit logging | ✅ | ✅ |
+| Static Policy API (list, get) | ✅ | ✅ |
 | **LLM Providers** | | |
 | OpenAI | ✅ | ✅ |
 | Anthropic (Claude) | ✅ | ✅ |
 | Ollama (local/air-gapped) | ✅ | ✅ |
 | AWS Bedrock | ❌ | ✅ |
 | Google Gemini | ❌ | ✅ |
+| Multi-provider routing & failover | ✅ | ✅ |
+| Customer Portal provider UI | ❌ | ✅ |
 | **MCP Connectors** | | |
-| PostgreSQL | ✅ | ✅ |
-| MySQL | ✅ | ✅ |
-| MongoDB | ✅ | ✅ |
-| Redis | ✅ | ✅ |
-| HTTP/REST | ✅ | ✅ |
-| Cassandra | ✅ | ✅ |
+| PostgreSQL, MySQL, MongoDB | ✅ | ✅ |
+| Redis, HTTP/REST, Cassandra | ✅ | ✅ |
+| S3, Azure Blob, GCS (cloud storage) | ✅ | ✅ |
 | Amadeus (Travel API) | ❌ | ✅ |
 | Salesforce | ❌ | ✅ |
 | Slack | ❌ | ✅ |
 | Snowflake | ❌ | ✅ |
+| HubSpot | ❌ | ✅ |
+| Jira | ❌ | ✅ |
+| ServiceNow | ❌ | ✅ |
 | **Multi-Agent Planning (MAP)** | | |
 | YAML agent configuration | ✅ | ✅ |
+| Parallel task execution | ✅ | ✅ |
+| Conditional logic & branching | ✅ | ✅ |
 | Agent registry with hot reload | ✅ | ✅ |
 | REST API (list, get, validate) | ✅ | ✅ |
-| REST API (CRUD, versions, test) | ❌ | ✅ |
-| Database-backed storage | ❌ | ✅ |
+| REST API (CRUD, versions, sandbox) | ❌ | ✅ |
+| Database-backed agent storage | ❌ | ✅ |
+| **Policy Management** | | |
+| Static policies (SQL injection, PII) | ✅ | ✅ |
+| Dynamic policy CRUD API | ✅ | ✅ |
+| Policy versioning | ✅ | ✅ |
+| Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS, SEBI) |
+| Customer Portal Policy UI | ❌ | ✅ |
 | **EU AI Act Compliance** | | |
 | Decision chain tracing | ✅ | ✅ |
 | Transparency headers (X-AI-*) | ✅ | ✅ |
-| Human-in-the-Loop (HITL) | ❌ | ✅ |
-| Conformity assessment APIs | ❌ | ✅ |
-| Accuracy metrics & bias detection | ❌ | ✅ |
+| Human-in-the-Loop (HITL) queue | ❌ | ✅ |
 | Emergency circuit breaker | ❌ | ✅ |
+| Conformity assessment workflow | ❌ | ✅ |
+| Accuracy metrics & bias detection | ❌ | ✅ |
+| 10-year audit retention | ❌ | ✅ |
 | EU AI Act export format | ❌ | ✅ |
-| **Advanced Features** | | |
-| Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS) |
+| **SEBI AI/ML Compliance (India)** | | |
+| PAN & Aadhaar detection | ✅ | ✅ |
+| 5-year audit retention | ❌ | ✅ |
+| SEBI audit export API | ❌ | ✅ |
+| Compliance dashboard | ❌ | ✅ |
+| **Platform Features** | | |
 | Customer dashboard UI | ❌ | ✅ |
-| Usage analytics | ❌ | ✅ |
+| Usage analytics & reporting | ❌ | ✅ |
 | AWS Marketplace integration | ❌ | ✅ |
 | **Deployment** | | |
 | Docker Compose (local) | ✅ | ✅ |
@@ -285,8 +305,7 @@ AxonFlow is available in two editions:
 | Multi-tenant isolation | ❌ | ✅ |
 | **Support** | | |
 | Community (GitHub Issues) | ✅ | ✅ |
-| Priority support | ❌ | ✅ |
-| SLA guarantees | ❌ | ✅ |
+| Priority support & SLA | ❌ | ✅ |
 
 **Get Enterprise:** Contact [sales@getaxonflow.com](mailto:sales@getaxonflow.com) or deploy via [AWS Marketplace](https://aws.amazon.com/marketplace).
 
@@ -521,12 +540,15 @@ We welcome contributions to AxonFlow! To maintain high quality standards:
 2. Check `technical-docs/` for architecture and testing standards
 3. Run `go test -cover` to verify coverage before submitting PRs
 
-**Current Quality Status (Dec 5, 2025):**
-- Agent Package: 74.9% test coverage ✅ (threshold: 74%)
-- Orchestrator Package: 73.0% test coverage ✅ (threshold: 72%)
-- Connectors Package: 68.6% test coverage ✅ (threshold: 66%)
-- All tests passing, zero flaky tests
-- CI/CD pipeline enforces coverage thresholds per module
+**Test Coverage (as of Dec 11, 2025):**
+
+| Package | Coverage | CI Threshold |
+|---------|----------|--------------|
+| Agent | 78.7% | 76.0% |
+| Orchestrator | 73.9% | 73.5% |
+| Connectors | 63.4% | 62.0% |
+
+*CI enforces thresholds per module. Coverage updated periodically.*
 
 ## 📚 Documentation
 
