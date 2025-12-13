@@ -541,6 +541,6 @@ for name, ps := range status {
 
 ## Related Documentation
 
-- [LLM Provider Architecture](../LLM_PROVIDER_ARCHITECTURE.md) - Deep dive into internals
-- [LLM Provider Configuration](../LLM_PROVIDER_CONFIGURATION.md) - User configuration guide
-- [TypeScript SDK Guide](./TYPESCRIPT_QUICKSTART.md) - TypeScript SDK usage
+- [LLM Provider Architecture](../reference/llm-architecture.md) - Deep dive into internals
+- [LLM Provider Configuration](../guides/llm-providers.md) - User configuration guide
+- [TypeScript SDK Guide](./typescript-quickstart.md) - TypeScript SDK usage

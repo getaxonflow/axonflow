@@ -504,7 +504,7 @@ agent, err := client.LoadAgent("customer-support")
 response, err := agent.Query(ctx, "How do I reset my password?")
 ```
 
-**See full guide:** [Agent Definition Reference](./agent-definition.md)
+**See full guide:** [Agent Definition Reference](./reference/agent-definition.md)
 
 ### 3. Deploy to Production
 
@@ -715,8 +715,8 @@ aws ecs describe-service \
 
 You've built your first AI agent with AxonFlow! Here's what to explore next:
 
-1. **[Agent Definition Guide](./agent-definition.md)** - Define custom agents with YAML
-2. **[API Reference](./api-reference.md)** - Complete SDK documentation
+1. **[Agent Definition Guide](./reference/agent-definition.md)** - Define custom agents with YAML
+2. **[API Reference](./api/)** - API specifications and error codes
 3. **[Example Applications](../examples/)** - Healthcare, E-commerce, Trip Planning
 4. **[Production Deployment](../technical-docs/DEPLOYMENT_GUIDE.md)** - Deploy to AWS
 5. **[MCP Connectors](../technical-docs/MCP_CONNECTORS.md)** - Connect to your data sources

@@ -416,7 +416,7 @@ paths:
         In hybrid mode, includes both file-based and database-backed agents.
         Database agents take priority over file agents with the same name.
 
-        **OSS:** Returns agents loaded from YAML files.
+        **Community:** Returns agents loaded from YAML files.
         **Enterprise:** Returns agents from both files and database.
       operationId: listAgents
       parameters:

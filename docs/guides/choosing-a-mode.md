@@ -299,6 +299,6 @@ app.post('/api/analyze', async (req, res) => {
 
 ## Next Steps
 
-- [Proxy Mode Guide](./PROXY_MODE_GUIDE.md) - Deep dive into Proxy Mode
-- [Gateway Mode Migration Guide](./GATEWAY_MODE_MIGRATION_GUIDE.md) - Deep dive into Gateway Mode
-- [SDK Comparison](./SDK_COMPARISON.md) - TypeScript vs Go vs Python SDKs
+- [Proxy Mode Guide](./proxy-mode.md) - Deep dive into Proxy Mode
+- [Gateway Mode Migration Guide](./gateway-mode.md) - Deep dive into Gateway Mode
+- [SDK Comparison](../reference/sdk-comparison.md) - TypeScript vs Go vs Python SDKs

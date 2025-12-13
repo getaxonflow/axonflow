@@ -304,5 +304,5 @@ Use this checklist to verify SEBI AI/ML compliance:
 
 - [SEBI AI/ML Guidelines Consultation Paper (June 2025)](https://www.sebi.gov.in/)
 - [Digital Personal Data Protection Act 2023](https://www.meity.gov.in/dpdp-act-2023)
-- [AxonFlow PII Detection](./PII_DETECTION.md)
-- [AxonFlow Policy Templates API](./POLICY_TEMPLATES_API.md)
+- [AxonFlow PII Detection](../guides/pii-detection.md)
+- [AxonFlow Policy Templates API](../reference/policy-templates.md)

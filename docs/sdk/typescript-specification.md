@@ -14,7 +14,7 @@ The SDK implements an invisible governance layer for AI applications, providing 
 2. **Isomorphic**: Works in Node.js and browsers
 3. **Non-Invasive**: 3-line integration without code restructuring
 4. **Fail-Open**: Gracefully degrades if service unavailable
-5. **Performance First**: <10ms overhead on AI calls
+5. **Performance First**: Minimal overhead on AI calls (typically single-digit ms)
 
 ## Component Architecture
 

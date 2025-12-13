@@ -172,7 +172,7 @@ Your request violated a policy. Check the error message for details.
 Check your API key and network connection.
 
 ### Performance concerns
-AxonFlow adds <10ms latency (9.5ms P99). If you see more, contact support.
+AxonFlow typically adds single-digit millisecond latency. If you see significantly more, contact support.
 
 ## Next Steps
 

@@ -129,7 +129,7 @@ interface AxonFlowConfig {
 ## Success Metrics
 - Integration time: <30 minutes
 - Code changes: <5 lines
-- Performance overhead: <10ms
+- Performance overhead: Typically single-digit ms
 - Bundle size: <50KB
 
 ## Risk Mitigation
