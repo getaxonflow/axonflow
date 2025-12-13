@@ -6,9 +6,10 @@ This folder contains SDK architecture and specification documents.
 
 | Document | Description |
 |----------|-------------|
-| [TYPESCRIPT_ARCHITECTURE.md](./TYPESCRIPT_ARCHITECTURE.md) | TypeScript SDK architecture and design |
-| [TYPESCRIPT_SPECIFICATION.md](./TYPESCRIPT_SPECIFICATION.md) | TypeScript SDK technical specification |
-| [TYPESCRIPT_QUICKSTART.md](./TYPESCRIPT_QUICKSTART.md) | Quick start guide for TypeScript SDK |
+| [typescript-architecture.md](./typescript-architecture.md) | TypeScript SDK architecture and design |
+| [typescript-specification.md](./typescript-specification.md) | TypeScript SDK technical specification |
+| [typescript-quickstart.md](./typescript-quickstart.md) | Quick start guide for TypeScript SDK |
+| [llm-sdk-guide.md](./llm-sdk-guide.md) | Using LLM providers with SDK |
 
 ## SDK Repositories
 
@@ -18,5 +19,5 @@ This folder contains SDK architecture and specification documents.
 
 ## Related Documentation
 
-- [SDK Comparison](../SDK_COMPARISON.md) - Feature comparison between Go and TypeScript SDKs
-- [Gateway Mode Migration](../GATEWAY_MODE_MIGRATION_GUIDE.md) - Migrating to Gateway Mode SDK
+- [SDK Comparison](../reference/sdk-comparison.md) - Feature comparison between Go and TypeScript SDKs
+- [Gateway Mode Migration](../guides/gateway-mode.md) - Migrating to Gateway Mode SDK

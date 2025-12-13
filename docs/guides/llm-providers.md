@@ -42,7 +42,7 @@ AxonFlow Enterprise Edition supports multiple LLM providers to meet diverse oper
 
 | Provider | Type | Use Cases | Availability |
 |----------|------|-----------|--------------|
-| **OpenAI** | Cloud API | General purpose, rapid development | OSS + Enterprise |
+| **OpenAI** | Cloud API | General purpose, rapid development | Community + Enterprise |
 | **AWS Bedrock** | Cloud API (AWS) | HIPAA compliance, data residency, enterprise | Enterprise Only |
 | **Ollama** | Self-hosted | Air-gapped, on-premise, cost optimization | Enterprise Only |
 
@@ -142,7 +142,7 @@ export AWS_REGION=us-east-1
 - ✅ No data used for training
 - ✅ Enterprise SLAs
 
-**Documentation**: See [BEDROCK_SETUP.md](./BEDROCK_SETUP.md) for complete setup guide.
+**Documentation**: See the Enterprise documentation for complete Bedrock setup guide.
 
 ---
 
@@ -235,7 +235,7 @@ docker exec ollama ollama list
 - ✅ Air-gap compatible
 - ✅ Custom model deployment
 
-**Documentation**: See [OLLAMA_SETUP.md](./OLLAMA_SETUP.md) for complete setup guide.
+**Documentation**: See the Enterprise documentation for complete Ollama setup guide.
 
 ---
 
@@ -281,7 +281,7 @@ LLM_PROVIDER: ollama  # Air-gapped
 
 AxonFlow uses an array-based `EnabledConnectors` parameter to control which MCP connector secrets are injected into ECS containers. This enables:
 
-- ✅ **OSS Deployments**: Deploy with no connectors (empty string)
+- ✅ **Community Deployments**: Deploy with no connectors (empty string)
 - ✅ **Partial Deployments**: Enable only specific connectors
 - ✅ **Enterprise Deployments**: Enable all connectors
 
@@ -314,7 +314,7 @@ Use `EnabledLLMProviders` parameter for these AI model providers:
 
 ### Deployment Examples
 
-**OSS Deployment (No Connectors):**
+**Community Deployment (No Connectors):**
 ```yaml
 # config/environments/staging.yaml
 EnabledConnectors: ""
@@ -411,7 +411,7 @@ export LLM_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
 
 ### OpenAI
 
-**For:** OSS and Enterprise Edition
+**For:** Community and Enterprise Edition
 
 OpenAI GPT models for general-purpose AI tasks.
 
@@ -433,7 +433,7 @@ export OPENAI_API_KEY=sk-xxxxx
 
 ### Anthropic
 
-**For:** OSS and Enterprise Edition
+**For:** Community and Enterprise Edition
 
 Anthropic Claude models optimized for safety and helpfulness.
 
@@ -1171,7 +1171,7 @@ curl -X PUT http://localhost:8080/api/v1/llm-providers/routing \
   -d '{"weights": {"my-anthropic": 70, "my-openai": 30}}'
 ```
 
-See [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md#rest-api-reference) for full API documentation.
+See [LLM Provider Architecture](../reference/llm-architecture.md#rest-api-reference) for full API documentation.
 
 ### Customer Portal (Enterprise)
 
@@ -1187,8 +1187,5 @@ Access the Customer Portal at your deployment URL (e.g., `https://portal.your-do
 ---
 
 **For more information:**
-- [LLM Provider Architecture](./LLM_PROVIDER_ARCHITECTURE.md) - Technical architecture and REST API reference
-- [MCP Connectors Guide](../technical-docs/MCP_CONNECTORS.md) - Connect to external data sources
-- [AWS Bedrock Configuration](./BEDROCK_SETUP.md)
-- [Ollama Self-Hosted Setup](./OLLAMA_SETUP.md)
-- [Architecture Overview](../technical-docs/ARCHITECTURE.md)
+- [LLM Provider Architecture](../reference/llm-architecture.md) - Technical architecture and REST API reference
+- [SDK LLM Guide](../sdk/llm-sdk-guide.md) - SDK integration examples

@@ -18,7 +18,7 @@ The EU AI Act (Regulation 2024/1689) establishes harmonized rules for AI systems
 
 ## Feature Summary
 
-| Feature | Article | OSS | Enterprise |
+| Feature | Article | Community | Enterprise |
 |---------|---------|-----|------------|
 | Decision Chain Tracing | 12, 13 | ✅ | ✅ |
 | Transparency Headers | 13 | ✅ | ✅ |
@@ -417,6 +417,6 @@ For detailed setup instructions, see the [Enterprise Installation Guide](/docs/e
 
 ## Related Documentation
 
-- [PII Detection](./PII_DETECTION.md)
-- [SEBI Compliance](./SEBI_COMPLIANCE.md)
-- [Policy Templates](./POLICY_TEMPLATES_API.md)
+- [PII Detection](../guides/pii-detection.md)
+- [SEBI Compliance](./sebi-compliance.md)
+- [Policy Templates](../reference/policy-templates.md)

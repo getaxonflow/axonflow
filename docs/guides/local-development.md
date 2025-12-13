@@ -535,9 +535,9 @@ docker-compose exec postgres psql -U axonflow -d axonflow -c "SELECT * FROM sche
 
 ---
 
-## Why This Matters for OSS
+## Why This Matters for Community Edition
 
-When AxonFlow goes open source, contributors MUST have fast local testing:
+When AxonFlow goes source-available, contributors MUST have fast local testing:
 
 - ✅ Test changes in 5-10 minutes (not 2-4 hours)
 - ✅ No AWS account required
@@ -546,7 +546,7 @@ When AxonFlow goes open source, contributors MUST have fast local testing:
 - ✅ Easy CI/CD integration
 - ✅ Works offline (after images built)
 
-**Without local testing, OSS adoption will be slow.**
+**Without local testing, Community adoption will be slow.**
 
 ---
 
@@ -556,7 +556,7 @@ When AxonFlow goes open source, contributors MUST have fast local testing:
 2. ✅ Verify all services start successfully
 3. ✅ Document any issues found
 4. Deploy to AWS with confidence
-5. Add this workflow to CONTRIBUTING.md (OSS prep)
+5. Add this workflow to CONTRIBUTING.md (Community edition prep)
 
 ---
 

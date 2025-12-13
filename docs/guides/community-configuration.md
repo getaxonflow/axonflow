@@ -1,6 +1,6 @@
-# AxonFlow OSS Configuration Guide
+# AxonFlow Community Configuration Guide
 
-This guide explains how to configure AxonFlow for self-hosted and OSS deployments using configuration files instead of the Customer Portal.
+This guide explains how to configure AxonFlow for self-hosted and Community deployments using configuration files instead of the Customer Portal.
 
 ## Overview
 
@@ -9,10 +9,10 @@ AxonFlow supports a three-tier configuration system:
 | Priority | Source | Use Case |
 |----------|--------|----------|
 | 1 (Highest) | Database | Enterprise deployments via Customer Portal |
-| 2 | Config File | OSS/self-hosted deployments |
+| 2 | Config File | Community/self-hosted deployments |
 | 3 (Lowest) | Environment Variables | Legacy compatibility, CI/CD |
 
-For OSS deployments, the **config file** is the recommended approach.
+For Community deployments, the **config file** is the recommended approach.
 
 ## Quick Start
 
@@ -333,6 +333,6 @@ Check:
 
 ## Next Steps
 
-- [Contributing a New Connector](./CONNECTOR_DEVELOPMENT_GUIDE.md)
-- [Policy Configuration](./POLICY_CONFIGURATION.md)
-- [API Reference](./API_REFERENCE.md)
+- [Contributing a New Connector](./connector-development.md)
+- [Policy Configuration](../reference/policy-templates.md)
+- [API Reference](../api/)

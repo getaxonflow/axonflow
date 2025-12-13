@@ -28,7 +28,7 @@ AxonFlow's LLM provider system is designed to be pluggable, extensible, and ente
 │  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────────┐    │
 │  │ Provider        │  │ Health          │  │ License           │    │
 │  │ Configs         │  │ Monitoring      │  │ Validator         │    │
-│  │ (name→config)   │  │ (periodic       │  │ (OSS vs ENT)      │    │
+│  │ (name→config)   │  │ (periodic       │  │ (Community vs ENT)│    │
 │  │                 │  │  health checks) │  │                   │    │
 │  └─────────────────┘  └─────────────────┘  └───────────────────┘    │
 │                                                                      │
@@ -44,7 +44,7 @@ AxonFlow's LLM provider system is designed to be pluggable, extensible, and ente
 │                         Providers                                    │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────┐  │
 │  │ OpenAI   │  │ Anthropic│  │ Bedrock  │  │ Ollama   │  │ Custom│  │
-│  │ (OSS)    │  │ (OSS)    │  │ (ENT)    │  │ (OSS)    │  │ (ENT) │  │
+│  │ (Comm)   │  │ (Comm)   │  │ (ENT)    │  │ (Comm)   │  │ (ENT) │  │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └───────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -204,9 +204,9 @@ type Provider interface {
 
 | Type | Constant | License | Description |
 |------|----------|---------|-------------|
-| OpenAI | `ProviderTypeOpenAI` | OSS | OpenAI GPT models |
-| Anthropic | `ProviderTypeAnthropic` | OSS | Anthropic Claude models |
-| Ollama | `ProviderTypeOllama` | OSS | Self-hosted open-source models |
+| OpenAI | `ProviderTypeOpenAI` | Community | OpenAI GPT models |
+| Anthropic | `ProviderTypeAnthropic` | Community | Anthropic Claude models |
+| Ollama | `ProviderTypeOllama` | Community | Self-hosted open-source models |
 | Bedrock | `ProviderTypeBedrock` | Enterprise | AWS Bedrock managed models |
 | Gemini | `ProviderTypeGemini` | Enterprise | Google Gemini models |
 | Custom | `ProviderTypeCustom` | Enterprise | Third-party or custom providers |
@@ -358,7 +358,7 @@ type RouteInfo struct {
 
 | Tier | Providers | Features |
 |------|-----------|----------|
-| OSS | Ollama, OpenAI, Anthropic | Basic routing, health checks |
+| Community | Ollama, OpenAI, Anthropic | Basic routing, health checks |
 | PRO | + Bedrock, Gemini, Custom | Advanced routing, priority support |
 | ENT | All providers | All features, SLA guarantee |
 | PLUS | All providers | Dedicated support, custom development |
@@ -902,6 +902,6 @@ All endpoints return errors in this format:
 
 ## Related Documentation
 
-- [LLM Provider Configuration Guide](./LLM_PROVIDER_CONFIGURATION.md) - User-facing configuration
-- [SDK Integration Guide](./sdk/LLM_SDK_GUIDE.md) - SDK usage examples
-- [Getting Started](./getting-started.md) - Quick start guide
+- [LLM Provider Configuration Guide](../guides/llm-providers.md) - User-facing configuration
+- [SDK Integration Guide](../sdk/llm-sdk-guide.md) - SDK usage examples
+- [Getting Started](../getting-started.md) - Quick start guide
