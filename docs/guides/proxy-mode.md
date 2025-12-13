@@ -232,7 +232,7 @@ flowchart LR
     end
 ```
 
-For latency-sensitive applications, consider [Gateway Mode](./GATEWAY_MODE_MIGRATION_GUIDE.md).
+For latency-sensitive applications, consider [Gateway Mode](./gateway-mode.md).
 
 ## Error Handling
 
@@ -289,6 +289,6 @@ const axonflow = new AxonFlow({
 
 ## Next Steps
 
-- [Choosing a Mode](./CHOOSING_A_MODE.md) - Decision guide for Proxy vs Gateway
-- [Gateway Mode Migration Guide](./GATEWAY_MODE_MIGRATION_GUIDE.md) - For lowest latency
-- [PII Detection](./PII_DETECTION.md) - Configure PII patterns
+- [Choosing a Mode](./choosing-a-mode.md) - Decision guide for Proxy vs Gateway
+- [Gateway Mode Migration Guide](./gateway-mode.md) - For lowest latency
+- [PII Detection](./pii-detection.md) - Configure PII patterns

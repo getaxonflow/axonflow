@@ -1155,7 +1155,7 @@ knowledge_sources:
 ## Next Steps
 
 1. **Browse Examples** - [examples/agents/](../examples/agents/)
-2. **Read API Reference** - [docs/api-reference.md](./api-reference.md)
+2. **Read API Reference** - [API Documentation](../api/)
 3. **Deploy Your First Agent** - Follow Quick Example above
 4. **Join Community** - https://getaxonflow.com/slack
 

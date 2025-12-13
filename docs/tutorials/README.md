@@ -18,5 +18,5 @@ Step-by-step tutorials for getting started with AxonFlow.
 ## Related Documentation
 
 - [Getting Started Guide](../getting-started.md)
-- [Local Development](../LOCAL_DEVELOPMENT.md)
+- [Local Development](../guides/local-development.md)
 - [SDK Documentation](../sdk/README.md)

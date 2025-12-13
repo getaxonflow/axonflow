@@ -11,7 +11,7 @@
 
 ### Opening (0:00 - 0:30)
 
-**Hook:** "In the next 10 minutes, you'll build a production-ready AI agent with sub-10ms policy enforcement."
+**Hook:** "In the next 10 minutes, you'll build a production-ready AI agent with low-latency inline policy enforcement."
 
 **Visual:** Show final result preview - terminal output with query response and 4ms latency
 
@@ -225,7 +225,7 @@ Latency: 4ms
 ```
 
 **Voiceover:**
-"And there it is! Our agent successfully processed the query and returned the answer. Notice the latency - just 4 milliseconds for policy evaluation. That's AxonFlow's sub-10ms guarantee in action."
+"And there it is! Our agent successfully processed the query and returned the answer. Notice the latency - just 4 milliseconds for policy evaluation. That's AxonFlow's low-latency inline enforcement in action."
 
 **Pause for 2 seconds on the output**
 
@@ -322,7 +322,7 @@ Next Steps:
 ### Closing (9:45 - 10:00)
 
 **Talking Points:**
-"Congratulations! You just built your first AxonFlow agent in under 10 minutes. From here, you can build production-ready AI applications with sub-10ms policy enforcement."
+"Congratulations! You just built your first AxonFlow agent in under 10 minutes. From here, you can build production-ready AI applications with low-latency inline policy enforcement."
 
 **Visual:**
 - Show the complete code on screen one more time
@@ -457,7 +457,7 @@ All other sections remain the same.
 **Viewer Learning Objectives:**
 - [ ] Understand what AxonFlow does
 - [ ] Successfully run their first query
-- [ ] See sub-10ms policy enforcement in action
+- [ ] See low-latency policy enforcement in action
 - [ ] Know where to find more resources
 - [ ] Feel confident building production applications
 
