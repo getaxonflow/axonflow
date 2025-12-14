@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/agent/sqli"
+
 	_ "github.com/lib/pq"
 )
 
@@ -111,13 +113,14 @@ type PolicyAction struct {
 // and user context. Scores range from 0.0 (no risk) to 1.0 (maximum risk).
 //
 // Risk factors:
-//   - SQL injection patterns: +0.9
+//   - SQL injection patterns: +0.9 (uses unified sqli package for detection)
 //   - Sensitive data keywords: +0.7
 //   - Admin role: +0.5
 //   - SELECT * queries: +0.3
 type RiskCalculator struct {
-	sensitivePatterns []*regexp.Regexp
-	riskWeights       map[string]float64
+	sqliScanner        sqli.Scanner       // Unified SQL injection scanner from sqli package
+	sensitivePatterns  []*regexp.Regexp   // Non-SQLi sensitive data patterns (passwords, secrets)
+	riskWeights        map[string]float64
 }
 
 // PolicyCache caches policy evaluation results to improve performance.
@@ -576,10 +579,13 @@ func (e *DynamicPolicyEngine) reloadPoliciesRoutine() {
 // RiskCalculator implementation
 func NewRiskCalculator() *RiskCalculator {
 	return &RiskCalculator{
+		// Use unified sqli package for SQL injection detection
+		// This provides 35+ patterns with category-based severity classification
+		// and consistent detection across input and response scanning
+		sqliScanner: sqli.NewBasicScanner(),
+		// Sensitive data patterns (non-SQLi) for risk calculation
 		sensitivePatterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)(password|secret|key|token)`),
-			regexp.MustCompile(`(?i)(drop\s+table|delete\s+from|truncate)`),
-			regexp.MustCompile(`(?i)(union\s+select|or\s+1=1)`),
 		},
 		riskWeights: map[string]float64{
 			"sql_injection":    0.9,
@@ -592,29 +598,36 @@ func NewRiskCalculator() *RiskCalculator {
 
 func (r *RiskCalculator) CalculateRiskScore(req OrchestratorRequest) float64 {
 	score := 0.0
-	
-	// Check for SQL injection patterns
+
+	// Check for SQL injection patterns using unified sqli scanner
+	// This provides consistent detection with the agent and MCP response scanning
+	sqliResult := r.sqliScanner.Scan(context.Background(), req.Query, sqli.ScanTypeInput)
+	if sqliResult.Detected {
+		score += r.riskWeights["sql_injection"]
+	}
+
+	// Check for sensitive data keywords (non-SQLi patterns)
 	for _, pattern := range r.sensitivePatterns {
 		if pattern.MatchString(req.Query) {
-			score += r.riskWeights["sql_injection"]
+			score += r.riskWeights["sensitive_data"]
 		}
 	}
-	
+
 	// Check user role
 	if req.User.Role == "admin" {
 		score += r.riskWeights["admin_query"]
 	}
-	
+
 	// Check query type
 	if strings.Contains(strings.ToLower(req.Query), "select *") {
 		score += r.riskWeights["large_result_set"]
 	}
-	
+
 	// Normalize score to 0-1 range
 	if score > 1.0 {
 		score = 1.0
 	}
-	
+
 	return score
 }
 

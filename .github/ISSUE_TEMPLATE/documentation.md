@@ -56,6 +56,11 @@ assignees: ''
 - [ ] No, but I can review a proposed fix
 - [ ] No, reporting for someone else to fix
 
+## Reported By
+
+<!-- If reporting on behalf of someone else, @mention them or provide attribution -->
+<!-- Example: @username or "Reported by: Name (Company)" -->
+
 ## Checklist
 - [ ] I have searched existing issues
 - [ ] I have checked the [documentation](https://docs.getaxonflow.com)

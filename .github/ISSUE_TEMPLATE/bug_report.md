@@ -110,6 +110,11 @@ AGENT_PORT=8443
 
 <!-- Optional: If you have suggestions on how to fix the bug -->
 
+## Reported By
+
+<!-- If reporting on behalf of someone else, @mention them or provide attribution -->
+<!-- Example: @username or "Reported by: Name (Company)" -->
+
 ## Checklist
 
 - [ ] I have searched existing issues to avoid duplicates
