@@ -2450,4 +2450,227 @@ func TestFetchApprovedData_MCPQueryPermission(t *testing.T) {
 	}
 }
 
+// ==================================================================
+// RBI Kill Switch Tests (OSS stub behavior)
+// ==================================================================
 
+// TestCheckRBIKillSwitch_OSS tests that kill switch returns not blocked in OSS mode
+func TestCheckRBIKillSwitch_OSS(t *testing.T) {
+	ctx := context.Background()
+
+	// In OSS mode, kill switch should always return not blocked
+	result := checkRBIKillSwitch(ctx, "org-123", "system-456")
+
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+	if result.IsBlocked {
+		t.Error("OSS stub should never block (expected IsBlocked=false)")
+	}
+}
+
+// TestGetRBIKillSwitchChecker tests lazy initialization of kill switch checker
+func TestGetRBIKillSwitchChecker(t *testing.T) {
+	// First call initializes
+	checker := getRBIKillSwitchChecker()
+
+	// Second call should return the same instance
+	checker2 := getRBIKillSwitchChecker()
+
+	// In OSS mode, checker will be nil because KillSwitchEnabled() returns false
+	// But the function should be consistent
+	if checker != checker2 {
+		t.Error("getRBIKillSwitchChecker should return the same instance on subsequent calls")
+	}
+}
+
+// TestPreCheckHandler_KillSwitchIntegration tests that kill switch check is integrated into pre-check flow
+// In OSS mode, kill switch is not enforced, so requests pass through. In enterprise mode, active kill switches block requests.
+func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
+	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Normal request - should pass in OSS mode (kill switch not enforced)
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "What is the status of my order?",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+		return
+	}
+
+	var resp PreCheckResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// In OSS mode, kill switch check always returns not blocked
+	if !resp.Approved {
+		t.Errorf("Expected Approved=true (OSS mode doesn't enforce kill switch), got Approved=false. BlockReason: %s",
+			resp.BlockReason)
+	}
+}
+
+// ==================================================================
+// RBI PII Detection Tests (OSS stub behavior)
+// ==================================================================
+
+// TestCheckRBIPII_OSS tests RBI PII check in OSS mode (no-op detection)
+func TestCheckRBIPII_OSS(t *testing.T) {
+	// In OSS mode, checkRBIPII should always return no PII found
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "Normal query",
+			query: "What is the weather today?",
+		},
+		{
+			name:  "Query with Aadhaar number (not detected in OSS)",
+			query: "My Aadhaar number is 2234 5678 9012",
+		},
+		{
+			name:  "Query with PAN number (not detected in OSS)",
+			query: "My PAN is ABCDE1234F",
+		},
+		{
+			name:  "Query with UPI ID (not detected in OSS)",
+			query: "Send payment to user@paytm",
+		},
+		{
+			name:  "Query with bank account (not detected in OSS)",
+			query: "Transfer to account 12345678901234",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := checkRBIPII(tt.query)
+
+			// OSS mode should never detect PII
+			if result.HasPII {
+				t.Errorf("OSS stub should not detect PII, got HasPII=true for: %s", tt.query)
+			}
+			if result.CriticalPII {
+				t.Errorf("OSS stub should not detect critical PII")
+			}
+			if result.BlockRecommended {
+				t.Errorf("OSS stub should never recommend blocking")
+			}
+			if len(result.DetectedTypes) > 0 {
+				t.Errorf("OSS stub should not detect any types, got: %v", result.DetectedTypes)
+			}
+		})
+	}
+}
+
+// TestGetRBIPIIDetector tests the lazy initialization of PII detector
+func TestGetRBIPIIDetector(t *testing.T) {
+	// In OSS mode, getRBIPIIDetector returns nil (no detector)
+	detector := getRBIPIIDetector()
+
+	// OSS stub returns nil detector
+	if detector != nil {
+		t.Log("Detector returned (enterprise build)")
+	} else {
+		t.Log("Detector is nil (OSS build)")
+	}
+
+	// Calling again should return same result (lazy initialization)
+	detector2 := getRBIPIIDetector()
+	if detector != detector2 {
+		t.Error("getRBIPIIDetector should return same instance on subsequent calls")
+	}
+}
+
+// TestPreCheckHandler_RBIPIIIntegration tests that RBI PII detection is integrated into pre-check flow
+// In OSS mode, PII is not detected, so requests pass through. In enterprise mode, critical PII is blocked.
+func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
+	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	tests := []struct {
+		name           string
+		query          string
+		expectApproved bool // In OSS mode, all should be approved
+	}{
+		{
+			name:           "Normal query without India PII",
+			query:          "What is the GDP of India?",
+			expectApproved: true,
+		},
+		{
+			name:           "Query with Aadhaar number (OSS: approved, Enterprise: blocked)",
+			query:          "My Aadhaar is 2234 5678 9012",
+			expectApproved: true, // OSS mode doesn't detect
+		},
+		{
+			name:           "Query with PAN number (OSS: approved, Enterprise: blocked)",
+			query:          "My PAN number is ABCDE1234F",
+			expectApproved: true, // OSS mode doesn't detect
+		},
+		{
+			name:           "Query with UPI ID (OSS: approved, Enterprise: blocked)",
+			query:          "Send money to user@ybl",
+			expectApproved: true, // OSS mode doesn't detect
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqBody := PreCheckRequest{
+				UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+				ClientID:  "test-client",
+				Query:     tt.query,
+			}
+			body, _ := json.Marshal(reqBody)
+
+			req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+			handler := http.HandlerFunc(handlePolicyPreCheck)
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", rr.Code)
+				return
+			}
+
+			var resp PreCheckResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("Failed to unmarshal response: %v", err)
+			}
+
+			// In OSS mode, all queries should be approved (PII detection disabled)
+			if resp.Approved != tt.expectApproved {
+				t.Errorf("Expected Approved=%v, got %v. BlockReason: %s",
+					tt.expectApproved, resp.Approved, resp.BlockReason)
+			}
+		})
+	}
+}

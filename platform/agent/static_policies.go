@@ -14,19 +14,21 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+
+	"axonflow/platform/agent/sqli"
 )
 
 // StaticPolicyEngine handles fast, rule-based policy enforcement
 // These are policies that can be evaluated quickly without external context
 type StaticPolicyEngine struct {
-	sqlInjectionPatterns  []*PolicyPattern
-	dangerousQueryPatterns []*PolicyPattern
-	adminAccessPatterns   []*PolicyPattern
-	piiPatterns           []*PolicyPattern // PII detection (passports, credit cards, etc.)
+	sqliScanner         sqli.Scanner      // Unified SQL injection + dangerous query scanner
+	adminAccessPatterns []*PolicyPattern
+	piiPatterns         []*PolicyPattern // PII detection (passports, credit cards, etc.)
 }
 
 // PolicyPattern represents a static policy rule
@@ -52,7 +54,9 @@ type StaticPolicyResult struct {
 
 // NewStaticPolicyEngine creates a new static policy engine with default rules
 func NewStaticPolicyEngine() *StaticPolicyEngine {
-	engine := &StaticPolicyEngine{}
+	engine := &StaticPolicyEngine{
+		sqliScanner: sqli.NewBasicScanner(),
+	}
 	engine.loadDefaultPolicies()
 	return engine
 }
@@ -60,37 +64,35 @@ func NewStaticPolicyEngine() *StaticPolicyEngine {
 // EvaluateStaticPolicies evaluates a query against all static policies
 func (spe *StaticPolicyEngine) EvaluateStaticPolicies(user *User, query string, requestType string) *StaticPolicyResult {
 	startTime := time.Now()
-	
+
 	result := &StaticPolicyResult{
 		Blocked:           false,
 		TriggeredPolicies: []string{},
 		ChecksPerformed:   []string{},
 	}
-	
+
 	queryLower := strings.ToLower(strings.TrimSpace(query))
-	
-	// 1. SQL Injection Detection (Critical - Always block)
-	if blockedPattern := spe.checkPatterns(queryLower, spe.sqlInjectionPatterns); blockedPattern != nil {
+
+	// 1. SQL Injection + Dangerous Query Detection using unified sqli scanner
+	// This covers both SQL injection attacks and dangerous DDL operations
+	sqliResult := spe.sqliScanner.Scan(context.Background(), query, sqli.ScanTypeInput)
+	if sqliResult.Detected {
 		result.Blocked = true
-		result.Reason = fmt.Sprintf("SQL injection attempt detected: %s", blockedPattern.Description)
-		result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
-		result.Severity = "critical"
-		result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
+		// Determine check type based on category
+		checkType := "sql_injection"
+		reason := "SQL injection attempt detected"
+		if sqliResult.Category == sqli.CategoryDangerousQuery {
+			checkType = "dangerous_queries"
+			reason = "Dangerous query detected"
+		}
+		result.Reason = fmt.Sprintf("%s: %s", reason, sqliResult.Pattern)
+		result.TriggeredPolicies = append(result.TriggeredPolicies, sqliResult.Pattern)
+		result.Severity = sqli.CategorySeverity(sqliResult.Category)
+		result.ChecksPerformed = append(result.ChecksPerformed, checkType)
 		result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 		return result
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
-	
-	// 2. Dangerous Query Detection (Critical - Always block)
-	if blockedPattern := spe.checkPatterns(queryLower, spe.dangerousQueryPatterns); blockedPattern != nil {
-		result.Blocked = true
-		result.Reason = fmt.Sprintf("Dangerous query detected: %s", blockedPattern.Description)
-		result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
-		result.Severity = "critical"
-		result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
-		result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
-		return result
-	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
 	
 	// 3. Admin Access Control (High - Block based on user role)
@@ -179,113 +181,12 @@ func (spe *StaticPolicyEngine) isValidRequestType(requestType string) bool {
 
 // loadDefaultPolicies initializes the static policy engine with default rules
 func (spe *StaticPolicyEngine) loadDefaultPolicies() {
-	// SQL Injection Patterns (Critical)
-	spe.sqlInjectionPatterns = []*PolicyPattern{
-		{
-			ID:          "sql_injection_union",
-			Name:        "SQL Injection - UNION Attack",
-			Pattern:     regexp.MustCompile(`union\s+select`),
-			PatternStr:  `union\s+select`,
-			Severity:    "critical",
-			Description: "UNION-based SQL injection attempt",
-			Enabled:     true,
-		},
-		{
-			ID:          "sql_injection_or_condition",
-			Name:        "SQL Injection - OR Condition",
-			Pattern:     regexp.MustCompile(`(\bor\b|\band\b).*['"]?\s*[=<>].*['"]?\s*(or|and)\s*['"]?\s*[=<>]`),
-			PatternStr:  `(\bor\b|\band\b).*['"]?\s*[=<>].*['"]?\s*(or|and)\s*['"]?\s*[=<>]`,
-			Severity:    "critical",
-			Description: "Boolean-based SQL injection attempt",
-			Enabled:     true,
-		},
-		{
-			ID:          "sql_injection_comment",
-			Name:        "SQL Injection - Comment Bypass",
-			Pattern:     regexp.MustCompile(`--|\*\/|\/\*`),
-			PatternStr:  `--|\*\/|\/\*`,
-			Severity:    "critical",
-			Description: "SQL comment injection attempt",
-			Enabled:     true,
-		},
-		{
-			ID:          "sql_injection_always_true",
-			Name:        "SQL Injection - Always True",
-			Pattern:     regexp.MustCompile(`1\s*=\s*1|''\s*=\s*''|"\s*=\s*"`),
-			PatternStr:  `1\s*=\s*1|''\s*=\s*''|"\s*=\s*"`,
-			Severity:    "critical",
-			Description: "Always-true condition injection",
-			Enabled:     true,
-		},
-	}
-	
-	// Dangerous Query Patterns (Critical)
-	spe.dangerousQueryPatterns = []*PolicyPattern{
-		{
-			ID:          "drop_table_prevention",
-			Name:        "DROP TABLE Prevention",
-			Pattern:     regexp.MustCompile(`drop\s+table`),
-			PatternStr:  `drop\s+table`,
-			Severity:    "critical",
-			Description: "DROP TABLE operations are not allowed through the API",
-			Enabled:     true,
-		},
-		{
-			ID:          "drop_database_prevention",
-			Name:        "DROP DATABASE Prevention", 
-			Pattern:     regexp.MustCompile(`drop\s+database`),
-			PatternStr:  `drop\s+database`,
-			Severity:    "critical",
-			Description: "DROP DATABASE operations are not allowed",
-			Enabled:     true,
-		},
-		{
-			ID:          "truncate_prevention",
-			Name:        "TRUNCATE Prevention",
-			Pattern:     regexp.MustCompile(`truncate\s+table`),
-			PatternStr:  `truncate\s+table`,
-			Severity:    "critical",
-			Description: "TRUNCATE operations are not allowed through the API",
-			Enabled:     true,
-		},
-		{
-			ID:          "delete_all_prevention",
-			Name:        "DELETE ALL Prevention",
-			Pattern:     regexp.MustCompile(`delete\s+from\s+\w+\s*(?:;|$)`),
-			PatternStr:  `delete\s+from\s+\w+\s*(?:;|$)`,
-			Severity:    "high",
-			Description: "DELETE operations without WHERE clause are not allowed",
-			Enabled:     true,
-		},
-		{
-			ID:          "alter_table_prevention",
-			Name:        "ALTER TABLE Prevention",
-			Pattern:     regexp.MustCompile(`alter\s+table`),
-			PatternStr:  `alter\s+table`,
-			Severity:    "high",
-			Description: "Schema modifications are not allowed through the API",
-			Enabled:     true,
-		},
-		{
-			ID:          "create_user_prevention",
-			Name:        "CREATE USER Prevention",
-			Pattern:     regexp.MustCompile(`create\s+user`),
-			PatternStr:  `create\s+user`,
-			Severity:    "high",
-			Description: "User creation is not allowed through the API",
-			Enabled:     true,
-		},
-		{
-			ID:          "grant_revoke_prevention", 
-			Name:        "GRANT/REVOKE Prevention",
-			Pattern:     regexp.MustCompile(`(grant|revoke)\s`),
-			PatternStr:  `(grant|revoke)\s`,
-			Severity:    "high",
-			Description: "Permission changes are not allowed through the API",
-			Enabled:     true,
-		},
-	}
-	
+	// Note: SQL injection and dangerous query patterns are now handled by the
+	// unified sqli.Scanner (see sqliScanner field). This provides:
+	// - 35+ patterns covering injection and dangerous operations
+	// - Consistent detection across agent and MCP response scanning
+	// - Category-based severity classification
+
 	// Admin Access Patterns (High)
 	spe.adminAccessPatterns = []*PolicyPattern{
 		{
@@ -629,11 +530,23 @@ func ValidateCreditCard(cardNumber string) bool {
 
 // GetPolicyStats returns statistics about loaded policies
 func (spe *StaticPolicyEngine) GetPolicyStats() map[string]interface{} {
+	// Count sqli patterns by category
+	sqliPatterns := sqli.NewPatternSet().Patterns()
+	sqliCount := 0
+	dangerousCount := 0
+	for _, p := range sqliPatterns {
+		if p.Category == sqli.CategoryDangerousQuery {
+			dangerousCount++
+		} else {
+			sqliCount++
+		}
+	}
+
 	return map[string]interface{}{
-		"sql_injection_patterns":  len(spe.sqlInjectionPatterns),
-		"dangerous_query_patterns": len(spe.dangerousQueryPatterns),
+		"sql_injection_patterns":   sqliCount,
+		"dangerous_query_patterns": dangerousCount,
 		"admin_access_patterns":    len(spe.adminAccessPatterns),
 		"pii_patterns":             len(spe.piiPatterns),
-		"total_patterns":           len(spe.sqlInjectionPatterns) + len(spe.dangerousQueryPatterns) + len(spe.adminAccessPatterns) + len(spe.piiPatterns),
+		"total_patterns":           len(sqliPatterns) + len(spe.adminAccessPatterns) + len(spe.piiPatterns),
 	}
 }

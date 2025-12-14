@@ -1,4 +1,4 @@
-.PHONY: help start stop status logs clean rebuild test test-coverage build build-oss build-enterprise lint docs
+.PHONY: help start stop status logs clean rebuild test test-coverage build build-community build-enterprise lint docs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -77,10 +77,10 @@ build: ## Build all Docker images (enterprise by default)
 	@docker-compose build --build-arg EDITION=$(EDITION)
 	@echo "$(GREEN)✅ Images built$(NC)"
 
-build-oss: ## Build OSS Docker images (no enterprise features)
-	@echo "$(YELLOW)Building OSS images...$(NC)"
+build-community: ## Build Community Docker images (no enterprise features)
+	@echo "$(YELLOW)Building Community images...$(NC)"
 	@docker-compose build --build-arg EDITION=oss
-	@echo "$(GREEN)✅ OSS images built$(NC)"
+	@echo "$(GREEN)✅ Community images built$(NC)"
 
 build-enterprise: ## Build Enterprise Docker images (all features)
 	@echo "$(YELLOW)Building Enterprise images...$(NC)"
