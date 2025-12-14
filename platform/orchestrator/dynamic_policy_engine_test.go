@@ -583,8 +583,10 @@ func TestCalculateRiskScore(t *testing.T) {
 				Query: "SELECT password FROM users",
 				User:  UserContext{Role: "user"},
 			},
-			expectedMin: 0.9,
-			expectedMax: 1.0,
+			// Sensitive data keywords (password, secret, key, token) use sensitive_data weight (0.7)
+			// SQL injection patterns use sql_injection weight (0.9) via unified sqli scanner
+			expectedMin: 0.7,
+			expectedMax: 0.7,
 		},
 	}
 

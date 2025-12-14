@@ -48,13 +48,14 @@ import (
 //   - saas:              core/ + enterprise/ + industry/*
 //   - in-vpc-healthcare: core/ + enterprise/ + industry/healthcare/
 //   - in-vpc-banking:    core/ + enterprise/ + industry/banking/
+//   - in-vpc-travel:     core/ + enterprise/ + industry/travel/
 //   - in-vpc-enterprise: core/ + enterprise/
 // =============================================================================
 
 // MigrationFile represents a migration file with metadata
 type MigrationFile struct {
 	Path     string // Full path to the file
-	Category string // core, enterprise, healthcare, banking
+	Category string // core, enterprise, healthcare, banking, travel
 	Version  string // Numeric version (e.g., "001", "100")
 	Name     string // Human-readable name
 }
@@ -87,6 +88,7 @@ func getMigrationPaths(basePath string) []string {
 		paths = append(paths, filepath.Join(basePath, "enterprise"))
 		paths = append(paths, filepath.Join(basePath, "industry", "healthcare"))
 		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
+		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
 		log.Println("📦 DEPLOYMENT_MODE=saas: Running all migrations (core + enterprise + industry)")
 
 	case "in-vpc-healthcare":
@@ -101,6 +103,12 @@ func getMigrationPaths(basePath string) []string {
 		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
 		log.Println("📦 DEPLOYMENT_MODE=in-vpc-banking: Running core + enterprise + banking migrations")
 
+	case "in-vpc-travel":
+		// Travel runs core + enterprise + travel industry
+		paths = append(paths, filepath.Join(basePath, "enterprise"))
+		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
+		log.Println("📦 DEPLOYMENT_MODE=in-vpc-travel: Running core + enterprise + travel migrations")
+
 	case "in-vpc-enterprise":
 		// Enterprise runs core + enterprise only
 		paths = append(paths, filepath.Join(basePath, "enterprise"))
@@ -112,6 +120,7 @@ func getMigrationPaths(basePath string) []string {
 		paths = append(paths, filepath.Join(basePath, "enterprise"))
 		paths = append(paths, filepath.Join(basePath, "industry", "healthcare"))
 		paths = append(paths, filepath.Join(basePath, "industry", "banking"))
+		paths = append(paths, filepath.Join(basePath, "industry", "travel"))
 	}
 
 	return paths

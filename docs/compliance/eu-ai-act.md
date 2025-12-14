@@ -160,23 +160,40 @@ audit:
 ### API Endpoints
 
 ```http
-# Get retention status
-GET /api/v1/audit/retention/status?org_id=org-123
+# List exports
+GET /api/v1/euaiact/export
+X-Org-ID: org-123
 
-# Export audit data
-POST /api/v1/audit/export
+# Create export request
+POST /api/v1/euaiact/export
+X-Org-ID: org-123
 {
-  "org_id": "org-123",
-  "format": "eu_ai_act",
-  "date_range": {
-    "start": "2025-01-01",
-    "end": "2025-12-31"
-  }
+  "export_type": "full_audit",
+  "format": "json",
+  "date_from": "2025-01-01T00:00:00Z",
+  "date_to": "2025-12-31T23:59:59Z",
+  "model_ids": ["model-123", "model-456"]
 }
 
 # Get export status
-GET /api/v1/audit/export/{export_id}
+GET /api/v1/euaiact/export/{id}
+X-Org-ID: org-123
+
+# Download export
+GET /api/v1/euaiact/export/{id}/download
+X-Org-ID: org-123
 ```
+
+### Export Types
+
+| Type | Description |
+|------|-------------|
+| `full_audit` | Complete audit trail with all decisions |
+| `conformity_evidence` | Evidence for conformity assessment |
+| `hitl_summary` | Human-in-the-loop decision summary |
+| `decision_chain` | Full decision chain with context |
+| `policy_violations` | Policy violation records |
+| `accuracy_metrics` | Model accuracy and bias metrics |
 
 ## EU AI Act Export Format (Enterprise)
 
@@ -260,45 +277,54 @@ Monitor AI system accuracy and detect potential biases.
 ### Accuracy Metrics
 
 ```http
+# Get accuracy summary
+GET /api/v1/euaiact/accuracy
+X-Org-ID: org-123
+
 # Record a metric
-POST /api/v1/accuracy/metrics
+POST /api/v1/euaiact/accuracy/record
+X-Org-ID: org-123
 {
-  "org_id": "org-123",
-  "agent_id": "agent-456",
-  "metric_type": "accuracy",
+  "model_id": "model-456",
+  "metric_type": "precision",
   "value": 0.95,
+  "sample_size": 10000,
   "context": {
     "task_type": "classification",
     "dataset": "validation_set_2025q4"
   }
 }
 
-# Get metrics summary
-GET /api/v1/accuracy/metrics?org_id=org-123&period=30d
-
-# Get compliance summary
-GET /api/v1/accuracy/compliance-summary?org_id=org-123
+# Get accuracy history
+GET /api/v1/euaiact/accuracy/history?model_id=model-456&period=30d
+X-Org-ID: org-123
 ```
 
 ### Bias Detection
 
 ```http
-# Record bias assessment
-POST /api/v1/accuracy/bias
+# Record bias measurement
+POST /api/v1/euaiact/accuracy/bias
+X-Org-ID: org-123
 {
-  "org_id": "org-123",
-  "agent_id": "agent-456",
+  "model_id": "model-456",
   "category": "gender",
-  "bias_score": 0.12,
-  "sample_size": 10000,
-  "details": {
-    "male_approval_rate": 0.78,
-    "female_approval_rate": 0.69
+  "group_metrics": {
+    "male": {"count": 5000, "positive_rate": 0.78},
+    "female": {"count": 5000, "positive_rate": 0.69}
   }
 }
 
-# Get bias alerts
-GET /api/v1/accuracy/alerts?org_id=org-123&severity=critical
+# Get alerts (including bias alerts)
+GET /api/v1/euaiact/accuracy/alerts
+X-Org-ID: org-123
+
+# Acknowledge alert
+PUT /api/v1/euaiact/accuracy/alerts/{id}
+{
+  "status": "acknowledged",
+  "acknowledged_by": "compliance@company.com"
+}
 ```
 
 ## Conformity Assessment (Enterprise)
@@ -317,49 +343,54 @@ Manage EU AI Act conformity assessments per Article 43.
 ### API Endpoints
 
 ```http
+# List assessments
+GET /api/v1/euaiact/conformity
+X-Org-ID: org-123
+
 # Create assessment
-POST /api/v1/conformity/assessments
+POST /api/v1/euaiact/conformity
+X-Org-ID: org-123
 {
-  "org_id": "org-123",
   "name": "Q4 2025 Conformity Assessment",
-  "type": "self_assessment",
-  "risk_category": "high"
+  "assessment_type": "self_assessment",
+  "risk_category": "high",
+  "system_name": "Customer Support AI",
+  "system_version": "1.0.0"
 }
 
-# Start assessment
-POST /api/v1/conformity/assessments/{id}/start
+# Get assessment details
+GET /api/v1/euaiact/conformity/{id}
+X-Org-ID: org-123
 
-# Update compliance check
-PUT /api/v1/conformity/assessments/{id}/checks/{checkId}
+# Update assessment
+PUT /api/v1/euaiact/conformity/{id}
+X-Org-ID: org-123
 {
-  "status": "pass",
-  "score": 95.0,
-  "evidence": "Documentation available at /docs/article-12-compliance.pdf",
-  "checked_by": "compliance@company.com"
-}
-
-# Add finding
-POST /api/v1/conformity/assessments/{id}/findings
-{
-  "title": "Incomplete audit trail",
-  "severity": "high",
-  "article": "article_12",
-  "description": "Audit logs missing for batch processing",
-  "remediation": "Enable batch audit logging in config"
+  "requirements": {
+    "article_9": {"status": "compliant", "evidence": "..."},
+    "article_10": {"status": "partial", "evidence": "..."}
+  }
 }
 
 # Submit for review
-POST /api/v1/conformity/assessments/{id}/submit
+POST /api/v1/euaiact/conformity/{id}/submit
+X-Org-ID: org-123
 
 # Approve assessment
-POST /api/v1/conformity/assessments/{id}/approve
+POST /api/v1/euaiact/conformity/{id}/approve
+X-Org-ID: org-123
 {
   "approved_by": "ciso@company.com",
   "comments": "All checks verified"
 }
 
-# Get compliance summary
-GET /api/v1/conformity/summary?org_id=org-123
+# Reject assessment
+POST /api/v1/euaiact/conformity/{id}/reject
+X-Org-ID: org-123
+{
+  "rejected_by": "ciso@company.com",
+  "reason": "Missing Article 12 evidence"
+}
 ```
 
 ### Assessment Types
