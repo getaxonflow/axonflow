@@ -1,10 +1,9 @@
-name: Build Docker Images (OSS)
+name: Build Docker Images (Community)
 
-# OSS build workflow - builds and tests Docker images locally
-# Does NOT push to any registry - OSS users build and run locally
+# Community build workflow - builds and tests Docker images locally
+# Does NOT push to any registry - users build and run locally
 #
-# This workflow syncs to the OSS repo and runs there.
-# For enterprise builds with ECR push, see build.yml (enterprise-only, not synced)
+# This workflow runs in the Community repo.
 
 on:
   push:
@@ -20,7 +19,7 @@ on:
       - 'platform/**/go.mod'
       - 'platform/**/go.sum'
       - 'migrations/core/**/*.sql'
-      - '.github/workflows/build-oss.yml'
+      - '.github/workflows/build-community.yml'
   # Pull requests: Run detect-changes and Build Summary on ALL PRs
   # This ensures the required Build Summary check is present for merge queue entry.
   # Actual builds are skipped on PRs - only validated in merge queue.
@@ -63,7 +62,7 @@ jobs:
               - 'platform/**/go.mod'
               - 'platform/**/go.sum'
               - 'migrations/core/**/*.sql'
-              - '.github/workflows/build-oss.yml'
+              - '.github/workflows/build-community.yml'
             orchestrator:
               - 'platform/orchestrator/**'
               - 'platform/common/**'
@@ -71,10 +70,10 @@ jobs:
               - 'platform/**/go.mod'
               - 'platform/**/go.sum'
               - 'migrations/core/**/*.sql'
-              - '.github/workflows/build-oss.yml'
+              - '.github/workflows/build-community.yml'
 
   # =============================================================================
-  # Build Jobs (OSS - Local Only)
+  # Build Jobs (Community - Local Only)
   # =============================================================================
   build-agent:
     name: Build Agent Image
@@ -235,7 +234,7 @@ jobs:
       - name: Check Results
         run: |
           echo "=============================================="
-          echo "OSS Docker Build Summary"
+          echo "Community Docker Build Summary"
           echo "=============================================="
           echo ""
 
