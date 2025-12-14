@@ -2529,35 +2529,47 @@ func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
 }
 
 // ==================================================================
-// RBI PII Detection Tests (OSS stub behavior)
+// RBI PII Detection Tests (Community edition behavior)
 // ==================================================================
 
-// TestCheckRBIPII_OSS tests RBI PII check in OSS mode (no-op detection)
-func TestCheckRBIPII_OSS(t *testing.T) {
-	// In OSS mode, checkRBIPII should always return no PII found
+// TestCheckRBIPII_Community tests RBI PII check in Community mode (pattern-based detection)
+func TestCheckRBIPII_Community(t *testing.T) {
+	// Community edition detects India PII using pattern-based detection
 	tests := []struct {
-		name  string
-		query string
+		name              string
+		query             string
+		expectHasPII      bool
+		expectCriticalPII bool
 	}{
 		{
-			name:  "Normal query",
-			query: "What is the weather today?",
+			name:              "Normal query",
+			query:             "What is the weather today?",
+			expectHasPII:      false,
+			expectCriticalPII: false,
 		},
 		{
-			name:  "Query with Aadhaar number (not detected in OSS)",
-			query: "My Aadhaar number is 2234 5678 9012",
+			name:              "Query with Aadhaar number (detected - critical)",
+			query:             "My Aadhaar number is 2234 5678 9012",
+			expectHasPII:      true,
+			expectCriticalPII: true,
 		},
 		{
-			name:  "Query with PAN number (not detected in OSS)",
-			query: "My PAN is ABCDE1234F",
+			name:              "Query with PAN number (detected - critical)",
+			query:             "My PAN is ABCDE1234F",
+			expectHasPII:      true,
+			expectCriticalPII: true,
 		},
 		{
-			name:  "Query with UPI ID (not detected in OSS)",
-			query: "Send payment to user@paytm",
+			name:              "Query with UPI ID (detected - critical)",
+			query:             "Send payment to user@paytm",
+			expectHasPII:      true,
+			expectCriticalPII: true,
 		},
 		{
-			name:  "Query with bank account (not detected in OSS)",
-			query: "Transfer to account 12345678901234",
+			name:              "Query with IFSC code (detected - non-critical)",
+			query:             "Transfer to IFSC SBIN0001234",
+			expectHasPII:      true,
+			expectCriticalPII: false, // IFSC code is medium severity, not critical
 		},
 	}
 
@@ -2565,18 +2577,12 @@ func TestCheckRBIPII_OSS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := checkRBIPII(tt.query)
 
-			// OSS mode should never detect PII
-			if result.HasPII {
-				t.Errorf("OSS stub should not detect PII, got HasPII=true for: %s", tt.query)
+			// Community edition detects India PII with pattern matching
+			if result.HasPII != tt.expectHasPII {
+				t.Errorf("Expected HasPII=%v, got %v for: %s", tt.expectHasPII, result.HasPII, tt.query)
 			}
-			if result.CriticalPII {
-				t.Errorf("OSS stub should not detect critical PII")
-			}
-			if result.BlockRecommended {
-				t.Errorf("OSS stub should never recommend blocking")
-			}
-			if len(result.DetectedTypes) > 0 {
-				t.Errorf("OSS stub should not detect any types, got: %v", result.DetectedTypes)
+			if result.CriticalPII != tt.expectCriticalPII {
+				t.Errorf("Expected CriticalPII=%v, got %v for: %s", tt.expectCriticalPII, result.CriticalPII, tt.query)
 			}
 		})
 	}
@@ -2584,14 +2590,14 @@ func TestCheckRBIPII_OSS(t *testing.T) {
 
 // TestGetRBIPIIDetector tests the lazy initialization of PII detector
 func TestGetRBIPIIDetector(t *testing.T) {
-	// In OSS mode, getRBIPIIDetector returns nil (no detector)
+	// Community edition returns a pattern-based detector
+	// Enterprise edition returns a full-featured detector with Verhoeff validation
 	detector := getRBIPIIDetector()
 
-	// OSS stub returns nil detector
 	if detector != nil {
-		t.Log("Detector returned (enterprise build)")
+		t.Log("Detector returned (Community or Enterprise build)")
 	} else {
-		t.Log("Detector is nil (OSS build)")
+		t.Log("Detector is nil (unexpected)")
 	}
 
 	// Calling again should return same result (lazy initialization)
@@ -2602,7 +2608,8 @@ func TestGetRBIPIIDetector(t *testing.T) {
 }
 
 // TestPreCheckHandler_RBIPIIIntegration tests that RBI PII detection is integrated into pre-check flow
-// In OSS mode, PII is not detected, so requests pass through. In enterprise mode, critical PII is blocked.
+// Both Community and Enterprise editions detect critical India PII (Aadhaar, PAN, UPI, Bank Account).
+// Community uses pattern-based detection (0.7 confidence), Enterprise adds Verhoeff checksum validation (0.98 confidence).
 func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
 	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
@@ -2616,7 +2623,7 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	tests := []struct {
 		name           string
 		query          string
-		expectApproved bool // In OSS mode, all should be approved
+		expectApproved bool // Critical PII is blocked in both Community and Enterprise
 	}{
 		{
 			name:           "Normal query without India PII",
@@ -2624,19 +2631,19 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 			expectApproved: true,
 		},
 		{
-			name:           "Query with Aadhaar number (OSS: approved, Enterprise: blocked)",
+			name:           "Query with Aadhaar number (blocked - critical PII)",
 			query:          "My Aadhaar is 2234 5678 9012",
-			expectApproved: true, // OSS mode doesn't detect
+			expectApproved: false, // Community detects and blocks critical PII
 		},
 		{
-			name:           "Query with PAN number (OSS: approved, Enterprise: blocked)",
+			name:           "Query with PAN number (blocked - critical PII)",
 			query:          "My PAN number is ABCDE1234F",
-			expectApproved: true, // OSS mode doesn't detect
+			expectApproved: false, // Community detects and blocks critical PII
 		},
 		{
-			name:           "Query with UPI ID (OSS: approved, Enterprise: blocked)",
+			name:           "Query with UPI ID (blocked - critical PII)",
 			query:          "Send money to user@ybl",
-			expectApproved: true, // OSS mode doesn't detect
+			expectApproved: false, // Community detects and blocks critical PII
 		},
 	}
 
@@ -2666,7 +2673,7 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
-			// In OSS mode, all queries should be approved (PII detection disabled)
+			// Community edition now detects critical India PII (Aadhaar, PAN, UPI, Bank Account)
 			if resp.Approved != tt.expectApproved {
 				t.Errorf("Expected Approved=%v, got %v. BlockReason: %s",
 					tt.expectApproved, resp.Approved, resp.BlockReason)
