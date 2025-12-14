@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/agent/sqli"
+
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -123,47 +125,47 @@ func BenchmarkEvaluateStaticPolicies_PIIDetection(b *testing.B) {
 	}
 }
 
-// BenchmarkCheckPatterns_NoMatch benchmarks pattern matching when no patterns match
+// BenchmarkSQLiScanner_NoMatch benchmarks SQLi scanning when no patterns match
 // This represents the common case for legitimate queries
-func BenchmarkCheckPatterns_NoMatch(b *testing.B) {
-	engine := NewStaticPolicyEngine()
-	query := "select name, email from users where id = 123"
+func BenchmarkSQLiScanner_NoMatch(b *testing.B) {
+	scanner := sqli.NewBasicScanner()
+	query := "select name, email from customers where id = 123"
+	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		result := engine.checkPatterns(query, engine.sqlInjectionPatterns)
-		if result != nil {
+		result := scanner.Scan(ctx, query, sqli.ScanTypeInput)
+		if result.Detected {
 			b.Fatal("Expected no pattern match for legitimate query")
 		}
 	}
 }
 
-// BenchmarkCheckPatterns_FirstMatch benchmarks pattern matching when first pattern matches
-// This represents the best case for malicious query detection
-func BenchmarkCheckPatterns_FirstMatch(b *testing.B) {
-	engine := NewStaticPolicyEngine()
-	query := "select * from users where 1=1 or 1=1"
+// BenchmarkSQLiScanner_SQLInjection benchmarks SQLi scanning when SQL injection is detected
+func BenchmarkSQLiScanner_SQLInjection(b *testing.B) {
+	scanner := sqli.NewBasicScanner()
+	query := "admin' OR 1=1--"
+	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		result := engine.checkPatterns(query, engine.sqlInjectionPatterns)
-		if result == nil {
+		result := scanner.Scan(ctx, query, sqli.ScanTypeInput)
+		if !result.Detected {
 			b.Fatal("Expected SQL injection pattern to match")
 		}
 	}
 }
 
-// BenchmarkCheckPatterns_LastMatch benchmarks pattern matching when last pattern matches
-// This represents the worst case for pattern matching (scans all patterns)
-func BenchmarkCheckPatterns_LastMatch(b *testing.B) {
-	engine := NewStaticPolicyEngine()
-	// Use a query that triggers a less common pattern (later in the list)
-	query := "drop database production"
+// BenchmarkSQLiScanner_DangerousQuery benchmarks SQLi scanning for dangerous queries
+func BenchmarkSQLiScanner_DangerousQuery(b *testing.B) {
+	scanner := sqli.NewBasicScanner()
+	query := "DROP TABLE sensitive_data"
+	ctx := context.Background()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		result := engine.checkPatterns(query, engine.dangerousQueryPatterns)
-		if result == nil {
+		result := scanner.Scan(ctx, query, sqli.ScanTypeInput)
+		if !result.Detected {
 			b.Fatal("Expected dangerous query pattern to match")
 		}
 	}

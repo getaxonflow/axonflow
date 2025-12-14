@@ -402,6 +402,7 @@ func TestGetMigrationPaths(t *testing.T) {
 				"/test/migrations/enterprise",
 				"/test/migrations/industry/healthcare",
 				"/test/migrations/industry/banking",
+				"/test/migrations/industry/travel",
 			},
 		},
 		{
@@ -420,6 +421,15 @@ func TestGetMigrationPaths(t *testing.T) {
 				"/test/migrations/core",
 				"/test/migrations/enterprise",
 				"/test/migrations/industry/banking",
+			},
+		},
+		{
+			name:       "In-VPC Travel",
+			deployMode: "in-vpc-travel",
+			expectedPaths: []string{
+				"/test/migrations/core",
+				"/test/migrations/enterprise",
+				"/test/migrations/industry/travel",
 			},
 		},
 		{
@@ -446,6 +456,7 @@ func TestGetMigrationPaths(t *testing.T) {
 				"/test/migrations/enterprise",
 				"/test/migrations/industry/healthcare",
 				"/test/migrations/industry/banking",
+				"/test/migrations/industry/travel",
 			},
 		},
 	}

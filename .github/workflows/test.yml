@@ -15,8 +15,11 @@ on:
       - develop
     paths:
       - 'platform/**/*.go'
+      - 'ee/platform/**/*.go'
       - 'go.mod'
       - 'go.sum'
+      - 'ee/go.mod'
+      - 'ee/go.sum'
       - '.github/workflows/test.yml'
   # Merge queue: re-run tests against the merged code with path filtering
   merge_group:
@@ -144,6 +147,16 @@ jobs:
             fi
           done
 
+          echo "=== Applying industry/travel migrations (EU AI Act) ==="
+          if [ -d "migrations/industry/travel" ]; then
+            for migration in migrations/industry/travel/*.sql; do
+              if [ -f "$migration" ] && [[ ! "$migration" =~ _down\.sql$ ]]; then
+                echo "Applying $migration..."
+                psql -h localhost -U test_user -d test_db -f "$migration" || echo "Migration $migration failed or already applied, continuing..."
+              fi
+            done
+          fi
+
       - name: Test Orchestrator
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
@@ -213,12 +226,66 @@ jobs:
           cd platform/shared/logger
           go test -v -cover -timeout 5m
 
+      # =============================================================================
+      # Enterprise Module Tests (ee/platform/*)
+      # =============================================================================
+      - name: Install Enterprise dependencies
+        run: |
+          cd ee
+          go mod download
+          # Note: go mod verify skipped for ee/ because it has a replace directive
+          # for axonflow/platform => ../platform (local modules can't be verified)
+
+      - name: Test Enterprise Orchestrator
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
+        run: |
+          cd ee/platform/orchestrator
+          go test -v -cover -coverprofile=coverage.out ./... -timeout 10m
+
+      - name: Check Enterprise Orchestrator Coverage
+        run: |
+          cd ee/platform/orchestrator
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Enterprise Orchestrator Coverage: $coverage%"
+
+          # Target 80%+ coverage for EU AI Act, RBI, SEBI modules
+          threshold=80.0
+          if (( $(echo "$coverage < $threshold" | bc -l) )); then
+            echo "❌ Enterprise Orchestrator coverage $coverage% is below threshold $threshold%"
+            exit 1
+          fi
+          echo "✅ Enterprise Orchestrator coverage $coverage% meets threshold $threshold%"
+
+      - name: Test Enterprise Agent
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
+        run: |
+          cd ee/platform/agent
+          go test -v -cover -coverprofile=coverage.out ./... -timeout 5m
+
+      - name: Check Enterprise Agent Coverage
+        run: |
+          cd ee/platform/agent
+          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Enterprise Agent Coverage: $coverage%"
+
+          # Initial threshold - license, marketplace, node enforcement, HITL, circuit breaker
+          threshold=50.0
+          if (( $(echo "$coverage < $threshold" | bc -l) )); then
+            echo "❌ Enterprise Agent coverage $coverage% is below threshold $threshold%"
+            exit 1
+          fi
+          echo "✅ Enterprise Agent coverage $coverage% meets threshold $threshold%"
+
       - name: Generate coverage reports
         if: success()
         run: |
           cd platform/orchestrator && go tool cover -html=coverage.out -o coverage.html
           cd ../agent && go tool cover -html=coverage.out -o coverage.html
           cd ../connectors && go tool cover -html=coverage.out -o coverage.html
+          cd ../../ee/platform/orchestrator && go tool cover -html=coverage.out -o coverage.html
+          cd ../agent && go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload coverage reports
         if: success()
@@ -229,6 +296,8 @@ jobs:
             platform/orchestrator/coverage.html
             platform/agent/coverage.html
             platform/connectors/coverage.html
+            ee/platform/orchestrator/coverage.html
+            ee/platform/agent/coverage.html
           retention-days: 30
 
   race-detector:
@@ -339,6 +408,16 @@ jobs:
             fi
           done
 
+          echo "=== Applying industry/travel migrations (EU AI Act) ==="
+          if [ -d "migrations/industry/travel" ]; then
+            for migration in migrations/industry/travel/*.sql; do
+              if [ -f "$migration" ] && [[ ! "$migration" =~ _down\.sql$ ]]; then
+                echo "Applying $migration..."
+                psql -h localhost -U test_user -d test_db -f "$migration" || echo "Migration $migration failed or already applied, continuing..."
+              fi
+            done
+          fi
+
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
@@ -384,6 +463,10 @@ jobs:
           echo "✅ All tests passed!"
           echo ""
           echo "Coverage thresholds verified:"
-          echo "  - Orchestrator: 73.5%"
-          echo "  - Agent: 76%"
-          echo "  - Connectors: 62%"
+          echo "  OSS Modules:"
+          echo "    - Orchestrator: 73.5%"
+          echo "    - Agent: 76%"
+          echo "    - Connectors: 62%"
+          echo "  Enterprise Modules:"
+          echo "    - ee/Orchestrator: 50%"
+          echo "    - ee/Agent: 50%"
