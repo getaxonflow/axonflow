@@ -30,7 +30,16 @@ RUN --mount=type=bind,source=.,target=/src \
       cp -r /src/ee/platform/agent/license/* ./agent/license/ && \
       cp -r /src/ee/platform/agent/marketplace/* ./agent/marketplace/ && \
       cp -r /src/ee/platform/agent/node_enforcement/* ./agent/node_enforcement/ && \
+      if [ -d "/src/ee/platform/agent/rbi" ]; then \
+        cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
+        echo "  Copied enterprise RBI module (kill switch)"; \
+      fi && \
       echo "Enterprise agent code copied successfully" && \
+      echo "=== Enterprise build: copying RBI compliance module ===" && \
+      if [ -d "/src/ee/platform/agent/rbi" ]; then \
+        cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
+        echo "  RBI PII detector copied successfully"; \
+      fi && \
       echo "=== Enterprise build: copying EE connectors ===" && \
       for connector in amadeus salesforce slack snowflake; do \
         if [ -d "/src/ee/platform/connectors/$connector" ]; then \
