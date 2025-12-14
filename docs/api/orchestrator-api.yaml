@@ -64,6 +64,11 @@ tags:
     description: |
       SEBI AI/ML Guidelines compliance and DPDP Act 2023 audit exports.
       Enterprise feature for Indian financial services compliance.
+  - name: RBI Compliance
+    description: |
+      RBI FREE-AI Framework compliance for Indian banking institutions.
+      Enterprise feature providing AI System Registry, Model Validation,
+      Incident Management, Kill Switch, Board Reporting, and Audit Export.
   - name: EU AI Act
     description: |
       EU AI Act compliance endpoints for technical documentation export,
@@ -2370,6 +2375,261 @@ paths:
         '404':
           description: Connector not found
 
+  # ============================================================================
+  # RBI FREE-AI Framework Compliance (Enterprise)
+  # ============================================================================
+
+  /api/v1/rbi/dashboard:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get RBI compliance dashboard
+      description: |
+        Returns RBI FREE-AI Framework compliance dashboard with module health status.
+      operationId: getRBIDashboard
+      responses:
+        '200':
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  module:
+                    type: string
+                  components:
+                    type: object
+
+  /api/v1/rbi/ai-systems:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List AI systems
+      description: |
+        List all registered AI systems for the organization.
+        Per RBI FREE-AI: All AI systems must be registered with board approval.
+      operationId: listAISystems
+      parameters:
+        - name: risk_category
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high]
+        - name: deployment_status
+          in: query
+          schema:
+            type: string
+            enum: [development, sandbox, canary, production, deprecated]
+      responses:
+        '200':
+          description: List of AI systems
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RBIAISystem'
+    post:
+      tags:
+        - RBI Compliance
+      summary: Register AI system
+      description: Register a new AI system in the RBI compliance registry.
+      operationId: createAISystem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RBIAISystemCreate'
+      responses:
+        '201':
+          description: AI system created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RBIAISystem'
+
+  /api/v1/rbi/ai-systems/{id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get AI system
+      operationId: getAISystem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: AI system details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RBIAISystem'
+    put:
+      tags:
+        - RBI Compliance
+      summary: Update AI system
+      operationId: updateAISystem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RBIAISystemCreate'
+      responses:
+        '200':
+          description: AI system updated
+    delete:
+      tags:
+        - RBI Compliance
+      summary: Delete AI system
+      operationId: deleteAISystem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: AI system deleted
+
+  /api/v1/rbi/validations:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List model validations
+      description: List model validation records per RBI FREE-AI Section 3.2.
+      operationId: listValidations
+      responses:
+        '200':
+          description: List of validations
+    post:
+      tags:
+        - RBI Compliance
+      summary: Create validation record
+      operationId: createValidation
+      responses:
+        '201':
+          description: Validation created
+
+  /api/v1/rbi/incidents:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List AI incidents
+      description: List AI incidents per RBI FREE-AI incident management requirements.
+      operationId: listIncidents
+      responses:
+        '200':
+          description: List of incidents
+    post:
+      tags:
+        - RBI Compliance
+      summary: Report AI incident
+      operationId: createIncident
+      responses:
+        '201':
+          description: Incident created
+
+  /api/v1/rbi/killswitches:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List kill switches
+      description: List active and inactive kill switches for emergency AI disable.
+      operationId: listKillSwitches
+      responses:
+        '200':
+          description: List of kill switches
+    post:
+      tags:
+        - RBI Compliance
+      summary: Activate kill switch
+      description: |
+        Emergency kill switch activation per RBI FREE-AI guidelines.
+        Immediately halts all AI operations for specified scope.
+      operationId: activateKillSwitch
+      responses:
+        '201':
+          description: Kill switch activated
+
+  /api/v1/rbi/killswitches/{id}/deactivate:
+    post:
+      tags:
+        - RBI Compliance
+      summary: Deactivate kill switch
+      operationId: deactivateKillSwitch
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Kill switch deactivated
+
+  /api/v1/rbi/reports:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List board reports
+      description: List board reports per RBI FREE-AI Section 6.1 requirements.
+      operationId: listBoardReports
+      responses:
+        '200':
+          description: List of reports
+    post:
+      tags:
+        - RBI Compliance
+      summary: Generate board report
+      operationId: createBoardReport
+      responses:
+        '201':
+          description: Report generation started
+
+  /api/v1/rbi/audit-exports:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List audit exports
+      description: List audit exports with 7-year retention per RBI requirements.
+      operationId: listAuditExports
+      responses:
+        '200':
+          description: List of exports
+    post:
+      tags:
+        - RBI Compliance
+      summary: Create audit export
+      operationId: createAuditExport
+      responses:
+        '201':
+          description: Export started
+
+  /api/v1/rbi/policies/templates:
+    get:
+      tags:
+        - RBI Compliance
+      summary: List RBI policy templates
+      description: List pre-built RBI FREE-AI compliance policy templates.
+      operationId: listRBIPolicyTemplates
+      responses:
+        '200':
+          description: List of policy templates
+
 components:
   schemas:
     HealthResponse:
@@ -3723,94 +3983,56 @@ components:
               type: string
 
     # ============================================================================
-    # EU AI Act Compliance Schemas
+    # RBI FREE-AI Compliance Schemas
     # ============================================================================
 
-    EUAIActExportRequest:
-      type: object
-      required:
-        - export_type
-        - format
-      properties:
-        export_type:
-          type: string
-          enum: [full_audit, conformity_evidence, hitl_summary, decision_chain, policy_violations, accuracy_metrics]
-          description: Type of compliance data to export
-        format:
-          type: string
-          enum: [json, csv, xml, pdf]
-          description: Output format for the export
-        date_from:
-          type: string
-          format: date-time
-          description: Start date for export range (RFC3339)
-        date_to:
-          type: string
-          format: date-time
-          description: End date for export range (RFC3339)
-        model_ids:
-          type: array
-          items:
-            type: string
-          description: Filter by specific model IDs
-        filters:
-          type: object
-          additionalProperties: true
-          description: Additional filters for the export
-
-    EUAIActExport:
+    RBIAISystem:
       type: object
       properties:
         id:
           type: string
+          format: uuid
         org_id:
           type: string
-        export_type:
+        system_id:
           type: string
-          enum: [full_audit, conformity_evidence, hitl_summary, decision_chain, policy_violations, accuracy_metrics]
-        format:
+        system_name:
           type: string
-          enum: [json, csv, xml, pdf]
-        status:
+        system_version:
           type: string
-          enum: [pending, processing, completed, failed]
-        progress:
-          type: integer
-          minimum: 0
-          maximum: 100
-        file_path:
+        description:
           type: string
-        file_size:
-          type: integer
-        record_count:
-          type: integer
-        date_from:
+        risk_category:
           type: string
-          format: date-time
-        date_to:
+          enum: [low, medium, high]
+        deployment_status:
           type: string
-          format: date-time
-        model_ids:
-          type: array
-          items:
-            type: string
-        filters:
-          type: object
-        error:
+          enum: [development, sandbox, canary, production, deprecated]
+        model_type:
           type: string
-        requested_by:
+        model_provider:
           type: string
+        use_case:
+          type: string
+        board_approval_required:
+          type: boolean
+        board_approval_status:
+          type: string
+          enum: [not_required, pending, approved, rejected, revoked]
+        last_validation_date:
+          type: string
+          format: date
+        next_validation_due:
+          type: string
+          format: date
         created_at:
           type: string
           format: date-time
-        started_at:
-          type: string
-          format: date-time
-        completed_at:
+        updated_at:
           type: string
           format: date-time
 
-    CreateConformityRequest:
+    RBIAISystemCreate:
       type: object
       required:
         - system_id
@@ -3819,93 +4041,6 @@ components:
       properties:
         system_id:
           type: string
-          description: Unique identifier for the AI system
-        system_name:
-          type: string
-          description: Human-readable name for the AI system
-        risk_category:
-          type: string
-          enum: [minimal, limited, high-risk, unacceptable]
-          description: EU AI Act risk classification
-        assessors:
-          type: array
-          items:
-            type: string
-          description: List of assessor email addresses
-
-    UpdateConformityRequest:
-      type: object
-      properties:
-        system_name:
-          type: string
-        risk_category:
-          type: string
-          enum: [minimal, limited, high-risk, unacceptable]
-        assessors:
-          type: array
-          items:
-            type: string
-        requirements:
-          type: array
-          items:
-            $ref: '#/components/schemas/RequirementStatus'
-        evidence:
-          type: array
-          items:
-            $ref: '#/components/schemas/EvidenceItem'
-        findings:
-          type: array
-          items:
-            $ref: '#/components/schemas/Finding'
-        risk_mitigation:
-          type: object
-          additionalProperties: true
-        recommendations:
-          type: array
-          items:
-            type: string
-
-    ConformityAssessment:
-      type: object
-      properties:
-        id:
-          type: string
-        org_id:
-          type: string
-        system_id:
-          type: string
-        system_name:
-          type: string
-        risk_category:
-          type: string
-          enum: [minimal, limited, high-risk, unacceptable]
-        status:
-          type: string
-          enum: [draft, in_progress, submitted, approved, rejected]
-        version:
-          type: integer
-        assessment_date:
-          type: string
-          format: date-time
-        valid_until:
-          type: string
-          format: date-time
-        assessors:
-          type: array
-          items:
-            type: string
-        requirements:
-          type: array
-          items:
-            $ref: '#/components/schemas/RequirementStatus'
-        evidence:
-          type: array
-          items:
-            $ref: '#/components/schemas/EvidenceItem'
-        findings:
-          type: array
-          items:
-            $ref: '#/components/schemas/Finding'
         risk_mitigation:
           type: object
         recommendations:

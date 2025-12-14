@@ -37,7 +37,7 @@ RUN --mount=type=bind,source=.,target=/src \
       fi && \
       if [ -d "/src/ee/platform/orchestrator/rbi" ]; then \
         mkdir -p ./orchestrator/rbi/ && \
-        cp -r /src/ee/platform/orchestrator/rbi/* ./orchestrator/rbi/ && \
+        find /src/ee/platform/orchestrator/rbi -maxdepth 1 -type f ! -name "go.mod" ! -name "go.sum" -exec cp {} ./orchestrator/rbi/ \; && \
         echo "RBI compliance module copied"; \
       fi && \
       if [ -d "/src/ee/platform/orchestrator/euaiact" ]; then \
