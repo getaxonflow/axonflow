@@ -93,7 +93,7 @@ Policy checks add single-digit millisecond overhead.
 
 **Gateway Mode** — Wrap existing LLM calls with governance. Pre-check → your LLM call → audit. Incremental adoption path.
 
-→ **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture)**
+→ **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
 
 ### vs LangChain / LangSmith
 
