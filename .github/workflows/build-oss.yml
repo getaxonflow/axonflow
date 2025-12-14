@@ -21,19 +21,12 @@ on:
       - 'platform/**/go.sum'
       - 'migrations/core/**/*.sql'
       - '.github/workflows/build-oss.yml'
+  # Pull requests: Run detect-changes and Build Summary on ALL PRs
+  # This ensures the required Build Summary check is present for merge queue entry.
+  # Actual builds are skipped on PRs - only validated in merge queue.
   pull_request:
     branches:
       - main
-    paths:
-      - 'platform/*/Dockerfile'
-      - 'platform/agent/**/*.go'
-      - 'platform/orchestrator/**/*.go'
-      - 'platform/connectors/**/*.go'
-      - 'platform/common/**/*.go'
-      - 'platform/cmd/**/*.go'
-      - 'platform/**/go.mod'
-      - 'platform/**/go.sum'
-      - 'migrations/core/**/*.sql'
   merge_group:
     branches:
       - main
@@ -41,12 +34,15 @@ on:
 
 jobs:
   # =============================================================================
-  # Change Detection (merge_group only)
+  # Change Detection (merge_group and pull_request)
   # =============================================================================
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'merge_group'
+    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       agent: ${{ steps.filter.outputs.agent }}
       orchestrator: ${{ steps.filter.outputs.orchestrator }}
@@ -83,8 +79,11 @@ jobs:
   build-agent:
     name: Build Agent Image
     needs: [detect-changes]
+    # Run if: NOT a PR AND (detect-changes was skipped OR succeeded with agent=true)
+    # Skip if: PR, detect-changes failed, or succeeded with agent=false
     if: |
       always() &&
+      github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.agent == 'true')
     runs-on: ubuntu-latest
@@ -117,8 +116,11 @@ jobs:
   build-orchestrator:
     name: Build Orchestrator Image
     needs: [detect-changes]
+    # Run if: NOT a PR AND (detect-changes was skipped OR succeeded with orchestrator=true)
+    # Skip if: PR, detect-changes failed, or succeeded with orchestrator=false
     if: |
       always() &&
+      github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
       (needs.detect-changes.result == 'skipped' || needs.detect-changes.outputs.orchestrator == 'true')
     runs-on: ubuntu-latest
@@ -155,8 +157,10 @@ jobs:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
     needs: [build-agent, build-orchestrator]
+    # Skip on PRs - only run on push/merge_group when builds succeed
     if: |
       always() &&
+      github.event_name != 'pull_request' &&
       (needs.build-agent.result == 'success' || needs.build-agent.result == 'skipped') &&
       (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped')
 
