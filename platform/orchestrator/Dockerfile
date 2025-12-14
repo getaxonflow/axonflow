@@ -30,6 +30,21 @@ RUN --mount=type=bind,source=.,target=/src \
       cp -r /src/ee/platform/agent/marketplace/* ./agent/marketplace/ && \
       cp -r /src/ee/platform/agent/node_enforcement/* ./agent/node_enforcement/ && \
       echo "Enterprise agent code copied successfully" && \
+      echo "=== Copying EE compliance modules ===" && \
+      if [ -d "/src/ee/platform/orchestrator/sebi" ]; then \
+        cp -r /src/ee/platform/orchestrator/sebi/* ./orchestrator/sebi/ && \
+        echo "SEBI compliance module copied"; \
+      fi && \
+      if [ -d "/src/ee/platform/orchestrator/rbi" ]; then \
+        mkdir -p ./orchestrator/rbi/ && \
+        cp -r /src/ee/platform/orchestrator/rbi/* ./orchestrator/rbi/ && \
+        echo "RBI compliance module copied"; \
+      fi && \
+      if [ -d "/src/ee/platform/orchestrator/euaiact" ]; then \
+        mkdir -p ./orchestrator/euaiact/ && \
+        cp -r /src/ee/platform/orchestrator/euaiact/* ./orchestrator/euaiact/ && \
+        echo "EU AI Act compliance module copied"; \
+      fi && \
       echo "=== Downloading enterprise dependencies ===" && \
       go get github.com/aws/aws-sdk-go-v2/service/marketplacemetering@latest && \
       echo "Enterprise dependencies downloaded"; \

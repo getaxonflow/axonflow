@@ -7,67 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.0] - 2025-12-14
 
-### Added
+**Community Launch Release**
 
-- **Row-Level Security (RLS)**: Database-level multi-tenant isolation for enhanced security
-  - Automatic RLS setup in CloudFormation templates
-  - User-level tenant isolation enforcement
-  - Comprehensive RLS unit and integration tests
-- **Customer Portal Documentation**: Protected documentation portal with SSO integration
-  - Full-page navigation through nginx
-  - Session-preserved documentation access
-  - Build-time API URL configuration
-- **Migration System**: Production-grade database migration tracking
-  - Industry-standard migration helpers with upgrade support
-  - Schema verification tools for deployment validation
-  - Idempotent migrations for safe re-runs
-- **Test Coverage Improvements**:
-  - Orchestrator package: 52% → 70.4% coverage
-  - Agent package: Maintained at 70.3%
-  - Amadeus connector: 74.1% coverage
-  - Comprehensive integration tests for RLS, connectors, and marketplace
-- **Deployment Infrastructure**:
-  - 2-environment deployment system (staging + production)
-  - Configuration-driven deployment with YAML environments
-  - Pre-flight validation to catch errors before deployment
-  - Autonomous deployment monitoring with deep ECS task inspection
-- **Example Workflows**: 10 comprehensive workflow examples (simple to complex)
-- **VPC Endpoint Support**: Conditional VPC endpoint creation for private networking
-- **CI/CD Enhancements**:
-  - Trivy security scanning workflow
-  - Standardized test coverage thresholds (65% minimum)
-  - GitHub Actions OIDC setup for secure AWS deployments
+This is the first public release of AxonFlow, a self-hosted governance and orchestration platform for production AI systems.
 
-### Fixed
+### Core Platform
 
-- **Critical Security**: Production bug in `reset_org_id()` function
-  - Wrong PostgreSQL session scope flag could leak tenant data
-  - Transaction-local flag couldn't override session-wide settings
-  - Now uses correct session-wide scope for connection pooling safety
-- **RLS Integration Tests**: Fixed 4 failing tests with proper cleanup and expectations
-- **Schema Migrations**: Fixed RLS test to handle table not existing in test environment
-- **CloudFormation Networking**: Resolved VPC subnet mismatch for ALB deployment
-- **Customer Portal Deployment**: Fixed Docker networking for proper backend API access
-- **Documentation Links**: Fixed portal navigation to preserve user sessions
-- **Migration Helpers**: Upgraded old `schema_migrations` table to new schema automatically
-- **Deployment Scripts**: Fixed `--target` parameter bug for proper instance targeting
+- **Policy Enforcement Agent**: Real-time policy enforcement with single-digit millisecond overhead
+  - Static policy engine with configurable rules
+  - PII detection (SSN, credit cards, PAN, Aadhaar)
+  - SQL injection blocking in user inputs
+  - Rate limiting and request validation
 
-### Changed
+- **Multi-Agent Planning (MAP)**: Declarative agent orchestration
+  - YAML-based agent configuration
+  - Natural language to workflow conversion
+  - Sequential and parallel execution modes
+  - Error handling with fallbacks
 
-- **CI/CD Standards**: Upgraded Go version from 1.21 to 1.23
-- **Test Infrastructure**: Extended PostgreSQL CI service to orchestrator tests
-- **Password Encoding**: Updated test expectations to match `url.UserPassword()` behavior
-- **Commit Linting**: Skipped for PR #14 (uses squash merge)
+- **MCP Connectors**: Model Context Protocol integration
+  - PostgreSQL, MySQL, MongoDB, Redis, HTTP connectors (Community)
+  - Salesforce, Slack, Snowflake, ServiceNow (Enterprise)
 
-### Security
+- **Gateway Mode**: Wrap existing LLM calls with governance
+  - Pre-check → your LLM call → audit trail
+  - Incremental adoption path for existing codebases
 
-- **RLS Enforcement**: Database-level tenant isolation prevents cross-tenant data access
-- **Migration Security**: Schema verification prevents deployment of invalid database states
-- **Secret Management**: All sensitive credentials now managed through AWS Secrets Manager
+- **Multi-Model Routing**: Intelligent LLM provider management
+  - OpenAI, Anthropic, Ollama (Community)
+  - AWS Bedrock, Google Gemini (Enterprise)
+  - Automatic failover and cost-based routing
+
+### Security & Compliance
+
+- **SQL Injection Response Scanning**: Detect SQLi payloads in MCP connector responses
+  - 37 regex patterns across 8 attack categories
+  - Monitoring mode by default (detect and log, configurable blocking)
+  - Per-connector configuration overrides
+  - Audit trail integration for compliance
+  - Basic scanner (Community), Advanced ML-based scanner (Enterprise)
+
+- **EU AI Act Compliance** (Articles 12, 13, 14, 15, 43):
+  - Decision chain tracing with full audit trails
+  - Transparency headers (X-AI-Decision-ID, X-AI-Model-Provider, etc.)
+  - Human-in-the-Loop (HITL) workflows (Enterprise)
+  - Conformity assessment endpoints (Enterprise)
+  - Emergency circuit breaker (Enterprise)
+
+- **RBI FREE-AI Framework**: Data integrity monitoring for financial AI (India)
+
+- **SEBI AI/ML Guidelines**: Security audit trail for investment platforms (India)
+
+### Infrastructure
+
+- **Docker Compose Deployment**: Local development in under 5 minutes
+- **Row-Level Security**: Database-level multi-tenant isolation
+- **Production Migrations**: Idempotent, versioned database migrations
+- **Test Coverage**: 70%+ coverage across core packages
+
+### Documentation
+
+- Getting Started Guide
+- LLM Provider Configuration
+- MCP Connector Development Guide
+- Security Best Practices
+- EU AI Act Compliance Guide
 
 ---
+
+## Pre-release Development History
+
+The following versions were internal development milestones leading up to v1.0.0.
 
 ## [1.0.12] - 2025-11-07
 

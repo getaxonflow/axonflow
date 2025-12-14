@@ -85,6 +85,8 @@ Policy checks add single-digit millisecond overhead.
 
 **Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs.
 
+**SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
+
 **Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
 
 **Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
@@ -140,7 +142,7 @@ Policy checks add single-digit millisecond overhead.
         PostgreSQL (policies, audit) • Redis (cache)
 ```
 
-- **Agent** (:8080): Policy enforcement, PII detection, MCP connectors
+- **Agent** (:8080): Policy enforcement, PII detection, SQLi response scanning, MCP connectors
 - **Orchestrator** (:8081): LLM routing, dynamic policies, multi-agent planning
 
 ---
@@ -152,6 +154,8 @@ Policy checks add single-digit millisecond overhead.
 | **Core Platform** | | |
 | Policy enforcement | ✅ | ✅ |
 | PII detection (SSN, credit cards, PAN/Aadhaar) | ✅ | ✅ |
+| SQLi response scanning (basic) | ✅ | ✅ |
+| SQLi response scanning (ML-based) | ❌ | ✅ |
 | Audit logging | ✅ | ✅ |
 | **LLM Providers** | | |
 | OpenAI, Anthropic, Ollama | ✅ | ✅ |
