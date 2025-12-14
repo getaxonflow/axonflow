@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-func TestNewSEBIModule_OSS(t *testing.T) {
+func TestNewSEBIModule_Community(t *testing.T) {
 	config := SEBIModuleConfig{
 		DB: nil,
 	}
@@ -27,15 +27,15 @@ func TestNewSEBIModule_OSS(t *testing.T) {
 	}
 }
 
-func TestSEBIModule_IsHealthy_OSS(t *testing.T) {
+func TestSEBIModule_IsHealthy_Community(t *testing.T) {
 	module := &SEBIModule{}
 
 	if module.IsHealthy() {
-		t.Error("IsHealthy() should return false for OSS stub")
+		t.Error("IsHealthy() should return false for Community stub")
 	}
 }
 
-func TestSEBIModule_HealthCheck_OSS(t *testing.T) {
+func TestSEBIModule_HealthCheck_Community(t *testing.T) {
 	module := &SEBIModule{}
 
 	status := module.HealthCheck()
@@ -45,7 +45,7 @@ func TestSEBIModule_HealthCheck_OSS(t *testing.T) {
 	}
 }
 
-func TestSEBIModule_RegisterRoutes_OSS(t *testing.T) {
+func TestSEBIModule_RegisterRoutes_Community(t *testing.T) {
 	module := &SEBIModule{}
 	mux := http.NewServeMux()
 
@@ -53,7 +53,7 @@ func TestSEBIModule_RegisterRoutes_OSS(t *testing.T) {
 	module.RegisterRoutes(mux)
 }
 
-func TestSEBIModule_RegisterRoutesWithMux_OSS(t *testing.T) {
+func TestSEBIModule_RegisterRoutesWithMux_Community(t *testing.T) {
 	module := &SEBIModule{}
 	r := mux.NewRouter()
 

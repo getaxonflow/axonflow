@@ -39,7 +39,8 @@ import (
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - OSS stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/sebi" // SEBI compliance - OSS stub or EE impl
+	"axonflow/platform/orchestrator/rbi"  // RBI FREE-AI module - OSS stub or EE impl
+	"axonflow/platform/orchestrator/sebi" // SEBI AI/ML module - OSS stub or EE impl
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -79,8 +80,9 @@ var (
 	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
-	sebiModule    *sebi.SEBIModule   // SEBI AI/ML Guidelines compliance (India)
-	euaiactModule *euaiact.Module    // EU AI Act compliance (Europe)
+	sebiModule    *sebi.SEBIModule // SEBI AI/ML Guidelines compliance (India)
+	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
+	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
 )
 
 // Per-stage metrics (similar to Agent)
@@ -390,6 +392,12 @@ func Run() {
 	if sebiModule != nil {
 		sebiModule.RegisterRoutesWithMux(r)
 		log.Println("SEBI Compliance API routes registered (/api/v1/sebi/...)")
+	}
+
+	// RBI FREE-AI Compliance Module (Enterprise - India Banking)
+	if rbiModule != nil {
+		rbiModule.RegisterRoutesWithMux(r)
+		log.Println("RBI FREE-AI Compliance API routes registered (/api/v1/rbi/...)")
 	}
 
 	// EU AI Act Compliance Module (Enterprise - EU Regulatory)
@@ -777,6 +785,20 @@ func initializeComponents() {
 			log.Println("⚠️  SEBI Module initialized but not healthy - database may be required")
 		}
 
+		// Initialize RBI FREE-AI Compliance Module (Enterprise - India Banking)
+		log.Println("Initializing RBI FREE-AI Compliance Module...")
+		rbiConfig := rbi.DefaultConfig()
+		rbiConfig.DB = usageDB
+		var rbiErr error
+		rbiModule, rbiErr = rbi.NewRBIModule(rbiConfig)
+		if rbiErr != nil {
+			log.Printf("⚠️  RBI Module initialization error: %v", rbiErr)
+		} else if rbiModule.IsHealthy() {
+			log.Println("RBI FREE-AI Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  RBI Module initialized but not healthy - database may be required")
+		}
+
 		// Initialize EU AI Act Compliance Module (Enterprise - EU Regulatory)
 		log.Println("Initializing EU AI Act Compliance Module...")
 		euaiactConfig := euaiact.ModuleConfig{
@@ -798,6 +820,7 @@ func initializeComponents() {
 		log.Println("⚠️  Policy CRUD API not initialized - database connection required")
 		log.Println("⚠️  Policy Templates API not initialized - database connection required")
 		log.Println("⚠️  SEBI Compliance Module not initialized - database connection required")
+		log.Println("⚠️  RBI FREE-AI Compliance Module not initialized - database connection required")
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 	}
 }
@@ -824,6 +847,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if sebiModule != nil {
 		components["sebi_compliance"] = sebiModule.IsHealthy()
 	}
+	if rbiModule != nil {
+		components["rbi_compliance"] = rbiModule.IsHealthy()
+	}
 	if euaiactModule != nil {
 		components["euaiact_compliance"] = euaiactModule.IsHealthy()
 	}
@@ -835,9 +861,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"timestamp":  time.Now().UTC(),
 		"components": components,
 		"features": map[string]bool{
-			"multi_agent_planning":  planningEngine != nil && resultAggregator != nil,
-			"sebi_compliance":       sebiModule != nil && sebiModule.IsHealthy(),
-			"euaiact_compliance":    euaiactModule != nil && euaiactModule.IsHealthy(),
+			"multi_agent_planning": planningEngine != nil && resultAggregator != nil,
+			"sebi_compliance":      sebiModule != nil && sebiModule.IsHealthy(),
+			"rbi_compliance":       rbiModule != nil && rbiModule.IsHealthy(),
+			"euaiact_compliance":   euaiactModule != nil && euaiactModule.IsHealthy(),
 		},
 	}
 
