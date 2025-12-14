@@ -28,6 +28,7 @@ import (
 
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
+	"axonflow/platform/agent/sqli"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/cassandra"
@@ -606,7 +607,19 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 9. Return results
+	// 9. Scan response for SQL injection (if enabled)
+	scanResult, scanErr := sqli.GetGlobalMiddleware().ScanQueryResponse(ctx, req.Connector, result.Rows)
+	if scanErr != nil {
+		log.Printf("[MCP] SQLi scan error: %v", scanErr)
+		// Continue - don't block on scan errors
+	} else if scanResult.Blocked {
+		log.Printf("[MCP] SQLi detected in response from connector '%s': pattern=%s category=%s",
+			req.Connector, scanResult.Pattern, scanResult.Category)
+		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
+		return
+	}
+
+	// 10. Return results
 	// SDK expects "data" field (ConnectorResponse.Data), not "rows"
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
@@ -757,6 +770,18 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[MCP] Execute failed: %v", err)
 		sendErrorResponse(w, "Command execution failed", http.StatusInternalServerError, nil)
+		return
+	}
+
+	// Scan response for SQL injection (if enabled)
+	scanResult, scanErr := sqli.GetGlobalMiddleware().ScanCommandResponse(ctx, req.Connector, result.Message, result.Metadata)
+	if scanErr != nil {
+		log.Printf("[MCP] SQLi scan error: %v", scanErr)
+		// Continue - don't block on scan errors
+	} else if scanResult.Blocked {
+		log.Printf("[MCP] SQLi detected in command response from connector '%s': pattern=%s category=%s",
+			req.Connector, scanResult.Pattern, scanResult.Category)
+		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
 		return
 	}
 

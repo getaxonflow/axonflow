@@ -37,7 +37,9 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/node_enforcement"
+	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - OSS stub or EE impl
 	"axonflow/platform/orchestrator/llm"
+	"axonflow/platform/orchestrator/sebi" // SEBI compliance - OSS stub or EE impl
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -75,6 +77,10 @@ var (
 	templateAPIHandler    *TemplateAPIHandler                // Policy Templates API handler
 	llmProviderRouter     *llm.Router                        // New pluggable LLM provider router (ADR-007)
 	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
+
+	// Enterprise Compliance Modules
+	sebiModule    *sebi.SEBIModule   // SEBI AI/ML Guidelines compliance (India)
+	euaiactModule *euaiact.Module    // EU AI Act compliance (Europe)
 )
 
 // Per-stage metrics (similar to Agent)
@@ -378,6 +384,18 @@ func Run() {
 	if llmProviderAPIHandler != nil {
 		llmProviderAPIHandler.RegisterRoutesWithMux(r)
 		log.Println("LLM Provider API routes registered (/api/v1/llm-providers)")
+	}
+
+	// SEBI Compliance Module (Enterprise - India Regulatory)
+	if sebiModule != nil {
+		sebiModule.RegisterRoutesWithMux(r)
+		log.Println("SEBI Compliance API routes registered (/api/v1/sebi/...)")
+	}
+
+	// EU AI Act Compliance Module (Enterprise - EU Regulatory)
+	if euaiactModule != nil {
+		euaiactModule.RegisterRoutesWithMux(r)
+		log.Println("EU AI Act Compliance API routes registered (/api/v1/euaiact/...)")
 	}
 
 	// Start server
@@ -743,9 +761,44 @@ func initializeComponents() {
 		templateService := NewTemplateService(templateRepo, policyRepo)
 		templateAPIHandler = NewTemplateAPIHandler(templateService)
 		log.Println("Policy Templates API initialized ✅")
+
+		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
+		log.Println("Initializing SEBI Compliance Module...")
+		sebiConfig := sebi.SEBIModuleConfig{
+			DB: usageDB,
+		}
+		var sebiErr error
+		sebiModule, sebiErr = sebi.NewSEBIModule(sebiConfig)
+		if sebiErr != nil {
+			log.Printf("⚠️  SEBI Module initialization error: %v", sebiErr)
+		} else if sebiModule.IsHealthy() {
+			log.Println("SEBI Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  SEBI Module initialized but not healthy - database may be required")
+		}
+
+		// Initialize EU AI Act Compliance Module (Enterprise - EU Regulatory)
+		log.Println("Initializing EU AI Act Compliance Module...")
+		euaiactConfig := euaiact.ModuleConfig{
+			DB:                   usageDB,
+			DefaultAccuracyMin:   0.80, // 80% minimum accuracy threshold
+			DefaultBiasMax:       0.10, // 10% maximum bias score
+			AlertCooldownMinutes: 15,   // 15 minutes between alerts
+		}
+		var euaiactErr error
+		euaiactModule, euaiactErr = euaiact.NewModule(euaiactConfig)
+		if euaiactErr != nil {
+			log.Printf("⚠️  EU AI Act Module initialization error: %v", euaiactErr)
+		} else if euaiactModule.IsHealthy() {
+			log.Println("EU AI Act Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  EU AI Act Module initialized but not healthy - database may be required")
+		}
 	} else {
 		log.Println("⚠️  Policy CRUD API not initialized - database connection required")
 		log.Println("⚠️  Policy Templates API not initialized - database connection required")
+		log.Println("⚠️  SEBI Compliance Module not initialized - database connection required")
+		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 	}
 }
 
@@ -767,6 +820,14 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		components["result_aggregator"] = resultAggregator.IsHealthy()
 	}
 
+	// Add compliance modules
+	if sebiModule != nil {
+		components["sebi_compliance"] = sebiModule.IsHealthy()
+	}
+	if euaiactModule != nil {
+		components["euaiact_compliance"] = euaiactModule.IsHealthy()
+	}
+
 	health := map[string]interface{}{
 		"status":     "healthy",
 		"service":    "axonflow-orchestrator",
@@ -774,7 +835,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"timestamp":  time.Now().UTC(),
 		"components": components,
 		"features": map[string]bool{
-			"multi_agent_planning": planningEngine != nil && resultAggregator != nil,
+			"multi_agent_planning":  planningEngine != nil && resultAggregator != nil,
+			"sebi_compliance":       sebiModule != nil && sebiModule.IsHealthy(),
+			"euaiact_compliance":    euaiactModule != nil && euaiactModule.IsHealthy(),
 		},
 	}
 

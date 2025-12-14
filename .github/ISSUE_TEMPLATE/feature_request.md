@@ -114,6 +114,11 @@ assignees: ''
 
 <!-- Link to any related issues, discussions, or external resources -->
 
+## Reported By
+
+<!-- If reporting on behalf of someone else, @mention them or provide attribution -->
+<!-- Example: @username or "Reported by: Name (Company)" -->
+
 ## Checklist
 
 - [ ] I have searched existing issues to avoid duplicates

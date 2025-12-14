@@ -1,32 +1,24 @@
-name: Test Suite
+name: Test Suite (Community)
+
+# Community test workflow - tests community edition code
+#
+# This workflow runs in the Community repo.
 
 on:
-  # Pull requests: Run detect-changes and Test Summary only
-  # This ensures the required Test Summary check is present for merge queue entry.
-  # Actual tests are skipped on PRs - only run in merge queue.
   pull_request:
     branches:
       - main
-      - develop
-  # Push to main/develop: Always run all tests (no path filters)
   push:
     branches:
       - main
-      - develop
     paths:
       - 'platform/**/*.go'
       - 'go.mod'
       - 'go.sum'
-      - '.github/workflows/test.yml'
-  # Merge queue: re-run tests against the merged code with path filtering
+      - '.github/workflows/test-community.yml'
   merge_group:
     branches:
       - main
-      - develop
-
-# Consolidated test jobs to reduce CI costs
-# Reduced from 7 jobs to 3 jobs (~50% reduction in billable minutes)
-# See: https://github.com/getaxonflow/axonflow-enterprise/issues/305
 
 jobs:
   # =============================================================================
@@ -52,18 +44,15 @@ jobs:
           filters: |
             go-code:
               - 'platform/**/*.go'
-              - 'ee/platform/**/*.go'
               - '**/go.mod'
               - '**/go.sum'
-              - '.github/workflows/test.yml'
+              - '.github/workflows/test-community.yml'
 
   unit-tests:
     name: Unit Tests (All Modules)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [detect-changes]
-    # Run if: push (path filtered at trigger) OR (PR/merge_group with Go changes)
-    # Skip on PRs without Go changes, skip in merge_group without Go changes
     if: |
       always() &&
       (github.event_name == 'push' ||
@@ -136,14 +125,6 @@ jobs:
             fi
           done
 
-          echo "=== Applying enterprise migrations ==="
-          for migration in migrations/enterprise/*.sql; do
-            if [ -f "$migration" ] && [[ ! "$migration" =~ _down\.sql$ ]]; then
-              echo "Applying $migration..."
-              psql -h localhost -U test_user -d test_db -f "$migration" || echo "Migration $migration failed or already applied, continuing..."
-            fi
-          done
-
       - name: Test Orchestrator
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
@@ -157,13 +138,12 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Orchestrator Coverage: $coverage%"
 
-          # Threshold restored to 73.5% after coverage improvements (PR #437)
           threshold=73.5
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
-            echo "❌ Orchestrator coverage $coverage% is below threshold $threshold%"
+            echo "Orchestrator coverage $coverage% is below threshold $threshold%"
             exit 1
           fi
-          echo "✅ Orchestrator coverage $coverage% meets threshold $threshold%"
+          echo "Orchestrator coverage $coverage% meets threshold $threshold%"
 
       - name: Test Agent
         env:
@@ -180,10 +160,10 @@ jobs:
 
           threshold=76.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
-            echo "❌ Agent coverage $coverage% is below threshold $threshold%"
+            echo "Agent coverage $coverage% is below threshold $threshold%"
             exit 1
           fi
-          echo "✅ Agent coverage $coverage% meets threshold $threshold%"
+          echo "Agent coverage $coverage% meets threshold $threshold%"
 
       - name: Test Connectors
         env:
@@ -203,10 +183,10 @@ jobs:
 
           threshold=62.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
-            echo "❌ Connector coverage $coverage% is below threshold $threshold%"
+            echo "Connector coverage $coverage% is below threshold $threshold%"
             exit 1
           fi
-          echo "✅ Connector coverage $coverage% meets threshold $threshold%"
+          echo "Connector coverage $coverage% meets threshold $threshold%"
 
       - name: Test Shared
         run: |
@@ -236,7 +216,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [detect-changes]
-    # Run if: push (path filtered at trigger) OR (PR/merge_group with Go changes)
     if: |
       always() &&
       (github.event_name == 'push' ||
@@ -269,7 +248,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [detect-changes, unit-tests, race-detector]
-    # Run if: push OR (PR/merge_group with Go changes) AND previous jobs didn't fail
     if: |
       always() &&
       needs.unit-tests.result != 'failure' &&
@@ -331,14 +309,6 @@ jobs:
             fi
           done
 
-          echo "=== Applying enterprise migrations ==="
-          for migration in migrations/enterprise/*.sql; do
-            if [ -f "$migration" ] && [[ ! "$migration" =~ _down\.sql$ ]]; then
-              echo "Applying $migration..."
-              psql -h localhost -U test_user -d test_db -f "$migration" || echo "Migration $migration failed or already applied, continuing..."
-            fi
-          done
-
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_db?sslmode=disable
@@ -357,7 +327,7 @@ jobs:
     steps:
       - name: Check test results
         run: |
-          echo "🧪 Test Suite Complete"
+          echo "Test Suite Complete"
           echo ""
           echo "Results:"
           echo "  Detect Changes: ${{ needs.detect-changes.result }}"
@@ -366,22 +336,20 @@ jobs:
           echo "  Integration Tests: ${{ needs.integration-tests.result }}"
 
       - name: Fail if any test failed
-        # Accept 'success' or 'skipped' (skipped = no Go code changes)
-        # detect-changes is 'skipped' for push events (only runs in PR/merge_group)
         if: |
           needs.detect-changes.result == 'failure' ||
           (needs.unit-tests.result != 'success' && needs.unit-tests.result != 'skipped') ||
           (needs.race-detector.result != 'success' && needs.race-detector.result != 'skipped') ||
           (needs.integration-tests.result != 'success' && needs.integration-tests.result != 'skipped')
         run: |
-          echo "❌ One or more test jobs failed"
+          echo "One or more test jobs failed"
           exit 1
 
       - name: Success message
         if: success()
         run: |
           echo ""
-          echo "✅ All tests passed!"
+          echo "All tests passed!"
           echo ""
           echo "Coverage thresholds verified:"
           echo "  - Orchestrator: 73.5%"

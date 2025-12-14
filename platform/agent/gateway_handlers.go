@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/agent/rbi"
 	"axonflow/platform/connectors/base"
 
 	"github.com/google/uuid"
@@ -83,8 +84,36 @@ var (
 // gatewayMetricsOnce ensures metrics are registered only once
 var gatewayMetricsOnce sync.Once
 
+// RBI Kill Switch checker (lazy initialization)
+var (
+	rbiKillSwitchChecker     *rbi.KillSwitchChecker
+	rbiKillSwitchCheckerOnce sync.Once
+)
+
 func init() {
 	registerGatewayMetrics()
+}
+
+// getRBIKillSwitchChecker returns the RBI kill switch checker (lazy initialization)
+// Returns nil if kill switch is not enabled (OSS mode)
+func getRBIKillSwitchChecker() *rbi.KillSwitchChecker {
+	rbiKillSwitchCheckerOnce.Do(func() {
+		if rbi.KillSwitchEnabled() && authDB != nil {
+			rbiKillSwitchChecker = rbi.NewKillSwitchChecker(authDB)
+			log.Printf("🛑 [RBI] Kill switch checker initialized (enterprise)")
+		}
+	})
+	return rbiKillSwitchChecker
+}
+
+// checkRBIKillSwitch checks if an RBI kill switch is active for the given org/system
+func checkRBIKillSwitch(ctx context.Context, orgID, systemID string) *rbi.KillSwitchCheckResult {
+	checker := getRBIKillSwitchChecker()
+	if checker == nil {
+		// Kill switch not enabled (OSS mode) - always allow
+		return &rbi.KillSwitchCheckResult{IsBlocked: false}
+	}
+	return checker.CheckKillSwitch(ctx, orgID, systemID)
 }
 
 // registerGatewayMetrics registers all gateway metrics once (safe for multiple calls)
@@ -99,6 +128,7 @@ func registerGatewayMetrics() {
 		_ = prometheus.Register(gatewayLLMCostTotal)
 		_ = prometheus.Register(gatewayAuditQueuedTotal)
 		_ = prometheus.Register(gatewayAuditFallbackTotal)
+		_ = prometheus.Register(gatewayRBIPIIDetected)
 	})
 }
 
@@ -196,7 +226,44 @@ var (
 			Help: "Total audit entries that fell back to direct DB write after queue failure",
 		},
 	)
+	gatewayRBIPIIDetected = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_gateway_rbi_pii_detected_total",
+			Help: "Total RBI PII detections in gateway pre-check",
+		},
+		[]string{"pii_type", "blocked"},
+	)
 )
+
+// rbiPIIDetector is the India-specific PII detector for RBI compliance.
+// Initialized lazily on first use. In OSS builds, this is a no-op.
+var (
+	rbiPIIDetector     *rbi.IndiaPIIDetector
+	rbiPIIDetectorOnce sync.Once
+)
+
+// getRBIPIIDetector returns the RBI PII detector, initializing it if needed.
+func getRBIPIIDetector() *rbi.IndiaPIIDetector {
+	rbiPIIDetectorOnce.Do(func() {
+		if rbi.IsEnabled() {
+			config := rbi.DefaultIndiaPIIDetectorConfig()
+			rbiPIIDetector = rbi.NewIndiaPIIDetector(config)
+			log.Printf("🇮🇳 [RBI] India PII detector initialized (enterprise)")
+		} else {
+			log.Printf("🇮🇳 [RBI] India PII detection disabled (OSS mode)")
+		}
+	})
+	return rbiPIIDetector
+}
+
+// checkRBIPII checks request query for India-specific PII.
+// Returns the check result with detected PII types and blocking recommendation.
+// In OSS builds, this returns a no-PII result (detection is disabled).
+func checkRBIPII(query string) *rbi.RBIPIICheckResult {
+	detector := getRBIPIIDetector()
+	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI guidelines
+	return rbi.CheckRequestForPII(detector, query, true)
+}
 
 // getGatewayAuditQueue returns the audit queue for Gateway Mode handlers
 // Returns nil if no policy engine or queue is available
@@ -285,6 +352,53 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		log.Printf("❌ [Pre-check] Tenant mismatch: user=%s, client=%s", user.TenantID, client.TenantID)
 		sendGatewayError(w, "Tenant mismatch", http.StatusForbidden)
 		return
+	}
+
+	// RBI FREE-AI Compliance: Check for active kill switches (emergency AI disable)
+	// This allows organizations to instantly halt all AI operations per RBI guidelines
+	killSwitchResult := checkRBIKillSwitch(ctx, client.OrgID, "")
+	if killSwitchResult.IsBlocked {
+		log.Printf("🛑 [Pre-check] Request blocked by RBI kill switch: %s", killSwitchResult.Reason)
+		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
+		response := PreCheckResponse{
+			ContextID:   uuid.New().String(),
+			Approved:    false,
+			Policies:    []string{"rbi_kill_switch"},
+			BlockReason: killSwitchResult.Reason,
+			ExpiresAt:   time.Now(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// RBI FREE-AI Compliance: Check for India-specific PII before policy evaluation
+	// This runs in both OSS (no-op) and enterprise (full detection) modes
+	piiResult := checkRBIPII(req.Query)
+	if piiResult.BlockRecommended {
+		log.Printf("🛑 [Pre-check] Request blocked by RBI PII detection: %s", piiResult.Reason)
+		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
+		// Record metrics for each detected PII type
+		for _, piiType := range piiResult.DetectedTypes {
+			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "true").Inc()
+		}
+		response := PreCheckResponse{
+			ContextID:   uuid.New().String(),
+			Approved:    false,
+			Policies:    []string{"rbi_pii_protection"},
+			BlockReason: piiResult.Reason,
+			ExpiresAt:   time.Now(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+	// Record PII detection metrics even for non-blocking detections
+	if piiResult.HasPII {
+		for _, piiType := range piiResult.DetectedTypes {
+			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "false").Inc()
+		}
+		log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
 	}
 
 	// Evaluate policies (reuse existing policy engine)
