@@ -85,7 +85,7 @@ Policy checks add single-digit millisecond overhead.
 
 **Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs.
 
-**Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy.
+**Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
 
 **Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
 
