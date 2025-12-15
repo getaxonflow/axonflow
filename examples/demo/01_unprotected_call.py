@@ -8,7 +8,7 @@ No checks, no rate limits, no audit trail.
 import openai
 
 # Direct call to LLM - no governance
-user_input = "What's the weather in London?"
+user_input = "Explain AI governance in one sentence"
 
 response = openai.chat.completions.create(
     model="gpt-4",
