@@ -32,16 +32,35 @@ RUN --mount=type=bind,source=.,target=/src \
       cp -r /src/ee/platform/agent/node_enforcement/* ./agent/node_enforcement/ && \
       if [ -d "/src/ee/platform/agent/rbi" ]; then \
         cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
-        echo "  Copied enterprise RBI module (kill switch)"; \
+        echo "  Copied enterprise RBI module"; \
+      fi && \
+      if [ -d "/src/ee/platform/agent/hitl" ]; then \
+        mkdir -p ./agent/hitl && \
+        cp -r /src/ee/platform/agent/hitl/* ./agent/hitl/ && \
+        echo "  Copied enterprise HITL module (EU AI Act Article 14)"; \
+      fi && \
+      if [ -d "/src/ee/platform/agent/circuitbreaker" ]; then \
+        mkdir -p ./agent/circuitbreaker && \
+        cp -r /src/ee/platform/agent/circuitbreaker/* ./agent/circuitbreaker/ && \
+        echo "  Copied enterprise Circuit Breaker module (EU AI Act Article 14)"; \
+      fi && \
+      if [ -d "/src/ee/platform/agent/sqli" ]; then \
+        mkdir -p /go/src/axonflow/ee/platform/agent/sqli && \
+        cp -r /src/ee/platform/agent/sqli/* /go/src/axonflow/ee/platform/agent/sqli/ && \
+        echo "module axonflow/ee/platform" > /go/src/axonflow/ee/platform/go.mod && \
+        echo "" >> /go/src/axonflow/ee/platform/go.mod && \
+        echo "go 1.24.0" >> /go/src/axonflow/ee/platform/go.mod && \
+        echo "" >> /go/src/axonflow/ee/platform/go.mod && \
+        echo "require axonflow/platform v0.0.0" >> /go/src/axonflow/ee/platform/go.mod && \
+        echo "" >> /go/src/axonflow/ee/platform/go.mod && \
+        echo "replace axonflow/platform => /go/src/axonflow/platform" >> /go/src/axonflow/ee/platform/go.mod && \
+        go mod edit -require axonflow/ee/platform@v0.0.0 && \
+        go mod edit -replace axonflow/ee/platform=/go/src/axonflow/ee/platform && \
+        echo "  Copied enterprise SQLi scanner (ML-based) and configured modules"; \
       fi && \
       echo "Enterprise agent code copied successfully" && \
-      echo "=== Enterprise build: copying RBI compliance module ===" && \
-      if [ -d "/src/ee/platform/agent/rbi" ]; then \
-        cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
-        echo "  RBI PII detector copied successfully"; \
-      fi && \
       echo "=== Enterprise build: copying EE connectors ===" && \
-      for connector in amadeus salesforce slack snowflake; do \
+      for connector in amadeus salesforce slack snowflake hubspot jira servicenow; do \
         if [ -d "/src/ee/platform/connectors/$connector" ]; then \
           cp -r /src/ee/platform/connectors/$connector/* ./connectors/$connector/ && \
           echo "  Copied enterprise connector: $connector"; \
