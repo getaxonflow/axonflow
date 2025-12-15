@@ -65,6 +65,7 @@ type DatabasePolicyEngine struct {
 	refreshInterval      time.Duration
 	performanceMode      bool  // When true, uses async writes for better performance
 	auditQueue           *AuditQueue  // Handles async audit logging with persistent fallback
+	piiBlockCritical     bool  // Block critical PII (SSN, credit cards) - default: true
 }
 
 // PolicyRecord represents a policy from database
@@ -148,11 +149,19 @@ func NewDatabasePolicyEngine() (*DatabasePolicyEngine, error) {
 		log.Println("Falling back to direct database writes (no queue)")
 	}
 
+	// PII blocking is ON by default; set PII_BLOCK_CRITICAL=false to disable
+	piiBlock := true
+	if val := os.Getenv("PII_BLOCK_CRITICAL"); val == "false" || val == "0" {
+		piiBlock = false
+		log.Println("[DatabasePolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
+	}
+
 	engine := &DatabasePolicyEngine{
-		db:              db,
-		refreshInterval: 60 * time.Second, // Refresh cache every 60 seconds
-		performanceMode: performanceMode,
-		auditQueue:      auditQueue,
+		db:               db,
+		refreshInterval:  60 * time.Second, // Refresh cache every 60 seconds
+		performanceMode:  performanceMode,
+		auditQueue:       auditQueue,
+		piiBlockCritical: piiBlock,
 	}
 
 	// Load initial policies
@@ -361,13 +370,23 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "admin_access")
 
-	// 4. PII Detection (for redaction)
+	// 4. PII Detection
+	// Critical PII (SSN, credit cards, Aadhaar, PAN) - block if piiBlockCritical is enabled
+	// Non-critical PII (email, phone) - log and flag for redaction
 	if piiPattern := dpe.checkPatterns(queryLower, dpe.piiDetectionPatterns); piiPattern != nil {
-		result.ChecksPerformed = append(result.ChecksPerformed, "pii_detection")
 		result.TriggeredPolicies = append(result.TriggeredPolicies, piiPattern.ID)
-		// Don't block, but flag for redaction
 		log.Printf("PII detected in query: %s", piiPattern.Description)
+		if piiPattern.Severity == "critical" && dpe.piiBlockCritical {
+			result.Blocked = true
+			result.Reason = piiPattern.Description
+			result.Severity = piiPattern.Severity
+			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+			dpe.logPolicyViolationToQueue(user, piiPattern, query)
+			return result
+		}
+		// Non-critical PII: allow with redaction in Orchestrator
 	}
+	result.ChecksPerformed = append(result.ChecksPerformed, "pii_detection")
 
 	result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 
@@ -611,7 +630,7 @@ func (dpe *DatabasePolicyEngine) loadDefaultPolicies() {
 			Name:        "SSN Detection",
 			Pattern:     regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
 			PatternStr:  `\b\d{3}-\d{2}-\d{4}\b`,
-			Severity:    "high",
+			Severity:    "critical", // Critical PII - blocks by default
 			Description: "Social Security Number detected",
 			Enabled:     true,
 		},
