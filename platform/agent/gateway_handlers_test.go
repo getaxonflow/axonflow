@@ -916,7 +916,7 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_PIIDetection tests PII detection (allowed with redaction flag)
+// TestPreCheckHandler_PIIDetection tests PII detection (blocks critical PII by default)
 func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
 	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
@@ -925,9 +925,11 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
 	defer os.Unsetenv("ENVIRONMENT")
 
+	// Ensure we use staticPolicyEngine, not dbPolicyEngine
+	dbPolicyEngine = nil
 	staticPolicyEngine = NewStaticPolicyEngine()
 
-	// Request with SSN (detected but not blocked - redaction flagged)
+	// Request with SSN (critical PII - blocks by default with PII_BLOCK_CRITICAL=true)
 	reqBody := PreCheckRequest{
 		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
 		ClientID:  "test-client",
@@ -950,9 +952,9 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	var resp PreCheckResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
-	// PII detection doesn't block - it flags for redaction
-	if !resp.Approved {
-		t.Errorf("Expected request to be approved (PII detected but not blocked): %s", resp.BlockReason)
+	// Critical PII (SSN) blocks by default (PII_BLOCK_CRITICAL=true)
+	if resp.Approved {
+		t.Error("Expected request to be blocked (critical PII detected, PII_BLOCK_CRITICAL=true)")
 	}
 
 	// Should have triggered PII policy
@@ -965,6 +967,62 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	}
 	if !hasPIIPolicy {
 		t.Error("Expected SSN detection policy to be triggered")
+	}
+}
+
+// TestPreCheckHandler_PIIDetection_Disabled tests that PII blocking can be disabled
+func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
+	os.Setenv("SELF_HOSTED_MODE", "true")
+	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("ENVIRONMENT", "development")
+	os.Setenv("PII_BLOCK_CRITICAL", "false") // Disable PII blocking
+	defer os.Unsetenv("SELF_HOSTED_MODE")
+	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("ENVIRONMENT")
+	defer os.Unsetenv("PII_BLOCK_CRITICAL")
+
+	// Ensure we use staticPolicyEngine, not dbPolicyEngine
+	dbPolicyEngine = nil
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Request with SSN (should NOT be blocked when PII_BLOCK_CRITICAL=false)
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "My SSN is 123-45-6789, what can you tell me?",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+		return
+	}
+
+	var resp PreCheckResponse
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	// With PII_BLOCK_CRITICAL=false, critical PII should NOT block
+	if !resp.Approved {
+		t.Errorf("Expected request to be approved when PII_BLOCK_CRITICAL=false, got blocked: %s", resp.BlockReason)
+	}
+
+	// Should still have triggered PII policy (detection still happens)
+	hasPIIPolicy := false
+	for _, policy := range resp.Policies {
+		if policy == "ssn_detection" {
+			hasPIIPolicy = true
+			break
+		}
+	}
+	if !hasPIIPolicy {
+		t.Error("Expected SSN detection policy to be triggered even when blocking is disabled")
 	}
 }
 
