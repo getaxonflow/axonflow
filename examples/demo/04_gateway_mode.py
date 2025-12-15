@@ -22,7 +22,7 @@ async def main():
         # Step 1: Pre-check (policy evaluation)
         ctx = await ax.get_policy_approved_context(
             user_token="demo-user",
-            query="What's the weather in London?",
+            query="Explain AI governance in one sentence",
         )
 
         if not ctx.approved:
@@ -33,7 +33,7 @@ async def main():
         start = time.time()
         response = openai.chat.completions.create(
             model="gpt-4",
-            messages=[{"role": "user", "content": "What's the weather in London?"}]
+            messages=[{"role": "user", "content": "Explain AI governance in one sentence"}]
         )
         latency_ms = int((time.time() - start) * 1000)
 
