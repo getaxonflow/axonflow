@@ -149,34 +149,75 @@ Policy checks add single-digit millisecond overhead.
 
 ## Community vs Enterprise
 
-| | Community (Free) | Enterprise |
-|---|:---:|:---:|
+| Feature | Community (Free) | Enterprise |
+|---------|------------|------------|
 | **Core Platform** | | |
-| Policy enforcement | ✅ | ✅ |
-| PII detection (SSN, credit cards, PAN/Aadhaar) | ✅ | ✅ |
+| Policy enforcement engine | ✅ | ✅ |
+| Single-digit ms inline governance | ✅ | ✅ |
+| PII detection (SSN, credit cards, PAN, Aadhaar) | ✅ | ✅ |
 | SQLi response scanning (basic) | ✅ | ✅ |
 | SQLi response scanning (ML-based) | ❌ | ✅ |
 | Audit logging | ✅ | ✅ |
+| Static Policy API (list, get) | ✅ | ✅ |
 | **LLM Providers** | | |
-| OpenAI, Anthropic, Ollama | ✅ | ✅ |
-| AWS Bedrock, Google Gemini | ❌ | ✅ |
+| OpenAI | ✅ | ✅ |
+| Anthropic (Claude) | ✅ | ✅ |
+| Ollama (local/air-gapped) | ✅ | ✅ |
+| AWS Bedrock | ❌ | ✅ |
+| Google Gemini | ❌ | ✅ |
 | Multi-provider routing & failover | ✅ | ✅ |
+| Customer Portal provider UI | ❌ | ✅ |
 | **MCP Connectors** | | |
-| PostgreSQL, MySQL, MongoDB, Redis, HTTP | ✅ | ✅ |
-| Salesforce, Slack, Snowflake, ServiceNow | ❌ | ✅ |
-| **Multi-Agent Planning** | | |
+| PostgreSQL, MySQL, MongoDB | ✅ | ✅ |
+| Redis, HTTP/REST, Cassandra | ✅ | ✅ |
+| S3, Azure Blob, GCS (cloud storage) | ✅ | ✅ |
+| Amadeus (Travel API) | ❌ | ✅ |
+| Salesforce | ❌ | ✅ |
+| Slack | ❌ | ✅ |
+| Snowflake | ❌ | ✅ |
+| HubSpot | ❌ | ✅ |
+| Jira | ❌ | ✅ |
+| ServiceNow | ❌ | ✅ |
+| Customer Portal Connector UI | ❌ | ✅ |
+| **Multi-Agent Planning (MAP)** | | |
 | YAML agent configuration | ✅ | ✅ |
+| Parallel task execution | ✅ | ✅ |
+| Conditional logic & branching | ✅ | ✅ |
+| Agent registry with hot reload | ✅ | ✅ |
 | REST API (list, get, validate) | ✅ | ✅ |
 | REST API (CRUD, versions, sandbox) | ❌ | ✅ |
+| Database-backed agent storage | ❌ | ✅ |
+| **Policy Management** | | |
+| Static policies (SQL injection, PII) | ✅ | ✅ |
+| Dynamic policy CRUD API | ✅ | ✅ |
+| Policy versioning | ✅ | ✅ |
+| Policy templates library | Basic | Full (EU AI Act, HIPAA, PCI-DSS, SEBI) |
+| Customer Portal Policy UI | ❌ | ✅ |
 | **EU AI Act Compliance** | | |
-| Decision chain tracing (Art. 12, 13) | ✅ | ✅ |
+| Decision chain tracing | ✅ | ✅ |
 | Transparency headers (X-AI-*) | ✅ | ✅ |
-| Human-in-the-Loop (HITL) workflows | ❌ | ✅ |
-| Conformity assessment (Art. 43) | ❌ | ✅ |
+| Human-in-the-Loop (HITL) queue | ❌ | ✅ |
 | Emergency circuit breaker | ❌ | ✅ |
-| **Platform** | | |
-| Customer Portal UI | ❌ | ✅ |
+| Conformity assessment workflow | ❌ | ✅ |
+| Accuracy metrics & bias detection | ❌ | ✅ |
+| 10-year audit retention | ❌ | ✅ |
+| EU AI Act export format | ❌ | ✅ |
+| **India Compliance (SEBI/RBI)** | | |
+| India PII detection (Aadhaar, PAN, UPI) | ✅ Pattern-based | ✅ With checksum |
+| SEBI AI/ML Guidelines - basic detection | ✅ | ✅ |
+| SEBI compliance module (export, 5-year retention) | ❌ | ✅ |
+| RBI FREE-AI Framework (kill switch, board reports) | ❌ | ✅ |
+| Compliance dashboard | ❌ | ✅ |
+| **Platform Features** | | |
+| Customer dashboard UI | ❌ | ✅ |
+| Usage analytics & reporting | ❌ | ✅ |
+| AWS Marketplace integration | ❌ | ✅ |
+| **Deployment** | | |
+| Docker Compose (local) | ✅ | ✅ |
+| AWS ECS/Fargate | Manual | One-click CloudFormation |
 | Multi-tenant isolation | ❌ | ✅ |
+| **Support** | | |
+| Community (GitHub Issues) | ✅ | ✅ |
 | Priority support & SLA | ❌ | ✅ |
 
 → **[Full feature comparison](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**

@@ -6,6 +6,7 @@ A quick interactive demo that showcases AxonFlow's governance capabilities in ac
 
 - AxonFlow platform running via `docker-compose up -d`
 - Services healthy (check with `docker-compose ps`)
+- Python SDK installed (for Python examples): `pip install axonflow`
 
 ## Quick Start
 
@@ -42,6 +43,44 @@ Demo 3: Credit Card Detection
 
 Demo 4: Sub-10ms Policy Evaluation
 ⚡ Average latency: 4ms
+```
+
+## Python SDK Examples
+
+These Python files are **runnable** demos of AxonFlow integration patterns:
+
+| File | Description | Runnable |
+|------|-------------|----------|
+| `01_unprotected_call.py` | Typical unprotected LLM call (the problem) | Yes (needs OpenAI key) |
+| `02_governed_call.py` | Same call with AxonFlow governance | Yes |
+| `03_pii_demo.py` | PII detection blocking SSN in prompts | Yes |
+| `04_gateway_mode.py` | Gateway mode for existing LLM integrations | Yes (needs OpenAI key) |
+| `05_map.yaml` | Multi-Agent Planning workflow definition | Config file |
+| `06_map_call.py` | Executing a MAP workflow | Yes |
+
+### Running the Python Demos
+
+```bash
+# 1. Install dependencies
+pip install axonflow openai
+
+# 2. Set environment variables
+export AXONFLOW_AGENT_URL=http://localhost:8080
+export AXONFLOW_CLIENT_ID=demo-client
+export AXONFLOW_CLIENT_SECRET=demo-secret
+export OPENAI_API_KEY=sk-your-key  # for 01 and 04
+
+# 3. Run any example
+python 02_governed_call.py
+python 03_pii_demo.py  # See PII blocking in action!
+```
+
+### Expected Output (03_pii_demo.py)
+
+```
+PolicyViolationError: Request blocked (SSN detected)
+Policy: pii-ssn
+Reason: SSN pattern detected in request
 ```
 
 ## Next Steps

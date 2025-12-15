@@ -1,7 +1,5 @@
 // Copyright 2025 AxonFlow
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// SPDX-License-Identifier: BUSL-1.1
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -38,6 +36,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
 
+	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/agent/hitl"
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/marketplace"
 	"axonflow/platform/agent/node_enforcement"
@@ -788,6 +788,22 @@ func Run() {
 	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
+
+	// Register HITL (Human-in-the-Loop) API endpoints (EU AI Act Article 14)
+	// Enterprise feature: Human oversight queue for high-risk AI decisions
+	hitlRepo := hitl.NewRepository(usageDB)
+	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{})
+	hitlHandler := hitl.NewHandler(hitlService)
+	hitlHandler.RegisterRoutes(globalRouter)
+	// Note: In community edition, RegisterRoutes is a no-op (HITL is an enterprise feature)
+
+	// Register Circuit Breaker API endpoints (EU AI Act Article 14)
+	// Enterprise feature: Emergency stop/interrupt capability for AI operations
+	cbRepo := circuitbreaker.NewRepository(usageDB)
+	cb := circuitbreaker.New(cbRepo, circuitbreaker.Config{})
+	cbHandler := circuitbreaker.NewHandler(cb)
+	cbHandler.RegisterRoutes(globalRouter)
+	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
 
 	// Mark application as ready - /health will now return "healthy"
 	appReady.Store(true)
