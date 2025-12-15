@@ -25,14 +25,14 @@ async def main():
             )
             print(response.data)
         except PolicyViolationError as e:
-            print(f"PolicyViolationError: {e.message}")
-            print(f"Policy: {e.policy}")
-            print(f"Reason: {e.block_reason}")
+            print(f"🛡️  REQUEST BLOCKED")
+            print(f"   Reason: {e.block_reason}")
+            print(f"   Policy: {e.policy}")
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 # Expected output:
-# PolicyViolationError: Request blocked by policy
-# Policy: None
-# Reason: US Social Security Number pattern detected
+# 🛡️  REQUEST BLOCKED
+#    Reason: US Social Security Number pattern detected
+#    Policy: pii_ssn_detection
