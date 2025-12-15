@@ -45,7 +45,7 @@ curl http://localhost:8081/health
 ### See It Working
 
 ```bash
-./platform/examples/demo/demo.sh
+./examples/demo/demo.sh
 ```
 
 ```
@@ -286,7 +286,7 @@ response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
 
 | Example | Description |
 |---------|-------------|
-| **[Support Demo](platform/examples/support-demo/)** | Customer support with PII redaction and RBAC |
+| **[Support Demo](examples/support-demo/)** | Customer support with PII redaction and RBAC |
 | **[Hello World](examples/hello-world/)** | Minimal SDK example (30 lines) |
 
 → **[More examples](https://docs.getaxonflow.com/docs/examples/overview)**
