@@ -1,0 +1,10 @@
+# Multi-Agent Planning - Define agents in YAML
+# AxonFlow turns this into an executable workflow
+
+agents:
+  - name: flight_search
+    type: connector-call
+    connector: amadeus
+  - name: itinerary_builder
+    type: llm-call
+    prompt_template: "Build a 3-day itinerary for {{.destination}}"

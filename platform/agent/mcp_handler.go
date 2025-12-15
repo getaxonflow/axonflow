@@ -1,7 +1,5 @@
 // Copyright 2025 AxonFlow
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// SPDX-License-Identifier: BUSL-1.1
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -30,16 +28,22 @@ import (
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
 	"axonflow/platform/connectors/amadeus"
+	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/cassandra"
 	"axonflow/platform/connectors/config"
+	"axonflow/platform/connectors/gcs"
 	httpconnector "axonflow/platform/connectors/http"
+	"axonflow/platform/connectors/hubspot"
+	"axonflow/platform/connectors/jira"
 	"axonflow/platform/connectors/mongodb"
 	"axonflow/platform/connectors/mysql"
 	"axonflow/platform/connectors/postgres"
 	"axonflow/platform/connectors/redis"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/connectors/s3"
 	"axonflow/platform/connectors/salesforce"
+	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
 )
@@ -205,6 +209,18 @@ func registerConnectorFromConfig(cfg *base.ConnectorConfig) error {
 		connector = httpconnector.NewHTTPConnector()
 	case "redis":
 		connector = redis.NewRedisConnector()
+	case "s3":
+		connector = s3.NewS3Connector()
+	case "azureblob":
+		connector = azureblob.NewAzureBlobConnector()
+	case "gcs":
+		connector = gcs.NewGCSConnector()
+	case "hubspot":
+		connector = hubspot.NewHubSpotConnector()
+	case "jira":
+		connector = jira.NewJiraConnector()
+	case "servicenow":
+		connector = servicenow.NewServiceNowConnector()
 	default:
 		return fmt.Errorf("unsupported connector type: %s", cfg.Type)
 	}
