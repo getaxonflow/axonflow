@@ -210,9 +210,9 @@ jobs:
 
       - name: Run Demo Script
         run: |
-          if [ -f "platform/examples/demo/demo.sh" ]; then
-            chmod +x platform/examples/demo/demo.sh
-            ./platform/examples/demo/demo.sh || echo "Demo completed"
+          if [ -f "examples/demo/demo.sh" ]; then
+            chmod +x examples/demo/demo.sh
+            ./examples/demo/demo.sh || echo "Demo completed"
           else
             echo "Demo script not found, skipping"
           fi
