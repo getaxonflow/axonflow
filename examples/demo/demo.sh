@@ -4,7 +4,7 @@
 # Run this after docker-compose up to see AxonFlow's governance in action
 #
 # Usage:
-#   ./platform/examples/demo/demo.sh
+#   ./examples/demo/demo.sh
 #
 set -e
 
