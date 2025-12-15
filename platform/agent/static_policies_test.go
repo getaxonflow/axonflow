@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -539,14 +540,14 @@ func TestPIIDetection(t *testing.T) {
 		{
 			name:                "Credit card (Visa)",
 			query:               "Payment with card 4532015112830366",
-			shouldBlock:         false, // PII detection doesn't block
+			shouldBlock:         true, // Critical PII blocks by default (PII_BLOCK_CRITICAL=true)
 			shouldTriggerPolicy: true,
 			policyID:            "credit_card_detection",
 		},
 		{
 			name:                "SSN",
 			query:               "Customer SSN is 123-45-6789",
-			shouldBlock:         false, // PII detection doesn't block
+			shouldBlock:         true, // Critical PII blocks by default (PII_BLOCK_CRITICAL=true)
 			shouldTriggerPolicy: true,
 			policyID:            "ssn_detection",
 		},
@@ -581,7 +582,56 @@ func TestPIIDetection(t *testing.T) {
 				}
 			}
 
-			// Verify PII detection check was performed
+			// Verify PII detection check was performed (not present if blocked early)
+			if !tt.shouldBlock && !containsCheck(result.ChecksPerformed, "pii_detection") {
+				t.Error("Expected 'pii_detection' in checks performed")
+			}
+		})
+	}
+}
+
+// TestPIIDetection_Disabled tests that PII blocking can be disabled via env var
+func TestPIIDetection_Disabled(t *testing.T) {
+	// Set env var to disable PII blocking
+	os.Setenv("PII_BLOCK_CRITICAL", "false")
+	defer os.Unsetenv("PII_BLOCK_CRITICAL")
+
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "SSN should not block when disabled",
+			query: "Customer SSN is 123-45-6789",
+		},
+		{
+			name:  "Credit card should not block when disabled",
+			query: "Payment with card 4532015112830366",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
+
+			// Should NOT block when PII_BLOCK_CRITICAL=false
+			if result.Blocked {
+				t.Errorf("Expected request to NOT be blocked when PII_BLOCK_CRITICAL=false, got blocked: %s", result.Reason)
+			}
+
+			// Should still detect PII (just not block)
+			if len(result.TriggeredPolicies) == 0 {
+				t.Error("Expected PII policy to be triggered even when blocking is disabled")
+			}
+
+			// pii_detection should be in ChecksPerformed
 			if !containsCheck(result.ChecksPerformed, "pii_detection") {
 				t.Error("Expected 'pii_detection' in checks performed")
 			}
@@ -1114,9 +1164,9 @@ func TestMultiplePIIInSingleQuery(t *testing.T) {
 
 	result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
 
-	// Should not block
-	if result.Blocked {
-		t.Error("Multiple PII detection should not block")
+	// Should block - contains critical PII (SSN, credit card)
+	if !result.Blocked {
+		t.Error("Multiple critical PII detection should block (PII_BLOCK_CRITICAL=true)")
 	}
 
 	// Static engine returns after first PII match found
@@ -1304,9 +1354,12 @@ func TestStaticPANDetection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
 
-			// PAN detection should not block
-			if result.Blocked {
-				t.Errorf("PAN detection should not block queries, got blocked: %s", result.Reason)
+			// PAN is critical severity - should block by default (PII_BLOCK_CRITICAL=true)
+			if tt.shouldTriggerPolicy && !result.Blocked {
+				t.Errorf("PAN detection should block queries (critical PII), got not blocked")
+			}
+			if !tt.shouldTriggerPolicy && result.Blocked {
+				t.Errorf("Should not block when no PAN detected, got blocked: %s", result.Reason)
 			}
 
 			// Check if policy was triggered
@@ -1433,9 +1486,12 @@ func TestStaticAadhaarDetection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
 
-			// Aadhaar detection should not block
-			if result.Blocked {
-				t.Errorf("Aadhaar detection should not block queries, got blocked: %s", result.Reason)
+			// Aadhaar is critical severity - should block by default (PII_BLOCK_CRITICAL=true)
+			if tt.shouldTriggerPolicy && !result.Blocked {
+				t.Errorf("Aadhaar detection should block queries (critical PII), got not blocked")
+			}
+			if !tt.shouldTriggerPolicy && result.Blocked {
+				t.Errorf("Should not block when no Aadhaar detected, got blocked: %s", result.Reason)
 			}
 
 			// Check if policy was triggered
@@ -1577,9 +1633,9 @@ func TestCombinedIndianPII(t *testing.T) {
 	query := "KYC Details - PAN: ABCPD1234E, Aadhaar: 2345 6789 0123, Name: John Doe"
 	result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
 
-	// Should not block
-	if result.Blocked {
-		t.Error("Indian PII detection should not block queries")
+	// Should block - both PAN and Aadhaar are critical severity PII
+	if !result.Blocked {
+		t.Error("Indian PII detection should block queries (critical PII, PII_BLOCK_CRITICAL=true)")
 	}
 
 	// At least one Indian PII policy should be triggered (first match wins in static engine)

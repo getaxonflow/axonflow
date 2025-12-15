@@ -33,6 +33,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 # Expected output:
-# PolicyViolationError: Request blocked (SSN detected)
-# Policy: pii-ssn
-# Reason: SSN pattern detected in request
+# PolicyViolationError: Request blocked by policy
+# Policy: None
+# Reason: US Social Security Number pattern detected

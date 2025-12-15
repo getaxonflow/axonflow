@@ -14,6 +14,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -27,6 +29,7 @@ type StaticPolicyEngine struct {
 	sqliScanner         sqli.Scanner      // Unified SQL injection + dangerous query scanner
 	adminAccessPatterns []*PolicyPattern
 	piiPatterns         []*PolicyPattern // PII detection (passports, credit cards, etc.)
+	piiBlockCritical    bool             // Block critical PII (SSN, credit cards) - default: true
 }
 
 // PolicyPattern represents a static policy rule
@@ -52,8 +55,16 @@ type StaticPolicyResult struct {
 
 // NewStaticPolicyEngine creates a new static policy engine with default rules
 func NewStaticPolicyEngine() *StaticPolicyEngine {
+	// PII blocking is ON by default; set PII_BLOCK_CRITICAL=false to disable
+	piiBlock := true
+	if val := os.Getenv("PII_BLOCK_CRITICAL"); val == "false" || val == "0" {
+		piiBlock = false
+		log.Println("[StaticPolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
+	}
+
 	engine := &StaticPolicyEngine{
-		sqliScanner: sqli.NewBasicScanner(),
+		sqliScanner:      sqli.NewBasicScanner(),
+		piiBlockCritical: piiBlock,
 	}
 	engine.loadDefaultPolicies()
 	return engine
@@ -128,13 +139,19 @@ func (spe *StaticPolicyEngine) EvaluateStaticPolicies(user *User, query string, 
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "basic_validation")
 
-	// 6. PII Detection (High - Log and flag for redaction, don't block)
-	// For travel/planning requests, detect PII but allow processing with redaction
+	// 6. PII Detection
+	// Critical PII (SSN, credit cards, Aadhaar, PAN) - block if piiBlockCritical is enabled
+	// Non-critical PII (email, phone) - log and flag for redaction in Orchestrator
 	if piiPattern := spe.checkPatterns(query, spe.piiPatterns); piiPattern != nil {
-		// Don't block for PII - just log and trigger redaction in Orchestrator
 		result.TriggeredPolicies = append(result.TriggeredPolicies, piiPattern.ID)
-		// Note: For severity "critical" PII (credit cards, SSNs), could optionally block
-		// For now, we allow with redaction for better UX in travel planning
+		if piiPattern.Severity == "critical" && spe.piiBlockCritical {
+			result.Blocked = true
+			result.Reason = piiPattern.Description
+			result.Severity = piiPattern.Severity
+			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+			return result
+		}
+		// For non-critical PII, allow with redaction in Orchestrator
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "pii_detection")
 
