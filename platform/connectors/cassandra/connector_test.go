@@ -1,6 +1,5 @@
 // Copyright 2025 AxonFlow
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// SPDX-License-Identifier: BUSL-1.1
 
 package cassandra
 

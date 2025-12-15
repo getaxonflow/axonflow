@@ -1,5 +1,5 @@
 // Copyright 2025 AxonFlow
-// Licensed under the Apache License, Version 2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 /*
 Package gcs provides a Google Cloud Storage connector for the AxonFlow MCP

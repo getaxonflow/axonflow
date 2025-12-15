@@ -1,5 +1,5 @@
 // Copyright 2025 AxonFlow
-// Licensed under the Apache License, Version 2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 /*
 Package s3 provides an Amazon S3 connector for the AxonFlow MCP (Model Context Protocol) system.
