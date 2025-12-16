@@ -104,6 +104,9 @@ services:
 
       # Orchestrator URL (required for Proxy Mode to forward requests)
       ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
+
+      # Internal service authentication (shared secret between agent and orchestrator)
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
     ports:
       - "8080:8080"
     depends_on:
@@ -154,6 +157,9 @@ services:
 
       # Agent MCP endpoint for MCP query routing
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
+
+      # Internal service authentication (shared secret between agent and orchestrator)
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
     ports:
       - "8081:8081"
     depends_on:

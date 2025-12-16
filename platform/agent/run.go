@@ -183,6 +183,7 @@ type ClientResponse struct {
 	Data        interface{}            `json:"data,omitempty"`
 	Result      string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
 	PlanID      string                 `json:"plan_id,omitempty"`  // For multi-agent planning
+	Steps       []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
 	Metadata    map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
 	Error       string                 `json:"error,omitempty"`
 	Blocked     bool                   `json:"blocked"`
@@ -1092,6 +1093,17 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 				} else {
 					log.Printf("[WARN] metadata field is not a map, type=%T", metadata)
 				}
+			}
+			if steps, exists := orchMap["steps"]; exists {
+				// Convert steps to []interface{} for SDK
+				if stepsSlice, ok := steps.([]interface{}); ok {
+					response.Steps = stepsSlice
+					log.Printf("[DEBUG] Extracted steps from orchestrator: count=%d", len(stepsSlice))
+				} else {
+					log.Printf("[WARN] steps field is not a slice, type=%T", steps)
+				}
+			} else {
+				log.Printf("[DEBUG] No 'steps' field in orchestrator response (may be expected for failed plans)")
 			}
 		} else {
 			log.Printf("[WARN] orchestratorResp is not a map, type=%T", orchestratorResp)
