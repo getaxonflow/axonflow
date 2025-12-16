@@ -33,7 +33,6 @@ async def main():
 
             print("\nAudit Trail")
             print("-" * 40)
-            print(f"Request ID: {e.request_id}")
             print(f"Detection: PII detected in input")
             print(f"Action: Request blocked before LLM call")
             print(f"Logged: Yes (immutable audit record created)")
@@ -50,7 +49,6 @@ if __name__ == "__main__":
 #
 # Audit Trail
 # ----------------------------------------
-# Request ID: req_abc123...
 # Detection: PII detected in input
 # Action: Request blocked before LLM call
 # Logged: Yes (immutable audit record created)

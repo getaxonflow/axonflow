@@ -25,21 +25,18 @@ async def main():
         # Display the LLM response
         print("LLM Response")
         print("-" * 40)
-        print(response.data)
+        print(response.data.get("data") if isinstance(response.data, dict) else response.data)
 
         # Display audit information
         print("\nAudit Trail")
         print("-" * 40)
-        print(f"Request ID: {response.request_id}")
-        print(f"Processing Time: {response.processing_time}")
-
-        if response.provider_info:
-            print(f"Provider: {response.provider_info.provider}")
-            print(f"Model: {response.provider_info.model}")
+        print(f"Success: {response.success}")
+        print(f"Blocked: {response.blocked}")
 
         if response.policy_info:
-            print(f"Risk Score: {response.policy_info.risk_score}")
-            print(f"Policies Evaluated: {len(response.policy_info.policies_evaluated)}")
+            print(f"Static Checks: {response.policy_info.static_checks}")
+            print(f"Processing Time: {response.policy_info.processing_time}")
+            print(f"Tenant ID: {response.policy_info.tenant_id}")
 
 if __name__ == "__main__":
     asyncio.run(main())

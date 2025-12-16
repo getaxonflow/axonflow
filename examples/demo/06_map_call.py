@@ -29,6 +29,7 @@ async def main():
         )
 
         print(f"Plan ID: {plan.plan_id}")
+        print(f"Domain: {plan.domain}")
         print(f"Steps: {len(plan.steps)}")
         for step in plan.steps:
             print(f"  - {step.name}: {step.type}")
@@ -42,19 +43,18 @@ async def main():
         # Display audit trail
         print("\nAudit Trail")
         print("-" * 40)
-        print(f"Workflow Execution ID: {result.workflow_execution_id}")
-        if result.metadata:
-            print(f"Execution Time: {result.metadata.execution_time_ms}ms")
-            print(f"Tasks Executed: {result.metadata.tasks_executed}")
-            print(f"Execution Mode: {result.metadata.execution_mode}")
+        print(f"Plan ID: {result.plan_id}")
+        if result.duration:
+            print(f"Duration: {result.duration}")
 
-        # Show per-step audit if available
-        if result.metadata and result.metadata.tasks:
-            print("\nPer-Step Audit:")
-            for task in result.metadata.tasks:
-                print(f"  - {task.name}: {task.status} ({task.duration_ms}ms)")
+        # Show per-step results if available
+        if result.step_results:
+            print("\nStep Results:")
+            for step_id, step_result in result.step_results.items():
+                print(f"  - {step_id}: {step_result}")
 
-        print(f"\nResult Preview: {str(result.result)[:200]}...")
+        if result.result:
+            print(f"\nResult Preview: {str(result.result)[:200]}...")
 
 if __name__ == "__main__":
     asyncio.run(main())
