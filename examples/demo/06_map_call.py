@@ -21,6 +21,8 @@ async def main():
     ) as ax:
         # Generate a plan from natural language
         # Using 'generic' domain - works without external connectors
+        print("Plan Generation")
+        print("=" * 40)
         plan = await ax.generate_plan(
             query="Research the benefits of renewable energy and create a summary report with recommendations",
             domain="generic",
@@ -32,9 +34,27 @@ async def main():
             print(f"  - {step.name}: {step.type}")
 
         # Execute the plan
+        print("\nPlan Execution")
+        print("=" * 40)
         result = await ax.execute_plan(plan.plan_id)
-        print(f"\nStatus: {result.status}")
-        print(f"Result: {result.result}")
+        print(f"Status: {result.status}")
+
+        # Display audit trail
+        print("\nAudit Trail")
+        print("-" * 40)
+        print(f"Workflow Execution ID: {result.workflow_execution_id}")
+        if result.metadata:
+            print(f"Execution Time: {result.metadata.execution_time_ms}ms")
+            print(f"Tasks Executed: {result.metadata.tasks_executed}")
+            print(f"Execution Mode: {result.metadata.execution_mode}")
+
+        # Show per-step audit if available
+        if result.metadata and result.metadata.tasks:
+            print("\nPer-Step Audit:")
+            for task in result.metadata.tasks:
+                print(f"  - {task.name}: {task.status} ({task.duration_ms}ms)")
+
+        print(f"\nResult Preview: {str(result.result)[:200]}...")
 
 if __name__ == "__main__":
     asyncio.run(main())
