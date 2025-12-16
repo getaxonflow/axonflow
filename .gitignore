@@ -213,3 +213,7 @@ platform/customer-portal/*.test
 # Cleanup automation (local configuration)
 .claude/hooks/
 cleanup-backup-location.txt
+
+# Compiled binaries
+platform/orchestrator/orchestrator
+platform/agent/agent
