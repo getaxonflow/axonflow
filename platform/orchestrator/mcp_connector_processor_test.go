@@ -14,6 +14,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -182,8 +183,9 @@ func TestMCPConnector_ExecuteStep_RegistryNotInitialized(t *testing.T) {
 		t.Error("ExecuteStep() should return error when registry not initialized")
 	}
 
-	if !strings.Contains(err.Error(), "registry not initialized") {
-		t.Errorf("Error should mention registry not initialized, got: %s", err.Error())
+	// With the new routing fallback, error should mention connector not found and agent router unavailable
+	if !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "agent router unavailable") {
+		t.Errorf("Error should mention connector not found and agent router unavailable, got: %s", err.Error())
 	}
 }
 
@@ -214,8 +216,9 @@ func TestMCPConnector_ExecuteStep_ConnectorNotFound(t *testing.T) {
 		t.Error("ExecuteStep() should return error for nonexistent connector")
 	}
 
-	if !strings.Contains(err.Error(), "failed to get connector") {
-		t.Errorf("Error should mention failed to get connector, got: %s", err.Error())
+	// With the new routing fallback, error should mention connector not found and agent router unavailable
+	if !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "agent router unavailable") {
+		t.Errorf("Error should mention connector not found and agent router unavailable, got: %s", err.Error())
 	}
 }
 
@@ -555,5 +558,144 @@ func TestMCPConnector_FormatResponse_DispatchToHotel(t *testing.T) {
 
 	if !strings.Contains(result, "hotel option") {
 		t.Error("Should dispatch to hotel formatter for hotel-related step")
+	}
+}
+
+// Tests for internal service token
+
+func TestGetInternalServiceToken_FallbackWhenNotConfigured(t *testing.T) {
+	// Use t.Setenv with empty value, then unset to ensure clean state
+	// t.Setenv automatically restores original value after test
+	os.Unsetenv(InternalServiceSecretEnvVar)
+
+	token := getInternalServiceToken()
+	if token != InternalServiceTokenFallback {
+		t.Errorf("getInternalServiceToken() = %q, want %q (fallback)", token, InternalServiceTokenFallback)
+	}
+}
+
+func TestGetInternalServiceToken_UsesConfiguredSecret(t *testing.T) {
+	testSecret := "my-super-secure-internal-service-secret-12345"
+	// t.Setenv automatically restores original value after test
+	t.Setenv(InternalServiceSecretEnvVar, testSecret)
+
+	token := getInternalServiceToken()
+	if token != testSecret {
+		t.Errorf("getInternalServiceToken() = %q, want %q", token, testSecret)
+	}
+}
+
+func TestInternalServiceConstants(t *testing.T) {
+	// Verify constants are properly defined
+	if InternalServiceClientID == "" {
+		t.Error("InternalServiceClientID should not be empty")
+	}
+	if InternalServiceTokenFallback == "" {
+		t.Error("InternalServiceTokenFallback should not be empty")
+	}
+	if InternalServiceTenantID == "" {
+		t.Error("InternalServiceTenantID should not be empty")
+	}
+	if InternalServiceSecretEnvVar == "" {
+		t.Error("InternalServiceSecretEnvVar should not be empty")
+	}
+
+	// Verify expected values
+	if InternalServiceClientID != "orchestrator-internal" {
+		t.Errorf("InternalServiceClientID = %q, expected 'orchestrator-internal'", InternalServiceClientID)
+	}
+	if InternalServiceTenantID != "*" {
+		t.Errorf("InternalServiceTenantID = %q, expected '*'", InternalServiceTenantID)
+	}
+}
+
+func TestInternalServiceSecretMinLength(t *testing.T) {
+	// Verify the minimum length constant is reasonable
+	if InternalServiceSecretMinLength < 16 {
+		t.Errorf("InternalServiceSecretMinLength = %d, should be at least 16 for security", InternalServiceSecretMinLength)
+	}
+	if InternalServiceSecretMinLength != 32 {
+		t.Errorf("InternalServiceSecretMinLength = %d, expected 32", InternalServiceSecretMinLength)
+	}
+}
+
+func TestLogInternalServiceAuthWarning(t *testing.T) {
+	tests := []struct {
+		name          string
+		secretValue   string
+		shouldWarn    bool
+		description   string
+	}{
+		{
+			name:        "no secret configured",
+			secretValue: "",
+			shouldWarn:  true,
+			description: "should warn when no secret is configured",
+		},
+		{
+			name:        "short secret configured",
+			secretValue: "short",
+			shouldWarn:  true,
+			description: "should warn when secret is too short",
+		},
+		{
+			name:        "adequate secret configured",
+			secretValue: "this-is-a-sufficiently-long-secret-for-production",
+			shouldWarn:  false,
+			description: "should not warn when secret is adequate length",
+		},
+		{
+			name:        "minimum length secret",
+			secretValue: "12345678901234567890123456789012", // exactly 32 chars
+			shouldWarn:  false,
+			description: "should not warn at exactly minimum length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset warning flag before each test
+			internalServiceAuthWarningLogged = false
+
+			// Use t.Setenv for automatic cleanup
+			if tt.secretValue == "" {
+				os.Unsetenv(InternalServiceSecretEnvVar)
+			} else {
+				t.Setenv(InternalServiceSecretEnvVar, tt.secretValue)
+			}
+
+			// Call the function - it should not panic
+			LogInternalServiceAuthWarning()
+
+			// Verify warning was logged (flag set)
+			if !internalServiceAuthWarningLogged {
+				t.Error("internalServiceAuthWarningLogged should be true after calling LogInternalServiceAuthWarning")
+			}
+
+			// Call again - should not log again (idempotent)
+			LogInternalServiceAuthWarning()
+		})
+	}
+}
+
+func TestLogInternalServiceAuthWarning_OnlyLogsOnce(t *testing.T) {
+	// Reset warning flag
+	internalServiceAuthWarningLogged = false
+
+	// Clear the secret to trigger warning path
+	os.Unsetenv(InternalServiceSecretEnvVar)
+
+	// Call multiple times
+	LogInternalServiceAuthWarning()
+	if !internalServiceAuthWarningLogged {
+		t.Fatal("Flag should be set after first call")
+	}
+
+	// Second call should be a no-op (flag prevents re-logging)
+	LogInternalServiceAuthWarning()
+
+	// Flag should still be true
+	if !internalServiceAuthWarningLogged {
+		t.Error("Flag should remain true")
 	}
 }

@@ -54,6 +54,58 @@ var mcpRegistry *registry.Registry
 // Global RuntimeConfigService for three-tier configuration
 var runtimeConfigService *config.RuntimeConfigService
 
+// Internal service authentication constants for orchestrator-to-agent routing.
+const (
+	// internalServiceClientID is the client ID used for internal orchestrator calls
+	internalServiceClientID = "orchestrator-internal"
+
+	// internalServiceTokenFallback is used when AXONFLOW_INTERNAL_SERVICE_SECRET is not configured
+	internalServiceTokenFallback = "orchestrator-internal-token"
+
+	// internalServiceSecretEnvVar is the environment variable for the shared secret
+	internalServiceSecretEnvVar = "AXONFLOW_INTERNAL_SERVICE_SECRET"
+
+	// internalServiceSecretMinLength is the recommended minimum length for the shared secret.
+	internalServiceSecretMinLength = 32
+)
+
+// internalServiceAuthWarningLogged tracks if we've already logged the fallback warning.
+var internalServiceAuthWarningLogged bool
+
+// logInternalServiceAuthWarning logs a warning if fallback mode is being used.
+// This should be called during initialization to alert operators about security configuration.
+func logInternalServiceAuthWarning() {
+	if internalServiceAuthWarningLogged {
+		return
+	}
+	secret := os.Getenv(internalServiceSecretEnvVar)
+	if secret == "" {
+		log.Printf("[SECURITY WARNING] %s not configured - using fallback token for internal service auth. This is acceptable for development but NOT recommended for production. Set %s to a secure random string (minimum %d characters).",
+			internalServiceSecretEnvVar, internalServiceSecretEnvVar, internalServiceSecretMinLength)
+	} else if len(secret) < internalServiceSecretMinLength {
+		log.Printf("[SECURITY WARNING] %s is only %d characters - recommend at least %d characters for production security.",
+			internalServiceSecretEnvVar, len(secret), internalServiceSecretMinLength)
+	}
+	internalServiceAuthWarningLogged = true
+}
+
+// isValidInternalServiceRequest checks if the request is from a trusted internal service.
+// If AXONFLOW_INTERNAL_SERVICE_SECRET is configured, validates the token against it.
+// Otherwise falls back to checking the hardcoded token (for OSS/dev environments).
+func isValidInternalServiceRequest(clientID, userToken string) bool {
+	if clientID != internalServiceClientID {
+		return false
+	}
+
+	// If shared secret is configured, validate against it
+	if secret := os.Getenv(internalServiceSecretEnvVar); secret != "" {
+		return userToken == secret
+	}
+
+	// Fallback for OSS/dev: accept hardcoded token
+	return userToken == internalServiceTokenFallback
+}
+
 // InitializeMCPRegistry sets up the MCP connector registry and registers default connectors
 // Configuration priority: Database > Config File (AXONFLOW_CONFIG_FILE) > Environment Variables
 func InitializeMCPRegistry() error {
@@ -63,6 +115,9 @@ func InitializeMCPRegistry() error {
 // InitializeMCPRegistryWithDB sets up the MCP connector registry with optional database support
 // This enables three-tier configuration: Database > Config File > Env Vars
 func InitializeMCPRegistryWithDB(db *sql.DB) error {
+	// Log security warning if internal service auth is using fallback token
+	logInternalServiceAuthWarning()
+
 	mcpRegistry = registry.NewRegistry()
 	log.Println("[MCP] Initializing connector registry...")
 
@@ -364,8 +419,9 @@ func registerSnowflakeConnector() error {
 }
 
 // registerAmadeusConnector registers an Amadeus connector
+// The connector name "amadeus-travel" matches the orchestrator's planning engine expectations
 func registerAmadeusConnector() error {
-	cfg, err := config.LoadAmadeusConfig("amadeus")
+	cfg, err := config.LoadAmadeusConfig("amadeus-travel")
 	if err != nil {
 		// Amadeus is optional - only register if configured
 		return nil
@@ -519,10 +575,27 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Validate user token
-	user, err := validateUserToken(req.UserToken, client.TenantID)
-	if err != nil {
-		sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-		return
+	// For internal orchestrator-to-agent routing, bypass token validation
+	// This allows the orchestrator to call MCP connectors without requiring user tokens
+	// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token
+	var user *User
+	if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
+		log.Printf("[MCP] Internal orchestrator request - bypassing user token validation")
+		user = &User{
+			ID:          0,
+			Email:       "orchestrator@axonflow.internal",
+			Name:        "Orchestrator Internal",
+			TenantID:    client.TenantID,
+			Role:        "service",
+			Permissions: []string{"query", "execute", "mcp"},
+		}
+	} else {
+		var err error
+		user, err = validateUserToken(req.UserToken, client.TenantID)
+		if err != nil {
+			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
+			return
+		}
 	}
 
 	// 3. Verify tenant isolation
