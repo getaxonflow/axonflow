@@ -293,10 +293,15 @@ func TestSendErrorResponse(t *testing.T) {
 
 func TestSimpleMetricsHandler(t *testing.T) {
 	tests := []struct {
-		name                     string
-		setupOrchestratorMetrics bool
-		expectedFields           []string
-		description              string
+		name                      string
+		setupOrchestratorMetrics  bool
+		setupWithRequestTypes     bool
+		setupWithProviders        bool
+		setupHealthCheckPassed    bool
+		expectedFields            []string
+		expectedRequestTypes      bool
+		expectedProviders         bool
+		description               string
 	}{
 		{
 			name:                     "With orchestrator metrics",
@@ -309,6 +314,17 @@ func TestSimpleMetricsHandler(t *testing.T) {
 			setupOrchestratorMetrics: false,
 			expectedFields:           []string{"total_requests", "blocked_requests", "policy_evaluations"},
 			description:              "Should return basic metrics when orchestratorMetrics is nil",
+		},
+		{
+			name:                      "With request types and providers",
+			setupOrchestratorMetrics:  true,
+			setupWithRequestTypes:     true,
+			setupWithProviders:        true,
+			setupHealthCheckPassed:    true,
+			expectedFields:            []string{"total_requests", "success_rate", "error_rate_per_sec"},
+			expectedRequestTypes:      true,
+			expectedProviders:         true,
+			description:               "Should include request_types and providers when populated",
 		},
 	}
 
@@ -325,12 +341,52 @@ func TestSimpleMetricsHandler(t *testing.T) {
 
 			// Set up orchestratorMetrics based on test case
 			if tt.setupOrchestratorMetrics {
-				if orchestratorMetrics == nil {
-					orchestratorMetrics = &OrchestratorMetrics{
-						dynamicPolicyTimings: []int64{1000, 2000, 3000},
-						llmTimings:           []int64{10000, 20000, 30000},
+				om := &OrchestratorMetrics{
+					dynamicPolicyTimings: []int64{1000, 2000, 3000},
+					llmTimings:           []int64{10000, 20000, 30000},
+					healthCheckPassed:    tt.setupHealthCheckPassed,
+				}
+				if tt.setupWithRequestTypes {
+					om.requestTypeMetrics = map[string]*RequestTypeOrchestratorMetrics{
+						"chat": {
+							TotalRequests:   100,
+							SuccessRequests: 95,
+							FailedRequests:  5,
+							BlockedRequests: 0,
+							Latencies:       []int64{50, 60, 70},
+						},
+						"completion": {
+							TotalRequests:   50,
+							SuccessRequests: 48,
+							FailedRequests:  2,
+							BlockedRequests: 0,
+							Latencies:       []int64{100, 120, 140},
+						},
 					}
 				}
+				if tt.setupWithProviders {
+					om.providerMetrics = map[string]*LLMProviderMetrics{
+						"openai": {
+							ProviderName: "openai",
+							TotalCalls:   80,
+							SuccessCalls: 78,
+							FailedCalls:  2,
+							TotalTokens:  50000,
+							TotalCost:    1.5,
+							Latencies:    []int64{200, 250, 300},
+						},
+						"anthropic": {
+							ProviderName: "anthropic",
+							TotalCalls:   20,
+							SuccessCalls: 19,
+							FailedCalls:  1,
+							TotalTokens:  10000,
+							TotalCost:    0.5,
+							Latencies:    []int64{150, 175, 200},
+						},
+					}
+				}
+				orchestratorMetrics = om
 			} else {
 				orchestratorMetrics = nil
 			}
@@ -374,6 +430,68 @@ func TestSimpleMetricsHandler(t *testing.T) {
 			if tt.setupOrchestratorMetrics {
 				if _, exists := metrics["dynamic_policy_eval_p99_ms"]; !exists {
 					t.Errorf("%s: Expected dynamic_policy_eval_p99_ms when orchestratorMetrics initialized", tt.description)
+				}
+			}
+
+			// Check request_types if expected
+			if tt.expectedRequestTypes {
+				requestTypes, ok := response["request_types"].(map[string]interface{})
+				if !ok {
+					t.Errorf("%s: Expected 'request_types' map in response", tt.description)
+				} else if len(requestTypes) == 0 {
+					t.Errorf("%s: Expected non-empty request_types", tt.description)
+				} else {
+					// Verify at least one request type has expected fields
+					for rtName, rtData := range requestTypes {
+						rtMap, ok := rtData.(map[string]interface{})
+						if !ok {
+							t.Errorf("%s: Expected request type '%s' to be a map", tt.description, rtName)
+							continue
+						}
+						if _, exists := rtMap["total_requests"]; !exists {
+							t.Errorf("%s: Expected 'total_requests' in request type '%s'", tt.description, rtName)
+						}
+						if _, exists := rtMap["p99_ms"]; !exists {
+							t.Errorf("%s: Expected 'p99_ms' in request type '%s'", tt.description, rtName)
+						}
+						break // Just check one
+					}
+				}
+			}
+
+			// Check providers if expected
+			if tt.expectedProviders {
+				providers, ok := response["providers"].(map[string]interface{})
+				if !ok {
+					t.Errorf("%s: Expected 'providers' map in response", tt.description)
+				} else if len(providers) == 0 {
+					t.Errorf("%s: Expected non-empty providers", tt.description)
+				} else {
+					// Verify at least one provider has expected fields
+					for pName, pData := range providers {
+						pMap, ok := pData.(map[string]interface{})
+						if !ok {
+							t.Errorf("%s: Expected provider '%s' to be a map", tt.description, pName)
+							continue
+						}
+						if _, exists := pMap["total_calls"]; !exists {
+							t.Errorf("%s: Expected 'total_calls' in provider '%s'", tt.description, pName)
+						}
+						if _, exists := pMap["total_tokens"]; !exists {
+							t.Errorf("%s: Expected 'total_tokens' in provider '%s'", tt.description, pName)
+						}
+						break // Just check one
+					}
+				}
+			}
+
+			// Check health section
+			health, ok := response["health"].(map[string]interface{})
+			if !ok {
+				t.Errorf("%s: Expected 'health' map in response", tt.description)
+			} else {
+				if _, exists := health["up"]; !exists {
+					t.Errorf("%s: Expected 'up' field in health", tt.description)
 				}
 			}
 		})
@@ -962,6 +1080,175 @@ func TestPlanRequestHandler(t *testing.T) {
 	}
 }
 
+// TestConvertWorkflowStepsToResponse tests the step conversion function
+func TestConvertWorkflowStepsToResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		steps    []WorkflowStep
+		expected []ResponsePlanStep
+	}{
+		{
+			name:     "Nil steps",
+			steps:    nil,
+			expected: []ResponsePlanStep{},
+		},
+		{
+			name:     "Empty steps",
+			steps:    []WorkflowStep{},
+			expected: []ResponsePlanStep{},
+		},
+		{
+			name: "LLM call step",
+			steps: []WorkflowStep{
+				{
+					Name:   "analyze-query",
+					Type:   "llm-call",
+					Prompt: "Analyze this query",
+				},
+			},
+			expected: []ResponsePlanStep{
+				{
+					ID:          "step_1_analyze-query",
+					Name:        "analyze-query",
+					Type:        "llm-call",
+					Description: "Analyze this query",
+					DependsOn:   []string{},
+					Agent:       "",
+					Parameters:  nil,
+				},
+			},
+		},
+		{
+			name: "Connector call step",
+			steps: []WorkflowStep{
+				{
+					Name:      "search-flights",
+					Type:      "connector-call",
+					Connector: "amadeus",
+					Statement: "search_flights",
+					Parameters: map[string]interface{}{
+						"origin":      "NYC",
+						"destination": "PAR",
+					},
+				},
+			},
+			expected: []ResponsePlanStep{
+				{
+					ID:          "step_1_search-flights",
+					Name:        "search-flights",
+					Type:        "connector-call",
+					Description: "Call amadeus connector: search_flights",
+					DependsOn:   []string{},
+					Agent:       "amadeus",
+					Parameters: map[string]interface{}{
+						"origin":      "NYC",
+						"destination": "PAR",
+					},
+				},
+			},
+		},
+		{
+			name: "Long prompt truncation",
+			steps: []WorkflowStep{
+				{
+					Name:   "long-prompt",
+					Type:   "llm-call",
+					Prompt: "This is a very long prompt that should be truncated because it exceeds the 100 character limit that we have set for descriptions in the response",
+				},
+			},
+			expected: []ResponsePlanStep{
+				{
+					ID:          "step_1_long-prompt",
+					Name:        "long-prompt",
+					Type:        "llm-call",
+					Description: "This is a very long prompt that should be truncated because it exceeds the 100 character limit that ...",
+					DependsOn:   []string{},
+					Agent:       "",
+					Parameters:  nil,
+				},
+			},
+		},
+		{
+			name: "Multiple steps (typical MAP workflow)",
+			steps: []WorkflowStep{
+				{
+					Name:      "search-flights",
+					Type:      "connector-call",
+					Connector: "amadeus",
+					Statement: "search_flights",
+				},
+				{
+					Name:      "search-hotels",
+					Type:      "connector-call",
+					Connector: "amadeus",
+					Statement: "search_hotels",
+				},
+				{
+					Name:   "synthesize-results",
+					Type:   "llm-call",
+					Prompt: "Combine flight and hotel results into an itinerary",
+				},
+			},
+			expected: []ResponsePlanStep{
+				{
+					ID:          "step_1_search-flights",
+					Name:        "search-flights",
+					Type:        "connector-call",
+					Description: "Call amadeus connector: search_flights",
+					DependsOn:   []string{},
+					Agent:       "amadeus",
+					Parameters:  nil,
+				},
+				{
+					ID:          "step_2_search-hotels",
+					Name:        "search-hotels",
+					Type:        "connector-call",
+					Description: "Call amadeus connector: search_hotels",
+					DependsOn:   []string{},
+					Agent:       "amadeus",
+					Parameters:  nil,
+				},
+				{
+					ID:          "step_3_synthesize-results",
+					Name:        "synthesize-results",
+					Type:        "llm-call",
+					Description: "Combine flight and hotel results into an itinerary",
+					DependsOn:   []string{},
+					Agent:       "",
+					Parameters:  nil,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertWorkflowStepsToResponse(tt.steps)
+			if len(result) != len(tt.expected) {
+				t.Errorf("Expected %d steps, got %d", len(tt.expected), len(result))
+				return
+			}
+			for i, step := range result {
+				if step.ID != tt.expected[i].ID {
+					t.Errorf("Step %d: expected ID %s, got %s", i, tt.expected[i].ID, step.ID)
+				}
+				if step.Name != tt.expected[i].Name {
+					t.Errorf("Step %d: expected Name %s, got %s", i, tt.expected[i].Name, step.Name)
+				}
+				if step.Type != tt.expected[i].Type {
+					t.Errorf("Step %d: expected Type %s, got %s", i, tt.expected[i].Type, step.Type)
+				}
+				if step.Description != tt.expected[i].Description {
+					t.Errorf("Step %d: expected Description %s, got %s", i, tt.expected[i].Description, step.Description)
+				}
+				if step.Agent != tt.expected[i].Agent {
+					t.Errorf("Step %d: expected Agent %s, got %s", i, tt.expected[i].Agent, step.Agent)
+				}
+			}
+		})
+	}
+}
+
 // TestAuditSearchHandler tests audit log search
 func TestAuditSearchHandler(t *testing.T) {
 	// Save old state
@@ -1388,3 +1675,4 @@ func TestCalculateErrorRateOrchestrator(t *testing.T) {
 		})
 	}
 }
+
