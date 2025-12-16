@@ -271,6 +271,42 @@ export AXONFLOW_CONFIG_FILE=/etc/axonflow/config.yaml
 
 In self-hosted mode, the config file takes precedence over database configuration.
 
+## Internal Service Authentication
+
+When running both the Agent and Orchestrator, they communicate internally for MCP connector routing. By default (for development), a fallback token is used. For production deployments, configure a shared secret:
+
+```bash
+# Set the same secret on both Agent and Orchestrator
+export AXONFLOW_INTERNAL_SERVICE_SECRET=your-secure-secret-at-least-32-characters
+```
+
+**Requirements:**
+- Secret must be at least 32 characters
+- Must be identical on both Agent and Orchestrator
+- For production, use a cryptographically secure random string
+
+**Generate a secure secret:**
+```bash
+# Using openssl
+openssl rand -hex 32
+
+# Using /dev/urandom
+head -c 32 /dev/urandom | xxd -p
+```
+
+In `docker-compose.yml`, set the secret via environment variable:
+```yaml
+environment:
+  AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
+```
+
+Then create a `.env` file:
+```bash
+AXONFLOW_INTERNAL_SERVICE_SECRET=your-secure-secret-at-least-32-characters
+```
+
+**Security Note:** Without a configured secret, development mode uses a fallback token and logs a `[SECURITY]` warning. Always configure the secret for production deployments.
+
 ## Validation
 
 The configuration file is validated on load. Validation checks:
