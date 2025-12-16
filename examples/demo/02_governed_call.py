@@ -21,7 +21,22 @@ async def main():
             query="Explain AI governance in one sentence",
             request_type="chat",
         )
-        print(response.data)
+
+        # Display the LLM response
+        print("LLM Response")
+        print("-" * 40)
+        print(response.data.get("data") if isinstance(response.data, dict) else response.data)
+
+        # Display audit information
+        print("\nAudit Trail")
+        print("-" * 40)
+        print(f"Success: {response.success}")
+        print(f"Blocked: {response.blocked}")
+
+        if response.policy_info:
+            print(f"Static Checks: {response.policy_info.static_checks}")
+            print(f"Processing Time: {response.policy_info.processing_time}")
+            print(f"Tenant ID: {response.policy_info.tenant_id}")
 
 if __name__ == "__main__":
     asyncio.run(main())
