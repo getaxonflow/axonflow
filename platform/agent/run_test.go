@@ -1262,6 +1262,20 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 		response := map[string]interface{}{
 			"plan_id": "plan_12345",
 			"result":  "Trip plan generated successfully",
+			"steps": []interface{}{
+				map[string]interface{}{
+					"id":          "step_1_flight_search",
+					"name":        "flight_search",
+					"type":        "connector",
+					"description": "Search for flights to Paris",
+				},
+				map[string]interface{}{
+					"id":          "step_2_hotel_search",
+					"name":        "hotel_search",
+					"type":        "connector",
+					"description": "Search for hotels in Paris",
+				},
+			},
 			"metadata": map[string]interface{}{
 				"agents_used": 3,
 				"total_time":  "5s",
@@ -1317,6 +1331,24 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 
 	if agentsUsed, ok := response.Metadata["agents_used"].(float64); !ok || agentsUsed != 3 {
 		t.Errorf("expected agents_used=3, got %v", response.Metadata["agents_used"])
+	}
+
+	// Verify steps are flattened
+	if response.Steps == nil {
+		t.Error("expected steps in response")
+	}
+
+	if len(response.Steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(response.Steps))
+	}
+
+	// Verify first step structure
+	if step0, ok := response.Steps[0].(map[string]interface{}); ok {
+		if step0["name"] != "flight_search" {
+			t.Errorf("expected first step name='flight_search', got '%v'", step0["name"])
+		}
+	} else {
+		t.Error("expected first step to be a map")
 	}
 }
 
