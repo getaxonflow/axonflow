@@ -1,0 +1,8 @@
+# AxonFlow SDK
+axonflow>=0.2.0
+
+# HTTP client for direct API calls
+httpx>=0.25.0
+
+# Environment management
+python-dotenv>=1.0.0
