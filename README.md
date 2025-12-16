@@ -40,7 +40,7 @@ curl http://localhost:8081/health
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
 | **Google Gemini** | ❌ | ✅ | Gemini Pro, Gemini Ultra |
 
-→ **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm-providers)**
+→ **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 
 ### See It Working
 
@@ -278,7 +278,7 @@ response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
 })
 ```
 
-→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/)**
+→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)**
 
 ---
 

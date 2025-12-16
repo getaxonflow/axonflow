@@ -1,0 +1,41 @@
+# Prometheus configuration for local development
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'local'
+    cluster: 'docker-compose'
+
+# Scrape configurations
+scrape_configs:
+  # Agent metrics (native Prometheus format)
+  - job_name: 'axonflow-agent'
+    static_configs:
+      - targets: ['axonflow-agent:8080']
+        labels:
+          service: 'agent'
+    metrics_path: '/prometheus'
+    scheme: http
+
+  # Orchestrator metrics (native Prometheus format)
+  - job_name: 'axonflow-orchestrator'
+    static_configs:
+      - targets: ['axonflow-orchestrator:8081']
+        labels:
+          service: 'orchestrator'
+    metrics_path: '/prometheus'
+    scheme: http
+
+  # Customer Portal metrics
+  - job_name: 'axonflow-customer-portal'
+    static_configs:
+      - targets: ['axonflow-customer-portal:8080']
+        labels:
+          service: 'customer-portal'
+    metrics_path: '/prometheus'
+    scheme: http
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
