@@ -790,3 +790,194 @@ func TestIsTenantConnectorRegistryEnabled(t *testing.T) {
 		t.Error("Expected true when registry is initialized")
 	}
 }
+
+// Tests for internal service authentication
+
+func TestIsValidInternalServiceRequest_FallbackToken(t *testing.T) {
+	// Ensure env var is not set (fallback mode)
+	// Note: We can't use t.Setenv("", "") to unset, so we use os.Unsetenv here
+	// This is acceptable because test isolation is maintained by the subtest structure
+	os.Unsetenv(internalServiceSecretEnvVar)
+
+	tests := []struct {
+		name     string
+		clientID string
+		token    string
+		want     bool
+	}{
+		{
+			name:     "valid internal request with fallback token",
+			clientID: internalServiceClientID,
+			token:    internalServiceTokenFallback,
+			want:     true,
+		},
+		{
+			name:     "wrong client ID",
+			clientID: "some-other-client",
+			token:    internalServiceTokenFallback,
+			want:     false,
+		},
+		{
+			name:     "wrong token",
+			clientID: internalServiceClientID,
+			token:    "wrong-token",
+			want:     false,
+		},
+		{
+			name:     "empty client ID",
+			clientID: "",
+			token:    internalServiceTokenFallback,
+			want:     false,
+		},
+		{
+			name:     "empty token",
+			clientID: internalServiceClientID,
+			token:    "",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidInternalServiceRequest(tt.clientID, tt.token)
+			if got != tt.want {
+				t.Errorf("isValidInternalServiceRequest(%q, %q) = %v, want %v",
+					tt.clientID, tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidInternalServiceRequest_WithConfiguredSecret(t *testing.T) {
+	// Set up a configured secret
+	testSecret := "my-super-secure-internal-service-secret-12345"
+	t.Setenv(internalServiceSecretEnvVar, testSecret)
+
+	tests := []struct {
+		name     string
+		clientID string
+		token    string
+		want     bool
+	}{
+		{
+			name:     "valid internal request with configured secret",
+			clientID: internalServiceClientID,
+			token:    testSecret,
+			want:     true,
+		},
+		{
+			name:     "fallback token rejected when secret configured",
+			clientID: internalServiceClientID,
+			token:    internalServiceTokenFallback,
+			want:     false,
+		},
+		{
+			name:     "wrong secret",
+			clientID: internalServiceClientID,
+			token:    "wrong-secret",
+			want:     false,
+		},
+		{
+			name:     "correct secret but wrong client ID",
+			clientID: "some-other-client",
+			token:    testSecret,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidInternalServiceRequest(tt.clientID, tt.token)
+			if got != tt.want {
+				t.Errorf("isValidInternalServiceRequest(%q, %q) = %v, want %v",
+					tt.clientID, tt.token, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInternalServiceSecretMinLength_Agent(t *testing.T) {
+	// Verify the minimum length constant is reasonable
+	if internalServiceSecretMinLength < 16 {
+		t.Errorf("internalServiceSecretMinLength = %d, should be at least 16 for security", internalServiceSecretMinLength)
+	}
+	if internalServiceSecretMinLength != 32 {
+		t.Errorf("internalServiceSecretMinLength = %d, expected 32", internalServiceSecretMinLength)
+	}
+}
+
+func TestLogInternalServiceAuthWarning_Agent(t *testing.T) {
+	tests := []struct {
+		name        string
+		secretValue string
+		description string
+	}{
+		{
+			name:        "no secret configured",
+			secretValue: "",
+			description: "should warn when no secret is configured",
+		},
+		{
+			name:        "short secret configured",
+			secretValue: "short",
+			description: "should warn when secret is too short",
+		},
+		{
+			name:        "adequate secret configured",
+			secretValue: "this-is-a-sufficiently-long-secret-for-production",
+			description: "should not warn when secret is adequate length",
+		},
+		{
+			name:        "minimum length secret",
+			secretValue: "12345678901234567890123456789012", // exactly 32 chars
+			description: "should not warn at exactly minimum length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset warning flag before each test
+			internalServiceAuthWarningLogged = false
+
+			// Use t.Setenv for automatic cleanup
+			if tt.secretValue == "" {
+				os.Unsetenv(internalServiceSecretEnvVar)
+			} else {
+				t.Setenv(internalServiceSecretEnvVar, tt.secretValue)
+			}
+
+			// Call the function - it should not panic
+			logInternalServiceAuthWarning()
+
+			// Verify warning was logged (flag set)
+			if !internalServiceAuthWarningLogged {
+				t.Error("internalServiceAuthWarningLogged should be true after calling logInternalServiceAuthWarning")
+			}
+
+			// Call again - should not log again (idempotent)
+			logInternalServiceAuthWarning()
+		})
+	}
+}
+
+func TestLogInternalServiceAuthWarning_OnlyLogsOnce_Agent(t *testing.T) {
+	// Reset warning flag
+	internalServiceAuthWarningLogged = false
+
+	// Clear the secret to trigger warning path
+	os.Unsetenv(internalServiceSecretEnvVar)
+
+	// Call multiple times
+	logInternalServiceAuthWarning()
+	if !internalServiceAuthWarningLogged {
+		t.Fatal("Flag should be set after first call")
+	}
+
+	// Second call should be a no-op (flag prevents re-logging)
+	logInternalServiceAuthWarning()
+
+	// Flag should still be true
+	if !internalServiceAuthWarningLogged {
+		t.Error("Flag should remain true")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +23,61 @@ import (
 
 	"axonflow/platform/connectors/base"
 )
+
+// Internal service authentication constants for orchestrator-to-agent routing.
+// These are used when the orchestrator needs to call MCP connectors on the agent
+// without full user authentication context.
+const (
+	// InternalServiceClientID is the client ID used for internal orchestrator calls
+	InternalServiceClientID = "orchestrator-internal"
+
+	// InternalServiceTokenFallback is used when AXONFLOW_INTERNAL_SERVICE_SECRET is not configured.
+	// This provides backwards compatibility for OSS/development environments.
+	// Production deployments should always set AXONFLOW_INTERNAL_SERVICE_SECRET.
+	InternalServiceTokenFallback = "orchestrator-internal-token"
+
+	// InternalServiceTenantID is the wildcard tenant ID for internal calls
+	InternalServiceTenantID = "*"
+
+	// InternalServiceSecretEnvVar is the environment variable for the shared secret
+	InternalServiceSecretEnvVar = "AXONFLOW_INTERNAL_SERVICE_SECRET"
+
+	// InternalServiceSecretMinLength is the recommended minimum length for the shared secret.
+	// Secrets shorter than this will trigger a security warning at startup.
+	InternalServiceSecretMinLength = 32
+)
+
+// internalServiceAuthWarningLogged tracks if we've already logged the fallback warning
+// to avoid spamming logs on every call.
+var internalServiceAuthWarningLogged bool
+
+// LogInternalServiceAuthWarning logs a warning if fallback mode is being used.
+// This should be called during startup to alert operators about security configuration.
+// It only logs once per process lifetime to avoid log spam.
+func LogInternalServiceAuthWarning() {
+	if internalServiceAuthWarningLogged {
+		return
+	}
+	secret := os.Getenv(InternalServiceSecretEnvVar)
+	if secret == "" {
+		log.Printf("[SECURITY WARNING] %s not configured - using fallback token for internal service auth. This is acceptable for development but NOT recommended for production. Set %s to a secure random string (minimum %d characters).",
+			InternalServiceSecretEnvVar, InternalServiceSecretEnvVar, InternalServiceSecretMinLength)
+	} else if len(secret) < InternalServiceSecretMinLength {
+		log.Printf("[SECURITY WARNING] %s is only %d characters - recommend at least %d characters for production security.",
+			InternalServiceSecretEnvVar, len(secret), InternalServiceSecretMinLength)
+	}
+	internalServiceAuthWarningLogged = true
+}
+
+// getInternalServiceToken returns the token to use for internal service auth.
+// If AXONFLOW_INTERNAL_SERVICE_SECRET is set, uses that for secure auth.
+// Otherwise falls back to the hardcoded token for OSS/dev environments.
+func getInternalServiceToken() string {
+	if secret := os.Getenv(InternalServiceSecretEnvVar); secret != "" {
+		return secret
+	}
+	return InternalServiceTokenFallback
+}
 
 // Prometheus metrics for MCP connectors
 var (
@@ -54,6 +110,9 @@ func init() {
 	prometheus.MustRegister(promConnectorCalls)
 	prometheus.MustRegister(promConnectorDuration)
 	prometheus.MustRegister(promConnectorErrors)
+
+	// Log security warning if internal service auth is using fallback token
+	LogInternalServiceAuthWarning()
 }
 
 // MCPConnectorProcessor handles workflow steps that call MCP connectors
@@ -74,16 +133,23 @@ func (p *MCPConnectorProcessor) ExecuteStep(ctx context.Context, step WorkflowSt
 		return nil, fmt.Errorf("connector name not specified in step %s", step.Name)
 	}
 
-	// Get connector from registry
-	if connectorRegistry == nil {
-		promConnectorErrors.WithLabelValues(connectorName, "unknown", "registry_not_initialized").Inc()
-		return nil, fmt.Errorf("connector registry not initialized")
+	// Try local registry first
+	var connector base.Connector
+	var localConnectorErr error
+
+	if connectorRegistry != nil {
+		connector, localConnectorErr = connectorRegistry.Get(connectorName)
 	}
 
-	connector, err := connectorRegistry.Get(connectorName)
-	if err != nil {
+	// If connector not found locally, route to agent via MCPQueryRouter
+	if connector == nil || localConnectorErr != nil {
+		if mcpQueryRouter != nil {
+			log.Printf("[MCP] Connector '%s' not found locally, routing to agent", connectorName)
+			return p.routeToAgent(ctx, step, input, execution)
+		}
+		// No local connector and no router - return error
 		promConnectorErrors.WithLabelValues(connectorName, "unknown", "connector_not_found").Inc()
-		return nil, fmt.Errorf("failed to get connector '%s': %v", connectorName, err)
+		return nil, fmt.Errorf("connector '%s' not found (local registry: %v, agent router unavailable)", connectorName, localConnectorErr)
 	}
 
 	// Build parameters from step configuration and input
@@ -311,3 +377,103 @@ func (p *MCPConnectorProcessor) formatHotelResults(rows []map[string]interface{}
 }
 
 // Note: Travel-specific fallback methods removed - business logic moved to clients
+
+// routeToAgent routes a connector call to the agent via MCPQueryRouter
+// This is used when the connector is not registered locally but may be available on the agent
+func (p *MCPConnectorProcessor) routeToAgent(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
+	connectorName := step.Connector
+	operation := step.Operation
+	if operation == "" {
+		operation = "query"
+	}
+
+	startTime := time.Now()
+
+	// Build parameters
+	params := p.buildParameters(step, input, execution)
+
+	// Build OrchestratorRequest for routing
+	req := OrchestratorRequest{
+		RequestID:   execution.ID,
+		Query:       step.Statement,
+		RequestType: "mcp-query",
+		User:        UserContext{}, // Will be populated from execution context if available
+		Client:      ClientContext{},
+		Context: map[string]interface{}{
+			"connector":  connectorName,
+			"params":     params,
+			"operation":  operation,
+			"step_name":  step.Name,
+		},
+		Timestamp: time.Now(),
+	}
+
+	// Extract client/user context from execution if available
+	// Default to internal service credentials for orchestrator-to-agent routing
+	req.Client.ID = InternalServiceClientID
+	req.Client.TenantID = InternalServiceTenantID
+	req.User.TenantID = InternalServiceTenantID
+	// Set internal service token for orchestrator-to-agent routing
+	// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token
+	req.Context["user_token"] = getInternalServiceToken()
+
+	if execution.Input != nil {
+		if clientID, ok := execution.Input["client_id"].(string); ok && clientID != "" {
+			req.Client.ID = clientID
+		}
+		if tenantID, ok := execution.Input["tenant_id"].(string); ok && tenantID != "" {
+			req.Client.TenantID = tenantID
+			req.User.TenantID = tenantID
+		}
+		if userToken, ok := execution.Input["user_token"].(string); ok && userToken != "" {
+			req.Context["user_token"] = userToken
+		}
+	}
+
+	log.Printf("[MCP] Routing connector '%s' operation '%s' to agent - step: %s", connectorName, operation, step.Name)
+
+	// Route to agent
+	resp, err := mcpQueryRouter.RouteToAgent(ctx, req)
+
+	duration := time.Since(startTime)
+	promConnectorDuration.WithLabelValues(connectorName, operation).Observe(float64(duration.Milliseconds()))
+
+	if err != nil {
+		promConnectorCalls.WithLabelValues(connectorName, operation, "error").Inc()
+		promConnectorErrors.WithLabelValues(connectorName, operation, "agent_routing_failed").Inc()
+		return nil, fmt.Errorf("failed to route connector '%s' to agent: %w", connectorName, err)
+	}
+
+	if !resp.Success {
+		promConnectorCalls.WithLabelValues(connectorName, operation, "error").Inc()
+		promConnectorErrors.WithLabelValues(connectorName, operation, "agent_returned_error").Inc()
+		return nil, fmt.Errorf("agent connector call failed: %s", resp.Error)
+	}
+
+	promConnectorCalls.WithLabelValues(connectorName, operation, "success").Inc()
+	log.Printf("[MCP] Agent connector '%s' operation completed successfully in %v", connectorName, duration)
+
+	// Extract response data
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		// Add formatted response for easy access
+		if rows, ok := data["rows"].([]interface{}); ok && len(rows) > 0 {
+			rowMaps := make([]map[string]interface{}, 0, len(rows))
+			for _, row := range rows {
+				if rowMap, ok := row.(map[string]interface{}); ok {
+					rowMaps = append(rowMaps, rowMap)
+				}
+			}
+			if len(rowMaps) > 0 {
+				data["response"] = p.formatResponse(step.Name, rowMaps)
+			}
+		}
+		return data, nil
+	}
+
+	// Return raw data if not a map
+	return map[string]interface{}{
+		"data":      resp.Data,
+		"connector": connectorName,
+		"duration":  duration.String(),
+	}, nil
+}

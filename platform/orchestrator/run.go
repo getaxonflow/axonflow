@@ -1728,14 +1728,26 @@ type PlanRequest struct {
 	Context       map[string]interface{} `json:"context"`
 }
 
+// ResponsePlanStep represents a step in the generated plan (matches SDK PlanStep)
+type ResponsePlanStep struct {
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Type        string                 `json:"type"`
+	Description string                 `json:"description,omitempty"`
+	DependsOn   []string               `json:"depends_on,omitempty"`
+	Agent       string                 `json:"agent,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+}
+
 // PlanResponse represents the response from a planning request
 type PlanResponse struct {
-	Success             bool         `json:"success"`
-	PlanID              string       `json:"plan_id"`
-	WorkflowExecutionID string       `json:"workflow_execution_id"`
-	Result              interface{}  `json:"result"`
-	Metadata            PlanMetadata `json:"metadata"`
-	Error               string       `json:"error,omitempty"`
+	Success             bool               `json:"success"`
+	PlanID              string             `json:"plan_id"`
+	Steps               []ResponsePlanStep `json:"steps"`
+	WorkflowExecutionID string             `json:"workflow_execution_id"`
+	Result              interface{}        `json:"result"`
+	Metadata            PlanMetadata       `json:"metadata"`
+	Error               string             `json:"error,omitempty"`
 }
 
 // PlanMetadata holds metadata about plan execution
@@ -1902,9 +1914,13 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		finalResult = "Plan executed successfully (no output generated)"
 	}
 
+	// Convert workflow steps to SDK-compatible format
+	planSteps := convertWorkflowStepsToResponse(workflow.Spec.Steps)
+
 	response := PlanResponse{
 		Success:             true,
 		PlanID:              fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		Steps:               planSteps,
 		WorkflowExecutionID: execution.ID,
 		Result:              finalResult,
 		Metadata: PlanMetadata{
@@ -1921,6 +1937,42 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+// convertWorkflowStepsToResponse converts workflow steps to SDK-compatible response format
+func convertWorkflowStepsToResponse(steps []WorkflowStep) []ResponsePlanStep {
+	if steps == nil {
+		return []ResponsePlanStep{}
+	}
+	result := make([]ResponsePlanStep, len(steps))
+	for i, step := range steps {
+		// Generate a unique ID for each step (use index for uniqueness, name for readability)
+		stepID := fmt.Sprintf("step_%d_%s", i+1, step.Name)
+
+		// Build description from available fields
+		description := ""
+		if step.Prompt != "" {
+			// Truncate long prompts
+			if len(step.Prompt) > 100 {
+				description = step.Prompt[:100] + "..."
+			} else {
+				description = step.Prompt
+			}
+		} else if step.Connector != "" {
+			description = fmt.Sprintf("Call %s connector: %s", step.Connector, step.Statement)
+		}
+
+		result[i] = ResponsePlanStep{
+			ID:          stepID,
+			Name:        step.Name,
+			Type:        step.Type,
+			Description: description,
+			DependsOn:   []string{}, // Workflow steps don't have explicit dependencies in current model
+			Agent:       step.Connector,
+			Parameters:  step.Parameters,
+		}
+	}
+	return result
 }
 
 func getOutputKeys(output map[string]interface{}) []string {
