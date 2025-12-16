@@ -4,3 +4,4 @@ response = await ax.execute_query(
     query="Explain AI governance in one sentence",
     request_type="chat",
 )
+print(f"Checks: {response.policy_info['static_checks']}")  # Audit trail
