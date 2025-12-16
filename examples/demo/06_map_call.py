@@ -3,6 +3,9 @@ Multi-Agent Planning (MAP) Demo
 
 A single natural-language request becomes an executable workflow
 with governance applied at every step.
+
+Note: This example uses 'generic' domain which works with LLM-only steps.
+For travel/healthcare domains with external connectors, see Enterprise edition.
 """
 
 import asyncio
@@ -17,9 +20,10 @@ async def main():
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as ax:
         # Generate a plan from natural language
+        # Using 'generic' domain - works without external connectors
         plan = await ax.generate_plan(
-            query="Book a flight to London and build an itinerary",
-            domain="travel",
+            query="Research the benefits of renewable energy and create a summary report with recommendations",
+            domain="generic",
         )
 
         print(f"Plan ID: {plan.plan_id}")
