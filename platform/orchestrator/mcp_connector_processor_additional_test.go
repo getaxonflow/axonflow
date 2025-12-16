@@ -13,6 +13,9 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -369,5 +372,160 @@ func TestMCPConnector_ExecuteStep_WithFormattedResponse(t *testing.T) {
 	// Should include formatted response
 	if response, ok := output["response"].(string); !ok || response == "" {
 		t.Error("Expected formatted response in output")
+	}
+}
+
+// TestRouteToAgentSuccess tests routing connector calls to agent when connector not found locally
+func TestRouteToAgentSuccess(t *testing.T) {
+	// Save and restore global state
+	oldRouter := mcpQueryRouter
+	oldRegistry := connectorRegistry
+	defer func() {
+		mcpQueryRouter = oldRouter
+		connectorRegistry = oldRegistry
+	}()
+
+	// Clear local registry so connector won't be found
+	connectorRegistry = registry.NewRegistry()
+
+	// Create mock agent server that returns agent MCP response format
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Agent response format (see mcp_query_router.go:155-158)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":     true,
+			"rows":        []interface{}{map[string]interface{}{"id": 1, "name": "result1"}, map[string]interface{}{"id": 2, "name": "result2"}},
+			"row_count":   2,
+			"duration_ms": 10,
+		})
+	}))
+	defer server.Close()
+
+	// Point MCPQueryRouter to our mock server
+	mcpQueryRouter = NewMCPQueryRouterWithTLS(server.URL, true)
+
+	processor := NewMCPConnectorProcessor()
+	ctx := context.Background()
+
+	step := WorkflowStep{
+		Name:      "agent-connector-step",
+		Connector: "nonexistent-connector",
+		Operation: "query",
+		Statement: "SELECT * FROM test",
+	}
+
+	execution := &WorkflowExecution{
+		ID: "test-workflow-agent-route",
+		Input: map[string]interface{}{
+			"client_id":  "test-client",
+			"tenant_id":  "test-tenant",
+			"user_token": "test-token",
+		},
+	}
+
+	output, err := processor.ExecuteStep(ctx, step, map[string]interface{}{}, execution)
+
+	if err != nil {
+		t.Fatalf("ExecuteStep() error = %v", err)
+	}
+
+	if output == nil {
+		t.Fatal("Expected non-nil output")
+	}
+
+	// Check that rows were returned
+	if rows, ok := output["rows"].([]interface{}); !ok || len(rows) == 0 {
+		t.Error("Expected rows in output")
+	}
+}
+
+// TestRouteToAgentError tests error handling when agent returns error
+func TestRouteToAgentError(t *testing.T) {
+	// Save and restore global state
+	oldRouter := mcpQueryRouter
+	oldRegistry := connectorRegistry
+	defer func() {
+		mcpQueryRouter = oldRouter
+		connectorRegistry = oldRegistry
+	}()
+
+	// Clear local registry so connector won't be found
+	connectorRegistry = registry.NewRegistry()
+
+	// Create mock agent server that returns error (agent response format)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Agent error response format
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "connector not available on agent",
+		})
+	}))
+	defer server.Close()
+
+	// Point MCPQueryRouter to our mock server
+	mcpQueryRouter = NewMCPQueryRouterWithTLS(server.URL, true)
+
+	processor := NewMCPConnectorProcessor()
+	ctx := context.Background()
+
+	step := WorkflowStep{
+		Name:      "agent-connector-step",
+		Connector: "nonexistent-connector",
+		Operation: "query",
+	}
+
+	execution := &WorkflowExecution{
+		ID: "test-workflow-agent-error",
+	}
+
+	_, err := processor.ExecuteStep(ctx, step, map[string]interface{}{}, execution)
+
+	if err == nil {
+		t.Fatal("Expected error when agent returns error response")
+	}
+
+	if !strings.Contains(err.Error(), "agent connector call failed") {
+		t.Errorf("Expected 'agent connector call failed' error, got: %v", err)
+	}
+}
+
+// TestRouteToAgentNetworkError tests error handling when agent is unreachable
+func TestRouteToAgentNetworkError(t *testing.T) {
+	// Save and restore global state
+	oldRouter := mcpQueryRouter
+	oldRegistry := connectorRegistry
+	defer func() {
+		mcpQueryRouter = oldRouter
+		connectorRegistry = oldRegistry
+	}()
+
+	// Clear local registry so connector won't be found
+	connectorRegistry = registry.NewRegistry()
+
+	// Point MCPQueryRouter to an invalid endpoint
+	mcpQueryRouter = NewMCPQueryRouterWithTLS("http://localhost:99999", true)
+
+	processor := NewMCPConnectorProcessor()
+	ctx := context.Background()
+
+	step := WorkflowStep{
+		Name:      "agent-connector-step",
+		Connector: "nonexistent-connector",
+		Operation: "query",
+	}
+
+	execution := &WorkflowExecution{
+		ID: "test-workflow-network-error",
+	}
+
+	_, err := processor.ExecuteStep(ctx, step, map[string]interface{}{}, execution)
+
+	if err == nil {
+		t.Fatal("Expected error when agent is unreachable")
+	}
+
+	if !strings.Contains(err.Error(), "failed to route connector") {
+		t.Errorf("Expected 'failed to route connector' error, got: %v", err)
 	}
 }
