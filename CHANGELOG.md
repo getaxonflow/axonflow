@@ -77,6 +77,18 @@ This is the first public release of AxonFlow, a self-hosted governance and orche
 
 ---
 
+## [1.0.1] - 2025-12-16
+
+### Added
+
+- **Internal Service Authentication**: Shared secret authentication for secure agent↔orchestrator communication via `AXONFLOW_INTERNAL_SERVICE_SECRET`
+
+### Changed
+
+- **PII Detection**: Made critical PII blocking configurable per-policy (Aadhaar, PAN patterns)
+
+---
+
 ## Pre-release Development History
 
 The following versions were internal development milestones leading up to v1.0.0.
