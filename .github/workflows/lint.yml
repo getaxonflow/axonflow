@@ -33,7 +33,6 @@ permissions:
 
 # Consolidated lint job to reduce CI costs
 # Reduced from 6 parallel matrix jobs to 1 sequential job (~80% reduction in billable minutes)
-# See: https://github.com/getaxonflow/axonflow-enterprise/issues/305
 
 jobs:
   # =============================================================================
