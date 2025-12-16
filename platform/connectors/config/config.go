@@ -343,6 +343,21 @@ func LoadAmadeusConfig(connectorName string) (*base.ConnectorConfig, error) {
 			baseURL = os.Getenv(prefix + "URL_TEST")
 		}
 
+		// Fallback to generic (non-suffixed) credentials
+		// This supports CloudFormation deployments that use AMADEUS_API_KEY/AMADEUS_API_SECRET
+		if apiKey == "" {
+			apiKey = os.Getenv("AMADEUS_API_KEY")
+		}
+		if apiSecret == "" {
+			apiSecret = os.Getenv("AMADEUS_API_SECRET")
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv(prefix + "API_KEY")
+		}
+		if apiSecret == "" {
+			apiSecret = os.Getenv(prefix + "API_SECRET")
+		}
+
 		// Default test URL
 		if baseURL == "" {
 			baseURL = "https://test.api.amadeus.com"
