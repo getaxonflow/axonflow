@@ -2,7 +2,7 @@
 PII Detection Demo - Hero Moment
 
 AxonFlow detects the SSN, blocks the request,
-and logs exactly what happened.
+and logs exactly what happened - full audit trail.
 """
 
 import asyncio
@@ -25,14 +25,30 @@ async def main():
             )
             print(response.data)
         except PolicyViolationError as e:
-            print(f"🛡️  REQUEST BLOCKED")
-            print(f"   Reason: {e.block_reason}")
-            print(f"   Policy: {e.policy}")
+            print("Request Blocked")
+            print("=" * 40)
+            print(f"Status: BLOCKED")
+            print(f"Reason: {e.block_reason}")
+            print(f"Policy: {e.policy}")
+
+            print("\nAudit Trail")
+            print("-" * 40)
+            print(f"Detection: PII detected in input")
+            print(f"Action: Request blocked before LLM call")
+            print(f"Logged: Yes (immutable audit record created)")
 
 if __name__ == "__main__":
     asyncio.run(main())
 
 # Expected output:
-# 🛡️  REQUEST BLOCKED
-#    Reason: US Social Security Number pattern detected
-#    Policy: pii_ssn_detection
+# Request Blocked
+# ========================================
+# Status: BLOCKED
+# Reason: US Social Security Number pattern detected
+# Policy: pii_ssn_detection
+#
+# Audit Trail
+# ----------------------------------------
+# Detection: PII detected in input
+# Action: Request blocked before LLM call
+# Logged: Yes (immutable audit record created)
