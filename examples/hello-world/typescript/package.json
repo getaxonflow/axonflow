@@ -2,6 +2,7 @@
   "name": "axonflow-hello-world",
   "version": "1.0.0",
   "description": "Hello World example for AxonFlow",
+  "type": "module",
   "main": "index.ts",
   "scripts": {
     "start": "ts-node index.ts",
@@ -12,7 +13,9 @@
   "author": "AxonFlow",
   "license": "MIT",
   "dependencies": {
-    "@axonflow/sdk": "^1.3.0"
+    "@axonflow/sdk": "^1.2.1",
+    "dotenv": "^16.3.0",
+    "openai": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
