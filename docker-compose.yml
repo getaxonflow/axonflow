@@ -243,8 +243,8 @@ services:
 
   # Grafana - Metrics visualization and dashboards
   # Login: admin / grafana_localdev456
-  # Note: Grafana dashboard provisioning removed for OSS (uses Grafana's built-in SQLite by default)
-  # For custom dashboards, manually import them via Grafana UI or mount a local dashboards folder
+  # Dashboards auto-provisioned from config/grafana/dashboards/
+  # Prometheus datasource auto-configured from config/grafana/provisioning/datasources/
   grafana:
     image: grafana/grafana:10.2.2
     container_name: axonflow-grafana
@@ -265,7 +265,7 @@ services:
       # Server configuration
       GF_SERVER_ROOT_URL: http://localhost:3000
 
-      # Auto-configure Prometheus datasource
+      # Plugins (none required for base functionality)
       GF_INSTALL_PLUGINS: ""
     ports:
       - "3000:3000"
@@ -276,6 +276,9 @@ services:
         condition: service_healthy
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./config/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
       interval: 10s
