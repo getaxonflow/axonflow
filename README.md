@@ -12,6 +12,8 @@
 
 📘 **[Full Documentation](https://docs.getaxonflow.com)** · 🚀 **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · 🔌 **[API Reference](./docs/api/)**
 
+*AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, and **Go**.*
+
 ---
 
 ## Quick Start
@@ -42,25 +44,20 @@ curl http://localhost:8081/health
 
 → **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 
-### See It Working
+### See Governance in Action (30 seconds)
 
 ```bash
-./examples/demo/demo.sh
+# Example: Send a request containing a credit card number — AxonFlow blocks it before it reaches an LLM
+curl -X POST http://localhost:8080/api/v1/gateway/pre-check \
+  -H "Content-Type: application/json" \
+  -d '{"user_query": "Process payment for card 4111-1111-1111-1111", "client_id": "demo"}'
 ```
 
+```json
+{"allowed": false, "blocked_by_policy": "pii_credit_card_detection"}
 ```
-Demo 1: SQL Injection Blocking
-Sending: "SELECT * FROM users WHERE id=1 UNION SELECT password FROM admin"
-🛡️  BLOCKED - SQL Injection Detected
 
-Demo 2: Safe Query (Allowed)
-Sending: "What is the weather forecast for tomorrow?"
-✓ ALLOWED - No policy violations
-
-Demo 3: Credit Card Detection
-Sending: "Charge my card 4111-1111-1111-1111 for the order"
-🛡️  POLICY TRIGGERED - Credit Card Detected
-```
+For a full end-to-end demo (gateway mode, policy enforcement, multi-agent planning), see `./examples/demo/demo.sh`.
 
 Policy checks add single-digit millisecond overhead.
 
