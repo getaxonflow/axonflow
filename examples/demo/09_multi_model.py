@@ -15,6 +15,7 @@ import asyncio
 import os
 
 from axonflow import AxonFlow
+from axonflow.exceptions import PolicyViolationError
 
 
 # Providers to demonstrate (if configured)
@@ -150,6 +151,11 @@ async def multi_model_demo():
                     else:
                         print(f"Result: ALLOWED (check policy config)")
 
+                except PolicyViolationError as e:
+                    print(f"Result: BLOCKED (expected)")
+                    print(f"Reason: {e}")
+                    print()
+                    print("Same policies apply regardless of provider.")
                 except Exception as e:
                     print(f"Result: ERROR - {e}")
 

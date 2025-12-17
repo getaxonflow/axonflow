@@ -14,6 +14,7 @@ import asyncio
 import os
 
 from axonflow import AxonFlow
+from axonflow.exceptions import PolicyViolationError
 
 
 # Sample queries for the support ticket database
@@ -138,9 +139,13 @@ async def demo_injection_blocking():
             else:
                 print(f"Status: ALLOWED (check policy configuration)")
 
+        except PolicyViolationError as e:
+            print(f"Status: BLOCKED (expected)")
+            print(f"Reason: {e}")
+            print()
+            print("SQL injection blocked - even through connectors!")
         except Exception as e:
-            print(f"Status: REJECTED - {e}")
-            print("Severe injection attempts are rejected at the API level.")
+            print(f"Status: ERROR - {e}")
 
     print()
 

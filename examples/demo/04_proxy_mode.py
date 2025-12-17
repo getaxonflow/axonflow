@@ -18,6 +18,7 @@ import os
 import time
 
 from axonflow import AxonFlow
+from axonflow.exceptions import PolicyViolationError
 
 
 async def main():
@@ -86,19 +87,25 @@ async def main():
         print(f"Query: \"{malicious_query}\"")
         print()
 
-        response = await client.execute_query(
-            user_token="support-agent-demo",
-            query=malicious_query,
-            request_type="chat",
-        )
+        try:
+            response = await client.execute_query(
+                user_token="support-agent-demo",
+                query=malicious_query,
+                request_type="chat",
+            )
 
-        if response.blocked:
+            if response.blocked:
+                print(f"Status: BLOCKED (expected)")
+                print(f"Reason: {response.block_reason}")
+                if response.policy_info and response.policy_info.policies_evaluated:
+                    print(f"Policy: {response.policy_info.policies_evaluated}")
+            else:
+                print(f"Status: ALLOWED (unexpected - check policy config)")
+
+        except PolicyViolationError as e:
+            # SDK raises exception for blocked requests
             print(f"Status: BLOCKED (expected)")
-            print(f"Reason: {response.block_reason}")
-            if response.policy_info and response.policy_info.policies_evaluated:
-                print(f"Policy: {response.policy_info.policies_evaluated}")
-        else:
-            print(f"Status: ALLOWED (unexpected - check policy config)")
+            print(f"Reason: {e}")
 
         print()
 
