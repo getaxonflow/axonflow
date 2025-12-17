@@ -24,25 +24,59 @@ For production, get your key from:
 
 ## 3. Add to Your Code (3 minutes)
 
-### Option A: Wrap Individual Calls
+### Gateway Mode (Recommended)
+
+Gateway Mode provides the most reliable integration:
 
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const axonflow = new AxonFlow({ apiKey: process.env.AXONFLOW_API_KEY });
+const axonflow = new AxonFlow({
+  endpoint: process.env.AXONFLOW_AGENT_URL,
+  clientId: process.env.AXONFLOW_CLIENT_ID,
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
+});
 
-// Wrap your AI call with protect()
-const response = await axonflow.protect(async () => {
-  return openai.chat.completions.create({
+async function queryWithGovernance(prompt: string) {
+  // 1. Pre-check: Get policy approval
+  const ctx = await axonflow.getPolicyApprovedContext({
+    userToken: 'user-123',
+    query: prompt,
+  });
+
+  if (!ctx.approved) {
+    throw new Error(`Query blocked: ${ctx.blockReason}`);
+  }
+
+  // 2. Make direct LLM call
+  const start = Date.now();
+  const response = await openai.chat.completions.create({
     model: 'gpt-4',
     messages: [{ role: 'user', content: prompt }]
   });
-});
+  const latencyMs = Date.now() - start;
+
+  // 3. Audit the call
+  await axonflow.auditLLMCall({
+    contextId: ctx.contextId,
+    responseSummary: response.choices[0].message.content?.substring(0, 100) || '',
+    provider: 'openai',
+    model: 'gpt-4',
+    tokenUsage: {
+      promptTokens: response.usage?.prompt_tokens || 0,
+      completionTokens: response.usage?.completion_tokens || 0,
+      totalTokens: response.usage?.total_tokens || 0
+    },
+    latencyMs
+  });
+
+  return response.choices[0].message.content;
+}
 ```
 
-### Option B: Wrap the Entire Client
+### Client Wrapping (Experimental)
 
 ```typescript
 import { AxonFlow, wrapOpenAIClient } from '@axonflow/sdk';
@@ -51,36 +85,40 @@ import OpenAI from 'openai';
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const axonflow = new AxonFlow({ apiKey: process.env.AXONFLOW_API_KEY });
 
-// All calls through this client are now protected
+// All calls through this client are protected
 const protectedOpenAI = wrapOpenAIClient(openai, axonflow);
 
-// Use normally - governance is invisible
+// Use normally - governance is automatic
 const response = await protectedOpenAI.chat.completions.create({
   model: 'gpt-4',
   messages: [{ role: 'user', content: prompt }]
 });
 ```
 
+> **Note:** The `protect()` wrapper has limitations. Use Gateway Mode for production.
+
 ## 4. Test It (30 seconds)
 
 Try sending sensitive data:
 
 ```typescript
-const response = await axonflow.protect(async () => {
-  return openai.chat.completions.create({
-    model: 'gpt-4',
-    messages: [{
-      role: 'user',
-      content: 'My SSN is 123-45-6789 and credit card is 4111-1111-1111-1111'
-    }]
-  });
+// Test with sensitive PII - should be blocked
+const ctx = await axonflow.getPolicyApprovedContext({
+  userToken: 'test-user',
+  query: 'My SSN is 123-45-6789 and credit card is 4111-1111-1111-1111'
 });
 
+if (!ctx.approved) {
+  console.log('Blocked:', ctx.blockReason);
+  // Output: "Blocked: pii_ssn_detection" or similar
+} else {
+  // If approved, make LLM call + audit
+}
+
 // AxonFlow will automatically:
-// - Redact SSN → [SSN_REDACTED]
-// - Redact credit card → [CARD_REDACTED]
-// - Log for compliance
-// - Continue the request safely
+// - Block requests with SSN, credit card numbers
+// - Log all policy evaluations for compliance
+// - Return clear block reasons for debugging
 ```
 
 ## 5. Deploy (30 seconds)
@@ -105,61 +143,85 @@ Once integrated, AxonFlow:
 
 ## Common Integration Patterns
 
-### React Component
-
-```tsx
-function ChatComponent() {
-  const axonflow = new AxonFlow({ apiKey: 'your-key' });
-
-  const handleSubmit = async (prompt: string) => {
-    const response = await axonflow.protect(() =>
-      fetch('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({ prompt })
-      }).then(r => r.json())
-    );
-
-    return response;
-  };
-}
-```
-
 ### Next.js API Route
 
 ```typescript
 // pages/api/chat.ts
 import { AxonFlow } from '@axonflow/sdk';
+import OpenAI from 'openai';
 
-const axonflow = new AxonFlow({ apiKey: process.env.AXONFLOW_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const axonflow = new AxonFlow({
+  endpoint: process.env.AXONFLOW_AGENT_URL,
+  clientId: process.env.AXONFLOW_CLIENT_ID,
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
+});
 
 export default async function handler(req, res) {
-  const response = await axonflow.protect(() =>
-    openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: req.body.messages
-    })
-  );
+  const { prompt, userToken } = req.body;
 
-  res.json(response);
+  const ctx = await axonflow.getPolicyApprovedContext({ userToken, query: prompt });
+  if (!ctx.approved) {
+    return res.status(403).json({ error: ctx.blockReason });
+  }
+
+  const start = Date.now();
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  await axonflow.auditLLMCall({
+    contextId: ctx.contextId,
+    responseSummary: response.choices[0].message.content?.substring(0, 100) || '',
+    provider: 'openai',
+    model: 'gpt-4',
+    tokenUsage: { promptTokens: response.usage?.prompt_tokens || 0, completionTokens: response.usage?.completion_tokens || 0, totalTokens: response.usage?.total_tokens || 0 },
+    latencyMs: Date.now() - start
+  });
+
+  res.json({ response: response.choices[0].message.content });
 }
 ```
 
 ### Express Middleware
 
 ```typescript
+import express from 'express';
 import { AxonFlow } from '@axonflow/sdk';
+import OpenAI from 'openai';
 
-const axonflow = new AxonFlow({ apiKey: process.env.AXONFLOW_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const axonflow = new AxonFlow({
+  endpoint: process.env.AXONFLOW_AGENT_URL,
+  clientId: process.env.AXONFLOW_CLIENT_ID,
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
+});
 
 app.post('/api/chat', async (req, res) => {
-  try {
-    const response = await axonflow.protect(() =>
-      openai.chat.completions.create(req.body)
-    );
-    res.json(response);
-  } catch (error) {
-    res.status(403).json({ error: error.message });
+  const { prompt, userToken } = req.body;
+
+  const ctx = await axonflow.getPolicyApprovedContext({ userToken, query: prompt });
+  if (!ctx.approved) {
+    return res.status(403).json({ error: ctx.blockReason });
   }
+
+  const start = Date.now();
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  await axonflow.auditLLMCall({
+    contextId: ctx.contextId,
+    responseSummary: response.choices[0].message.content?.substring(0, 100) || '',
+    provider: 'openai',
+    model: 'gpt-4',
+    tokenUsage: { promptTokens: response.usage?.prompt_tokens || 0, completionTokens: response.usage?.completion_tokens || 0, totalTokens: response.usage?.total_tokens || 0 },
+    latencyMs: Date.now() - start
+  });
+
+  res.json({ response: response.choices[0].message.content });
 });
 ```
 

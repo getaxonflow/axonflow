@@ -99,12 +99,12 @@ FROM alpine:3.22
 
 # AWS Marketplace metadata
 LABEL name="AxonFlow Orchestrator" \
-      vendor="AxonFlow Inc" \
+      vendor="AxonFlow, Inc." \
       version="1.0.0" \
       release="1" \
       summary="AxonFlow AI Control Plane - Orchestrator Component" \
       description="Multi-Agent Planning (MAP) orchestrator for coordinating AI agents in parallel with dependency management and autonomous execution." \
-      maintainer="AxonFlow Inc <support@getaxonflow.com>" \
+      maintainer="AxonFlow, Inc. <support@getaxonflow.com>" \
       url="https://getaxonflow.com" \
       documentation="https://docs.getaxonflow.com" \
       license="Commercial" \
@@ -113,7 +113,7 @@ LABEL name="AxonFlow Orchestrator" \
       io.opencontainer.image.title="AxonFlow Orchestrator" \
       io.opencontainer.image.description="Multi-Agent Planning orchestrator for AI systems" \
       io.opencontainer.image.version="1.0.0" \
-      io.opencontainer.image.vendor="AxonFlow Inc" \
+      io.opencontainer.image.vendor="AxonFlow, Inc." \
       io.opencontainer.image.licenses="Commercial" \
       io.opencontainer.image.url="https://getaxonflow.com" \
       io.opencontainer.image.documentation="https://docs.getaxonflow.com"

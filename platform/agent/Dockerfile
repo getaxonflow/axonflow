@@ -121,12 +121,12 @@ FROM alpine:3.22
 
 # AWS Marketplace metadata
 LABEL name="AxonFlow Agent" \
-      vendor="AxonFlow Inc" \
+      vendor="AxonFlow, Inc." \
       version="1.0.0" \
       release="1" \
       summary="AxonFlow AI Control Plane - Agent Component" \
       description="Sub-10ms policy enforcement engine for AI governance. Evaluates policies, routes requests to orchestrator, and provides audit trail." \
-      maintainer="AxonFlow Inc <support@getaxonflow.com>" \
+      maintainer="AxonFlow, Inc. <support@getaxonflow.com>" \
       url="https://getaxonflow.com" \
       documentation="https://docs.getaxonflow.com" \
       license="Commercial" \
@@ -135,7 +135,7 @@ LABEL name="AxonFlow Agent" \
       io.opencontainer.image.title="AxonFlow Agent" \
       io.opencontainer.image.description="Sub-10ms policy enforcement for AI systems" \
       io.opencontainer.image.version="1.0.0" \
-      io.opencontainer.image.vendor="AxonFlow Inc" \
+      io.opencontainer.image.vendor="AxonFlow, Inc." \
       io.opencontainer.image.licenses="Commercial" \
       io.opencontainer.image.url="https://getaxonflow.com" \
       io.opencontainer.image.documentation="https://docs.getaxonflow.com"
