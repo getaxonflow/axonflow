@@ -148,7 +148,7 @@ async def show_blocked_requests():
                         if isinstance(policy_details, str):
                             try:
                                 policy_details = json.loads(policy_details)
-                            except:
+                            except (json.JSONDecodeError, ValueError):
                                 pass
 
                         print(f"  Query: {str(log.get('query', ''))[:40]}...")

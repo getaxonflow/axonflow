@@ -190,7 +190,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "1 - (sum(axonflow_agent_blocked_requests_total) / sum(axonflow_agent_requests_total))",
+          "expr": "(sum(axonflow_agent_requests_total) - sum(axonflow_agent_blocked_requests_total)) / clamp_min(sum(axonflow_agent_requests_total), 1)",
           "refId": "A"
         }
       ],

@@ -10,7 +10,6 @@ Each pattern triggers the appropriate policy for blocking or redaction.
 
 import asyncio
 import os
-import sys
 
 from axonflow import AxonFlow
 
