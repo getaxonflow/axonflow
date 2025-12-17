@@ -1,0 +1,11 @@
+# AxonFlow SDK
+axonflow>=0.2.0
+
+# LangChain
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-anthropic>=0.1.0
+langchain-core>=0.1.0
+
+# Environment management
+python-dotenv>=1.0.0
