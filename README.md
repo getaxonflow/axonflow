@@ -47,14 +47,14 @@ curl http://localhost:8081/health
 ### See Governance in Action (30 seconds)
 
 ```bash
-# Example: Send a request containing a credit card number — AxonFlow blocks it before it reaches an LLM
+# Example: Send a request containing an SSN — AxonFlow blocks it before it reaches an LLM
 curl -X POST http://localhost:8080/api/policy/pre-check \
   -H "Content-Type: application/json" \
-  -d '{"user_token": "demo-user", "client_id": "demo-client", "query": "Process payment for card 4111-1111-1111-1111"}'
+  -d '{"user_token": "demo-user", "client_id": "demo-client", "query": "Look up customer with SSN 123-45-6789"}'
 ```
 
 ```json
-{"approved": false, "block_reason": "PII detected: credit_card", "policies": ["pii_credit_card_detection"]}
+{"approved": false, "block_reason": "PII detected: ssn", "policies": ["pii_ssn_detection"]}
 ```
 
 For a full end-to-end demo (gateway mode, policy enforcement, multi-agent planning), see `./examples/demo/demo.sh`.
