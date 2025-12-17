@@ -1,0 +1,28 @@
+{
+  "name": "axonflow-gateway-mode-typescript",
+  "version": "1.0.0",
+  "description": "Gateway Mode example using AxonFlow TypeScript SDK",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "start:openai": "ts-node src/openai-example.ts",
+    "start:anthropic": "ts-node src/anthropic-example.ts",
+    "dev": "ts-node-dev src/index.ts"
+  },
+  "keywords": ["axonflow", "gateway-mode", "ai-governance", "typescript"],
+  "author": "AxonFlow",
+  "license": "MIT",
+  "dependencies": {
+    "@axonflow/sdk": "^1.2.1",
+    "dotenv": "^16.3.0",
+    "openai": "^4.20.0",
+    "@anthropic-ai/sdk": "^0.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0"
+  }
+}

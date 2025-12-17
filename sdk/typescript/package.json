@@ -1,0 +1,63 @@
+{
+  "name": "@axonflow/sdk",
+  "version": "1.2.0",
+  "description": "AxonFlow SDK - Add invisible AI governance to your applications in 3 lines of code",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/cjs/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run clean && npm run compile",
+    "clean": "rm -rf dist",
+    "compile": "tsc && tsc --project tsconfig.esm.json && node scripts/fix-esm-imports.js",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "axonflow",
+    "ai",
+    "governance",
+    "openai",
+    "anthropic",
+    "llm",
+    "security",
+    "compliance",
+    "policy",
+    "mcp",
+    "connectors",
+    "multi-agent"
+  ],
+  "author": "AxonFlow <dev@getaxonflow.com>",
+  "license": "MIT",
+  "homepage": "https://getaxonflow.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getaxonflow/axonflow-sdk-typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/getaxonflow/axonflow-sdk-typescript/issues"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "ts-jest": "^29.0.0"
+  },
+  "dependencies": {}
+}
