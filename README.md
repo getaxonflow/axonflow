@@ -12,7 +12,7 @@
 
 📘 **[Full Documentation](https://docs.getaxonflow.com)** · 🚀 **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · 🔌 **[API Reference](./docs/api/)**
 
-*AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, and **Go**.*
+*AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, **Go**, and **Java**.*
 
 ---
 
@@ -231,6 +231,15 @@ npm install @axonflow/sdk     # TypeScript
 go get github.com/getaxonflow/axonflow-sdk-go  # Go
 ```
 
+```xml
+<!-- Java (Maven) -->
+<dependency>
+    <groupId>com.getaxonflow</groupId>
+    <artifactId>axonflow-sdk</artifactId>
+    <version>1.0.0</version>
+</dependency>
+```
+
 ### Python
 
 ```python
@@ -273,6 +282,36 @@ response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
     Query:       "Analyze customer sentiment",
     RequestType: "chat",
 })
+```
+
+### Java
+
+```java
+import com.getaxonflow.sdk.AxonFlow;
+import com.getaxonflow.sdk.AxonFlowConfig;
+import com.getaxonflow.sdk.types.*;
+
+AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
+    .agentUrl("http://localhost:8080")
+    .build());
+
+// Gateway Mode: Pre-check → Your LLM call → Audit
+PolicyApprovalResult approval = client.getPolicyApprovedContext(
+    PolicyApprovalRequest.builder()
+        .query("Analyze customer sentiment")
+        .clientId("my-app")
+        .userToken("user-123")
+        .build());
+
+if (approval.isApproved()) {
+    // Make your LLM call here...
+    client.auditLLMCall(AuditOptions.builder()
+        .contextId(approval.getContextId())
+        .clientId("my-app")
+        .model("gpt-4")
+        .success(true)
+        .build());
+}
 ```
 
 → **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)**

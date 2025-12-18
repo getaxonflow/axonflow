@@ -1,0 +1,33 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: axonflow-spring-boot-example
+
+# AxonFlow Configuration
+axonflow:
+  agent-url: ${AXONFLOW_AGENT_URL:http://localhost:8080}
+  license-key: ${AXONFLOW_LICENSE_KEY:}
+  timeout-seconds: 60
+  debug: ${AXONFLOW_DEBUG:false}
+
+# OpenAI Configuration (for Gateway Mode)
+openai:
+  api-key: ${OPENAI_API_KEY:}
+
+# Logging
+logging:
+  level:
+    com.axonflow: DEBUG
+    root: INFO
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
