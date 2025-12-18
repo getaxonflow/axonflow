@@ -245,6 +245,12 @@ func (d *IndiaPIIDetector) DetectAll(text string) []IndiaPIIDetectionResult {
 				continue
 			}
 
+			// Skip Aadhaar matches that are actually part of credit card numbers
+			// Credit cards are 16 digits, Aadhaar is 12 digits - the regex can match first 12 of a CC
+			if pattern.Type == IndiaPIITypeAadhaar && isLikelyCreditCard(text, endIdx) {
+				continue
+			}
+
 			// Extract context
 			context := d.extractContext(text, startIdx, endIdx)
 
@@ -308,6 +314,11 @@ func (d *IndiaPIIDetector) DetectType(text string, piiType IndiaPIIType) []India
 				continue
 			}
 
+			// Skip Aadhaar matches that are actually part of credit card numbers
+			if pattern.Type == IndiaPIITypeAadhaar && isLikelyCreditCard(text, endIdx) {
+				continue
+			}
+
 			context := d.extractContext(text, startIdx, endIdx)
 			confidence := 0.7
 
@@ -348,9 +359,24 @@ func (d *IndiaPIIDetector) DetectPAN(text string) []IndiaPIIDetectionResult {
 }
 
 // HasIndiaPII quickly checks if text contains any India PII.
+// This method filters out common false positives (email addresses for UPI, credit cards for Aadhaar).
 func (d *IndiaPIIDetector) HasIndiaPII(text string) bool {
 	for _, pattern := range d.patterns {
-		if pattern.Pattern.MatchString(text) {
+		matches := pattern.Pattern.FindAllStringIndex(text, -1)
+		for _, match := range matches {
+			// Skip email addresses that match UPI pattern
+			if pattern.Type == IndiaPIITypeUPI {
+				matchedText := text[match[0]:match[1]]
+				if isLikelyEmail(matchedText) {
+					continue
+				}
+			}
+			// Skip Aadhaar matches that are part of credit card numbers
+			if pattern.Type == IndiaPIITypeAadhaar {
+				if isLikelyCreditCard(text, match[1]) {
+					continue
+				}
+			}
 			return true
 		}
 	}
@@ -374,6 +400,7 @@ func (d *IndiaPIIDetector) HasUPIID(text string) bool {
 }
 
 // HasCriticalPII checks if text contains critical PII (Aadhaar, PAN, UPI, Bank Account).
+// This method filters out common false positives (email addresses for UPI, credit cards for Aadhaar).
 func (d *IndiaPIIDetector) HasCriticalPII(text string) bool {
 	criticalTypes := map[IndiaPIIType]bool{
 		IndiaPIITypeUPI:         true,
@@ -383,7 +410,25 @@ func (d *IndiaPIIDetector) HasCriticalPII(text string) bool {
 	}
 
 	for _, pattern := range d.patterns {
-		if criticalTypes[pattern.Type] && pattern.Pattern.MatchString(text) {
+		if !criticalTypes[pattern.Type] {
+			continue
+		}
+
+		matches := pattern.Pattern.FindAllStringIndex(text, -1)
+		for _, match := range matches {
+			// Skip email addresses that match UPI pattern
+			if pattern.Type == IndiaPIITypeUPI {
+				matchedText := text[match[0]:match[1]]
+				if isLikelyEmail(matchedText) {
+					continue
+				}
+			}
+			// Skip Aadhaar matches that are part of credit card numbers
+			if pattern.Type == IndiaPIITypeAadhaar {
+				if isLikelyCreditCard(text, match[1]) {
+					continue
+				}
+			}
 			return true
 		}
 	}
@@ -610,6 +655,55 @@ func CheckRequestForPII(detector *IndiaPIIDetector, query string, blockOnCritica
 // IsEnabled returns whether India PII detection is enabled.
 // Community edition: Returns true (pattern-based detection is available).
 func IsEnabled() bool {
+	return true
+}
+
+// isLikelyCreditCard checks if a matched 12-digit number is actually part of a credit card.
+// Credit cards come in different lengths:
+// - 16 digits: Visa, Mastercard, Discover (format: XXXX-XXXX-XXXX-XXXX)
+// - 15 digits: American Express (format: XXXX-XXXXXX-XXXXX or XXXX-XXXX-XXXX-XXX)
+//
+// This function checks if the match is immediately followed by additional digits,
+// which would indicate it's the first 12 digits of a credit card, not an Aadhaar number.
+func isLikelyCreditCard(text string, matchEnd int) bool {
+	// Check if there's more text after the match
+	if matchEnd >= len(text) {
+		return false
+	}
+
+	remaining := text[matchEnd:]
+
+	// Check for credit card continuation patterns:
+	// - Separator (space or hyphen) followed by 2+ digits
+	//   (Diners Club has 2-digit suffix, Amex has 3, Visa/MC has 4)
+	// - Or just 2+ more digits directly (continuous format)
+
+	// Pattern 1: separator + 2+ digits (e.g., "-1111", "-005", or "-04")
+	// Need at least 3 chars: 1 separator + 2 digits minimum (Diners Club has 2-digit suffix)
+	if len(remaining) >= 3 && (remaining[0] == '-' || remaining[0] == ' ') {
+		// Check for at least 2 digits after separator (handles Diners Club)
+		if isDigitString(remaining[1:3]) {
+			return true
+		}
+	}
+
+	// Pattern 2: 2+ digits directly (continuous format)
+	// This handles continuous credit card formats like "4111111111111111"
+	if len(remaining) >= 2 && isDigitString(remaining[0:2]) {
+		// At least 2 more digits indicates credit card continuation
+		return true
+	}
+
+	return false
+}
+
+// isDigitString checks if all characters in the string are digits
+func isDigitString(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
 	return true
 }
 

@@ -244,13 +244,53 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 
 	// PII Patterns - Comprehensive detection with validation
 	// Phase 1: Core PII patterns with improved accuracy
-	// Note: Order matters - more specific patterns should come first to avoid
-	// generic patterns (like phone) matching region-specific IDs (like Aadhaar)
+	// IMPORTANT: Order matters - more specific patterns MUST come first!
+	// Credit cards must be checked before Aadhaar because:
+	// - Aadhaar pattern (12 digits with optional spaces) can match first 12 digits
+	//   of 16-digit credit cards with spaces (e.g., "4111 1111 1111 1111")
+	// - Credit card patterns are more specific (exact prefixes + digit counts)
 	spe.piiPatterns = []*PolicyPattern{
 		// =============================================================================
+		// Credit Card Detection (MUST BE FIRST)
+		// Credit cards have specific prefixes and digit counts, making them more
+		// specific than generic digit patterns. Checking these first prevents
+		// false positives where Aadhaar matches credit card substrings.
+		// =============================================================================
+
+		// Credit Card - All major networks with separators
+		// Patterns cover:
+		// - Continuous formats (no separators): Visa, MC, Amex, Discover, Diners, JCB
+		// - Formatted 16-digit (4-4-4-4): Visa, MC, Discover, JCB
+		// - Formatted 15-digit (4-4-4-3): Amex with separators
+		// - Formatted 14-digit (4-4-4-2): Diners Club with separators
+		{
+			ID:          "credit_card_detection",
+			Name:        "Credit Card Number Detection",
+			Pattern: regexp.MustCompile(`\b(?:` +
+				// Continuous patterns (no separators)
+				`4\d{12}(?:\d{3})?|` + // Visa (13 or 16 digits)
+				`5[1-5]\d{14}|` + // Mastercard (51-55)
+				`2[2-7]\d{14}|` + // Mastercard 2-series (22-27)
+				`3[47]\d{13}|` + // Amex (34, 37) - 15 digits
+				`6(?:011|5\d{2})\d{12}|` + // Discover
+				`3(?:0[0-5]|[68]\d)\d{11}|` + // Diners Club (300-305, 36, 38) - 14 digits
+				`(?:2131|1800|35\d{3})\d{11}` + // JCB
+				`)\b|` +
+				// Formatted patterns (with space or hyphen separators)
+				`\b(?:` +
+				`\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}|` + // 16-digit 4-4-4-4 (Visa, MC, Discover, JCB)
+				`3[47]\d{2}[- ]\d{4}[- ]\d{4}[- ]\d{3}|` + // Amex 4-4-4-3 (15 digits)
+				`3(?:0[0-5]|[68]\d)\d[- ]\d{4}[- ]\d{4}[- ]\d{2}` + // Diners 4-4-4-2 (14 digits)
+				`)\b`),
+			PatternStr:  `credit_card_comprehensive`,
+			Severity:    "critical",
+			Description: "Credit card numbers detected - automatic redaction required for PCI compliance",
+			Enabled:     true,
+		},
+
+		// =============================================================================
 		// Indian PII Detection (SEBI AI/ML Guidelines & DPDP Act 2023)
-		// These patterns are placed first because they're more specific than generic
-		// patterns like phone detection, which could otherwise match Aadhaar numbers.
+		// These come after credit cards but before generic patterns like phone.
 		// =============================================================================
 
 		// PAN - Indian Permanent Account Number (Income Tax ID)
@@ -271,6 +311,8 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 		// Format: 12 digits, first digit 2-9 (never 0 or 1), often written with spaces
 		// Verhoeff checksum validated by UIDAI
 		// Reference: DPDP Act 2023, SEBI AI/ML Guidelines - Data Privacy Pillar
+		// NOTE: Must come AFTER credit card detection to avoid matching credit cards
+		// with spaces (e.g., "4111 1111 1111 1111" first 12 digits match Aadhaar)
 		{
 			ID:          "aadhaar_detection",
 			Name:        "Indian Aadhaar Detection",
@@ -293,16 +335,6 @@ func (spe *StaticPolicyEngine) loadDefaultPolicies() {
 			PatternStr:  `\b(\d{3})[- ]?(\d{2})[- ]?(\d{4})\b`,
 			Severity:    "critical",
 			Description: "Social Security Number detected - automatic redaction required",
-			Enabled:     true,
-		},
-		// Credit Card - All major networks with separators
-		{
-			ID:          "credit_card_detection",
-			Name:        "Credit Card Number Detection",
-			Pattern:     regexp.MustCompile(`\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|2[2-7][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b|\b(\d{4})[- ]?(\d{4})[- ]?(\d{4})[- ]?(\d{4})\b`),
-			PatternStr:  `credit_card_comprehensive`,
-			Severity:    "critical",
-			Description: "Credit card numbers detected - automatic redaction required for PCI compliance",
 			Enabled:     true,
 		},
 		// Email - RFC 5322 compliant

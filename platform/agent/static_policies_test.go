@@ -1131,6 +1131,247 @@ func TestCreditCardNetworkDetection(t *testing.T) {
 	}
 }
 
+// TestCreditCardFormattedDetection tests detection of credit cards with separators
+// This is critical for Amex (15-digit, 4-4-4-3 format) and Diners Club (14-digit, 4-4-4-2 format)
+// which were NOT detected before this fix.
+func TestCreditCardFormattedDetection(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name     string
+		card     string
+		expected bool // true = should be detected
+	}{
+		// =================================================================
+		// 16-digit cards with separators (4-4-4-4 format)
+		// =================================================================
+		{"Visa with hyphens", "4111-1111-1111-1111", true},
+		{"Visa with spaces", "4111 1111 1111 1111", true},
+		{"Mastercard with hyphens", "5500-0000-0000-0004", true},
+		{"Mastercard with spaces", "5500 0000 0000 0004", true},
+		{"Discover with hyphens", "6011-0000-0000-0004", true},
+		{"Discover with spaces", "6011 0000 0000 0004", true},
+		{"JCB with hyphens", "3530-1113-3330-0000", true},
+		{"JCB with spaces", "3530 1113 3330 0000", true},
+
+		// =================================================================
+		// 15-digit Amex cards (4-4-4-3 format) - THE CRITICAL FIX
+		// =================================================================
+		{"Amex with hyphens (4-4-4-3)", "3782-8224-6310-005", true},
+		{"Amex with spaces (4-4-4-3)", "3782 8224 6310 005", true},
+		{"Amex 34xx with hyphens", "3400-0000-0000-009", true},
+		{"Amex 37xx with hyphens", "3700-0000-0000-002", true},
+
+		// =================================================================
+		// 14-digit Diners Club cards (4-4-4-2 format) - THE CRITICAL FIX
+		// =================================================================
+		{"Diners Club with hyphens (4-4-4-2)", "3056-9309-0259-04", true},
+		{"Diners Club with spaces (4-4-4-2)", "3056 9309 0259 04", true},
+		{"Diners Club 36xx with hyphens", "3600-0000-0000-08", true},
+		{"Diners Club 38xx with hyphens", "3800-0000-0000-06", true},
+
+		// =================================================================
+		// Continuous formats (no separators) - should still work
+		// =================================================================
+		{"Visa continuous", "4111111111111111", true},
+		{"Mastercard continuous", "5500000000000004", true},
+		{"Discover continuous", "6011000000000004", true},
+		{"JCB continuous", "3530111333300000", true},
+		{"Amex continuous", "378282246310005", true},
+		{"Diners continuous", "30569309025904", true},
+
+		// =================================================================
+		// Edge cases - should NOT be detected
+		// =================================================================
+		{"Too few digits", "4111-1111-1111", false},
+		{"Letters mixed in", "4111-XXXX-1111-1111", false},
+		{"Random 12 digits (not a card)", "1234-5678-9012", false},
+
+		// Note: Mixed separators ARE detected - better to over-detect than miss real cards
+		{"Mixed separators (still detected)", "4111-1111 1111-1111", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := "Process payment with card " + tt.card
+			result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
+
+			detected := containsPolicy(result.TriggeredPolicies, "credit_card_detection")
+			if detected != tt.expected {
+				if tt.expected {
+					t.Errorf("Should detect %s: %s", tt.name, tt.card)
+				} else {
+					t.Errorf("Should NOT detect %s: %s", tt.name, tt.card)
+				}
+			}
+		})
+	}
+}
+
+// TestCreditCardPatternRegex directly tests the regex pattern for credit cards
+func TestCreditCardPatternRegex(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+
+	// Find the credit card pattern
+	var ccPattern *PolicyPattern
+	for _, p := range engine.piiPatterns {
+		if p.ID == "credit_card_detection" {
+			ccPattern = p
+			break
+		}
+	}
+
+	if ccPattern == nil {
+		t.Fatal("credit_card_detection pattern not found")
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		// =================================================================
+		// Formatted 16-digit (4-4-4-4)
+		// =================================================================
+		{"Visa 4-4-4-4 hyphen", "4111-1111-1111-1111", true},
+		{"Visa 4-4-4-4 space", "4111 1111 1111 1111", true},
+		{"Mastercard 4-4-4-4 hyphen", "5500-0000-0000-0004", true},
+		{"Mastercard 4-4-4-4 space", "5500 0000 0000 0004", true},
+		{"Discover 4-4-4-4 hyphen", "6011-0000-0000-0004", true},
+		{"Discover 4-4-4-4 space", "6011 0000 0000 0004", true},
+		{"JCB 4-4-4-4 hyphen", "3530-1113-3330-0000", true},
+		{"JCB 4-4-4-4 space", "3530 1113 3330 0000", true},
+
+		// =================================================================
+		// Formatted 15-digit Amex (4-4-4-3)
+		// =================================================================
+		{"Amex 4-4-4-3 hyphen", "3782-8224-6310-005", true},
+		{"Amex 4-4-4-3 space", "3782 8224 6310 005", true},
+		{"Amex 34xx hyphen", "3400-0000-0000-009", true},
+		{"Amex 37xx space", "3700 0000 0000 002", true},
+
+		// =================================================================
+		// Formatted 14-digit Diners (4-4-4-2)
+		// =================================================================
+		{"Diners 4-4-4-2 hyphen", "3056-9309-0259-04", true},
+		{"Diners 4-4-4-2 space", "3056 9309 0259 04", true},
+		{"Diners 36xx hyphen", "3600-0000-0000-08", true},
+		{"Diners 38xx hyphen", "3800-0000-0000-06", true},
+
+		// =================================================================
+		// Continuous formats (no separators)
+		// =================================================================
+		{"Visa continuous", "4111111111111111", true},
+		{"Mastercard continuous", "5500000000000004", true},
+		{"Discover continuous", "6011000000000004", true},
+		{"JCB continuous", "3530111333300000", true},
+		{"Amex continuous", "378282246310005", true},
+		{"Diners continuous", "30569309025904", true},
+
+		// =================================================================
+		// Should NOT match
+		// =================================================================
+		{"Only 12 digits", "411111111111", false},
+		{"Only 10 digits", "4111111111", false},
+		{"With letters", "4111-XXXX-1111-1111", false},
+
+		// Note: Mixed separators ARE detected - better to over-detect than miss real cards
+		{"Mixed separators (still matches)", "4111-1111 1111-1111", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matched := ccPattern.Pattern.MatchString(tt.input)
+			if matched != tt.expected {
+				if tt.expected {
+					t.Errorf("Regex should match %s: %q", tt.name, tt.input)
+				} else {
+					t.Errorf("Regex should NOT match %s: %q", tt.name, tt.input)
+				}
+			}
+		})
+	}
+}
+
+// TestCreditCardVsAadhaarRegression verifies that:
+// 1. Credit cards with spaces are detected as credit cards (not Aadhaar)
+// 2. Valid Aadhaar numbers are still detected correctly
+// This is a regression test for the pattern ordering fix.
+func TestCreditCardVsAadhaarRegression(t *testing.T) {
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name           string
+		query          string
+		expectedPolicy string // which policy should trigger
+	}{
+		// Credit cards with spaces should NOT trigger Aadhaar
+		{
+			name:           "Visa with spaces - should be credit card, not Aadhaar",
+			query:          "Pay with card 4111 1111 1111 1111",
+			expectedPolicy: "credit_card_detection",
+		},
+		{
+			name:           "Mastercard with spaces - should be credit card",
+			query:          "Card number is 5500 0000 0000 0004",
+			expectedPolicy: "credit_card_detection",
+		},
+		{
+			name:           "Amex with spaces - should be credit card",
+			query:          "Use Amex 3782 8224 6310 005",
+			expectedPolicy: "credit_card_detection",
+		},
+		// Valid Aadhaar numbers should still be detected
+		{
+			name:           "Aadhaar 12 digits no spaces",
+			query:          "My aadhaar is 234567890123",
+			expectedPolicy: "aadhaar_detection",
+		},
+		{
+			name:           "Aadhaar 12 digits with spaces (4-4-4)",
+			query:          "Aadhaar number: 2345 6789 0123",
+			expectedPolicy: "aadhaar_detection",
+		},
+		{
+			name:           "Aadhaar with prefix keyword",
+			query:          "aadhaar: 345678901234",
+			expectedPolicy: "aadhaar_detection",
+		},
+		{
+			name:           "UID with prefix keyword",
+			query:          "UID: 456789012345",
+			expectedPolicy: "aadhaar_detection",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
+
+			if len(result.TriggeredPolicies) == 0 {
+				t.Errorf("Expected policy %s to trigger, but no policies triggered", tt.expectedPolicy)
+				return
+			}
+
+			// Check if the expected policy was triggered (should be first)
+			if result.TriggeredPolicies[0] != tt.expectedPolicy {
+				t.Errorf("Expected %s but got %s for query: %s",
+					tt.expectedPolicy, result.TriggeredPolicies[0], tt.query)
+			}
+		})
+	}
+}
+
 // TestPIIPolicyStats tests that enhanced patterns are counted correctly
 func TestPIIPolicyStats(t *testing.T) {
 	engine := NewStaticPolicyEngine()
