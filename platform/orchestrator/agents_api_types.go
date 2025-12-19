@@ -30,7 +30,7 @@ type AgentResource struct {
 	UpdatedAt   *time.Time       `json:"updated_at,omitempty"`
 }
 
-// AgentListResponse for paginated list of agents (OSS).
+// AgentListResponse for paginated list of agents (Community).
 type AgentListResponse struct {
 	Agents     []AgentResource       `json:"agents"`
 	Pagination AgentPaginationMeta   `json:"pagination"`
@@ -58,7 +58,7 @@ type ListAgentsParams struct {
 	PageSize int    `json:"page_size"`
 }
 
-// ValidateAgentConfigRequest for POST /api/v1/agents/validate (OSS).
+// ValidateAgentConfigRequest for POST /api/v1/agents/validate (Community).
 type ValidateAgentConfigRequest struct {
 	Config AgentConfigSpec `json:"config"`
 	Domain string          `json:"domain,omitempty"`
@@ -90,7 +90,7 @@ type AgentAPIErrorDetail struct {
 	Details []AgentValidationError `json:"details,omitempty"`
 }
 
-// AgentsServicer defines the interface for agent read operations (OSS).
+// AgentsServicer defines the interface for agent read operations (Community).
 // This is a subset of the full enterprise service, providing read-only access.
 type AgentsServicer interface {
 	// ListAgents returns agents from the registry with optional filtering

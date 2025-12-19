@@ -24,14 +24,16 @@ import (
 	"time"
 
 	"axonflow/platform/orchestrator/llm/anthropic"
+	"axonflow/platform/orchestrator/llm/gemini"
 )
 
 // init registers all built-in provider factories.
-// These are the OSS providers available without an enterprise license.
+// These are the Community providers available without an enterprise license.
 func init() {
 	RegisterFactory(ProviderTypeAnthropic, NewAnthropicProviderFactory)
 	RegisterFactory(ProviderTypeOpenAI, NewOpenAIProviderFactory)
 	RegisterFactory(ProviderTypeOllama, NewOllamaProviderFactory)
+	RegisterFactory(ProviderTypeGemini, NewGeminiProviderFactory)
 }
 
 // NewAnthropicProviderFactory creates an Anthropic provider from configuration.
@@ -1126,3 +1128,216 @@ func calculateCost(inputTokens, outputTokens int, inputCostPer1K, outputCostPer1
 	return (float64(inputTokens)/1000)*inputCostPer1K +
 		(float64(outputTokens)/1000)*outputCostPer1K
 }
+
+// Gemini provider implementation
+
+// Gemini pricing constants per 1K tokens (Gemini 1.5 Pro).
+const (
+	geminiInputCostPer1K  = 0.00125 // $1.25/1M input (up to 128K context)
+	geminiOutputCostPer1K = 0.005   // $5/1M output
+)
+
+// NewGeminiProviderFactory creates a Gemini provider from configuration.
+func NewGeminiProviderFactory(config ProviderConfig) (Provider, error) {
+	if config.APIKey == "" && config.APIKeySecretARN == "" {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeGemini,
+			Code:         ErrFactoryInvalidConfig,
+			Message:      "API key is required for Gemini provider",
+		}
+	}
+
+	// Default model
+	model := config.Model
+	if model == "" {
+		model = gemini.DefaultModel
+	}
+
+	// Default timeout
+	timeout := gemini.DefaultTimeout
+	if config.TimeoutSeconds > 0 {
+		timeout = time.Duration(config.TimeoutSeconds) * time.Second
+	}
+
+	// Build endpoint
+	endpoint := config.Endpoint
+	if endpoint == "" {
+		endpoint = gemini.DefaultBaseURL
+	}
+
+	provider, err := gemini.NewProvider(gemini.Config{
+		APIKey:  config.APIKey,
+		BaseURL: endpoint,
+		Model:   model,
+		Timeout: timeout,
+	})
+	if err != nil {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeGemini,
+			Code:         ErrFactoryCreationFailed,
+			Message:      fmt.Sprintf("failed to create Gemini provider: %v", err),
+			Cause:        err,
+		}
+	}
+
+	// Wrap in adapter that implements the unified Provider interface
+	return &GeminiProviderAdapter{
+		provider: provider,
+		name:     config.Name,
+		config:   config,
+	}, nil
+}
+
+// GeminiProviderAdapter adapts the gemini.Provider to the unified Provider interface.
+type GeminiProviderAdapter struct {
+	provider *gemini.Provider
+	name     string
+	config   ProviderConfig
+}
+
+// Name returns the provider instance name.
+func (a *GeminiProviderAdapter) Name() string {
+	return a.name
+}
+
+// Type returns the provider type.
+func (a *GeminiProviderAdapter) Type() ProviderType {
+	return ProviderTypeGemini
+}
+
+// Complete generates a completion for the given request.
+func (a *GeminiProviderAdapter) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
+	// Convert to gemini-specific request
+	geminiReq := gemini.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		TopK:          req.TopK,
+		Model:         req.Model,
+		StopSequences: req.StopSequences,
+		Stream:        req.Stream,
+	}
+
+	resp, err := a.provider.Complete(ctx, geminiReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider": "gemini",
+		},
+	}, nil
+}
+
+// CompleteStream generates a streaming completion for the given request.
+func (a *GeminiProviderAdapter) CompleteStream(ctx context.Context, req CompletionRequest, handler StreamHandler) (*CompletionResponse, error) {
+	// Convert to gemini-specific request
+	geminiReq := gemini.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		TopK:          req.TopK,
+		Model:         req.Model,
+		StopSequences: req.StopSequences,
+		Stream:        true,
+	}
+
+	resp, err := a.provider.CompleteStream(ctx, geminiReq, func(chunk gemini.StreamChunk) error {
+		return handler(StreamChunk{
+			Type:    chunk.Type,
+			Content: chunk.Content,
+			Done:    chunk.Done,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider": "gemini",
+			"streamed": true,
+		},
+	}, nil
+}
+
+// HealthCheck verifies the provider is operational.
+func (a *GeminiProviderAdapter) HealthCheck(ctx context.Context) (*HealthCheckResult, error) {
+	start := time.Now()
+	healthy := a.provider.IsHealthy()
+
+	status := HealthStatusUnhealthy
+	message := "provider reports unhealthy"
+	if healthy {
+		status = HealthStatusHealthy
+		message = "provider is operational"
+	}
+
+	return &HealthCheckResult{
+		Status:      status,
+		Latency:     time.Since(start),
+		Message:     message,
+		LastChecked: time.Now(),
+	}, nil
+}
+
+// Capabilities returns the list of features this provider supports.
+func (a *GeminiProviderAdapter) Capabilities() []Capability {
+	return []Capability{
+		CapabilityChat,
+		CapabilityCompletion,
+		CapabilityStreaming,
+		CapabilityVision,
+		CapabilityFunctionCalling,
+		CapabilityCodeGeneration,
+		CapabilityLongContext,
+	}
+}
+
+// SupportsStreaming indicates if the provider supports streaming responses.
+func (a *GeminiProviderAdapter) SupportsStreaming() bool {
+	return a.provider.SupportsStreaming()
+}
+
+// EstimateCost provides a cost estimate for a given request.
+func (a *GeminiProviderAdapter) EstimateCost(req CompletionRequest) *CostEstimate {
+	estimatedInputTokens, estimatedOutputTokens := estimateTokens(req)
+	totalEstimate := calculateCost(estimatedInputTokens, estimatedOutputTokens,
+		geminiInputCostPer1K, geminiOutputCostPer1K)
+
+	return &CostEstimate{
+		InputCostPer1K:        geminiInputCostPer1K,
+		OutputCostPer1K:       geminiOutputCostPer1K,
+		EstimatedInputTokens:  estimatedInputTokens,
+		EstimatedOutputTokens: estimatedOutputTokens,
+		TotalEstimate:         totalEstimate,
+		Currency:              "USD",
+	}
+}
+
+// Verify interface compliance at compile time.
+var _ Provider = (*GeminiProviderAdapter)(nil)
+var _ StreamingProvider = (*GeminiProviderAdapter)(nil)

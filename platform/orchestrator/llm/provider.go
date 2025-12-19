@@ -18,7 +18,7 @@ import (
 // Provider is the unified interface for all LLM providers.
 // Implementations must be safe for concurrent use.
 //
-// This interface unifies the previously separate OSS and Enterprise provider
+// This interface unifies the previously separate Community and Enterprise provider
 // interfaces, enabling pluggable providers that work across both editions.
 //
 // Minimal implementation requires: Name(), Type(), Complete(), and HealthCheck().

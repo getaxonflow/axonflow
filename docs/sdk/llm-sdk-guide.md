@@ -465,18 +465,18 @@ llm.RegisterFactory(llm.ProviderTypeCustom, func(config llm.ProviderConfig) (llm
 ### Check Provider Availability
 
 ```go
-// Check if provider is available in OSS
-if llm.IsOSSProvider(llm.ProviderTypeOpenAI) {
-    fmt.Println("OpenAI is available in OSS")
+// Check if provider is available in Community edition
+if llm.IsCommunityProvider(llm.ProviderTypeOpenAI) {
+    fmt.Println("OpenAI is available in Community edition")
 }
 
-// Get all OSS providers
-ossProviders := llm.GetOSSProviders()
-// Returns: [ollama, openai, anthropic]
+// Get all Community providers
+communityProviders := llm.GetCommunityProviders()
+// Returns: [ollama, openai, anthropic, gemini]
 
 // Get enterprise-only providers
 entProviders := llm.GetEnterpriseProviders()
-// Returns: [bedrock, gemini, custom]
+// Returns: [bedrock, custom]
 ```
 
 ### Validate Provider Access
@@ -485,7 +485,7 @@ entProviders := llm.GetEnterpriseProviders()
 err := llm.ValidateProviderAccess(ctx, llm.ProviderTypeBedrock)
 if err != nil {
     log.Printf("Cannot use Bedrock: %v", err)
-    // Fall back to OSS provider
+    // Fall back to Community provider
 }
 ```
 

@@ -16,18 +16,18 @@ import (
 	"testing"
 )
 
-func TestOSSLicenseValidator_GetCurrentTier(t *testing.T) {
-	v := NewOSSLicenseValidator()
+func TestCommunityLicenseValidator_GetCurrentTier(t *testing.T) {
+	v := NewCommunityLicenseValidator()
 	ctx := context.Background()
 
 	tier := v.GetCurrentTier(ctx)
-	if tier != LicenseTierOSS {
-		t.Errorf("GetCurrentTier() = %q, want %q", tier, LicenseTierOSS)
+	if tier != LicenseTierCommunity {
+		t.Errorf("GetCurrentTier() = %q, want %q", tier, LicenseTierCommunity)
 	}
 }
 
-func TestOSSLicenseValidator_IsProviderAllowed(t *testing.T) {
-	v := NewOSSLicenseValidator()
+func TestCommunityLicenseValidator_IsProviderAllowed(t *testing.T) {
+	v := NewCommunityLicenseValidator()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -38,8 +38,8 @@ func TestOSSLicenseValidator_IsProviderAllowed(t *testing.T) {
 		{"Ollama allowed", ProviderTypeOllama, true},
 		{"OpenAI allowed", ProviderTypeOpenAI, true},
 		{"Anthropic allowed", ProviderTypeAnthropic, true},
+		{"Gemini allowed", ProviderTypeGemini, true},
 		{"Bedrock not allowed", ProviderTypeBedrock, false},
-		{"Gemini not allowed", ProviderTypeGemini, false},
 		{"Custom not allowed", ProviderTypeCustom, false},
 		{"Unknown not allowed", ProviderType("unknown"), false},
 	}
@@ -54,34 +54,34 @@ func TestOSSLicenseValidator_IsProviderAllowed(t *testing.T) {
 	}
 }
 
-func TestOSSLicenseValidator_ValidateLicense(t *testing.T) {
-	v := NewOSSLicenseValidator()
+func TestCommunityLicenseValidator_ValidateLicense(t *testing.T) {
+	v := NewCommunityLicenseValidator()
 	ctx := context.Background()
 
-	// OSS validator always returns nil (no license required)
+	// Community validator always returns nil (no license required)
 	err := v.ValidateLicense(ctx, "any-key")
 	if err != nil {
 		t.Errorf("ValidateLicense() = %v, want nil", err)
 	}
 }
 
-func TestOSSLicenseValidator_GetFeatures(t *testing.T) {
-	v := NewOSSLicenseValidator()
+func TestCommunityLicenseValidator_GetFeatures(t *testing.T) {
+	v := NewCommunityLicenseValidator()
 	features := v.GetFeatures()
 
-	// Check some expected OSS features
+	// Check some expected Community features
 	expectedEnabled := []string{"multi_provider", "load_balancing", "health_checks", "audit_logging", "metrics_collection"}
 	for _, f := range expectedEnabled {
 		if !features[f] {
-			t.Errorf("Feature %q should be enabled in OSS", f)
+			t.Errorf("Feature %q should be enabled in Community", f)
 		}
 	}
 
 	// Check some expected enterprise-only features
-	expectedDisabled := []string{"bedrock_provider", "gemini_provider", "custom_providers", "advanced_routing"}
+	expectedDisabled := []string{"bedrock_provider", "custom_providers", "advanced_routing"}
 	for _, f := range expectedDisabled {
 		if features[f] {
-			t.Errorf("Feature %q should be disabled in OSS", f)
+			t.Errorf("Feature %q should be disabled in Community", f)
 		}
 	}
 
@@ -98,11 +98,11 @@ func TestGetTierForProvider(t *testing.T) {
 		providerType ProviderType
 		want         LicenseTier
 	}{
-		{ProviderTypeOllama, LicenseTierOSS},
-		{ProviderTypeOpenAI, LicenseTierOSS},
-		{ProviderTypeAnthropic, LicenseTierOSS},
+		{ProviderTypeOllama, LicenseTierCommunity},
+		{ProviderTypeOpenAI, LicenseTierCommunity},
+		{ProviderTypeAnthropic, LicenseTierCommunity},
+		{ProviderTypeGemini, LicenseTierCommunity},
 		{ProviderTypeBedrock, LicenseTierProfessional},
-		{ProviderTypeGemini, LicenseTierProfessional},
 		{ProviderTypeCustom, LicenseTierProfessional},
 		{ProviderType("unknown"), LicenseTierProfessional}, // Unknown defaults to Professional
 	}
@@ -117,7 +117,7 @@ func TestGetTierForProvider(t *testing.T) {
 	}
 }
 
-func TestIsOSSProvider(t *testing.T) {
+func TestIsCommunityProvider(t *testing.T) {
 	tests := []struct {
 		providerType ProviderType
 		want         bool
@@ -125,33 +125,34 @@ func TestIsOSSProvider(t *testing.T) {
 		{ProviderTypeOllama, true},
 		{ProviderTypeOpenAI, true},
 		{ProviderTypeAnthropic, true},
+		{ProviderTypeGemini, true},
 		{ProviderTypeBedrock, false},
-		{ProviderTypeGemini, false},
 		{ProviderTypeCustom, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.providerType), func(t *testing.T) {
-			got := IsOSSProvider(tt.providerType)
+			got := IsCommunityProvider(tt.providerType)
 			if got != tt.want {
-				t.Errorf("IsOSSProvider(%q) = %v, want %v", tt.providerType, got, tt.want)
+				t.Errorf("IsCommunityProvider(%q) = %v, want %v", tt.providerType, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestGetOSSProviders(t *testing.T) {
-	providers := GetOSSProviders()
+func TestGetCommunityProviders(t *testing.T) {
+	providers := GetCommunityProviders()
 
-	if len(providers) < 3 {
-		t.Errorf("GetOSSProviders() returned %d providers, want at least 3", len(providers))
+	if len(providers) < 4 {
+		t.Errorf("GetCommunityProviders() returned %d providers, want at least 4", len(providers))
 	}
 
-	// Check that expected OSS providers are in the list
+	// Check that expected Community providers are in the list
 	expected := map[ProviderType]bool{
 		ProviderTypeOllama:    false,
 		ProviderTypeOpenAI:    false,
 		ProviderTypeAnthropic: false,
+		ProviderTypeGemini:    false,
 	}
 
 	for _, p := range providers {
@@ -162,7 +163,7 @@ func TestGetOSSProviders(t *testing.T) {
 
 	for p, found := range expected {
 		if !found {
-			t.Errorf("Expected OSS provider %q not found in GetOSSProviders()", p)
+			t.Errorf("Expected Community provider %q not found in GetCommunityProviders()", p)
 		}
 	}
 }
@@ -170,14 +171,13 @@ func TestGetOSSProviders(t *testing.T) {
 func TestGetEnterpriseProviders(t *testing.T) {
 	providers := GetEnterpriseProviders()
 
-	if len(providers) < 3 {
-		t.Errorf("GetEnterpriseProviders() returned %d providers, want at least 3", len(providers))
+	if len(providers) < 2 {
+		t.Errorf("GetEnterpriseProviders() returned %d providers, want at least 2", len(providers))
 	}
 
 	// Check that expected Enterprise providers are in the list
 	expected := map[ProviderType]bool{
 		ProviderTypeBedrock: false,
-		ProviderTypeGemini:  false,
 		ProviderTypeCustom:  false,
 	}
 
@@ -202,26 +202,26 @@ func TestTierSatisfiesRequirement(t *testing.T) {
 		want         bool
 	}{
 		// Same tier
-		{"OSS meets OSS", LicenseTierOSS, LicenseTierOSS, true},
+		{"Community meets Community", LicenseTierCommunity, LicenseTierCommunity, true},
 		{"PRO meets PRO", LicenseTierProfessional, LicenseTierProfessional, true},
 		{"ENT meets ENT", LicenseTierEnterprise, LicenseTierEnterprise, true},
 		{"PLUS meets PLUS", LicenseTierEnterprisePlus, LicenseTierEnterprisePlus, true},
 
 		// Higher tier meets lower requirement
-		{"PRO meets OSS", LicenseTierProfessional, LicenseTierOSS, true},
-		{"ENT meets OSS", LicenseTierEnterprise, LicenseTierOSS, true},
+		{"PRO meets Community", LicenseTierProfessional, LicenseTierCommunity, true},
+		{"ENT meets Community", LicenseTierEnterprise, LicenseTierCommunity, true},
 		{"ENT meets PRO", LicenseTierEnterprise, LicenseTierProfessional, true},
-		{"PLUS meets all", LicenseTierEnterprisePlus, LicenseTierOSS, true},
+		{"PLUS meets all", LicenseTierEnterprisePlus, LicenseTierCommunity, true},
 
 		// Lower tier doesn't meet higher requirement
-		{"OSS doesn't meet PRO", LicenseTierOSS, LicenseTierProfessional, false},
-		{"OSS doesn't meet ENT", LicenseTierOSS, LicenseTierEnterprise, false},
+		{"Community doesn't meet PRO", LicenseTierCommunity, LicenseTierProfessional, false},
+		{"Community doesn't meet ENT", LicenseTierCommunity, LicenseTierEnterprise, false},
 		{"PRO doesn't meet ENT", LicenseTierProfessional, LicenseTierEnterprise, false},
 		{"ENT doesn't meet PLUS", LicenseTierEnterprise, LicenseTierEnterprisePlus, false},
 
 		// Unknown tier
-		{"Unknown current tier", LicenseTier("unknown"), LicenseTierOSS, false},
-		{"Unknown required tier", LicenseTierOSS, LicenseTier("unknown"), false},
+		{"Unknown current tier", LicenseTier("unknown"), LicenseTierCommunity, false},
+		{"Unknown required tier", LicenseTierCommunity, LicenseTier("unknown"), false},
 	}
 
 	for _, tt := range tests {
@@ -240,7 +240,7 @@ func TestLicenseError_Error(t *testing.T) {
 		err := &LicenseError{
 			ProviderType: ProviderTypeBedrock,
 			RequiredTier: LicenseTierProfessional,
-			CurrentTier:  LicenseTierOSS,
+			CurrentTier:  LicenseTierCommunity,
 			Message:      "upgrade required",
 		}
 
@@ -271,8 +271,8 @@ func TestValidateProviderAccess(t *testing.T) {
 	originalValidator := DefaultValidator
 	defer func() { DefaultValidator = originalValidator }()
 
-	// Use OSS validator for tests
-	DefaultValidator = NewOSSLicenseValidator()
+	// Use Community validator for tests
+	DefaultValidator = NewCommunityLicenseValidator()
 	ctx := context.Background()
 
 	t.Run("allowed provider", func(t *testing.T) {
@@ -299,8 +299,8 @@ func TestValidateProviderAccess(t *testing.T) {
 		if licErr.RequiredTier != LicenseTierProfessional {
 			t.Errorf("RequiredTier = %q, want %q", licErr.RequiredTier, LicenseTierProfessional)
 		}
-		if licErr.CurrentTier != LicenseTierOSS {
-			t.Errorf("CurrentTier = %q, want %q", licErr.CurrentTier, LicenseTierOSS)
+		if licErr.CurrentTier != LicenseTierCommunity {
+			t.Errorf("CurrentTier = %q, want %q", licErr.CurrentTier, LicenseTierCommunity)
 		}
 	})
 }

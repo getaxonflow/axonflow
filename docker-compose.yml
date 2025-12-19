@@ -3,12 +3,12 @@
 # Replaces 2-4 hour AWS test cycle with 5-10 minute local cycle
 #
 # Usage:
-#   docker-compose up -d                              # Start OSS services (agent, orchestrator)
+#   docker-compose up -d                              # Start Community services (agent, orchestrator)
 #   docker-compose --profile enterprise up -d         # Start all services including enterprise
 #   docker-compose logs -f axonflow-agent             # Follow agent logs
 #   docker-compose down -v                            # Stop and remove volumes
 #
-# OSS Services (always started):
+# Community Services (always started):
 #   - PostgreSQL: localhost:5432 (axonflow, grafana databases)
 #   - Redis: localhost:6379 (caching)
 #   - Agent: localhost:8080
@@ -22,8 +22,8 @@
 services:
   # PostgreSQL Database - Core platform storage
   # Creates both 'axonflow' and 'grafana' databases on first run
-  # The grafana user/database is created via POSTGRES_INITDB_ARGS for OSS compatibility
-  # (Enterprise uses migration 107 instead, but OSS needs inline setup)
+  # The grafana user/database is created via POSTGRES_INITDB_ARGS for Community compatibility
+  # (Enterprise uses migration 107 instead, but Community needs inline setup)
   postgres:
     image: postgres:15-alpine
     container_name: axonflow-postgres
@@ -90,13 +90,15 @@ services:
       # Optional: LLM API Keys (can be set in .env file)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-}
 
       # Service configuration
       PORT: 8080
       SELF_HOSTED_MODE: "true"
       SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
       ENVIRONMENT: "development"
-      # DEPLOYMENT_MODE defaults to "oss" - enterprise deployments set via GitHub workflow
+      # DEPLOYMENT_MODE defaults to "community" - enterprise deployments set via GitHub workflow
       LOG_LEVEL: debug
 
       # Redis (optional)
@@ -149,6 +151,8 @@ services:
       # LLM API Keys
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-}
       LOCAL_LLM_ENDPOINT: ${LOCAL_LLM_ENDPOINT:-}
 
       # Service configuration

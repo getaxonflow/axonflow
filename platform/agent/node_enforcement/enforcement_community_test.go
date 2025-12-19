@@ -62,7 +62,7 @@ func TestHeartbeatService_Start(t *testing.T) {
 
 	err := service.Start(ctx)
 	if err != nil {
-		t.Errorf("Start() error = %v, want nil (OSS no-op)", err)
+		t.Errorf("Start() error = %v, want nil (Community no-op)", err)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestMultiChannelAlerter_SendNodeViolationAlert(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := alerter.SendNodeViolationAlert(ctx, tt.violation)
 			if err != nil {
-				t.Errorf("SendNodeViolationAlert() error = %v, want nil (OSS no-op)", err)
+				t.Errorf("SendNodeViolationAlert() error = %v, want nil (Community no-op)", err)
 			}
 		})
 	}
@@ -228,7 +228,7 @@ func TestMultiChannelAlerter_SendNodeCountWarning(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := alerter.SendNodeCountWarning(ctx, tt.orgID, tt.usage)
 			if err != nil {
-				t.Errorf("SendNodeCountWarning() error = %v, want nil (OSS no-op)", err)
+				t.Errorf("SendNodeCountWarning() error = %v, want nil (Community no-op)", err)
 			}
 		})
 	}
@@ -255,10 +255,10 @@ func TestGetActiveNodeCount(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			count, err := GetActiveNodeCount(ctx, nil, tt.licenseKeyHash)
 			if err != nil {
-				t.Errorf("GetActiveNodeCount() error = %v, want nil (OSS stub)", err)
+				t.Errorf("GetActiveNodeCount() error = %v, want nil (Community stub)", err)
 			}
 			if count != 0 {
-				t.Errorf("GetActiveNodeCount() = %d, want 0 (OSS stub)", count)
+				t.Errorf("GetActiveNodeCount() = %d, want 0 (Community stub)", count)
 			}
 		})
 	}
@@ -269,13 +269,13 @@ func TestGetActiveNodesByOrg(t *testing.T) {
 
 	nodes, err := GetActiveNodesByOrg(ctx, nil)
 	if err != nil {
-		t.Errorf("GetActiveNodesByOrg() error = %v, want nil (OSS stub)", err)
+		t.Errorf("GetActiveNodesByOrg() error = %v, want nil (Community stub)", err)
 	}
 	if nodes == nil {
 		t.Error("GetActiveNodesByOrg() returned nil, want empty map")
 	}
 	if len(nodes) != 0 {
-		t.Errorf("GetActiveNodesByOrg() returned %d nodes, want 0 (OSS stub)", len(nodes))
+		t.Errorf("GetActiveNodesByOrg() returned %d nodes, want 0 (Community stub)", len(nodes))
 	}
 }
 
@@ -284,7 +284,7 @@ func TestCleanupStaleHeartbeats(t *testing.T) {
 
 	err := CleanupStaleHeartbeats(ctx, nil)
 	if err != nil {
-		t.Errorf("CleanupStaleHeartbeats() error = %v, want nil (OSS no-op)", err)
+		t.Errorf("CleanupStaleHeartbeats() error = %v, want nil (Community no-op)", err)
 	}
 }
 
@@ -309,13 +309,13 @@ func TestGetViolationHistory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			violations, err := GetViolationHistory(ctx, nil, tt.orgID)
 			if err != nil {
-				t.Errorf("GetViolationHistory() error = %v, want nil (OSS stub)", err)
+				t.Errorf("GetViolationHistory() error = %v, want nil (Community stub)", err)
 			}
 			if violations == nil {
 				t.Error("GetViolationHistory() returned nil, want empty slice")
 			}
 			if len(violations) != 0 {
-				t.Errorf("GetViolationHistory() returned %d violations, want 0 (OSS stub)", len(violations))
+				t.Errorf("GetViolationHistory() returned %d violations, want 0 (Community stub)", len(violations))
 			}
 		})
 	}
@@ -358,7 +358,7 @@ func TestHeartbeatService_ContextCancellation(t *testing.T) {
 	// Should handle cancelled context gracefully
 	err := service.Start(ctx)
 	if err != nil {
-		t.Errorf("Start() with cancelled context error = %v, want nil (OSS no-op)", err)
+		t.Errorf("Start() with cancelled context error = %v, want nil (Community no-op)", err)
 	}
 }
 

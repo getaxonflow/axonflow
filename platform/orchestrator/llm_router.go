@@ -27,6 +27,7 @@ import (
 
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/llm/anthropic"
+	"axonflow/platform/orchestrator/llm/gemini"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -60,6 +61,8 @@ type LLMRouterConfig struct {
 	BedrockModel    string
 	OllamaEndpoint  string
 	OllamaModel     string
+	GeminiKey       string
+	GeminiModel     string
 	LocalEndpoint   string // Deprecated: use OllamaEndpoint
 }
 
@@ -134,6 +137,11 @@ func NewLLMRouter(config LLMRouterConfig) *LLMRouter {
 		router.weights["ollama"] = 0.25
 	}
 
+	if config.GeminiKey != "" {
+		router.providers["gemini"] = NewGeminiProvider(config.GeminiKey, config.GeminiModel)
+		router.weights["gemini"] = 0.25
+	}
+
 	// Log provider status summary at startup
 	router.logProviderStatus(config)
 
@@ -185,6 +193,15 @@ func (r *LLMRouter) logProviderStatus(config LLMRouterConfig) {
 			available = append(available, "ollama")
 		} else {
 			failed = append(failed, "ollama")
+		}
+	}
+
+	if config.GeminiKey != "" {
+		configured = append(configured, "gemini")
+		if _, ok := r.providers["gemini"]; ok {
+			available = append(available, "gemini")
+		} else {
+			failed = append(failed, "gemini")
 		}
 	}
 
@@ -791,6 +808,103 @@ func (p *EnhancedAnthropicProvider) QueryStream(ctx context.Context, prompt stri
 	}, nil
 }
 
+// EnhancedGeminiProvider wraps the gemini package provider
+// with full support for Gemini 1.5 Pro, Gemini 1.5 Flash, and Gemini 2.0 Flash.
+type EnhancedGeminiProvider struct {
+	provider *gemini.Provider
+}
+
+func (p *EnhancedGeminiProvider) Name() string {
+	return "gemini"
+}
+
+func (p *EnhancedGeminiProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
+	// Use the model from options, or default to Gemini 1.5 Pro
+	model := options.Model
+	if model == "" {
+		model = gemini.DefaultModel
+	}
+
+	req := gemini.CompletionRequest{
+		Prompt:       prompt,
+		MaxTokens:    options.MaxTokens,
+		Temperature:  options.Temperature,
+		Model:        model,
+		SystemPrompt: options.SystemPrompt,
+	}
+
+	resp, err := p.provider.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LLMResponse{
+		Content:      resp.Content,
+		Model:        resp.Model,
+		TokensUsed:   resp.Usage.TotalTokens,
+		ResponseTime: resp.Latency,
+		Metadata: map[string]interface{}{
+			"provider":      "gemini",
+			"stop_reason":   resp.StopReason,
+			"input_tokens":  resp.Usage.InputTokens,
+			"output_tokens": resp.Usage.OutputTokens,
+		},
+	}, nil
+}
+
+func (p *EnhancedGeminiProvider) IsHealthy() bool {
+	return p.provider.IsHealthy()
+}
+
+func (p *EnhancedGeminiProvider) GetCapabilities() []string {
+	return p.provider.GetCapabilities()
+}
+
+func (p *EnhancedGeminiProvider) EstimateCost(tokens int) float64 {
+	return p.provider.EstimateCost(tokens)
+}
+
+// QueryStream performs a streaming query using the Gemini provider
+func (p *EnhancedGeminiProvider) QueryStream(ctx context.Context, prompt string, options QueryOptions, handler func(chunk string) error) (*LLMResponse, error) {
+	model := options.Model
+	if model == "" {
+		model = gemini.DefaultModel
+	}
+
+	req := gemini.CompletionRequest{
+		Prompt:       prompt,
+		MaxTokens:    options.MaxTokens,
+		Temperature:  options.Temperature,
+		Model:        model,
+		SystemPrompt: options.SystemPrompt,
+		Stream:       true,
+	}
+
+	resp, err := p.provider.CompleteStream(ctx, req, func(chunk gemini.StreamChunk) error {
+		if chunk.Content != "" {
+			return handler(chunk.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &LLMResponse{
+		Content:      resp.Content,
+		Model:        resp.Model,
+		TokensUsed:   resp.Usage.TotalTokens,
+		ResponseTime: resp.Latency,
+		Metadata: map[string]interface{}{
+			"provider":      "gemini",
+			"stop_reason":   resp.StopReason,
+			"input_tokens":  resp.Usage.InputTokens,
+			"output_tokens": resp.Usage.OutputTokens,
+			"streamed":      true,
+		},
+	}, nil
+}
+
 // BedrockProvider implements LLMProvider for AWS Bedrock using AWS SDK v2.
 // This provides proper AWS Signature V4 authentication via IAM roles,
 // enabling secure and compliant access to Bedrock models.
@@ -1282,6 +1396,35 @@ func NewOllamaProvider(endpoint, model string) LLMProvider {
 func NewLocalLLMProvider(endpoint string) LLMProvider {
 	// Deprecated: use NewOllamaProvider instead
 	return NewOllamaProvider(endpoint, "")
+}
+
+func NewGeminiProvider(apiKey, model string) LLMProvider {
+	if apiKey == "" {
+		// Return mock if no API key
+		return &MockProvider{
+			name:    "gemini",
+			healthy: true,
+			apiKey:  apiKey,
+		}
+	}
+
+	// Use the Gemini provider from the gemini package
+	provider, err := gemini.NewProvider(gemini.Config{
+		APIKey: apiKey,
+		Model:  model,
+	})
+	if err != nil {
+		log.Printf("[LLMRouter] ERROR: Failed to initialize Gemini provider: %v", err)
+		return &MockProvider{
+			name:    "gemini",
+			healthy: false,
+			apiKey:  apiKey,
+		}
+	}
+
+	return &EnhancedGeminiProvider{
+		provider: provider,
+	}
 }
 
 func (m *MockProvider) Name() string {

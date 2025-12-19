@@ -32,7 +32,7 @@ const (
 	InternalServiceClientID = "orchestrator-internal"
 
 	// InternalServiceTokenFallback is used when AXONFLOW_INTERNAL_SERVICE_SECRET is not configured.
-	// This provides backwards compatibility for OSS/development environments.
+	// This provides backwards compatibility for Community/development environments.
 	// Production deployments should always set AXONFLOW_INTERNAL_SERVICE_SECRET.
 	InternalServiceTokenFallback = "orchestrator-internal-token"
 
@@ -71,7 +71,7 @@ func LogInternalServiceAuthWarning() {
 
 // getInternalServiceToken returns the token to use for internal service auth.
 // If AXONFLOW_INTERNAL_SERVICE_SECRET is set, uses that for secure auth.
-// Otherwise falls back to the hardcoded token for OSS/dev environments.
+// Otherwise falls back to the hardcoded token for Community/dev environments.
 func getInternalServiceToken() string {
 	if secret := os.Getenv(InternalServiceSecretEnvVar); secret != "" {
 		return secret

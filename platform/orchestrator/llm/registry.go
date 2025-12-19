@@ -86,7 +86,7 @@ func WithFactoryManager(fm *FactoryManager) RegistryOption {
 }
 
 // WithLicenseValidator sets a custom license validator.
-// If not set, the registry uses the DefaultValidator which enforces OSS restrictions.
+// If not set, the registry uses the DefaultValidator which enforces Community restrictions.
 func WithLicenseValidator(v LicenseValidator) RegistryOption {
 	return func(r *Registry) {
 		r.validator = v

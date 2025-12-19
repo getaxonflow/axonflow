@@ -37,7 +37,7 @@ func TestNewMeteringService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			service, err := NewMeteringService(nil, tt.productCode)
 			if err != nil {
-				t.Errorf("NewMeteringService() error = %v, want nil (OSS stub)", err)
+				t.Errorf("NewMeteringService() error = %v, want nil (Community stub)", err)
 			}
 			if service == nil {
 				t.Error("NewMeteringService() returned nil service, want non-nil stub")
@@ -55,7 +55,7 @@ func TestMeteringService_Start(t *testing.T) {
 	ctx := context.Background()
 	err = service.Start(ctx)
 	if err != nil {
-		t.Errorf("Start() error = %v, want nil (OSS no-op)", err)
+		t.Errorf("Start() error = %v, want nil (Community no-op)", err)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestMeteringService_RetryFailedRecords(t *testing.T) {
 	ctx := context.Background()
 	err = service.RetryFailedRecords(ctx)
 	if err != nil {
-		t.Errorf("RetryFailedRecords() error = %v, want nil (OSS no-op)", err)
+		t.Errorf("RetryFailedRecords() error = %v, want nil (Community no-op)", err)
 	}
 }
 
@@ -107,13 +107,13 @@ func TestGetUsageHistory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			records, err := GetUsageHistory(ctx, nil, tt.days)
 			if err != nil {
-				t.Errorf("GetUsageHistory() error = %v, want nil (OSS stub)", err)
+				t.Errorf("GetUsageHistory() error = %v, want nil (Community stub)", err)
 			}
 			if records == nil {
 				t.Error("GetUsageHistory() returned nil, want empty slice")
 			}
 			if len(records) != 0 {
-				t.Errorf("GetUsageHistory() returned %d records, want 0 (OSS stub)", len(records))
+				t.Errorf("GetUsageHistory() returned %d records, want 0 (Community stub)", len(records))
 			}
 		})
 	}
@@ -231,14 +231,14 @@ func TestMeteringService_ContextCancellation(t *testing.T) {
 
 	service, _ := NewMeteringService(nil, "cancelled-ctx")
 
-	// Should handle cancelled context gracefully (no-op in OSS)
+	// Should handle cancelled context gracefully (no-op in Community)
 	err := service.Start(ctx)
 	if err != nil {
-		t.Errorf("Start() with cancelled context error = %v, want nil (OSS no-op)", err)
+		t.Errorf("Start() with cancelled context error = %v, want nil (Community no-op)", err)
 	}
 
 	err = service.RetryFailedRecords(ctx)
 	if err != nil {
-		t.Errorf("RetryFailedRecords() with cancelled context error = %v, want nil (OSS no-op)", err)
+		t.Errorf("RetryFailedRecords() with cancelled context error = %v, want nil (Community no-op)", err)
 	}
 }

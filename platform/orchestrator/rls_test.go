@@ -91,7 +91,7 @@ func cleanupRLSTestData(t *testing.T, db *sql.DB) {
 	// Note: If this fails, it means the test user doesn't have BYPASSRLS privilege
 	// In CI, test_user is a superuser so this should work
 
-	// Delete dynamic_policies for all test orgs (OSS table)
+	// Delete dynamic_policies for all test orgs (Community table)
 	_, err := db.ExecContext(ctx, `
 		DELETE FROM dynamic_policies WHERE org_id LIKE 'rls-test-%'
 	`)
@@ -99,7 +99,7 @@ func cleanupRLSTestData(t *testing.T, db *sql.DB) {
 		t.Logf("Warning: Failed to cleanup dynamic_policies: %v", err)
 	}
 
-	// Delete static_policies for all test orgs (OSS table)
+	// Delete static_policies for all test orgs (Community table)
 	_, err = db.ExecContext(ctx, `
 		DELETE FROM static_policies WHERE org_id LIKE 'rls-test-%'
 	`)
@@ -267,7 +267,7 @@ func TestWithRLS(t *testing.T) {
 				return fmt.Errorf("org_id = %q, want %q", gotOrgID, orgID)
 			}
 
-			// Insert test data (using dynamic_policies - OSS table)
+			// Insert test data (using dynamic_policies - Community table)
 			_, err = db.ExecContext(ctx, `
 				INSERT INTO dynamic_policies (org_id, policy_id, name, policy_type, conditions, actions, priority, created_at, updated_at)
 				VALUES ($1, 'test-policy-id', 'test-policy', 'risk_based', '[]'::jsonb, '[]'::jsonb, 100, NOW(), NOW())
@@ -330,7 +330,7 @@ func TestRLSTenantIsolation(t *testing.T) {
 	orgIDHealthcare := "rls-test-healthcare"
 	orgIDEcommerce := "rls-test-ecommerce"
 
-	// Insert healthcare data (using dynamic_policies - OSS table)
+	// Insert healthcare data (using dynamic_policies - Community table)
 	err := WithRLS(ctx, db, orgIDHealthcare, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO dynamic_policies (org_id, policy_id, name, policy_type, conditions, actions, priority, created_at, updated_at)
@@ -343,7 +343,7 @@ func TestRLSTenantIsolation(t *testing.T) {
 		t.Fatalf("Failed to insert healthcare data: %v", err)
 	}
 
-	// Insert ecommerce data (using dynamic_policies - OSS table)
+	// Insert ecommerce data (using dynamic_policies - Community table)
 	err = WithRLS(ctx, db, orgIDEcommerce, func(db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
 			INSERT INTO dynamic_policies (org_id, policy_id, name, policy_type, conditions, actions, priority, created_at, updated_at)
@@ -541,19 +541,19 @@ func TestGetRLSStats(t *testing.T) {
 		t.Fatalf("GetRLSStats() failed: %v", err)
 	}
 
-	// Should have at least 15 tables with RLS enabled (OSS mode)
+	// Should have at least 15 tables with RLS enabled (Community mode)
 	// Note: Enterprise builds have more tables (24+)
 	if stats.TablesWithRLS < 15 {
 		t.Errorf("TablesWithRLS = %d, want >= 15", stats.TablesWithRLS)
 	}
 
-	// Should have at least 60 policies (OSS mode - 4 policies per table)
+	// Should have at least 60 policies (Community mode - 4 policies per table)
 	// Note: Enterprise builds have more policies (68+)
 	if stats.PolicyCount < 60 {
 		t.Errorf("PolicyCount = %d, want >= 60", stats.PolicyCount)
 	}
 
-	// Should include critical tables (OSS tables only)
+	// Should include critical tables (Community tables only)
 	criticalTables := []string{"organizations", "user_sessions", "dynamic_policies", "static_policies"}
 	for _, table := range criticalTables {
 		found := false
@@ -649,7 +649,7 @@ func TestRLSPerformance(t *testing.T) {
 	ctx := context.Background()
 	orgID := "rls-test-perf"
 
-	// Insert test data (using dynamic_policies - OSS table)
+	// Insert test data (using dynamic_policies - Community table)
 	// Schema: policy_id, name, policy_type, conditions, actions, priority
 	err := WithRLS(ctx, db, orgID, func(db *sql.DB) error {
 		for i := 0; i < 100; i++ {
@@ -1246,7 +1246,7 @@ func TestRLSHealthCheck_WithMock(t *testing.T) {
 				mock.ExpectQuery("SELECT EXISTS.*pg_proc").WithArgs("set_org_id").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 				mock.ExpectQuery("SELECT EXISTS.*pg_proc").WithArgs("reset_org_id").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 
-				// Check RLS on critical tables (OSS tables only)
+				// Check RLS on critical tables (Community tables only)
 				mock.ExpectQuery("SELECT COALESCE").WithArgs("organizations").WillReturnRows(sqlmock.NewRows([]string{"rowsecurity"}).AddRow(true))
 				mock.ExpectQuery("SELECT COALESCE").WithArgs("user_sessions").WillReturnRows(sqlmock.NewRows([]string{"rowsecurity"}).AddRow(true))
 				mock.ExpectQuery("SELECT COALESCE").WithArgs("dynamic_policies").WillReturnRows(sqlmock.NewRows([]string{"rowsecurity"}).AddRow(true))

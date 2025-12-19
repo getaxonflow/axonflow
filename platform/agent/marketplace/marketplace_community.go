@@ -12,7 +12,7 @@
 // limitations under the License.
 
 // Package marketplace provides AWS Marketplace metering integration.
-// This is the OSS stub - metering is disabled in OSS mode.
+// This is the Community stub - metering is disabled in Community mode.
 package marketplace
 
 import (
@@ -22,9 +22,9 @@ import (
 )
 
 // MeteringService handles AWS Marketplace metering for container products.
-// OSS stub: No-op implementation - metering is disabled in OSS mode.
+// Community stub: No-op implementation - metering is disabled in Community mode.
 type MeteringService struct {
-	// No fields needed for OSS stub
+	// No fields needed for Community stub
 }
 
 // UsageRecord represents a metering record
@@ -39,33 +39,33 @@ type UsageRecord struct {
 }
 
 // NewMeteringService creates a new AWS Marketplace metering service.
-// OSS stub: Returns a no-op service.
+// Community stub: Returns a no-op service.
 func NewMeteringService(db *sql.DB, productCode string) (*MeteringService, error) {
 	return &MeteringService{}, nil
 }
 
 // Start begins hourly metering.
-// OSS stub: No-op - metering is disabled in OSS mode.
+// Community stub: No-op - metering is disabled in Community mode.
 func (s *MeteringService) Start(ctx context.Context) error {
-	// No-op in OSS mode - AWS Marketplace metering is an enterprise feature
+	// No-op in Community mode - AWS Marketplace metering is an enterprise feature
 	return nil
 }
 
 // Stop stops the metering service.
-// OSS stub: No-op.
+// Community stub: No-op.
 func (s *MeteringService) Stop() {
-	// No-op in OSS mode
+	// No-op in Community mode
 }
 
 // RetryFailedRecords attempts to resend failed metering records.
-// OSS stub: No-op - always returns nil.
+// Community stub: No-op - always returns nil.
 func (s *MeteringService) RetryFailedRecords(ctx context.Context) error {
-	// No-op in OSS mode
+	// No-op in Community mode
 	return nil
 }
 
 // GetUsageHistory returns usage history for analytics.
-// OSS stub: Returns empty slice.
+// Community stub: Returns empty slice.
 func GetUsageHistory(ctx context.Context, db *sql.DB, days int) ([]UsageRecord, error) {
 	return []UsageRecord{}, nil
 }

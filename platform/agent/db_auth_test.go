@@ -107,7 +107,7 @@ func TestValidateViaOrganizations_V2LicenseIsAuthority(t *testing.T) {
 }
 
 // TestValidateViaOrganizations_ExpiredOrg tests organization with expired license
-// Note: In OSS mode, expired licenses are accepted (lenient mode)
+// Note: In Community mode, expired licenses are accepted (lenient mode)
 // In Enterprise mode, expired licenses are rejected after grace period
 func TestValidateViaOrganizations_ExpiredOrg(t *testing.T) {
 	db, _, err := sqlmock.New() // mock not used - license validation fails first
@@ -122,7 +122,7 @@ func TestValidateViaOrganizations_ExpiredOrg(t *testing.T) {
 	ctx := context.Background()
 	client, err := validateViaOrganizations(ctx, db, "test-client", testLicenseKey)
 
-	// In OSS mode, expired licenses are accepted (lenient)
+	// In Community mode, expired licenses are accepted (lenient)
 	// In Enterprise mode, this would fail after grace period
 	if err != nil {
 		// Enterprise behavior: expired license rejected
@@ -130,9 +130,9 @@ func TestValidateViaOrganizations_ExpiredOrg(t *testing.T) {
 		return
 	}
 
-	// OSS behavior: expired license accepted
+	// Community behavior: expired license accepted
 	if client == nil {
-		t.Error("OSS mode: expected client for expired license, got nil")
+		t.Error("Community mode: expected client for expired license, got nil")
 	}
 }
 
@@ -556,10 +556,10 @@ func TestGetCustomerUsageForMonth_NoData(t *testing.T) {
 
 // TestCreateAPIKey_Success tests successful API key creation
 func TestCreateAPIKey_Success(t *testing.T) {
-	// Skip this test in OSS builds as it requires GenerateLicenseKey
+	// Skip this test in Community builds as it requires GenerateLicenseKey
 	_, err := license.GenerateLicenseKey(license.TierProfessional, "test", 1)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 
 	db, mock, err := sqlmock.New()

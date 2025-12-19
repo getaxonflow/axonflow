@@ -23,7 +23,7 @@ func TestAmadeusConnector_Connect(t *testing.T) {
 	config := &base.ConnectorConfig{Name: "test", Type: "amadeus"}
 	err := conn.Connect(ctx, config)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -44,7 +44,7 @@ func TestAmadeusConnector_HealthCheck(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if status.Healthy {
-		t.Error("expected unhealthy status for OSS stub")
+		t.Error("expected unhealthy status for Community stub")
 	}
 }
 
@@ -54,7 +54,7 @@ func TestAmadeusConnector_Query(t *testing.T) {
 	query := &base.Query{Statement: "query"}
 	_, err := conn.Query(ctx, query)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -64,7 +64,7 @@ func TestAmadeusConnector_Execute(t *testing.T) {
 	cmd := &base.Command{Action: "execute"}
 	_, err := conn.Execute(ctx, cmd)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -88,8 +88,8 @@ func TestAmadeusConnector_Type(t *testing.T) {
 
 func TestAmadeusConnector_Version(t *testing.T) {
 	conn := NewAmadeusConnector()
-	if got := conn.Version(); got != "oss-stub" {
-		t.Errorf("Version() = %q, want %q", got, "oss-stub")
+	if got := conn.Version(); got != "community-stub" {
+		t.Errorf("Version() = %q, want %q", got, "community-stub")
 	}
 }
 

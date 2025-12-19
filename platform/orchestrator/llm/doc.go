@@ -15,7 +15,7 @@ Package llm provides a unified interface and types for LLM (Large Language Model
 # Overview
 
 This package defines the common abstractions used across all LLM integrations in AxonFlow.
-It enables pluggable provider implementations that work consistently in both OSS and
+It enables pluggable provider implementations that work consistently in both Community and
 Enterprise editions.
 
 # Provider Interface
