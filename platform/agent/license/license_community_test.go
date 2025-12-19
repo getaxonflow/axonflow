@@ -32,27 +32,27 @@ func TestValidateLicense(t *testing.T) {
 		expectedMsg    string
 	}{
 		{
-			name:          "empty license key - OSS mode",
+			name:          "empty license key - Community mode",
 			licenseKey:    "",
 			expectedValid: true,
-			expectedTier:  TierOSS,
-			expectedOrgID: "oss",
+			expectedTier:  TierCommunity,
+			expectedOrgID: "community",
 			checkMessage:  true,
-			expectedMsg:   "OSS mode - no license required",
+			expectedMsg:   "Community mode - no license required",
 		},
 		{
-			name:          "invalid format - falls back to OSS",
+			name:          "invalid format - falls back to Community",
 			licenseKey:    "INVALID-LICENSE-KEY",
 			expectedValid: true,
-			expectedTier:  TierOSS,
-			expectedOrgID: "oss",
+			expectedTier:  TierCommunity,
+			expectedOrgID: "community",
 		},
 		{
-			name:          "V1 format - falls back to OSS",
+			name:          "V1 format - falls back to Community",
 			licenseKey:    "AXON-V1-something",
 			expectedValid: true,
-			expectedTier:  TierOSS,
-			expectedOrgID: "oss",
+			expectedTier:  TierCommunity,
+			expectedOrgID: "community",
 		},
 	}
 
@@ -77,12 +77,12 @@ func TestValidateLicense(t *testing.T) {
 				t.Errorf("ValidateLicense() Message = %v, want %v", result.Message, tt.expectedMsg)
 			}
 
-			// Verify OSS features
+			// Verify Community features
 			if result.Features == nil {
 				t.Error("ValidateLicense() Features = nil, want non-nil map")
 			}
-			if ossMode, ok := result.Features["oss_mode"]; !ok || !ossMode {
-				t.Error("ValidateLicense() Features['oss_mode'] should be true")
+			if communityMode, ok := result.Features["community_mode"]; !ok || !communityMode {
+				t.Error("ValidateLicense() Features['community_mode'] should be true")
 			}
 		})
 	}
@@ -90,19 +90,19 @@ func TestValidateLicense(t *testing.T) {
 
 func TestValidateLicense_ValidV2License(t *testing.T) {
 	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in OSS builds
+	// Skip in Community builds
 	_, err := GenerateLicenseKey(TierEnterprise, "test-org", 365)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 }
 
 func TestValidateLicense_ExpiredV2License(t *testing.T) {
 	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in OSS builds
+	// Skip in Community builds
 	_, err := GenerateLicenseKey(TierProfessional, "expired-org", -30)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 }
 
@@ -175,10 +175,10 @@ func TestVerifyV2Signature(t *testing.T) {
 
 func TestVerifyV2Signature_GeneratedLicense(t *testing.T) {
 	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in OSS builds
+	// Skip in Community builds
 	_, err := GenerateLicenseKey(TierEnterprise, "test", 365)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 }
 
@@ -197,14 +197,14 @@ func TestValidateWithRetry(t *testing.T) {
 			licenseKey:    "",
 			maxAttempts:   1,
 			expectedValid: true,
-			expectedTier:  TierOSS,
+			expectedTier:  TierCommunity,
 		},
 		{
 			name:          "valid license - multiple attempts",
 			licenseKey:    "",
 			maxAttempts:   3,
 			expectedValid: true,
-			expectedTier:  TierOSS,
+			expectedTier:  TierCommunity,
 		},
 	}
 
@@ -226,11 +226,11 @@ func TestValidateWithRetry(t *testing.T) {
 	}
 }
 
-func TestGetOSSFeatures(t *testing.T) {
-	features := getOSSFeatures()
+func TestGetCommunityFeatures(t *testing.T) {
+	features := getCommunityFeatures()
 
 	if features == nil {
-		t.Fatal("getOSSFeatures() returned nil, want non-nil map")
+		t.Fatal("getCommunityFeatures() returned nil, want non-nil map")
 	}
 
 	expectedFeatures := map[string]bool{
@@ -239,48 +239,48 @@ func TestGetOSSFeatures(t *testing.T) {
 		"sla_guarantee":     false,
 		"audit_logging":     true,
 		"basic_support":     false,
-		"oss_mode":          true,
+		"community_mode":    true,
 	}
 
 	for key, expectedValue := range expectedFeatures {
 		if value, ok := features[key]; !ok {
-			t.Errorf("getOSSFeatures() missing key %q", key)
+			t.Errorf("getCommunityFeatures() missing key %q", key)
 		} else if value != expectedValue {
-			t.Errorf("getOSSFeatures()[%q] = %v, want %v", key, value, expectedValue)
+			t.Errorf("getCommunityFeatures()[%q] = %v, want %v", key, value, expectedValue)
 		}
 	}
 
 	// Verify no extra keys
 	if len(features) != len(expectedFeatures) {
-		t.Errorf("getOSSFeatures() has %d features, want %d", len(features), len(expectedFeatures))
+		t.Errorf("getCommunityFeatures() has %d features, want %d", len(features), len(expectedFeatures))
 	}
 }
 
 func TestGenerateLicenseKey(t *testing.T) {
 	// This test requires GenerateLicenseKey which is enterprise-only
-	// The error behavior is tested in TestLicenseKey_GenerationNotAvailableInOSS
+	// The error behavior is tested in TestLicenseKey_GenerationNotAvailableInCommunity
 	_, err := GenerateLicenseKey(TierProfessional, "test-org", 365)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 }
 
 func TestGenerateLicenseKey_RoundTrip(t *testing.T) {
 	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in OSS builds
+	// Skip in Community builds
 	_, err := GenerateLicenseKey(TierProfessional, "test-org", 365)
 	if err != nil {
-		t.Skip("GenerateLicenseKey not available in OSS builds")
+		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
 }
 
-func TestLicenseKey_GenerationNotAvailableInOSS(t *testing.T) {
-	// In OSS builds, license generation is not available
+func TestLicenseKey_GenerationNotAvailableInCommunity(t *testing.T) {
+	// In Community builds, license generation is not available
 	// This is a security feature to prevent exposure of the license format
 
 	_, err := GenerateLicenseKey(TierEnterprise, "healthcare", 365)
 	if err == nil {
-		t.Error("GenerateLicenseKey() should return error in OSS builds")
+		t.Error("GenerateLicenseKey() should return error in Community builds")
 	}
 
 	// Check for enterprise upgrade messaging (includes link to getaxonflow.com/enterprise)
@@ -291,7 +291,7 @@ func TestLicenseKey_GenerationNotAvailableInOSS(t *testing.T) {
 	// Also test GenerateServiceLicenseKey
 	_, err = GenerateServiceLicenseKey(TierEnterprise, "test", "service", "backend-service", []string{"perm"}, 365)
 	if err == nil {
-		t.Error("GenerateServiceLicenseKey() should return error in OSS builds")
+		t.Error("GenerateServiceLicenseKey() should return error in Community builds")
 	}
 }
 
@@ -301,10 +301,10 @@ func TestTierConstants(t *testing.T) {
 		TierProfessional,
 		TierEnterprise,
 		TierEnterprisePlus,
-		TierOSS,
+		TierCommunity,
 	}
 
-	expectedValues := []string{"PRO", "ENT", "PLUS", "OSS"}
+	expectedValues := []string{"PRO", "ENT", "PLUS", "Community"}
 
 	for i, tier := range tiers {
 		if string(tier) != expectedValues[i] {
@@ -314,7 +314,7 @@ func TestTierConstants(t *testing.T) {
 }
 
 func TestValidateLicense_UnknownTier(t *testing.T) {
-	// Test license with unknown tier - should default to OSS
+	// Test license with unknown tier - should default to Community
 	ctx := context.Background()
 
 	// This would require manually crafting a license with an invalid tier
@@ -324,33 +324,33 @@ func TestValidateLicense_UnknownTier(t *testing.T) {
 		t.Errorf("ValidateLicense() error = %v, want nil", err)
 	}
 
-	if result.Tier != TierOSS {
-		t.Errorf("ValidateLicense() with empty key should default to TierOSS, got %v", result.Tier)
+	if result.Tier != TierCommunity {
+		t.Errorf("ValidateLicense() with empty key should default to TierCommunity, got %v", result.Tier)
 	}
 }
 
-func TestValidationResult_OSSMode(t *testing.T) {
+func TestValidationResult_CommunityMode(t *testing.T) {
 	ctx := context.Background()
 
-	// In OSS mode, validating any license returns OSS tier result
-	// Test with empty license key (should return OSS result)
+	// In Community mode, validating any license returns Community tier result
+	// Test with empty license key (should return Community tier result)
 	result, err := ValidateLicense(ctx, "any-license-key")
 	if err != nil {
 		t.Fatalf("ValidateLicense() error = %v", err)
 	}
 
-	// In OSS mode, all licenses are valid (permissive validation)
+	// In Community mode, all licenses are valid (permissive validation)
 	if !result.Valid {
-		t.Error("ValidationResult.Valid should be true in OSS mode")
+		t.Error("ValidationResult.Valid should be true in Community mode")
 	}
-	if result.Tier != TierOSS {
-		t.Errorf("ValidationResult.Tier should be OSS in OSS mode, got %v", result.Tier)
+	if result.Tier != TierCommunity {
+		t.Errorf("ValidationResult.Tier should be Community in Community mode, got %v", result.Tier)
 	}
-	if result.OrgID != "oss" {
-		t.Errorf("ValidationResult.OrgID should be 'oss' in OSS mode, got %v", result.OrgID)
+	if result.OrgID != "community" {
+		t.Errorf("ValidationResult.OrgID should be 'community' in Community mode, got %v", result.OrgID)
 	}
 	if result.MaxNodes != 9999 {
-		t.Errorf("ValidationResult.MaxNodes should be 9999 (unlimited) in OSS mode, got %v", result.MaxNodes)
+		t.Errorf("ValidationResult.MaxNodes should be 9999 (unlimited) in Community mode, got %v", result.MaxNodes)
 	}
 	if result.ExpiresAt.IsZero() {
 		t.Error("ValidationResult.ExpiresAt should not be zero")

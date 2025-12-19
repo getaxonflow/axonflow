@@ -91,7 +91,7 @@ func logInternalServiceAuthWarning() {
 
 // isValidInternalServiceRequest checks if the request is from a trusted internal service.
 // If AXONFLOW_INTERNAL_SERVICE_SECRET is configured, validates the token against it.
-// Otherwise falls back to checking the hardcoded token (for OSS/dev environments).
+// Otherwise falls back to checking the hardcoded token (for Community/dev environments).
 func isValidInternalServiceRequest(clientID, userToken string) bool {
 	if clientID != internalServiceClientID {
 		return false
@@ -102,7 +102,7 @@ func isValidInternalServiceRequest(clientID, userToken string) bool {
 		return userToken == secret
 	}
 
-	// Fallback for OSS/dev: accept hardcoded token
+	// Fallback for Community/dev: accept hardcoded token
 	return userToken == internalServiceTokenFallback
 }
 
@@ -121,7 +121,7 @@ func InitializeMCPRegistryWithDB(db *sql.DB) error {
 	mcpRegistry = registry.NewRegistry()
 	log.Println("[MCP] Initializing connector registry...")
 
-	// Check for config file (OSS mode)
+	// Check for config file (Community mode)
 	configFilePath := os.Getenv("AXONFLOW_CONFIG_FILE")
 	if configFilePath == "" {
 		// Check default locations

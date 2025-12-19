@@ -18,20 +18,20 @@ import (
 	"testing"
 )
 
-func TestKillSwitchEnabled_OSS(t *testing.T) {
+func TestKillSwitchEnabled_Community(t *testing.T) {
 	if KillSwitchEnabled() {
-		t.Error("Expected KillSwitchEnabled() to return false in OSS mode")
+		t.Error("Expected KillSwitchEnabled() to return false in Community mode")
 	}
 }
 
-func TestNewKillSwitchChecker_OSS(t *testing.T) {
+func TestNewKillSwitchChecker_Community(t *testing.T) {
 	checker := NewKillSwitchChecker(nil)
 	if checker == nil {
 		t.Error("Expected NewKillSwitchChecker to return non-nil checker")
 	}
 }
 
-func TestCheckKillSwitch_OSS(t *testing.T) {
+func TestCheckKillSwitch_Community(t *testing.T) {
 	checker := NewKillSwitchChecker(nil)
 	ctx := context.Background()
 
@@ -41,14 +41,14 @@ func TestCheckKillSwitch_OSS(t *testing.T) {
 		t.Fatal("Expected non-nil result")
 	}
 	if result.IsBlocked {
-		t.Error("Expected OSS stub to return IsBlocked=false")
+		t.Error("Expected Community stub to return IsBlocked=false")
 	}
 	if result.Reason != "" {
 		t.Errorf("Expected empty reason, got %q", result.Reason)
 	}
 }
 
-func TestListActiveKillSwitches_OSS(t *testing.T) {
+func TestListActiveKillSwitches_Community(t *testing.T) {
 	checker := NewKillSwitchChecker(nil)
 	ctx := context.Background()
 

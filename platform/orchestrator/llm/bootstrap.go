@@ -40,6 +40,12 @@ const (
 	EnvOllamaModel    = "OLLAMA_MODEL"
 	EnvOllamaTimeout  = "OLLAMA_TIMEOUT_SECONDS"
 
+	// Google Gemini environment variables
+	EnvGoogleAPIKey   = "GOOGLE_API_KEY"
+	EnvGoogleModel    = "GOOGLE_MODEL"
+	EnvGoogleEndpoint = "GOOGLE_ENDPOINT"
+	EnvGoogleTimeout  = "GOOGLE_TIMEOUT_SECONDS"
+
 	// AWS Bedrock environment variables (Enterprise)
 	EnvBedrockRegion = "BEDROCK_REGION"
 	EnvBedrockModel  = "BEDROCK_MODEL"
@@ -105,6 +111,8 @@ type BootstrapResult struct {
 //   - OPENAI_ENDPOINT: Custom OpenAI endpoint (optional)
 //   - OLLAMA_ENDPOINT: Ollama endpoint (enables Ollama provider)
 //   - OLLAMA_MODEL: Default Ollama model (optional)
+//   - GOOGLE_API_KEY: Google API key (enables Gemini provider)
+//   - GOOGLE_MODEL: Default Gemini model (optional)
 //   - BEDROCK_REGION: AWS Bedrock region (enables Bedrock provider, Enterprise only)
 //   - BEDROCK_MODEL: Default Bedrock model (optional)
 //   - LLM_DEFAULT_PROVIDER: Name of the default provider
@@ -156,6 +164,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		{"anthropic", ProviderTypeAnthropic, bootstrapAnthropic},
 		{"openai", ProviderTypeOpenAI, bootstrapOpenAI},
 		{"ollama", ProviderTypeOllama, bootstrapOllama},
+		{"gemini", ProviderTypeGemini, bootstrapGemini},
 	}
 
 	ctx := context.Background()
@@ -229,7 +238,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		len(result.ProvidersBootstrapped), len(result.ProvidersFailed))
 
 	if len(result.ProvidersBootstrapped) == 0 && len(result.ProvidersFailed) == 0 {
-		logger.Println("WARNING: No LLM providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OLLAMA_ENDPOINT.")
+		logger.Println("WARNING: No LLM providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, or OLLAMA_ENDPOINT.")
 	}
 
 	return result, nil
@@ -316,6 +325,37 @@ func bootstrapOllama() (*ProviderConfig, error) {
 	}
 
 	if timeoutStr := os.Getenv(EnvOllamaTimeout); timeoutStr != "" {
+		if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+			config.TimeoutSeconds = timeout
+		}
+	}
+
+	return config, nil
+}
+
+// bootstrapGemini creates a Gemini provider config from environment variables.
+func bootstrapGemini() (*ProviderConfig, error) {
+	apiKey := os.Getenv(EnvGoogleAPIKey)
+	if apiKey == "" {
+		return nil, nil // Not configured
+	}
+
+	config := &ProviderConfig{
+		Name:    "gemini",
+		Type:    ProviderTypeGemini,
+		APIKey:  apiKey,
+		Enabled: true,
+	}
+
+	if model := os.Getenv(EnvGoogleModel); model != "" {
+		config.Model = model
+	}
+
+	if endpoint := os.Getenv(EnvGoogleEndpoint); endpoint != "" {
+		config.Endpoint = endpoint
+	}
+
+	if timeoutStr := os.Getenv(EnvGoogleTimeout); timeoutStr != "" {
 		if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
 			config.TimeoutSeconds = timeout
 		}

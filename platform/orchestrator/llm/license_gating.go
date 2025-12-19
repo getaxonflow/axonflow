@@ -22,8 +22,8 @@ type LicenseTier string
 
 // License tiers that determine available features.
 const (
-	// LicenseTierOSS is the open-source tier with basic provider support.
-	LicenseTierOSS LicenseTier = "OSS"
+	// LicenseTierCommunity is the Community tier with basic provider support.
+	LicenseTierCommunity LicenseTier = "Community"
 
 	// LicenseTierProfessional includes advanced providers and routing.
 	LicenseTierProfessional LicenseTier = "PRO"
@@ -36,22 +36,22 @@ const (
 )
 
 // providerTierRequirement maps provider types to their minimum required tier.
-// OSS-available providers require OSS tier (no license needed).
+// Community-available providers require Community tier (no license needed).
 // Enterprise providers require at least Professional tier.
 var providerTierRequirement = map[ProviderType]LicenseTier{
-	// OSS providers - available without license
-	ProviderTypeOllama:    LicenseTierOSS,
-	ProviderTypeOpenAI:    LicenseTierOSS,
-	ProviderTypeAnthropic: LicenseTierOSS,
+	// Community providers - available without license
+	ProviderTypeOllama:    LicenseTierCommunity,
+	ProviderTypeOpenAI:    LicenseTierCommunity,
+	ProviderTypeAnthropic: LicenseTierCommunity,
+	ProviderTypeGemini:    LicenseTierCommunity, // Gemini available in Community edition
 
 	// Enterprise providers - require license
 	ProviderTypeBedrock: LicenseTierProfessional,
-	ProviderTypeGemini:  LicenseTierProfessional,
 	ProviderTypeCustom:  LicenseTierProfessional,
 }
 
 // LicenseValidator defines the interface for license validation.
-// This allows different implementations for OSS and Enterprise builds.
+// This allows different implementations for Community and Enterprise builds.
 type LicenseValidator interface {
 	// GetCurrentTier returns the current license tier.
 	GetCurrentTier(ctx context.Context) LicenseTier
@@ -82,64 +82,64 @@ func (e *LicenseError) Error() string {
 	return fmt.Sprintf("license error: %s", e.Message)
 }
 
-// OSSLicenseValidator is the default validator for OSS builds.
-// It allows only OSS-tier providers and doesn't require a license key.
-type OSSLicenseValidator struct {
+// CommunityLicenseValidator is the default validator for Community builds.
+// It allows only Community-tier providers and doesn't require a license key.
+type CommunityLicenseValidator struct {
 	mu       sync.RWMutex
 	tier     LicenseTier
 	features map[string]bool
 }
 
-// NewOSSLicenseValidator creates a new OSS license validator.
-func NewOSSLicenseValidator() *OSSLicenseValidator {
-	return &OSSLicenseValidator{
-		tier: LicenseTierOSS,
+// NewCommunityLicenseValidator creates a new Community license validator.
+func NewCommunityLicenseValidator() *CommunityLicenseValidator {
+	return &CommunityLicenseValidator{
+		tier: LicenseTierCommunity,
 		features: map[string]bool{
-			"multi_provider":       true,  // OSS supports multiple providers
+			"multi_provider":       true,  // Community supports multiple providers
 			"load_balancing":       true,  // Basic load balancing
 			"health_checks":        true,  // Provider health monitoring
 			"bedrock_provider":     false, // Enterprise only
-			"gemini_provider":      false, // Enterprise only
+			"gemini_provider":      true,  // Community supports Gemini
 			"custom_providers":     false, // Enterprise only
 			"advanced_routing":     false, // Enterprise only
 			"provider_priority":    false, // Enterprise only
 			"cost_optimization":    false, // Enterprise only
 			"dedicated_support":    false, // Enterprise only
 			"sla_guarantee":        false, // Enterprise only
-			"audit_logging":        true,  // OSS includes basic audit
-			"metrics_collection":   true,  // OSS includes basic metrics
+			"audit_logging":        true,  // Community includes basic audit
+			"metrics_collection":   true,  // Community includes basic metrics
 			"advanced_metrics":     false, // Enterprise only
 			"provider_rate_limits": false, // Enterprise only
 		},
 	}
 }
 
-// GetCurrentTier returns the OSS tier.
-func (v *OSSLicenseValidator) GetCurrentTier(ctx context.Context) LicenseTier {
+// GetCurrentTier returns the Community tier.
+func (v *CommunityLicenseValidator) GetCurrentTier(ctx context.Context) LicenseTier {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.tier
 }
 
-// IsProviderAllowed checks if a provider is allowed in OSS mode.
-func (v *OSSLicenseValidator) IsProviderAllowed(ctx context.Context, providerType ProviderType) bool {
+// IsProviderAllowed checks if a provider is allowed in Community mode.
+func (v *CommunityLicenseValidator) IsProviderAllowed(ctx context.Context, providerType ProviderType) bool {
 	requiredTier, exists := providerTierRequirement[providerType]
 	if !exists {
 		// Unknown provider type defaults to requiring Professional tier
 		return false
 	}
-	return requiredTier == LicenseTierOSS
+	return requiredTier == LicenseTierCommunity
 }
 
-// ValidateLicense is a no-op in OSS mode.
-// OSS doesn't require a license key.
-func (v *OSSLicenseValidator) ValidateLicense(ctx context.Context, licenseKey string) error {
-	// OSS builds don't validate licenses
+// ValidateLicense is a no-op in Community mode.
+// Community edition doesn't require a license key.
+func (v *CommunityLicenseValidator) ValidateLicense(ctx context.Context, licenseKey string) error {
+	// Community builds don't validate licenses
 	return nil
 }
 
-// GetFeatures returns the features available in OSS mode.
-func (v *OSSLicenseValidator) GetFeatures() map[string]bool {
+// GetFeatures returns the features available in Community mode.
+func (v *CommunityLicenseValidator) GetFeatures() map[string]bool {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 
@@ -160,16 +160,16 @@ func GetTierForProvider(providerType ProviderType) LicenseTier {
 	return tier
 }
 
-// IsOSSProvider returns true if the provider is available in OSS mode.
-func IsOSSProvider(providerType ProviderType) bool {
-	return GetTierForProvider(providerType) == LicenseTierOSS
+// IsCommunityProvider returns true if the provider is available in Community mode.
+func IsCommunityProvider(providerType ProviderType) bool {
+	return GetTierForProvider(providerType) == LicenseTierCommunity
 }
 
-// GetOSSProviders returns a list of providers available in OSS mode.
-func GetOSSProviders() []ProviderType {
+// GetCommunityProviders returns a list of providers available in Community mode.
+func GetCommunityProviders() []ProviderType {
 	var providers []ProviderType
 	for pt, tier := range providerTierRequirement {
-		if tier == LicenseTierOSS {
+		if tier == LicenseTierCommunity {
 			providers = append(providers, pt)
 		}
 	}
@@ -180,7 +180,7 @@ func GetOSSProviders() []ProviderType {
 func GetEnterpriseProviders() []ProviderType {
 	var providers []ProviderType
 	for pt, tier := range providerTierRequirement {
-		if tier != LicenseTierOSS {
+		if tier != LicenseTierCommunity {
 			providers = append(providers, pt)
 		}
 	}
@@ -190,7 +190,7 @@ func GetEnterpriseProviders() []ProviderType {
 // TierSatisfiesRequirement checks if a given tier meets or exceeds the required tier.
 func TierSatisfiesRequirement(currentTier, requiredTier LicenseTier) bool {
 	tierRank := map[LicenseTier]int{
-		LicenseTierOSS:            0,
+		LicenseTierCommunity:      0,
 		LicenseTierProfessional:   1,
 		LicenseTierEnterprise:     2,
 		LicenseTierEnterprisePlus: 3,
@@ -207,9 +207,9 @@ func TierSatisfiesRequirement(currentTier, requiredTier LicenseTier) bool {
 }
 
 // DefaultValidator is the global license validator instance.
-// In OSS builds, this is an OSSLicenseValidator.
+// In Community builds, this is a CommunityLicenseValidator.
 // In Enterprise builds, this is replaced with EnterpriseLicenseValidator.
-var DefaultValidator LicenseValidator = NewOSSLicenseValidator()
+var DefaultValidator LicenseValidator = NewCommunityLicenseValidator()
 
 // SetDefaultValidator allows replacing the default validator.
 // This is primarily used in Enterprise builds to inject the enterprise validator.

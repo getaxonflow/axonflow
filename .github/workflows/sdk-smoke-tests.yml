@@ -1,0 +1,280 @@
+name: SDK Smoke Tests
+
+# Validates that SDK examples and README curl commands work against the stack.
+# Catches broken documentation before merge.
+#
+# Runtime: ~4-5 minutes
+# Trigger: Changes to agent, orchestrator, demo examples, docker-compose, or enterprise code
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  merge_group:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'platform/agent/**'
+      - 'platform/orchestrator/**'
+      - 'platform/connectors/**'
+      - 'ee/platform/agent/**'
+      - 'ee/platform/orchestrator/**'
+      - 'ee/platform/connectors/**'
+      - 'examples/demo/**'
+      - 'docker-compose.yml'
+      - 'migrations/**'
+      - '.github/workflows/sdk-smoke-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  # Timeouts and retry configuration
+  HEALTH_CHECK_RETRIES: 30
+  HEALTH_CHECK_INTERVAL: 2
+  DOCKER_WAIT_TIMEOUT: 180
+
+jobs:
+  # =============================================================================
+  # Change Detection (PR and merge_group only)
+  # =============================================================================
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      sdk-relevant: ${{ steps.filter.outputs.sdk-relevant }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect SDK-relevant changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sdk-relevant:
+              - 'platform/agent/**'
+              - 'platform/orchestrator/**'
+              - 'platform/connectors/**'
+              - 'ee/platform/agent/**'
+              - 'ee/platform/orchestrator/**'
+              - 'ee/platform/connectors/**'
+              - 'examples/demo/**'
+              - 'docker-compose.yml'
+              - 'migrations/**'
+              - '.github/workflows/sdk-smoke-tests.yml'
+
+  smoke-tests:
+    name: SDK Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [detect-changes]
+    # Run if: push/workflow_dispatch OR (PR/merge_group with SDK-relevant changes)
+    if: |
+      always() &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.sdk-relevant == 'true'))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+          # jq is pre-installed on GitHub runners, but verify
+          jq --version
+
+      - name: Start AxonFlow stack
+        id: start-stack
+        run: |
+          echo "🚀 Starting AxonFlow stack..."
+          docker compose up -d --wait --wait-timeout ${{ env.DOCKER_WAIT_TIMEOUT }} || {
+            echo "❌ Docker compose failed to start"
+            echo "📋 Docker compose logs:"
+            docker compose logs
+            exit 1
+          }
+          echo "✅ Docker compose started"
+
+      - name: Wait for services to be healthy
+        shell: bash
+        run: |
+          echo "⏳ Waiting for services to be healthy..."
+
+          # Function to check health with retries
+          wait_for_health() {
+            local url=$1
+            local name=$2
+            local retries=${{ env.HEALTH_CHECK_RETRIES }}
+            local interval=${{ env.HEALTH_CHECK_INTERVAL }}
+
+            for i in $(seq 1 $retries); do
+              if curl -sf "$url" > /dev/null 2>&1; then
+                echo "✅ $name is healthy"
+                return 0
+              fi
+              echo "⏳ Waiting for $name... (attempt $i/$retries)"
+              sleep $interval
+            done
+
+            echo "❌ $name failed to become healthy after $retries attempts"
+            return 1
+          }
+
+          # Check both services
+          wait_for_health "http://localhost:8080/health" "Agent" || exit 1
+          wait_for_health "http://localhost:8081/health" "Orchestrator" || exit 1
+
+          echo ""
+          echo "✅ All services are healthy!"
+
+      - name: Test PII Detection (SSN - Monitoring Mode)
+        shell: bash
+        run: |
+          echo "🧪 Testing PII detection (SSN - monitoring mode)..."
+          response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
+            -H "Content-Type: application/json" \
+            -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Look up customer with SSN 123-45-6789"}')
+
+          echo "Response: $response"
+
+          # SSN detection is in monitoring mode (approved=true but detected)
+          # Verify the policy was triggered even though request is approved
+          if echo "$response" | jq -e '.policies | length > 0' > /dev/null 2>&1; then
+            policy=$(echo "$response" | jq -r '.policies[0]')
+            echo "✅ SSN detected by policy: $policy"
+          else
+            echo "❌ SSN not detected - no policies triggered"
+            exit 1
+          fi
+
+      - name: Test PII Detection (Credit Card)
+        shell: bash
+        run: |
+          echo "🧪 Testing PII detection (Credit Card)..."
+          response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
+            -H "Content-Type: application/json" \
+            -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Process payment for card 4111-1111-1111-1111"}')
+
+          echo "Response: $response"
+
+          if echo "$response" | jq -e '.approved == false or .policyApproved == false or .blocked == true' > /dev/null 2>&1; then
+            echo "✅ Credit card correctly blocked"
+          else
+            echo "❌ Credit card not blocked"
+            echo "Expected: approved=false or blocked=true"
+            exit 1
+          fi
+
+      - name: Test SQL Injection Blocking
+        shell: bash
+        run: |
+          echo "🧪 Testing SQL injection blocking..."
+          response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
+            -H "Content-Type: application/json" \
+            -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "SELECT * FROM users UNION SELECT * FROM passwords"}')
+
+          echo "Response: $response"
+
+          if echo "$response" | jq -e '.approved == false or .policyApproved == false or .blocked == true' > /dev/null 2>&1; then
+            echo "✅ SQL injection correctly blocked"
+          else
+            echo "❌ SQL injection not blocked"
+            echo "Expected: approved=false or blocked=true"
+            exit 1
+          fi
+
+      - name: Test Safe Query (Baseline)
+        shell: bash
+        run: |
+          echo "🧪 Testing safe query passes..."
+          response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
+            -H "Content-Type: application/json" \
+            -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "What is the weather today?"}')
+
+          echo "Response: $response"
+
+          # Safe query should be approved
+          if echo "$response" | jq -e '.approved == true or .policyApproved == true or .blocked == false' > /dev/null 2>&1; then
+            echo "✅ Safe query correctly approved"
+          else
+            echo "❌ Safe query incorrectly blocked"
+            echo "Expected: approved=true or blocked=false"
+            exit 1
+          fi
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "📋 Collecting diagnostic logs..."
+          echo ""
+          echo "=== Docker Compose Status ==="
+          docker compose ps
+          echo ""
+          echo "=== Agent Logs (last 100 lines) ==="
+          docker compose logs --tail=100 agent 2>/dev/null || echo "(no agent logs)"
+          echo ""
+          echo "=== Orchestrator Logs (last 100 lines) ==="
+          docker compose logs --tail=100 orchestrator 2>/dev/null || echo "(no orchestrator logs)"
+          echo ""
+          echo "=== PostgreSQL Logs (last 50 lines) ==="
+          docker compose logs --tail=50 postgres 2>/dev/null || echo "(no postgres logs)"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans 2>/dev/null || true
+
+  smoke-test-summary:
+    name: Smoke Test Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, smoke-tests]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "🧪 SDK Smoke Tests Complete"
+          echo ""
+          echo "Results:"
+          echo "  Detect Changes: ${{ needs.detect-changes.result }}"
+          echo "  Smoke Tests: ${{ needs.smoke-tests.result }}"
+
+      - name: Fail if tests failed
+        # Accept 'success' or 'skipped' (skipped = no SDK-relevant changes)
+        if: |
+          needs.detect-changes.result == 'failure' ||
+          (needs.smoke-tests.result != 'success' && needs.smoke-tests.result != 'skipped')
+        run: |
+          echo "❌ SDK smoke tests failed"
+          exit 1
+
+      - name: Success message
+        if: success()
+        run: |
+          echo "✅ SDK smoke tests passed!"
+          echo ""
+          echo "Validated:"
+          echo "  - PII Detection (SSN - monitoring mode)"
+          echo "  - PII Blocking (Credit Card)"
+          echo "  - SQL Injection Blocking"
+          echo "  - Safe Query Approval"

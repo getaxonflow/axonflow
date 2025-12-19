@@ -35,7 +35,7 @@ func TestSlackConnector_Connect(t *testing.T) {
 
 	err := conn.Connect(ctx, config)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -58,7 +58,7 @@ func TestSlackConnector_HealthCheck(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if status.Healthy {
-		t.Error("expected unhealthy status for OSS stub")
+		t.Error("expected unhealthy status for Community stub")
 	}
 }
 
@@ -69,7 +69,7 @@ func TestSlackConnector_Query(t *testing.T) {
 
 	_, err := conn.Query(ctx, query)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -80,7 +80,7 @@ func TestSlackConnector_Execute(t *testing.T) {
 
 	_, err := conn.Execute(ctx, cmd)
 	if err == nil {
-		t.Error("expected error for OSS stub")
+		t.Error("expected error for Community stub")
 	}
 }
 
@@ -108,8 +108,8 @@ func TestSlackConnector_Type(t *testing.T) {
 
 func TestSlackConnector_Version(t *testing.T) {
 	conn := NewSlackConnector()
-	if got := conn.Version(); got != "oss-stub" {
-		t.Errorf("Version() = %q, want %q", got, "oss-stub")
+	if got := conn.Version(); got != "community-stub" {
+		t.Errorf("Version() = %q, want %q", got, "community-stub")
 	}
 }
 
@@ -117,6 +117,6 @@ func TestSlackConnector_Capabilities(t *testing.T) {
 	conn := NewSlackConnector()
 	caps := conn.Capabilities()
 	if len(caps) != 0 {
-		t.Errorf("expected empty capabilities for OSS stub, got %v", caps)
+		t.Errorf("expected empty capabilities for Community stub, got %v", caps)
 	}
 }

@@ -18,7 +18,7 @@ The RBI FREE-AI Framework (August 2025) establishes governance requirements for 
 
 | Feature | Community | Enterprise |
 |---------|:---------:|:----------:|
-| India PII detection (Aadhaar, PAN) | OSS patterns | Full validation |
+| India PII detection (Aadhaar, PAN) | Basic patterns | Full validation |
 | AI System Registry API | - | Full CRUD |
 | Model Validation tracking | - | Full workflow |
 | Incident Management | - | Full workflow |

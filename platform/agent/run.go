@@ -355,14 +355,14 @@ func Run() {
 
 	// License validation (optional for central agent deployments and self-hosted mode)
 	// Central agents validate CLIENT license keys during request processing
-	// Self-hosted mode skips license validation entirely (for OSS/local development)
+	// Self-hosted mode skips license validation entirely (for Community/local development)
 	// This validation is only needed for customer-deployed agents
 	selfHostedMode := os.Getenv("SELF_HOSTED_MODE") == "true"
 	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
 
 	if selfHostedMode {
 		log.Println("🏠 SELF_HOSTED_MODE enabled - skipping license validation")
-		log.Println("   Perfect for OSS contributors and local development")
+		log.Println("   Perfect for Community contributors and local development")
 	} else {
 		// Validate HMAC secret is properly configured before any license operations
 		// This is required for BOTH:
@@ -869,7 +869,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			OrgID:       "self-hosted",
 			TenantID:    req.ClientID,
 			Enabled:     true,
-			LicenseTier: "OSS",
+			LicenseTier: "Community",
 			RateLimit:   0,
 			Permissions: []string{},
 		}

@@ -556,19 +556,19 @@ func TestGetRLSStats(t *testing.T) {
 		t.Fatalf("GetRLSStats() failed: %v", err)
 	}
 
-	// Should have at least 15 tables with RLS enabled (OSS minimum)
+	// Should have at least 15 tables with RLS enabled (Community minimum)
 	// Note: enterprise builds have more tables (24+)
 	if stats.TablesWithRLS < 15 {
-		t.Errorf("TablesWithRLS = %d, want >= 15 (OSS minimum)", stats.TablesWithRLS)
+		t.Errorf("TablesWithRLS = %d, want >= 15 (Community minimum)", stats.TablesWithRLS)
 	}
 
-	// Should have at least 60 policies (OSS minimum: 15 tables * 4 policies each)
+	// Should have at least 60 policies (Community minimum: 15 tables * 4 policies each)
 	// Note: enterprise builds have more policies (68+)
 	if stats.PolicyCount < 60 {
-		t.Errorf("PolicyCount = %d, want >= 60 (OSS minimum)", stats.PolicyCount)
+		t.Errorf("PolicyCount = %d, want >= 60 (Community minimum)", stats.PolicyCount)
 	}
 
-	// Should include critical OSS tables (enterprise tables may not exist)
+	// Should include critical Community tables (enterprise tables may not exist)
 	criticalTables := []string{"organizations", "dynamic_policies", "static_policies"}
 	for _, table := range criticalTables {
 		found := false
@@ -670,7 +670,7 @@ func TestRLSPerformance(t *testing.T) {
 	ctx := context.Background()
 	orgID := "rls-test-perf"
 
-	// Insert test data using dynamic_policies (OSS table, not enterprise-only usage_events)
+	// Insert test data using dynamic_policies (Community table, not enterprise-only usage_events)
 	// Schema: policy_id, name, policy_type, conditions, actions, priority
 	err := WithRLS(ctx, db, orgID, func(db *sql.DB) error {
 		for i := 0; i < 100; i++ {

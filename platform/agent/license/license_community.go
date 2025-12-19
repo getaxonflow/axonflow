@@ -12,7 +12,7 @@
 // limitations under the License.
 
 // Package license provides license validation for AxonFlow Agent.
-// This is the OSS stub - it parses V2 license keys but doesn't enforce
+// This is the Community stub - it parses V2 license keys but doesn't enforce
 // signature validation. All parseable V2 licenses are considered valid.
 package license
 
@@ -35,10 +35,10 @@ const (
 	TierProfessional   Tier = "PRO"
 	TierEnterprise     Tier = "ENT"
 	TierEnterprisePlus Tier = "PLUS"
-	TierOSS            Tier = "OSS" // OSS tier - unlimited usage
+	TierCommunity      Tier = "Community" // Community tier - unlimited usage
 )
 
-// defaultHMACSecret is used for test license validation in OSS mode
+// defaultHMACSecret is used for test license validation in Community mode
 const defaultHMACSecret = "axonflow-license-secret-2025-change-in-production"
 
 // ValidationResult contains the result of license validation
@@ -70,16 +70,16 @@ type ServiceLicensePayload struct {
 	ExpiresAt   string   `json:"expires_at"` // Format: YYYYMMDD
 }
 
-// ValidateHMACSecretAtStartup is a no-op in OSS builds.
-// OSS builds don't require HMAC secret validation since they don't generate
+// ValidateHMACSecretAtStartup is a no-op in Community builds.
+// Community builds don't require HMAC secret validation since they don't generate
 // or strictly validate licenses.
 func ValidateHMACSecretAtStartup() error {
 	return nil
 }
 
 // ValidateLicense validates an AxonFlow license key.
-// OSS stub: Parses V2 licenses to extract metadata, but doesn't enforce strict validation.
-// For non-V2 licenses or parse errors, returns a default OSS result.
+// Community stub: Parses V2 licenses to extract metadata, but doesn't enforce strict validation.
+// For non-V2 licenses or parse errors, returns a default Community result.
 func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult, error) {
 	// Try to parse as V2 license
 	if strings.HasPrefix(licenseKey, "AXON-V2-") {
@@ -87,21 +87,21 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 		if err == nil && result != nil {
 			return result, nil
 		}
-		// If V2 parsing fails, fall through to default OSS result
+		// If V2 parsing fails, fall through to default Community result
 	}
 
-	// Default: Return OSS mode result for non-V2 or unparseable licenses
+	// Default: Return Community mode result for non-V2 or unparseable licenses
 	return &ValidationResult{
 		Valid:           true,
-		Tier:            TierOSS,
-		OrgID:           "oss",
-		MaxNodes:        9999, // Unlimited in OSS mode
+		Tier:            TierCommunity,
+		OrgID:           "community",
+		MaxNodes:        9999, // Unlimited in Community mode
 		ExpiresAt:       time.Now().AddDate(100, 0, 0), // Far future
 		DaysUntilExpiry: 36500,
 		GracePeriodDays: 0,
 		Error:           "",
-		Message:         "OSS mode - no license required",
-		Features:        getOSSFeatures(),
+		Message:         "Community mode - no license required",
+		Features:        getCommunityFeatures(),
 	}, nil
 }
 
@@ -131,7 +131,7 @@ func parseV2License(licenseKey string) (*ValidationResult, error) {
 	// Validate tier
 	tier := Tier(payload.Tier)
 	if tier != TierProfessional && tier != TierEnterprise && tier != TierEnterprisePlus {
-		tier = TierOSS // Default to OSS for unknown tiers
+		tier = TierCommunity // Default to Community for unknown tiers
 	}
 
 	// Parse expiry date (format: YYYYMMDD)
@@ -141,33 +141,33 @@ func parseV2License(licenseKey string) (*ValidationResult, error) {
 	}
 
 	// Verify signature using default HMAC secret (for tests)
-	// In OSS mode, we're lenient but still verify to support tests
+	// In Community mode, we're lenient but still verify to support tests
 	if !verifyV2Signature(payloadBase64, signature) {
-		return nil, nil // Invalid signature, fall through to default OSS
+		return nil, nil // Invalid signature, fall through to default Community
 	}
 
-	// Check if expired (but in OSS mode, we're lenient)
+	// Check if expired (but in Community mode, we're lenient)
 	now := time.Now()
 	daysUntilExpiry := int(expiry.Sub(now).Hours() / 24)
 
-	// In OSS mode, expired licenses still work (grace period is unlimited)
+	// In Community mode, expired licenses still work (grace period is unlimited)
 	valid := true
-	message := "V2 license parsed in OSS mode"
+	message := "V2 license parsed in Community mode"
 	if now.After(expiry) {
-		message = "V2 license expired but accepted in OSS mode"
+		message = "V2 license expired but accepted in Community mode"
 	}
 
 	return &ValidationResult{
 		Valid:           valid,
 		Tier:            tier,
 		OrgID:           payload.TenantID,
-		MaxNodes:        9999, // Unlimited in OSS mode
+		MaxNodes:        9999, // Unlimited in Community mode
 		ExpiresAt:       expiry,
 		DaysUntilExpiry: daysUntilExpiry,
 		GracePeriodDays: 0,
 		Error:           "",
 		Message:         message,
-		Features:        getOSSFeatures(),
+		Features:        getCommunityFeatures(),
 		ServiceName:     payload.ServiceName,
 		ServiceType:     payload.ServiceType,
 		Permissions:     payload.Permissions,
@@ -184,35 +184,35 @@ func verifyV2Signature(payloadBase64, providedSignature string) bool {
 }
 
 // ValidateWithRetry validates a license with automatic retry on transient failures.
-// OSS stub: Always returns valid immediately (no retries needed).
+// Community stub: Always returns valid immediately (no retries needed).
 func ValidateWithRetry(ctx context.Context, licenseKey string, maxAttempts int) (*ValidationResult, error) {
 	return ValidateLicense(ctx, licenseKey)
 }
 
-// getOSSFeatures returns the features enabled in OSS mode
-func getOSSFeatures() map[string]bool {
+// getCommunityFeatures returns the features enabled in Community mode
+func getCommunityFeatures() map[string]bool {
 	return map[string]bool{
 		"multi_tenant":      false,
 		"advanced_policies": false,
 		"sla_guarantee":     false,
 		"audit_logging":     true,
 		"basic_support":     false, // Community support only
-		"oss_mode":          true,
+		"community_mode":    true,
 	}
 }
 
-// GenerateLicenseKey is not available in OSS builds.
+// GenerateLicenseKey is not available in Community builds.
 // License generation is an enterprise-only feature to prevent exposure of the
 // license key format and signing algorithm.
 func GenerateLicenseKey(tier Tier, orgID string, expiryDays int) (string, error) {
-	return "", fmt.Errorf("license generation is not available in OSS builds - " +
+	return "", fmt.Errorf("license generation is not available in Community builds - " +
 		"upgrade to Enterprise at https://getaxonflow.com/enterprise for license management")
 }
 
-// GenerateServiceLicenseKey is not available in OSS builds.
+// GenerateServiceLicenseKey is not available in Community builds.
 // License generation is an enterprise-only feature to prevent exposure of the
 // license key format and signing algorithm.
 func GenerateServiceLicenseKey(tier Tier, tenantID, serviceName, serviceType string, permissions []string, expiryDays int) (string, error) {
-	return "", fmt.Errorf("license generation is not available in OSS builds - " +
+	return "", fmt.Errorf("license generation is not available in Community builds - " +
 		"upgrade to Enterprise at https://getaxonflow.com/enterprise for license management")
 }

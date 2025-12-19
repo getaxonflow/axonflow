@@ -374,8 +374,8 @@ if err != nil {
 }
 
 // Get available providers for current tier
-ossProviders := GetOSSProviders()       // [ollama, openai, anthropic]
-entProviders := GetEnterpriseProviders() // [bedrock, gemini, custom]
+communityProviders := GetCommunityProviders() // [ollama, openai, anthropic, gemini]
+entProviders := GetEnterpriseProviders()       // [bedrock, custom]
 ```
 
 ### Implementing Custom Validator
@@ -644,7 +644,7 @@ Ensure enterprise features are properly gated:
 
 ```go
 func TestEnterpriseProviderRequiresLicense(t *testing.T) {
-    registry := NewRegistry(WithLicenseValidator(NewOSSLicenseValidator()))
+    registry := NewRegistry(WithLicenseValidator(NewCommunityLicenseValidator()))
 
     err := registry.Register(ctx, &ProviderConfig{
         Name: "bedrock-test",
@@ -652,7 +652,7 @@ func TestEnterpriseProviderRequiresLicense(t *testing.T) {
     })
 
     if err == nil {
-        t.Fatal("Expected license error for enterprise provider in OSS mode")
+        t.Fatal("Expected license error for enterprise provider in Community mode")
     }
 }
 ```

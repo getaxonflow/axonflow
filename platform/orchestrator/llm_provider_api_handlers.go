@@ -593,8 +593,8 @@ func (h *LLMProviderAPIHandler) handleListProviderTypes(w http.ResponseWriter, r
 	types := make([]map[string]interface{}, 0, len(factories))
 	for _, pt := range factories {
 		info := map[string]interface{}{
-			"type": string(pt),
-			"oss":  llm.IsOSSProvider(pt),
+			"type":      string(pt),
+			"community": llm.IsCommunityProvider(pt),
 		}
 
 		// Add tier info
