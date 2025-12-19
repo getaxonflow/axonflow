@@ -42,7 +42,7 @@ import (
 // because dependencies (like static_policies) won't exist yet.
 //
 // DEPLOYMENT_MODE controls which paths are included:
-//   - oss:               core/
+//   - community:         core/
 //   - saas:              core/ + enterprise/ + industry/*
 //   - in-vpc-healthcare: core/ + enterprise/ + industry/healthcare/
 //   - in-vpc-banking:    core/ + enterprise/ + industry/banking/
@@ -62,7 +62,7 @@ type MigrationFile struct {
 func getMigrationPaths(basePath string) []string {
 	mode := os.Getenv("DEPLOYMENT_MODE")
 	if mode == "" {
-		mode = "oss" // Default to OSS mode for local development and docker-compose
+		mode = "community" // Default to Community mode for local development and docker-compose
 	}
 
 	// Handle legacy 'invpc' value (backwards compatibility)
@@ -77,9 +77,9 @@ func getMigrationPaths(basePath string) []string {
 	paths = append(paths, filepath.Join(basePath, "core"))
 
 	switch mode {
-	case "oss":
-		// OSS only runs core migrations
-		log.Println("📦 DEPLOYMENT_MODE=oss: Running core migrations only")
+	case "community":
+		// Community only runs core migrations
+		log.Println("📦 DEPLOYMENT_MODE=community: Running core migrations only")
 
 	case "saas":
 		// SaaS runs everything

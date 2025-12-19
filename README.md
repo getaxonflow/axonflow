@@ -40,7 +40,7 @@ curl http://localhost:8081/health
 | **Anthropic** | ✅ | ✅ | Claude 3.5 Sonnet, Claude 3 Opus |
 | **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
-| **Google Gemini** | ❌ | ✅ | Gemini Pro, Gemini Ultra |
+| **Google Gemini** | ✅ | ✅ | Gemini Pro, Gemini Ultra |
 
 → **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 
@@ -161,7 +161,7 @@ Policy checks add single-digit millisecond overhead.
 | Anthropic (Claude) | ✅ | ✅ |
 | Ollama (local/air-gapped) | ✅ | ✅ |
 | AWS Bedrock | ❌ | ✅ |
-| Google Gemini | ❌ | ✅ |
+| Google Gemini | ✅ | ✅ |
 | Multi-provider routing & failover | ✅ | ✅ |
 | Customer Portal provider UI | ❌ | ✅ |
 | **MCP Connectors** | | |

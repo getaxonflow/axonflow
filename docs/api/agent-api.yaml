@@ -2354,7 +2354,7 @@ components:
           description: Whether client is active
         license_tier:
           type: string
-          enum: [OSS, starter, professional, enterprise]
+          enum: [Community, starter, professional, enterprise]
           description: License tier
         license_expiry:
           type: string

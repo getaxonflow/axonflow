@@ -18,12 +18,12 @@ import (
 	"database/sql"
 )
 
-// KillSwitchChecker is the OSS stub for kill switch checking.
-// In OSS mode, kill switches are not enforced.
+// KillSwitchChecker is the Community stub for kill switch checking.
+// In Community mode, kill switches are not enforced.
 type KillSwitchChecker struct{}
 
 // NewKillSwitchChecker creates a new kill switch checker.
-// In OSS mode, this returns a no-op implementation.
+// In Community mode, this returns a no-op implementation.
 func NewKillSwitchChecker(_ *sql.DB) *KillSwitchChecker {
 	return &KillSwitchChecker{}
 }
@@ -47,7 +47,7 @@ type KillSwitchCheckResult struct {
 }
 
 // CheckKillSwitch checks if any active kill switch applies to the request.
-// In OSS mode, this always returns not blocked.
+// In Community mode, this always returns not blocked.
 func (k *KillSwitchChecker) CheckKillSwitch(_ context.Context, _, _ string) *KillSwitchCheckResult {
 	return &KillSwitchCheckResult{
 		IsBlocked: false,
@@ -56,13 +56,13 @@ func (k *KillSwitchChecker) CheckKillSwitch(_ context.Context, _, _ string) *Kil
 }
 
 // KillSwitchEnabled returns whether kill switch enforcement is enabled.
-// In OSS mode, this returns false.
+// In Community mode, this returns false.
 func KillSwitchEnabled() bool {
 	return false
 }
 
 // ListActiveKillSwitches returns all active kill switches for an org.
-// In OSS mode, this returns an empty slice.
+// In Community mode, this returns an empty slice.
 func (k *KillSwitchChecker) ListActiveKillSwitches(_ context.Context, _ string) ([]*ActiveKillSwitch, error) {
 	return nil, nil
 }

@@ -43,8 +43,10 @@ AxonFlow Enterprise Edition supports multiple LLM providers to meet diverse oper
 | Provider | Type | Use Cases | Availability |
 |----------|------|-----------|--------------|
 | **OpenAI** | Cloud API | General purpose, rapid development | Community + Enterprise |
+| **Anthropic** | Cloud API | Safety-focused, Claude models | Community + Enterprise |
+| **Google Gemini** | Cloud API | Multimodal, fast inference | Community + Enterprise |
+| **Ollama** | Self-hosted | Air-gapped, on-premise, cost optimization | Community + Enterprise |
 | **AWS Bedrock** | Cloud API (AWS) | HIPAA compliance, data residency, enterprise | Enterprise Only |
-| **Ollama** | Self-hosted | Air-gapped, on-premise, cost optimization | Enterprise Only |
 
 ### OpenAI Configuration
 
@@ -309,6 +311,7 @@ Use `EnabledLLMProviders` parameter for these AI model providers:
 |-------------|---------|-------------|--------|
 | `openai` | OpenAI GPT models | `openai-api-key` | (plain string) |
 | `anthropic` | Anthropic Claude models | `anthropic-api-key` | (plain string) |
+| `gemini` | Google Gemini models | `gemini-api-key` | (plain string) |
 | `bedrock` | AWS Bedrock (IAM auth) | N/A | Uses IAM role |
 | `ollama` | Self-hosted Ollama | N/A | Uses endpoint URL |
 

@@ -252,9 +252,9 @@ func TestRegistry_Register(t *testing.T) {
 		}
 	})
 
-	t.Run("license gating allows OSS providers", func(t *testing.T) {
-		// OSS validator allows Ollama, OpenAI, Anthropic
-		r := NewRegistry(WithLicenseValidator(NewOSSLicenseValidator()))
+	t.Run("license gating allows Community providers", func(t *testing.T) {
+		// Community validator allows Ollama, OpenAI, Anthropic
+		r := NewRegistry(WithLicenseValidator(NewCommunityLicenseValidator()))
 		r.factory.Register(ProviderTypeOllama, func(config ProviderConfig) (Provider, error) {
 			return NewMockProvider(config.Name, config.Type), nil
 		})
@@ -266,13 +266,13 @@ func TestRegistry_Register(t *testing.T) {
 
 		err := r.Register(ctx, config)
 		if err != nil {
-			t.Errorf("OSS provider should be allowed: %v", err)
+			t.Errorf("Community provider should be allowed: %v", err)
 		}
 	})
 
-	t.Run("license gating blocks enterprise providers in OSS mode", func(t *testing.T) {
-		// OSS validator should block Bedrock, Gemini, Custom
-		r := NewRegistry(WithLicenseValidator(NewOSSLicenseValidator()))
+	t.Run("license gating blocks enterprise providers in Community mode", func(t *testing.T) {
+		// Community validator should block Bedrock, Custom
+		r := NewRegistry(WithLicenseValidator(NewCommunityLicenseValidator()))
 		r.factory.Register(ProviderTypeBedrock, func(config ProviderConfig) (Provider, error) {
 			return NewMockProvider(config.Name, config.Type), nil
 		})
@@ -285,7 +285,7 @@ func TestRegistry_Register(t *testing.T) {
 
 		err := r.Register(ctx, config)
 		if err == nil {
-			t.Fatal("Enterprise provider should be blocked in OSS mode")
+			t.Fatal("Enterprise provider should be blocked in Community mode")
 		}
 
 		var regErr *RegistryError

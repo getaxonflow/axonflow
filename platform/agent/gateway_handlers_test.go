@@ -2507,21 +2507,21 @@ func TestFetchApprovedData_MCPQueryPermission(t *testing.T) {
 }
 
 // ==================================================================
-// RBI Kill Switch Tests (OSS stub behavior)
+// RBI Kill Switch Tests (Community stub behavior)
 // ==================================================================
 
-// TestCheckRBIKillSwitch_OSS tests that kill switch returns not blocked in OSS mode
-func TestCheckRBIKillSwitch_OSS(t *testing.T) {
+// TestCheckRBIKillSwitch_Community tests that kill switch returns not blocked in Community mode
+func TestCheckRBIKillSwitch_Community(t *testing.T) {
 	ctx := context.Background()
 
-	// In OSS mode, kill switch should always return not blocked
+	// In Community mode, kill switch should always return not blocked
 	result := checkRBIKillSwitch(ctx, "org-123", "system-456")
 
 	if result == nil {
 		t.Fatal("Expected non-nil result")
 	}
 	if result.IsBlocked {
-		t.Error("OSS stub should never block (expected IsBlocked=false)")
+		t.Error("Community stub should never block (expected IsBlocked=false)")
 	}
 }
 
@@ -2533,7 +2533,7 @@ func TestGetRBIKillSwitchChecker(t *testing.T) {
 	// Second call should return the same instance
 	checker2 := getRBIKillSwitchChecker()
 
-	// In OSS mode, checker will be nil because KillSwitchEnabled() returns false
+	// In Community mode, checker will be nil because KillSwitchEnabled() returns false
 	// But the function should be consistent
 	if checker != checker2 {
 		t.Error("getRBIKillSwitchChecker should return the same instance on subsequent calls")
@@ -2541,7 +2541,7 @@ func TestGetRBIKillSwitchChecker(t *testing.T) {
 }
 
 // TestPreCheckHandler_KillSwitchIntegration tests that kill switch check is integrated into pre-check flow
-// In OSS mode, kill switch is not enforced, so requests pass through. In enterprise mode, active kill switches block requests.
+// In Community mode, kill switch is not enforced, so requests pass through. In enterprise mode, active kill switches block requests.
 func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
 	os.Setenv("SELF_HOSTED_MODE", "true")
 	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
@@ -2552,7 +2552,7 @@ func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
 
 	staticPolicyEngine = NewStaticPolicyEngine()
 
-	// Normal request - should pass in OSS mode (kill switch not enforced)
+	// Normal request - should pass in Community mode (kill switch not enforced)
 	reqBody := PreCheckRequest{
 		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
 		ClientID:  "test-client",
@@ -2577,9 +2577,9 @@ func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	// In OSS mode, kill switch check always returns not blocked
+	// In Community mode, kill switch check always returns not blocked
 	if !resp.Approved {
-		t.Errorf("Expected Approved=true (OSS mode doesn't enforce kill switch), got Approved=false. BlockReason: %s",
+		t.Errorf("Expected Approved=true (Community mode doesn't enforce kill switch), got Approved=false. BlockReason: %s",
 			resp.BlockReason)
 	}
 }

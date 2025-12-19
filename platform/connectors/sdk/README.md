@@ -169,7 +169,7 @@ results := benchHarness.BenchmarkQuery(b, &base.Query{Statement: "SELECT 1"})
 
 ## Available Connectors
 
-### OSS Connectors (platform/connectors/)
+### Community Connectors (platform/connectors/)
 
 | Connector | Type | Description |
 |-----------|------|-------------|
@@ -197,7 +197,7 @@ results := benchHarness.BenchmarkQuery(b, &base.Query{Statement: "SELECT 1"})
 
 ## Creating a New Connector
 
-1. Create a new package under `platform/connectors/` (OSS) or `ee/platform/connectors/` (Enterprise)
+1. Create a new package under `platform/connectors/` (Community) or `ee/platform/connectors/` (Enterprise)
 
 2. Implement the `base.Connector` interface:
 

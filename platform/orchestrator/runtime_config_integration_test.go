@@ -279,10 +279,13 @@ func TestProviderConstants(t *testing.T) {
 	if ProviderOllama != "ollama" {
 		t.Errorf("ProviderOllama = %q, want %q", ProviderOllama, "ollama")
 	}
+	if ProviderGemini != "gemini" {
+		t.Errorf("ProviderGemini = %q, want %q", ProviderGemini, "gemini")
+	}
 
 	// Verify ValidLLMProviders contains all constants
-	if len(ValidLLMProviders) != 4 {
-		t.Errorf("ValidLLMProviders has %d entries, want 4", len(ValidLLMProviders))
+	if len(ValidLLMProviders) != 5 {
+		t.Errorf("ValidLLMProviders has %d entries, want 5", len(ValidLLMProviders))
 	}
 }
 

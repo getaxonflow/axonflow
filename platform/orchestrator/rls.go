@@ -239,8 +239,8 @@ func RLSHealthCheck(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
-	// Check if RLS is enabled on critical tables (OSS tables only)
-	// Note: enterprise tables (usage_events, agent_heartbeats) are not in OSS builds
+	// Check if RLS is enabled on critical tables (Community tables only)
+	// Note: enterprise tables (usage_events, agent_heartbeats) are not in Community builds
 	criticalTables := []string{
 		"organizations",
 		"user_sessions",

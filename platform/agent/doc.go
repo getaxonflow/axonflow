@@ -59,7 +59,7 @@ The Agent supports multiple authentication strategies:
   - License key validation (X-License-Key header)
   - JWT token validation for user identity
   - Database-backed client registration
-  - Self-hosted mode for OSS deployments
+  - Self-hosted mode for Community deployments
 
 # Gateway Mode API
 

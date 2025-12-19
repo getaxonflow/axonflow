@@ -242,9 +242,9 @@ RBI_EXPORT_PATH=/tmp/rbi-exports   # Export directory
 RBI_PII_MIN_CONFIDENCE=0.5         # PII detection threshold
 ```
 
-### OSS vs Enterprise
+### Community vs Enterprise
 
-| Feature | OSS | Enterprise |
+| Feature | Community | Enterprise |
 |---------|-----|------------|
 | PII Detection (Aadhaar, PAN) | Included | Included |
 | Policy Templates | Included | Included |

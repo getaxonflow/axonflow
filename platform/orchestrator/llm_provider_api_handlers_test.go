@@ -592,7 +592,7 @@ func TestLLMProviderAPIHandler_ProviderTypes(t *testing.T) {
 			t.Fatal("expected provider_types array in response")
 		}
 
-		// Should have at least OSS providers (anthropic, openai, ollama)
+		// Should have at least Community providers (anthropic, openai, ollama)
 		if len(types) < 3 {
 			t.Errorf("expected at least 3 provider types, got %d", len(types))
 		}

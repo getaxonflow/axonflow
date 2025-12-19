@@ -14,13 +14,13 @@ Package amadeus provides the Amadeus Travel API connector for AxonFlow.
 
 # Overview
 
-This is the OSS stub for the Amadeus connector. The full implementation
+This is the Community stub for the Amadeus connector. The full implementation
 with flight search, hotel booking, and travel APIs is available in the
 Enterprise edition.
 
-# OSS Limitations
+# Community Limitations
 
-The OSS version of this connector returns ErrEnterpriseFeature for all
+The Community version of this connector returns ErrEnterpriseFeature for all
 operations. To use the Amadeus connector, upgrade to AxonFlow Enterprise.
 
 # Enterprise Features

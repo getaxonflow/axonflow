@@ -165,7 +165,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 		// Clear other providers
 		env.Unset(EnvBedrockRegion)
 
-		// Set all OSS providers
+		// Set all Community providers
 		env.Set(EnvAnthropicAPIKey, "test-anthropic-key")
 		env.Set(EnvOpenAIAPIKey, "test-openai-key")
 		env.Set(EnvOllamaEndpoint, "http://localhost:11434")
@@ -220,7 +220,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 		env := newTestEnvHelper(t)
 		defer env.Restore()
 
-		// Set all OSS providers
+		// Set all Community providers
 		env.Set(EnvAnthropicAPIKey, "test-anthropic-key")
 		env.Set(EnvOpenAIAPIKey, "test-openai-key")
 		env.Set(EnvOllamaEndpoint, "http://localhost:11434")
@@ -251,7 +251,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 		env := newTestEnvHelper(t)
 		defer env.Restore()
 
-		// Set all OSS providers
+		// Set all Community providers
 		env.Set(EnvAnthropicAPIKey, "test-anthropic-key")
 		env.Set(EnvOpenAIAPIKey, "test-openai-key")
 		env.Set(EnvOllamaEndpoint, "http://localhost:11434")

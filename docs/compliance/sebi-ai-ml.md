@@ -15,8 +15,8 @@ SEBI's AI/ML Framework establishes governance requirements for AI systems used b
 
 | Feature | Community | Enterprise |
 |---------|:---------:|:----------:|
-| PAN detection | OSS patterns | Full validation |
-| Aadhaar detection | OSS patterns | Full validation |
+| PAN detection | Basic patterns | Full validation |
+| Aadhaar detection | Basic patterns | Full validation |
 | Audit Export API | - | Full workflow |
 | 5-year Retention | - | Configurable |
 | SEBI Export Format | - | Compliant |

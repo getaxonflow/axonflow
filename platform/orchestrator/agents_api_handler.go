@@ -21,7 +21,7 @@ import (
 	"strings"
 )
 
-// AgentsAPIHandler handles HTTP requests for agent management (OSS read-only endpoints).
+// AgentsAPIHandler handles HTTP requests for agent management (Community read-only endpoints).
 // This handler provides read access to agents registered in the AgentRegistry.
 type AgentsAPIHandler struct {
 	registry *AgentRegistry
@@ -33,7 +33,7 @@ func NewAgentsAPIHandler(registry *AgentRegistry) *AgentsAPIHandler {
 }
 
 // RegisterRoutes registers agent API routes with the provided mux.
-// OSS Distribution: Read-only endpoints
+// Community Distribution: Read-only endpoints
 //   - GET /api/v1/agents - List all agents
 //   - GET /api/v1/agents/{id} - Get agent by ID
 //   - GET /api/v1/agents/domain/{domain} - List agents by domain

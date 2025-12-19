@@ -93,7 +93,7 @@ func init() {
 }
 
 // getRBIKillSwitchChecker returns the RBI kill switch checker (lazy initialization)
-// Returns nil if kill switch is not enabled (OSS mode)
+// Returns nil if kill switch is not enabled (Community mode)
 func getRBIKillSwitchChecker() *rbi.KillSwitchChecker {
 	rbiKillSwitchCheckerOnce.Do(func() {
 		if rbi.KillSwitchEnabled() && authDB != nil {
@@ -108,7 +108,7 @@ func getRBIKillSwitchChecker() *rbi.KillSwitchChecker {
 func checkRBIKillSwitch(ctx context.Context, orgID, systemID string) *rbi.KillSwitchCheckResult {
 	checker := getRBIKillSwitchChecker()
 	if checker == nil {
-		// Kill switch not enabled (OSS mode) - always allow
+		// Kill switch not enabled (Community mode) - always allow
 		return &rbi.KillSwitchCheckResult{IsBlocked: false}
 	}
 	return checker.CheckKillSwitch(ctx, orgID, systemID)
@@ -234,7 +234,7 @@ var (
 )
 
 // rbiPIIDetector is the India-specific PII detector for RBI compliance.
-// Initialized lazily on first use. In OSS builds, this is a no-op.
+// Initialized lazily on first use. In Community builds, this is a no-op.
 var (
 	rbiPIIDetector     *rbi.IndiaPIIDetector
 	rbiPIIDetectorOnce sync.Once
@@ -248,7 +248,7 @@ func getRBIPIIDetector() *rbi.IndiaPIIDetector {
 			rbiPIIDetector = rbi.NewIndiaPIIDetector(config)
 			log.Printf("🇮🇳 [RBI] India PII detector initialized (enterprise)")
 		} else {
-			log.Printf("🇮🇳 [RBI] India PII detection disabled (OSS mode)")
+			log.Printf("🇮🇳 [RBI] India PII detection disabled (Community mode)")
 		}
 	})
 	return rbiPIIDetector
@@ -256,7 +256,7 @@ func getRBIPIIDetector() *rbi.IndiaPIIDetector {
 
 // checkRBIPII checks request query for India-specific PII.
 // Returns the check result with detected PII types and blocking recommendation.
-// In OSS builds, this returns a no-PII result (detection is disabled).
+// In Community builds, this returns a no-PII result (detection is disabled).
 func checkRBIPII(query string) *rbi.RBIPIICheckResult {
 	detector := getRBIPIIDetector()
 	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI guidelines
@@ -318,7 +318,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			OrgID:       "self-hosted",
 			TenantID:    req.ClientID,
 			Enabled:     true,
-			LicenseTier: "OSS",
+			LicenseTier: "Community",
 		}
 	} else if authDB != nil {
 		client, err = validateClientLicenseDB(ctx, authDB, req.ClientID, licenseKey)
@@ -371,7 +371,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBI FREE-AI Compliance: Check for India-specific PII before policy evaluation
-	// This runs in both OSS (no-op) and enterprise (full detection) modes
+	// This runs in both Community (no-op) and Enterprise (full detection) modes
 	piiResult := checkRBIPII(req.Query)
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Pre-check] Request blocked by RBI PII detection: %s", piiResult.Reason)
