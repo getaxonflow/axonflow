@@ -89,6 +89,58 @@ This is the first public release of AxonFlow, a self-hosted governance and orche
 
 ---
 
+## [1.1.0] - 2025-12-19
+
+**SDK Feature Parity & Terminology Update**
+
+### Added
+
+- **Google Gemini LLM Provider**: Native Gemini integration now available in Community edition
+  - Supports Gemini Pro and Gemini Pro Vision models
+  - Automatic failover and routing alongside OpenAI, Anthropic, Ollama
+
+- **SDK Feature Parity**: All four SDKs now have complete feature parity
+  - **TypeScript SDK** (v1.4.0): 85.75% test coverage
+  - **Python SDK** (v1.4.0): 71.39% test coverage
+  - **Java SDK** (v1.4.0): 81.9% test coverage
+  - **Go SDK** (v1.4.0): 82.8% test coverage
+
+- **LLM Interceptors** (all SDKs): Wrapper-based governance for LLM providers
+  - OpenAI, Anthropic, Gemini, Ollama, AWS Bedrock interceptors
+  - Gateway Mode: Two-phase policy checking with `getPolicyApprovedContext()` and `auditLLMCall()`
+  - Proxy Mode: Single-call governance with `executeQuery()`
+
+### Changed
+
+- **Terminology**: Renamed "OSS" to "Community" across the entire codebase
+  - Environment variable: `AXONFLOW_MODE=community` (previously `oss`)
+  - API responses: `"mode": "community"` (previously `"oss"`)
+  - Documentation updated throughout
+
+### Breaking Changes
+
+- **`AXONFLOW_MODE` Environment Variable**: If you were using `AXONFLOW_MODE=oss`, update to `AXONFLOW_MODE=community`
+- **API Response**: The `mode` field in API responses now returns `"community"` instead of `"oss"`
+
+### Migration Notes
+
+To upgrade from 1.0.x:
+
+1. Update environment variables:
+   ```bash
+   # Before
+   AXONFLOW_MODE=oss
+
+   # After
+   AXONFLOW_MODE=community
+   ```
+
+2. Update any code that checks for `mode === "oss"` to check for `mode === "community"`
+
+3. Update SDKs to v1.4.0 for LLM Interceptors support
+
+---
+
 ## Pre-release Development History
 
 The following versions were internal development milestones leading up to v1.0.0.
