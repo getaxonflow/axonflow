@@ -1,13 +1,13 @@
-# AxonFlow SDK Comparison: Go vs TypeScript
+# AxonFlow SDK Comparison: Go, TypeScript, and Java
 
-Complete feature parity achieved between Go and TypeScript SDKs. Both SDKs now support all AxonFlow platform features including retry logic, caching, fail-open strategy, MCP connectors, and Multi-Agent Planning (MAP).
+Complete feature parity achieved across all SDKs. All SDKs now support AxonFlow platform features including retry logic, caching, fail-open strategy, MCP connectors, Multi-Agent Planning (MAP), and LLM interceptors.
 
 ## Quick Decision Guide
 
 **Use TypeScript SDK if:**
 - Building web applications (React, Next.js, Vue)
 - Need "invisible" governance with `protect()` wrapper
-- Want OpenAI/Anthropic interceptors
+- Want Proxy Mode for simple integration
 - Prefer NPM package distribution
 
 **Use Go SDK if:**
@@ -16,42 +16,51 @@ Complete feature parity achieved between Go and TypeScript SDKs. Both SDKs now s
 - Need explicit control over governance calls
 - Building internal tools or agents
 
+**Use Java SDK if:**
+- Building enterprise Java applications
+- Need Spring Boot integration
+- Working with existing Java/Kotlin codebases
+- Need Maven/Gradle package management
+
 ## Feature Comparison Matrix
 
-| Feature | Go SDK | TypeScript SDK | Notes |
-|---------|--------|----------------|-------|
-| **Core Features** ||||
-| Request/Response | ✅ | ✅ | Both fully supported |
-| Policy enforcement | ✅ | ✅ | Both fully supported |
-| Health checks | ✅ | ✅ | Both fully supported |
-| TLS configuration | ✅ | ✅ | Go has more granular control |
-| **Gateway Mode (Nov 2025)** ||||
-| `getPolicyApprovedContext()` | ✅ | ✅ | Pre-check before LLM calls |
-| `auditLLMCall()` | ✅ | ✅ | Audit after LLM calls |
-| Context expiration (5min TTL) | ✅ | ✅ | Context IDs expire after 5 minutes |
-| LLM cost estimation | ✅ | ✅ | OpenAI, Anthropic, Bedrock, Ollama |
-| **Resilience** ||||
-| Retry with exponential backoff | ✅ | ✅ | Both support configurable retry |
-| In-memory caching with TTL | ✅ | ✅ | Both support configurable TTL |
-| Fail-open in production | ✅ | ✅ | Both support production mode |
-| Debug logging | ✅ | ✅ | Both support structured logging |
-| **MCP Connectors** ||||
-| List connectors | ✅ | ✅ | Browse marketplace |
-| Install connectors | ✅ | ✅ | Install from marketplace |
-| Query connectors | ✅ | ✅ | Execute connector queries |
-| **Multi-Agent Planning (MAP)** ||||
-| Generate plans | ✅ | ✅ | Natural language to workflow |
-| Execute plans | ✅ | ✅ | Run multi-step workflows |
-| Get plan status | ✅ | ✅ | Monitor long-running plans |
-| **Developer Experience** ||||
-| Package manager | Embedded | NPM | TypeScript: `@axonflow/sdk` |
-| Documentation | ✅ README | ✅ README | Both comprehensive |
-| Code examples | ✅ | ✅ | Both include examples |
-| Type safety | ✅ | ✅ | Go: structs, TS: interfaces |
-| **Advanced** ||||
-| Provider interceptors | ❌ | ✅ | TypeScript: OpenAI, Anthropic |
-| Client wrapping | ❌ | ✅ | TypeScript: `wrapOpenAIClient()` |
-| Invisible governance | ❌ | ✅ | TypeScript: `protect()` wrapper |
+| Feature | Python | TypeScript | Go | Java |
+|---------|--------|------------|-----|------|
+| **Core Features** ||||||
+| Request/Response | ✅ | ✅ | ✅ | ✅ |
+| Policy enforcement | ✅ | ✅ | ✅ | ✅ |
+| Health checks | ✅ | ✅ | ✅ | ✅ |
+| TLS configuration | ✅ | ✅ | ✅ | ✅ |
+| **Proxy Mode (Dec 2025)** ||||||
+| `executeQuery()` | ✅ | ✅ | ✅ | ✅ |
+| Request type support | ✅ | ✅ | ✅ | ✅ |
+| **Gateway Mode** ||||||
+| `getPolicyApprovedContext()` | ✅ | ✅ | ✅ | ✅ |
+| `auditLLMCall()` | ✅ | ✅ | ✅ | ✅ |
+| Context expiration (5min TTL) | ✅ | ✅ | ✅ | ✅ |
+| LLM cost estimation | ✅ | ✅ | ✅ | ✅ |
+| **LLM Interceptors (Dec 2025)** ||||||
+| OpenAI Interceptor | ✅ | ✅ | ✅ | ✅ |
+| Anthropic Interceptor | ✅ | ✅ | ✅ | ✅ |
+| Async support | ✅ | ✅ | ✅ | ✅ |
+| **Resilience** ||||||
+| Retry with exponential backoff | ✅ | ✅ | ✅ | ✅ |
+| In-memory caching with TTL | ✅ | ✅ | ✅ | ✅ |
+| Fail-open in production | ✅ | ✅ | ✅ | ✅ |
+| Debug logging | ✅ | ✅ | ✅ | ✅ |
+| **MCP Connectors** ||||||
+| List connectors | ✅ | ✅ | ✅ | ✅ |
+| Install connectors | ✅ | ✅ | ✅ | ✅ |
+| Query connectors | ✅ | ✅ | ✅ | ✅ |
+| **Multi-Agent Planning (MAP)** ||||||
+| Generate plans | ✅ | ✅ | ✅ | ✅ |
+| Execute plans | ✅ | ✅ | ✅ | ✅ |
+| Get plan status | ✅ | ✅ | ✅ | ✅ |
+| **Developer Experience** ||||||
+| Package manager | PyPI | NPM | Go Modules | Maven |
+| Documentation | ✅ | ✅ | ✅ | ✅ |
+| Code examples | ✅ | ✅ | ✅ | ✅ |
+| Type safety | ✅ | ✅ | ✅ | ✅ |
 
 ## Lines of Code
 
