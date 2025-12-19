@@ -41,11 +41,11 @@ var defaultConnectorFactory *ConnectorFactoryRegistry
 var defaultConnectorFactoryOnce sync.Once
 
 // GetDefaultConnectorFactory returns the singleton ConnectorFactoryRegistry.
-// It initializes the factory with all OSS connectors on first call.
+// It initializes the factory with all Community connectors on first call.
 func GetDefaultConnectorFactory() *ConnectorFactoryRegistry {
 	defaultConnectorFactoryOnce.Do(func() {
 		defaultConnectorFactory = NewConnectorFactoryRegistry()
-		defaultConnectorFactory.RegisterOSSConnectors()
+		defaultConnectorFactory.RegisterCommunityConnectors()
 	})
 	return defaultConnectorFactory
 }
@@ -138,10 +138,10 @@ func (f *ConnectorFactoryRegistry) Clear() {
 	f.creators = make(map[string]ConnectorCreator)
 }
 
-// RegisterOSSConnectors registers all open-source connector creators.
-// These are the connectors available in the OSS version.
-func (f *ConnectorFactoryRegistry) RegisterOSSConnectors() {
-	f.logger.Println("Registering OSS connectors...")
+// RegisterCommunityConnectors registers all Community connector creators.
+// These are the connectors available in the Community version.
+func (f *ConnectorFactoryRegistry) RegisterCommunityConnectors() {
+	f.logger.Println("Registering Community connectors...")
 
 	// Database connectors
 	f.RegisterOrReplace(ConnectorPostgres, func() base.Connector {
@@ -169,7 +169,7 @@ func (f *ConnectorFactoryRegistry) RegisterOSSConnectors() {
 		return httpconnector.NewHTTPConnector()
 	})
 
-	f.logger.Printf("Registered %d OSS connectors", f.Count())
+	f.logger.Printf("Registered %d Community connectors", f.Count())
 }
 
 // DefaultConnectorFactory returns a ConnectorFactory function for use with TenantConnectorRegistry.

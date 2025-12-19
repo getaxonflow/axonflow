@@ -89,35 +89,71 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.0.2
 
-      - name: Lint Agent
+      - name: Lint All Modules (Parallel)
+        shell: bash
         run: |
-          echo "🔍 Linting platform/agent..."
-          cd platform/agent
-          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+          set -euo pipefail
+          echo "🔍 Linting all modules in parallel..."
+          GOLANGCI_CONFIG="${{ github.workspace }}/.golangci.yml"
 
-      - name: Lint Orchestrator
-        run: |
-          echo "🔍 Linting platform/orchestrator..."
-          cd platform/orchestrator
-          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+          # Create temp directory for status and output tracking
+          WORKDIR=$(mktemp -d)
+          trap "rm -rf $WORKDIR" EXIT
 
-      - name: Lint Connectors
-        run: |
-          echo "🔍 Linting platform/connectors..."
-          cd platform/connectors
-          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+          # Define modules to lint with their paths
+          declare -A MODULES=(
+            ["agent"]="platform/agent"
+            ["orchestrator"]="platform/orchestrator"
+            ["connectors"]="platform/connectors"
+            ["shared"]="platform/shared"
+            ["sdk"]="sdk/golang"
+          )
 
-      - name: Lint Shared
-        run: |
-          echo "🔍 Linting platform/shared..."
-          cd platform/shared
-          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+          # Run all lint jobs in parallel, capturing output
+          for name in "${!MODULES[@]}"; do
+            path="${MODULES[$name]}"
+            (
+              if [ ! -d "$path" ]; then
+                echo "ERROR: Directory $path does not exist" > "$WORKDIR/${name}.out"
+                echo "1" > "$WORKDIR/${name}.status"
+              else
+                cd "$path"
+                if golangci-lint run --timeout=5m --config="$GOLANGCI_CONFIG" > "$WORKDIR/${name}.out" 2>&1; then
+                  echo "0" > "$WORKDIR/${name}.status"
+                else
+                  echo "1" > "$WORKDIR/${name}.status"
+                fi
+              fi
+            ) &
+          done
 
-      - name: Lint Go SDK
-        run: |
-          echo "🔍 Linting sdk/golang..."
-          cd sdk/golang
-          golangci-lint run --timeout=5m --config=${{ github.workspace }}/.golangci.yml
+          # Wait for all to complete
+          wait
+
+          # Check results and display output for failures
+          FAILED=0
+          for name in "${!MODULES[@]}"; do
+            if [ "$(cat "$WORKDIR/${name}.status" 2>/dev/null || echo "1")" = "1" ]; then
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "❌ $name lint FAILED (${MODULES[$name]})"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              cat "$WORKDIR/${name}.out" 2>/dev/null || echo "(no output captured)"
+              echo ""
+              FAILED=1
+            else
+              echo "✅ $name lint passed"
+            fi
+          done
+
+          if [ "$FAILED" = "1" ]; then
+            echo ""
+            echo "❌ One or more modules failed linting. See details above."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All modules passed linting!"
 
   lint-summary:
     name: Lint Summary

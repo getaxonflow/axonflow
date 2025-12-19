@@ -4,7 +4,7 @@ This directory contains connectors contributed by the AxonFlow community.
 
 ## Overview
 
-Community connectors extend AxonFlow's MCP (Model Context Protocol) capabilities by integrating with additional external services. These connectors are contributed by the community and maintained alongside the core OSS connectors.
+Community connectors extend AxonFlow's MCP (Model Context Protocol) capabilities by integrating with additional external services. These connectors are contributed by the community and maintained alongside the core Community connectors.
 
 ## Directory Structure
 

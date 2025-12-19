@@ -10,7 +10,7 @@
 // limitations under the License.
 
 // Package snowflake provides the Snowflake data warehouse connector.
-// This is the OSS stub - the full Snowflake connector is an enterprise feature.
+// This is the Community stub - the full Snowflake connector is an enterprise feature.
 package snowflake
 
 import (
@@ -23,33 +23,33 @@ import (
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
 var ErrEnterpriseFeature = errors.New("snowflake connector is an enterprise feature - contact sales@getaxonflow.com")
 
-// SnowflakeConnector is the OSS stub for the Snowflake data warehouse connector.
+// SnowflakeConnector is the Community stub for the Snowflake data warehouse connector.
 // The full implementation is available in the enterprise edition.
 type SnowflakeConnector struct {
 	config *base.ConnectorConfig
 }
 
 // NewSnowflakeConnector creates a new Snowflake connector instance.
-// OSS stub: Returns a stub that will error on Connect().
+// Community stub: Returns a stub that will error on Connect().
 func NewSnowflakeConnector() *SnowflakeConnector {
 	return &SnowflakeConnector{}
 }
 
 // Connect establishes a connection to Snowflake.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SnowflakeConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
 	c.config = config
 	return base.NewConnectorError(config.Name, "Connect", "snowflake connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
-// OSS stub: No-op.
+// Community stub: No-op.
 func (c *SnowflakeConnector) Disconnect(ctx context.Context) error {
 	return nil
 }
 
 // HealthCheck verifies the connection is valid.
-// OSS stub: Returns unhealthy status indicating enterprise feature.
+// Community stub: Returns unhealthy status indicating enterprise feature.
 func (c *SnowflakeConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
 	return &base.HealthStatus{
 		Healthy: false,
@@ -58,13 +58,13 @@ func (c *SnowflakeConnector) HealthCheck(ctx context.Context) (*base.HealthStatu
 }
 
 // Query executes a SQL query against Snowflake.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SnowflakeConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	return nil, base.NewConnectorError("snowflake", "Query", "snowflake connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Execute executes a SQL statement (INSERT, UPDATE, DELETE).
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SnowflakeConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	return nil, base.NewConnectorError("snowflake", "Execute", "snowflake connector requires enterprise license", ErrEnterpriseFeature)
 }
@@ -84,11 +84,11 @@ func (c *SnowflakeConnector) Type() string {
 
 // Version returns the connector version.
 func (c *SnowflakeConnector) Version() string {
-	return "oss-stub"
+	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.
-// OSS stub: Returns empty list (no capabilities in OSS mode).
+// Community stub: Returns empty list (no capabilities in Community mode).
 func (c *SnowflakeConnector) Capabilities() []string {
 	return []string{}
 }

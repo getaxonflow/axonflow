@@ -35,10 +35,10 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/node_enforcement"
-	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - OSS stub or EE impl
+	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/rbi"  // RBI FREE-AI module - OSS stub or EE impl
-	"axonflow/platform/orchestrator/sebi" // SEBI AI/ML module - OSS stub or EE impl
+	"axonflow/platform/orchestrator/rbi"  // RBI FREE-AI module - Community stub or EE impl
+	"axonflow/platform/orchestrator/sebi" // SEBI AI/ML module - Community stub or EE impl
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -255,6 +255,10 @@ func LoadLLMConfig() LLMRouterConfig {
 	config.OllamaEndpoint = os.Getenv("OLLAMA_ENDPOINT")
 	config.OllamaModel = os.Getenv("OLLAMA_MODEL")
 
+	// Gemini configuration
+	config.GeminiKey = os.Getenv("GOOGLE_API_KEY")
+	config.GeminiModel = os.Getenv("GOOGLE_MODEL")
+
 	// Backward compatibility: LocalEndpoint
 	if config.OllamaEndpoint == "" {
 		config.LocalEndpoint = os.Getenv("LOCAL_LLM_ENDPOINT")
@@ -272,6 +276,9 @@ func LoadLLMConfig() LLMRouterConfig {
 	}
 	if config.OllamaEndpoint != "" {
 		log.Printf("  - Ollama: enabled (endpoint: %s, model: %s)", config.OllamaEndpoint, config.OllamaModel)
+	}
+	if config.GeminiKey != "" {
+		log.Printf("  - Gemini: enabled (key: %s..., model: %s)", config.GeminiKey[:min(10, len(config.GeminiKey))], config.GeminiModel)
 	}
 	if config.LocalEndpoint != "" && config.OllamaEndpoint == "" {
 		log.Printf("  - Local LLM: enabled (endpoint: %s) [deprecated: use OLLAMA_ENDPOINT]", config.LocalEndpoint)
@@ -601,7 +608,7 @@ func initializeComponents() {
 	InitRuntimeConfigService(usageDB, selfHosted)
 	log.Println("RuntimeConfigService initialized (ADR-007 compliant)")
 
-	// Wire config file loader for Priority 2 (OSS config file support)
+	// Wire config file loader for Priority 2 (Community config file support)
 	// Checks AXONFLOW_CONFIG_FILE or AXONFLOW_LLM_CONFIG_FILE env vars
 	SetConfigFileLoaderFromEnv() // Logs its own success/failure messages
 

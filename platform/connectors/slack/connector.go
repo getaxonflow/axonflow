@@ -10,7 +10,7 @@
 // limitations under the License.
 
 // Package slack provides the Slack messaging connector.
-// This is the OSS stub - the full Slack connector is an enterprise feature.
+// This is the Community stub - the full Slack connector is an enterprise feature.
 package slack
 
 import (
@@ -23,33 +23,33 @@ import (
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
 var ErrEnterpriseFeature = errors.New("slack connector is an enterprise feature - contact sales@getaxonflow.com")
 
-// SlackConnector is the OSS stub for the Slack messaging connector.
+// SlackConnector is the Community stub for the Slack messaging connector.
 // The full implementation is available in the enterprise edition.
 type SlackConnector struct {
 	config *base.ConnectorConfig
 }
 
 // NewSlackConnector creates a new Slack connector instance.
-// OSS stub: Returns a stub that will error on Connect().
+// Community stub: Returns a stub that will error on Connect().
 func NewSlackConnector() *SlackConnector {
 	return &SlackConnector{}
 }
 
 // Connect establishes a connection to Slack API.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SlackConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
 	c.config = config
 	return base.NewConnectorError(config.Name, "Connect", "slack connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
-// OSS stub: No-op.
+// Community stub: No-op.
 func (c *SlackConnector) Disconnect(ctx context.Context) error {
 	return nil
 }
 
 // HealthCheck verifies the API is accessible.
-// OSS stub: Returns unhealthy status indicating enterprise feature.
+// Community stub: Returns unhealthy status indicating enterprise feature.
 func (c *SlackConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
 	return &base.HealthStatus{
 		Healthy: false,
@@ -58,13 +58,13 @@ func (c *SlackConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, e
 }
 
 // Query executes a read operation (list channels, users, messages).
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SlackConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	return nil, base.NewConnectorError("slack", "Query", "slack connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Execute executes a write operation (send message, create channel).
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *SlackConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	return nil, base.NewConnectorError("slack", "Execute", "slack connector requires enterprise license", ErrEnterpriseFeature)
 }
@@ -84,11 +84,11 @@ func (c *SlackConnector) Type() string {
 
 // Version returns the connector version.
 func (c *SlackConnector) Version() string {
-	return "oss-stub"
+	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.
-// OSS stub: Returns empty list (no capabilities in OSS mode).
+// Community stub: Returns empty list (no capabilities in Community mode).
 func (c *SlackConnector) Capabilities() []string {
 	return []string{}
 }

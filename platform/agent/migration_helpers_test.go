@@ -386,8 +386,8 @@ func TestGetMigrationPaths(t *testing.T) {
 		expectedPaths []string
 	}{
 		{
-			name:       "OSS mode",
-			deployMode: "oss",
+			name:       "Community mode",
+			deployMode: "community",
 			expectedPaths: []string{
 				"/test/migrations/core",
 			},
@@ -489,10 +489,10 @@ func TestGetMigrationPaths_DefaultMode(t *testing.T) {
 	basePath := "/test/migrations"
 	paths := getMigrationPaths(basePath)
 
-	// Should default to oss mode (core only) for docker-compose and OSS users
+	// Should default to community mode (core only) for docker-compose and Community users
 	expectedCount := 1 // core only
 	if len(paths) != expectedCount {
-		t.Errorf("Expected %d paths for default mode (oss), got %d", expectedCount, len(paths))
+		t.Errorf("Expected %d paths for default mode (community), got %d", expectedCount, len(paths))
 	}
 
 	// First path should be core
@@ -597,7 +597,7 @@ func TestCollectMigrations_SkipDownMigrations(t *testing.T) {
 		}
 	}
 
-	os.Setenv("DEPLOYMENT_MODE", "oss")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	migrations, err := collectMigrations(tmpDir)
@@ -619,7 +619,7 @@ func TestCollectMigrations_SkipDownMigrations(t *testing.T) {
 func TestCollectMigrations_NonexistentDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("DEPLOYMENT_MODE", "oss")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	// Should not error, just log and skip

@@ -157,7 +157,7 @@ func maskARN(arn string) string {
 }
 
 // LocalSecretsManager implements SecretsManager using local environment variables
-// Useful for development and OSS deployments without AWS Secrets Manager
+// Useful for development and Community deployments without AWS Secrets Manager
 type LocalSecretsManager struct {
 	secrets map[string]map[string]string
 	mu      sync.RWMutex

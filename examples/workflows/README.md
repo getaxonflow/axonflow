@@ -13,7 +13,7 @@ cp .env.example .env
 go run main.go
 ```
 
-## Basic Patterns (OSS Features)
+## Basic Patterns (Community Features)
 
 ### 1. Simple Sequential
 **File:** `01-simple-sequential/`

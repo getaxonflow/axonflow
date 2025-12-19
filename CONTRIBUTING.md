@@ -174,7 +174,7 @@ Found a bug? We'd love your help fixing it:
 ### New Features
 Want to add functionality? Great!
 1. Open an issue to discuss the feature first
-2. Ensure it fits the OSS scope (see [OSS vs Enterprise](#oss-vs-enterprise))
+2. Ensure it fits the Community scope (see [Community vs Enterprise](#community-vs-enterprise))
 3. Implement with tests and documentation
 4. Submit a PR
 
@@ -199,14 +199,14 @@ Make AxonFlow faster:
 - Reduce memory usage
 - Improve startup time
 
-### OSS vs Enterprise
+### Community vs Enterprise
 
-AxonFlow follows an open-core model:
+AxonFlow follows a source-available model:
 
-**OSS (Open Source) - Contributions Welcome:**
+**Community (Source-Available) - Contributions Welcome:**
 - `platform/agent/` - Core agent functionality
 - `platform/orchestrator/` - Policy engine and LLM routing
-- `platform/connectors/` - OSS connectors (postgres, redis, http, cassandra)
+- `platform/connectors/` - Community connectors (postgres, redis, http, cassandra)
 - `platform/connectors/community/` - Community-contributed connectors
 - `platform/shared/` - Shared utilities
 - `docs/` - Documentation
@@ -217,7 +217,7 @@ AxonFlow follows an open-core model:
 - `ee/platform/agent/license/` - License validation
 - `ee/platform/customers/` - Customer demos
 
-Contributions to the OSS codebase are synced from the OSS repo to the enterprise repo, ensuring your work benefits all users.
+Contributions to the Community codebase are synced from the Community repo to the enterprise repo, ensuring your work benefits all users.
 
 ## Contributing Connectors
 
@@ -235,16 +235,16 @@ platform/connectors/
 │       └── connector_test.go
 ├── config/            # Configuration loading
 ├── registry/          # Connector registry
-├── postgres/          # OSS connector example
-├── cassandra/         # OSS connector example
-├── redis/             # OSS connector example
-└── http/              # OSS connector example
+├── postgres/          # Community connector example
+├── cassandra/         # Community connector example
+├── redis/             # Community connector example
+└── http/              # Community connector example
 ```
 
-**OSS vs Enterprise Connectors:**
-- **OSS connectors** (`postgres`, `cassandra`, `redis`, `http`): Full implementations, included in open source
-- **Community connectors** (`community/*`): Contributed by the community, included in open source
-- **Enterprise connectors** (`ee/platform/connectors/*`): Commercial features with OSS stubs
+**Community vs Enterprise Connectors:**
+- **Community connectors** (`postgres`, `cassandra`, `redis`, `http`): Full implementations, included in source-available release
+- **Community-contributed connectors** (`community/*`): Contributed by the community, included in source-available release
+- **Enterprise connectors** (`ee/platform/connectors/*`): Commercial features with Community stubs
 
 ### Creating a New Connector
 
@@ -427,7 +427,7 @@ connectors:
 
 ### Example Community Connectors
 
-See existing OSS connectors for reference:
+See existing Community connectors for reference:
 - `platform/connectors/postgres/` - PostgreSQL connector
 - `platform/connectors/http/` - Generic HTTP connector
 - `platform/connectors/redis/` - Redis connector

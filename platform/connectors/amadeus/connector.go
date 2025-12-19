@@ -10,7 +10,7 @@
 // limitations under the License.
 
 // Package amadeus provides the Amadeus Travel API connector.
-// This is the OSS stub - the full Amadeus connector is an enterprise feature.
+// This is the Community stub - the full Amadeus connector is an enterprise feature.
 package amadeus
 
 import (
@@ -23,33 +23,33 @@ import (
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
 var ErrEnterpriseFeature = errors.New("amadeus connector is an enterprise feature - contact sales@getaxonflow.com")
 
-// AmadeusConnector is the OSS stub for the Amadeus Travel API connector.
+// AmadeusConnector is the Community stub for the Amadeus Travel API connector.
 // The full implementation is available in the enterprise edition.
 type AmadeusConnector struct {
 	config *base.ConnectorConfig
 }
 
 // NewAmadeusConnector creates a new Amadeus connector instance.
-// OSS stub: Returns a stub that will error on Connect().
+// Community stub: Returns a stub that will error on Connect().
 func NewAmadeusConnector() *AmadeusConnector {
 	return &AmadeusConnector{}
 }
 
 // Connect establishes a connection to Amadeus API.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *AmadeusConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
 	c.config = config
 	return base.NewConnectorError(config.Name, "Connect", "amadeus connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
-// OSS stub: No-op.
+// Community stub: No-op.
 func (c *AmadeusConnector) Disconnect(ctx context.Context) error {
 	return nil
 }
 
 // HealthCheck verifies the API is accessible.
-// OSS stub: Returns unhealthy status indicating enterprise feature.
+// Community stub: Returns unhealthy status indicating enterprise feature.
 func (c *AmadeusConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
 	return &base.HealthStatus{
 		Healthy: false,
@@ -58,13 +58,13 @@ func (c *AmadeusConnector) HealthCheck(ctx context.Context) (*base.HealthStatus,
 }
 
 // Query executes a read operation.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *AmadeusConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	return nil, base.NewConnectorError("amadeus", "Query", "amadeus connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Execute executes a write operation.
-// OSS stub: Always returns ErrEnterpriseFeature.
+// Community stub: Always returns ErrEnterpriseFeature.
 func (c *AmadeusConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	return nil, base.NewConnectorError("amadeus", "Execute", "amadeus connector requires enterprise license", ErrEnterpriseFeature)
 }
@@ -84,11 +84,11 @@ func (c *AmadeusConnector) Type() string {
 
 // Version returns the connector version.
 func (c *AmadeusConnector) Version() string {
-	return "oss-stub"
+	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.
-// OSS stub: Returns empty list (no capabilities in OSS mode).
+// Community stub: Returns empty list (no capabilities in Community mode).
 func (c *AmadeusConnector) Capabilities() []string {
 	return []string{}
 }

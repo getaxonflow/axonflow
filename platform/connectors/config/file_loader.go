@@ -294,7 +294,7 @@ func ValidateConfigFile(config *ConfigFile) error {
 // GenerateExampleConfigFile generates an example configuration file
 func GenerateExampleConfigFile() string {
 	return `# AxonFlow Runtime Configuration
-# This file configures MCP connectors and LLM providers for OSS deployments
+# This file configures MCP connectors and LLM providers for Community deployments
 # Environment variables can be referenced using ${VAR_NAME} or ${VAR_NAME:-default} syntax
 
 version: "1.0"

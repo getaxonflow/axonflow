@@ -85,7 +85,7 @@ type RuntimeConfigService struct {
 	mu             sync.RWMutex
 
 	// Configuration sources (in priority order)
-	configFile string // Path to YAML/JSON config file (OSS mode)
+	configFile string // Path to YAML/JSON config file (Community mode)
 	selfHosted bool   // If true, prefer config file over database
 
 	// Config file loader (set by SetConfigFileLoader)
@@ -132,7 +132,7 @@ func NewRuntimeConfigService(opts RuntimeConfigServiceOptions) *RuntimeConfigSer
 	return svc
 }
 
-// SetConfigFileLoader sets the config file loader for OSS mode
+// SetConfigFileLoader sets the config file loader for Community mode
 func (s *RuntimeConfigService) SetConfigFileLoader(loader ConfigFileLoader) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,7 +140,7 @@ func (s *RuntimeConfigService) SetConfigFileLoader(loader ConfigFileLoader) {
 }
 
 // GetConnectorConfigs returns all enabled connector configs for a tenant
-// Priority: 1. Database (Enterprise) 2. Config file (OSS) 3. Env vars (Fallback)
+// Priority: 1. Database (Enterprise) 2. Config file (Community edition) 3. Env vars (Fallback)
 func (s *RuntimeConfigService) GetConnectorConfigs(ctx context.Context, tenantID string) ([]*base.ConnectorConfig, ConfigSource, error) {
 	// Check cache first
 	if cached, ok := s.cache.GetConnectors(tenantID); ok {
@@ -163,7 +163,7 @@ func (s *RuntimeConfigService) GetConnectorConfigs(ctx context.Context, tenantID
 		}
 	}
 
-	// Priority 2: Config file (for OSS)
+	// Priority 2: Config file (for Community edition)
 	s.mu.RLock()
 	fileLoader := s.fileLoader
 	s.mu.RUnlock()
@@ -230,7 +230,7 @@ func (s *RuntimeConfigService) GetLLMProviderConfigs(ctx context.Context, tenant
 		}
 	}
 
-	// Priority 2: Config file (for OSS)
+	// Priority 2: Config file (for Community edition)
 	s.mu.RLock()
 	fileLoader := s.fileLoader
 	s.mu.RUnlock()
@@ -592,6 +592,28 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 			Enabled:  true,
 		})
 		s.logger.Println("Loaded Anthropic config from environment variables")
+	}
+
+	// Gemini configuration
+	if apiKey := os.Getenv("GOOGLE_API_KEY"); apiKey != "" {
+		model := os.Getenv("GOOGLE_MODEL")
+		if model == "" {
+			model = "gemini-2.0-flash"
+		}
+		configs = append(configs, &LLMProviderConfig{
+			ProviderName: "gemini",
+			DisplayName:  "Google Gemini",
+			Config: map[string]interface{}{
+				"model": model,
+			},
+			Credentials: map[string]string{
+				"api_key": apiKey,
+			},
+			Priority: 5,
+			Weight:   1.0,
+			Enabled:  true,
+		})
+		s.logger.Println("Loaded Gemini config from environment variables")
 	}
 
 	return configs

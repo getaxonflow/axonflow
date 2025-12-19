@@ -225,12 +225,12 @@ func TestConnectorFactoryRegistry_Clear(t *testing.T) {
 	}
 }
 
-func TestConnectorFactoryRegistry_RegisterOSSConnectors(t *testing.T) {
+func TestConnectorFactoryRegistry_RegisterCommunityConnectors(t *testing.T) {
 	factory := NewConnectorFactoryRegistry()
-	factory.RegisterOSSConnectors()
+	factory.RegisterCommunityConnectors()
 
-	// OSS connectors: postgres, mysql, mongodb, cassandra, redis, http
-	expectedOSSConnectors := []string{
+	// Community connectors: postgres, mysql, mongodb, cassandra, redis, http
+	expectedCommunityConnectors := []string{
 		ConnectorPostgres,
 		ConnectorMySQL,
 		ConnectorMongoDB,
@@ -239,14 +239,14 @@ func TestConnectorFactoryRegistry_RegisterOSSConnectors(t *testing.T) {
 		ConnectorHTTP,
 	}
 
-	for _, ct := range expectedOSSConnectors {
+	for _, ct := range expectedCommunityConnectors {
 		if !factory.IsRegistered(ct) {
-			t.Errorf("Expected OSS connector '%s' to be registered", ct)
+			t.Errorf("Expected Community connector '%s' to be registered", ct)
 		}
 	}
 
 	// Verify we can create each one
-	for _, ct := range expectedOSSConnectors {
+	for _, ct := range expectedCommunityConnectors {
 		conn, err := factory.Create(ct)
 		if err != nil {
 			t.Errorf("Failed to create '%s' connector: %v", ct, err)
@@ -265,9 +265,9 @@ func TestGetDefaultConnectorFactory(t *testing.T) {
 		t.Fatal("Expected non-nil default factory")
 	}
 
-	// Should have OSS connectors registered
+	// Should have Community connectors registered
 	if factory.Count() < 6 {
-		t.Errorf("Expected at least 6 OSS connectors, got %d", factory.Count())
+		t.Errorf("Expected at least 6 Community connectors, got %d", factory.Count())
 	}
 
 	// Verify singleton behavior

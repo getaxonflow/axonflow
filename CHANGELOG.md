@@ -282,7 +282,7 @@ The following versions were internal development milestones leading up to v1.0.0
 
 ### Added
 
-- **OSS Launch Preparation**: Docker Compose quickstart for local development
+- **Community Launch Preparation**: Docker Compose quickstart for local development
   - README overhaul with competitive positioning
   - Quick start guide (<5 minutes setup)
   - Self-hosted mode documentation
@@ -297,7 +297,7 @@ The following versions were internal development milestones leading up to v1.0.0
 
 ### Changed
 
-- **Roadmap**: Updated master roadmap with OSS launch status
+- **Roadmap**: Updated master roadmap with Community launch status
 - **Test Coverage**: Updated documentation with orchestrator integration tests (70.4%)
 
 ---

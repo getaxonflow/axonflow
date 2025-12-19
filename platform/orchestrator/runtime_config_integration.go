@@ -29,6 +29,7 @@ const (
 	ProviderAnthropic = "anthropic"
 	ProviderBedrock   = "bedrock"
 	ProviderOllama    = "ollama"
+	ProviderGemini    = "gemini"
 )
 
 // ValidLLMProviders is the list of supported LLM provider names.
@@ -37,6 +38,7 @@ var ValidLLMProviders = []string{
 	ProviderAnthropic,
 	ProviderBedrock,
 	ProviderOllama,
+	ProviderGemini,
 }
 
 // isValidLLMProvider checks if the given provider name is valid.
@@ -186,6 +188,14 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 				log.Printf("[LLM Config] WARNING: Ollama provider requires endpoint. "+
 					"Got model=%q but no endpoint - provider disabled", model)
 			}
+		case ProviderGemini:
+			if apiKey, ok := credentials["api_key"]; ok && apiKey != "" {
+				routerConfig.GeminiKey = apiKey
+				if model, hasModel := providerConfig["model"].(string); hasModel && model != "" {
+					routerConfig.GeminiModel = model
+				}
+				log.Printf("[LLM Config] Gemini provider loaded from %s", source)
+			}
 		}
 	}
 
@@ -202,6 +212,9 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 	}
 	if routerConfig.OllamaEndpoint != "" {
 		providers = append(providers, ProviderOllama)
+	}
+	if routerConfig.GeminiKey != "" {
+		providers = append(providers, ProviderGemini)
 	}
 
 	if len(providers) == 0 {
