@@ -105,41 +105,53 @@ func TestSelfHostedMode_RequiresAcknowledgment(t *testing.T) {
 // TestSelfHostedMode_WorksInDevelopment verifies that self-hosted mode
 // works correctly when properly configured in a development environment
 func TestSelfHostedMode_WorksInDevelopment(t *testing.T) {
-	// Set up properly configured self-hosted environment
-	t.Setenv("SELF_HOSTED_MODE", "true")
-	t.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", SelfHostedModeAcknowledgment)
-	t.Setenv("ENVIRONMENT", "development")
-
-	// Should succeed with any token
-	user, err := validateUserToken("literally-any-token-works", "test-tenant")
-	if err != nil {
-		t.Fatalf("Self-hosted mode should accept any token in development: %v", err)
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{"dummy token", "literally-any-token-works"},
+		{"no token", ""},
 	}
 
-	// Verify user properties
-	if user.Role != "admin" {
-		t.Errorf("Expected admin role, got: %s", user.Role)
-	}
-	if user.TenantID != "test-tenant" {
-		t.Errorf("Expected tenant ID 'test-tenant', got: %s", user.TenantID)
-	}
-	if user.Email != "local-dev@axonflow.local" {
-		t.Errorf("Expected local dev email, got: %s", user.Email)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up properly configured self-hosted environment
+			t.Setenv("SELF_HOSTED_MODE", "true")
+			t.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", SelfHostedModeAcknowledgment)
+			t.Setenv("ENVIRONMENT", "development")
 
-	// Verify admin permissions
-	expectedPerms := []string{"query", "llm", "mcp_query", "admin"}
-	for _, perm := range expectedPerms {
-		found := false
-		for _, userPerm := range user.Permissions {
-			if userPerm == perm {
-				found = true
-				break
+			// Should succeed with any token
+			user, err := validateUserToken(tt.token, "test-tenant")
+			if err != nil {
+				t.Fatalf("Self-hosted mode should accept any token in development: %v", err)
 			}
-		}
-		if !found {
-			t.Errorf("Expected permission %q to be present", perm)
-		}
+
+			// Verify user properties
+			if user.Role != "admin" {
+				t.Errorf("Expected admin role, got: %s", user.Role)
+			}
+			if user.TenantID != "test-tenant" {
+				t.Errorf("Expected tenant ID 'test-tenant', got: %s", user.TenantID)
+			}
+			if user.Email != "local-dev@axonflow.local" {
+				t.Errorf("Expected local dev email, got: %s", user.Email)
+			}
+
+			// Verify admin permissions
+			expectedPerms := []string{"query", "llm", "mcp_query", "admin"}
+			for _, perm := range expectedPerms {
+				found := false
+				for _, userPerm := range user.Permissions {
+					if userPerm == perm {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected permission %q to be present", perm)
+				}
+			}
+		})
 	}
 }
 
