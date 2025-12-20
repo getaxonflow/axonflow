@@ -141,6 +141,21 @@ To upgrade from 1.0.x:
 
 ---
 
+## [1.1.2] - 2025-12-20
+
+### Fixed
+
+- **LLM Router:** Use provider's configured model instead of hardcoded defaults ([#94](https://github.com/getaxonflow/axonflow/pull/94))
+  - Previously, `selectModel()` returned hardcoded model names (e.g., `gpt-3.5-turbo`, `claude-3-5-sonnet`) which caused failures when the API key didn't have access to those specific models
+  - Now respects `OPENAI_MODEL`, `ANTHROPIC_MODEL`, and other provider-specific environment variables
+  - Model specified in request context takes highest priority
+
+### Changed
+
+- Added `OPENAI_MODEL` and `ANTHROPIC_MODEL` environment variable passthrough in docker-compose.yml
+
+---
+
 ## [1.1.1] - 2025-12-20
 
 ### Fixed
