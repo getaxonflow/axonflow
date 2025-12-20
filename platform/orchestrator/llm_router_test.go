@@ -392,6 +392,8 @@ func TestCostEstimation(t *testing.T) {
 }
 
 // TestModelSelection tests model selection logic
+// selectModel() returns empty string for all providers to let them use their
+// configured model from environment variables (OPENAI_MODEL, ANTHROPIC_MODEL, etc.)
 func TestModelSelection(t *testing.T) {
 	router := &LLMRouter{}
 
@@ -407,7 +409,7 @@ func TestModelSelection(t *testing.T) {
 			req: OrchestratorRequest{
 				RequestType: "code_generation",
 			},
-			expectedModel: "gpt-4",
+			expectedModel: "", // Empty - provider uses configured model
 		},
 		{
 			name:         "OpenAI - regular query",
@@ -415,7 +417,7 @@ func TestModelSelection(t *testing.T) {
 			req: OrchestratorRequest{
 				RequestType: "sql",
 			},
-			expectedModel: "gpt-3.5-turbo",
+			expectedModel: "", // Empty - provider uses configured model
 		},
 		{
 			name:         "Anthropic - any request",
@@ -423,7 +425,7 @@ func TestModelSelection(t *testing.T) {
 			req: OrchestratorRequest{
 				RequestType: "analysis",
 			},
-			expectedModel: "claude-3-5-sonnet-20241022",
+			expectedModel: "", // Empty - provider uses configured model
 		},
 		{
 			name:         "Local - any request",
@@ -431,7 +433,26 @@ func TestModelSelection(t *testing.T) {
 			req: OrchestratorRequest{
 				RequestType: "simple_query",
 			},
-			expectedModel: "llama2",
+			expectedModel: "", // Empty - provider uses configured model
+		},
+		{
+			name:         "Model from request context",
+			providerName: "openai",
+			req: OrchestratorRequest{
+				RequestType: "chat",
+				Context: map[string]interface{}{
+					"model": "gpt-4-turbo",
+				},
+			},
+			expectedModel: "gpt-4-turbo", // Uses model from context
+		},
+		{
+			name:         "Unknown provider",
+			providerName: "unknown",
+			req: OrchestratorRequest{
+				RequestType: "query",
+			},
+			expectedModel: "", // Empty for unknown providers
 		},
 	}
 

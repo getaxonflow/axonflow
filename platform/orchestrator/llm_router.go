@@ -379,30 +379,42 @@ func (r *LLMRouter) selectProvider(req OrchestratorRequest) (LLMProvider, error)
 	return r.providers[selected], nil
 }
 
-// selectModel selects the appropriate model for a provider
+// selectModel selects the appropriate model for a provider.
+// Priority order:
+// 1. Model explicitly specified in request context
+// 2. Provider's configured model (via environment variable)
+// 3. Provider's default model (hardcoded fallback)
 func (r *LLMRouter) selectModel(providerName string, req OrchestratorRequest) string {
+	// First, check if model is explicitly specified in request context
+	if model, ok := req.Context["model"].(string); ok && model != "" {
+		return model
+	}
+
+	// Return empty string to let the provider use its configured model.
+	// Each provider should have its own default model configured via
+	// environment variables (e.g., OPENAI_MODEL, ANTHROPIC_MODEL).
+	// This ensures docker-compose and deployment configs are respected.
 	switch providerName {
 	case "openai":
-		if req.RequestType == "code_generation" {
-			return "gpt-4"
-		}
-		return "gpt-3.5-turbo"
+		// Return empty string to use OPENAI_MODEL env var or provider default
+		return ""
 	case "anthropic":
-		// Use Claude 4 Sonnet for complex tasks, Claude 3.5 Sonnet for standard
-		if req.RequestType == "complex_analysis" || req.RequestType == "code_generation" {
-			return anthropic.ModelClaude4Sonnet
-		}
-		return anthropic.ModelClaude35Sonnet
+		// Return empty string to use ANTHROPIC_MODEL env var or provider default
+		return ""
+	case "gemini":
+		// Return empty string to use GOOGLE_MODEL env var or provider default
+		return ""
 	case "bedrock":
 		// Return empty string to use provider's configured model
 		// Bedrock model IDs must match format: provider.model-name-version
 		// e.g., anthropic.claude-3-5-sonnet-20240620-v1:0
 		return ""
 	case "ollama":
-		// Return empty string to use provider's configured model
+		// Return empty string to use OLLAMA_MODEL env var or provider default
 		return ""
 	case "local":
-		return "llama2"
+		// Deprecated: use ollama instead
+		return ""
 	default:
 		return ""
 	}
