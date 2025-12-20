@@ -911,7 +911,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	validateUserStart := time.Now()
 	user, err := validateUserToken(req.UserToken, client.TenantID)
 	if err != nil {
-		sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
+		sendErrorResponse(w, fmt.Sprintf("Invalid user token: %v", err), http.StatusUnauthorized, nil)
 		return
 	}
 
@@ -1185,11 +1185,7 @@ func validateClient(clientID string) (*Client, error) {
 }
 
 func validateUserToken(tokenString string, expectedTenantID string) (*User, error) {
-	if tokenString == "" {
-		return nil, fmt.Errorf("token required")
-	}
-
-	// Self-hosted mode: Accept any token for local development
+	// Self-hosted mode: Don't require a token for local development
 	// SECURITY: This bypass requires explicit safeguards
 	if os.Getenv("SELF_HOSTED_MODE") == "true" {
 		// Safeguard 1: Block in production environment (case-insensitive)
@@ -1217,6 +1213,8 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 			Permissions: []string{"query", "llm", "mcp_query", "admin"},
 			TenantID:    expectedTenantID,
 		}, nil
+	} else if tokenString == "" {
+		return nil, fmt.Errorf("token required")
 	}
 
 	// Test mode: Tenant mismatch test token - user from trip_planner_tenant
