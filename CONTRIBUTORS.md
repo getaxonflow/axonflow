@@ -54,11 +54,9 @@ We value all types of contributions:
 
 ## Contribution Statistics
 
-<!-- This section is updated automatically by our tooling -->
-
 | Metric | Count |
 |--------|-------|
-| Total Contributors | 1 |
+| Total Contributors | 2 |
 | PRs Merged | - |
 | Issues Closed | - |
 
