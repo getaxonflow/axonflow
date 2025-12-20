@@ -26,7 +26,7 @@ Contributors are listed here as their PRs are merged.
 
 | Name | Contribution | PR |
 |------|--------------|-----|
-| *Be the first contributor!* | - | - |
+| [Gregory Zak](https://github.com/gzak) | Self-hosted auth fix | [#89](https://github.com/getaxonflow/axonflow/pull/89) |
 
 ## Documentation Contributors
 
@@ -54,11 +54,9 @@ We value all types of contributions:
 
 ## Contribution Statistics
 
-<!-- This section is updated automatically by our tooling -->
-
 | Metric | Count |
 |--------|-------|
-| Total Contributors | 1 |
+| Total Contributors | 2 |
 | PRs Merged | - |
 | Issues Closed | - |
 
