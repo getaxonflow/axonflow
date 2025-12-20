@@ -14,6 +14,7 @@ package usage
 import (
 	"database/sql"
 	"log"
+	"os"
 )
 
 // UsageRecorder handles recording usage events to the database
@@ -41,6 +42,11 @@ type APICallEvent struct {
 // RecordAPICall records an API call event to the database
 // Uses goroutine-safe async pattern - errors are logged but don't block responses
 func (r *UsageRecorder) RecordAPICall(event APICallEvent) error {
+	if os.Getenv("SELF_HOSTED_MODE") == "true" {
+		log.Printf("[DEBUG] unrecorded audit payload: %v", event)
+		return nil
+	}
+
 	_, err := r.db.Exec(`
 		INSERT INTO usage_events (
 			org_id, client_id, event_type, instance_id, instance_type,
@@ -75,6 +81,11 @@ type LLMRequestEvent struct {
 // RecordLLMRequest records an LLM API call event with token usage and cost
 // Uses goroutine-safe async pattern - errors are logged but don't block responses
 func (r *UsageRecorder) RecordLLMRequest(event LLMRequestEvent) error {
+	if os.Getenv("SELF_HOSTED_MODE") == "true" {
+		log.Printf("[DEBUG] unrecorded audit payload: %v", event)
+		return nil
+	}
+
 	// Calculate cost based on provider pricing
 	costCents := CalculateCost(event.LLMProvider, event.LLMModel,
 		event.PromptTokens, event.CompletionTokens)

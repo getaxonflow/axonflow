@@ -12,6 +12,7 @@
 package usage
 
 import (
+	"os"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -216,6 +217,18 @@ func TestRecordAPICall_Error(t *testing.T) {
 	}
 }
 
+// TestRecordAPICall_SelfHost tests that RecordAPICall is a no-op
+func TestRecordAPICall_SelfHost(t *testing.T) {
+	os.Setenv("SELF_HOSTED_MODE", "true")
+	defer os.Unsetenv("SELF_HOSTED_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordAPICall(APICallEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
 // TestRecordLLMRequest tests the RecordLLMRequest function with sqlmock
 func TestRecordLLMRequest(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -333,6 +346,18 @@ func TestRecordLLMRequest_EmptyClientID(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestRecordAPICall_SelfHost tests that RecordAPICall is a no-op
+func TestRecordLLMRequest_SelfHost(t *testing.T) {
+	os.Setenv("SELF_HOSTED_MODE", "true")
+	defer os.Unsetenv("SELF_HOSTED_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordLLMRequest(LLMRequestEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
 	}
 }
 
