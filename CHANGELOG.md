@@ -141,6 +141,17 @@ To upgrade from 1.0.x:
 
 ---
 
+## [1.1.1] - 2025-12-20
+
+### Fixed
+
+- **Self-hosted mode:** Fixed authentication bypass not working when `userToken` is empty or omitted ([#89](https://github.com/getaxonflow/axonflow/pull/89))
+  - Previously, self-hosted mode required a dummy `userToken`/`apiKey` even though it should accept requests without credentials
+  - Now correctly bypasses authentication when `SELF_HOSTED_MODE=true` and `SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH` are set
+  - Thanks to [@gzak](https://github.com/gzak) for the contribution
+
+---
+
 ## Pre-release Development History
 
 The following versions were internal development milestones leading up to v1.0.0.
