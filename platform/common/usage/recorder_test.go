@@ -217,13 +217,47 @@ func TestRecordAPICall_Error(t *testing.T) {
 	}
 }
 
-// TestRecordAPICall_SelfHost tests that RecordAPICall is a no-op
-func TestRecordAPICall_SelfHost(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
+// TestRecordAPICall_CommunityMode tests that RecordAPICall is a no-op in community mode
+func TestRecordAPICall_CommunityMode(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	recorder := NewUsageRecorder(nil)
 	err := recorder.RecordAPICall(APICallEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordAPICall_EmptyDeploymentMode tests that RecordAPICall is a no-op when DEPLOYMENT_MODE is unset
+func TestRecordAPICall_EmptyDeploymentMode(t *testing.T) {
+	os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordAPICall(APICallEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordLLMRequest_CommunityMode tests that RecordLLMRequest is a no-op in community mode
+func TestRecordLLMRequest_CommunityMode(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordLLMRequest(LLMRequestEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordLLMRequest_EmptyDeploymentMode tests that RecordLLMRequest is a no-op when DEPLOYMENT_MODE is unset
+func TestRecordLLMRequest_EmptyDeploymentMode(t *testing.T) {
+	os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordLLMRequest(LLMRequestEvent{})
 	if err != nil {
 		t.Fatalf("Expected no-op but failed instead: %v", err)
 	}
@@ -346,18 +380,6 @@ func TestRecordLLMRequest_EmptyClientID(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("Unfulfilled expectations: %v", err)
-	}
-}
-
-// TestRecordAPICall_SelfHost tests that RecordAPICall is a no-op
-func TestRecordLLMRequest_SelfHost(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-
-	recorder := NewUsageRecorder(nil)
-	err := recorder.RecordLLMRequest(LLMRequestEvent{})
-	if err != nil {
-		t.Fatalf("Expected no-op but failed instead: %v", err)
 	}
 }
 
