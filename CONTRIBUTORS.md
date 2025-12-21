@@ -27,6 +27,7 @@ Contributors are listed here as their PRs are merged.
 | Name | Contribution | PR |
 |------|--------------|-----|
 | [Gregory Zak](https://github.com/gzak) | Self-hosted auth fix | [#89](https://github.com/getaxonflow/axonflow/pull/89) |
+| [Gregory Zak](https://github.com/gzak) | Usage recording Community fix | [#97](https://github.com/getaxonflow/axonflow/pull/97) |
 
 ## Documentation Contributors
 
