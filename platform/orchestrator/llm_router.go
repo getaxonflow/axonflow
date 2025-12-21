@@ -540,6 +540,7 @@ func (r *LLMRouter) healthCheckRoutine() {
 // OpenAIProvider implements real OpenAI API calls
 type OpenAIProvider struct {
 	apiKey  string
+	model   string
 	healthy bool
 	client  *http.Client
 }
@@ -550,10 +551,16 @@ func (p *OpenAIProvider) Name() string {
 
 func (p *OpenAIProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
 	start := time.Now()
-	
+
+	// Use model from options, or fall back to provider's configured model
+	model := options.Model
+	if model == "" {
+		model = p.model
+	}
+
 	// Build OpenAI request
 	openAIReq := map[string]interface{}{
-		"model": options.Model,
+		"model": model,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -628,99 +635,6 @@ func (p *OpenAIProvider) GetCapabilities() []string {
 
 func (p *OpenAIProvider) EstimateCost(tokens int) float64 {
 	return float64(tokens) * 0.00002 // $0.02 per 1K tokens
-}
-
-// AnthropicProvider implements real Anthropic API calls
-type AnthropicProvider struct {
-	apiKey  string
-	healthy bool
-	client  *http.Client
-}
-
-func (p *AnthropicProvider) Name() string {
-	return "anthropic"
-}
-
-func (p *AnthropicProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
-	start := time.Now()
-	
-	// Build Anthropic request
-	anthropicReq := map[string]interface{}{
-		"model": options.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"max_tokens": options.MaxTokens,
-		"temperature": options.Temperature,
-	}
-
-	reqBody, err := json.Marshal(anthropicReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %v", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("Error closing response body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic API error: %s", string(body))
-	}
-
-	var anthropicResp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&anthropicResp); err != nil {
-		return nil, err
-	}
-
-	content := ""
-	if len(anthropicResp.Content) > 0 {
-		content = anthropicResp.Content[0].Text
-	}
-
-	return &LLMResponse{
-		Content:      content,
-		Model:        options.Model,
-		TokensUsed:   anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens,
-		ResponseTime: time.Since(start),
-		Metadata:     map[string]interface{}{"provider": "anthropic"},
-	}, nil
-}
-
-func (p *AnthropicProvider) IsHealthy() bool {
-	return p.healthy && p.apiKey != ""
-}
-
-func (p *AnthropicProvider) GetCapabilities() []string {
-	return []string{"reasoning", "analysis", "writing"}
-}
-
-func (p *AnthropicProvider) EstimateCost(tokens int) float64 {
-	return float64(tokens) * 0.00003 // $0.03 per 1K tokens
 }
 
 // EnhancedAnthropicProvider wraps the new anthropic package provider
@@ -1323,8 +1237,16 @@ func NewOpenAIProvider(apiKey string) LLMProvider {
 			apiKey:  apiKey,
 		}
 	}
+
+	// Get model from environment, with fallback to gpt-4o
+	model := os.Getenv("OPENAI_MODEL")
+	if model == "" {
+		model = "gpt-4o"
+	}
+
 	return &OpenAIProvider{
 		apiKey:  apiKey,
+		model:   model,
 		healthy: true,
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}

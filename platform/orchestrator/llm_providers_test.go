@@ -499,7 +499,7 @@ func TestLoadLLMConfig(t *testing.T) {
 // TestProviderInterface ensures all providers implement the interface
 func TestProviderInterface(t *testing.T) {
 	var _ LLMProvider = (*OpenAIProvider)(nil)
-	var _ LLMProvider = (*AnthropicProvider)(nil)
+	var _ LLMProvider = (*EnhancedAnthropicProvider)(nil)
 	var _ LLMProvider = (*BedrockProvider)(nil)
 	var _ LLMProvider = (*OllamaProvider)(nil)
 	var _ LLMProvider = (*MockProvider)(nil)
