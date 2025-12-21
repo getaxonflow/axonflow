@@ -540,6 +540,7 @@ func (r *LLMRouter) healthCheckRoutine() {
 // OpenAIProvider implements real OpenAI API calls
 type OpenAIProvider struct {
 	apiKey  string
+	model   string
 	healthy bool
 	client  *http.Client
 }
@@ -550,10 +551,16 @@ func (p *OpenAIProvider) Name() string {
 
 func (p *OpenAIProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
 	start := time.Now()
-	
+
+	// Use model from options, or fall back to provider's configured model
+	model := options.Model
+	if model == "" {
+		model = p.model
+	}
+
 	// Build OpenAI request
 	openAIReq := map[string]interface{}{
-		"model": options.Model,
+		"model": model,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -1323,8 +1330,16 @@ func NewOpenAIProvider(apiKey string) LLMProvider {
 			apiKey:  apiKey,
 		}
 	}
+
+	// Get model from environment, with fallback to gpt-4o
+	model := os.Getenv("OPENAI_MODEL")
+	if model == "" {
+		model = "gpt-4o"
+	}
+
 	return &OpenAIProvider{
 		apiKey:  apiKey,
+		model:   model,
 		healthy: true,
 		client:  &http.Client{Timeout: 30 * time.Second},
 	}
