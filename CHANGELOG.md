@@ -141,6 +141,26 @@ To upgrade from 1.0.x:
 
 ---
 
+## [1.1.3] - 2025-12-21
+
+### Changed
+
+- **Usage Metering**: Refactored to use build tags for clean Community/Enterprise separation
+  - Community builds have zero-overhead no-op implementation
+  - Enterprise builds include full usage metering with database persistence
+  - Follows same pattern as circuit breaker feature
+  - Eliminates runtime `DEPLOYMENT_MODE` environment variable check
+
+### Technical Details
+
+The `platform/common/usage/` package now uses Go build tags:
+- `types.go`: Shared type definitions (no build tag, synced to Community)
+- `recorder_community.go`: No-op stubs (`//go:build !enterprise`)
+- `recorder_enterprise.go`: Full implementation (`//go:build enterprise`)
+- `pricing.go`: Cost calculation (`//go:build enterprise`)
+
+---
+
 ## [1.1.2] - 2025-12-20
 
 ### Fixed

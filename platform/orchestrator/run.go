@@ -688,7 +688,7 @@ func initializeComponents() {
 	log.Println("Response Processor initialized with PII detection")
 
 	// Initialize Audit Logger
-	auditLogger = NewAuditLogger(os.Getenv("DATABASE_URL"))
+	auditLogger = NewAuditLogger(dbURL)
 	log.Println("Audit Logger initialized")
 
 	// Initialize Metrics Collector
