@@ -12,6 +12,7 @@
 package usage
 
 import (
+	"os"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -213,6 +214,52 @@ func TestRecordAPICall_Error(t *testing.T) {
 	err = recorder.RecordAPICall(event)
 	if err == nil {
 		t.Error("Expected error from RecordAPICall")
+	}
+}
+
+// TestRecordAPICall_CommunityMode tests that RecordAPICall is a no-op in community mode
+func TestRecordAPICall_CommunityMode(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordAPICall(APICallEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordAPICall_EmptyDeploymentMode tests that RecordAPICall is a no-op when DEPLOYMENT_MODE is unset
+func TestRecordAPICall_EmptyDeploymentMode(t *testing.T) {
+	os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordAPICall(APICallEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordLLMRequest_CommunityMode tests that RecordLLMRequest is a no-op in community mode
+func TestRecordLLMRequest_CommunityMode(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordLLMRequest(LLMRequestEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
+	}
+}
+
+// TestRecordLLMRequest_EmptyDeploymentMode tests that RecordLLMRequest is a no-op when DEPLOYMENT_MODE is unset
+func TestRecordLLMRequest_EmptyDeploymentMode(t *testing.T) {
+	os.Unsetenv("DEPLOYMENT_MODE")
+
+	recorder := NewUsageRecorder(nil)
+	err := recorder.RecordLLMRequest(LLMRequestEvent{})
+	if err != nil {
+		t.Fatalf("Expected no-op but failed instead: %v", err)
 	}
 }
 
