@@ -161,6 +161,27 @@ The `platform/common/usage/` package now uses Go build tags:
 
 ---
 
+## [1.1.3] - 2025-12-21
+
+### Fixed
+
+- **Usage Recording:** Fixed postgres errors in Community mode when `usage_events` table doesn't exist ([#96](https://github.com/getaxonflow/axonflow/issues/96))
+  - Usage metering is now properly separated as an Enterprise-only feature
+  - Community builds have zero-overhead no-op implementation using build tags
+  - Thanks to [@gzak](https://github.com/gzak) for identifying and contributing the initial fix ([#97](https://github.com/getaxonflow/axonflow/pull/97))
+
+- **OpenAI Provider:** Fixed "you must provide a model parameter" error when `OPENAI_MODEL` not explicitly set ([#100](https://github.com/getaxonflow/axonflow/pull/100))
+  - `OpenAIProvider` now reads `OPENAI_MODEL` environment variable with `gpt-4o` fallback
+  - Consistent with other providers (Anthropic, Gemini, Ollama)
+
+### Changed
+
+- **Code Cleanup:** Removed 450+ lines of dead code
+  - Removed unused `AnthropicProvider` struct (superseded by `EnhancedAnthropicProvider`)
+  - Usage package refactored with build tags for clean Community/Enterprise separation
+
+---
+
 ## [1.1.2] - 2025-12-20
 
 ### Fixed
