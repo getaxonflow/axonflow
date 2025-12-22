@@ -98,7 +98,8 @@ services:
       SELF_HOSTED_MODE: "true"
       SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
       ENVIRONMENT: "development"
-      # DEPLOYMENT_MODE defaults to "community" - enterprise deployments set via GitHub workflow
+      # DEPLOYMENT_MODE defaults to "community" - can be overridden via .env or env var
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       LOG_LEVEL: debug
 
       # Redis (optional)

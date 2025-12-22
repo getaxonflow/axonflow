@@ -24,9 +24,9 @@ For production, get your key from:
 
 ## 3. Add to Your Code (3 minutes)
 
-### Gateway Mode (Recommended)
+### Gateway Mode
 
-Gateway Mode provides the most reliable integration:
+Gateway Mode is ideal for **existing LLM integrations** (LangChain, CrewAI) or latency-critical apps. For new projects, consider [Proxy Mode](#proxy-mode) for full compliance and Multi-Agent Planning.
 
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
