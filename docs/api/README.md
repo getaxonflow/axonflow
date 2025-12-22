@@ -41,7 +41,7 @@ This directory contains OpenAPI 3.0 specifications for all AxonFlow APIs.
 
 ## Quick Start Examples
 
-### Gateway Mode (Recommended for SDK users)
+### Gateway Mode (For existing LLM integrations)
 
 **Step 1: Pre-check before LLM call**
 ```bash
