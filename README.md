@@ -16,6 +16,15 @@
 
 ---
 
+## Why This Exists
+
+Most agent frameworks optimize for authoring workflows, not operating them.
+Once agents touch real systems, teams run into familiar problems: partial failures, retries with side effects, missing permissions, and no runtime visibility.
+
+AxonFlow treats agents as long-running, stateful systems that require governance, observability, and control at runtime — not just good prompts.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -59,7 +68,7 @@ curl -X POST http://localhost:8080/api/policy/pre-check \
 
 For a full end-to-end demo (gateway mode, policy enforcement, multi-agent planning), see `./examples/demo/demo.sh`.
 
-Policy checks add single-digit millisecond overhead.
+AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions in single-digit milliseconds — fast enough to prevent failures rather than observe them after the fact.
 
 ---
 
@@ -172,7 +181,8 @@ Community is for experimentation and validation. Enterprise is what IT, security
 - Priority support with SLA
 - Customer Portal UI for runtime management
 
-For security reviews, procurement, and internal approvals: **[Full feature and compliance breakdown](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
+See the full **[Community vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
+*(designed for security reviews, procurement, and platform evaluations)*
 
 **Enterprise:** [AWS Marketplace](https://aws.amazon.com/marketplace) or [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
 
