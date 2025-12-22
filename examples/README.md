@@ -81,9 +81,9 @@ All examples use the latest SDK versions:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| TypeScript | `@axonflow/sdk` | ^1.3.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.4.0 |
-| Python | `axonflow-sdk` | ^1.3.0 |
+| TypeScript | `@axonflow/sdk` | ^1.4.1 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.5.0 |
+| Python | `axonflow-sdk` | ^0.3.0 |
 
 ## Environment Configuration
 
