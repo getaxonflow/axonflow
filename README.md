@@ -5,7 +5,7 @@
 ## TL;DR
 
 - **What:** A control plane that sits between your app and LLM providers, applying real-time policy enforcement and orchestration
-- **How it works:** Run AI workflows end-to-end, or plug in via gateway mode to govern existing agent stacks without forcing a rewrite
+- **How it works:** Runs AI workflows end-to-end as a control plane, with an optional gateway mode for incremental adoption
 - **How it runs:** Docker Compose locally, no signup, no license key required
 - **Core features:** Policy enforcement (PII, injection attacks), audit trails, multi-model routing, multi-agent planning
 - **License:** BSL 1.1 (source-available) — converts to Apache 2.0 after 4 years
