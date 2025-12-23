@@ -22,9 +22,10 @@ The simplest integration - check if queries pass policy evaluation.
 
 | Language | Path | Description |
 |----------|------|-------------|
-| Go | `hello-world/go/` | Basic Go SDK usage |
-| TypeScript | `hello-world/typescript/` | Basic TypeScript SDK usage |
 | Python | `hello-world/python/` | Basic Python SDK usage |
+| TypeScript | `hello-world/typescript/` | Basic TypeScript SDK usage |
+| Go | `hello-world/go/` | Basic Go SDK usage |
+| Java | `hello-world/java/` | Basic Java SDK usage |
 
 ### Integration Modes
 
@@ -40,9 +41,10 @@ Your App → AxonFlow Pre-check → Your LLM Call → AxonFlow Audit
 
 | Language | Path |
 |----------|------|
+| Python | `integrations/gateway-mode/python/` |
 | TypeScript | `integrations/gateway-mode/typescript/` |
 | Go | `integrations/gateway-mode/go/` |
-| Python | `integrations/gateway-mode/python/` |
+| Java | `integrations/gateway-mode/java/` |
 
 #### Proxy Mode (Simplest)
 
@@ -54,9 +56,21 @@ Your App → AxonFlow (Policy + LLM) → Response
 
 | Language | Path |
 |----------|------|
+| Python | `integrations/proxy-mode/python/` |
 | TypeScript | `integrations/proxy-mode/typescript/` |
 | Go | `integrations/proxy-mode/go/` |
-| Python | `integrations/proxy-mode/python/` |
+| Java | `integrations/proxy-mode/java/` |
+
+### Multi-Agent Planning (MAP)
+
+Orchestrate multi-step AI workflows with governance.
+
+| Language | Path | Description |
+|----------|------|-------------|
+| Python | `map/python/` | Generate and execute multi-agent plans |
+| TypeScript | `map/typescript/` | Generate and execute multi-agent plans |
+| Go | `map/go/` | Generate and execute multi-agent plans |
+| Java | `map/java/` | Generate and execute multi-agent plans |
 
 ### Framework Integrations
 
@@ -81,9 +95,10 @@ All examples use the latest SDK versions:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| TypeScript | `@axonflow/sdk` | ^1.4.1 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.5.0 |
-| Python | `axonflow-sdk` | ^0.3.0 |
+| Python | `axonflow` | ^0.3.1 |
+| TypeScript | `@axonflow/sdk` | ^1.4.2 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.5.1 |
+| Java | `com.getaxonflow:axonflow-sdk` | 1.1.1 |
 
 ## Environment Configuration
 
@@ -128,6 +143,6 @@ See [ee/examples/README.md](../ee/examples/README.md) for details.
 ## Documentation
 
 - [AxonFlow Docs](https://docs.getaxonflow.com)
-- [Gateway Mode Guide](https://docs.getaxonflow.com/docs/integrations/gateway-mode)
-- [Proxy Mode Guide](https://docs.getaxonflow.com/docs/integrations/proxy-mode)
-- [SDK Reference](https://docs.getaxonflow.com/docs/sdk/overview)
+- [Gateway Mode Guide](https://docs.getaxonflow.com/docs/sdk/gateway-mode)
+- [Proxy Mode Guide](https://docs.getaxonflow.com/docs/sdk/proxy-mode)
+- [SDK Reference](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)
