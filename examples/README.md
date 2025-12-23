@@ -122,7 +122,7 @@ All examples use the latest SDK versions:
 | Python | `axonflow` | ^0.3.1 |
 | TypeScript | `@axonflow/sdk` | ^1.4.2 |
 | Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.5.1 |
-| Java | `com.getaxonflow:axonflow-sdk` | 1.1.1 |
+| Java | `com.getaxonflow:axonflow-sdk` | 1.1.2 |
 
 ## Environment Configuration
 
