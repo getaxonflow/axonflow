@@ -72,6 +72,30 @@ Orchestrate multi-step AI workflows with governance.
 | Go | `map/go/` | Generate and execute multi-agent plans |
 | Java | `map/java/` | Generate and execute multi-agent plans |
 
+### LLM Interceptors
+
+Wrap LLM provider clients with transparent governance - no code changes required.
+
+```
+Your App → Wrapped LLM Client → AxonFlow Pre-check → LLM API → AxonFlow Audit
+```
+
+| Language | Path | Description |
+|----------|------|-------------|
+| Python | `interceptors/python/` | OpenAI/Anthropic interceptors |
+| Go | `interceptors/go/` | OpenAI-compatible interceptors |
+| Java | `interceptors/java/` | OpenAI/Anthropic interceptors |
+
+### MCP Connectors
+
+Query external systems through MCP (Model Context Protocol) connectors with policy governance.
+
+| Language | Path | Description |
+|----------|------|-------------|
+| TypeScript | `mcp-connectors/typescript/` | Query MCP connectors |
+| Go | `mcp-connectors/go/` | Query MCP connectors |
+| Java | `mcp-connectors/java/` | Query MCP connectors |
+
 ### Framework Integrations
 
 Use AxonFlow with popular AI frameworks.

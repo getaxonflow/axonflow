@@ -11,9 +11,9 @@ async function main(): Promise<void> {
 
   // Initialize client - uses environment variables or defaults for self-hosted
   const axonflow = new AxonFlow({
-    agentUrl: process.env.AXONFLOW_AGENT_URL || 'http://localhost:8080',
-    clientId: process.env.AXONFLOW_CLIENT_ID || 'demo',
-    clientSecret: process.env.AXONFLOW_CLIENT_SECRET || 'demo',
+    endpoint: process.env.AXONFLOW_AGENT_URL || 'http://localhost:8080',
+    licenseKey: process.env.AXONFLOW_LICENSE_KEY || '',
+    tenant: process.env.AXONFLOW_TENANT || 'demo',
     debug: true,
   });
 
