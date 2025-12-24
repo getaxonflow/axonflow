@@ -1,0 +1,5 @@
+# AxonFlow SDK (from feature branch)
+axonflow @ git+https://github.com/getaxonflow/axonflow-sdk-python.git@feat/policy-crud
+
+# For loading environment variables
+python-dotenv>=1.0.0

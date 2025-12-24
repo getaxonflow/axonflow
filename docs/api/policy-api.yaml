@@ -17,7 +17,7 @@ info:
     ## Multi-tenancy
     Policies are isolated per tenant. Each API call operates only on policies
     belonging to the authenticated tenant.
-  version: 1.0.0
+  version: 2.0.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -173,10 +173,28 @@ paths:
         - $ref: '#/components/parameters/TenantID'
         - name: category
           in: query
-          description: Filter by policy category
+          description: |
+            Filter by policy category. New categories use semantic naming:
+            - security-sqli: SQL injection detection (replaces sql_injection)
+            - security-admin: Admin access protection (replaces admin_access)
+            - pii-global, pii-us, pii-eu, pii-india: Regional PII detection (replaces pii_detection)
+            - dynamic-*: Dynamic policy categories
+            - custom: Custom tenant policies
+
+            Legacy categories (deprecated, will be mapped to new names):
+            - sql_injection → security-sqli
+            - admin_access → security-admin
+            - pii_detection → pii-global
+            - dangerous_queries → security-sqli
           schema:
             type: string
-            enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+            enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, dynamic-risk, dynamic-compliance, dynamic-security, dynamic-cost, dynamic-access, custom, sql_injection, admin_access, pii_detection, dangerous_queries]
+        - name: tier
+          in: query
+          description: Filter by policy tier
+          schema:
+            type: string
+            enum: [system, organization, tenant]
         - name: enabled
           in: query
           description: Filter by enabled status
@@ -220,6 +238,148 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+
+  /api/v1/static-policies/{policy_id}/override:
+    parameters:
+      - $ref: '#/components/parameters/TenantID'
+      - name: policy_id
+        in: path
+        required: true
+        description: Static policy ID to override
+        schema:
+          type: string
+
+    post:
+      tags:
+        - Static Policies
+      summary: Create policy override (Enterprise)
+      description: |
+        Create an override for a system policy. Overrides can disable the policy
+        or change its action to a more restrictive one.
+
+        **Enterprise only** - requires Enterprise license.
+      operationId: createPolicyOverride
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled_override:
+                  type: boolean
+                  description: Set to false to disable the policy
+                action_override:
+                  type: string
+                  enum: [block, redact, warn, log]
+                  description: Override action (must be more restrictive)
+                override_reason:
+                  type: string
+                  description: Reason for override (required for audit)
+                  minLength: 10
+                  maxLength: 500
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Optional expiration date
+              required:
+                - override_reason
+            example:
+              enabled_override: false
+              override_reason: "Internal tooling - no customer data exposure"
+              expires_at: "2025-06-01T00:00:00Z"
+      responses:
+        '201':
+          description: Override created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverride'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          description: Requires Enterprise license
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Static Policies
+      summary: Remove policy override (Enterprise)
+      description: Remove an override, restoring the policy to its default behavior
+      operationId: deletePolicyOverride
+      responses:
+        '204':
+          description: Override removed
+        '403':
+          description: Requires Enterprise license
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/effective-policies:
+    get:
+      tags:
+        - Static Policies
+      summary: Get effective policies for tenant
+      description: |
+        Returns the merged policy set for the tenant, with hierarchy resolution applied:
+        1. System policies (base)
+        2. Organization policies (if Enterprise)
+        3. Tenant policies (overrides)
+
+        Disabled policies and overrides are reflected in the result.
+      operationId: getEffectivePolicies
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: category
+          in: query
+          description: Filter by category
+          schema:
+            type: string
+        - name: include_disabled
+          in: query
+          description: Include disabled policies in response
+          schema:
+            type: boolean
+            default: false
+        - name: include_overridden
+          in: query
+          description: Include policies that have been overridden
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Effective policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StaticPolicy'
+                  summary:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                      by_tier:
+                        type: object
+                        properties:
+                          system:
+                            type: integer
+                          organization:
+                            type: integer
+                          tenant:
+                            type: integer
+                      by_category:
+                        type: object
+                        additionalProperties:
+                          type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /api/v1/policies:
     get:
@@ -1513,30 +1673,39 @@ components:
 
     StaticPolicy:
       type: object
-      description: A static policy from Agent service (read-only)
+      description: A static policy from Agent service
       properties:
+        id:
+          type: string
+          description: Internal UUID identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
         policy_id:
           type: string
-          description: Static policy identifier
-          example: static-sql-injection-1
+          description: Human-readable policy identifier (e.g., sys_sqli_union_select)
+          example: sys_sqli_union_select
         name:
           type: string
           description: Policy name
-          example: SQL Injection Detection
+          example: UNION SELECT Detection
         description:
           type: string
           description: What the policy protects against
         category:
           type: string
-          enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+          enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, dynamic-risk, dynamic-compliance, dynamic-security, dynamic-cost, dynamic-access, custom]
           description: Policy category
+        tier:
+          type: string
+          enum: [system, organization, tenant]
+          description: Policy tier (system policies are immutable)
+          example: system
         pattern:
           type: string
           description: Detection pattern (regex)
-          example: "(?i)(union\\s+select|insert\\s+into|delete\\s+from)"
+          example: "(?i)\\bUNION\\s+(ALL\\s+)?SELECT\\b"
         action:
           type: string
-          enum: [block, redact, alert, log]
+          enum: [block, redact, warn, log]
           description: Action to take when pattern matches
         severity:
           type: string
@@ -1545,10 +1714,59 @@ components:
         enabled:
           type: boolean
           description: Whether the policy is enabled
+        priority:
+          type: integer
+          description: Evaluation priority (higher = evaluated first)
+          example: 1000
+        has_override:
+          type: boolean
+          description: Whether this policy has an override (Enterprise only)
+        override:
+          $ref: '#/components/schemas/PolicyOverride'
+        organization_id:
+          type: string
+          description: Organization ID (for org-tier policies)
+        tenant_id:
+          type: string
+          description: Tenant ID (for tenant-tier policies)
         created_at:
           type: string
           format: date-time
         updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          description: Policy version number
+
+    PolicyOverride:
+      type: object
+      description: Override configuration for system policies (Enterprise only)
+      properties:
+        id:
+          type: string
+          description: Override identifier
+        policy_id:
+          type: string
+          description: ID of the policy being overridden
+        enabled_override:
+          type: boolean
+          description: Override enabled status (null = no override)
+        action_override:
+          type: string
+          enum: [block, redact, warn, log]
+          description: Override action (must be more restrictive)
+        override_reason:
+          type: string
+          description: Reason for the override (required for audit)
+        expires_at:
+          type: string
+          format: date-time
+          description: When the override automatically expires
+        created_by:
+          type: string
+          description: User who created the override
+        created_at:
           type: string
           format: date-time
 

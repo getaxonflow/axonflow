@@ -1,0 +1,19 @@
+{
+  "name": "axonflow-policy-examples-typescript",
+  "version": "1.0.0",
+  "description": "AxonFlow Policy Management Examples (TypeScript)",
+  "type": "module",
+  "scripts": {
+    "create": "npx tsx create-custom-policy.ts",
+    "list": "npx tsx list-and-filter.ts",
+    "test-pattern": "npx tsx test-pattern.ts",
+    "all": "npm run create && npm run list && npm run test-pattern"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "github:getaxonflow/axonflow-sdk-typescript#feat/policy-crud"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

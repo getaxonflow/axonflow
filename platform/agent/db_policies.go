@@ -222,13 +222,16 @@ func validateRE2Pattern(pattern string) error {
 	return nil
 }
 
-// LoadPoliciesFromDB loads policies from database into memory
+// LoadPoliciesFromDB loads system-tier policies from database into memory.
+// Note: This method only loads system-tier policies. Tenant-specific policies
+// are handled by the TierAwarePolicyEngine via GetEffective() which properly
+// filters by tenant ID.
 func (dpe *DatabasePolicyEngine) LoadPoliciesFromDB() error {
 	query := `
 		SELECT policy_id, name, category, pattern, severity, description, action, tenant_id, metadata
 		FROM static_policies
-		WHERE enabled = true
-		ORDER BY category, severity DESC
+		WHERE enabled = true AND (tier = 'system' OR tier IS NULL)
+		ORDER BY category, priority DESC NULLS LAST
 	`
 
 	rows, err := dpe.db.Query(query)
@@ -285,15 +288,20 @@ func (dpe *DatabasePolicyEngine) LoadPoliciesFromDB() error {
 			Enabled:     true,
 		}
 
-		// Categorize policies
+		// Categorize policies (supports both legacy and new category names)
 		switch record.Category {
-		case "sql_injection":
+		// SQL injection patterns (legacy: sql_injection, new: security-sqli)
+		case "sql_injection", "security-sqli":
 			sqlInjection = append(sqlInjection, policy)
+		// Dangerous query patterns (legacy: dangerous_queries)
+		// Note: In new architecture, dangerous queries are part of security-sqli
 		case "dangerous_queries":
 			dangerousQueries = append(dangerousQueries, policy)
-		case "admin_access":
+		// Admin access patterns (legacy: admin_access, new: security-admin)
+		case "admin_access", "security-admin":
 			adminAccess = append(adminAccess, policy)
-		case "pii_detection":
+		// PII detection patterns (legacy: pii_detection, new: pii-*)
+		case "pii_detection", "pii-global", "pii-us", "pii-eu", "pii-india":
 			piiDetection = append(piiDetection, policy)
 		}
 
@@ -636,75 +644,65 @@ func (dpe *DatabasePolicyEngine) updatePolicyMetricDirect(policyID string, block
 	}
 }
 
-// loadDefaultPolicies loads hardcoded defaults as fallback
+// loadDefaultPolicies loads system policies from seed data as fallback when database is unavailable.
+// This ensures all 53 static system policies are available even without database access.
 func (dpe *DatabasePolicyEngine) loadDefaultPolicies() {
-	log.Println("Loading default hardcoded policies as fallback")
+	log.Println("Loading system policies from seed data as fallback")
 
 	dpe.cacheMutex.Lock()
 	defer dpe.cacheMutex.Unlock()
 
-	// SQL Injection Patterns
-	dpe.sqlInjectionPatterns = []*PolicyPattern{
-		{
-			ID:          "sql_injection_union",
-			Name:        "SQL Injection - UNION Attack",
-			Pattern:     regexp.MustCompile(`union\s+select`),
-			PatternStr:  `union\s+select`,
-			Severity:    "critical",
-			Description: "UNION-based SQL injection attempt",
+	// Reset pattern collections
+	var sqlInjection []*PolicyPattern
+	var dangerousQueries []*PolicyPattern
+	var adminAccess []*PolicyPattern
+	var piiDetection []*PolicyPattern
+
+	// Load all static system policies from seed data
+	seedPolicies := GetStaticSystemPolicies()
+	loadedCount := 0
+	errorCount := 0
+
+	for _, seed := range seedPolicies {
+		// Compile the regex pattern
+		compiledPattern, err := regexp.Compile(seed.Pattern)
+		if err != nil {
+			log.Printf("Warning: Failed to compile pattern for seed policy %s: %v", seed.ID, err)
+			errorCount++
+			continue
+		}
+
+		policy := &PolicyPattern{
+			ID:          seed.ID,
+			Name:        seed.Name,
+			Pattern:     compiledPattern,
+			PatternStr:  seed.Pattern,
+			Severity:    string(seed.Severity),
+			Description: seed.Description,
 			Enabled:     true,
-		},
-		{
-			ID:          "sql_injection_comment",
-			Name:        "SQL Injection - Comment Bypass",
-			Pattern:     regexp.MustCompile(`--|\*\/|\/\*`),
-			PatternStr:  `--|\*\/|\/\*`,
-			Severity:    "critical",
-			Description: "SQL comment injection attempt",
-			Enabled:     true,
-		},
+		}
+
+		// Categorize based on the policy category
+		switch seed.Category {
+		case CategorySecuritySQLi:
+			sqlInjection = append(sqlInjection, policy)
+		case CategorySecurityAdmin:
+			adminAccess = append(adminAccess, policy)
+		case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIEU, CategoryPIIIndia:
+			piiDetection = append(piiDetection, policy)
+		}
+
+		loadedCount++
 	}
 
-	// Dangerous Query Patterns
-	dpe.dangerousQueryPatterns = []*PolicyPattern{
-		{
-			ID:          "drop_table_prevention",
-			Name:        "DROP TABLE Prevention",
-			Pattern:     regexp.MustCompile(`drop\s+table`),
-			PatternStr:  `drop\s+table`,
-			Severity:    "critical",
-			Description: "DROP TABLE operations are not allowed",
-			Enabled:     true,
-		},
-	}
-
-	// Admin Access Patterns
-	dpe.adminAccessPatterns = []*PolicyPattern{
-		{
-			ID:          "config_table_access",
-			Name:        "Configuration Table Access",
-			Pattern:     regexp.MustCompile(`system_config|admin_settings`),
-			PatternStr:  `system_config|admin_settings`,
-			Severity:    "high",
-			Description: "Access to system configuration requires admin privileges",
-			Enabled:     true,
-		},
-	}
-
-	// PII Detection Patterns
-	dpe.piiDetectionPatterns = []*PolicyPattern{
-		{
-			ID:          "ssn_detection",
-			Name:        "SSN Detection",
-			Pattern:     regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
-			PatternStr:  `\b\d{3}-\d{2}-\d{4}\b`,
-			Severity:    "critical", // Critical PII - blocks by default
-			Description: "Social Security Number detected",
-			Enabled:     true,
-		},
-	}
-
+	// Assign to engine
+	dpe.sqlInjectionPatterns = sqlInjection
+	dpe.dangerousQueryPatterns = dangerousQueries // Empty in new architecture (merged into security-sqli)
+	dpe.adminAccessPatterns = adminAccess
+	dpe.piiDetectionPatterns = piiDetection
 	dpe.lastRefresh = time.Now()
+
+	log.Printf("Loaded %d system policies from seed data (%d errors)", loadedCount, errorCount)
 }
 
 // Close closes database connection and shuts down audit queue

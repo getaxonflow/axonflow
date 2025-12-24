@@ -167,6 +167,8 @@ services:
       # Service configuration
       PORT: 8081
       LOG_LEVEL: debug
+      # DEPLOYMENT_MODE determines license tier (community, saas, enterprise, banking, etc.)
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
 
       # Agent MCP endpoint for MCP query routing
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
@@ -216,6 +218,10 @@ services:
       # Service configuration
       PORT: 8080
       LOG_LEVEL: debug
+
+      # Internal service URLs (Docker DNS names)
+      AGENT_URL: http://axonflow-agent:8080
+      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
     ports:
       - "8082:8080"
     depends_on:

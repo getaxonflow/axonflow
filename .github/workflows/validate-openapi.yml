@@ -66,6 +66,8 @@ jobs:
         with:
           base: base-spec.yaml
           revision: docs/api/policy-api.yaml
+          # For v2.0.0: Fail on ERR only (actual breaking changes)
+          # Warnings for new enum values in responses are acceptable for major versions
           fail-on: ERR
 
       - name: Generate documentation preview

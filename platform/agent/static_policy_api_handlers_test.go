@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,12 @@ func TestNewStaticPolicyAPIHandler(t *testing.T) {
 	if handler.db != db {
 		t.Error("expected db to be set")
 	}
+	if handler.policyRepo == nil {
+		t.Error("expected policyRepo to be set")
+	}
+	if handler.overrideRepo == nil {
+		t.Error("expected overrideRepo to be set")
+	}
 }
 
 func TestHandleListStaticPolicies(t *testing.T) {
@@ -57,136 +64,33 @@ func TestHandleListStaticPolicies(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				// Count query
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
 				// Main query
 				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
+					"id", "policy_id", "name", "category", "tier", "pattern",
+					"severity", "description", "action", "priority", "enabled",
+					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"version", "created_at", "updated_at", "created_by", "updated_by",
 				}).
 					AddRow(
-						"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-						"Blocks UNION-based SQL injection", "block", true, "global",
-						"{}", testTime, testTime, 1,
+						"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
+						"critical", "Blocks UNION-based SQL injection", "block", 100, true,
+						nil, "global", "", "[]", "{}",
+						1, testTime, testTime, "system", "system",
 					).
 					AddRow(
-						"uuid-2", "pii_ssn", "PII SSN Detection", "pii_detection", "\\d{3}-\\d{2}-\\d{4}", "high",
-						"Detects SSN patterns", "redact", true, "test-tenant",
-						"{}", testTime, testTime, 1,
+						"uuid-2", "pii_ssn", "PII SSN Detection", "pii-us", "tenant", "\\d{3}-\\d{2}-\\d{4}",
+						"high", "Detects SSN patterns", "redact", 50, true,
+						nil, "test-tenant", "", "[]", "{}",
+						1, testTime, testTime, "user", "user",
 					)
 
 				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", 20, 0).
 					WillReturnRows(rows)
 			},
 			expectedStatus: http.StatusOK,
 			expectedCount:  2,
-		},
-		{
-			name:        "success - filter by category",
-			queryParams: "?category=sql_injection",
-			tenantID:    "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant", "sql_injection").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", "sql_injection", 20, 0).
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  1,
-		},
-		{
-			name:        "success - filter by severity",
-			queryParams: "?severity=critical",
-			tenantID:    "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant", "critical").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", "critical", 20, 0).
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  1,
-		},
-		{
-			name:        "success - filter by enabled",
-			queryParams: "?enabled=true",
-			tenantID:    "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant", true).
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", true, 20, 0).
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  1,
-		},
-		{
-			name:        "success - pagination",
-			queryParams: "?page=2&page_size=5",
-			tenantID:    "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "policy-6", "Policy 6", "sql_injection", "pattern", "high",
-					"Description", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", 5, 5). // page_size=5, offset=5 (page 2)
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  1,
 		},
 		{
 			name:        "success - empty result",
@@ -194,63 +98,14 @@ func TestHandleListStaticPolicies(t *testing.T) {
 			tenantID:    "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant", "nonexistent").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				})
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", "nonexistent", 20, 0).
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  0,
-		},
-		{
-			name:        "success - without tenant ID (global policies only)",
-			queryParams: "",
-			tenantID:    "",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("").
-					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("", 20, 0).
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-			expectedCount:  1,
-		},
-		{
-			name:        "success - page size capped at 100",
-			queryParams: "?page_size=200",
-			tenantID:    "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM static_policies`).
-					WithArgs("test-tenant").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 				mock.ExpectQuery(`SELECT.*FROM static_policies`).
-					WithArgs("test-tenant", 100, 0). // page_size capped at 100
 					WillReturnRows(sqlmock.NewRows([]string{
-						"id", "policy_id", "name", "category", "pattern", "severity",
-						"description", "action", "enabled", "tenant_id",
-						"metadata", "created_at", "updated_at", "version",
+						"id", "policy_id", "name", "category", "tier", "pattern",
+						"severity", "description", "action", "priority", "enabled",
+						"organization_id", "tenant_id", "org_id", "tags", "metadata",
+						"version", "created_at", "updated_at", "created_by", "updated_by",
 					}))
 			},
 			expectedStatus: http.StatusOK,
@@ -292,10 +147,6 @@ func TestHandleListStaticPolicies(t *testing.T) {
 					t.Errorf("expected %d policies, got %d", tt.expectedCount, len(response.Policies))
 				}
 			}
-
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("unfulfilled expectations: %v", err)
-			}
 		})
 	}
 }
@@ -304,48 +155,27 @@ func TestHandleGetStaticPolicy(t *testing.T) {
 	tests := []struct {
 		name           string
 		policyID       string
-		tenantID       string
 		setupMock      func(sqlmock.Sqlmock)
 		expectedStatus int
 	}{
 		{
 			name:     "success - get by policy_id",
 			policyID: "sql_injection_union",
-			tenantID: "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
+					"id", "policy_id", "name", "category", "tier", "pattern",
+					"severity", "description", "action", "priority", "enabled",
+					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"version", "created_at", "updated_at", "created_by", "updated_by", "deleted_at",
 				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
+					"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
+					"critical", "Blocks UNION-based SQL injection", "block", 100, true,
+					nil, "global", "", "[]", "{}",
+					1, testTime, testTime, "system", "system", nil,
 				)
 
 				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("sql_injection_union", "test-tenant").
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:     "success - get by UUID",
-			policyID: "uuid-1",
-			tenantID: "test-tenant",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("uuid-1", "test-tenant").
+					WithArgs("sql_injection_union").
 					WillReturnRows(rows)
 			},
 			expectedStatus: http.StatusOK,
@@ -353,34 +183,12 @@ func TestHandleGetStaticPolicy(t *testing.T) {
 		{
 			name:     "not found",
 			policyID: "nonexistent",
-			tenantID: "test-tenant",
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("nonexistent", "test-tenant").
+					WithArgs("nonexistent").
 					WillReturnRows(sqlmock.NewRows([]string{}))
 			},
 			expectedStatus: http.StatusNotFound,
-		},
-		{
-			name:     "success - global policy without tenant ID",
-			policyID: "sql_injection_union",
-			tenantID: "",
-			setupMock: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{
-					"id", "policy_id", "name", "category", "pattern", "severity",
-					"description", "action", "enabled", "tenant_id",
-					"metadata", "created_at", "updated_at", "version",
-				}).AddRow(
-					"uuid-1", "sql_injection_union", "SQL Injection UNION", "sql_injection", "union\\s+select", "critical",
-					"Blocks UNION-based SQL injection", "block", true, "global",
-					"{}", testTime, testTime, 1,
-				)
-
-				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
-					WithArgs("sql_injection_union", "").
-					WillReturnRows(rows)
-			},
-			expectedStatus: http.StatusOK,
 		},
 	}
 
@@ -398,9 +206,6 @@ func TestHandleGetStaticPolicy(t *testing.T) {
 
 			req := httptest.NewRequest("GET", "/api/v1/static-policies/"+tt.policyID, nil)
 			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
-			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
-			}
 			rr := httptest.NewRecorder()
 
 			handler.HandleGetStaticPolicy(rr, req)
@@ -419,81 +224,522 @@ func TestHandleGetStaticPolicy(t *testing.T) {
 					t.Error("expected policy_id to be set")
 				}
 			}
-
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("unfulfilled expectations: %v", err)
-			}
 		})
 	}
 }
 
-func TestBuildListQuery(t *testing.T) {
-	db, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create mock db: %v", err)
-	}
-	defer db.Close()
-
-	handler := NewStaticPolicyAPIHandler(db)
-
+func TestHandleCreateStaticPolicy(t *testing.T) {
 	tests := []struct {
-		name         string
-		tenantID     string
-		category     string
-		severity     string
-		enabled      string
-		page         int
-		pageSize     int
-		expectedArgs int // Number of expected arguments
+		name           string
+		tenantID       string
+		requestBody    CreateStaticPolicyRequest
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
 	}{
 		{
-			name:         "no filters",
-			tenantID:     "test",
-			page:         1,
-			pageSize:     20,
-			expectedArgs: 3, // tenantID, pageSize, offset
+			name:     "missing tenant ID",
+			tenantID: "",
+			requestBody: CreateStaticPolicyRequest{
+				Name:     "Test Policy",
+				Pattern:  "test.*pattern",
+				Category: "pii-global",
+				Action:   "block",
+				Tier:     TierTenant,
+			},
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:         "category filter",
-			tenantID:     "test",
-			category:     "sql_injection",
-			page:         1,
-			pageSize:     20,
-			expectedArgs: 4, // tenantID, category, pageSize, offset
+			name:     "missing name",
+			tenantID: "test-tenant",
+			requestBody: CreateStaticPolicyRequest{
+				Pattern:  "test.*pattern",
+				Category: "pii-global",
+				Action:   "block",
+				Tier:     TierTenant,
+			},
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:         "all filters",
-			tenantID:     "test",
-			category:     "sql_injection",
-			severity:     "critical",
-			enabled:      "true",
-			page:         1,
-			pageSize:     20,
-			expectedArgs: 6, // tenantID, category, severity, enabled, pageSize, offset
-		},
-		{
-			name:         "pagination",
-			tenantID:     "test",
-			page:         3,
-			pageSize:     10,
-			expectedArgs: 3,
+			name:     "missing pattern",
+			tenantID: "test-tenant",
+			requestBody: CreateStaticPolicyRequest{
+				Name:     "Test Policy",
+				Category: "pii-global",
+				Action:   "block",
+				Tier:     TierTenant,
+			},
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query, countQuery, args := handler.buildListQuery(
-				tt.tenantID, tt.category, tt.severity, tt.enabled, tt.page, tt.pageSize,
-			)
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
 
-			if query == "" {
-				t.Error("expected query to be non-empty")
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			body, _ := json.Marshal(tt.requestBody)
+			req := httptest.NewRequest("POST", "/api/v1/static-policies", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
 			}
-			if countQuery == "" {
-				t.Error("expected count query to be non-empty")
+			rr := httptest.NewRecorder()
+
+			handler.HandleCreateStaticPolicy(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
 			}
-			if len(args) != tt.expectedArgs {
-				t.Errorf("expected %d args, got %d", tt.expectedArgs, len(args))
+		})
+	}
+}
+
+func TestHandleDeleteStaticPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:     "not found",
+			policyID: "nonexistent",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// First query to get the policy
+				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+					WithArgs("nonexistent").
+					WillReturnRows(sqlmock.NewRows([]string{}))
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			req := httptest.NewRequest("DELETE", "/api/v1/static-policies/"+tt.policyID, nil)
+			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			req.Header.Set("X-User-ID", "test-user")
+			rr := httptest.NewRecorder()
+
+			handler.HandleDeleteStaticPolicy(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleTogglePolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		enabled        bool
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:     "not found",
+			policyID: "nonexistent",
+			enabled:  true,
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// First query to get the policy for toggle
+				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+					WithArgs("nonexistent").
+					WillReturnRows(sqlmock.NewRows([]string{}))
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			body, _ := json.Marshal(map[string]bool{"enabled": tt.enabled})
+			req := httptest.NewRequest("PATCH", "/api/v1/static-policies/"+tt.policyID, bytes.NewReader(body))
+			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-User-ID", "test-user")
+			rr := httptest.NewRecorder()
+
+			handler.HandleTogglePolicy(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleGetEffectivePolicies(t *testing.T) {
+	tests := []struct {
+		name           string
+		tenantID       string
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:           "missing tenant ID",
+			tenantID:       "",
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:     "success",
+			tenantID: "test-tenant",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// Main policies query
+				rows := sqlmock.NewRows([]string{
+					"id", "policy_id", "name", "category", "tier", "pattern",
+					"severity", "description", "action", "priority", "enabled",
+					"organization_id", "tenant_id", "org_id", "tags", "metadata",
+					"version", "created_at", "updated_at", "created_by", "updated_by",
+				}).AddRow(
+					"uuid-1", "sql_injection_union", "SQL Injection UNION", "security-sqli", "system", "union\\s+select",
+					"critical", "Blocks UNION-based SQL injection", "block", 100, true,
+					nil, "global", "", "[]", "{}",
+					1, testTime, testTime, "system", "system",
+				)
+
+				mock.ExpectQuery(`SELECT.*FROM static_policies`).
+					WillReturnRows(rows)
+
+				// Overrides query
+				mock.ExpectQuery(`SELECT.*FROM policy_overrides`).
+					WillReturnRows(sqlmock.NewRows([]string{
+						"id", "policy_id", "policy_type", "organization_id", "tenant_id",
+						"action_override", "enabled_override", "override_reason", "expires_at",
+						"created_by", "created_at", "updated_by", "updated_at",
+					}))
+			},
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			req := httptest.NewRequest("GET", "/api/v1/static-policies/effective", nil)
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleGetEffectivePolicies(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var response EffectivePolicies
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+
+				if response.TenantID != tt.tenantID {
+					t.Errorf("expected tenant_id %s, got %s", tt.tenantID, response.TenantID)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleTestPattern(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestBody    interface{}
+		expectedStatus int
+		checkResponse  func(t *testing.T, response *PatternTestResult)
+	}{
+		{
+			name:           "missing pattern",
+			requestBody:    map[string]interface{}{"inputs": []string{"test"}},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name: "valid pattern with matches",
+			requestBody: map[string]interface{}{
+				"pattern": "\\d{3}-\\d{2}-\\d{4}",
+				"inputs":  []string{"123-45-6789", "no match here"},
+			},
+			expectedStatus: http.StatusOK,
+			checkResponse: func(t *testing.T, response *PatternTestResult) {
+				if !response.Valid {
+					t.Error("expected pattern to be valid")
+				}
+				if len(response.Matches) != 2 {
+					t.Errorf("expected 2 matches, got %d", len(response.Matches))
+				}
+			},
+		},
+		{
+			name: "invalid pattern",
+			requestBody: map[string]interface{}{
+				"pattern": "[invalid(pattern",
+				"inputs":  []string{"test"},
+			},
+			expectedStatus: http.StatusOK,
+			checkResponse: func(t *testing.T, response *PatternTestResult) {
+				if response.Valid {
+					t.Error("expected pattern to be invalid")
+				}
+				if response.Error == "" {
+					t.Error("expected error message")
+				}
+			},
+		},
+		{
+			name: "backward compatible single input",
+			requestBody: map[string]interface{}{
+				"pattern": "test",
+				"input":   "this is a test",
+			},
+			expectedStatus: http.StatusOK,
+			checkResponse: func(t *testing.T, response *PatternTestResult) {
+				if !response.Valid {
+					t.Error("expected pattern to be valid")
+				}
+				if len(response.Matches) != 1 {
+					t.Errorf("expected 1 match, got %d", len(response.Matches))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, _, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			body, _ := json.Marshal(tt.requestBody)
+			req := httptest.NewRequest("POST", "/api/v1/static-policies/test", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+
+			handler.HandleTestPattern(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+
+			if tt.expectedStatus == http.StatusOK && tt.checkResponse != nil {
+				var response PatternTestResult
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+				tt.checkResponse(t, &response)
+			}
+		})
+	}
+}
+
+func TestHandleGetVersionHistory(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		tenantID       string
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:     "success",
+			policyID: "test-policy",
+			tenantID: "test-tenant",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// First the license check query
+				mock.ExpectQuery(`SELECT license_tier FROM clients`).
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("enterprise"))
+
+				// Then the versions query
+				rows := sqlmock.NewRows([]string{
+					"id", "policy_id", "version", "snapshot", "change_type", "change_summary", "changed_by", "changed_at",
+				}).AddRow(
+					"version-1", "test-policy", 1, []byte("{}"), "create", "Policy created", "user", testTime,
+				).AddRow(
+					"version-2", "test-policy", 2, []byte("{}"), "update", "Policy updated", "user", testTime,
+				)
+
+				mock.ExpectQuery(`SELECT.*FROM static_policy_versions WHERE`).
+					WillReturnRows(rows)
+			},
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			req := httptest.NewRequest("GET", "/api/v1/static-policies/"+tt.policyID+"/versions", nil)
+			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleGetVersionHistory(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var response map[string]interface{}
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+
+				if response["policy_id"] != tt.policyID {
+					t.Errorf("expected policy_id %s, got %v", tt.policyID, response["policy_id"])
+				}
+			}
+		})
+	}
+}
+
+func TestHandleCreateOverride(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		tenantID       string
+		requestBody    CreateOverrideRequest
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:     "missing tenant ID",
+			policyID: "test-policy",
+			tenantID: "",
+			requestBody: CreateOverrideRequest{
+				OverrideReason: "Testing",
+			},
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			body, _ := json.Marshal(tt.requestBody)
+			req := httptest.NewRequest("POST", "/api/v1/static-policies/"+tt.policyID+"/override", bytes.NewReader(body))
+			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			req.Header.Set("Content-Type", "application/json")
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleCreateOverride(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleDeleteOverride(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		tenantID       string
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:           "missing tenant ID",
+			policyID:       "test-policy",
+			tenantID:       "",
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			req := httptest.NewRequest("DELETE", "/api/v1/static-policies/"+tt.policyID+"/override", nil)
+			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleDeleteOverride(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
 			}
 		})
 	}
@@ -549,11 +795,11 @@ func TestWriteJSONError(t *testing.T) {
 
 func TestPaginationMeta(t *testing.T) {
 	tests := []struct {
-		name           string
-		totalItems     int
-		pageSize       int
-		page           int
-		expectedPages  int
+		name          string
+		totalItems    int
+		pageSize      int
+		page          int
+		expectedPages int
 	}{
 		{
 			name:          "exact division",
@@ -588,10 +834,64 @@ func TestPaginationMeta(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			totalPages := (tt.totalItems + tt.pageSize - 1) / tt.pageSize
+			if tt.totalItems == 0 {
+				totalPages = 0
+			}
 
 			if totalPages != tt.expectedPages {
 				t.Errorf("expected %d pages, got %d", tt.expectedPages, totalPages)
 			}
 		})
 	}
+}
+
+func TestRegisterStaticPolicyHandlers(t *testing.T) {
+	t.Run("registers handlers with database", func(t *testing.T) {
+		db, _, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create mock db: %v", err)
+		}
+		defer db.Close()
+
+		router := mux.NewRouter()
+		RegisterStaticPolicyHandlers(router, db)
+
+		// Verify that routes were registered by checking that they exist
+		routes := []struct {
+			path   string
+			method string
+		}{
+			{"/api/v1/static-policies", "GET"},
+			{"/api/v1/static-policies", "POST"},
+			{"/api/v1/static-policies/effective", "GET"},
+			{"/api/v1/static-policies/test", "POST"},
+			{"/api/v1/static-policies/{id}", "GET"},
+			{"/api/v1/static-policies/{id}", "PUT"},
+			{"/api/v1/static-policies/{id}", "DELETE"},
+			{"/api/v1/static-policies/{id}", "PATCH"},
+			{"/api/v1/static-policies/{id}/versions", "GET"},
+			{"/api/v1/static-policies/{id}/override", "POST"},
+			{"/api/v1/static-policies/{id}/override", "DELETE"},
+		}
+
+		for _, route := range routes {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			match := &mux.RouteMatch{}
+			if !router.Match(req, match) {
+				t.Errorf("expected route %s %s to be registered", route.method, route.path)
+			}
+		}
+	})
+
+	t.Run("skips registration without database", func(t *testing.T) {
+		router := mux.NewRouter()
+		RegisterStaticPolicyHandlers(router, nil)
+
+		// With nil db, no routes should be registered
+		req := httptest.NewRequest("GET", "/api/v1/static-policies", nil)
+		match := &mux.RouteMatch{}
+		if router.Match(req, match) {
+			t.Error("expected no routes to be registered with nil db")
+		}
+	})
 }

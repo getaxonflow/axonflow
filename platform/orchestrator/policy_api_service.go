@@ -21,15 +21,26 @@ import (
 
 // PolicyService handles business logic for policy operations
 type PolicyService struct {
-	repo         *PolicyRepository
-	policyEngine *DynamicPolicyEngine
+	repo           *PolicyRepository
+	policyEngine   *DynamicPolicyEngine
+	licenseChecker LicenseChecker
 }
 
-// NewPolicyService creates a new policy service
+// NewPolicyService creates a new policy service with environment-based license checker.
 func NewPolicyService(repo *PolicyRepository, engine *DynamicPolicyEngine) *PolicyService {
 	return &PolicyService{
-		repo:         repo,
-		policyEngine: engine,
+		repo:           repo,
+		policyEngine:   engine,
+		licenseChecker: NewEnvLicenseChecker(),
+	}
+}
+
+// NewPolicyServiceWithLicense creates a policy service with a custom license checker.
+func NewPolicyServiceWithLicense(repo *PolicyRepository, engine *DynamicPolicyEngine, lc LicenseChecker) *PolicyService {
+	return &PolicyService{
+		repo:           repo,
+		policyEngine:   engine,
+		licenseChecker: lc,
 	}
 }
 
@@ -40,15 +51,29 @@ func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID string, req *
 		return nil, err
 	}
 
+	// Tier validation
+	if err := s.validateTierForCreate(ctx, tenantID, req); err != nil {
+		return nil, err
+	}
+
+	// Default to tenant tier if not specified
+	tier := req.Tier
+	if tier == "" {
+		tier = TierTenant
+	}
+
 	policy := &PolicyResource{
 		Name:        req.Name,
 		Description: req.Description,
 		Type:        string(req.Type),
+		Category:    req.Category,
+		Tier:        tier,
 		Conditions:  req.Conditions,
 		Actions:     req.Actions,
 		Priority:    req.Priority,
 		Enabled:     req.Enabled,
 		TenantID:    tenantID,
+		Tags:        req.Tags,
 		CreatedBy:   createdBy,
 		UpdatedBy:   createdBy,
 	}
@@ -99,11 +124,21 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 		return nil, err
 	}
 
+	// Tier validation: system tier policies cannot be modified
+	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
+		return nil, err
+	}
+
 	return s.repo.Update(ctx, tenantID, policyID, req, updatedBy)
 }
 
 // DeletePolicy removes a policy
 func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID string, deletedBy string) error {
+	// Tier validation: system tier policies cannot be deleted
+	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
+		return err
+	}
+
 	return s.repo.Delete(ctx, tenantID, policyID, deletedBy)
 }
 
@@ -499,4 +534,56 @@ func (e *ValidationError) Error() string {
 		msgs = append(msgs, fmt.Sprintf("%s: %s", err.Field, err.Message))
 	}
 	return strings.Join(msgs, "; ")
+}
+
+// validateTierForCreate validates tier constraints for policy creation.
+func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID string, req *CreatePolicyRequest) error {
+	tier := req.Tier
+	if tier == "" {
+		tier = TierTenant
+	}
+
+	// System tier cannot be created via API
+	if tier == TierSystem {
+		return NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
+	}
+
+	// Organization tier requires Enterprise license
+	if tier == TierOrganization && !s.licenseChecker.IsEnterprise() {
+		return NewTierValidationError("Organization-tier policies require Enterprise license", ErrCodeOrgTierEnterprise)
+	}
+
+	// Tenant tier: check policy limit for Community edition
+	if tier == TierTenant && !s.licenseChecker.IsEnterprise() {
+		count, err := s.repo.CountByTenant(ctx, tenantID)
+		if err != nil {
+			return fmt.Errorf("failed to count policies: %w", err)
+		}
+		if count >= CommunityPolicyLimit {
+			return NewTierValidationError(
+				fmt.Sprintf("Policy limit of %d reached for Community edition", CommunityPolicyLimit),
+				ErrCodePolicyLimitExceeded,
+			)
+		}
+	}
+
+	return nil
+}
+
+// validateTierForModify validates that a policy can be modified (updated or deleted).
+// System tier policies are immutable and cannot be modified via API.
+func (s *PolicyService) validateTierForModify(ctx context.Context, tenantID, policyID string) error {
+	policy, err := s.repo.GetByID(ctx, tenantID, policyID)
+	if err != nil {
+		return fmt.Errorf("failed to get policy: %w", err)
+	}
+	if policy == nil {
+		return nil // Let the actual operation handle not found
+	}
+
+	if policy.Tier == TierSystem {
+		return NewTierValidationError("System policies cannot be modified via API", ErrCodeSystemTierImmutable)
+	}
+
+	return nil
 }
