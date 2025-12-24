@@ -27,6 +27,7 @@ import (
 // These are policies that can be evaluated quickly without external context
 type StaticPolicyEngine struct {
 	sqliScanner         sqli.Scanner      // Unified SQL injection + dangerous query scanner
+	sqliConfig          sqli.Config       // SQL injection configuration (mode, block/warn)
 	adminAccessPatterns []*PolicyPattern
 	piiPatterns         []*PolicyPattern // PII detection (passports, credit cards, etc.)
 	piiBlockCritical    bool             // Block critical PII (SSN, credit cards) - default: true
@@ -62,8 +63,25 @@ func NewStaticPolicyEngine() *StaticPolicyEngine {
 		log.Println("[StaticPolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
 	}
 
+	// Load SQL injection config from environment
+	sqliCfg := sqli.ConfigFromEnv()
+
+	// Create the appropriate scanner based on configured mode
+	var scanner sqli.Scanner
+	var err error
+	scanner, err = sqli.NewScanner(sqliCfg.InputMode)
+	if err != nil {
+		// Fall back to basic scanner if requested mode unavailable (e.g., advanced without license)
+		log.Printf("[StaticPolicyEngine] WARNING: Failed to create %s scanner: %v. Falling back to basic mode.",
+			sqliCfg.InputMode, err)
+		scanner = sqli.NewBasicScanner()
+		sqliCfg.InputMode = sqli.ModeBasic
+		sqliCfg.ResponseMode = sqli.ModeBasic
+	}
+
 	engine := &StaticPolicyEngine{
-		sqliScanner:      sqli.NewBasicScanner(),
+		sqliScanner:      scanner,
+		sqliConfig:       sqliCfg,
 		piiBlockCritical: piiBlock,
 	}
 	engine.loadDefaultPolicies()
@@ -86,7 +104,6 @@ func (spe *StaticPolicyEngine) EvaluateStaticPolicies(user *User, query string, 
 	// This covers both SQL injection attacks and dangerous DDL operations
 	sqliResult := spe.sqliScanner.Scan(context.Background(), query, sqli.ScanTypeInput)
 	if sqliResult.Detected {
-		result.Blocked = true
 		// Determine check type based on category
 		checkType := "sql_injection"
 		reason := "SQL injection attempt detected"
@@ -94,12 +111,21 @@ func (spe *StaticPolicyEngine) EvaluateStaticPolicies(user *User, query string, 
 			checkType = "dangerous_queries"
 			reason = "Dangerous query detected"
 		}
-		result.Reason = fmt.Sprintf("%s: %s", reason, sqliResult.Pattern)
+
+		// Only block if BlockOnDetection is enabled; otherwise log and continue
+		if spe.sqliConfig.BlockOnDetection {
+			result.Blocked = true
+			result.Reason = fmt.Sprintf("%s: %s", reason, sqliResult.Pattern)
+			result.TriggeredPolicies = append(result.TriggeredPolicies, sqliResult.Pattern)
+			result.Severity = sqli.CategorySeverity(sqliResult.Category)
+			result.ChecksPerformed = append(result.ChecksPerformed, checkType)
+			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+			return result
+		}
+		// Warn mode: log detection but allow through
+		log.Printf("[SQLi] WARNING: %s detected but not blocked (warn mode): pattern=%s, category=%s",
+			reason, sqliResult.Pattern, sqliResult.Category)
 		result.TriggeredPolicies = append(result.TriggeredPolicies, sqliResult.Pattern)
-		result.Severity = sqli.CategorySeverity(sqliResult.Category)
-		result.ChecksPerformed = append(result.ChecksPerformed, checkType)
-		result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
-		return result
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
 	result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")

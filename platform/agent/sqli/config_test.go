@@ -1,6 +1,7 @@
 package sqli
 
 import (
+	"os"
 	"testing"
 )
 
@@ -390,5 +391,188 @@ func TestConfig_ChainedWith(t *testing.T) {
 	}
 	if override, ok := cfg.ConnectorOverrides["postgresql"]; !ok || override.ResponseMode != ModeBasic {
 		t.Error("Chained ConnectorOverride not set correctly")
+	}
+}
+
+// TestConfigFromEnv_DefaultValues tests that ConfigFromEnv returns sensible defaults
+// when no environment variables are set.
+func TestConfigFromEnv_DefaultValues(t *testing.T) {
+	// Clear any existing env vars
+	os.Unsetenv(EnvSQLIScannerMode)
+	os.Unsetenv(EnvSQLIBlockMode)
+
+	cfg := ConfigFromEnv()
+
+	t.Run("default scanner mode is basic", func(t *testing.T) {
+		if cfg.InputMode != ModeBasic {
+			t.Errorf("InputMode = %v, want %v", cfg.InputMode, ModeBasic)
+		}
+		if cfg.ResponseMode != ModeBasic {
+			t.Errorf("ResponseMode = %v, want %v", cfg.ResponseMode, ModeBasic)
+		}
+	})
+
+	t.Run("default block mode is block (true)", func(t *testing.T) {
+		if !cfg.BlockOnDetection {
+			t.Error("BlockOnDetection should be true by default")
+		}
+	})
+}
+
+// TestConfigFromEnv_ScannerMode tests SQLI_SCANNER_MODE parsing.
+func TestConfigFromEnv_ScannerMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		envValue     string
+		expectedMode Mode
+	}{
+		{"off mode", "off", ModeOff},
+		{"basic mode", "basic", ModeBasic},
+		{"advanced mode", "advanced", ModeAdvanced},
+		{"off mode uppercase", "OFF", ModeOff},
+		{"basic mode uppercase", "BASIC", ModeBasic},
+		{"advanced mode uppercase", "ADVANCED", ModeAdvanced},
+		{"basic mode mixed case", "Basic", ModeBasic},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Setenv(EnvSQLIScannerMode, tt.envValue)
+			os.Unsetenv(EnvSQLIBlockMode)
+			defer os.Unsetenv(EnvSQLIScannerMode)
+
+			cfg := ConfigFromEnv()
+
+			if cfg.InputMode != tt.expectedMode {
+				t.Errorf("InputMode = %v, want %v", cfg.InputMode, tt.expectedMode)
+			}
+			if cfg.ResponseMode != tt.expectedMode {
+				t.Errorf("ResponseMode = %v, want %v", cfg.ResponseMode, tt.expectedMode)
+			}
+		})
+	}
+}
+
+// TestConfigFromEnv_InvalidScannerMode tests fallback for invalid SQLI_SCANNER_MODE.
+func TestConfigFromEnv_InvalidScannerMode(t *testing.T) {
+	invalidModes := []string{"invalid", "super", "123", "enabled", "disabled"}
+
+	for _, mode := range invalidModes {
+		t.Run("invalid mode "+mode, func(t *testing.T) {
+			os.Setenv(EnvSQLIScannerMode, mode)
+			os.Unsetenv(EnvSQLIBlockMode)
+			defer os.Unsetenv(EnvSQLIScannerMode)
+
+			cfg := ConfigFromEnv()
+
+			// Should fall back to basic mode
+			if cfg.InputMode != ModeBasic {
+				t.Errorf("InputMode = %v, want %v (fallback)", cfg.InputMode, ModeBasic)
+			}
+			if cfg.ResponseMode != ModeBasic {
+				t.Errorf("ResponseMode = %v, want %v (fallback)", cfg.ResponseMode, ModeBasic)
+			}
+		})
+	}
+}
+
+// TestConfigFromEnv_BlockMode tests SQLI_BLOCK_MODE parsing.
+func TestConfigFromEnv_BlockMode(t *testing.T) {
+	tests := []struct {
+		name          string
+		envValue      string
+		expectedBlock bool
+	}{
+		{"block mode", "block", true},
+		{"warn mode", "warn", false},
+		{"block mode uppercase", "BLOCK", true},
+		{"warn mode uppercase", "WARN", false},
+		{"block mode mixed case", "Block", true},
+		{"warn mode mixed case", "Warn", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Unsetenv(EnvSQLIScannerMode)
+			os.Setenv(EnvSQLIBlockMode, tt.envValue)
+			defer os.Unsetenv(EnvSQLIBlockMode)
+
+			cfg := ConfigFromEnv()
+
+			if cfg.BlockOnDetection != tt.expectedBlock {
+				t.Errorf("BlockOnDetection = %v, want %v", cfg.BlockOnDetection, tt.expectedBlock)
+			}
+		})
+	}
+}
+
+// TestConfigFromEnv_InvalidBlockMode tests fallback for invalid SQLI_BLOCK_MODE.
+func TestConfigFromEnv_InvalidBlockMode(t *testing.T) {
+	invalidModes := []string{"invalid", "log", "123", "on", "off", "true", "false"}
+
+	for _, mode := range invalidModes {
+		t.Run("invalid block mode "+mode, func(t *testing.T) {
+			os.Unsetenv(EnvSQLIScannerMode)
+			os.Setenv(EnvSQLIBlockMode, mode)
+			defer os.Unsetenv(EnvSQLIBlockMode)
+
+			cfg := ConfigFromEnv()
+
+			// Should fall back to block mode (security-first)
+			if !cfg.BlockOnDetection {
+				t.Errorf("BlockOnDetection = false, want true (fallback to block for security)")
+			}
+		})
+	}
+}
+
+// TestConfigFromEnv_CombinedSettings tests both environment variables together.
+func TestConfigFromEnv_CombinedSettings(t *testing.T) {
+	tests := []struct {
+		name          string
+		scannerMode   string
+		blockMode     string
+		expectedMode  Mode
+		expectedBlock bool
+	}{
+		{"off mode with warn", "off", "warn", ModeOff, false},
+		{"off mode with block", "off", "block", ModeOff, true},
+		{"basic mode with warn", "basic", "warn", ModeBasic, false},
+		{"basic mode with block", "basic", "block", ModeBasic, true},
+		{"advanced mode with warn", "advanced", "warn", ModeAdvanced, false},
+		{"advanced mode with block", "advanced", "block", ModeAdvanced, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Setenv(EnvSQLIScannerMode, tt.scannerMode)
+			os.Setenv(EnvSQLIBlockMode, tt.blockMode)
+			defer func() {
+				os.Unsetenv(EnvSQLIScannerMode)
+				os.Unsetenv(EnvSQLIBlockMode)
+			}()
+
+			cfg := ConfigFromEnv()
+
+			if cfg.InputMode != tt.expectedMode {
+				t.Errorf("InputMode = %v, want %v", cfg.InputMode, tt.expectedMode)
+			}
+			if cfg.ResponseMode != tt.expectedMode {
+				t.Errorf("ResponseMode = %v, want %v", cfg.ResponseMode, tt.expectedMode)
+			}
+			if cfg.BlockOnDetection != tt.expectedBlock {
+				t.Errorf("BlockOnDetection = %v, want %v", cfg.BlockOnDetection, tt.expectedBlock)
+			}
+		})
+	}
+}
+
+// TestEnvVarConstants tests that environment variable constants are correct.
+func TestEnvVarConstants(t *testing.T) {
+	if EnvSQLIScannerMode != "SQLI_SCANNER_MODE" {
+		t.Errorf("EnvSQLIScannerMode = %q, want %q", EnvSQLIScannerMode, "SQLI_SCANNER_MODE")
+	}
+	if EnvSQLIBlockMode != "SQLI_BLOCK_MODE" {
+		t.Errorf("EnvSQLIBlockMode = %q, want %q", EnvSQLIBlockMode, "SQLI_BLOCK_MODE")
 	}
 }

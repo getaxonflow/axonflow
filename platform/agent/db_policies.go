@@ -25,6 +25,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/agent/sqli"
 )
 
 // execWithRetry executes a database query with exponential backoff retry
@@ -66,6 +68,8 @@ type DatabasePolicyEngine struct {
 	performanceMode      bool  // When true, uses async writes for better performance
 	auditQueue           *AuditQueue  // Handles async audit logging with persistent fallback
 	piiBlockCritical     bool  // Block critical PII (SSN, credit cards) - default: true
+	sqliScanner          sqli.Scanner // SQL injection scanner (respects SQLI_SCANNER_MODE)
+	sqliConfig           sqli.Config  // SQL injection configuration (mode, block/warn)
 }
 
 // PolicyRecord represents a policy from database
@@ -156,12 +160,31 @@ func NewDatabasePolicyEngine() (*DatabasePolicyEngine, error) {
 		log.Println("[DatabasePolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
 	}
 
+	// Initialize SQL injection scanner from environment variables
+	sqliCfg := sqli.ConfigFromEnv()
+	var sqliScanner sqli.Scanner
+	if sqliCfg.InputMode != sqli.ModeOff {
+		var scannerErr error
+		sqliScanner, scannerErr = sqli.NewScanner(sqliCfg.InputMode)
+		if scannerErr != nil {
+			log.Printf("[DatabasePolicyEngine] WARNING: Failed to create %s scanner: %v. Falling back to basic mode.", sqliCfg.InputMode, scannerErr)
+			sqliScanner = sqli.NewBasicScanner()
+			sqliCfg.InputMode = sqli.ModeBasic
+			sqliCfg.ResponseMode = sqli.ModeBasic
+		}
+		log.Printf("[DatabasePolicyEngine] SQL injection scanner initialized: mode=%s, block=%v", sqliCfg.InputMode, sqliCfg.BlockOnDetection)
+	} else {
+		log.Println("[DatabasePolicyEngine] SQL injection scanning DISABLED (SQLI_SCANNER_MODE=off)")
+	}
+
 	engine := &DatabasePolicyEngine{
 		db:               db,
 		refreshInterval:  60 * time.Second, // Refresh cache every 60 seconds
 		performanceMode:  performanceMode,
 		auditQueue:       auditQueue,
 		piiBlockCritical: piiBlock,
+		sqliScanner:      sqliScanner,
+		sqliConfig:       sqliCfg,
 	}
 
 	// Load initial policies
@@ -323,33 +346,78 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 	dpe.cacheMutex.RLock()
 	defer dpe.cacheMutex.RUnlock()
 
-	// 1. SQL Injection Detection
-	if blockedPattern := dpe.checkPatterns(queryLower, dpe.sqlInjectionPatterns); blockedPattern != nil {
-		result.Blocked = true
-		result.Reason = fmt.Sprintf("SQL injection attempt detected: %s", blockedPattern.Description)
-		result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
-		result.Severity = "critical"
-		result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
-		result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+	// 1. SQL Injection Detection - uses sqli package scanner (respects SQLI_SCANNER_MODE)
+	if dpe.sqliScanner != nil {
+		if sqliResult := dpe.sqliScanner.Scan(context.Background(), query, sqli.ScanTypeInput); sqliResult.Detected {
+			// Get description from metadata (set by BasicScanner)
+			description := fmt.Sprintf("SQL injection pattern '%s' detected", sqliResult.Pattern)
+			if desc, ok := sqliResult.Metadata["pattern_description"].(string); ok && desc != "" {
+				description = desc
+			}
 
-		// Log to audit queue (handles async/sync based on mode)
-		dpe.logPolicyViolationToQueue(user, blockedPattern, query)
-		return result
+			// Create a synthetic policy pattern for audit logging
+			sqliPattern := &PolicyPattern{
+				ID:          fmt.Sprintf("sqli_%s", sqliResult.Category),
+				Name:        fmt.Sprintf("SQL Injection - %s", sqliResult.Pattern),
+				Severity:    "critical",
+				Description: description,
+				Enabled:     true,
+			}
+
+			if dpe.sqliConfig.BlockOnDetection {
+				// Block mode - reject the request
+				result.Blocked = true
+				result.Reason = fmt.Sprintf("SQL injection attempt detected: %s (pattern: %s)", description, sqliResult.Pattern)
+				result.TriggeredPolicies = append(result.TriggeredPolicies, sqliPattern.ID)
+				result.Severity = "critical"
+				result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
+				result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+
+				// Log to audit queue (handles async/sync based on mode)
+				dpe.logPolicyViolationToQueue(user, sqliPattern, query)
+				return result
+			} else {
+				// Warn mode - log but allow through
+				log.Printf("[SQLi] WARNING: SQL injection attempt detected but not blocked (warn mode): pattern=%s, category=%s", sqliResult.Pattern, sqliResult.Category)
+				result.TriggeredPolicies = append(result.TriggeredPolicies, sqliPattern.ID)
+				// Continue processing - don't return early
+			}
+		}
+	} else if dpe.sqliConfig.InputMode != sqli.ModeOff {
+		// Fallback to legacy SQL injection patterns when scanner not initialized
+		// (e.g., in tests that create the engine directly without NewDatabasePolicyEngine)
+		if blockedPattern := dpe.checkPatterns(queryLower, dpe.sqlInjectionPatterns); blockedPattern != nil {
+			result.Blocked = true
+			result.Reason = fmt.Sprintf("SQL injection attempt detected: %s", blockedPattern.Description)
+			result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
+			result.Severity = "critical"
+			result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
+			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+
+			// Log to audit queue (handles async/sync based on mode)
+			dpe.logPolicyViolationToQueue(user, blockedPattern, query)
+			return result
+		}
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
 
 	// 2. Dangerous Query Detection
-	if blockedPattern := dpe.checkPatterns(queryLower, dpe.dangerousQueryPatterns); blockedPattern != nil {
-		result.Blocked = true
-		result.Reason = fmt.Sprintf("Dangerous query detected: %s", blockedPattern.Description)
-		result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
-		result.Severity = "critical"
-		result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
-		result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+	// Note: When sqliScanner is enabled, it already includes CategoryDangerousQuery patterns.
+	// When SQLI_SCANNER_MODE=off, dangerous queries are also not blocked (consistent with mode).
+	// This legacy check is only used when sqliScanner is nil AND mode is not explicitly off.
+	if dpe.sqliScanner == nil && dpe.sqliConfig.InputMode != sqli.ModeOff {
+		if blockedPattern := dpe.checkPatterns(queryLower, dpe.dangerousQueryPatterns); blockedPattern != nil {
+			result.Blocked = true
+			result.Reason = fmt.Sprintf("Dangerous query detected: %s", blockedPattern.Description)
+			result.TriggeredPolicies = append(result.TriggeredPolicies, blockedPattern.ID)
+			result.Severity = "critical"
+			result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
+			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 
-		// Log to audit queue
-		dpe.logPolicyViolationToQueue(user, blockedPattern, query)
-		return result
+			// Log to audit queue
+			dpe.logPolicyViolationToQueue(user, blockedPattern, query)
+			return result
+		}
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
 

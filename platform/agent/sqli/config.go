@@ -2,6 +2,8 @@ package sqli
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"strings"
 )
 
@@ -62,6 +64,65 @@ func DefaultConfig() Config {
 		MaxContentLength:  1048576, // 1MB
 		ConnectorOverrides: make(map[string]ConnectorConfig),
 	}
+}
+
+// Environment variable names for SQL injection scanner configuration.
+const (
+	// EnvSQLIScannerMode sets the scanning mode for both input and response.
+	// Valid values: "off", "basic", "advanced"
+	// Default: "basic"
+	EnvSQLIScannerMode = "SQLI_SCANNER_MODE"
+
+	// EnvSQLIBlockMode sets whether to block or warn on detection.
+	// Valid values: "block", "warn"
+	// Default: "block"
+	EnvSQLIBlockMode = "SQLI_BLOCK_MODE"
+)
+
+// ConfigFromEnv creates a configuration from environment variables.
+// This allows runtime configuration without code changes.
+//
+// Environment variables:
+//   - SQLI_SCANNER_MODE: off, basic, advanced (default: basic)
+//   - SQLI_BLOCK_MODE: block, warn (default: block)
+//
+// Invalid values are logged and fall back to defaults.
+func ConfigFromEnv() Config {
+	cfg := DefaultConfig()
+
+	// Parse SQLI_SCANNER_MODE
+	if modeStr := os.Getenv(EnvSQLIScannerMode); modeStr != "" {
+		mode, err := ParseMode(strings.ToLower(modeStr))
+		if err != nil {
+			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'basic'. Valid values: off, basic, advanced",
+				EnvSQLIScannerMode, modeStr)
+		} else {
+			cfg.InputMode = mode
+			cfg.ResponseMode = mode
+			log.Printf("[SQLi] Scanner mode set to %q from environment", mode)
+		}
+	}
+
+	// Parse SQLI_BLOCK_MODE
+	if blockStr := os.Getenv(EnvSQLIBlockMode); blockStr != "" {
+		switch strings.ToLower(blockStr) {
+		case "block":
+			cfg.BlockOnDetection = true
+			log.Printf("[SQLi] Block mode ENABLED - detections will be blocked")
+		case "warn":
+			cfg.BlockOnDetection = false
+			log.Printf("[SQLi] Warn mode ENABLED - detections will be logged but not blocked")
+		default:
+			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'block'. Valid values: block, warn",
+				EnvSQLIBlockMode, blockStr)
+			cfg.BlockOnDetection = true // Default to block for security
+		}
+	} else {
+		// Default to block mode for security-first approach
+		cfg.BlockOnDetection = true
+	}
+
+	return cfg
 }
 
 // Validate validates the configuration and returns any errors.

@@ -102,6 +102,12 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       LOG_LEVEL: debug
 
+      # SQL Injection Scanner Configuration
+      # SQLI_SCANNER_MODE: off, basic, advanced (default: basic)
+      # SQLI_BLOCK_MODE: block, warn (default: block)
+      SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
+      SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+
       # Redis (optional)
       REDIS_URL: redis://redis:6379
 

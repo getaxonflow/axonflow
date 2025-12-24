@@ -87,6 +87,45 @@ middleware, err := sqli.NewScanningMiddleware(
 )
 ```
 
+### Environment Variable Configuration
+
+For Docker and containerized deployments, configure SQL injection scanning using environment variables:
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | Sets the scanning mode for both input and response |
+| `SQLI_BLOCK_MODE` | `block`, `warn` | `block` | Controls whether detections are blocked or just logged |
+
+**Example: docker-compose.yml**
+
+```yaml
+services:
+  axonflow-agent:
+    environment:
+      # Scanning mode: off, basic, advanced
+      SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
+      # Block mode: block (reject requests), warn (log only)
+      SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+```
+
+**Usage Examples:**
+
+```bash
+# Default: basic scanning with blocking enabled
+docker compose up -d
+
+# Disable scanning entirely
+SQLI_SCANNER_MODE=off docker compose up -d
+
+# Enable scanning in warn-only mode (log but don't block)
+SQLI_BLOCK_MODE=warn docker compose up -d
+
+# Use advanced scanning (Enterprise only) with blocking
+SQLI_SCANNER_MODE=advanced SQLI_BLOCK_MODE=block docker compose up -d
+```
+
+> **Note:** Invalid environment variable values are logged and fall back to defaults (basic mode, blocking enabled) to ensure security-first behavior.
+
 ## Detection Categories
 
 | Category | Severity | Description |
@@ -102,21 +141,29 @@ middleware, err := sqli.NewScanningMiddleware(
 
 ## Response Handling
 
-When SQL injection is detected:
+When SQL injection is detected, behavior depends on the configured block mode:
 
-1. **Blocked Response** (default): Returns HTTP 403 Forbidden
-   ```json
-   {
-     "success": false,
-     "error": "Response blocked: potential SQL injection detected (pattern: union_select)"
-   }
-   ```
+### Block Mode (`SQLI_BLOCK_MODE=block`, default)
 
-2. **Detection-Only Mode**: Logs detection but allows response through
-   ```yaml
-   sqli:
-     block_on_detection: false
-   ```
+Returns HTTP 403 Forbidden and rejects the request:
+```json
+{
+  "success": false,
+  "error": "Response blocked: potential SQL injection detected (pattern: union_select)"
+}
+```
+
+### Warn Mode (`SQLI_BLOCK_MODE=warn`)
+
+Logs the detection but allows the request through. Useful for:
+- Initial deployment to assess false positive rates
+- Testing detection patterns before enabling enforcement
+- Environments where availability is prioritized over strict blocking
+
+Example log output:
+```
+[SQLi] WARNING: SQL injection attempt detected but not blocked (warn mode): pattern=union_select, category=union_based
+```
 
 ## Audit Trail
 
