@@ -399,7 +399,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
 	}
 
-	// Evaluate policies (reuse existing policy engine)
+	// IMPORTANT: Gateway Mode Design Decision - Static Policies Only
+	//
+	// Gateway Mode intentionally ONLY evaluates static policies (PII detection, SQL injection,
+	// dangerous queries) for lowest latency. It does NOT call the Orchestrator for dynamic
+	// policies.
+	//
+	// This means:
+	// - Custom policies created via Customer Portal UI or API are NOT enforced
+	// - Policy versioning and testing features are NOT available
+	// - Only built-in security patterns are evaluated
+	//
+	// For full policy support including dynamic policies, users should use Proxy Mode.
+	// See: docs.getaxonflow.com/docs/sdk/choosing-a-mode
+	//
+	// Evaluate static policies only (reuse existing policy engine)
 	var policyResult *StaticPolicyResult
 	if dbPolicyEngine != nil {
 		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, "llm_chat")
