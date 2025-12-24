@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.2.0] - 2025-12-24
+## [2.0.0] - 2025-12-25
 
-**Unified Policy Architecture**
+**Unified Policy Architecture - Major Release**
+
+This major release introduces enterprise-grade policy management to AxonFlow with a new three-tier hierarchy for granular control at every level.
+
+### ⚠️ Breaking Changes
+
+**Category Enum Values Changed in Responses**
+
+| Old Category | New Category |
+|--------------|--------------|
+| `sql_injection` | `security-sqli` |
+| `admin_access` | `security-admin` |
+| `pii_detection` | `pii-global`, `pii-us`, `pii-eu`, `pii-india` |
+| `dangerous_queries` | `security-sqli` |
+
+**Migration Notes:**
+- Old category values are still accepted in **request** parameters (backwards compatible)
+- Update your code if you're parsing category values from **responses**
+- SDKs don't require updates - they pass through category values as strings
 
 ### Added
 
@@ -62,6 +80,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Performance**: Static policy evaluation maintains < 5ms p99 latency
   - Tier-aware caching with configurable TTL
   - Optimized regex pattern compilation
+
+### Fixed
+
+- **PII Detection Priority**: Credit card detection now correctly takes priority over phone number detection
+  - Root cause: Policies were sorted by severity string (alphabetically "medium" > "critical")
+  - Fix: Changed to `ORDER BY priority DESC` using numeric priority field
+
+- **Tenant Policy Isolation**: Tenant-specific policies now only apply to their respective tenants
+  - Root cause: `LoadPoliciesFromDB()` was loading ALL policies without tier filtering
+  - Fix: Added two-phase evaluation - system policies via fast path, tenant policies via tier-aware engine
 
 ### Enterprise Features
 
