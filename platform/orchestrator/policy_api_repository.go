@@ -55,18 +55,31 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 	policy.UpdatedAt = now
 	policy.Version = 1
 
+	// Default tier to tenant if not specified
+	tier := policy.Tier
+	if tier == "" {
+		tier = TierTenant
+	}
+
+	// Handle organization_id - convert empty string to nil for UUID column
+	var orgID interface{}
+	if policy.OrganizationID != "" {
+		orgID = policy.OrganizationID
+	}
+
 	query := `
 		INSERT INTO dynamic_policies (
-			policy_id, name, description, policy_type, conditions, actions,
-			tenant_id, priority, enabled, version, created_by, updated_by,
+			policy_id, name, description, policy_type, category, tier,
+			conditions, actions, tenant_id, organization_id,
+			priority, enabled, version, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 	`
 
 	_, err = r.db.ExecContext(ctx, query,
-		policy.ID, policy.Name, policy.Description, string(policy.Type),
-		conditionsJSON, actionsJSON, policy.TenantID, policy.Priority,
-		policy.Enabled, policy.Version, policy.CreatedBy, policy.UpdatedBy,
+		policy.ID, policy.Name, policy.Description, string(policy.Type), policy.Category, string(tier),
+		conditionsJSON, actionsJSON, policy.TenantID, orgID,
+		policy.Priority, policy.Enabled, policy.Version, policy.CreatedBy, policy.UpdatedBy,
 		policy.CreatedAt, policy.UpdatedAt,
 	)
 
@@ -86,8 +99,10 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 // GetByID retrieves a policy by its ID
 func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID string) (*PolicyResource, error) {
 	query := `
-		SELECT policy_id, name, description, policy_type, conditions, actions,
-		       tenant_id, priority, enabled, COALESCE(version, 1),
+		SELECT policy_id, name, description, policy_type,
+		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
+		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
@@ -96,12 +111,14 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 
 	policy := &PolicyResource{}
 	var conditionsJSON, actionsJSON []byte
-	var policyType string
+	var policyType, category, tier, orgID string
 
 	err := r.db.QueryRowContext(ctx, query, policyID, tenantID).Scan(
 		&policy.ID, &policy.Name, &policy.Description, &policyType,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &policy.Priority,
-		&policy.Enabled, &policy.Version, &policy.CreatedBy, &policy.UpdatedBy,
+		&category, &tier,
+		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+		&policy.Priority, &policy.Enabled, &policy.Version,
+		&policy.CreatedBy, &policy.UpdatedBy,
 		&policy.CreatedAt, &policy.UpdatedAt,
 	)
 
@@ -113,6 +130,9 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 	}
 
 	policy.Type = string(policyType)
+	policy.Category = category
+	policy.Tier = PolicyTier(tier)
+	policy.OrganizationID = orgID
 
 	if err := json.Unmarshal(conditionsJSON, &policy.Conditions); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal conditions: %w", err)
@@ -184,8 +204,10 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	offset := (params.Page - 1) * params.PageSize
 
 	query := fmt.Sprintf(`
-		SELECT policy_id, name, description, policy_type, conditions, actions,
-		       tenant_id, priority, enabled, COALESCE(version, 1),
+		SELECT policy_id, name, description, policy_type,
+		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
+		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
@@ -204,12 +226,14 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 	for rows.Next() {
 		var policy PolicyResource
 		var conditionsJSON, actionsJSON []byte
-		var policyType string
+		var policyType, category, tier, orgID string
 
 		err := rows.Scan(
 			&policy.ID, &policy.Name, &policy.Description, &policyType,
-			&conditionsJSON, &actionsJSON, &policy.TenantID, &policy.Priority,
-			&policy.Enabled, &policy.Version, &policy.CreatedBy, &policy.UpdatedBy,
+			&category, &tier,
+			&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+			&policy.Priority, &policy.Enabled, &policy.Version,
+			&policy.CreatedBy, &policy.UpdatedBy,
 			&policy.CreatedAt, &policy.UpdatedAt,
 		)
 		if err != nil {
@@ -217,6 +241,9 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 		}
 
 		policy.Type = string(policyType)
+		policy.Category = category
+		policy.Tier = PolicyTier(tier)
+		policy.OrganizationID = orgID
 
 		if err := json.Unmarshal(conditionsJSON, &policy.Conditions); err != nil {
 			return nil, 0, fmt.Errorf("failed to unmarshal conditions: %w", err)
@@ -575,8 +602,10 @@ func (r *PolicyRepository) updatePolicyTx(ctx context.Context, tx *sql.Tx, tenan
 // findByNameTx finds a policy by name within a transaction
 func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantID, name string) (*PolicyResource, error) {
 	query := `
-		SELECT policy_id, name, description, policy_type, conditions, actions,
-		       tenant_id, priority, enabled, COALESCE(version, 1),
+		SELECT policy_id, name, description, policy_type,
+		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
+		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
@@ -586,12 +615,14 @@ func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantI
 
 	policy := &PolicyResource{}
 	var conditionsJSON, actionsJSON []byte
-	var policyType string
+	var policyType, category, tier, orgID string
 
 	err := tx.QueryRowContext(ctx, query, name, tenantID).Scan(
 		&policy.ID, &policy.Name, &policy.Description, &policyType,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &policy.Priority,
-		&policy.Enabled, &policy.Version, &policy.CreatedBy, &policy.UpdatedBy,
+		&category, &tier,
+		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+		&policy.Priority, &policy.Enabled, &policy.Version,
+		&policy.CreatedBy, &policy.UpdatedBy,
 		&policy.CreatedAt, &policy.UpdatedAt,
 	)
 
@@ -603,6 +634,9 @@ func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantI
 	}
 
 	policy.Type = policyType
+	policy.Category = category
+	policy.Tier = PolicyTier(tier)
+	policy.OrganizationID = orgID
 	_ = json.Unmarshal(conditionsJSON, &policy.Conditions)
 	_ = json.Unmarshal(actionsJSON, &policy.Actions)
 
@@ -651,8 +685,10 @@ func (r *PolicyRepository) createVersionEntryTx(ctx context.Context, tx *sql.Tx,
 //nolint:unused // Used in tests
 func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string) (*PolicyResource, error) {
 	query := `
-		SELECT policy_id, name, description, policy_type, conditions, actions,
-		       tenant_id, priority, enabled, COALESCE(version, 1),
+		SELECT policy_id, name, description, policy_type,
+		       COALESCE(category, ''), COALESCE(tier, 'tenant'),
+		       conditions, actions, tenant_id, COALESCE(organization_id::text, ''),
+		       priority, enabled, COALESCE(version, 1),
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
@@ -662,12 +698,14 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 
 	policy := &PolicyResource{}
 	var conditionsJSON, actionsJSON []byte
-	var policyType string
+	var policyType, category, tier, orgID string
 
 	err := r.db.QueryRowContext(ctx, query, name, tenantID).Scan(
 		&policy.ID, &policy.Name, &policy.Description, &policyType,
-		&conditionsJSON, &actionsJSON, &policy.TenantID, &policy.Priority,
-		&policy.Enabled, &policy.Version, &policy.CreatedBy, &policy.UpdatedBy,
+		&category, &tier,
+		&conditionsJSON, &actionsJSON, &policy.TenantID, &orgID,
+		&policy.Priority, &policy.Enabled, &policy.Version,
+		&policy.CreatedBy, &policy.UpdatedBy,
 		&policy.CreatedAt, &policy.UpdatedAt,
 	)
 
@@ -679,8 +717,21 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 	}
 
 	policy.Type = policyType
+	policy.Category = category
+	policy.Tier = PolicyTier(tier)
+	policy.OrganizationID = orgID
 	_ = json.Unmarshal(conditionsJSON, &policy.Conditions)
 	_ = json.Unmarshal(actionsJSON, &policy.Actions)
 
 	return policy, nil
+}
+
+// CountByTenant counts active policies for a tenant (for policy limit enforcement).
+func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID string) (int, error) {
+	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND deleted_at IS NULL`
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, tenantID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count policies: %w", err)
+	}
+	return count, nil
 }

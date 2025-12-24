@@ -16,22 +16,50 @@ import (
 	"time"
 )
 
+// PolicyTier represents the tier level in the policy hierarchy.
+type PolicyTier string
+
+const (
+	// TierSystem represents AxonFlow-managed, immutable policies.
+	TierSystem PolicyTier = "system"
+	// TierOrganization represents organization-wide policies (Enterprise only).
+	TierOrganization PolicyTier = "organization"
+	// TierTenant represents team-specific policies.
+	TierTenant PolicyTier = "tenant"
+)
+
+// DynamicPolicyCategory represents categories for dynamic policies.
+type DynamicPolicyCategory string
+
+const (
+	CategoryDynamicRisk       DynamicPolicyCategory = "dynamic-risk"
+	CategoryDynamicCompliance DynamicPolicyCategory = "dynamic-compliance"
+	CategoryDynamicSecurity   DynamicPolicyCategory = "dynamic-security"
+	CategoryDynamicCost       DynamicPolicyCategory = "dynamic-cost"
+	CategoryDynamicAccess     DynamicPolicyCategory = "dynamic-access"
+)
+
 // PolicyResource represents a policy for the API (extends DynamicPolicy with API-specific fields)
 type PolicyResource struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
 	Type        string            `json:"type"` // content, user, risk, cost
+	Category    string            `json:"category,omitempty"` // dynamic-risk, dynamic-compliance, etc.
+	Tier        PolicyTier        `json:"tier"`               // system, organization, tenant
 	Conditions  []PolicyCondition `json:"conditions"`
 	Actions     []PolicyAction    `json:"actions"`
 	Priority    int               `json:"priority"`
 	Enabled     bool              `json:"enabled"`
 	Version     int               `json:"version"`
 	TenantID    string            `json:"tenant_id"`
+	OrganizationID string         `json:"organization_id,omitempty"` // For org-tier policies
+	Tags        []string          `json:"tags,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 	CreatedBy   string            `json:"created_by,omitempty"`
 	UpdatedBy   string            `json:"updated_by,omitempty"`
+	DeletedAt   *time.Time        `json:"deleted_at,omitempty"`
 }
 
 // CreatePolicyRequest for POST /api/v1/policies
@@ -39,10 +67,13 @@ type CreatePolicyRequest struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Type        string            `json:"type"` // content, user, risk, cost
+	Category    string            `json:"category,omitempty"` // dynamic-risk, dynamic-compliance, etc.
+	Tier        PolicyTier        `json:"tier,omitempty"` // Only 'organization' or 'tenant' allowed via API
 	Conditions  []PolicyCondition `json:"conditions"`
 	Actions     []PolicyAction    `json:"actions"`
 	Priority    int               `json:"priority"`
 	Enabled     bool              `json:"enabled"`
+	Tags        []string          `json:"tags,omitempty"`
 }
 
 // UpdatePolicyRequest for PUT /api/v1/policies/{id}
@@ -50,21 +81,26 @@ type UpdatePolicyRequest struct {
 	Name        *string           `json:"name,omitempty"`
 	Description *string           `json:"description,omitempty"`
 	Type        *string           `json:"type,omitempty"`
+	Category    *string           `json:"category,omitempty"` // Only for non-system policies
 	Conditions  []PolicyCondition `json:"conditions,omitempty"`
 	Actions     []PolicyAction    `json:"actions,omitempty"`
 	Priority    *int              `json:"priority,omitempty"`
 	Enabled     *bool             `json:"enabled,omitempty"`
+	Tags        []string          `json:"tags,omitempty"`
 }
 
 // ListPoliciesParams for GET /api/v1/policies query params
 type ListPoliciesParams struct {
-	Type     string `json:"type"`
-	Enabled  *bool  `json:"enabled"`
-	Search   string `json:"search"`
-	Page     int    `json:"page"`
-	PageSize int    `json:"page_size"`
-	SortBy   string `json:"sort_by"`
-	SortDir  string `json:"sort_dir"`
+	Type           string      `json:"type"`
+	Category       string      `json:"category"`
+	Tier           *PolicyTier `json:"tier"`
+	Enabled        *bool       `json:"enabled"`
+	Search         string      `json:"search"`
+	IncludeDeleted bool        `json:"include_deleted"`
+	Page           int         `json:"page"`
+	PageSize       int         `json:"page_size"`
+	SortBy         string      `json:"sort_by"`
+	SortDir        string      `json:"sort_dir"`
 }
 
 // TestPolicyRequest for POST /api/v1/policies/{id}/test

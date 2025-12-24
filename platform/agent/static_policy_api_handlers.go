@@ -15,13 +15,25 @@
 // Static policies are pattern-based enforcement rules (PII detection, SQL injection blocking)
 // that are stored in the static_policies table and evaluated by the Agent.
 //
-// The API enables the Customer Portal to display both static (Agent) and dynamic (Orchestrator)
-// policies in a unified view.
+// API Endpoints:
+//   - GET    /api/v1/static-policies           - List policies with filtering
+//   - POST   /api/v1/static-policies           - Create a new policy
+//   - GET    /api/v1/static-policies/{id}      - Get policy by ID
+//   - PUT    /api/v1/static-policies/{id}      - Update policy
+//   - DELETE /api/v1/static-policies/{id}      - Soft delete policy
+//   - PATCH  /api/v1/static-policies/{id}      - Toggle enabled status
+//   - GET    /api/v1/static-policies/effective - Get effective policies with overrides
+//   - POST   /api/v1/static-policies/test      - Test a pattern against input
+//   - GET    /api/v1/static-policies/{id}/versions - Get version history
+//   - POST   /api/v1/static-policies/{id}/override - Create override (Enterprise)
+//   - DELETE /api/v1/static-policies/{id}/override - Delete override (Enterprise)
 package agent
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -30,49 +42,27 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// StaticPolicy represents a static policy from the database
-type StaticPolicy struct {
-	ID          string          `json:"id"`
-	PolicyID    string          `json:"policy_id"`
-	Name        string          `json:"name"`
-	Category    string          `json:"category"`
-	Pattern     string          `json:"pattern"`
-	Severity    string          `json:"severity"`
-	Description string          `json:"description,omitempty"`
-	Action      string          `json:"action"`
-	Enabled     bool            `json:"enabled"`
-	TenantID    string          `json:"tenant_id"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	Version     int             `json:"version"`
-}
+// Note: StaticPolicy, CreateStaticPolicyRequest, UpdateStaticPolicyRequest, and related types
+// are defined in policy_types.go with enhanced fields for tier hierarchy support (ADR-020).
 
-// StaticPoliciesListResponse is the response for listing static policies
-type StaticPoliciesListResponse struct {
-	Policies   []StaticPolicy `json:"policies"`
-	Pagination PaginationMeta `json:"pagination"`
-}
-
-// PaginationMeta contains pagination metadata
-type PaginationMeta struct {
-	Page       int `json:"page"`
-	PageSize   int `json:"page_size"`
-	TotalItems int `json:"total_items"`
-	TotalPages int `json:"total_pages"`
-}
-
-// StaticPolicyAPIHandler handles static policy API requests
+// StaticPolicyAPIHandler handles static policy API requests.
+// It uses StaticPolicyRepository and PolicyOverrideRepository for database operations.
 type StaticPolicyAPIHandler struct {
-	db *sql.DB
+	db           *sql.DB
+	policyRepo   *StaticPolicyRepository
+	overrideRepo *PolicyOverrideRepository
 }
 
-// NewStaticPolicyAPIHandler creates a new handler for static policy API
+// NewStaticPolicyAPIHandler creates a new handler for static policy API.
 func NewStaticPolicyAPIHandler(db *sql.DB) *StaticPolicyAPIHandler {
-	return &StaticPolicyAPIHandler{db: db}
+	return &StaticPolicyAPIHandler{
+		db:           db,
+		policyRepo:   NewStaticPolicyRepository(db),
+		overrideRepo: NewPolicyOverrideRepository(db),
+	}
 }
 
-// RegisterStaticPolicyHandlers registers the static policy API routes
+// RegisterStaticPolicyHandlers registers the static policy API routes.
 func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	if db == nil {
 		log.Println("⚠️ Database not available - Static Policy API disabled")
@@ -81,26 +71,43 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 
 	handler := NewStaticPolicyAPIHandler(db)
 
-	// GET /api/v1/static-policies - List static policies with filtering and pagination
+	// List and effective endpoints (must come before {id} routes)
 	router.HandleFunc("/api/v1/static-policies", handler.HandleListStaticPolicies).Methods("GET")
+	router.HandleFunc("/api/v1/static-policies", handler.HandleCreateStaticPolicy).Methods("POST")
+	router.HandleFunc("/api/v1/static-policies/effective", handler.HandleGetEffectivePolicies).Methods("GET")
+	router.HandleFunc("/api/v1/static-policies/test", handler.HandleTestPattern).Methods("POST")
 
-	// GET /api/v1/static-policies/{id} - Get a specific static policy by ID
+	// Single policy operations
 	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleGetStaticPolicy).Methods("GET")
+	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleUpdateStaticPolicy).Methods("PUT")
+	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleDeleteStaticPolicy).Methods("DELETE")
+	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleTogglePolicy).Methods("PATCH")
 
-	log.Println("✅ Static Policy API routes registered")
+	// Version history
+	router.HandleFunc("/api/v1/static-policies/{id}/versions", handler.HandleGetVersionHistory).Methods("GET")
+
+	// Override endpoints (Enterprise only)
+	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleCreateOverride).Methods("POST")
+	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
+
+	log.Println("✅ Static Policy API routes registered (11 endpoints)")
 }
 
 // HandleListStaticPolicies handles GET /api/v1/static-policies
 // Query parameters:
-// - page: Page number (default: 1)
-// - page_size: Items per page (default: 20, max: 100)
-// - category: Filter by category (sql_injection, dangerous_queries, admin_access, pii_detection)
-// - severity: Filter by severity (low, medium, high, critical)
-// - enabled: Filter by enabled status (true/false)
+//   - page: Page number (default: 1)
+//   - page_size: Items per page (default: 20, max: 100)
+//   - category: Filter by category (security-sqli, pii-global, etc.)
+//   - tier: Filter by tier (system, organization, tenant)
+//   - severity: Filter by severity (low, medium, high, critical)
+//   - enabled: Filter by enabled status (true/false)
+//   - search: Search in name and description
+//
 // Headers:
-// - X-Tenant-ID: Tenant ID for filtering (required in SaaS mode)
+//   - X-Tenant-ID: Tenant ID for scoping (required in SaaS mode)
+//   - X-Organization-ID: Organization ID for org-level filtering
 func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter, r *http.Request) {
-	// Get tenant ID from header
+	ctx := r.Context()
 	tenantID := r.Header.Get("X-Tenant-ID")
 
 	// Parse pagination parameters
@@ -111,188 +118,485 @@ func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter,
 
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 	if pageSize < 1 {
-		pageSize = 20
+		pageSize = DefaultPageSize
 	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
-
-	// Parse filter parameters
-	categoryFilter := r.URL.Query().Get("category")
-	severityFilter := r.URL.Query().Get("severity")
-	enabledFilter := r.URL.Query().Get("enabled")
-
-	// Build query with filters
-	query, countQuery, args := h.buildListQuery(tenantID, categoryFilter, severityFilter, enabledFilter, page, pageSize)
-
-	// Get total count first
-	var totalItems int
-	if err := h.db.QueryRow(countQuery, args[:len(args)-2]...).Scan(&totalItems); err != nil {
-		log.Printf("[StaticPolicyAPI] Error counting policies: %v", err)
-		writeJSONError(w, "Failed to count policies", http.StatusInternalServerError)
-		return
+	if pageSize > MaxPageSize {
+		pageSize = MaxPageSize
 	}
 
-	// Execute query
-	rows, err := h.db.Query(query, args...)
+	// Build filter params
+	params := &ListStaticPoliciesParams{
+		Page:     page,
+		PageSize: pageSize,
+		Search:   r.URL.Query().Get("search"),
+	}
+
+	// Parse tier filter
+	if tierStr := r.URL.Query().Get("tier"); tierStr != "" {
+		tier := PolicyTier(tierStr)
+		if IsValidTier(tier) {
+			params.Tier = &tier
+		}
+	}
+
+	// Parse category filter
+	if categoryStr := r.URL.Query().Get("category"); categoryStr != "" {
+		category := PolicyCategory(categoryStr)
+		params.Category = &category
+	}
+
+	// Parse enabled filter
+	if enabledStr := r.URL.Query().Get("enabled"); enabledStr != "" {
+		enabled := enabledStr == "true"
+		params.Enabled = &enabled
+	}
+
+	// Execute list query using repository
+	response, err := h.policyRepo.List(ctx, tenantID, params)
 	if err != nil {
-		log.Printf("[StaticPolicyAPI] Error querying policies: %v", err)
-		writeJSONError(w, "Failed to query policies", http.StatusInternalServerError)
+		log.Printf("[StaticPolicyAPI] Error listing policies: %v", err)
+		writeJSONError(w, "Failed to list policies", http.StatusInternalServerError)
 		return
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			log.Printf("[StaticPolicyAPI] Error closing rows: %v", closeErr)
-		}
-	}()
-
-	// Collect results
-	policies := make([]StaticPolicy, 0)
-	for rows.Next() {
-		var p StaticPolicy
-		var description, metadata sql.NullString
-		err := rows.Scan(
-			&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Pattern,
-			&p.Severity, &description, &p.Action, &p.Enabled,
-			&p.TenantID, &metadata, &p.CreatedAt, &p.UpdatedAt, &p.Version,
-		)
-		if err != nil {
-			log.Printf("[StaticPolicyAPI] Error scanning policy row: %v", err)
-			continue
-		}
-
-		if description.Valid {
-			p.Description = description.String
-		}
-		if metadata.Valid && metadata.String != "" {
-			p.Metadata = json.RawMessage(metadata.String)
-		}
-
-		policies = append(policies, p)
-	}
-
-	if err := rows.Err(); err != nil {
-		log.Printf("[StaticPolicyAPI] Error iterating rows: %v", err)
-		writeJSONError(w, "Failed to read policies", http.StatusInternalServerError)
-		return
-	}
-
-	// Calculate pagination metadata
-	totalPages := (totalItems + pageSize - 1) / pageSize
-
-	response := StaticPoliciesListResponse{
-		Policies: policies,
-		Pagination: PaginationMeta{
-			Page:       page,
-			PageSize:   pageSize,
-			TotalItems: totalItems,
-			TotalPages: totalPages,
-		},
 	}
 
 	log.Printf("[StaticPolicyAPI] Returning %d policies (page %d/%d, tenant: %s)",
-		len(policies), page, totalPages, tenantID)
+		len(response.Policies), response.Pagination.Page, response.Pagination.TotalPages, tenantID)
 
 	writeJSONResponse(w, response, http.StatusOK)
 }
 
+// HandleCreateStaticPolicy handles POST /api/v1/static-policies
+// Request body: CreateStaticPolicyRequest
+// Headers:
+//   - X-Tenant-ID: Tenant ID (required)
+//   - X-Organization-ID: Organization ID (required for org-tier policies)
+//   - X-User-ID: User ID for audit trail
+func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := r.Header.Get("X-Tenant-ID")
+	orgID := r.Header.Get("X-Organization-ID")
+	userID := r.Header.Get("X-User-ID")
+
+	if tenantID == "" {
+		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body
+	var req CreateStaticPolicyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if req.Name == "" {
+		writeJSONError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if req.Pattern == "" {
+		writeJSONError(w, "pattern is required", http.StatusBadRequest)
+		return
+	}
+	if req.Category == "" {
+		writeJSONError(w, "category is required", http.StatusBadRequest)
+		return
+	}
+	if req.Action == "" {
+		writeJSONError(w, "action is required", http.StatusBadRequest)
+		return
+	}
+
+	// Build policy from request
+	policy := &StaticPolicy{
+		Name:        req.Name,
+		Description: req.Description,
+		Category:    req.Category,
+		Tier:        req.Tier,
+		Pattern:     req.Pattern,
+		Action:      req.Action,
+		Severity:    req.Severity,
+		Priority:    req.Priority,
+		Enabled:     req.Enabled,
+		Tags:        req.Tags,
+		TenantID:    tenantID,
+		OrgID:       orgID,
+	}
+
+	// Set organization ID for org-tier policies
+	if req.Tier == TierOrganization && orgID != "" {
+		policy.OrganizationID = &orgID
+	}
+
+	// Create policy using repository
+	if err := h.policyRepo.Create(ctx, policy, userID); err != nil {
+		log.Printf("[StaticPolicyAPI] Error creating policy: %v", err)
+
+		// Return appropriate status code based on error type
+		switch {
+		case errors.Is(err, ErrSystemTierCreation):
+			writeJSONError(w, "Cannot create system-tier policies via API", http.StatusForbidden)
+		case errors.Is(err, ErrOrgTierRequiresEnterprise):
+			writeJSONError(w, "Organization tier requires Enterprise license", http.StatusForbidden)
+		case errors.Is(err, ErrTenantPolicyLimitReached):
+			writeJSONError(w, "Tenant policy limit reached (30 max for Community)", http.StatusForbidden)
+		case errors.Is(err, ErrInvalidPattern):
+			writeJSONError(w, "Invalid regex pattern: "+err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrInvalidCategory):
+			writeJSONError(w, "Invalid policy category", http.StatusBadRequest)
+		case errors.Is(err, ErrInvalidTier):
+			writeJSONError(w, "Invalid policy tier", http.StatusBadRequest)
+		default:
+			writeJSONError(w, "Failed to create policy", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	log.Printf("[StaticPolicyAPI] Created policy %s (tier: %s, tenant: %s)", policy.PolicyID, policy.Tier, tenantID)
+
+	writeJSONResponse(w, policy, http.StatusCreated)
+}
+
 // HandleGetStaticPolicy handles GET /api/v1/static-policies/{id}
 func (h *StaticPolicyAPIHandler) HandleGetStaticPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	vars := mux.Vars(r)
 	policyID := vars["id"]
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-
-	query := `
-		SELECT
-			id, policy_id, name, category, pattern, severity,
-			description, action, enabled, tenant_id,
-			metadata::text, created_at, updated_at, version
-		FROM static_policies
-		WHERE (policy_id = $1 OR id::text = $1)
-		  AND (tenant_id = 'global' OR tenant_id = $2 OR $2 = '')`
-
-	var p StaticPolicy
-	var description, metadata sql.NullString
-	err := h.db.QueryRow(query, policyID, tenantID).Scan(
-		&p.ID, &p.PolicyID, &p.Name, &p.Category, &p.Pattern,
-		&p.Severity, &description, &p.Action, &p.Enabled,
-		&p.TenantID, &metadata, &p.CreatedAt, &p.UpdatedAt, &p.Version,
-	)
-
-	if err == sql.ErrNoRows {
-		writeJSONError(w, "Policy not found", http.StatusNotFound)
-		return
-	}
+	policy, err := h.policyRepo.GetByID(ctx, policyID)
 	if err != nil {
+		if errors.Is(err, ErrPolicyNotFound) {
+			writeJSONError(w, "Policy not found", http.StatusNotFound)
+			return
+		}
 		log.Printf("[StaticPolicyAPI] Error getting policy %s: %v", policyID, err)
 		writeJSONError(w, "Failed to get policy", http.StatusInternalServerError)
 		return
 	}
 
-	if description.Valid {
-		p.Description = description.String
-	}
-	if metadata.Valid && metadata.String != "" {
-		p.Metadata = json.RawMessage(metadata.String)
-	}
-
-	writeJSONResponse(w, p, http.StatusOK)
+	writeJSONResponse(w, policy, http.StatusOK)
 }
 
-// buildListQuery builds the SQL query for listing policies with filters
-func (h *StaticPolicyAPIHandler) buildListQuery(tenantID, category, severity, enabled string, page, pageSize int) (string, string, []interface{}) {
-	baseWhere := "WHERE (tenant_id = 'global' OR tenant_id = $1 OR $1 = '')"
-	args := []interface{}{tenantID}
-	argNum := 2
+// HandleUpdateStaticPolicy handles PUT /api/v1/static-policies/{id}
+// Request body: UpdateStaticPolicyRequest
+func (h *StaticPolicyAPIHandler) HandleUpdateStaticPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	userID := r.Header.Get("X-User-ID")
 
-	// Add category filter
-	if category != "" {
-		baseWhere += " AND category = $" + strconv.Itoa(argNum)
-		args = append(args, category)
-		argNum++
+	// Parse request body
+	var req UpdateStaticPolicyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	// Add severity filter
-	if severity != "" {
-		baseWhere += " AND severity = $" + strconv.Itoa(argNum)
-		args = append(args, severity)
-		argNum++
+	// Update policy using repository
+	policy, err := h.policyRepo.Update(ctx, policyID, &req, userID)
+	if err != nil {
+		log.Printf("[StaticPolicyAPI] Error updating policy %s: %v", policyID, err)
+
+		switch {
+		case errors.Is(err, ErrPolicyNotFound):
+			writeJSONError(w, "Policy not found", http.StatusNotFound)
+		case errors.Is(err, ErrSystemPolicyModification):
+			writeJSONError(w, "System policies cannot be modified", http.StatusForbidden)
+		case errors.Is(err, ErrInvalidPattern):
+			writeJSONError(w, "Invalid regex pattern: "+err.Error(), http.StatusBadRequest)
+		default:
+			writeJSONError(w, "Failed to update policy", http.StatusInternalServerError)
+		}
+		return
 	}
 
-	// Add enabled filter
-	if enabled != "" {
-		enabledBool := enabled == "true"
-		baseWhere += " AND enabled = $" + strconv.Itoa(argNum)
-		args = append(args, enabledBool)
-		argNum++
+	log.Printf("[StaticPolicyAPI] Updated policy %s (version: %d)", policyID, policy.Version)
+
+	writeJSONResponse(w, policy, http.StatusOK)
+}
+
+// HandleDeleteStaticPolicy handles DELETE /api/v1/static-policies/{id}
+// Performs soft delete (sets deleted_at timestamp)
+func (h *StaticPolicyAPIHandler) HandleDeleteStaticPolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	userID := r.Header.Get("X-User-ID")
+
+	if err := h.policyRepo.Delete(ctx, policyID, userID); err != nil {
+		log.Printf("[StaticPolicyAPI] Error deleting policy %s: %v", policyID, err)
+
+		switch {
+		case errors.Is(err, ErrPolicyNotFound):
+			writeJSONError(w, "Policy not found", http.StatusNotFound)
+		case errors.Is(err, ErrSystemPolicyDeletion):
+			writeJSONError(w, "System policies cannot be deleted", http.StatusForbidden)
+		default:
+			writeJSONError(w, "Failed to delete policy", http.StatusInternalServerError)
+		}
+		return
 	}
 
-	// Count query
-	countQuery := "SELECT COUNT(*) FROM static_policies " + baseWhere
+	log.Printf("[StaticPolicyAPI] Deleted policy %s (soft delete)", policyID)
 
-	// Main query with pagination
-	query := `
-		SELECT
-			id, policy_id, name, category, pattern, severity,
-			description, action, enabled, tenant_id,
-			metadata::text, created_at, updated_at, version
-		FROM static_policies
-		` + baseWhere + `
-		ORDER BY
-			CASE severity
-				WHEN 'critical' THEN 1
-				WHEN 'high' THEN 2
-				WHEN 'medium' THEN 3
-				WHEN 'low' THEN 4
-			END,
-			name ASC
-		LIMIT $` + strconv.Itoa(argNum) + ` OFFSET $` + strconv.Itoa(argNum+1)
+	w.WriteHeader(http.StatusNoContent)
+}
 
-	offset := (page - 1) * pageSize
-	args = append(args, pageSize, offset)
+// HandleTogglePolicy handles PATCH /api/v1/static-policies/{id}
+// Toggles the enabled status of a policy
+// Request body: {"enabled": true/false}
+func (h *StaticPolicyAPIHandler) HandleTogglePolicy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	userID := r.Header.Get("X-User-ID")
 
-	return query, countQuery, args
+	// Parse request body
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.policyRepo.ToggleEnabled(ctx, policyID, req.Enabled, userID); err != nil {
+		log.Printf("[StaticPolicyAPI] Error toggling policy %s: %v", policyID, err)
+
+		switch {
+		case errors.Is(err, ErrPolicyNotFound):
+			writeJSONError(w, "Policy not found", http.StatusNotFound)
+		case errors.Is(err, ErrSystemPolicyModification):
+			writeJSONError(w, "System policies cannot be disabled via API", http.StatusForbidden)
+		default:
+			writeJSONError(w, "Failed to toggle policy", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Fetch the updated policy to return
+	policy, err := h.policyRepo.GetByID(ctx, policyID)
+	if err != nil {
+		log.Printf("[StaticPolicyAPI] Error fetching toggled policy %s: %v", policyID, err)
+		writeJSONError(w, "Failed to fetch updated policy", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[StaticPolicyAPI] Toggled policy %s enabled=%v", policyID, req.Enabled)
+
+	writeJSONResponse(w, policy, http.StatusOK)
+}
+
+// HandleGetEffectivePolicies handles GET /api/v1/static-policies/effective
+// Returns all effective policies for a tenant with overrides applied.
+// This is used by the Customer Portal for the unified policy view.
+func (h *StaticPolicyAPIHandler) HandleGetEffectivePolicies(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantID := r.Header.Get("X-Tenant-ID")
+	orgIDHeader := r.Header.Get("X-Organization-ID")
+
+	if tenantID == "" {
+		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Convert orgID to pointer (nil if empty)
+	var orgID *string
+	if orgIDHeader != "" {
+		orgID = &orgIDHeader
+	}
+
+	// Get effective policies (with overrides applied)
+	policies, err := h.policyRepo.GetEffective(ctx, tenantID, orgID)
+	if err != nil {
+		log.Printf("[StaticPolicyAPI] Error getting effective policies: %v", err)
+		writeJSONError(w, "Failed to get effective policies", http.StatusInternalServerError)
+		return
+	}
+
+	response := EffectivePolicies{
+		Static:         policies,
+		TenantID:       tenantID,
+		OrganizationID: orgIDHeader,
+		ComputedAt:     time.Now().UTC(),
+	}
+
+	log.Printf("[StaticPolicyAPI] Returning %d effective policies for tenant %s", len(policies), tenantID)
+
+	writeJSONResponse(w, response, http.StatusOK)
+}
+
+// TestPatternAPIRequest is the request body for testing a pattern via API.
+type TestPatternAPIRequest struct {
+	Pattern string   `json:"pattern"`
+	Inputs  []string `json:"inputs"`
+	// Single input for backward compatibility
+	Input string `json:"input,omitempty"`
+}
+
+// HandleTestPattern handles POST /api/v1/static-policies/test
+// Tests a regex pattern against input strings
+// Request body: {"pattern": "...", "inputs": ["input1", "input2"]}
+// or: {"pattern": "...", "input": "single input"} for backward compatibility
+func (h *StaticPolicyAPIHandler) HandleTestPattern(w http.ResponseWriter, r *http.Request) {
+	var req TestPatternAPIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Pattern == "" {
+		writeJSONError(w, "pattern is required", http.StatusBadRequest)
+		return
+	}
+
+	// Support both "inputs" array and single "input" for backward compatibility
+	inputs := req.Inputs
+	if len(inputs) == 0 && req.Input != "" {
+		inputs = []string{req.Input}
+	}
+
+	// Create a context with timeout for pattern testing
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Validate and test the pattern
+	result := TestPattern(ctx, req.Pattern, inputs)
+
+	writeJSONResponse(w, result, http.StatusOK)
+}
+
+// HandleGetVersionHistory handles GET /api/v1/static-policies/{id}/versions
+// Returns version history for a policy.
+// Community edition: limited to 5 versions
+// Enterprise edition: unlimited
+func (h *StaticPolicyAPIHandler) HandleGetVersionHistory(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	tenantID := r.Header.Get("X-Tenant-ID")
+
+	versions, err := h.policyRepo.GetVersions(ctx, policyID, tenantID)
+	if err != nil {
+		if errors.Is(err, ErrPolicyNotFound) {
+			writeJSONError(w, "Policy not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[StaticPolicyAPI] Error getting versions for policy %s: %v", policyID, err)
+		writeJSONError(w, "Failed to get version history", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"policy_id": policyID,
+		"versions":  versions,
+		"count":     len(versions),
+	}
+
+	writeJSONResponse(w, response, http.StatusOK)
+}
+
+// HandleCreateOverride handles POST /api/v1/static-policies/{id}/override
+// Creates an override for a system policy (Enterprise only)
+// Request body: CreateOverrideRequest
+func (h *StaticPolicyAPIHandler) HandleCreateOverride(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	tenantID := r.Header.Get("X-Tenant-ID")
+	orgID := r.Header.Get("X-Organization-ID")
+	userID := r.Header.Get("X-User-ID")
+
+	if tenantID == "" {
+		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body
+	var req CreateOverrideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Build override
+	override := &PolicyOverride{
+		PolicyID:        policyID,
+		PolicyType:      TypeStatic,
+		ActionOverride:  req.ActionOverride,
+		EnabledOverride: req.EnabledOverride,
+		OverrideReason:  req.OverrideReason,
+		ExpiresAt:       req.ExpiresAt,
+	}
+
+	// Set scope based on headers
+	if orgID != "" {
+		override.OrganizationID = &orgID
+	}
+	if tenantID != "" {
+		override.TenantID = &tenantID
+	}
+
+	// Create override using repository
+	if err := h.overrideRepo.Create(ctx, override, userID); err != nil {
+		log.Printf("[StaticPolicyAPI] Error creating override for policy %s: %v", policyID, err)
+
+		switch {
+		case errors.Is(err, ErrOverrideReasonRequired):
+			writeJSONError(w, "override_reason is required", http.StatusBadRequest)
+		case errors.Is(err, ErrOverrideRequiresEnterprise):
+			writeJSONError(w, "Policy overrides require Enterprise license", http.StatusForbidden)
+		case errors.Is(err, ErrOverrideAlreadyExists):
+			writeJSONError(w, "Override already exists for this policy", http.StatusConflict)
+		default:
+			writeJSONError(w, "Failed to create override: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	log.Printf("[StaticPolicyAPI] Created override for policy %s (tenant: %s)", policyID, tenantID)
+
+	writeJSONResponse(w, override, http.StatusCreated)
+}
+
+// HandleDeleteOverride handles DELETE /api/v1/static-policies/{id}/override
+// Deletes an override for a policy
+func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vars := mux.Vars(r)
+	policyID := vars["id"]
+	tenantIDHeader := r.Header.Get("X-Tenant-ID")
+	orgIDHeader := r.Header.Get("X-Organization-ID")
+	userID := r.Header.Get("X-User-ID")
+
+	if tenantIDHeader == "" {
+		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Convert to pointers for repository call
+	var tenantID, orgID *string
+	if tenantIDHeader != "" {
+		tenantID = &tenantIDHeader
+	}
+	if orgIDHeader != "" {
+		orgID = &orgIDHeader
+	}
+
+	// Delete override using repository
+	if err := h.overrideRepo.DeleteByPolicyID(ctx, policyID, tenantID, orgID, userID); err != nil {
+		if errors.Is(err, ErrOverrideNotFound) {
+			writeJSONError(w, "Override not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[StaticPolicyAPI] Error deleting override for policy %s: %v", policyID, err)
+		writeJSONError(w, "Failed to delete override", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[StaticPolicyAPI] Deleted override for policy %s (tenant: %s)", policyID, tenantIDHeader)
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // writeJSONResponse writes a JSON response with the given status code

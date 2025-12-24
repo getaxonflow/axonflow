@@ -140,6 +140,11 @@ func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, 
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
+		if tierErr, ok := err.(*TierValidationError); ok {
+			log.Printf("[PolicyAPI] CreatePolicy tier error for tenant %s: %v", tenantID, err)
+			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			return
+		}
 		// Log detailed error but return generic message
 		log.Printf("[PolicyAPI] CreatePolicy error for tenant %s: %v", tenantID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create policy")
@@ -222,6 +227,11 @@ func (h *PolicyAPIHandler) updatePolicy(w http.ResponseWriter, r *http.Request, 
 			h.writeValidationError(w, validationErr.Errors)
 			return
 		}
+		if tierErr, ok := err.(*TierValidationError); ok {
+			log.Printf("[PolicyAPI] UpdatePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
+			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			return
+		}
 		log.Printf("[PolicyAPI] UpdatePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to update policy")
 		return
@@ -252,6 +262,11 @@ func (h *PolicyAPIHandler) deletePolicy(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := h.service.DeletePolicy(r.Context(), tenantID, policyID, userID); err != nil {
+		if tierErr, ok := err.(*TierValidationError); ok {
+			log.Printf("[PolicyAPI] DeletePolicy tier error for tenant %s, policy %s: %v", tenantID, policyID, err)
+			h.writeError(w, http.StatusForbidden, tierErr.Code, tierErr.Message)
+			return
+		}
 		log.Printf("[PolicyAPI] DeletePolicy error for tenant %s, policy %s: %v", tenantID, policyID, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to delete policy")
 		return

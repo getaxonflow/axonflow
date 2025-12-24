@@ -56,13 +56,14 @@ const (
 
 // Configuration
 var (
-	jwtSecret          = []byte(os.Getenv("JWT_SECRET"))
-	orchestratorURL    = getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
-	authDB             *sql.DB // Database for Option 3 authentication
-	usageDB            *sql.DB // Database for usage metering
-	staticPolicyEngine *StaticPolicyEngine
-	dbPolicyEngine     *DatabasePolicyEngine
-	meteringService    *marketplace.MeteringService // AWS Marketplace metering
+	jwtSecret              = []byte(os.Getenv("JWT_SECRET"))
+	orchestratorURL        = getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
+	authDB                 *sql.DB // Database for Option 3 authentication
+	usageDB                *sql.DB // Database for usage metering
+	staticPolicyEngine     *StaticPolicyEngine
+	dbPolicyEngine         *DatabasePolicyEngine
+	tierAwarePolicyEngine  *TierAwarePolicyEngine // New tier-aware policy engine for tenant-specific policies
+	meteringService        *marketplace.MeteringService // AWS Marketplace metering
 )
 
 // Prometheus metrics
@@ -609,6 +610,10 @@ func Run() {
 		usageDB = authDB
 		log.Println("✅ Usage metering database connected")
 
+		// Initialize tier-aware policy engine for tenant-specific policy evaluation
+		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
+		log.Println("✅ Tier-aware policy engine initialized (tenant policies enabled)")
+
 		// Initialize AWS Marketplace metering (if enabled)
 		if os.Getenv("ENABLE_MARKETPLACE_METERING") == "true" {
 			productCode := os.Getenv("MARKETPLACE_PRODUCT_CODE")
@@ -930,15 +935,41 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("✅ Tenant isolation check passed")
 	log.Printf("[TIMING] Tenant isolation check: %v", tenantCheckTime)
 
-	// 4. Apply static policy enforcement (use DB engine if available)
+	// 4. Apply static policy enforcement
+	// Two-phase evaluation:
+	// - Phase 1: System policies (SQLi scanner, PII detection) via dbPolicyEngine
+	// - Phase 2: Tenant-specific policies via tierAwarePolicyEngine
 	policyEvalStart := time.Now()
 	log.Printf("📋 Evaluating static policies for request type: %s", req.RequestType)
 	var policyResult *StaticPolicyResult
+
+	// Phase 1: System policies (SQLi scanner optimized for fast detection)
 	if dbPolicyEngine != nil {
 		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
 	} else {
 		policyResult = staticPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
 	}
+
+	// Phase 2: Tenant-specific policies (if not already blocked and tier engine available)
+	if !policyResult.Blocked && tierAwarePolicyEngine != nil {
+		ctx := r.Context()
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, req.Query)
+		if err != nil {
+			log.Printf("⚠️ Tier-aware policy evaluation error: %v", err)
+		} else if tierResult.Matched && tierResult.Action == "block" {
+			// Tenant policy triggered a block
+			policyResult.Blocked = true
+			policyResult.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
+			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			policyResult.Severity = tierResult.Severity
+			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
+		} else if tierResult.Matched {
+			// Policy matched but action is not block (warn, log, redact)
+			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
+			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
+		}
+	}
+
 	policyEvalTime := time.Since(policyEvalStart)
 	log.Printf("✅ Policy evaluation complete: Blocked=%v, TriggeredPolicies=%d", policyResult.Blocked, len(policyResult.TriggeredPolicies))
 	log.Printf("[TIMING] Policy evaluation: %v", policyEvalTime)
@@ -1403,20 +1434,40 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mock user for testing
+	// Mock user for testing - use tenant ID from request header if provided
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "tenant_1" // fallback for backward compatibility
+	}
 	testUser := &User{
 		Email:       testReq.UserEmail,
 		Role:        "agent",
 		Permissions: []string{"query"},
-		TenantID:    "tenant_1",
+		TenantID:    tenantID,
 	}
 
-	// Use DB engine if available for testing
+	// Two-phase evaluation (same as proxy handler)
 	var result *StaticPolicyResult
 	if dbPolicyEngine != nil {
 		result = dbPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
 	} else {
 		result = staticPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
+	}
+
+	// Phase 2: Tier-aware policies (if not blocked and engine available)
+	if !result.Blocked && tierAwarePolicyEngine != nil {
+		ctx := r.Context()
+		tierResult, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, testUser.TenantID, nil, testReq.Query)
+		if err != nil {
+			log.Printf("⚠️ Tier-aware policy test error: %v", err)
+		} else if tierResult.Matched && tierResult.Action == "block" {
+			result.Blocked = true
+			result.Reason = fmt.Sprintf("Blocked by %s policy: %s", tierResult.Tier, tierResult.PolicyName)
+			result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+			result.Severity = tierResult.Severity
+		} else if tierResult.Matched {
+			result.TriggeredPolicies = append(result.TriggeredPolicies, tierResult.PolicyID)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

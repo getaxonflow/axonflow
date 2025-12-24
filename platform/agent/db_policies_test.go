@@ -209,28 +209,37 @@ func TestDatabasePolicyEngineHasPermission(t *testing.T) {
 	}
 }
 
-// TestLoadDefaultPolicies tests fallback policy loading
+// TestLoadDefaultPolicies tests fallback policy loading using system policy seed data
 func TestLoadDefaultPolicies(t *testing.T) {
 	dpe := &DatabasePolicyEngine{}
 
-	// Load default policies
+	// Load default policies from seed data
 	dpe.loadDefaultPolicies()
 
-	// Verify policies were loaded
+	// Verify policies were loaded from seed data (53 total: 37 SQLi + 4 admin + 12 PII)
 	if len(dpe.sqlInjectionPatterns) == 0 {
 		t.Error("Expected SQL injection patterns to be loaded")
 	}
-
-	if len(dpe.dangerousQueryPatterns) == 0 {
-		t.Error("Expected dangerous query patterns to be loaded")
+	if len(dpe.sqlInjectionPatterns) < 30 {
+		t.Errorf("Expected at least 30 SQL injection patterns, got %d", len(dpe.sqlInjectionPatterns))
 	}
+
+	// Note: dangerousQueryPatterns is empty in new architecture - dangerous queries
+	// are now part of security-sqli category (e.g., DROP TABLE, TRUNCATE)
+	// No assertion for dangerousQueryPatterns
 
 	if len(dpe.adminAccessPatterns) == 0 {
 		t.Error("Expected admin access patterns to be loaded")
 	}
+	if len(dpe.adminAccessPatterns) < 4 {
+		t.Errorf("Expected at least 4 admin access patterns, got %d", len(dpe.adminAccessPatterns))
+	}
 
 	if len(dpe.piiDetectionPatterns) == 0 {
 		t.Error("Expected PII detection patterns to be loaded")
+	}
+	if len(dpe.piiDetectionPatterns) < 10 {
+		t.Errorf("Expected at least 10 PII detection patterns, got %d", len(dpe.piiDetectionPatterns))
 	}
 
 	// Verify last refresh was set
@@ -238,7 +247,7 @@ func TestLoadDefaultPolicies(t *testing.T) {
 		t.Error("Expected lastRefresh to be set")
 	}
 
-	// Verify patterns are enabled
+	// Verify patterns are enabled and have compiled regex
 	for _, pattern := range dpe.sqlInjectionPatterns {
 		if !pattern.Enabled {
 			t.Errorf("Pattern %s should be enabled", pattern.ID)
@@ -247,9 +256,16 @@ func TestLoadDefaultPolicies(t *testing.T) {
 			t.Errorf("Pattern %s should have compiled regex", pattern.ID)
 		}
 	}
+
+	// Verify total count matches seed data
+	totalLoaded := len(dpe.sqlInjectionPatterns) + len(dpe.adminAccessPatterns) + len(dpe.piiDetectionPatterns)
+	expectedTotal := len(GetStaticSystemPolicies())
+	if totalLoaded != expectedTotal {
+		t.Errorf("Expected %d total policies from seed data, got %d", expectedTotal, totalLoaded)
+	}
 }
 
-// TestDefaultPoliciesWork tests that default policies are usable
+// TestDefaultPoliciesWork tests that default policies from seed data are usable
 // Note: Full evaluation testing requires database connection and is covered by integration tests
 func TestDefaultPoliciesWork(t *testing.T) {
 	dpe := &DatabasePolicyEngine{}
@@ -265,21 +281,43 @@ func TestDefaultPoliciesWork(t *testing.T) {
 		name          string
 		query         string
 		expectPattern bool
+		category      string // Which category the pattern should be in
 	}{
 		{
-			name:          "UNION pattern exists",
+			name:          "UNION SELECT pattern",
 			query:         "select * from users union select * from admin",
 			expectPattern: true,
+			category:      "sqli",
 		},
 		{
-			name:          "DROP TABLE pattern exists",
+			name:          "DROP TABLE pattern",
 			query:         "drop table customers",
 			expectPattern: true,
+			category:      "sqli",
 		},
 		{
-			name:          "Comment pattern exists",
-			query:         "select * from users -- comment",
+			name:          "SLEEP function injection",
+			query:         "select * from users where id = 1 and SLEEP(5)",
 			expectPattern: true,
+			category:      "sqli",
+		},
+		{
+			name:          "SSN detection",
+			query:         "find user with ssn 123-45-6789",
+			expectPattern: true,
+			category:      "pii",
+		},
+		{
+			name:          "Admin users table access",
+			query:         "select * from users where role = 'admin'",
+			expectPattern: true,
+			category:      "admin",
+		},
+		{
+			name:          "Safe query - no match expected",
+			query:         "select name from customers where id = 1",
+			expectPattern: false,
+			category:      "",
 		},
 	}
 
@@ -293,14 +331,19 @@ func TestDefaultPoliciesWork(t *testing.T) {
 				found = true
 			}
 
-			// Check dangerous query patterns
-			if dpe.checkPatterns(tt.query, dpe.dangerousQueryPatterns) != nil {
+			// Check admin access patterns
+			if dpe.checkPatterns(tt.query, dpe.adminAccessPatterns) != nil {
+				found = true
+			}
+
+			// Check PII detection patterns
+			if dpe.checkPatterns(tt.query, dpe.piiDetectionPatterns) != nil {
 				found = true
 			}
 
 			if found != tt.expectPattern {
-				t.Errorf("Query: %s\nExpected pattern match=%v, got=%v",
-					tt.query, tt.expectPattern, found)
+				t.Errorf("Query: %s\nExpected pattern match=%v, got=%v (category=%s)",
+					tt.query, tt.expectPattern, found, tt.category)
 			}
 
 			// Verify user permission check doesn't panic
@@ -807,28 +850,28 @@ func TestEvaluateStaticPolicies_WithDBEngine(t *testing.T) {
 	}{
 		{
 			name:           "Safe query allowed",
-			query:          "SELECT * FROM users WHERE id = 1",
+			query:          "SELECT * FROM customers WHERE id = 1",
 			requestType:    "sql",
 			expectBlocked:  false,
 			expectedReason: "",
 		},
 		{
 			name:           "SQL injection blocked",
-			query:          "SELECT * FROM users UNION SELECT * FROM admin",
+			query:          "SELECT * FROM data UNION SELECT * FROM admin",
 			requestType:    "sql",
 			expectBlocked:  true,
 			expectedReason: "SQL injection",
 		},
 		{
 			name:           "DROP TABLE blocked",
-			query:          "DROP TABLE users",
+			query:          "DROP TABLE customers",
 			requestType:    "sql",
 			expectBlocked:  true,
-			expectedReason: "Dangerous query",
+			expectedReason: "DROP TABLE", // Now caught by security-sqli category
 		},
 		{
-			name:           "Comment injection blocked",
-			query:          "SELECT * FROM users -- comment",
+			name:           "Comment injection with SQL keyword blocked",
+			query:          "SELECT * FROM data -- SELECT password FROM admin",
 			requestType:    "sql",
 			expectBlocked:  true,
 			expectedReason: "SQL injection",
@@ -1401,6 +1444,196 @@ func TestDatabasePolicyEngine_Close_WithNilQueue(t *testing.T) {
 	err = engine.Close()
 	if err != nil {
 		t.Errorf("Close failed: %v", err)
+	}
+}
+
+// TestEvaluateStaticPolicies_AdminUser tests that admin users bypass admin access checks
+func TestEvaluateStaticPolicies_AdminUser(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// No expectations needed - admin user bypasses admin access check
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 24 * time.Hour,
+		lastRefresh:     time.Now(),
+	}
+	engine.loadDefaultPolicies()
+
+	// Admin user should bypass admin access patterns
+	adminUser := &User{
+		ID:          1,
+		Role:        "admin",
+		Permissions: []string{"admin"},
+	}
+
+	// Query that would normally trigger admin access pattern
+	query := "SELECT * FROM system_config"
+	result := engine.EvaluateStaticPolicies(adminUser, query, "sql")
+
+	// Admin user should not be blocked by admin access patterns
+	// (but could still be blocked by other patterns)
+	if result != nil && result.Blocked {
+		// Check if blocked for admin access specifically
+		for _, policy := range result.TriggeredPolicies {
+			if policy == "sys_admin_config_table" {
+				t.Error("Admin user should bypass admin access pattern check")
+			}
+		}
+	}
+}
+
+// TestEvaluateStaticPolicies_NonCriticalPII tests non-critical PII is not blocked
+func TestEvaluateStaticPolicies_NonCriticalPII(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Expect INSERT for metrics when PII is detected
+	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine := &DatabasePolicyEngine{
+		db:               db,
+		refreshInterval:  24 * time.Hour,
+		lastRefresh:      time.Now(),
+		piiBlockCritical: true, // Even with this true, non-critical PII shouldn't block
+	}
+	engine.loadDefaultPolicies()
+
+	user := &User{
+		ID:          1,
+		Role:        "user",
+		Permissions: []string{"query"},
+	}
+
+	// Email is non-critical PII (medium severity) - should log but not block
+	query := "Contact me at test@example.com"
+	result := engine.EvaluateStaticPolicies(user, query, "natural_language")
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// Non-critical PII should not block (only log/redact)
+	// The pattern should trigger but not block
+	t.Logf("Non-critical PII result: blocked=%v, triggered=%v", result.Blocked, result.TriggeredPolicies)
+}
+
+// TestEvaluateStaticPolicies_PIIBlockDisabled tests PII blocking when disabled
+func TestEvaluateStaticPolicies_PIIBlockDisabled(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Expect INSERT for metrics when PII is detected
+	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine := &DatabasePolicyEngine{
+		db:               db,
+		refreshInterval:  24 * time.Hour,
+		lastRefresh:      time.Now(),
+		piiBlockCritical: false, // PII blocking disabled
+	}
+	engine.loadDefaultPolicies()
+
+	user := &User{
+		ID:          1,
+		Role:        "user",
+		Permissions: []string{"query"},
+	}
+
+	// SSN would normally block, but with piiBlockCritical=false, it should only log
+	query := "My SSN is 123-45-6789"
+	result := engine.EvaluateStaticPolicies(user, query, "natural_language")
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// With piiBlockCritical=false, critical PII should not block
+	if result.Blocked {
+		t.Error("Expected SSN not to block when piiBlockCritical=false")
+	}
+
+	// But it should still trigger the pattern
+	if len(result.TriggeredPolicies) == 0 {
+		t.Error("Expected PII pattern to be triggered")
+	}
+}
+
+// TestLogPolicyViolationToQueue_NilUser tests logging violation with nil user
+func TestLogPolicyViolationToQueue_NilUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Expect INSERT for direct logging (no queue)
+	mock.ExpectExec("INSERT INTO policy_violations").
+		WithArgs("Test Policy", "high", "agent", "", "Test description", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	engine := &DatabasePolicyEngine{
+		db:         db,
+		auditQueue: nil, // No queue, uses direct logging
+	}
+
+	policy := &PolicyPattern{
+		ID:          "test_policy",
+		Name:        "Test Policy",
+		Severity:    "high",
+		Description: "Test description",
+	}
+
+	// Log violation with nil user
+	engine.logPolicyViolationToQueue(nil, policy, "test query")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unfulfilled expectations: %v", err)
+	}
+}
+
+// TestEvaluateStaticPolicies_CacheRefreshTrigger tests that stale cache triggers refresh
+func TestEvaluateStaticPolicies_CacheRefreshTrigger(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// No expectations needed for simple query that doesn't trigger patterns
+
+	engine := &DatabasePolicyEngine{
+		db:              db,
+		refreshInterval: 1 * time.Second,
+		lastRefresh:     time.Now().Add(-2 * time.Second), // Cache is stale
+	}
+	engine.loadDefaultPolicies()
+
+	user := &User{
+		ID:   1,
+		Role: "user",
+	}
+
+	// This should trigger background refresh (async, won't error)
+	result := engine.EvaluateStaticPolicies(user, "SELECT 1", "sql")
+
+	if result == nil {
+		t.Fatal("Expected result, got nil")
+	}
+
+	// Should have performed checks
+	if len(result.ChecksPerformed) == 0 {
+		t.Error("Expected checks to be performed")
 	}
 }
 

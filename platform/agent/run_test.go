@@ -13,6 +13,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -793,6 +794,150 @@ func TestPolicyTestHandler(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPolicyTestHandlerWithTierAwareEngine tests policy handler with tier-aware engine
+func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
+	// Save original global state
+	originalEngine := tierAwarePolicyEngine
+	originalStatic := staticPolicyEngine
+	defer func() {
+		tierAwarePolicyEngine = originalEngine
+		staticPolicyEngine = originalStatic
+	}()
+
+	// Initialize static engine once
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	t.Run("policy blocked by tier-aware engine", func(t *testing.T) {
+		// Create fresh mock database for this test
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create mock db: %v", err)
+		}
+		defer db.Close()
+
+		// Create fresh tier-aware engine
+		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
+
+		// Mock returning a tenant policy that blocks "blocked_pattern"
+		rows := sqlmock.NewRows([]string{
+			"id", "policy_id", "name", "category", "pattern", "severity",
+			"description", "action", "tier", "priority", "enabled",
+			"organization_id", "tenant_id", "org_id",
+			"tags", "metadata", "version",
+			"created_at", "updated_at", "created_by", "updated_by",
+			"override_id", "action_override", "enabled_override",
+			"expires_at", "override_reason",
+		}).AddRow(
+			"policy-uuid", "custom_test123", "Block Pattern", "security-admin",
+			"blocked_pattern", "high",
+			"Blocks blocked_pattern", "block", "tenant", 50, true,
+			nil, "tenant_1", nil,
+			"[]", "{}", 1,
+			time.Now(), time.Now(), "admin", "admin",
+			nil, nil, nil, nil, nil,
+		)
+
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("tenant_1", "").
+			WillReturnRows(rows)
+
+		body, _ := json.Marshal(map[string]string{
+			"query":        "this has blocked_pattern in it",
+			"user_email":   "test@example.com",
+			"request_type": "chat",
+		})
+
+		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		policyTestHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		// Should be blocked by the tier-aware engine
+		blocked, ok := response["blocked"].(bool)
+		if !ok || !blocked {
+			t.Error("expected request to be blocked by tier-aware policy")
+		}
+	})
+
+	t.Run("policy matches but action is warn (not block)", func(t *testing.T) {
+		// Create fresh mock database for this test
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create mock db: %v", err)
+		}
+		defer db.Close()
+
+		// Create fresh tier-aware engine
+		tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
+
+		// Mock returning a tenant policy with "warn" action
+		rows := sqlmock.NewRows([]string{
+			"id", "policy_id", "name", "category", "pattern", "severity",
+			"description", "action", "tier", "priority", "enabled",
+			"organization_id", "tenant_id", "org_id",
+			"tags", "metadata", "version",
+			"created_at", "updated_at", "created_by", "updated_by",
+			"override_id", "action_override", "enabled_override",
+			"expires_at", "override_reason",
+		}).AddRow(
+			"policy-uuid", "custom_test456", "Warn Pattern", "security-admin",
+			"warn_pattern", "medium",
+			"Warns on pattern", "warn", "tenant", 50, true, // action is "warn" not "block"
+			nil, "tenant_1", nil,
+			"[]", "{}", 1,
+			time.Now(), time.Now(), "admin", "admin",
+			nil, nil, nil, nil, nil,
+		)
+
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("tenant_1", "").
+			WillReturnRows(rows)
+
+		body, _ := json.Marshal(map[string]string{
+			"query":        "this has warn_pattern in it",
+			"user_email":   "test@example.com",
+			"request_type": "chat",
+		})
+
+		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		policyTestHandler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		// Should NOT be blocked (action is warn, not block)
+		blocked, ok := response["blocked"].(bool)
+		if ok && blocked {
+			t.Error("expected request to NOT be blocked (action is warn)")
+		}
+
+		// But policy should have been triggered
+		triggered, ok := response["triggered_policies"].([]interface{})
+		if !ok || len(triggered) == 0 {
+			t.Error("expected triggered_policies to include the warn policy")
+		}
+	})
 }
 
 // TestMetricsHandler tests the metrics endpoint
@@ -1940,6 +2085,44 @@ func TestGetRequestTypeMetrics(t *testing.T) {
 	}
 }
 
+// TestGetRequestTypeMetricsWithData tests request type metrics retrieval with data
+func TestGetRequestTypeMetricsWithData(t *testing.T) {
+	testMetrics := &AgentMetrics{}
+
+	// Record some metrics first
+	testMetrics.recordRequestTypeMetrics("chat", 100, true, false)
+	testMetrics.recordRequestTypeMetrics("chat", 150, true, false)
+	testMetrics.recordRequestTypeMetrics("chat", 200, false, false)
+	testMetrics.recordRequestTypeMetrics("chat", 50, true, true) // blocked
+
+	// Retrieve metrics
+	result := testMetrics.getRequestTypeMetrics()
+
+	if result == nil {
+		t.Fatal("expected non-nil metrics map")
+	}
+
+	chatMetrics, ok := result["chat"]
+	if !ok {
+		t.Fatal("expected chat metrics to exist")
+	}
+
+	// Verify metrics values
+	// Note: blocked requests don't count as success, even if success=true
+	if chatMetrics["total_requests"].(int64) != 4 {
+		t.Errorf("expected 4 total requests, got %v", chatMetrics["total_requests"])
+	}
+	if chatMetrics["success_requests"].(int64) != 2 {
+		t.Errorf("expected 2 success requests, got %v", chatMetrics["success_requests"])
+	}
+	if chatMetrics["failed_requests"].(int64) != 1 {
+		t.Errorf("expected 1 failed request, got %v", chatMetrics["failed_requests"])
+	}
+	if chatMetrics["blocked_requests"].(int64) != 1 {
+		t.Errorf("expected 1 blocked request, got %v", chatMetrics["blocked_requests"])
+	}
+}
+
 // TestGetConnectorMetrics tests connector metrics retrieval
 func TestGetConnectorMetrics(t *testing.T) {
 	// Initialize metrics if needed
@@ -1952,6 +2135,42 @@ func TestGetConnectorMetrics(t *testing.T) {
 	// Should return empty but valid response
 	if metrics == nil {
 		t.Error("expected non-nil metrics map")
+	}
+}
+
+// TestGetConnectorMetricsWithData tests connector metrics retrieval with data
+func TestGetConnectorMetricsWithData(t *testing.T) {
+	testMetrics := &AgentMetrics{}
+
+	// Record some metrics first
+	testMetrics.recordConnectorMetrics("postgres", 100, true, "")
+	testMetrics.recordConnectorMetrics("postgres", 150, true, "")
+	testMetrics.recordConnectorMetrics("postgres", 200, false, "connection timeout")
+
+	// Retrieve metrics
+	result := testMetrics.getConnectorMetrics()
+
+	if result == nil {
+		t.Fatal("expected non-nil metrics map")
+	}
+
+	pgMetrics, ok := result["postgres"]
+	if !ok {
+		t.Fatal("expected postgres metrics to exist")
+	}
+
+	// Verify metrics values
+	if pgMetrics["total_requests"].(int64) != 3 {
+		t.Errorf("expected 3 total requests, got %v", pgMetrics["total_requests"])
+	}
+	if pgMetrics["success_requests"].(int64) != 2 {
+		t.Errorf("expected 2 success requests, got %v", pgMetrics["success_requests"])
+	}
+	if pgMetrics["failed_requests"].(int64) != 1 {
+		t.Errorf("expected 1 failed request, got %v", pgMetrics["failed_requests"])
+	}
+	if pgMetrics["last_error"].(string) != "connection timeout" {
+		t.Errorf("expected last_error = 'connection timeout', got %v", pgMetrics["last_error"])
 	}
 }
 
@@ -2214,4 +2433,105 @@ func TestAgentMetrics_EdgeCases(t *testing.T) {
 	if len(metrics.connectorMetrics) != len(connectors) {
 		t.Errorf("Expected %d connector metrics, got %d", len(connectors), len(metrics.connectorMetrics))
 	}
+}
+
+// TestTierAwarePolicyIntegration tests that tenant-specific policies are evaluated
+func TestTierAwarePolicyIntegration(t *testing.T) {
+	// Create mock database
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock db: %v", err)
+	}
+	defer db.Close()
+
+	// Save and restore global state
+	originalEngine := tierAwarePolicyEngine
+	defer func() { tierAwarePolicyEngine = originalEngine }()
+
+	// Initialize tier-aware engine with mock db
+	tierAwarePolicyEngine = NewTierAwarePolicyEngine(db, nil)
+
+	t.Run("tenant policy blocks matching pattern", func(t *testing.T) {
+		// Mock the GetEffective query to return a tenant policy that blocks "secret_pattern"
+		rows := sqlmock.NewRows([]string{
+			"id", "policy_id", "name", "category", "pattern", "severity",
+			"description", "action", "tier", "priority", "enabled",
+			"organization_id", "tenant_id", "org_id",
+			"tags", "metadata", "version",
+			"created_at", "updated_at", "created_by", "updated_by",
+			"override_id", "action_override", "enabled_override",
+			"expires_at", "override_reason",
+		}).AddRow(
+			"policy-uuid", "custom_tenant123", "Block Secret Pattern", "security-admin",
+			"secret_pattern", "high",
+			"Block secret patterns", "block", "tenant", 50, true,
+			nil, "test-tenant", nil,
+			"[]", "{}", 1,
+			time.Now(), time.Now(), "admin", "admin",
+			nil, nil, nil, nil, nil,
+		)
+
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("test-tenant", "").
+			WillReturnRows(rows)
+
+		// Test user
+		user := &User{
+			Email:    "test@example.com",
+			TenantID: "test-tenant",
+		}
+
+		// Evaluate policy with input that matches the pattern
+		ctx := context.Background()
+		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, user.TenantID, nil, "this contains secret_pattern in it")
+		if err != nil {
+			t.Fatalf("EvaluatePolicy failed: %v", err)
+		}
+
+		if !result.Matched {
+			t.Error("expected policy to match")
+		}
+		if result.Action != "block" {
+			t.Errorf("expected action 'block', got '%s'", result.Action)
+		}
+		if result.Tier != TierTenant {
+			t.Errorf("expected tier 'tenant', got '%s'", result.Tier)
+		}
+	})
+
+	t.Run("no match when pattern not in input", func(t *testing.T) {
+		// Mock the GetEffective query
+		rows := sqlmock.NewRows([]string{
+			"id", "policy_id", "name", "category", "pattern", "severity",
+			"description", "action", "tier", "priority", "enabled",
+			"organization_id", "tenant_id", "org_id",
+			"tags", "metadata", "version",
+			"created_at", "updated_at", "created_by", "updated_by",
+			"override_id", "action_override", "enabled_override",
+			"expires_at", "override_reason",
+		}).AddRow(
+			"policy-uuid", "custom_tenant456", "Block Secret Pattern", "security-admin",
+			"secret_pattern", "high",
+			"Block secret patterns", "block", "tenant", 50, true,
+			nil, "test-tenant", nil,
+			"[]", "{}", 1,
+			time.Now(), time.Now(), "admin", "admin",
+			nil, nil, nil, nil, nil,
+		)
+
+		mock.ExpectQuery(`SELECT`).
+			WithArgs("test-tenant", "").
+			WillReturnRows(rows)
+
+		// Evaluate with input that does NOT match
+		ctx := context.Background()
+		result, err := tierAwarePolicyEngine.EvaluatePolicy(ctx, "test-tenant", nil, "this is a normal query")
+		if err != nil {
+			t.Fatalf("EvaluatePolicy failed: %v", err)
+		}
+
+		if result.Matched {
+			t.Error("expected no match for normal query")
+		}
+	})
 }

@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2025-12-24
+
+**Unified Policy Architecture**
+
+### Added
+
+- **Three-Tier Policy Hierarchy**: New policy architecture with System → Organization → Tenant inheritance
+  - **System Tier**: 63 immutable security policies (53 static + 10 dynamic)
+  - **Organization Tier**: Company-wide policies (Enterprise only)
+  - **Tenant Tier**: Team-specific policies with full CRUD
+  - Tier-aware policy resolution with caching
+
+- **63 System Policies**: Comprehensive security and compliance coverage out-of-the-box
+  - **Security - SQL Injection** (37): UNION, boolean-based, time-based, stacked queries, etc.
+  - **Security - Admin Access** (4): Users table, audit log, config table access
+  - **PII - Global** (7): Credit card, email, phone, IP, passport, DOB
+  - **PII - US** (2): SSN, bank accounts
+  - **PII - EU** (1): IBAN
+  - **PII - India** (2): PAN, Aadhaar
+  - **Dynamic** (10): Risk, compliance (HIPAA, GDPR), cost, access control
+
+- **Policy CRUD APIs**: Full create, read, update, delete for organization and tenant policies
+  - `GET /api/v1/static-policies` - List with tier/category filtering
+  - `POST /api/v1/static-policies` - Create custom policy
+  - `PUT /api/v1/static-policies/{id}` - Update policy
+  - `DELETE /api/v1/static-policies/{id}` - Delete policy
+  - `GET /api/v1/effective-policies` - Get merged hierarchy for tenant
+
+- **Policy Overrides** (Enterprise): Customize system policy behavior
+  - Disable system policies for organization
+  - Change action (only to more restrictive)
+  - Expiration dates for temporary overrides
+  - Audit trail with reason requirement
+
+- **SDK Policy Methods**: All 4 SDKs support policy management
+  - TypeScript: `listStaticPolicies()`, `createStaticPolicy()`, etc.
+  - Python: `list_static_policies()`, `create_static_policy()`, etc.
+  - Go: `ListStaticPolicies()`, `CreateStaticPolicy()`, etc.
+  - Java: `listStaticPolicies()`, `createStaticPolicy()`, etc.
+
+- **Customer Portal UI**: Visual policy management for Enterprise customers
+  - Unified policy dashboard
+  - Override management
+  - Policy testing interface
+
+### Changed
+
+- **Policy Categories**: New category naming convention
+  - `security-sqli`, `security-admin` for security policies
+  - `pii-global`, `pii-us`, `pii-eu`, `pii-india` for PII detection
+  - `dynamic-risk`, `dynamic-compliance`, `dynamic-cost`, `dynamic-access` for context-aware policies
+
+- **Performance**: Static policy evaluation maintains < 5ms p99 latency
+  - Tier-aware caching with configurable TTL
+  - Optimized regex pattern compilation
+
+### Enterprise Features
+
+- Organization-tier policy management
+- System policy override capabilities
+- Policy version history
+- Customer Portal policy UI
+
+---
+
 ## [1.1.3] - 2025-12-21
 
 ### Fixed
