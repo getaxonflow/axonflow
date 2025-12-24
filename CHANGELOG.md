@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.2.0] - 2025-12-24
+## [2.0.0] - 2025-12-25
 
+**Unified Policy Architecture - Major Release**
+
+### ⚠️ Breaking Changes
+
+**Category Enum Values Changed in Responses**
+
+| Old Category | New Category |
+|--------------|--------------|
+| `sql_injection` | `security-sqli` |
+| `admin_access` | `security-admin` |
+| `pii_detection` | `pii-global`, `pii-us`, `pii-eu`, `pii-india` |
+| `dangerous_queries` | `security-sqli` |
+
+**Migration Notes:**
+- Old category values still accepted in **request** parameters (backwards compatible)
+- Update code parsing category values from **responses**
+
+### Added
 **Unified Policy Architecture**
 
 ### Added
