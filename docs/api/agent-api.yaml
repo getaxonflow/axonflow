@@ -23,7 +23,7 @@ info:
     - **In-VPC**: Customer-deployed, single-tenant
     - **Self-Hosted**: `SELF_HOSTED_MODE=true` bypasses license validation
 
-  version: 1.0.0
+  version: 2.0.0
   contact:
     name: AxonFlow Support
     url: https://getaxonflow.com/support
@@ -1784,14 +1784,21 @@ paths:
         - Static Policies
       summary: List static policies
       description: |
-        Returns all static (system-managed) policies for the tenant.
-        Static policies are read-only and managed via database migrations.
+        Returns static policies with three-tier hierarchy resolution:
+        1. **System policies** - Managed by AxonFlow, immutable base
+        2. **Organization policies** - Enterprise tier, organization-wide (Enterprise only)
+        3. **Tenant policies** - Per-tenant customizations
 
-        Categories include:
-        - `sql_injection` - SQL injection detection patterns
-        - `pii_detection` - PII/PHI data protection patterns
-        - `dangerous_queries` - Potentially harmful query patterns
-        - `admin_access` - Administrative access controls
+        **v2.0.0 Categories** (semantic naming):
+        - `security-sqli` - SQL injection detection (was: sql_injection)
+        - `security-admin` - Admin access protection (was: admin_access)
+        - `pii-global` - Global PII patterns (was: pii_detection)
+        - `pii-us` - US-specific PII (SSN, etc.)
+        - `pii-eu` - EU-specific PII (GDPR)
+        - `pii-india` - India-specific PII (Aadhaar, PAN)
+        - `custom` - Tenant-created policies
+
+        Legacy category names are still accepted and automatically mapped.
 
         Part of ADR-018: Unified Policy Management System.
       operationId: listStaticPolicies
@@ -1819,10 +1826,18 @@ paths:
             maximum: 100
         - name: category
           in: query
-          description: Filter by category
+          description: |
+            Filter by policy category. New categories use semantic naming.
+            Legacy names (sql_injection, pii_detection, etc.) are still accepted.
           schema:
             type: string
-            enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
+            enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, custom, sql_injection, pii_detection, dangerous_queries, admin_access]
+        - name: tier
+          in: query
+          description: Filter by policy tier
+          schema:
+            type: string
+            enum: [system, organization, tenant]
         - name: severity
           in: query
           description: Filter by severity level
@@ -1938,7 +1953,9 @@ components:
 
     StaticPolicy:
       type: object
-      description: A system-managed static policy (read-only)
+      description: |
+        A static policy with three-tier hierarchy support (v2.0.0).
+        System policies are immutable; Organization/Tenant policies can be customized.
       properties:
         id:
           type: string
@@ -1946,42 +1963,59 @@ components:
           description: Unique policy UUID
         policy_id:
           type: string
-          description: Human-readable policy identifier
-          example: "sql_injection_union"
+          description: Human-readable policy identifier (e.g., sys_sqli_union_select)
+          example: "sys_sqli_union_select"
         name:
           type: string
           description: Display name of the policy
-          example: "SQL Injection - UNION Attack"
+          example: "UNION SELECT Detection"
         description:
           type: string
           description: Detailed policy description
-          example: "Detects SQL injection attempts using UNION keyword"
+          example: "Detects SQL injection attempts using UNION SELECT"
         category:
           type: string
-          enum: [sql_injection, pii_detection, dangerous_queries, admin_access]
-          description: Policy category
+          enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, custom]
+          description: Policy category (v2.0.0 semantic naming)
+        tier:
+          type: string
+          enum: [system, organization, tenant]
+          description: Policy tier in the hierarchy
+          example: "system"
         pattern:
           type: string
           description: Regex pattern for detection
-          example: "(?i)\\bunion\\b.*\\bselect\\b"
+          example: "(?i)\\bUNION\\s+(ALL\\s+)?SELECT\\b"
         severity:
           type: string
           enum: [critical, high, medium, low]
           description: Policy severity level
         action:
           type: string
-          enum: [block, warn, log, redact]
+          enum: [block, redact, warn, log]
           description: Action to take when pattern matches
         enabled:
           type: boolean
           description: Whether policy is active
+        priority:
+          type: integer
+          description: Evaluation priority (higher = evaluated first)
+          example: 1000
+        version:
+          type: integer
+          description: Policy version number
+          example: 1
+        has_override:
+          type: boolean
+          description: Whether this policy has an override (Enterprise only)
+        override:
+          $ref: '#/components/schemas/PolicyOverride'
+        organization_id:
+          type: string
+          description: Organization ID (for organization-tier policies)
         tenant_id:
           type: string
-          description: Tenant scope (use 'global' for all tenants)
-        metadata:
-          type: object
-          additionalProperties: true
-          description: Additional policy configuration
+          description: Tenant ID (for tenant-tier policies)
         created_at:
           type: string
           format: date-time
@@ -2029,6 +2063,37 @@ components:
         total_pages:
           type: integer
           description: Total number of pages
+
+    PolicyOverride:
+      type: object
+      description: Override configuration for system policies (Enterprise only)
+      properties:
+        id:
+          type: string
+          description: Override identifier
+        policy_id:
+          type: string
+          description: ID of the policy being overridden
+        enabled_override:
+          type: boolean
+          description: Override enabled status (null = no override)
+        action_override:
+          type: string
+          enum: [block, redact, warn, log]
+          description: Override action (must be more restrictive)
+        override_reason:
+          type: string
+          description: Reason for the override (required for audit)
+        expires_at:
+          type: string
+          format: date-time
+          description: When the override automatically expires
+        created_by:
+          type: string
+          description: User who created the override
+        created_at:
+          type: string
+          format: date-time
 
     MetricsResponse:
       type: object
