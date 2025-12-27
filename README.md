@@ -67,7 +67,26 @@ curl -X POST http://localhost:8080/api/policy/pre-check \
 {"approved": false, "block_reason": "PII detected: ssn", "policies": ["pii_ssn_detection"]}
 ```
 
-For a full end-to-end demo (gateway mode, policy enforcement, multi-agent planning), see `./examples/demo/demo.sh`.
+### Full Interactive Demo (10 min)
+
+Experience the complete governance suite: PII detection, SQL injection blocking,
+proxy and gateway modes, MCP connectors, multi-agent planning, and observability.
+
+```bash
+# Create .env with your API key (containers read from this file at startup)
+echo "OPENAI_API_KEY=$OPENAI_API_KEY" > .env
+
+# Restart services to load the key
+docker compose up -d --force-recreate
+
+# Run the interactive demo
+./examples/demo/demo.sh
+```
+
+The demo walks through a realistic customer support scenario with live LLM calls.
+See [`examples/demo/README.md`](examples/demo/README.md) for options (`--quick`, `--part N`).
+
+---
 
 AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions in single-digit milliseconds — fast enough to prevent failures rather than observe them after the fact.
 
