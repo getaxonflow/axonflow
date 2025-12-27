@@ -96,9 +96,10 @@ check_python() {
         exit 1
     fi
 
-    if ! python3 -c "import axonflow" 2>/dev/null; then
-        echo -e "${YELLOW}Installing axonflow SDK...${NC}"
-        pip3 install axonflow --quiet
+    # Only install if packages are missing
+    if ! python3 -c "import axonflow, httpx, openai" 2>/dev/null; then
+        echo -e "${YELLOW}Installing Python dependencies...${NC}"
+        pip3 install -r "$SCRIPT_DIR/requirements.txt" --quiet --disable-pip-version-check
     fi
 }
 
