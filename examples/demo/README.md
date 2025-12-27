@@ -22,11 +22,13 @@ docker-compose ps
 
 - **Docker & Docker Compose** - For running AxonFlow services
 - **Python 3.8+** - For running demo examples
-- **AxonFlow Python SDK** - Installed automatically if missing
+- **Python packages** - Installed automatically (see `requirements.txt`)
 
-Optional (for full demo):
-- **OpenAI API Key** - Set `OPENAI_API_KEY` for LLM calls
-- **Anthropic API Key** - Set `ANTHROPIC_API_KEY` for multi-model demo
+Required (for LLM features):
+- **OpenAI API Key** - `export OPENAI_API_KEY=sk-your-key` (see main README)
+
+Optional:
+- **Anthropic API Key** - `export ANTHROPIC_API_KEY=...` for multi-model demo
 
 ## Demo Structure
 

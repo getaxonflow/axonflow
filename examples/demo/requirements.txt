@@ -1,0 +1,12 @@
+# Core SDK
+axonflow>=0.3.0
+
+# HTTP client
+httpx>=0.24.0
+
+# LLM providers
+openai>=1.0.0
+
+# LangChain (for gateway mode demo)
+langchain-openai>=0.1.0
+langchain-core>=0.1.0
