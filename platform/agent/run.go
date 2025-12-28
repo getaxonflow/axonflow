@@ -197,6 +197,9 @@ type PolicyEvaluationInfo struct {
 	StaticChecks      []string `json:"static_checks"`
 	ProcessingTime    string   `json:"processing_time"`
 	TenantID          string   `json:"tenant_id"`
+	// CodeArtifact contains metadata about detected code in LLM responses
+	// Part of Issue #761: Governed Code Generation
+	CodeArtifact *CodeArtifactMetadata `json:"code_artifact,omitempty"`
 }
 
 // User represents authenticated user information
@@ -1083,7 +1086,23 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	promPolicyEvaluations.Inc()
 	promRequestDuration.WithLabelValues("dynamic").Observe(float64(time.Since(startTime).Milliseconds()))
 
-	// 7. Return response with policy information
+	// 7. Detect code artifacts in response (Issue #761: Governed Code Generation)
+	var codeArtifact *CodeArtifactMetadata
+	if responseContent := extractResponseContent(orchestratorResp); responseContent != "" {
+		codeArtifact = DetectCodeInResponse(responseContent)
+		if codeArtifact != nil {
+			// Evaluate code-specific policies
+			if staticPolicyEngine != nil {
+				policiesChecked, _ := EvaluateCodePolicies(responseContent, staticPolicyEngine)
+				codeArtifact.PoliciesChecked = policiesChecked
+			}
+			log.Printf("[AUDIT] Code artifact detected: language=%s, type=%s, size=%d bytes, secrets=%d, unsafe=%d",
+				codeArtifact.Language, codeArtifact.CodeType, codeArtifact.SizeBytes,
+				codeArtifact.SecretsDetected, codeArtifact.UnsafePatterns)
+		}
+	}
+
+	// 8. Return response with policy information
 	response := ClientResponse{
 		Success: true,
 		Data:    orchestratorResp,
@@ -1092,6 +1111,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			StaticChecks:      policyResult.ChecksPerformed,
 			ProcessingTime:    time.Since(startTime).String(),
 			TenantID:          user.TenantID,
+			CodeArtifact:      codeArtifact,
 		},
 	}
 

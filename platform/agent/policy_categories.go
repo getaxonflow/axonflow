@@ -20,6 +20,7 @@ const (
 	// CategoryPIIGlobal covers globally applicable PII patterns.
 	// Includes: credit card, email, phone, IP address, passport, DOB, booking reference.
 	CategoryPIIGlobal PolicyCategory = "pii-global"
+
 	// CategoryPIIUS covers US-specific PII patterns.
 	// Includes: SSN, bank account.
 	CategoryPIIUS PolicyCategory = "pii-us"
@@ -29,6 +30,20 @@ const (
 	// CategoryPIIIndia covers India-specific PII patterns.
 	// Includes: PAN, Aadhaar.
 	CategoryPIIIndia PolicyCategory = "pii-india"
+
+	// Static policy categories - Code Governance (Issue #761)
+	// These categories enable governed code generation by detecting secrets,
+	// unsafe patterns, and compliance issues in LLM-generated code.
+
+	// CategoryCodeSecrets covers secret detection in generated code.
+	// Includes: API keys, tokens, passwords, private keys, credentials.
+	CategoryCodeSecrets PolicyCategory = "code-secrets"
+	// CategoryCodeUnsafe covers unsafe code pattern detection.
+	// Includes: eval(), exec(), shell injection, SQL formatting, insecure deserialization.
+	CategoryCodeUnsafe PolicyCategory = "code-unsafe"
+	// CategoryCodeCompliance covers code compliance patterns.
+	// Includes: license headers, banned imports, deprecated APIs.
+	CategoryCodeCompliance PolicyCategory = "code-compliance"
 
 	// Dynamic policy categories
 
@@ -58,6 +73,18 @@ func StaticPolicyCategories() []PolicyCategory {
 		CategoryPIIUS,
 		CategoryPIIEU,
 		CategoryPIIIndia,
+		CategoryCodeSecrets,
+		CategoryCodeUnsafe,
+		CategoryCodeCompliance,
+	}
+}
+
+// CodeGovernanceCategories returns all code governance policy categories.
+func CodeGovernanceCategories() []PolicyCategory {
+	return []PolicyCategory{
+		CategoryCodeSecrets,
+		CategoryCodeUnsafe,
+		CategoryCodeCompliance,
 	}
 }
 
@@ -143,6 +170,11 @@ const (
 	// ActionBlock rejects the request immediately (default for critical policies).
 	ActionBlock OverrideAction = "block"
 
+	// ActionRequireApproval pauses execution and requires human approval before proceeding.
+	// Used for high-risk operations that need human oversight (EU AI Act Article 14 compliance).
+	// Creates an entry in the HITL queue and waits for approve/reject decision.
+	ActionRequireApproval OverrideAction = "require_approval"
+
 	// ActionRedact masks/redacts matched content instead of blocking.
 	// Useful for PII protection where data should be anonymized, not blocked.
 	ActionRedact OverrideAction = "redact"
@@ -160,6 +192,7 @@ const (
 func AllOverrideActions() []OverrideAction {
 	return []OverrideAction{
 		ActionBlock,
+		ActionRequireApproval,
 		ActionRedact,
 		ActionWarn,
 		ActionLog,
@@ -179,10 +212,12 @@ func IsValidOverrideAction(action OverrideAction) bool {
 // ActionRestrictiveness returns the restrictiveness level of an action.
 // Higher values indicate more restrictive actions.
 // Used to enforce that overrides cannot weaken policies.
-// Levels: block(4) > redact(3) > warn(2) > log(1)
+// Levels: block(5) > require_approval(4) > redact(3) > warn(2) > log(1)
 func ActionRestrictiveness(action OverrideAction) int {
 	switch action {
 	case ActionBlock:
+		return 5
+	case ActionRequireApproval:
 		return 4
 	case ActionRedact:
 		return 3

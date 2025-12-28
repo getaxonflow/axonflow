@@ -9,12 +9,13 @@ import (
 	"testing"
 )
 
-// TestGetStaticSystemPolicies verifies all 53 static system policies are correctly defined
+// TestGetStaticSystemPolicies verifies all 68 static system policies are correctly defined
+// (53 original + 15 code governance policies from Issue #761)
 func TestGetStaticSystemPolicies(t *testing.T) {
 	policies := GetStaticSystemPolicies()
 
-	// Verify total count
-	expectedCount := 53
+	// Verify total count (53 original + 8 code-secrets + 7 code-unsafe = 68)
+	expectedCount := 68
 	if len(policies) != expectedCount {
 		t.Errorf("Expected %d static policies, got %d", expectedCount, len(policies))
 	}
@@ -72,6 +73,8 @@ func TestStaticPolicyCategoryDistribution(t *testing.T) {
 		CategoryPIIUS:         2,  // US-specific PII patterns
 		CategoryPIIEU:         1,  // EU-specific PII patterns
 		CategoryPIIIndia:      2,  // India-specific PII patterns
+		CategoryCodeSecrets:   8,  // Code secrets detection (Issue #761)
+		CategoryCodeUnsafe:    7,  // Unsafe code patterns (Issue #761)
 	}
 
 	for category, expected := range expectedCounts {
@@ -207,7 +210,7 @@ func TestGetSystemPolicyCounts(t *testing.T) {
 // TestGetTotalSystemPolicyCount verifies the total count
 func TestGetTotalSystemPolicyCount(t *testing.T) {
 	total := GetTotalSystemPolicyCount()
-	expected := 63 // 53 static + 10 dynamic
+	expected := 78 // 68 static + 10 dynamic (includes Issue #761 code governance policies)
 
 	if total != expected {
 		t.Errorf("Expected total %d, got %d", expected, total)
