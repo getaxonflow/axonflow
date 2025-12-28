@@ -1294,7 +1294,7 @@ func TestNewAnthropicProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewAnthropicProvider(tt.apiKey)
+			provider := NewAnthropicProvider(tt.apiKey, "") // Empty model uses package default
 
 			if provider == nil {
 				t.Fatal("Expected non-nil provider")

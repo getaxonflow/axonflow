@@ -254,9 +254,11 @@ func LoadLLMConfig() LLMRouterConfig {
 
 	// OpenAI configuration
 	config.OpenAIKey = os.Getenv("OPENAI_API_KEY")
+	config.OpenAIModel = os.Getenv("OPENAI_MODEL")
 
 	// Anthropic configuration
 	config.AnthropicKey = os.Getenv("ANTHROPIC_API_KEY")
+	config.AnthropicModel = os.Getenv("ANTHROPIC_MODEL")
 
 	// Bedrock configuration
 	// Allow environment-specific overrides (e.g., BEDROCK_REGION_PROD)
