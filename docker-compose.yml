@@ -164,6 +164,14 @@ services:
       GOOGLE_MODEL: ${GOOGLE_MODEL:-}
       LOCAL_LLM_ENDPOINT: ${LOCAL_LLM_ENDPOINT:-}
 
+      # LLM Routing Configuration (Phase 1: Community)
+      # LLM_ROUTING_STRATEGY: "weighted" (default), "round_robin", or "failover"
+      # PROVIDER_WEIGHTS: "openai:50,anthropic:30,bedrock:20" or "bedrock:100"
+      # DEFAULT_LLM_PROVIDER: fallback provider for failover strategy
+      LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
+      PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
+
       # Service configuration
       PORT: 8081
       LOG_LEVEL: debug
