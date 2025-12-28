@@ -1992,8 +1992,8 @@ components:
           description: Policy severity level
         action:
           type: string
-          enum: [block, redact, warn, log]
-          description: Action to take when pattern matches
+          enum: [block, require_approval, redact, warn, log]
+          description: Action to take when pattern matches. require_approval triggers HITL queue for human oversight.
         enabled:
           type: boolean
           description: Whether policy is active
@@ -2079,8 +2079,8 @@ components:
           description: Override enabled status (null = no override)
         action_override:
           type: string
-          enum: [block, redact, warn, log]
-          description: Override action (must be more restrictive)
+          enum: [block, require_approval, redact, warn, log]
+          description: Override action (must be more restrictive). require_approval triggers HITL queue.
         override_reason:
           type: string
           description: Reason for the override (required for audit)
