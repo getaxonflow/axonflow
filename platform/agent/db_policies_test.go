@@ -216,7 +216,9 @@ func TestLoadDefaultPolicies(t *testing.T) {
 	// Load default policies from seed data
 	dpe.loadDefaultPolicies()
 
-	// Verify policies were loaded from seed data (53 total: 37 SQLi + 4 admin + 12 PII)
+	// Verify policies were loaded from seed data
+	// DatabasePolicyEngine loads: 37 SQLi + 4 admin + 12 PII = 53 policies
+	// (code-secrets and code-unsafe policies are handled separately by code_detector.go)
 	if len(dpe.sqlInjectionPatterns) == 0 {
 		t.Error("Expected SQL injection patterns to be loaded")
 	}
@@ -257,9 +259,10 @@ func TestLoadDefaultPolicies(t *testing.T) {
 		}
 	}
 
-	// Verify total count matches seed data
+	// Verify total count matches seed data for DatabasePolicyEngine categories
+	// Note: code-secrets and code-unsafe policies are handled by code_detector.go, not DatabasePolicyEngine
 	totalLoaded := len(dpe.sqlInjectionPatterns) + len(dpe.adminAccessPatterns) + len(dpe.piiDetectionPatterns)
-	expectedTotal := len(GetStaticSystemPolicies())
+	expectedTotal := 53 // 37 SQLi + 4 admin + 12 PII (original categories loaded by DatabasePolicyEngine)
 	if totalLoaded != expectedTotal {
 		t.Errorf("Expected %d total policies from seed data, got %d", expectedTotal, totalLoaded)
 	}

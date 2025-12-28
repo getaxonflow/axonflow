@@ -17,6 +17,9 @@ func TestStaticPolicyCategories(t *testing.T) {
 		CategoryPIIUS,
 		CategoryPIIEU,
 		CategoryPIIIndia,
+		CategoryCodeSecrets,
+		CategoryCodeUnsafe,
+		CategoryCodeCompliance,
 	}
 
 	if len(categories) != len(expected) {
@@ -75,6 +78,9 @@ func TestIsValidStaticCategory(t *testing.T) {
 		{"pii-us is valid", CategoryPIIUS, true},
 		{"pii-eu is valid", CategoryPIIEU, true},
 		{"pii-india is valid", CategoryPIIIndia, true},
+		{"code-secrets is valid", CategoryCodeSecrets, true},
+		{"code-unsafe is valid", CategoryCodeUnsafe, true},
+		{"code-compliance is valid", CategoryCodeCompliance, true},
 		{"dynamic-risk is invalid for static", CategoryDynamicRisk, false},
 		{"empty is invalid", PolicyCategory(""), false},
 		{"unknown is invalid", PolicyCategory("unknown"), false},
@@ -155,7 +161,7 @@ func TestIsValidTier(t *testing.T) {
 func TestAllOverrideActions(t *testing.T) {
 	actions := AllOverrideActions()
 
-	expected := []OverrideAction{ActionBlock, ActionRedact, ActionWarn, ActionLog}
+	expected := []OverrideAction{ActionBlock, ActionRequireApproval, ActionRedact, ActionWarn, ActionLog}
 
 	if len(actions) != len(expected) {
 		t.Errorf("AllOverrideActions() returned %d actions, expected %d", len(actions), len(expected))
@@ -175,6 +181,7 @@ func TestIsValidOverrideAction(t *testing.T) {
 		want   bool
 	}{
 		{"block is valid", ActionBlock, true},
+		{"require_approval is valid", ActionRequireApproval, true},
 		{"redact is valid", ActionRedact, true},
 		{"warn is valid", ActionWarn, true},
 		{"log is valid", ActionLog, true},
@@ -197,8 +204,9 @@ func TestActionRestrictiveness(t *testing.T) {
 		action OverrideAction
 		want   int
 	}{
-		{"block has highest restrictiveness", ActionBlock, 4},
-		{"redact has high-medium restrictiveness", ActionRedact, 3},
+		{"block has highest restrictiveness", ActionBlock, 5},
+		{"require_approval has high restrictiveness", ActionRequireApproval, 4},
+		{"redact has medium-high restrictiveness", ActionRedact, 3},
 		{"warn has medium restrictiveness", ActionWarn, 2},
 		{"log has lowest restrictiveness", ActionLog, 1},
 		{"unknown has zero restrictiveness", OverrideAction("unknown"), 0},
@@ -220,18 +228,27 @@ func TestIsMoreRestrictive(t *testing.T) {
 		baseAction OverrideAction
 		want       bool
 	}{
+		{"block is more restrictive than require_approval", ActionBlock, ActionRequireApproval, true},
 		{"block is more restrictive than warn", ActionBlock, ActionWarn, true},
 		{"block is more restrictive than redact", ActionBlock, ActionRedact, true},
 		{"block is more restrictive than log", ActionBlock, ActionLog, true},
+		{"require_approval is more restrictive than redact", ActionRequireApproval, ActionRedact, true},
+		{"require_approval is more restrictive than warn", ActionRequireApproval, ActionWarn, true},
+		{"require_approval is more restrictive than log", ActionRequireApproval, ActionLog, true},
 		{"redact is more restrictive than warn", ActionRedact, ActionWarn, true},
 		{"redact is more restrictive than log", ActionRedact, ActionLog, true},
 		{"warn is more restrictive than log", ActionWarn, ActionLog, true},
 		{"block is equally restrictive as block", ActionBlock, ActionBlock, true},
+		{"require_approval is equally restrictive as require_approval", ActionRequireApproval, ActionRequireApproval, true},
 		{"redact is equally restrictive as redact", ActionRedact, ActionRedact, true},
+		{"require_approval is not more restrictive than block", ActionRequireApproval, ActionBlock, false},
 		{"warn is not more restrictive than block", ActionWarn, ActionBlock, false},
 		{"redact is not more restrictive than block", ActionRedact, ActionBlock, false},
+		{"warn is not more restrictive than require_approval", ActionWarn, ActionRequireApproval, false},
+		{"redact is not more restrictive than require_approval", ActionRedact, ActionRequireApproval, false},
 		{"warn is not more restrictive than redact", ActionWarn, ActionRedact, false},
 		{"log is not more restrictive than block", ActionLog, ActionBlock, false},
+		{"log is not more restrictive than require_approval", ActionLog, ActionRequireApproval, false},
 		{"log is not more restrictive than warn", ActionLog, ActionWarn, false},
 		{"log is not more restrictive than redact", ActionLog, ActionRedact, false},
 	}
@@ -296,6 +313,9 @@ func TestCategoryConstants(t *testing.T) {
 		{CategoryPIIUS, "pii-us"},
 		{CategoryPIIEU, "pii-eu"},
 		{CategoryPIIIndia, "pii-india"},
+		{CategoryCodeSecrets, "code-secrets"},
+		{CategoryCodeUnsafe, "code-unsafe"},
+		{CategoryCodeCompliance, "code-compliance"},
 		{CategoryDynamicRisk, "dynamic-risk"},
 		{CategoryDynamicCompliance, "dynamic-compliance"},
 		{CategoryDynamicSecurity, "dynamic-security"},
@@ -335,6 +355,7 @@ func TestOverrideActionConstants(t *testing.T) {
 		expected string
 	}{
 		{ActionBlock, "block"},
+		{ActionRequireApproval, "require_approval"},
 		{ActionRedact, "redact"},
 		{ActionWarn, "warn"},
 		{ActionLog, "log"},

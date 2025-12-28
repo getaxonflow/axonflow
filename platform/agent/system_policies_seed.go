@@ -38,8 +38,10 @@ type DynamicPolicySeed struct {
 // - pii-us: US-specific PII patterns (2 patterns)
 // - pii-eu: EU-specific PII patterns (1 pattern)
 // - pii-india: India-specific PII patterns (2 patterns)
+// - code-secrets: Secret detection in generated code (8 patterns) - Issue #761
+// - code-unsafe: Unsafe code pattern detection (7 patterns) - Issue #761
 //
-// Total: 53 static system policies
+// Total: 68 static system policies
 func GetStaticSystemPolicies() []SystemPolicySeed {
 	policies := []SystemPolicySeed{}
 
@@ -60,6 +62,12 @@ func GetStaticSystemPolicies() []SystemPolicySeed {
 	// ========================================================================
 	piiPatterns := getPIIPatterns()
 	policies = append(policies, piiPatterns...)
+
+	// ========================================================================
+	// Code Governance Patterns (Issue #761) - 15 patterns
+	// ========================================================================
+	codePatterns := getCodeGovernancePatterns()
+	policies = append(policies, codePatterns...)
 
 	return policies
 }
@@ -796,4 +804,174 @@ func GetSystemPolicyCounts() map[PolicyCategory]int {
 // GetTotalSystemPolicyCount returns the total number of system policies.
 func GetTotalSystemPolicyCount() int {
 	return len(GetStaticSystemPolicies()) + len(GetDynamicSystemPolicies())
+}
+
+// getCodeGovernancePatterns returns code governance patterns for Issue #761.
+// These patterns detect secrets, unsafe code constructs, and compliance issues
+// in LLM-generated code, enabling governed code generation.
+//
+// Categories:
+// - code-secrets: API keys, tokens, passwords, private keys (8 patterns)
+// - code-unsafe: eval(), exec(), shell injection, insecure deserialization (7 patterns)
+//
+// Total: 15 patterns
+func getCodeGovernancePatterns() []SystemPolicySeed {
+	return []SystemPolicySeed{
+		// ====================================================================
+		// code-secrets (8 patterns)
+		// ====================================================================
+		{
+			ID:          "sys_code_aws_key",
+			Name:        "AWS Access Key Detection",
+			Description: "Detects AWS access keys in generated code - keys should be loaded from environment variables",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `AKIA[0-9A-Z]{16}`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_aws_secret",
+			Name:        "AWS Secret Key Detection",
+			Description: "Detects potential AWS secret keys in generated code - 40-character base64 strings in assignment context",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `(?i)(?:aws|secret|key)\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_github_token",
+			Name:        "GitHub Token Detection",
+			Description: "Detects GitHub personal access tokens, OAuth tokens, and app tokens in generated code",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `gh[pousr]_[A-Za-z0-9_]{36,}`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_openai_key",
+			Name:        "OpenAI API Key Detection",
+			Description: "Detects OpenAI API keys in generated code - should use environment variables",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `sk-(?:proj-)?[A-Za-z0-9]{32,}`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_anthropic_key",
+			Name:        "Anthropic API Key Detection",
+			Description: "Detects Anthropic API keys in generated code - should use environment variables",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `sk-ant-[A-Za-z0-9-]{95}`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_jwt",
+			Name:        "JWT Token Detection",
+			Description: "Detects hardcoded JWT tokens in generated code - tokens should be dynamically generated",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_.+/]*`,
+			Severity:    SeverityHigh,
+			Action:      "block",
+			Priority:    90,
+		},
+		{
+			ID:          "sys_code_private_key",
+			Name:        "Private Key Detection",
+			Description: "Detects private keys (RSA, EC, OpenSSH) embedded in generated code",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    100,
+		},
+		{
+			ID:          "sys_code_password_assign",
+			Name:        "Hardcoded Password Detection",
+			Description: "Detects hardcoded password assignments in generated code",
+			Category:    CategoryCodeSecrets,
+			Pattern:     `(?i)password\s*[:=]\s*["'][^"']{4,}["']`,
+			Severity:    SeverityHigh,
+			Action:      "block",
+			Priority:    90,
+		},
+		// ====================================================================
+		// code-unsafe (7 patterns)
+		// ====================================================================
+		{
+			ID:          "sys_code_eval_js",
+			Name:        "JavaScript eval() Detection",
+			Description: "Detects eval() calls in JavaScript/TypeScript code - use safer alternatives like JSON.parse()",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `\beval\s*\(`,
+			Severity:    SeverityHigh,
+			Action:      "warn",
+			Priority:    80,
+		},
+		{
+			ID:          "sys_code_exec_python",
+			Name:        "Python exec() Detection",
+			Description: "Detects exec() calls in Python code - use safer alternatives like ast.literal_eval()",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `\bexec\s*\(`,
+			Severity:    SeverityHigh,
+			Action:      "warn",
+			Priority:    80,
+		},
+		{
+			ID:          "sys_code_shell_injection",
+			Name:        "Shell Injection Risk Detection",
+			Description: "Detects subprocess calls with shell=True in Python - use shell=False with explicit args",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True`,
+			Severity:    SeverityCritical,
+			Action:      "block",
+			Priority:    95,
+		},
+		{
+			ID:          "sys_code_sql_format",
+			Name:        "SQL String Formatting Detection",
+			Description: "Detects SQL queries built with string formatting - use parameterized queries instead",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `(?i)(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE).*(?:\.format\s*\(|%s|%d|\{[^}]+\})`,
+			Severity:    SeverityHigh,
+			Action:      "warn",
+			Priority:    80,
+		},
+		{
+			ID:          "sys_code_os_system",
+			Name:        "OS Command Execution Detection",
+			Description: "Detects os.system() calls which are vulnerable to command injection - use subprocess with explicit args",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `os\.system\s*\(`,
+			Severity:    SeverityHigh,
+			Action:      "warn",
+			Priority:    80,
+		},
+		{
+			ID:          "sys_code_pickle",
+			Name:        "Insecure Deserialization Detection",
+			Description: "Detects pickle.load/loads usage which can execute arbitrary code - use json or safer alternatives",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `pickle\.loads?\s*\(`,
+			Severity:    SeverityCritical,
+			Action:      "warn",
+			Priority:    85,
+		},
+		{
+			ID:          "sys_code_yaml_unsafe",
+			Name:        "Unsafe YAML Load Detection",
+			Description: "Detects yaml.load() without safe Loader - use yaml.safe_load() instead",
+			Category:    CategoryCodeUnsafe,
+			Pattern:     `yaml\.load\s*\([^)]*(?:Loader\s*=\s*None|[^L][^o][^a][^d][^e][^r])?\s*\)`,
+			Severity:    SeverityHigh,
+			Action:      "warn",
+			Priority:    80,
+		},
+	}
 }
