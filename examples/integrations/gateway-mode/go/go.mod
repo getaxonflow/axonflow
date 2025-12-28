@@ -3,6 +3,6 @@ module github.com/getaxonflow/axonflow/examples/integrations/gateway-mode/go
 go 1.21
 
 require (
-	github.com/getaxonflow/axonflow-sdk-go v1.5.0
+	github.com/getaxonflow/axonflow-sdk-go v1.8.0
 	github.com/sashabaranov/go-openai v1.17.9
 )
