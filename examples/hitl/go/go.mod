@@ -2,6 +2,4 @@ module axonflow-hitl-example
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go v1.6.0
-
-replace github.com/getaxonflow/axonflow-sdk-go => /Users/saurabhjain/Development/tmp/go-sdk-hitl
+require github.com/getaxonflow/axonflow-sdk-go v1.7.0
