@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.1.0] - 2025-12-28
+
+### Added
+
+- **Human-in-the-Loop (HITL)**: New `require_approval` policy action for human oversight
+  - Enterprise: Pauses execution, creates approval request in HITL queue
+  - Community: Auto-approves (upgrade path to Enterprise)
+  - EU AI Act Article 14 and SEBI AI/ML compliance support
+
+- **Code Governance**: Automatic detection and audit of LLM-generated code
+  - Identifies language, code type, potential secrets, unsafe patterns
+  - Detects eval, exec, shell injection risks
+  - Metadata logged for compliance
+
+- **LLM Provider Routing**: Runtime control over provider selection
+  - Weighted routing across providers
+  - Health-based automatic failover
+  - Per-request provider preferences
+
+### Fixed
+
+- Anthropic provider now respects `ANTHROPIC_MODEL` environment variable
+- Support demo build and runtime fixes
+- HITL example tier filter fixes
+
+---
+
 ## [2.0.0] - 2025-12-25
 
 **Unified Policy Architecture - Major Release**
