@@ -15,29 +15,35 @@ A complete example application demonstrating AxonFlow's AI governance capabiliti
 ### Prerequisites
 
 - Docker and Docker Compose
-- OpenAI or Anthropic API key (at least one)
-- AxonFlow platform running (see main repo)
+- OpenAI or Anthropic API key (for natural language queries)
 
-### 1. Start AxonFlow Platform
+### 1. Configure API Keys
 
-First, start the AxonFlow platform from the root of the repository:
+Copy the example environment file and add your API keys:
 
 ```bash
-cd ../..  # Go to platform root
-docker-compose up -d
+cp .env.example .env
 ```
+
+Edit `.env` and add at least one API key:
+
+```bash
+# OpenAI API Key (get from https://platform.openai.com/api-keys)
+OPENAI_API_KEY=sk-your-key-here
+
+# OR Anthropic API Key (get from https://console.anthropic.com/)
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+
+> **Important**: The `.env` file is gitignored and will never be committed. Keep your API keys secure.
 
 ### 2. Start the Demo
 
 ```bash
-# Set your API keys
-export OPENAI_API_KEY=sk-your-key-here
-# OR
-export ANTHROPIC_API_KEY=sk-ant-your-key-here
-
-# Start the demo
 docker-compose up -d
 ```
+
+> **Note**: Natural language queries (e.g., "Find all customers") require valid API keys. SQL queries work without API keys.
 
 ### 3. Access the Demo
 
@@ -51,6 +57,8 @@ docker-compose up -d
 | john.doe@company.com | Support Agent | demo123 | Limited PII, US West region |
 | sarah.manager@company.com | Manager | demo123 | Full PII, escalation handling |
 | admin@company.com | Admin | demo123 | Global access, system admin |
+
+> **Tip**: Both `demo123` and `AxonFlow2024Demo!` passwords work.
 
 ## Demo Scenarios
 

@@ -5,8 +5,8 @@ import PolicyConfig from './PolicyConfig';
 import PerformanceMonitor from './PerformanceMonitor';
 import LiveMonitor from './LiveMonitor';
 
-// API URL: Use relative paths so nginx can proxy, or explicit URL for local dev
-const API_BASE = process.env.REACT_APP_API_URL || '';
+// API calls use relative paths - nginx proxies /api/* to backend
+const API_BASE = '';
 
 function App() {
   const [user, setUser] = useState(() => {
@@ -481,6 +481,7 @@ function App() {
     setDashboard(null);
     setQueryResult(null);
     setAuditLogs([]);
+    setError('');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };

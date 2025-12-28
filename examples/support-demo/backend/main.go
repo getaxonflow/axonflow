@@ -96,10 +96,14 @@ type LoginResponse struct {
 
 // DashboardStats for the demo dashboard
 type DashboardStats struct {
-	TotalCustomers  int `json:"total_customers"`
-	OpenTickets     int `json:"open_tickets"`
-	ResolvedToday   int `json:"resolved_today"`
-	AvgResponseTime int `json:"avg_response_time"`
+	TotalCustomers     int     `json:"total_customers"`
+	OpenTickets        int     `json:"open_tickets"`
+	ResolvedToday      int     `json:"resolved_today"`
+	AvgResponseTime    int     `json:"avg_response_time"`
+	TotalQueries       int     `json:"total_queries"`
+	TotalPIIDetections int     `json:"total_pii_detections"`
+	TotalUsers         int     `json:"total_users"`
+	ComplianceScore    float64 `json:"compliance_score"`
 }
 
 // Demo users - in production these would come from a database
@@ -249,6 +253,11 @@ func main() {
 	r.HandleFunc("/api/llm/chat", authMiddleware(llmChatHandler)).Methods("POST")
 	r.HandleFunc("/api/llm/natural-query", authMiddleware(naturalQueryHandler)).Methods("POST")
 	r.HandleFunc("/api/llm/status", authMiddleware(llmStatusHandler)).Methods("GET")
+	r.HandleFunc("/api/llm/user-access", authMiddleware(userAccessHandler)).Methods("GET")
+	r.HandleFunc("/api/audit", authMiddleware(auditStubHandler)).Methods("GET")
+	r.HandleFunc("/api/policy-metrics", authMiddleware(policyMetricsStubHandler)).Methods("GET")
+	r.HandleFunc("/api/policy-metrics/update", authMiddleware(stubHandler)).Methods("POST")
+	r.HandleFunc("/api/performance/metrics", authMiddleware(performanceStubHandler)).Methods("GET")
 
 	// Start server
 	port := os.Getenv("PORT")
@@ -279,7 +288,9 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, exists := demoUsers[req.Email]
-	if !exists || req.Password != "demo123" {
+	// Accept both demo passwords for flexibility
+	validPassword := req.Password == "demo123" || req.Password == "AxonFlow2024Demo!"
+	if !exists || !validPassword {
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -417,10 +428,11 @@ Return only the SQL query, no explanation.`, query)
 		prompt,
 		"chat",
 		map[string]interface{}{
-			"user_email":  user.Email,
-			"user_role":   user.Role,
-			"user_region": user.Region,
-			"task":        "nl_to_sql",
+			"user_email":       user.Email,
+			"user_role":        user.Role,
+			"user_region":      user.Region,
+			"user_permissions": user.Permissions,
+			"task":             "nl_to_sql",
 		},
 	)
 
@@ -430,14 +442,41 @@ Return only the SQL query, no explanation.`, query)
 		return
 	}
 
-	if resp.Blocked {
-		respondWithBlocked(w, user, query, resp.BlockReason)
+	log.Printf("[DEBUG] Response - Success: %v, Blocked: %v, BlockReason: %s", resp.Success, resp.Blocked, resp.BlockReason)
+
+	// Check for blocked response - SDK v1.5.0 may not properly unmarshal blocked field
+	// So we also check the Error field which may contain block reason
+	blocked := resp.Blocked
+	blockReason := resp.BlockReason
+
+	// Also check if response indicates block through Error field or failed Success
+	if !blocked && resp.Error != "" && (strings.Contains(resp.Error, "blocked") ||
+		strings.Contains(resp.Error, "detected") || strings.Contains(resp.Error, "injection")) {
+		blocked = true
+		blockReason = resp.Error
+	}
+
+	if blocked || (!resp.Success && blockReason != "") {
+		respondWithBlocked(w, user, query, blockReason)
 		return
 	}
 
+	// Extract result from response - check both Result field and nested Data field
+	result := resp.Result
+	if result == "" && resp.Data != nil {
+		// Try to extract from nested data.data field
+		if dataMap, ok := resp.Data.(map[string]interface{}); ok {
+			if nestedData, exists := dataMap["data"].(string); exists {
+				result = nestedData
+				log.Printf("[DEBUG] Extracted result from data.data field (length: %d)", len(result))
+			}
+		}
+	}
+
 	// Extract and execute generated SQL
-	sqlQuery := extractSQL(resp.Result)
+	sqlQuery := extractSQL(result)
 	if sqlQuery == "" {
+		log.Printf("[DEBUG] Could not extract SQL. Result: %s", result)
 		http.Error(w, "Could not generate SQL from query", http.StatusBadRequest)
 		return
 	}
@@ -549,6 +588,19 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE status != 'resolved'").Scan(&stats.OpenTickets)
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE resolved_at::date = CURRENT_DATE").Scan(&stats.ResolvedToday)
 	stats.AvgResponseTime = 45 // Demo value in minutes
+
+	// Query policy metrics from database
+	db.QueryRow("SELECT COALESCE(total_policies_enforced, 0), COALESCE(pii_redacted, 0) FROM policy_metrics WHERE date = CURRENT_DATE").Scan(&stats.TotalQueries, &stats.TotalPIIDetections)
+
+	// Count unique demo users
+	stats.TotalUsers = len(demoUsers)
+
+	// Calculate compliance score (100% - (blocked queries / total queries) * 100)
+	if stats.TotalQueries > 0 {
+		stats.ComplianceScore = 98.5 // Demo value - in production calculate from actual blocks
+	} else {
+		stats.ComplianceScore = 100.0
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
@@ -693,5 +745,60 @@ func respondWithResults(w http.ResponseWriter, user User, query string, results 
 			AccessGranted: true,
 			Timestamp:     time.Now(),
 		},
+	})
+}
+
+// Stub handlers for frontend compatibility
+func stubHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+}
+
+func userAccessHandler(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value("user").(User)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"user_role": user.Role,
+		"providers": map[string]interface{}{
+			"openai": map[string]interface{}{
+				"name":   "OpenAI GPT-4",
+				"access": "Full access",
+				"color":  "green",
+			},
+			"anthropic": map[string]interface{}{
+				"name":   "Anthropic Claude",
+				"access": "Full access",
+				"color":  "green",
+			},
+		},
+	})
+}
+
+func auditStubHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode([]map[string]interface{}{})
+}
+
+func policyMetricsStubHandler(w http.ResponseWriter, r *http.Request) {
+	var totalPolicies, aiQueries, piiRedacted, regionalBlocks int
+	db.QueryRow(`SELECT COALESCE(total_policies_enforced, 0), COALESCE(ai_queries, 0),
+		COALESCE(pii_redacted, 0), COALESCE(regional_blocks, 0)
+		FROM policy_metrics WHERE date = CURRENT_DATE`).Scan(&totalPolicies, &aiQueries, &piiRedacted, &regionalBlocks)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_policies_enforced": totalPolicies,
+		"ai_queries":              aiQueries,
+		"pii_redacted":            piiRedacted,
+		"regional_blocks":         regionalBlocks,
+	})
+}
+
+func performanceStubHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"avg_latency_ms": 45,
+		"requests_total": 0,
+		"cache_hit_rate": 0,
 	})
 }
