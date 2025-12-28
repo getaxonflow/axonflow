@@ -43,19 +43,7 @@ CREATE TABLE support_tickets (
     resolved_at TIMESTAMP NULL
 );
 
--- Audit log for tracking all queries
-CREATE TABLE audit_log (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id),
-    user_email VARCHAR(255) NOT NULL,
-    query_text TEXT NOT NULL,
-    results_count INTEGER DEFAULT 0,
-    pii_detected TEXT[] DEFAULT '{}',
-    pii_redacted BOOLEAN DEFAULT FALSE,
-    access_granted BOOLEAN DEFAULT TRUE,
-    ip_address INET,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+-- Note: Audit logging is handled by AxonFlow Agent, not stored locally
 
 -- Insert demo users with different permission levels
 INSERT INTO users (email, password_hash, name, department, role, region, permissions) VALUES
@@ -94,5 +82,3 @@ INSERT INTO support_tickets (customer_id, title, description, status, priority, 
 CREATE INDEX idx_customers_region ON customers(region);
 CREATE INDEX idx_tickets_region ON support_tickets(region);
 CREATE INDEX idx_tickets_status ON support_tickets(status);
-CREATE INDEX idx_audit_log_user ON audit_log(user_id);
-CREATE INDEX idx_audit_log_created ON audit_log(created_at);
