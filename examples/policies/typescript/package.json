@@ -10,7 +10,7 @@
     "all": "npm run create && npm run list && npm run test-pattern"
   },
   "dependencies": {
-    "@axonflow/sdk": "^1.5.0"
+    "@axonflow/sdk": "^1.6.0"
   },
   "devDependencies": {
     "tsx": "^4.7.0",

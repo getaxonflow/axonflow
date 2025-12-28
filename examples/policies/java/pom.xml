@@ -7,7 +7,7 @@
 
     <groupId>com.getaxonflow.examples</groupId>
     <artifactId>policy-examples</artifactId>
-    <version>1.0.0</version>
+    <version>1.3.0</version>
     <packaging>jar</packaging>
 
     <name>AxonFlow Policy Examples</name>
@@ -24,7 +24,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>1.2.0</version>
+            <version>1.3.0</version>
         </dependency>
     </dependencies>
 
