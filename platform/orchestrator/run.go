@@ -237,6 +237,18 @@ type ProviderInfo struct {
 
 // LoadLLMConfig loads LLM configuration from environment with hierarchy
 // Hierarchy: environment-specific env vars > generic env vars > CloudFormation defaults
+//
+// Provider Configuration:
+//   - OPENAI_API_KEY: OpenAI API key
+//   - ANTHROPIC_API_KEY: Anthropic API key
+//   - BEDROCK_REGION, BEDROCK_MODEL: AWS Bedrock configuration
+//   - OLLAMA_ENDPOINT, OLLAMA_MODEL: Ollama configuration
+//   - GOOGLE_API_KEY, GOOGLE_MODEL: Google Gemini configuration
+//
+// Routing Configuration (Phase 1: Community):
+//   - LLM_ROUTING_STRATEGY: "weighted" (default), "round_robin", "failover"
+//   - PROVIDER_WEIGHTS: "openai:50,anthropic:30,bedrock:20" or "bedrock:100"
+//   - DEFAULT_LLM_PROVIDER: fallback provider for failover strategy
 func LoadLLMConfig() LLMRouterConfig {
 	config := LLMRouterConfig{}
 
@@ -263,6 +275,12 @@ func LoadLLMConfig() LLMRouterConfig {
 	if config.OllamaEndpoint == "" {
 		config.LocalEndpoint = os.Getenv("LOCAL_LLM_ENDPOINT")
 	}
+
+	// Load routing configuration
+	routingConfig := LoadRoutingConfig()
+	config.RoutingStrategy = routingConfig.Strategy
+	config.ProviderWeights = routingConfig.ProviderWeights
+	config.DefaultProvider = routingConfig.DefaultProvider
 
 	log.Printf("[LLM Config] Loaded provider configuration:")
 	if config.OpenAIKey != "" {
@@ -655,10 +673,24 @@ func initializeComponents() {
 		// Create the new router from the already-bootstrapped registry
 		// Note: We use the registry from bootstrapResult directly instead of calling
 		// QuickBootstrap() which would bootstrap providers again.
+		//
+		// Use routing config from environment variables (ADR-021: LLM Provider Routing Control)
+		routingConfig := LoadRoutingConfig()
 		weights := make(map[string]float64)
-		equalWeight := 1.0 / float64(len(bootstrapResult.ProvidersBootstrapped))
-		for _, name := range bootstrapResult.ProvidersBootstrapped {
-			weights[name] = equalWeight
+		if len(routingConfig.ProviderWeights) > 0 {
+			// Use custom weights from PROVIDER_WEIGHTS env var
+			for _, name := range bootstrapResult.ProvidersBootstrapped {
+				if w, ok := routingConfig.ProviderWeights[name]; ok {
+					weights[name] = w
+				}
+			}
+			log.Printf("[LLM Router] Using custom weights from PROVIDER_WEIGHTS: %v", weights)
+		} else {
+			// Fall back to equal weights if no custom weights configured
+			equalWeight := 1.0 / float64(len(bootstrapResult.ProvidersBootstrapped))
+			for _, name := range bootstrapResult.ProvidersBootstrapped {
+				weights[name] = equalWeight
+			}
 		}
 
 		llmProviderRouter = llm.NewRouter(

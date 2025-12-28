@@ -223,6 +223,13 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 		log.Printf("[LLM Config] Enabled providers: %v (source: %s)", providers, source)
 	}
 
+	// Load routing configuration from environment variables (ADR-021)
+	// Routing config is always loaded from env vars, even when providers come from RuntimeConfigService
+	routingConfig := LoadRoutingConfig()
+	routerConfig.RoutingStrategy = routingConfig.Strategy
+	routerConfig.ProviderWeights = routingConfig.ProviderWeights
+	routerConfig.DefaultProvider = routingConfig.DefaultProvider
+
 	return routerConfig
 }
 

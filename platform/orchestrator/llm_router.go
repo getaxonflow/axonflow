@@ -36,12 +36,13 @@ import (
 
 // LLMRouter handles intelligent routing to multiple LLM providers
 type LLMRouter struct {
-	providers      map[string]LLMProvider
-	weights        map[string]float64
-	healthChecker  *HealthChecker
-	loadBalancer   *LoadBalancer
-	metricsTracker *ProviderMetricsTracker
-	mu             sync.RWMutex
+	providers        map[string]LLMProvider
+	weights          map[string]float64
+	healthChecker    *HealthChecker
+	loadBalancer     *LoadBalancer
+	metricsTracker   *ProviderMetricsTracker
+	providerSelector *ProviderSelector // Handles routing strategy selection
+	mu               sync.RWMutex
 }
 
 // LLMProvider interface for different LLM implementations
@@ -64,6 +65,11 @@ type LLMRouterConfig struct {
 	GeminiKey       string
 	GeminiModel     string
 	LocalEndpoint   string // Deprecated: use OllamaEndpoint
+
+	// Routing configuration (Phase 1: Community env-based routing)
+	RoutingStrategy RoutingStrategy    // "weighted" (default), "round_robin", "failover"
+	ProviderWeights map[string]float64 // Custom weights (normalized to sum to 1.0)
+	DefaultProvider string             // Fallback provider for failover strategy
 }
 
 // QueryOptions contains options for LLM queries
@@ -96,15 +102,22 @@ type ProviderStatus struct {
 
 // NewLLMRouter creates a new LLM router instance
 func NewLLMRouter(config LLMRouterConfig) *LLMRouter {
-	router := &LLMRouter{
-		providers:      make(map[string]LLMProvider),
-		weights:        make(map[string]float64),
-		healthChecker:  NewHealthChecker(),
-		loadBalancer:   NewLoadBalancer(),
-		metricsTracker: NewProviderMetricsTracker(),
+	// Determine routing strategy (default to weighted)
+	strategy := config.RoutingStrategy
+	if strategy == "" {
+		strategy = RoutingStrategyWeighted
 	}
 
-	// Initialize providers
+	router := &LLMRouter{
+		providers:        make(map[string]LLMProvider),
+		weights:          make(map[string]float64),
+		healthChecker:    NewHealthChecker(),
+		loadBalancer:     NewLoadBalancer(),
+		metricsTracker:   NewProviderMetricsTracker(),
+		providerSelector: NewProviderSelector(strategy, config.DefaultProvider),
+	}
+
+	// Initialize providers with default equal weights
 	if config.OpenAIKey != "" {
 		router.providers["openai"] = NewOpenAIProvider(config.OpenAIKey)
 		router.weights["openai"] = 0.25
@@ -140,6 +153,12 @@ func NewLLMRouter(config LLMRouterConfig) *LLMRouter {
 	if config.GeminiKey != "" {
 		router.providers["gemini"] = NewGeminiProvider(config.GeminiKey, config.GeminiModel)
 		router.weights["gemini"] = 0.25
+	}
+
+	// Apply custom provider weights from config (overrides defaults)
+	// Only apply weights for providers that were actually initialized
+	if len(config.ProviderWeights) > 0 {
+		router.applyCustomWeights(config.ProviderWeights)
 	}
 
 	// Log provider status summary at startup
@@ -210,6 +229,14 @@ func (r *LLMRouter) logProviderStatus(config LLMRouterConfig) {
 	if len(failed) > 0 {
 		log.Printf("[LLMRouter] FAILED:     %v (check logs above for errors)", failed)
 	}
+
+	// Log routing configuration
+	log.Printf("[LLMRouter] ---------- Routing Configuration ----------")
+	log.Printf("[LLMRouter] Strategy: %s", r.GetRoutingStrategy())
+	if r.GetDefaultProvider() != "" {
+		log.Printf("[LLMRouter] Default Provider: %s", r.GetDefaultProvider())
+	}
+	log.Printf("[LLMRouter] Weights: %v", r.weights)
 
 	if len(available) == 0 {
 		log.Printf("[LLMRouter] WARNING: No LLM providers available! All requests requiring LLM will fail.")
@@ -373,9 +400,18 @@ func (r *LLMRouter) selectProvider(req OrchestratorRequest) (LLMProvider, error)
 			return provider, nil
 		}
 	}
-	
-	// Weighted random selection
-	selected := r.loadBalancer.SelectProvider(healthyProviders, r.weights)
+
+	// Use provider selector with configured routing strategy
+	// If providerSelector is nil (e.g., in tests), fall back to first healthy provider
+	var selected string
+	if r.providerSelector != nil {
+		selected = r.providerSelector.SelectProvider(healthyProviders, r.weights, r.loadBalancer)
+	} else if len(healthyProviders) > 0 {
+		selected = healthyProviders[0]
+	}
+	if selected == "" {
+		return nil, fmt.Errorf("provider selection failed")
+	}
 	return r.providers[selected], nil
 }
 
@@ -472,6 +508,65 @@ func (r *LLMRouter) GetProviderStatus() map[string]ProviderStatus {
 	}
 	
 	return status
+}
+
+// applyCustomWeights applies custom provider weights from configuration
+// Only applies weights to providers that are actually initialized
+// Weights are normalized to sum to 1.0 for the available providers
+func (r *LLMRouter) applyCustomWeights(customWeights map[string]float64) {
+	// Filter to only providers that exist
+	applicableWeights := make(map[string]float64)
+	totalWeight := 0.0
+
+	for provider, weight := range customWeights {
+		if _, exists := r.providers[provider]; exists {
+			applicableWeights[provider] = weight
+			totalWeight += weight
+		} else {
+			log.Printf("[LLMRouter] WARNING: Custom weight for unknown provider '%s' ignored", provider)
+		}
+	}
+
+	if len(applicableWeights) == 0 {
+		log.Printf("[LLMRouter] WARNING: No custom weights applicable to initialized providers, using defaults")
+		return
+	}
+
+	// Normalize weights to sum to 1.0
+	if totalWeight > 0 {
+		for provider := range applicableWeights {
+			applicableWeights[provider] = applicableWeights[provider] / totalWeight
+		}
+	}
+
+	// Apply the weights
+	// First, set all providers to 0
+	for provider := range r.providers {
+		r.weights[provider] = 0
+	}
+
+	// Then apply the custom weights
+	for provider, weight := range applicableWeights {
+		r.weights[provider] = weight
+	}
+
+	log.Printf("[LLMRouter] Custom weights applied: %v", r.weights)
+}
+
+// GetRoutingStrategy returns the current routing strategy
+func (r *LLMRouter) GetRoutingStrategy() RoutingStrategy {
+	if r.providerSelector == nil {
+		return RoutingStrategyWeighted
+	}
+	return r.providerSelector.GetStrategy()
+}
+
+// GetDefaultProvider returns the configured default provider
+func (r *LLMRouter) GetDefaultProvider() string {
+	if r.providerSelector == nil {
+		return ""
+	}
+	return r.providerSelector.GetDefaultProvider()
 }
 
 // UpdateProviderWeights updates the routing weights
