@@ -57,7 +57,9 @@ type LLMProvider interface {
 // LLMRouterConfig contains configuration for the router
 type LLMRouterConfig struct {
 	OpenAIKey       string
+	OpenAIModel     string
 	AnthropicKey    string
+	AnthropicModel  string
 	BedrockRegion   string
 	BedrockModel    string
 	OllamaEndpoint  string
@@ -124,7 +126,7 @@ func NewLLMRouter(config LLMRouterConfig) *LLMRouter {
 	}
 
 	if config.AnthropicKey != "" {
-		router.providers["anthropic"] = NewAnthropicProvider(config.AnthropicKey)
+		router.providers["anthropic"] = NewAnthropicProvider(config.AnthropicKey, config.AnthropicModel)
 		router.weights["anthropic"] = 0.25
 	}
 
@@ -280,10 +282,10 @@ func (r *LLMRouter) RouteRequest(ctx context.Context, req OrchestratorRequest) (
 	if err != nil {
 		// Track error
 		r.metricsTracker.RecordError(provider.Name())
-		
+
 		// Try failover
 		if fallbackProvider := r.getFallbackProvider(provider.Name()); fallbackProvider != nil {
-			log.Printf("Failing over from %s to %s", provider.Name(), fallbackProvider.Name())
+			log.Printf("Failing over from %s to %s (reason: %v)", provider.Name(), fallbackProvider.Name(), err)
 			// Update model for the fallback provider
 			fallbackOptions := options
 			fallbackOptions.Model = r.selectModel(fallbackProvider.Name(), req)
@@ -406,8 +408,11 @@ func (r *LLMRouter) selectProvider(req OrchestratorRequest) (LLMProvider, error)
 	var selected string
 	if r.providerSelector != nil {
 		selected = r.providerSelector.SelectProvider(healthyProviders, r.weights, r.loadBalancer)
-	} else if len(healthyProviders) > 0 {
-		selected = healthyProviders[0]
+	} else {
+		log.Printf("[LLMRouter] WARNING: providerSelector is nil, falling back to first healthy provider")
+		if len(healthyProviders) > 0 {
+			selected = healthyProviders[0]
+		}
 	}
 	if selected == "" {
 		return nil, fmt.Errorf("provider selection failed")
@@ -736,6 +741,7 @@ func (p *OpenAIProvider) EstimateCost(tokens int) float64 {
 // with full support for Claude 3.5 Sonnet, Claude 3 Opus, Claude 4, and streaming.
 type EnhancedAnthropicProvider struct {
 	provider *anthropic.Provider
+	model    string // Configured model (from ANTHROPIC_MODEL env var)
 }
 
 func (p *EnhancedAnthropicProvider) Name() string {
@@ -743,8 +749,11 @@ func (p *EnhancedAnthropicProvider) Name() string {
 }
 
 func (p *EnhancedAnthropicProvider) Query(ctx context.Context, prompt string, options QueryOptions) (*LLMResponse, error) {
-	// Use the model from options, or default to Claude 3.5 Sonnet
+	// Use model priority: options.Model > provider's configured model > package default
 	model := options.Model
+	if model == "" {
+		model = p.model
+	}
 	if model == "" {
 		model = anthropic.DefaultModel
 	}
@@ -790,7 +799,11 @@ func (p *EnhancedAnthropicProvider) EstimateCost(tokens int) float64 {
 
 // QueryStream performs a streaming query using the enhanced provider
 func (p *EnhancedAnthropicProvider) QueryStream(ctx context.Context, prompt string, options QueryOptions, handler func(chunk string) error) (*LLMResponse, error) {
+	// Use model priority: options.Model > provider's configured model > package default
 	model := options.Model
+	if model == "" {
+		model = p.model
+	}
 	if model == "" {
 		model = anthropic.DefaultModel
 	}
@@ -1347,7 +1360,7 @@ func NewOpenAIProvider(apiKey string) LLMProvider {
 	}
 }
 
-func NewAnthropicProvider(apiKey string) LLMProvider {
+func NewAnthropicProvider(apiKey, model string) LLMProvider {
 	if apiKey == "" {
 		// Return mock if no API key
 		return &MockProvider{
@@ -1360,6 +1373,7 @@ func NewAnthropicProvider(apiKey string) LLMProvider {
 	// Use the enhanced Anthropic provider from the anthropic package
 	provider, err := anthropic.NewProvider(anthropic.Config{
 		APIKey: apiKey,
+		Model:  model, // If empty, will use package default
 	})
 	if err != nil {
 		log.Printf("[LLMRouter] ERROR: Failed to initialize Anthropic provider: %v", err)
@@ -1372,6 +1386,7 @@ func NewAnthropicProvider(apiKey string) LLMProvider {
 
 	return &EnhancedAnthropicProvider{
 		provider: provider,
+		model:    model,
 	}
 }
 
