@@ -208,11 +208,17 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 	}
 
 	// Build policy from request
+	// Default tier to "tenant" if not provided
+	tier := req.Tier
+	if tier == "" {
+		tier = TierTenant
+	}
+
 	policy := &StaticPolicy{
 		Name:        req.Name,
 		Description: req.Description,
 		Category:    req.Category,
-		Tier:        req.Tier,
+		Tier:        tier,
 		Pattern:     req.Pattern,
 		Action:      req.Action,
 		Severity:    req.Severity,
@@ -224,7 +230,7 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 	}
 
 	// Set organization ID for org-tier policies
-	if req.Tier == TierOrganization && orgID != "" {
+	if tier == TierOrganization && orgID != "" {
 		policy.OrganizationID = &orgID
 	}
 

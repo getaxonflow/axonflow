@@ -1,0 +1,16 @@
+{
+  "name": "axonflow-hitl-example",
+  "version": "1.0.0",
+  "description": "AxonFlow HITL (Human-in-the-Loop) examples",
+  "type": "module",
+  "scripts": {
+    "example": "npx ts-node --esm require-approval-policy.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
