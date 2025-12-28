@@ -41,8 +41,8 @@ docker-compose up -d
 
 ### 3. Access the Demo
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8080/api/health
+- **Frontend**: http://localhost:3001
+- **Backend API**: http://localhost:8082/api/health
 
 ### Demo Users
 
@@ -83,7 +83,7 @@ SELECT * FROM users; DROP TABLE users;
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │  React Frontend │────▶│   Go Backend    │────▶│   PostgreSQL    │
-│   (Port 3000)   │     │   (Port 8080)   │     │   (Port 5432)   │
+│   (Port 3001)   │     │   (Port 8082)   │     │   (Port 5433)   │
 └─────────────────┘     └────────┬────────┘     └─────────────────┘
                                  │
                                  ▼
