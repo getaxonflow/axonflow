@@ -109,7 +109,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 ## What AxonFlow Does
 
-**Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs.
+**Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs. Use `require_approval` action for human oversight (auto-approves in Community; full HITL queue in Enterprise).
 
 **SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
 
