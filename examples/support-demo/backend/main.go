@@ -251,10 +251,6 @@ func main() {
 	}
 
 	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("AXONFLOW_LICENSE_KEY environment variable is required")
-	}
-
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
 		AgentURL:   agentURL,
 		LicenseKey: licenseKey,

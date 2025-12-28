@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: axonflow_demo
       POSTGRES_DB: support_demo
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
@@ -32,7 +32,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
-      - "8080:8080"
+      - "8082:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,7 +50,7 @@ services:
     environment:
       - REACT_APP_API_URL=http://localhost:8080
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       - backend
 
