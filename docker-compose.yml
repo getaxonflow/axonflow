@@ -116,6 +116,11 @@ services:
 
       # Internal service authentication (shared secret between agent and orchestrator)
       AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
+
+      # MCP Connector configuration file
+      AXONFLOW_CONFIG_FILE: /config/axonflow.yaml
+    volumes:
+      - ./config/axonflow.yaml:/config/axonflow.yaml:ro
     ports:
       - "8080:8080"
     depends_on:

@@ -1,0 +1,72 @@
+# AxonFlow Runtime Configuration
+# This file configures MCP connectors for Community deployments
+# Environment variables can be referenced using ${VAR_NAME} or ${VAR_NAME:-default} syntax
+
+version: "1.0"
+
+connectors:
+  # PostgreSQL connector - connects to local/docker PostgreSQL
+  postgres:
+    type: postgres
+    enabled: true
+    display_name: "PostgreSQL Database"
+    description: "Local PostgreSQL database for testing MCP connectors"
+    connection_url: "postgres://${DATABASE_USER:-axonflow}:${DATABASE_PASSWORD:-localdev123}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-axonflow}?sslmode=disable"
+    options:
+      max_open_conns: 25
+      max_idle_conns: 5
+      conn_max_lifetime: "5m"
+    timeout_ms: 30000
+    max_retries: 3
+    tenant_id: "*"
+
+  # Redis connector - connects to local/docker Redis
+  # TODO: Fix credentials handling in Redis connector before enabling
+  # redis:
+  #   type: redis
+  #   enabled: true
+  #   display_name: "Redis Cache"
+  #   description: "Local Redis for testing MCP connectors"
+  #   connection_url: "redis://redis:6379"
+  #   timeout_ms: 5000
+  #   max_retries: 3
+  #   tenant_id: "*"
+
+  # Database connector - alias for postgres for SDK examples
+  database:
+    type: postgres
+    enabled: true
+    display_name: "Database (Alias)"
+    description: "Alias for PostgreSQL connector for SDK examples"
+    connection_url: "postgres://${DATABASE_USER:-axonflow}:${DATABASE_PASSWORD:-localdev123}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-axonflow}?sslmode=disable"
+    options:
+      max_open_conns: 10
+      max_idle_conns: 2
+    timeout_ms: 30000
+    max_retries: 3
+    tenant_id: "*"
+
+llm_providers:
+  # OpenAI (if API key available)
+  openai:
+    enabled: true
+    display_name: "OpenAI"
+    config:
+      model: ${OPENAI_MODEL:-gpt-4-turbo}
+      max_tokens: 4096
+    credentials:
+      api_key: ${OPENAI_API_KEY}
+    priority: 5
+    weight: 0.5
+
+  # Anthropic (if API key available)
+  anthropic:
+    enabled: true
+    display_name: "Anthropic"
+    config:
+      model: ${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
+      max_tokens: 8192
+    credentials:
+      api_key: ${ANTHROPIC_API_KEY}
+    priority: 5
+    weight: 0.5

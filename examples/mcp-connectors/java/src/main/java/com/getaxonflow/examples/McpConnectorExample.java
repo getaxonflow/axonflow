@@ -30,11 +30,11 @@ import java.util.Map;
  * through AxonFlow with policy governance.
  *
  * MCP connectors allow AI applications to securely interact with
- * external systems like GitHub, Salesforce, Jira, and more.
+ * external systems like databases, APIs, and more.
  *
  * Prerequisites:
- * - AxonFlow running with connectors enabled
- * - Connector installed and configured (e.g., GitHub connector)
+ * - AxonFlow running with connectors enabled (docker-compose up -d)
+ * - PostgreSQL connector configured in config/axonflow.yaml
  *
  * Usage:
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
@@ -57,18 +57,15 @@ public class McpConnectorExample {
         System.out.println("------------------------------------------------------------");
         System.out.println();
 
-        // Example 1: Query GitHub Connector
-        System.out.println("Example 1: Query GitHub Connector");
+        // Example 1: Query PostgreSQL Connector (configured in axonflow.yaml)
+        System.out.println("Example 1: Query PostgreSQL Connector");
         System.out.println("----------------------------------------");
 
         try {
             ConnectorQuery query = ConnectorQuery.builder()
-                .connectorId("github")
-                .operation("list_issues")
+                .connectorId("postgres")  // Connector configured in config/axonflow.yaml
+                .operation("SELECT 1 as health_check, current_timestamp as server_time")
                 .userToken("user-123")
-                .addParameter("repo", "getaxonflow/axonflow")
-                .addParameter("state", "open")
-                .addParameter("limit", 5)
                 .build();
 
             ConnectorResponse response = axonflow.queryConnector(query);
@@ -81,8 +78,7 @@ public class McpConnectorExample {
                 System.out.printf("Error: %s%n", response.getError());
             }
         } catch (ConnectorException e) {
-            // Connector not installed - expected for demo
-            System.out.println("Status: Connector not available (expected if not installed)");
+            System.out.println("Status: Connector not available");
             System.out.printf("Error: %s%n", e.getMessage());
         } catch (Exception e) {
             System.out.println("Status: ERROR");
@@ -91,17 +87,18 @@ public class McpConnectorExample {
 
         System.out.println();
 
-        // Example 2: Query with Policy Enforcement
+        // Example 2: Query with Policy Enforcement (SQL Injection)
         System.out.println("Example 2: Query with Policy Enforcement");
         System.out.println("----------------------------------------");
         System.out.println("MCP queries are policy-checked before execution.");
         System.out.println("Queries that violate policies will be blocked.");
+        System.out.println();
 
         try {
             // This demonstrates that even connector queries go through policy checks
             ConnectorQuery query = ConnectorQuery.builder()
-                .connectorId("database")
-                .operation("SELECT * FROM users WHERE 1=1; DROP TABLE users;--")
+                .connectorId("postgres")
+                .operation("SELECT * FROM users WHERE 1=1; DROP TABLE users;--")  // SQL injection attempt
                 .userToken("user-123")
                 .build();
 
@@ -110,7 +107,8 @@ public class McpConnectorExample {
             if (!response.isSuccess()) {
                 String error = response.getError();
                 if (error != null && (error.contains("blocked") || error.contains("policy") ||
-                    error.contains("DROP TABLE") || error.contains("dangerous"))) {
+                    error.contains("DROP TABLE") || error.contains("dangerous") ||
+                    error.contains("SQL injection"))) {
                     System.out.println("Status: BLOCKED by policy (expected behavior)");
                     System.out.printf("Reason: %s%n", error);
                 } else {
@@ -118,17 +116,18 @@ public class McpConnectorExample {
                     System.out.printf("Error: %s%n", error);
                 }
             } else {
-                System.out.println("Status: Query allowed");
+                System.out.println("Status: Query allowed (UNEXPECTED - should have been blocked!)");
                 System.out.printf("Response: %s%n", response.getData());
             }
         } catch (Exception e) {
             String error = e.getMessage();
             if (error != null && (error.contains("blocked") || error.contains("policy") ||
-                error.contains("DROP TABLE") || error.contains("dangerous"))) {
+                error.contains("DROP TABLE") || error.contains("dangerous") ||
+                error.contains("SQL injection"))) {
                 System.out.println("Status: BLOCKED by policy (expected behavior)");
                 System.out.printf("Reason: %s%n", error);
             } else {
-                System.out.println("Status: Connector not available");
+                System.out.println("Status: Error");
                 System.out.printf("Error: %s%n", error);
             }
         }
