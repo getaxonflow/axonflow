@@ -1,6 +1,43 @@
-version: '3.8'
-
 services:
+  # AxonFlow Agent - Policy enforcement and LLM governance
+  axonflow-agent:
+    build:
+      context: ../..
+      dockerfile: platform/agent/Dockerfile
+    environment:
+      - SELF_HOSTED_MODE=true
+      - SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH
+      - ORCHESTRATOR_URL=http://axonflow-orchestrator:8081
+      - LOG_LEVEL=info
+      # Allow PII through for role-based demo (detect but don't block)
+      - PII_BLOCK_CRITICAL=false
+    ports:
+      - "8085:8080"
+    depends_on:
+      - axonflow-orchestrator
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # AxonFlow Orchestrator - LLM routing
+  axonflow-orchestrator:
+    build:
+      context: ../..
+      dockerfile: platform/orchestrator/Dockerfile
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LOG_LEVEL=info
+    ports:
+      - "8084:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
@@ -28,13 +65,15 @@ services:
       - DATABASE_URL=postgres://axonflow:axonflow_demo@postgres:5432/support_demo?sslmode=disable
       - JWT_SECRET=demo-secret-change-in-production
       - PORT=8080
-      - AXONFLOW_ENDPOINT=${AXONFLOW_ENDPOINT:-http://host.docker.internal:8080}
+      - AXONFLOW_ENDPOINT=${AXONFLOW_ENDPOINT:-http://axonflow-agent:8080}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
       - "8082:8080"
     depends_on:
       postgres:
+        condition: service_healthy
+      axonflow-agent:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
@@ -47,8 +86,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    environment:
-      - REACT_APP_API_URL=http://localhost:8082
     ports:
       - "3001:80"
     depends_on:

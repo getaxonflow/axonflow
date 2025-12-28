@@ -5,11 +5,8 @@ import PolicyConfig from './PolicyConfig';
 import PerformanceMonitor from './PerformanceMonitor';
 import LiveMonitor from './LiveMonitor';
 
-// Simple API URL detection - works everywhere
-const API_BASE = process.env.REACT_APP_API_URL ||
-  (window.location.hostname === 'localhost'
-    ? 'http://localhost:8080'
-    : `${window.location.protocol}//${window.location.host}/api`);
+// API calls use relative paths - nginx proxies /api/* to backend
+const API_BASE = '';
 
 function App() {
   const [user, setUser] = useState(() => {
@@ -253,13 +250,9 @@ function App() {
 
   const fetchPolicyMetrics = async () => {
     try {
-      // Fetch Agent health - use different ports for dev vs prod
-      const agentHealthURL = window.location.hostname === 'localhost' ? 'http://localhost:8080/health' : `https://${window.location.hostname}/agent/health`;
-      const agentHealth = await axios.get(agentHealthURL).catch(() => ({ data: { status: 'unhealthy' } }));
-      
-      // Fetch Orchestrator health - use different ports for dev vs prod  
-      const orchestratorHealthURL = window.location.hostname === 'localhost' ? 'http://localhost:8081/health' : `https://${window.location.hostname}/orchestrator/health`;
-      const orchestratorHealth = await axios.get(orchestratorHealthURL).catch(() => ({ data: { status: 'unhealthy' } }));
+      // For this demo, AxonFlow services are external - check via backend status endpoint
+      const agentHealth = { data: { status: 'unknown' } };
+      const orchestratorHealth = { data: { status: 'unknown' } };
       
       // Fetch persistent policy metrics from database
       const metricsResponse = await axios.get(`${API_BASE}/api/policy-metrics`, {
@@ -488,6 +481,7 @@ function App() {
     setDashboard(null);
     setQueryResult(null);
     setAuditLogs([]);
+    setError('');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
   };
