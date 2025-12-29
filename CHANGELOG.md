@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] - 2025-12-29
+
+### Added
+
+- **LLM Router Interface Abstraction (ADR-022 Phase 6)**: Components now depend on standard interface rather than concrete implementations
+  - `LLMRouterInterface` - Standard interface for router abstraction
+  - `UnifiedRouterWrapper` - Adapter enabling UnifiedRouter as drop-in LLMRouter replacement
+  - Type conversion utilities between legacy and new router types
+
+- **LLM Provider Routing Examples**: New HTTP/curl examples for direct API access
+  - Shell script examples for all supported providers (OpenAI, Anthropic, Ollama, Gemini)
+  - Gateway mode pre-check and audit examples
+  - Java SDK example for provider routing
+
+### Changed
+
+- Orchestrator now uses interface type for LLM router configuration
+- Improved test coverage for audit logging and routing strategies
+
+---
+
 ## [2.1.0] - 2025-12-28
 
 ### Added
