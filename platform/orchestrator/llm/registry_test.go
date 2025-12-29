@@ -427,6 +427,99 @@ func TestRegistry_Unregister(t *testing.T) {
 	})
 }
 
+func TestRegistry_Enable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("enable existing provider", func(t *testing.T) {
+		r := setupTestRegistry(t)
+		config := &ProviderConfig{
+			Name:    "test-provider",
+			Type:    ProviderTypeOllama,
+			Enabled: false,
+		}
+		_ = r.Register(ctx, config)
+
+		err := r.Enable("test-provider")
+		if err != nil {
+			t.Fatalf("Enable error = %v", err)
+		}
+
+		// Verify provider is now enabled
+		enabledList := r.ListEnabled()
+		found := false
+		for _, name := range enabledList {
+			if name == "test-provider" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("provider should be in enabled list after Enable()")
+		}
+	})
+
+	t.Run("enable non-existent provider", func(t *testing.T) {
+		r := setupTestRegistry(t)
+		err := r.Enable("non-existent")
+		if err == nil {
+			t.Fatal("Enable should error for non-existent provider")
+		}
+		regErr, ok := err.(*RegistryError)
+		if !ok {
+			t.Fatalf("expected RegistryError, got %T", err)
+		}
+		if regErr.Code != ErrRegistryNotFound {
+			t.Errorf("error code = %q, want %q", regErr.Code, ErrRegistryNotFound)
+		}
+	})
+}
+
+func TestRegistry_Disable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("disable existing provider", func(t *testing.T) {
+		r := setupTestRegistry(t)
+		config := &ProviderConfig{
+			Name:    "test-provider",
+			Type:    ProviderTypeOllama,
+			Enabled: true,
+		}
+		_ = r.Register(ctx, config)
+
+		// Verify provider is initially enabled
+		enabledList := r.ListEnabled()
+		if len(enabledList) != 1 {
+			t.Fatalf("expected 1 enabled provider, got %d", len(enabledList))
+		}
+
+		err := r.Disable("test-provider")
+		if err != nil {
+			t.Fatalf("Disable error = %v", err)
+		}
+
+		// Verify provider is now disabled
+		enabledList = r.ListEnabled()
+		if len(enabledList) != 0 {
+			t.Errorf("expected 0 enabled providers after Disable(), got %d", len(enabledList))
+		}
+	})
+
+	t.Run("disable non-existent provider", func(t *testing.T) {
+		r := setupTestRegistry(t)
+		err := r.Disable("non-existent")
+		if err == nil {
+			t.Fatal("Disable should error for non-existent provider")
+		}
+		regErr, ok := err.(*RegistryError)
+		if !ok {
+			t.Fatalf("expected RegistryError, got %T", err)
+		}
+		if regErr.Code != ErrRegistryNotFound {
+			t.Errorf("error code = %q, want %q", regErr.Code, ErrRegistryNotFound)
+		}
+	})
+}
+
 func TestRegistry_List(t *testing.T) {
 	ctx := context.Background()
 	r := setupTestRegistry(t)

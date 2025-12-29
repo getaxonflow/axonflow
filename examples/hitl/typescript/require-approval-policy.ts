@@ -84,10 +84,9 @@ async function main() {
     console.log(`   Action: ${adminPolicy.action}`);
 
     // 4. List all policies with require_approval action
-    // Filter by tenant tier to get our custom policies (system policies are on first page)
     console.log('\n4. Listing all HITL policies...');
 
-    const allPolicies = await client.listStaticPolicies({ tier: 'tenant' });
+    const allPolicies = await client.listStaticPolicies();
     const hitlPolicies = allPolicies.filter(p => p.action === 'require_approval');
 
     console.log(`   Found ${hitlPolicies.length} HITL policies:`);

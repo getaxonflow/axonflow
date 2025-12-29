@@ -109,11 +109,9 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 ## What AxonFlow Does
 
-**Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs. Use `require_approval` action for human oversight (auto-approves in Community; full HITL queue in Enterprise).
+**Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs.
 
 **SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
-
-**Code Governance** — Automatically detect and audit LLM-generated code. Identifies language, code type, potential secrets, and unsafe patterns (eval, exec, shell injection). Metadata logged for compliance.
 
 **Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
 
@@ -312,7 +310,6 @@ if (approval.isApproved()) {
 | Example | Description |
 |---------|-------------|
 | **[Support Demo](examples/support-demo/)** | Customer support with PII redaction and RBAC |
-| **[Code Governance](examples/code-governance/)** | Detect and audit LLM-generated code artifacts |
 | **[Hello World](examples/hello-world/)** | Minimal SDK example (30 lines) |
 
 → **[More examples](https://docs.getaxonflow.com/docs/examples/overview)**

@@ -74,7 +74,8 @@ var (
 	nodeMonitor        *node_enforcement.NodeMonitor      // Node enforcement
 	policyAPIHandler      *PolicyAPIHandler                  // Policy CRUD API handler
 	templateAPIHandler    *TemplateAPIHandler                // Policy Templates API handler
-	llmProviderRouter     *llm.Router                        // New pluggable LLM provider router (ADR-007)
+	llmProviderRouter     *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
+	llmRouterWrapper      LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
 	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
@@ -254,11 +255,9 @@ func LoadLLMConfig() LLMRouterConfig {
 
 	// OpenAI configuration
 	config.OpenAIKey = os.Getenv("OPENAI_API_KEY")
-	config.OpenAIModel = os.Getenv("OPENAI_MODEL")
 
 	// Anthropic configuration
 	config.AnthropicKey = os.Getenv("ANTHROPIC_API_KEY")
-	config.AnthropicModel = os.Getenv("ANTHROPIC_MODEL")
 
 	// Bedrock configuration
 	// Allow environment-specific overrides (e.g., BEDROCK_REGION_PROD)
@@ -695,13 +694,24 @@ func initializeComponents() {
 			}
 		}
 
-		llmProviderRouter = llm.NewRouter(
-			llm.WithRouterRegistry(bootstrapResult.Registry),
-			llm.WithDefaultWeights(weights),
-		)
+		// Create unified router that bridges legacy and new APIs (ADR-022: Router Consolidation)
+		// Convert orchestrator.RoutingStrategy to llm.RoutingStrategy
+		llmProviderRouter = llm.NewUnifiedRouter(llm.UnifiedRouterConfig{
+			Registry: bootstrapResult.Registry,
+			RoutingConfig: llm.RoutingConfig{
+				Strategy:        llm.RoutingStrategy(routingConfig.Strategy),
+				ProviderWeights: weights,
+				DefaultProvider: routingConfig.DefaultProvider,
+			},
+		})
+		log.Printf("[LLM Router] Unified router initialized with strategy: %s", routingConfig.Strategy)
 
-		// Create API handler for the new router
-		llmProviderAPIHandler = NewLLMProviderAPIHandlerWithRouter(llmProviderRouter, log.Default())
+		// Create wrapper for LLMRouterInterface compatibility (ADR-022 Phase 6)
+		llmRouterWrapper = NewUnifiedRouterWrapper(llmProviderRouter)
+		log.Println("[LLM Router] Interface wrapper created for legacy compatibility")
+
+		// Create API handler using the underlying Router
+		llmProviderAPIHandler = NewLLMProviderAPIHandlerWithRouter(llmProviderRouter.Router(), log.Default())
 		if llmProviderAPIHandler != nil {
 			log.Println("✅ LLM Provider API handler initialized (ADR-007 Phase 2)")
 		} else {
@@ -747,14 +757,14 @@ func initializeComponents() {
 	if workflowEngine == nil {
 		log.Println("WARNING: Workflow Engine failed to initialize - workflow endpoints will not be available")
 	} else {
-		workflowEngine.InitializeWithDependencies(GetLLMRouter(), amadeusClient)
+		workflowEngine.InitializeWithDependencies(llmRouterWrapper, amadeusClient)
 		log.Println("Workflow Engine initialized successfully with API call support")
 	}
 
 	// Initialize Planning Engine (Multi-Agent Planning v0.1)
 	log.Println("Initializing Planning Engine...")
-	if router := GetLLMRouter(); router != nil {
-		planningEngine = NewPlanningEngine(router)
+	if llmRouterWrapper != nil {
+		planningEngine = NewPlanningEngine(llmRouterWrapper)
 		log.Println("Planning Engine initialized with LLM-based decomposition")
 	} else {
 		log.Println("WARNING: Planning Engine not initialized - LLM Router unavailable")
@@ -762,8 +772,8 @@ func initializeComponents() {
 
 	// Initialize Result Aggregator (Multi-Agent Planning v0.1)
 	log.Println("Initializing Result Aggregator...")
-	if router := GetLLMRouter(); router != nil {
-		resultAggregator = NewResultAggregator(router)
+	if llmRouterWrapper != nil {
+		resultAggregator = NewResultAggregator(llmRouterWrapper)
 		log.Println("Result Aggregator initialized with LLM synthesis")
 	} else {
 		log.Println("WARNING: Result Aggregator not initialized - LLM Router unavailable")
@@ -865,10 +875,9 @@ func initializeComponents() {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	router := GetLLMRouter()
 	components := map[string]bool{
 		"policy_engine":      dynamicPolicyEngine.IsHealthy(),
-		"llm_router":         router != nil && router.IsHealthy(),
+		"llm_router":         llmRouterWrapper != nil && llmRouterWrapper.IsHealthy(),
 		"response_processor": responseProcessor.IsHealthy(),
 		"audit_logger":       auditLogger.IsHealthy(),
 		"workflow_engine":    workflowEngine.IsHealthy(),
@@ -1045,15 +1054,20 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Model:    "test",
 		}
 	} else {
-		log.Printf("[LLM] CALLING: Routing to LLM provider (skip_llm=false)")
 		llmStartTime := time.Now()
-		llmResponse, providerInfo, err = GetLLMRouter().RouteRequest(ctx, req)
+		if llmRouterWrapper == nil {
+			err = fmt.Errorf("LLM router not initialized")
+			log.Printf("[LLM] ERROR: Router not available")
+		} else {
+			log.Printf("[LLM] CALLING: Routing to LLM provider (skip_llm=false)")
+			llmResponse, providerInfo, err = llmRouterWrapper.RouteRequest(ctx, req)
+		}
+		llmTime := time.Since(llmStartTime)
 		providerName := "unknown"
 		if providerInfo != nil {
 			providerName = providerInfo.Provider
 		}
-		log.Printf("[LLM] COMPLETED: provider=%s, latency=%v, err=%v", providerName, time.Since(llmStartTime), err)
-		llmTime := time.Since(llmStartTime)
+		log.Printf("[LLM] COMPLETED: provider=%s, latency=%v, err=%v", providerName, llmTime, err)
 
 		// Record per-stage LLM timing
 		if orchestratorMetrics != nil && err == nil {
@@ -1134,7 +1148,12 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func providerStatusHandler(w http.ResponseWriter, r *http.Request) {
-	status := GetLLMRouter().GetProviderStatus()
+	var status map[string]ProviderStatus
+	if llmRouterWrapper != nil {
+		status = llmRouterWrapper.GetProviderStatus()
+	} else {
+		status = make(map[string]ProviderStatus)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
@@ -1149,7 +1168,12 @@ func updateProviderWeightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := GetLLMRouter().UpdateProviderWeights(weights); err != nil {
+	if llmRouterWrapper == nil {
+		sendErrorResponse(w, "LLM router not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := llmRouterWrapper.UpdateProviderWeights(weights); err != nil {
 		sendErrorResponse(w, "Failed to update weights: "+err.Error(), http.StatusBadRequest)
 		return
 	}

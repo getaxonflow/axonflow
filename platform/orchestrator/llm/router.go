@@ -23,16 +23,17 @@ import (
 
 // Router handles intelligent routing to multiple LLM providers.
 // It uses the Registry for provider management and supports:
-// - Weighted load balancing
+// - Multiple routing strategies (weighted, round_robin, failover)
 // - Health-based routing
 // - Automatic failover
 // - Request-specific provider selection
 type Router struct {
-	registry       *Registry
-	loadBalancer   *routerLoadBalancer
-	metricsTracker *routerMetricsTracker
-	logger         *log.Logger
-	mu             sync.RWMutex
+	registry         *Registry
+	loadBalancer     *routerLoadBalancer
+	metricsTracker   *routerMetricsTracker
+	providerSelector *ProviderSelector
+	logger           *log.Logger
+	mu               sync.RWMutex
 
 	// Default weights for load balancing (can be overridden per-request)
 	defaultWeights map[string]float64
@@ -50,6 +51,13 @@ type RouterConfig struct {
 	// DefaultWeights maps provider names to routing weights.
 	// Weights should sum to 1.0.
 	DefaultWeights map[string]float64
+
+	// RoutingStrategy specifies the provider selection algorithm.
+	// Valid values: "weighted" (default), "round_robin", "failover".
+	RoutingStrategy RoutingStrategy
+
+	// DefaultProvider is the preferred provider for failover strategy.
+	DefaultProvider string
 
 	// Logger is the logger to use. If nil, a default logger is created.
 	Logger *log.Logger
@@ -83,13 +91,32 @@ func WithDefaultWeights(weights map[string]float64) RouterOption {
 	}
 }
 
+// WithRoutingStrategy sets the routing strategy.
+func WithRoutingStrategy(strategy RoutingStrategy) RouterOption {
+	return func(r *Router) {
+		if r.providerSelector != nil {
+			r.providerSelector.SetStrategy(strategy)
+		}
+	}
+}
+
+// WithDefaultProvider sets the default provider for failover strategy.
+func WithDefaultProvider(provider string) RouterOption {
+	return func(r *Router) {
+		if r.providerSelector != nil {
+			r.providerSelector.SetDefaultProvider(provider)
+		}
+	}
+}
+
 // NewRouter creates a new Router with the given options.
 func NewRouter(opts ...RouterOption) *Router {
 	r := &Router{
-		loadBalancer:   newRouterLoadBalancer(),
-		metricsTracker: newRouterMetricsTracker(),
-		defaultWeights: make(map[string]float64),
-		logger:         log.New(os.Stdout, "[LLM_ROUTER] ", log.LstdFlags),
+		loadBalancer:     newRouterLoadBalancer(),
+		metricsTracker:   newRouterMetricsTracker(),
+		providerSelector: NewProviderSelector(RoutingStrategyWeighted, ""),
+		defaultWeights:   make(map[string]float64),
+		logger:           log.New(os.Stdout, "[LLM_ROUTER] ", log.LstdFlags),
 	}
 
 	for _, opt := range opts {
@@ -106,12 +133,19 @@ func NewRouter(opts ...RouterOption) *Router {
 
 // NewRouterFromConfig creates a router from configuration.
 func NewRouterFromConfig(config RouterConfig) *Router {
+	// Determine routing strategy
+	strategy := config.RoutingStrategy
+	if strategy == "" {
+		strategy = RoutingStrategyWeighted
+	}
+
 	r := &Router{
-		registry:       config.Registry,
-		loadBalancer:   newRouterLoadBalancer(),
-		metricsTracker: newRouterMetricsTracker(),
-		defaultWeights: config.DefaultWeights,
-		logger:         config.Logger,
+		registry:         config.Registry,
+		loadBalancer:     newRouterLoadBalancer(),
+		metricsTracker:   newRouterMetricsTracker(),
+		providerSelector: NewProviderSelector(strategy, config.DefaultProvider),
+		defaultWeights:   config.DefaultWeights,
+		logger:           config.Logger,
 	}
 
 	if r.registry == nil {
@@ -226,8 +260,18 @@ func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts
 	// Get weights
 	weights := r.getWeights(healthyNames, opts.weights)
 
-	// Select using load balancer
-	selected := r.loadBalancer.selectProvider(healthyNames, weights)
+	// Select using provider selector (supports multiple routing strategies)
+	var selected string
+	if r.providerSelector != nil {
+		selected = r.providerSelector.SelectProvider(healthyNames, weights)
+	} else {
+		// Fallback to load balancer for backward compatibility
+		selected = r.loadBalancer.selectProvider(healthyNames, weights)
+	}
+
+	if selected == "" {
+		return nil, fmt.Errorf("provider selection failed")
+	}
 
 	return r.registry.Get(ctx, selected)
 }
@@ -337,6 +381,36 @@ func (r *Router) GetProviderStatus(ctx context.Context) map[string]*ProviderStat
 // Registry returns the underlying registry.
 func (r *Router) Registry() *Registry {
 	return r.registry
+}
+
+// GetRoutingStrategy returns the current routing strategy.
+func (r *Router) GetRoutingStrategy() RoutingStrategy {
+	if r.providerSelector != nil {
+		return r.providerSelector.GetStrategy()
+	}
+	return RoutingStrategyWeighted
+}
+
+// SetRoutingStrategy updates the routing strategy at runtime.
+func (r *Router) SetRoutingStrategy(strategy RoutingStrategy) {
+	if r.providerSelector != nil {
+		r.providerSelector.SetStrategy(strategy)
+	}
+}
+
+// GetDefaultProvider returns the configured default provider.
+func (r *Router) GetDefaultProvider() string {
+	if r.providerSelector != nil {
+		return r.providerSelector.GetDefaultProvider()
+	}
+	return ""
+}
+
+// SetDefaultProvider updates the default provider at runtime.
+func (r *Router) SetDefaultProvider(provider string) {
+	if r.providerSelector != nil {
+		r.providerSelector.SetDefaultProvider(provider)
+	}
 }
 
 // Close shuts down the router.

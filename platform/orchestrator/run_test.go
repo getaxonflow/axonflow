@@ -640,6 +640,13 @@ func setupTestComponents(ctx context.Context) {
 		})
 	}
 
+	// Create a test wrapper for llmRouterWrapper (uses legacy router for testing)
+	// Note: In production, llmRouterWrapper wraps UnifiedRouter
+	if llmRouterWrapper == nil && llmRouter != nil {
+		// Use the legacy router directly since *LLMRouter implements LLMRouterInterface
+		llmRouterWrapper = llmRouter
+	}
+
 	if responseProcessor == nil {
 		responseProcessor = NewResponseProcessor()
 	}

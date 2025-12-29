@@ -25,7 +25,7 @@ import (
 
 // PlanningEngine generates workflows from natural language queries
 type PlanningEngine struct {
-	llmRouter *LLMRouter
+	llmRouter LLMRouterInterface
 	templates map[string]*DomainTemplate
 	registry  *AgentRegistry // Config-based agent registry (MAP 0.5)
 	logger    *logger.Logger
@@ -58,7 +58,7 @@ type PlanGenerationRequest struct {
 }
 
 // NewPlanningEngine creates a new planning engine instance
-func NewPlanningEngine(router *LLMRouter) *PlanningEngine {
+func NewPlanningEngine(router LLMRouterInterface) *PlanningEngine {
 	engine := &PlanningEngine{
 		llmRouter: router,
 		templates: make(map[string]*DomainTemplate),
@@ -79,7 +79,7 @@ func NewPlanningEngine(router *LLMRouter) *PlanningEngine {
 }
 
 // NewPlanningEngineWithConfigDir creates a planning engine with configs from a specific directory
-func NewPlanningEngineWithConfigDir(router *LLMRouter, configDir string) (*PlanningEngine, error) {
+func NewPlanningEngineWithConfigDir(router LLMRouterInterface, configDir string) (*PlanningEngine, error) {
 	engine := &PlanningEngine{
 		llmRouter: router,
 		templates: make(map[string]*DomainTemplate),
