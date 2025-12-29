@@ -6,7 +6,7 @@
 
     <groupId>com.getaxonflow.examples</groupId>
     <artifactId>code-governance-example</artifactId>
-    <version>1.3.0</version>
+    <version>1.3.1</version>
     <packaging>jar</packaging>
 
     <name>AxonFlow Code Governance Example - Java</name>
@@ -22,7 +22,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>1.3.0</version>
+            <version>1.3.1</version>
         </dependency>
     </dependencies>
 
