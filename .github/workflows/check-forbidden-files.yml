@@ -1,0 +1,58 @@
+name: Check Forbidden Files
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-files:
+    name: Check for forbidden files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for forbidden files in PR
+        run: |
+          # Get list of files added/modified in this PR (exclude deletions)
+          FILES=$(git diff --name-only --diff-filter=ACM origin/main...HEAD)
+
+          # Patterns that should never be committed
+          FORBIDDEN_PATTERNS=(
+            "^\.claude/"
+            "CLAUDE\.md$"
+            "CLAUDE.*\.md$"
+            "SESSION_.*\.md$"
+            "session-.*\.md$"
+            "HANDOVER.*\.md$"
+          )
+
+          FORBIDDEN_FOUND=()
+
+          for file in $FILES; do
+            for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$file" | grep -qE "$pattern"; then
+                FORBIDDEN_FOUND+=("$file")
+                break
+              fi
+            done
+          done
+
+          if [ ${#FORBIDDEN_FOUND[@]} -gt 0 ]; then
+            echo "❌ Forbidden files detected in PR:"
+            echo ""
+            for file in "${FORBIDDEN_FOUND[@]}"; do
+              echo "  - $file"
+            done
+            echo ""
+            echo "These files should not be committed to the repository."
+            echo "They are typically personal development aids (Claude Code config, session notes)."
+            echo ""
+            echo "To remove them from tracking while keeping locally:"
+            echo "  git rm --cached <file>"
+            echo ""
+            exit 1
+          fi
+
+          echo "✅ No forbidden files found"

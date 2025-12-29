@@ -13,10 +13,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/getaxonflow/axonflow-sdk-go"
 )
@@ -28,138 +28,87 @@ func main() {
 		endpoint = "http://localhost:8080"
 	}
 
-	tenant := os.Getenv("AXONFLOW_TENANT")
-	if tenant == "" {
-		tenant = "demo"
-	}
+	client := axonflow.NewClient(axonflow.AxonFlowConfig{
+		AgentURL:   endpoint,
+		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"),
+		Mode:       "production",
+		Debug:      os.Getenv("DEBUG") == "true",
+		Timeout:    60 * time.Second,
+	})
 
-	client, err := axonflow.NewClient(
-		axonflow.WithEndpoint(endpoint),
-		axonflow.WithLicenseKey(os.Getenv("AXONFLOW_LICENSE_KEY")),
-		axonflow.WithTenant(tenant),
-	)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-
-	ctx := context.Background()
-	fmt.Println("=== LLM Provider Routing Examples ===\n")
+	fmt.Println("=== LLM Provider Routing Examples ===")
+	fmt.Println()
 
 	// Example 1: Default routing (uses server-side strategy)
 	fmt.Println("1. Default routing (server decides provider):")
-	defaultResp, err := client.Proxy(ctx, &axonflow.ProxyRequest{
-		Query:       "What is 2 + 2?",
-		RequestType: "chat",
-	})
+	defaultResp, err := client.ExecuteQuery(
+		"demo-user", // userToken
+		"What is 2 + 2?",
+		"chat",
+		nil, // context - let server decide provider
+	)
 	if err != nil {
 		log.Printf("   Error: %v\n", err)
+	} else if defaultResp.Blocked {
+		fmt.Printf("   Blocked: %s\n", defaultResp.BlockReason)
 	} else {
-		response := truncate(defaultResp.Response, 50)
-		provider := "unknown"
-		if defaultResp.Metadata != nil {
-			if p, ok := defaultResp.Metadata["provider"].(string); ok {
-				provider = p
-			}
-		}
+		response := truncate(fmt.Sprintf("%v", defaultResp.Data), 100)
 		fmt.Printf("   Response: %s...\n", response)
-		fmt.Printf("   Provider used: %s\n\n", provider)
+		fmt.Printf("   Success: %v\n\n", defaultResp.Success)
 	}
 
-	// Example 2: Request a specific provider
-	fmt.Println("2. Request specific provider (OpenAI):")
-	openaiResp, err := client.Proxy(ctx, &axonflow.ProxyRequest{
-		Query:       "What is the capital of France?",
-		RequestType: "chat",
-		Context: map[string]interface{}{
-			"provider": "openai", // Request specific provider
+	// Example 2: Request specific provider (Ollama - local)
+	fmt.Println("2. Request specific provider (Ollama):")
+	ollamaResp, err := client.ExecuteQuery(
+		"demo-user",
+		"What is the capital of France?",
+		"chat",
+		map[string]interface{}{
+			"provider": "ollama", // Request specific provider
 		},
-	})
+	)
 	if err != nil {
 		log.Printf("   Error: %v\n", err)
+	} else if ollamaResp.Blocked {
+		fmt.Printf("   Blocked: %s\n", ollamaResp.BlockReason)
 	} else {
-		response := truncate(openaiResp.Response, 50)
-		provider := "unknown"
-		if openaiResp.Metadata != nil {
-			if p, ok := openaiResp.Metadata["provider"].(string); ok {
-				provider = p
-			}
-		}
+		response := truncate(fmt.Sprintf("%v", ollamaResp.Data), 100)
 		fmt.Printf("   Response: %s...\n", response)
-		fmt.Printf("   Provider used: %s\n\n", provider)
+		fmt.Printf("   Success: %v\n\n", ollamaResp.Success)
 	}
 
-	// Example 3: Request Anthropic
-	fmt.Println("3. Request specific provider (Anthropic):")
-	anthropicResp, err := client.Proxy(ctx, &axonflow.ProxyRequest{
-		Query:       "Explain quantum computing in one sentence.",
-		RequestType: "chat",
-		Context: map[string]interface{}{
-			"provider": "anthropic",
+	// Example 3: Request with model override
+	fmt.Println("3. Request with specific model:")
+	modelResp, err := client.ExecuteQuery(
+		"demo-user",
+		"What is machine learning in one sentence?",
+		"chat",
+		map[string]interface{}{
+			"provider": "ollama",
+			"model":    "tinyllama", // Specify exact model
 		},
-	})
+	)
 	if err != nil {
 		log.Printf("   Error: %v\n", err)
+	} else if modelResp.Blocked {
+		fmt.Printf("   Blocked: %s\n", modelResp.BlockReason)
 	} else {
-		response := truncate(anthropicResp.Response, 50)
-		provider := "unknown"
-		if anthropicResp.Metadata != nil {
-			if p, ok := anthropicResp.Metadata["provider"].(string); ok {
-				provider = p
-			}
-		}
+		response := truncate(fmt.Sprintf("%v", modelResp.Data), 100)
 		fmt.Printf("   Response: %s...\n", response)
-		fmt.Printf("   Provider used: %s\n\n", provider)
+		fmt.Printf("   Success: %v\n\n", modelResp.Success)
 	}
 
-	// Example 4: Request with model override
-	fmt.Println("4. Request with specific model:")
-	modelResp, err := client.Proxy(ctx, &axonflow.ProxyRequest{
-		Query:       "What is machine learning?",
-		RequestType: "chat",
-		Context: map[string]interface{}{
-			"provider": "openai",
-			"model":    "gpt-4o-mini", // Specify exact model
-		},
-	})
-	if err != nil {
+	// Example 4: Health check
+	fmt.Println("4. Check agent health:")
+	if err := client.HealthCheck(); err != nil {
 		log.Printf("   Error: %v\n", err)
 	} else {
-		response := truncate(modelResp.Response, 50)
-		model := "unknown"
-		if modelResp.Metadata != nil {
-			if m, ok := modelResp.Metadata["model"].(string); ok {
-				model = m
-			}
-		}
-		fmt.Printf("   Response: %s...\n", response)
-		fmt.Printf("   Model used: %s\n\n", model)
+		fmt.Println("   Status: healthy")
+		fmt.Println("   Agent is responding correctly")
 	}
 
-	// Example 5: Health check to see available providers
-	fmt.Println("5. Check provider health status:")
-	health, err := client.Health(ctx)
-	if err != nil {
-		log.Printf("   Error: %v\n", err)
-	} else {
-		fmt.Printf("   Status: %s\n", health.Status)
-		if health.Providers != nil {
-			for name, status := range health.Providers {
-				healthy := false
-				if statusMap, ok := status.(map[string]interface{}); ok {
-					if h, ok := statusMap["healthy"].(bool); ok {
-						healthy = h
-					}
-				}
-				symbol := "✗ unhealthy"
-				if healthy {
-					symbol = "✓ healthy"
-				}
-				fmt.Printf("   - %s: %s\n", name, symbol)
-			}
-		}
-	}
-
-	fmt.Println("\n=== Examples Complete ===")
+	fmt.Println()
+	fmt.Println("=== Examples Complete ===")
 }
 
 func truncate(s string, maxLen int) string {

@@ -823,7 +823,7 @@ func TestOptimizeExecutionMode(t *testing.T) {
 func TestPlanningEngineIsHealthy(t *testing.T) {
 	tests := []struct {
 		name     string
-		router   *LLMRouter
+		router   LLMRouterInterface
 		expected bool
 	}{
 		{
@@ -837,7 +837,7 @@ func TestPlanningEngineIsHealthy(t *testing.T) {
 		},
 		{
 			name:     "Nil router",
-			router:   nil,
+			router:   nil, // Explicitly nil LLMRouterInterface
 			expected: false,
 		},
 	}

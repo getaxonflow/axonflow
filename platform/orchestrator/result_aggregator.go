@@ -21,11 +21,11 @@ import (
 
 // ResultAggregator synthesizes outputs from multiple tasks into a coherent final result
 type ResultAggregator struct {
-	llmRouter *LLMRouter
+	llmRouter LLMRouterInterface
 }
 
 // NewResultAggregator creates a new result aggregator instance
-func NewResultAggregator(router *LLMRouter) *ResultAggregator {
+func NewResultAggregator(router LLMRouterInterface) *ResultAggregator {
 	return &ResultAggregator{
 		llmRouter: router,
 	}

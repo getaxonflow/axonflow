@@ -20,11 +20,9 @@ import asyncio
 from axonflow import AxonFlow
 from axonflow.policies import (
     CreateStaticPolicyRequest,
-    ListStaticPoliciesOptions,
     PolicyCategory,
     PolicySeverity,
     PolicyAction,
-    PolicyTier,
 )
 
 
@@ -103,12 +101,9 @@ async def main():
             print(f"   Action: {admin_policy.action}")
 
             # 4. List all policies with require_approval action
-            # Filter by tenant tier to get our custom policies (system policies are on first page)
             print("\n4. Listing all HITL policies...")
 
-            all_policies = await client.list_static_policies(
-                ListStaticPoliciesOptions(tier=PolicyTier.TENANT)
-            )
+            all_policies = await client.list_static_policies()
             hitl_policies = [p for p in all_policies
                            if p.action == PolicyAction.REQUIRE_APPROVAL.value]
 
