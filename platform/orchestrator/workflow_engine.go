@@ -164,10 +164,10 @@ func (s *InMemoryWorkflowStorage) UpdateExecution(execution *WorkflowExecution) 
 
 // LLM Call Step Processor
 type LLMCallProcessor struct {
-	llmRouter *LLMRouter
+	llmRouter LLMRouterInterface
 }
 
-func NewLLMCallProcessor(router *LLMRouter) *LLMCallProcessor {
+func NewLLMCallProcessor(router LLMRouterInterface) *LLMCallProcessor {
 	return &LLMCallProcessor{llmRouter: router}
 }
 
@@ -505,7 +505,7 @@ func NewWorkflowEngine() *WorkflowEngine {
 }
 
 // InitializeWithDependencies sets up processors that need external dependencies
-func (e *WorkflowEngine) InitializeWithDependencies(router *LLMRouter, amadeusClient *AmadeusClient) {
+func (e *WorkflowEngine) InitializeWithDependencies(router LLMRouterInterface, amadeusClient *AmadeusClient) {
 	if router != nil {
 		e.stepProcessors["llm-call"] = NewLLMCallProcessor(router)
 	}

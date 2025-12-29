@@ -43,7 +43,16 @@
 # Development Dependencies (Not in Production)
 # ------------------------------------------------------------------------------
 
-# Add ignored CVEs here after review
+# Example code dependencies - not used in production
+# The spring-boot example uses com.theokanning.openai-gpt3-java which has
+# old transitive dependencies. This library is unmaintained.
+CVE-2021-0341   # okhttp 3.14.9 in openai-gpt3-java - example code only
+CVE-2020-25649  # jackson-databind in openai-gpt3-java - example code only
+CVE-2020-36518  # jackson-databind in openai-gpt3-java - example code only
+CVE-2021-46877  # jackson-databind in openai-gpt3-java - example code only
+CVE-2022-42003  # jackson-databind in openai-gpt3-java - example code only
+CVE-2022-42004  # jackson-databind in openai-gpt3-java - example code only
+CVE-2025-52999  # jackson-core in openai-gpt3-java - example code only
 
 # ------------------------------------------------------------------------------
 # False Positives

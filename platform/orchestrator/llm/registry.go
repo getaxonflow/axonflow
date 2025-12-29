@@ -220,6 +220,44 @@ func (r *Registry) RegisterProvider(name string, provider Provider, config *Prov
 	return nil
 }
 
+// Enable enables a provider for routing.
+func (r *Registry) Enable(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	config, exists := r.configs[name]
+	if !exists {
+		return &RegistryError{
+			ProviderName: name,
+			Code:         ErrRegistryNotFound,
+			Message:      fmt.Sprintf("provider %q not found", name),
+		}
+	}
+
+	config.Enabled = true
+	r.logger.Printf("Enabled provider: %s", name)
+	return nil
+}
+
+// Disable disables a provider (removes from routing).
+func (r *Registry) Disable(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	config, exists := r.configs[name]
+	if !exists {
+		return &RegistryError{
+			ProviderName: name,
+			Code:         ErrRegistryNotFound,
+			Message:      fmt.Sprintf("provider %q not found", name),
+		}
+	}
+
+	config.Enabled = false
+	r.logger.Printf("Disabled provider: %s", name)
+	return nil
+}
+
 // Unregister removes a provider from the registry.
 func (r *Registry) Unregister(ctx context.Context, name string) error {
 	r.mu.Lock()

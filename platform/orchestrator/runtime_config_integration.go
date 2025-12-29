@@ -150,17 +150,11 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 		case ProviderOpenAI:
 			if apiKey, ok := credentials["api_key"]; ok && apiKey != "" {
 				routerConfig.OpenAIKey = apiKey
-				if model, hasModel := providerConfig["model"].(string); hasModel && model != "" {
-					routerConfig.OpenAIModel = model
-				}
 				log.Printf("[LLM Config] OpenAI provider loaded from %s", source)
 			}
 		case ProviderAnthropic:
 			if apiKey, ok := credentials["api_key"]; ok && apiKey != "" {
 				routerConfig.AnthropicKey = apiKey
-				if model, hasModel := providerConfig["model"].(string); hasModel && model != "" {
-					routerConfig.AnthropicModel = model
-				}
 				log.Printf("[LLM Config] Anthropic provider loaded from %s", source)
 			}
 		case ProviderBedrock:

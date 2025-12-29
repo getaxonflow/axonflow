@@ -1084,6 +1084,122 @@ func TestLogSuccessfulRequest(t *testing.T) {
 	}
 }
 
+// TestLogSuccessfulRequestWithRedaction tests logging successful requests with redaction info
+func TestLogSuccessfulRequestWithRedaction(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+
+	req := OrchestratorRequest{
+		RequestID:   "test-req-redacted",
+		Query:       "Test query with SSN 123-45-6789",
+		RequestType: "test",
+		User: UserContext{
+			ID:       1,
+			Email:    "test@example.com",
+			Role:     "user",
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			ID: "test-client",
+		},
+	}
+
+	policyResult := &PolicyEvaluationResult{
+		Allowed:         true,
+		RiskScore:       0.5,
+		AppliedPolicies: []string{"pii_redaction_policy"},
+	}
+
+	providerInfo := &ProviderInfo{
+		Provider:       "openai",
+		Model:          "gpt-4",
+		ResponseTimeMs: 150,
+		TokensUsed:     100,
+		Cost:           0.005,
+	}
+
+	// Create context with redaction info
+	redactionInfo := &RedactionInfo{
+		HasRedactions:  true,
+		RedactedFields: []string{"ssn", "email"},
+		RedactionCount: 2,
+	}
+	ctx := context.WithValue(context.Background(), "redaction_info", redactionInfo)
+	entry := logger.LogSuccessfulRequest(ctx, req, "Test query with [REDACTED] [REDACTED]", policyResult, providerInfo)
+
+	// Verify redaction was applied
+	if entry.PolicyDecision != "redacted" {
+		t.Errorf("Expected policy decision 'redacted', got %q", entry.PolicyDecision)
+	}
+
+	if len(entry.RedactedFields) != 2 {
+		t.Errorf("Expected 2 redacted fields, got %d", len(entry.RedactedFields))
+	}
+
+	// Verify entry was queued
+	select {
+	case queuedEntry := <-logger.auditQueue:
+		if queuedEntry.RequestID != entry.RequestID {
+			t.Errorf("Queued entry request ID mismatch")
+		}
+	default:
+		t.Error("Entry was not queued")
+	}
+}
+
+// TestLogSuccessfulRequestWithEmptyRedaction tests logging with redaction info but no redactions
+func TestLogSuccessfulRequestWithEmptyRedaction(t *testing.T) {
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 100),
+		shutdownChan: make(chan struct{}),
+	}
+
+	req := OrchestratorRequest{
+		RequestID:   "test-req-no-redaction",
+		Query:       "Clean query without PII",
+		RequestType: "test",
+		User: UserContext{
+			ID:       1,
+			Email:    "test@example.com",
+			Role:     "user",
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			ID: "test-client",
+		},
+	}
+
+	policyResult := &PolicyEvaluationResult{
+		Allowed:         true,
+		RiskScore:       0.1,
+		AppliedPolicies: []string{"standard_policy"},
+	}
+
+	providerInfo := &ProviderInfo{
+		Provider:       "openai",
+		Model:          "gpt-4",
+		ResponseTimeMs: 100,
+		TokensUsed:     50,
+		Cost:           0.002,
+	}
+
+	// Create context with redaction info but no redactions
+	redactionInfo := &RedactionInfo{
+		HasRedactions:  false,
+		RedactedFields: []string{},
+		RedactionCount: 0,
+	}
+	ctx := context.WithValue(context.Background(), "redaction_info", redactionInfo)
+	entry := logger.LogSuccessfulRequest(ctx, req, "Clean response", policyResult, providerInfo)
+
+	// With no redactions, policy decision should remain "allowed"
+	if entry.PolicyDecision != "allowed" {
+		t.Errorf("Expected policy decision 'allowed', got %q", entry.PolicyDecision)
+	}
+}
+
 // TestLogBlockedRequest tests logging blocked requests
 func TestLogBlockedRequest(t *testing.T) {
 	logger := &AuditLogger{
@@ -1248,6 +1364,225 @@ func TestEnqueueEntry(t *testing.T) {
 			} else {
 				if queuedCount != tt.entriesToAdd {
 					t.Errorf("Expected %d entries to be queued, got %d", tt.entriesToAdd, queuedCount)
+				}
+			}
+		})
+	}
+}
+
+// TestProcessAuditQueue tests the audit queue processing
+func TestProcessAuditQueue(t *testing.T) {
+	t.Run("processes entries from queue", func(t *testing.T) {
+		logger := &AuditLogger{
+			auditQueue:   make(chan *AuditEntry, 10),
+			shutdownChan: make(chan struct{}),
+		}
+		logger.wg.Add(1)
+
+		// Start processing in background
+		go logger.processAuditQueue()
+
+		// Add some entries
+		for i := 0; i < 3; i++ {
+			logger.auditQueue <- &AuditEntry{
+				ID:        fmt.Sprintf("entry-%d", i),
+				RequestID: fmt.Sprintf("req-%d", i),
+				Timestamp: time.Now(),
+			}
+		}
+
+		// Give processor time to handle entries
+		time.Sleep(50 * time.Millisecond)
+
+		// Shutdown
+		close(logger.shutdownChan)
+		logger.wg.Wait()
+	})
+
+	t.Run("handles shutdown gracefully", func(t *testing.T) {
+		logger := &AuditLogger{
+			auditQueue:   make(chan *AuditEntry, 10),
+			shutdownChan: make(chan struct{}),
+		}
+		logger.wg.Add(1)
+
+		// Start processing in background
+		go logger.processAuditQueue()
+
+		// Immediate shutdown
+		close(logger.shutdownChan)
+
+		// Should complete without hanging
+		done := make(chan struct{})
+		go func() {
+			logger.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Error("processAuditQueue did not shut down within timeout")
+		}
+	})
+}
+
+// TestEnqueueEntryFullQueue tests queue full behavior with write
+func TestEnqueueEntryFullQueue(t *testing.T) {
+	// Create logger with very small queue
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 1),
+		shutdownChan: make(chan struct{}),
+		// batchWriter is nil, so direct write will be skipped but log message printed
+	}
+
+	// Fill the queue
+	logger.auditQueue <- &AuditEntry{ID: "fill"}
+
+	// This should trigger the "queue full" path
+	entry := &AuditEntry{
+		ID:        "overflow",
+		RequestID: "overflow-req",
+		Timestamp: time.Now(),
+	}
+
+	// Should not block - the entry will be dropped (logged)
+	done := make(chan struct{})
+	go func() {
+		logger.enqueueEntry(entry)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - didn't block
+	case <-time.After(100 * time.Millisecond):
+		t.Error("enqueueEntry blocked when queue was full")
+	}
+}
+
+// TestEnqueueEntryFullQueueWithBatchWriter tests queue full behavior with batchWriter
+func TestEnqueueEntryFullQueueWithBatchWriter(t *testing.T) {
+	// Create a batchWriter without a DB (will silently succeed)
+	batchWriter := &BatchWriter{
+		batchSize: 10,
+		entries:   make([]*AuditEntry, 0),
+	}
+
+	logger := &AuditLogger{
+		auditQueue:   make(chan *AuditEntry, 1),
+		shutdownChan: make(chan struct{}),
+		batchWriter:  batchWriter,
+	}
+
+	// Fill the queue
+	logger.auditQueue <- &AuditEntry{ID: "fill"}
+
+	// This should trigger the "queue full" path and call batchWriter.Write
+	entry := &AuditEntry{
+		ID:        "overflow",
+		RequestID: "overflow-req",
+		Timestamp: time.Now(),
+	}
+
+	// Should not block
+	done := make(chan struct{})
+	go func() {
+		logger.enqueueEntry(entry)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good - didn't block and should have written directly
+	case <-time.After(100 * time.Millisecond):
+		t.Error("enqueueEntry blocked when queue was full with batchWriter")
+	}
+}
+
+// TestDetectComplianceFlagsAdditional tests additional compliance flag detection cases
+func TestDetectComplianceFlagsAdditional(t *testing.T) {
+	logger := &AuditLogger{}
+
+	tests := []struct {
+		name          string
+		query         string
+		tenantID      string
+		expectedFlags []string
+	}{
+		{
+			name:          "HIPAA patient query",
+			query:         "Get patient records",
+			expectedFlags: []string{"hipaa_relevant"},
+		},
+		{
+			name:          "HIPAA medical query",
+			query:         "Retrieve medical history",
+			expectedFlags: []string{"hipaa_relevant"},
+		},
+		{
+			name:          "SOX account query",
+			query:         "Get account balance",
+			expectedFlags: []string{"sox_relevant"},
+		},
+		{
+			name:          "SOX transaction query",
+			query:         "Process transaction",
+			expectedFlags: []string{"sox_relevant"},
+		},
+		{
+			name:          "PII with SSN",
+			query:         "Get SSN details",
+			expectedFlags: []string{"pii_access"},
+		},
+		{
+			name:          "PII with email",
+			query:         "Get user email",
+			expectedFlags: []string{"pii_access"},
+		},
+		{
+			name:          "PII with credit_card",
+			query:         "Process credit_card payment",
+			expectedFlags: []string{"pii_access"},
+		},
+		{
+			name:          "no compliance flags",
+			query:         "Hello, how are you?",
+			expectedFlags: []string{},
+		},
+		{
+			name:          "multiple flags - hipaa and sox",
+			query:         "Get patient account details",
+			expectedFlags: []string{"hipaa_relevant", "sox_relevant"},
+		},
+		{
+			name:          "GDPR applicable for EU tenant",
+			query:         "Get data",
+			tenantID:      "eu_tenant_123",
+			expectedFlags: []string{"gdpr_applicable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := OrchestratorRequest{
+				Query: tt.query,
+				User:  UserContext{TenantID: tt.tenantID},
+			}
+			flags := logger.detectComplianceFlags(req, nil)
+
+			// Check all expected flags are present
+			for _, expectedFlag := range tt.expectedFlags {
+				found := false
+				for _, flag := range flags {
+					if flag == expectedFlag {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected flag %q not found in %v", expectedFlag, flags)
 				}
 			}
 		})

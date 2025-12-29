@@ -17,9 +17,12 @@ Configure routing via environment variables on the AxonFlow Orchestrator:
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `LLM_ROUTING_STRATEGY` | `weighted`, `round_robin`, `failover` | `weighted` | Routing strategy |
+| `LLM_ROUTING_STRATEGY` | `weighted`, `round_robin`, `failover`, `cost_optimized`* | `weighted` | Routing strategy |
 | `PROVIDER_WEIGHTS` | `openai:50,anthropic:30,bedrock:20` | Equal weights | Provider distribution |
 | `DEFAULT_LLM_PROVIDER` | `bedrock`, `openai`, etc. | None | Primary provider for failover |
+| `PROVIDER_COSTS`* | `ollama:0,bedrock:0.02,openai:0.03` | See defaults | Cost per 1K tokens |
+
+\* Enterprise only
 
 ## Routing Strategies
 
@@ -51,6 +54,22 @@ DEFAULT_LLM_PROVIDER=bedrock
 # Always uses Bedrock, falls back to others if unhealthy
 ```
 
+### Cost Optimized (Enterprise)
+
+Automatically routes to the cheapest healthy provider:
+
+```bash
+LLM_ROUTING_STRATEGY=cost_optimized
+PROVIDER_COSTS=ollama:0,bedrock:0.02,anthropic:0.025,openai:0.03
+# Selects cheapest healthy provider automatically
+```
+
+Default costs (if `PROVIDER_COSTS` not set):
+- ollama: $0.00 (self-hosted)
+- bedrock: $0.02
+- anthropic/gemini: $0.025
+- openai: $0.03
+
 ## Examples
 
 Each example demonstrates:
@@ -59,6 +78,16 @@ Each example demonstrates:
 2. **Provider preference** - Request a specific provider
 3. **Model override** - Specify exact model to use
 4. **Health checking** - Query provider availability
+
+### HTTP (curl)
+
+No SDK required - direct HTTP calls:
+
+```bash
+cd http
+chmod +x provider-routing.sh
+AXONFLOW_ENDPOINT=http://localhost:8080 ./provider-routing.sh
+```
 
 ### TypeScript
 
@@ -126,12 +155,21 @@ DEFAULT_LLM_PROVIDER=bedrock
 PROVIDER_WEIGHTS=bedrock:100
 ```
 
-### Cost Optimization
+### Cost Optimization (Community)
 
-Prefer cheaper providers:
+Prefer cheaper providers via weights:
 
 ```bash
 PROVIDER_WEIGHTS=bedrock:60,anthropic:30,openai:10
+```
+
+### Cost Optimization (Enterprise)
+
+Automatic cheapest provider selection:
+
+```bash
+LLM_ROUTING_STRATEGY=cost_optimized
+PROVIDER_COSTS=ollama:0,bedrock:0.02,anthropic:0.025,openai:0.03
 ```
 
 ### High Availability
