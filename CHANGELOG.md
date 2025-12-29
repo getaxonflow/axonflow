@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **LLM Router Interface Abstraction (ADR-022 Phase 6)**: Components now depend on standard interface rather than concrete implementations
+- **LLM Router Interface Abstraction**: Components now depend on standard interface rather than concrete implementations
   - `LLMRouterInterface` - Standard interface for router abstraction
   - `UnifiedRouterWrapper` - Adapter enabling UnifiedRouter as drop-in LLMRouter replacement
   - Type conversion utilities between legacy and new router types
