@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.0] - 2025-12-30
+
+### Changed
+
+- **LLM Router Consolidation**: Completed migration to interface-based router architecture
+  - Removed legacy `LLMRouter` concrete implementation (~1,700 lines)
+  - All routing now through `LLMRouterInterface` abstraction introduced in v2.2.0
+  - Cleaner codebase with single routing implementation path
+
+- **Docker Compose Architecture**: Simplified deployment configuration
+  - `docker-compose.yml` now serves as Community base configuration
+  - Enterprise features available via overlay pattern
+
+- **Default Anthropic Model**: Updated to `claude-sonnet-4-20250514` (Claude 4)
+
+### Added
+
+- **LLM Provider E2E Tests**: Comprehensive end-to-end test suite
+  - Coverage for OpenAI, Anthropic, Google Gemini, and AWS Bedrock
+  - Multi-language test implementations (Go, Python, TypeScript, Java)
+
+### Removed
+
+- `llm_router.go` - Superseded by `UnifiedRouterWrapper`
+- `llm_routing_strategy.go` - Consolidated into unified router
+- Legacy router test files
+
+---
+
 ## [2.2.0] - 2025-12-29
 
 ### Added
