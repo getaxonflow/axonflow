@@ -3,6 +3,9 @@ import { AIRequest } from '../types';
 
 /**
  * Interceptor for Anthropic Claude API calls
+ *
+ * @deprecated TypeScript interceptors are deprecated as of SDK v1.4.0 and will be removed in v2.0.0.
+ * Use Gateway Mode or Proxy Mode instead. See https://docs.getaxonflow.com/docs/sdk/gateway-mode
  */
 export class AnthropicInterceptor extends BaseInterceptor {
   canHandle(aiCall: any): boolean {
@@ -47,8 +50,20 @@ export class AnthropicInterceptor extends BaseInterceptor {
 
 /**
  * Helper to wrap Anthropic client for easier interception
+ *
+ * @deprecated TypeScript interceptors are deprecated as of SDK v1.4.0 and will be removed in v2.0.0.
+ * Modern LLM SDKs (OpenAI v4+, Anthropic v0.20+) use ES2022 private class fields which are
+ * incompatible with JavaScript Proxy-based wrapping.
+ *
+ * Use Gateway Mode or Proxy Mode instead:
+ * - Gateway Mode: https://docs.getaxonflow.com/docs/sdk/gateway-mode
+ * - Proxy Mode: https://docs.getaxonflow.com/docs/sdk/proxy-mode
  */
 export function wrapAnthropicClient(anthropicClient: any, axonflow: any): any {
+  console.warn(
+    '[AxonFlow] DEPRECATION WARNING: wrapAnthropicClient is deprecated as of SDK v1.4.0 and will be removed in v2.0.0. ' +
+    'Use Gateway Mode or Proxy Mode instead. See https://docs.getaxonflow.com/docs/sdk/gateway-mode'
+  );
   // Create a proxy that intercepts method calls
   return new Proxy(anthropicClient, {
     get(target, prop, receiver) {
