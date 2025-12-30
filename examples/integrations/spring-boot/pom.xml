@@ -41,8 +41,8 @@
         <!-- AxonFlow SDK -->
         <dependency>
             <groupId>com.getaxonflow</groupId>
-            <artifactId>axonflow-sdk</artifactId>
-            <version>1.6.0</version>
+            <artifactId>axonflow-sdk-java</artifactId>
+            <version>1.7.0</version>
         </dependency>
 
         <!-- OpenAI for Gateway Mode demo -->

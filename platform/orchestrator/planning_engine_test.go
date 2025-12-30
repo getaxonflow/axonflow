@@ -15,6 +15,7 @@ import (
 	"axonflow/platform/shared/logger"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -23,9 +24,7 @@ import (
 
 // TestNewPlanningEngine tests planning engine initialization
 func TestNewPlanningEngine(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 
 	engine := NewPlanningEngine(router)
 
@@ -56,9 +55,7 @@ func TestNewPlanningEngine(t *testing.T) {
 
 // TestDomainTemplates tests domain template initialization
 func TestDomainTemplates(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -98,9 +95,7 @@ func TestDomainTemplates(t *testing.T) {
 
 // TestHeuristicAnalysis tests the heuristic fallback analysis
 func TestHeuristicAnalysis(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -176,9 +171,7 @@ func TestHeuristicAnalysis(t *testing.T) {
 
 // TestParseAnalysisResponse tests JSON parsing of LLM analysis
 func TestParseAnalysisResponse(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -242,9 +235,7 @@ func TestParseAnalysisResponse(t *testing.T) {
 
 // TestBuildAnalysisPrompt tests analysis prompt generation
 func TestBuildAnalysisPrompt(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	query := "Plan a trip to Tokyo"
@@ -273,9 +264,7 @@ func TestBuildAnalysisPrompt(t *testing.T) {
 
 // TestGenerateTemplateWorkflow tests template-based workflow generation
 func TestGenerateTemplateWorkflow(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -351,9 +340,7 @@ func TestGenerateTemplateWorkflow(t *testing.T) {
 
 // TestBuildSynthesisPrompt tests domain-specific synthesis prompts
 func TestBuildSynthesisPrompt(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -393,9 +380,7 @@ func TestBuildSynthesisPrompt(t *testing.T) {
 
 // TestEnhanceSynthesisSteps tests synthesis step enhancement
 func TestEnhanceSynthesisSteps(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	workflow := &Workflow{
@@ -424,9 +409,7 @@ func TestEnhanceSynthesisSteps(t *testing.T) {
 
 // TestCreateTaskStep tests task step creation
 func TestCreateTaskStep(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -490,9 +473,7 @@ func TestCreateTaskStep(t *testing.T) {
 
 // TestConvertToAmadeusConnectorCalls tests Amadeus connector conversion
 func TestConvertToAmadeusConnectorCalls(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	workflow := &Workflow{
@@ -538,9 +519,7 @@ func TestConvertToAmadeusConnectorCalls(t *testing.T) {
 
 // TestExtractFlightParameters tests flight parameter extraction
 func TestExtractFlightParameters(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -594,9 +573,7 @@ func TestExtractFlightParameters(t *testing.T) {
 
 // TestExtractLocation tests location extraction
 func TestExtractLocation(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -623,9 +600,7 @@ func TestExtractLocation(t *testing.T) {
 
 // TestIsKnownCity tests city validation
 func TestIsKnownCity(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -653,9 +628,7 @@ func TestIsKnownCity(t *testing.T) {
 
 // TestParseNumber tests number parsing from strings
 func TestParseNumber(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -684,9 +657,7 @@ func TestParseNumber(t *testing.T) {
 
 // TestExtractHotelParameters tests hotel parameter extraction
 func TestExtractHotelParameters(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -747,9 +718,7 @@ func TestExtractHotelParameters(t *testing.T) {
 
 // TestIsAmadeusConfigured tests Amadeus configuration check
 func TestIsAmadeusConfigured(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	// Save original env vars
@@ -784,9 +753,7 @@ func TestIsAmadeusConfigured(t *testing.T) {
 
 // TestOptimizeExecutionMode tests execution mode optimization
 func TestOptimizeExecutionMode(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	workflow := &Workflow{
@@ -821,19 +788,24 @@ func TestOptimizeExecutionMode(t *testing.T) {
 
 // TestPlanningEngineIsHealthy tests planning engine health check
 func TestPlanningEngineIsHealthy(t *testing.T) {
+	healthyRouter := NewMockLLMRouter()
+	unhealthyRouter := NewMockLLMRouter()
+	unhealthyRouter.Healthy = false
+
 	tests := []struct {
 		name     string
 		router   LLMRouterInterface
 		expected bool
 	}{
 		{
-			name: "Healthy router",
-			router: &LLMRouter{
-				providers: map[string]LLMProvider{
-					"test": &TestMockProvider{healthy: true},
-				},
-			},
+			name:     "Healthy router",
+			router:   healthyRouter,
 			expected: true,
+		},
+		{
+			name:     "Unhealthy router",
+			router:   unhealthyRouter,
+			expected: false,
 		},
 		{
 			name:     "Nil router",
@@ -862,19 +834,8 @@ func TestPlanningEngineIsHealthy(t *testing.T) {
 func TestGeneratePlanWithMockLLM(t *testing.T) {
 	// Create mock LLM router with fallback to heuristic analysis
 	// Since LLM will fail, the planning engine will use heuristics
-	mockProvider := &TestMockProvider{
-		healthy:    true,
-		shouldFail: true,
-	}
-
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-
-	router := NewLLMRouter(config)
-	router.providers["mock"] = mockProvider
-	router.weights["mock"] = 1.0
-	router.loadBalancer = NewLoadBalancer()
+	router := NewMockLLMRouter()
+	router.RouteError = fmt.Errorf("mock LLM failure")
 
 	engine := NewPlanningEngine(router)
 
@@ -918,9 +879,7 @@ func TestGeneratePlanWithMockLLM(t *testing.T) {
 
 // TestBuildTaskPrompt tests task-specific prompt generation
 func TestBuildTaskPrompt(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -969,9 +928,7 @@ func TestBuildTaskPrompt(t *testing.T) {
 
 // TestParseWorkflowResponse tests workflow JSON parsing
 func TestParseWorkflowResponse(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	validWorkflow := Workflow{
@@ -1051,9 +1008,7 @@ func TestParseWorkflowResponse(t *testing.T) {
 
 // TestApplyExecutionMode tests execution mode application
 func TestApplyExecutionMode(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	workflow := &Workflow{
@@ -1071,9 +1026,7 @@ func TestApplyExecutionMode(t *testing.T) {
 
 // TestNewPlanningEngineWithConfigDir tests creating engine from a config directory
 func TestNewPlanningEngineWithConfigDir(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 
 	t.Run("empty config dir uses default templates", func(t *testing.T) {
 		engine, err := NewPlanningEngineWithConfigDir(router, "")
@@ -1115,9 +1068,7 @@ func TestNewPlanningEngineWithConfigDir(t *testing.T) {
 
 // TestGetAgentRegistry tests the GetAgentRegistry method
 func TestGetAgentRegistry(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	registry := engine.GetAgentRegistry()
@@ -1131,9 +1082,7 @@ func TestGetAgentRegistry(t *testing.T) {
 
 // TestReloadAgentConfigs tests config reloading
 func TestReloadAgentConfigs(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 
 	t.Run("returns error when registry is nil", func(t *testing.T) {
 		engine := &PlanningEngine{
@@ -1164,9 +1113,7 @@ func TestReloadAgentConfigs(t *testing.T) {
 
 // TestTryLoadAgentConfigs tests the config loading from standard paths
 func TestTryLoadAgentConfigs(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	// Should return false when no standard paths exist
@@ -1177,9 +1124,7 @@ func TestTryLoadAgentConfigs(t *testing.T) {
 
 // TestGetDomainTemplateFromRegistry tests getDomainTemplate with registry
 func TestGetDomainTemplateFromRegistry(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -1210,9 +1155,7 @@ func TestGetDomainTemplateFromRegistry(t *testing.T) {
 
 // TestInitializeTemplates tests the template initialization
 func TestInitializeTemplates(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := &PlanningEngine{
 		llmRouter: router,
 		templates: make(map[string]*DomainTemplate),
@@ -1264,9 +1207,7 @@ func TestInitializeTemplates(t *testing.T) {
 
 // TestBuildSynthesisPromptWithDifferentInputs tests buildSynthesisPrompt with various inputs
 func TestBuildSynthesisPromptWithDifferentInputs(t *testing.T) {
-	router := &LLMRouter{
-		providers: make(map[string]LLMProvider),
-	}
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	tests := []struct {
@@ -1316,20 +1257,8 @@ func TestBuildSynthesisPromptWithDifferentInputs(t *testing.T) {
 
 // TestGenerateWorkflowDefinitionEdgeCases tests generateWorkflowDefinition with edge cases
 func TestGenerateWorkflowDefinitionEdgeCases(t *testing.T) {
-	// Create a mock provider for testing
-	mockProvider := &MockProvider{
-		name:    "mock",
-		healthy: true,
-	}
-
-	router := &LLMRouter{
-		providers: map[string]LLMProvider{
-			"mock": mockProvider,
-		},
-		loadBalancer:   NewLoadBalancer(),
-		metricsTracker: NewProviderMetricsTracker(),
-		weights:        map[string]float64{"mock": 1.0},
-	}
+	// Create a mock router for testing
+	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)
 
 	ctx := context.Background()

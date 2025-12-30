@@ -1,29 +1,24 @@
-# AxonFlow Local Development Environment
+# AxonFlow Local Development Environment (Community Edition)
 # Fast feedback loop for testing changes locally before deploying to AWS
-# Replaces 2-4 hour AWS test cycle with 5-10 minute local cycle
 #
 # Usage:
-#   docker-compose up -d                              # Start Community services (agent, orchestrator)
-#   docker-compose --profile enterprise up -d         # Start all services including enterprise
-#   docker-compose logs -f axonflow-agent             # Follow agent logs
-#   docker-compose down -v                            # Stop and remove volumes
+#   docker compose up -d                    # Start all Community services
+#   docker compose logs -f axonflow-agent   # Follow agent logs
+#   docker compose down -v                  # Stop and remove volumes
 #
-# Community Services (always started):
-#   - PostgreSQL: localhost:5432 (axonflow, grafana databases)
-#   - Redis: localhost:6379 (caching)
+# For Enterprise features (Bedrock, Customer Portal, etc.):
+#   See docker-compose.enterprise.yml
+#
+# Services:
+#   - PostgreSQL: localhost:5432
+#   - Redis: localhost:6379
 #   - Agent: localhost:8080
 #   - Orchestrator: localhost:8081
 #   - Prometheus: localhost:9090
 #   - Grafana: localhost:3000 (admin/grafana_localdev456)
-#
-# Enterprise Services (--profile enterprise):
-#   - Customer Portal: localhost:8082
 
 services:
   # PostgreSQL Database - Core platform storage
-  # Creates both 'axonflow' and 'grafana' databases on first run
-  # The grafana user/database is created via POSTGRES_INITDB_ARGS for Community compatibility
-  # (Enterprise uses migration 107 instead, but Community needs inline setup)
   postgres:
     image: postgres:15-alpine
     container_name: axonflow-postgres
@@ -41,11 +36,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s  # Grace period for first-run initialization
+      start_period: 30s
     networks:
       - axonflow-network
 
-  # Redis - Rate limiting and caching (optional but recommended)
+  # Redis - Rate limiting and caching
   redis:
     image: redis:7-alpine
     container_name: axonflow-redis
@@ -57,22 +52,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s  # Grace period for Redis startup
+      start_period: 10s
     networks:
       - axonflow-network
 
-  # AxonFlow Agent
-  # Runs database migrations and handles MCP queries
+  # AxonFlow Agent - Runs migrations and handles MCP queries
   axonflow-agent:
     build:
       context: .
       dockerfile: platform/agent/Dockerfile
       args:
-        EDITION: oss
+        EDITION: community
     container_name: axonflow-agent
     restart: unless-stopped
     environment:
-      # Database Configuration (matches AWS deployment format)
+      # Database Configuration
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_NAME: axonflow
@@ -83,41 +77,43 @@ services:
       # Grafana Password (for migration 017_grafana_database.sql)
       GRAFANA_PASSWORD: grafana_localdev456
 
-      # License (test key for local development)
-      AXONFLOW_LICENSE_KEY: AXON-LOCAL-testorg-20250101-testkey12345
+      # Organization
       ORG_ID: local-dev-org
 
-      # Optional: LLM API Keys (can be set in .env file)
+      # LLM API Keys (set in .env file or environment)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-}
+
+      # Ollama (local LLM)
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+
+      # LLM Routing Configuration
+      LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
+      PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
 
       # Service configuration
       PORT: 8080
       SELF_HOSTED_MODE: "true"
       SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
       ENVIRONMENT: "development"
-      # DEPLOYMENT_MODE defaults to "community" - can be overridden via .env or env var
-      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
+      DEPLOYMENT_MODE: community
       LOG_LEVEL: debug
 
-      # SQL Injection Scanner Configuration
-      # SQLI_SCANNER_MODE: off, basic, advanced (default: basic)
-      # SQLI_BLOCK_MODE: block, warn (default: block)
+      # SQL Injection Scanner
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
       SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
-      # Redis (optional)
+      # Redis
       REDIS_URL: redis://redis:6379
 
-      # Orchestrator URL (required for Proxy Mode to forward requests)
+      # Orchestrator URL (for Proxy Mode)
       ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
 
-      # Internal service authentication (shared secret between agent and orchestrator)
-      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
-
-      # MCP Connector configuration file
+      # MCP Connector configuration
       AXONFLOW_CONFIG_FILE: /config/axonflow.yaml
     volumes:
       - ./config/axonflow.yaml:/config/axonflow.yaml:ro
@@ -137,18 +133,17 @@ services:
     networks:
       - axonflow-network
 
-  # AxonFlow Orchestrator
-  # Handles LLM orchestration and policy enforcement
+  # AxonFlow Orchestrator - LLM routing and policy enforcement
   axonflow-orchestrator:
     build:
       context: .
       dockerfile: platform/orchestrator/Dockerfile
       args:
-        EDITION: oss
+        EDITION: community
     container_name: axonflow-orchestrator
     restart: unless-stopped
     environment:
-      # Database Configuration (matches AWS deployment format)
+      # Database Configuration
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_NAME: axonflow
@@ -156,8 +151,7 @@ services:
       DATABASE_PASSWORD: localdev123
       DATABASE_SSLMODE: disable
 
-      # License
-      AXONFLOW_LICENSE_KEY: AXON-LOCAL-testorg-20250101-testkey12345
+      # Organization
       ORG_ID: local-dev-org
 
       # LLM API Keys and Models
@@ -167,12 +161,14 @@ services:
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-}
+
+      # Ollama (local LLM)
+      OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       LOCAL_LLM_ENDPOINT: ${LOCAL_LLM_ENDPOINT:-}
 
-      # LLM Routing Configuration (Phase 1: Community)
-      # LLM_ROUTING_STRATEGY: "weighted" (default), "round_robin", or "failover"
-      # PROVIDER_WEIGHTS: "openai:50,anthropic:30,bedrock:20" or "bedrock:100"
-      # DEFAULT_LLM_PROVIDER: fallback provider for failover strategy
+      # LLM Routing Configuration
+      # Strategies: "weighted" (default), "round_robin", "failover"
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
       DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
@@ -180,14 +176,10 @@ services:
       # Service configuration
       PORT: 8081
       LOG_LEVEL: debug
-      # DEPLOYMENT_MODE determines license tier (community, saas, enterprise, banking, etc.)
-      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
+      DEPLOYMENT_MODE: community
 
-      # Agent MCP endpoint for MCP query routing
+      # Agent MCP endpoint
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
-
-      # Internal service authentication (shared secret between agent and orchestrator)
-      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
     ports:
       - "8081:8081"
     depends_on:
@@ -202,54 +194,7 @@ services:
     networks:
       - axonflow-network
 
-  # AxonFlow Customer Portal (Enterprise only)
-  # API for customer onboarding and management
-  # Requires: --profile enterprise
-  axonflow-customer-portal:
-    profiles:
-      - enterprise
-    build:
-      context: .
-      dockerfile: ee/platform/customer-portal/Dockerfile
-      args:
-        EDITION: enterprise
-    container_name: axonflow-customer-portal
-    restart: unless-stopped
-    environment:
-      # Database Configuration (matches AWS deployment format)
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_NAME: axonflow
-      DATABASE_USER: axonflow
-      DATABASE_PASSWORD: localdev123
-      DATABASE_SSLMODE: disable
-
-      # Organization
-      ORG_ID: local-dev-org
-      TIER: Professional
-
-      # Service configuration
-      PORT: 8080
-      LOG_LEVEL: debug
-
-      # Internal service URLs (Docker DNS names)
-      AGENT_URL: http://axonflow-agent:8080
-      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
-    ports:
-      - "8082:8080"
-    depends_on:
-      axonflow-agent:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    networks:
-      - axonflow-network
-
-  # Prometheus - Metrics collection and monitoring
+  # Prometheus - Metrics collection
   prometheus:
     image: prom/prometheus:v2.48.0
     container_name: axonflow-prometheus
@@ -273,31 +218,22 @@ services:
       timeout: 5s
       retries: 3
 
-  # Grafana - Metrics visualization and dashboards
+  # Grafana - Metrics visualization
   # Login: admin / grafana_localdev456
-  # Dashboards auto-provisioned from config/grafana/dashboards/
-  # Prometheus datasource auto-configured from config/grafana/provisioning/datasources/
   grafana:
     image: grafana/grafana:10.2.2
     container_name: axonflow-grafana
     restart: unless-stopped
     environment:
-      # Admin credentials
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: grafana_localdev456
-
-      # Database configuration (use grafana database in PostgreSQL)
       GF_DATABASE_TYPE: postgres
       GF_DATABASE_HOST: postgres:5432
       GF_DATABASE_NAME: grafana
       GF_DATABASE_USER: grafana
       GF_DATABASE_PASSWORD: grafana_localdev456
       GF_DATABASE_SSL_MODE: disable
-
-      # Server configuration
       GF_SERVER_ROOT_URL: http://localhost:3000
-
-      # Plugins (none required for base functionality)
       GF_INSTALL_PLUGINS: ""
     ports:
       - "3000:3000"

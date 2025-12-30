@@ -1,9 +1,9 @@
 # Multi-stage build for AxonFlow Agent
 FROM golang:1.25-alpine AS builder
 
-# Build argument for edition (oss or enterprise)
-# Default to oss - enterprise builds must explicitly set EDITION=enterprise
-ARG EDITION=oss
+# Build argument for edition (community or enterprise)
+# Default to community - enterprise builds must explicitly set EDITION=enterprise
+ARG EDITION=community
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -17,11 +17,11 @@ COPY platform/go.mod platform/go.sum* ./
 # Download dependencies
 RUN go mod download
 
-# Copy all source code from platform directory (OSS core code)
+# Copy all source code from platform directory (Community core code)
 COPY platform/ .
 
-# For enterprise builds from enterprise repo, copy ee/ code to overlay OSS stubs
-# ADR-013: Enterprise repo always has ee/, OSS repo doesn't have ee/
+# For enterprise builds from enterprise repo, copy ee/ code to overlay Community stubs
+# ADR-013: Enterprise repo always has ee/, Community repo doesn't have ee/
 # IMPORTANT: Only copy EE code for EDITION=enterprise to avoid dependency issues
 # The EE code has dependencies (AWS SDK) not in platform/go.mod
 RUN --mount=type=bind,source=.,target=/src \
@@ -74,12 +74,12 @@ RUN --mount=type=bind,source=.,target=/src \
     elif [ "$EDITION" = "enterprise" ]; then \
       echo "ERROR: Enterprise build requested but ee/ directory not found" && exit 1; \
     else \
-      echo "=== OSS build: using stub implementations ==="; \
+      echo "=== Community build: using stub implementations ==="; \
     fi
 
 # Build the agent binary from cmd/agent entry point
 # For enterprise builds, include the enterprise tag
-# For OSS builds, no tag is needed (uses OSS stubs)
+# For Community builds, no tag is needed (uses Community stubs)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/agent ./cmd/agent

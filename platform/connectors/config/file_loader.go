@@ -383,7 +383,7 @@ llm_providers:
     enabled: false  # Enable when API key is available
     display_name: "Anthropic"
     config:
-      model: ${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
+      model: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
       max_tokens: 8192
     credentials:
       api_key: ${ANTHROPIC_API_KEY}

@@ -1,9 +1,9 @@
 # Multi-stage build for AxonFlow Orchestrator
 FROM golang:1.25-alpine AS builder
 
-# Build argument for edition (oss or enterprise)
-# Default to oss - enterprise builds must explicitly set EDITION=enterprise
-ARG EDITION=oss
+# Build argument for edition (community or enterprise)
+# Default to community - enterprise builds must explicitly set EDITION=enterprise
+ARG EDITION=community
 
 # Install git for go modules
 RUN apk add --no-cache git ca-certificates tzdata
@@ -17,12 +17,12 @@ COPY platform/go.mod platform/go.sum* ./
 # Download dependencies
 RUN go mod download
 
-# Copy all source code from platform directory (OSS core code)
+# Copy all source code from platform directory (Community core code)
 COPY platform/ .
 
 # For enterprise builds from enterprise repo, copy ee/ agent code
 # The orchestrator imports agent/node_enforcement which needs enterprise code
-# ADR-013: Enterprise repo always has ee/, OSS repo doesn't have ee/
+# ADR-013: Enterprise repo always has ee/, Community repo doesn't have ee/
 RUN --mount=type=bind,source=.,target=/src \
     if [ "$EDITION" = "enterprise" ] && [ -d "/src/ee/platform/agent/node_enforcement" ]; then \
       echo "=== Enterprise build: copying EE agent code for orchestrator ===" && \
@@ -45,19 +45,24 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/orchestrator/euaiact/* ./orchestrator/euaiact/ && \
         echo "EU AI Act compliance module copied"; \
       fi && \
+      if [ -d "/src/ee/platform/orchestrator/llmadapters" ]; then \
+        mkdir -p ./orchestrator/llmadapters/ && \
+        cp -r /src/ee/platform/orchestrator/llmadapters/* ./orchestrator/llmadapters/ && \
+        echo "LLM Adapters module copied (Bedrock support)"; \
+      fi && \
       echo "=== Downloading enterprise dependencies ===" && \
       go get github.com/aws/aws-sdk-go-v2/service/marketplacemetering@latest && \
       echo "Enterprise dependencies downloaded"; \
     elif [ "$EDITION" = "enterprise" ]; then \
       echo "ERROR: Enterprise build requested but ee/ directory not found" && exit 1; \
     else \
-      echo "=== OSS build: using stub implementations ==="; \
+      echo "=== Community build: using stub implementations ==="; \
     fi
 
 # Build the orchestrator binary from cmd/orchestrator entry point
 # The orchestrator package is imported as a library by cmd/orchestrator/main.go
 # For enterprise builds, include the enterprise tag
-# For OSS builds, no tag is needed (uses OSS stubs)
+# For Community builds, no tag is needed (uses Community stubs)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/orchestrator ./cmd/orchestrator
@@ -66,7 +71,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
 # Directory structure: migrations/core/, migrations/enterprise/, migrations/industry/
 #
 # Build simplicity: Each repo only contains its own migrations
-# - OSS repo: Only has migrations/core/
+# - Community repo: Only has migrations/core/
 # - Enterprise repo: Has migrations/core/, migrations/enterprise/, migrations/industry/
 # Just copy what exists - no conditional logic needed
 FROM alpine:3.22 AS migrations-prep

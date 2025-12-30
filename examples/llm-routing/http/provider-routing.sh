@@ -1,8 +1,16 @@
 #!/bin/bash
 # LLM Provider Routing Examples - Direct HTTP/curl
 #
-# This script demonstrates LLM provider routing using direct HTTP calls.
-# No SDK required - works with any HTTP client.
+# This script demonstrates how AxonFlow routes requests to LLM providers.
+# Provider selection is controlled SERVER-SIDE via environment variables,
+# not per-request. This ensures consistent routing policies across your org.
+#
+# Server-side configuration (environment variables):
+#   LLM_ROUTING_STRATEGY=weighted|round_robin|failover|cost_optimized*
+#   PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20
+#   DEFAULT_LLM_PROVIDER=openai
+#
+# * cost_optimized is Enterprise only
 #
 # Prerequisites:
 #   - AxonFlow Agent running at http://localhost:8080
@@ -28,6 +36,10 @@ NC='\033[0m' # No Color
 echo "=== LLM Provider Routing Examples (HTTP) ==="
 echo ""
 echo "Agent URL: $AGENT_URL"
+echo ""
+echo "Provider selection is server-side. Configure via environment variables:"
+echo "  LLM_ROUTING_STRATEGY=weighted"
+echo "  PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20"
 echo ""
 
 # Helper function for making requests
@@ -57,8 +69,8 @@ make_request() {
     echo ""
 }
 
-# Example 1: Default routing (server decides provider)
-echo "1. Default routing (server decides provider):"
+# Example 1: Send a request (server decides which provider to use)
+echo "1. Send request (server routes based on configured strategy):"
 make_request "   Sending query..." '{
     "query": "What is 2 + 2? Answer with just the number.",
     "user_token": "demo-user",
@@ -66,76 +78,26 @@ make_request "   Sending query..." '{
     "request_type": "llm_chat"
 }'
 
-# Example 2: Request Ollama (local provider)
-echo "2. Request specific provider (Ollama):"
-make_request "   Sending query to Ollama..." '{
-    "query": "What is the capital of France? Answer in one word.",
-    "user_token": "demo-user",
-    "client_id": "http-example",
-    "request_type": "llm_chat",
-    "context": {
-        "provider": "ollama"
-    }
-}'
+# Example 2: Multiple requests show distribution based on weights
+echo "2. Multiple requests (observe provider distribution):"
+for i in 1 2 3; do
+    make_request "   Request $i..." "{
+        \"query\": \"Question $i: What is the capital of France?\",
+        \"user_token\": \"demo-user\",
+        \"client_id\": \"http-example\",
+        \"request_type\": \"llm_chat\"
+    }"
+done
 
-# Example 3: Request with specific model
-echo "3. Request with specific model override:"
-make_request "   Sending query with model override..." '{
-    "query": "What is machine learning? Answer in one sentence.",
-    "user_token": "demo-user",
-    "client_id": "http-example",
-    "request_type": "llm_chat",
-    "context": {
-        "provider": "ollama",
-        "model": "tinyllama"
-    }
-}'
-
-# Example 4: Request OpenAI (if configured)
-echo "4. Request OpenAI provider:"
-make_request "   Sending query to OpenAI..." '{
-    "query": "What is Python? Answer in one sentence.",
-    "user_token": "demo-user",
-    "client_id": "http-example",
-    "request_type": "llm_chat",
-    "context": {
-        "provider": "openai"
-    }
-}'
-
-# Example 5: Request Anthropic (if configured)
-echo "5. Request Anthropic provider:"
-make_request "   Sending query to Anthropic..." '{
-    "query": "What is JavaScript? Answer in one sentence.",
-    "user_token": "demo-user",
-    "client_id": "http-example",
-    "request_type": "llm_chat",
-    "context": {
-        "provider": "anthropic"
-    }
-}'
-
-# Example 6: Request Gemini (if configured)
-echo "6. Request Google Gemini provider:"
-make_request "   Sending query to Gemini..." '{
-    "query": "What is Go programming language? Answer in one sentence.",
-    "user_token": "demo-user",
-    "client_id": "http-example",
-    "request_type": "llm_chat",
-    "context": {
-        "provider": "gemini"
-    }
-}'
-
-# Example 7: Health check
-echo "7. Health check:"
+# Example 3: Health check
+echo "3. Health check:"
 health=$(curl -s "$AGENT_URL/health")
 status=$(echo "$health" | jq -r '.status')
 echo -e "   Status: ${GREEN}$status${NC}"
 echo ""
 
-# Example 8: Gateway Mode (Pre-check + Audit)
-echo "8. Gateway Mode (Pre-check + Audit):"
+# Example 4: Gateway Mode (Pre-check + Audit)
+echo "4. Gateway Mode (Pre-check + Audit):"
 echo "   Step 1: Pre-check request..."
 precheck=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
@@ -178,6 +140,11 @@ fi
 echo ""
 
 echo "=== Examples Complete ==="
+echo ""
+echo "To change provider routing, update server environment variables:"
+echo "  - LLM_ROUTING_STRATEGY: weighted, round_robin, failover"
+echo "  - PROVIDER_WEIGHTS: distribution percentages"
+echo "  - DEFAULT_LLM_PROVIDER: fallback for failover strategy"
 echo ""
 echo "For more examples, see:"
 echo "  - SDK examples: ../go/, ../python/, ../typescript/, ../java/"

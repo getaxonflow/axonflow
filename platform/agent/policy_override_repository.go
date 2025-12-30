@@ -188,12 +188,27 @@ func (r *PolicyOverrideRepository) Delete(ctx context.Context, overrideID string
 }
 
 // DeleteByPolicyID deletes the override for a specific policy and scope.
+// The policyID can be either the UUID (id column) or policy_id from static_policies table.
 func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, policyID string, tenantID *string, orgID *string, deletedBy string) error {
+	// The policyID passed in is what the SDK sees (could be ID or PolicyID)
+	// The override table stores the UUID (ID field), not the human-readable PolicyID
+	resolvedPolicyID := policyID
+
+	// Try to get the policy to resolve the actual UUID
+	policy, err := r.staticPolicyRepo.GetByID(ctx, policyID)
+	if err == nil && policy != nil {
+		// Use the ID (UUID) from the resolved policy, not PolicyID
+		// ID is the actual UUID stored in policy_overrides.policy_id
+		resolvedPolicyID = policy.ID
+	}
+	// If policy not found, continue with the original policyID
+	// (it might already be the correct UUID)
+
 	query := `
 		DELETE FROM policy_overrides
 		WHERE policy_id = $1
 	`
-	args := []interface{}{policyID}
+	args := []interface{}{resolvedPolicyID}
 	argNum := 2
 
 	if tenantID != nil {
@@ -412,23 +427,37 @@ func (r *PolicyOverrideRepository) ListOverridesForTenant(
 	orgID *string,
 	includeExpired bool,
 ) ([]PolicyOverride, error) {
-	query := `
-		SELECT
-			id, policy_id, policy_type,
-			organization_id, tenant_id,
-			action_override, enabled_override,
-			override_reason, expires_at,
-			created_by, created_at, updated_by, updated_at
-		FROM policy_overrides
-		WHERE (tenant_id = $1 OR (organization_id = $2 AND tenant_id IS NULL))
-	`
-	args := []interface{}{tenantID}
+	// Build query based on whether orgID is provided
+	var query string
+	var args []interface{}
 
-	orgIDStr := ""
-	if orgID != nil {
-		orgIDStr = *orgID
+	if orgID != nil && *orgID != "" {
+		// Include both tenant-level and org-level overrides
+		query = `
+			SELECT
+				id, policy_id, policy_type,
+				organization_id, tenant_id,
+				action_override, enabled_override,
+				override_reason, expires_at,
+				created_by, created_at, updated_by, updated_at
+			FROM policy_overrides
+			WHERE (tenant_id = $1 OR (organization_id = $2 AND tenant_id IS NULL))
+		`
+		args = []interface{}{tenantID, *orgID}
+	} else {
+		// Only tenant-level overrides (no org filter)
+		query = `
+			SELECT
+				id, policy_id, policy_type,
+				organization_id, tenant_id,
+				action_override, enabled_override,
+				override_reason, expires_at,
+				created_by, created_at, updated_by, updated_at
+			FROM policy_overrides
+			WHERE tenant_id = $1
+		`
+		args = []interface{}{tenantID}
 	}
-	args = append(args, orgIDStr)
 
 	if !includeExpired {
 		query += " AND (expires_at IS NULL OR expires_at > NOW())"

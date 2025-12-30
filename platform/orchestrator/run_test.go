@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"axonflow/platform/orchestrator/euaiact"
+	"axonflow/platform/orchestrator/rbi"
+	"axonflow/platform/orchestrator/sebi"
 
 	"github.com/gorilla/mux"
 )
@@ -110,6 +115,99 @@ func TestGetEnv(t *testing.T) {
 	}
 }
 
+func TestLoadLLMConfig(t *testing.T) {
+	// Save current env vars
+	savedVars := map[string]string{
+		"OPENAI_API_KEY":     os.Getenv("OPENAI_API_KEY"),
+		"ANTHROPIC_API_KEY":  os.Getenv("ANTHROPIC_API_KEY"),
+		"BEDROCK_REGION":     os.Getenv("BEDROCK_REGION"),
+		"BEDROCK_MODEL":      os.Getenv("BEDROCK_MODEL"),
+		"OLLAMA_ENDPOINT":    os.Getenv("OLLAMA_ENDPOINT"),
+		"OLLAMA_MODEL":       os.Getenv("OLLAMA_MODEL"),
+		"GOOGLE_API_KEY":     os.Getenv("GOOGLE_API_KEY"),
+		"GOOGLE_MODEL":       os.Getenv("GOOGLE_MODEL"),
+		"LOCAL_LLM_ENDPOINT": os.Getenv("LOCAL_LLM_ENDPOINT"),
+	}
+
+	// Restore env vars after test
+	defer func() {
+		for k, v := range savedVars {
+			if v == "" {
+				os.Unsetenv(k)
+			} else {
+				os.Setenv(k, v)
+			}
+		}
+	}()
+
+	// Test with all providers set
+	t.Run("all providers configured", func(t *testing.T) {
+		os.Setenv("OPENAI_API_KEY", "test-openai-key-1234567890")
+		os.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key-1234567890")
+		os.Setenv("BEDROCK_REGION", "us-east-1")
+		os.Setenv("BEDROCK_MODEL", "claude-3")
+		os.Setenv("OLLAMA_ENDPOINT", "http://localhost:11434")
+		os.Setenv("OLLAMA_MODEL", "llama2")
+		os.Setenv("GOOGLE_API_KEY", "test-google-key-1234567890")
+		os.Setenv("GOOGLE_MODEL", "gemini-pro")
+
+		config := LoadLLMConfig()
+
+		if config.OpenAIKey != "test-openai-key-1234567890" {
+			t.Errorf("Expected OpenAI key to be set")
+		}
+		if config.AnthropicKey != "test-anthropic-key-1234567890" {
+			t.Errorf("Expected Anthropic key to be set")
+		}
+		if config.BedrockRegion != "us-east-1" {
+			t.Errorf("Expected Bedrock region to be set")
+		}
+		if config.OllamaEndpoint != "http://localhost:11434" {
+			t.Errorf("Expected Ollama endpoint to be set")
+		}
+		if config.GeminiKey != "test-google-key-1234567890" {
+			t.Errorf("Expected Gemini key to be set")
+		}
+	})
+
+	// Test backward compatibility with LOCAL_LLM_ENDPOINT
+	t.Run("backward compatibility LOCAL_LLM_ENDPOINT", func(t *testing.T) {
+		// Clear all env vars first
+		for k := range savedVars {
+			os.Unsetenv(k)
+		}
+
+		os.Setenv("LOCAL_LLM_ENDPOINT", "http://localhost:1234")
+
+		config := LoadLLMConfig()
+
+		if config.LocalEndpoint != "http://localhost:1234" {
+			t.Errorf("Expected LocalEndpoint to be set, got %s", config.LocalEndpoint)
+		}
+	})
+
+	// Test that OLLAMA_ENDPOINT takes precedence over LOCAL_LLM_ENDPOINT
+	t.Run("OLLAMA_ENDPOINT takes precedence", func(t *testing.T) {
+		// Clear all env vars first
+		for k := range savedVars {
+			os.Unsetenv(k)
+		}
+
+		os.Setenv("OLLAMA_ENDPOINT", "http://ollama:11434")
+		os.Setenv("LOCAL_LLM_ENDPOINT", "http://local:1234")
+
+		config := LoadLLMConfig()
+
+		if config.OllamaEndpoint != "http://ollama:11434" {
+			t.Errorf("Expected OllamaEndpoint to be set")
+		}
+		// LocalEndpoint should not be set when OllamaEndpoint is set
+		if config.LocalEndpoint != "" {
+			t.Errorf("Expected LocalEndpoint to be empty when OllamaEndpoint is set, got %s", config.LocalEndpoint)
+		}
+	})
+}
+
 // ============================================================================
 // HTTP Handler Tests
 // ============================================================================
@@ -152,7 +250,7 @@ func TestHealthHandler(t *testing.T) {
 
 			if tt.setupPlanningEngine {
 				if planningEngine == nil {
-					planningEngine = NewPlanningEngine(llmRouter)
+					planningEngine = NewPlanningEngine(llmRouterWrapper)
 				}
 			} else {
 				planningEngine = nil
@@ -160,7 +258,7 @@ func TestHealthHandler(t *testing.T) {
 
 			if tt.setupResultAggregator {
 				if resultAggregator == nil {
-					resultAggregator = NewResultAggregator(llmRouter)
+					resultAggregator = NewResultAggregator(llmRouterWrapper)
 				}
 			} else {
 				resultAggregator = nil
@@ -498,6 +596,92 @@ func TestSimpleMetricsHandler(t *testing.T) {
 	}
 }
 
+func TestHealthHandler_WithComplianceModules(t *testing.T) {
+	// Initialize components
+	ctx := context.Background()
+	setupTestComponents(ctx)
+	defer teardownTestComponents()
+
+	// Save current compliance module state
+	savedSEBI := sebiModule
+	savedRBI := rbiModule
+	savedEUAIAct := euaiactModule
+	savedPlanningEngine := planningEngine
+	savedResultAggregator := resultAggregator
+
+	// Initialize compliance modules for test using constructors from subpackages
+	var err error
+	sebiModule, err = sebi.NewSEBIModule(sebi.SEBIModuleConfig{})
+	if err != nil {
+		t.Fatalf("Failed to create SEBI module: %v", err)
+	}
+	rbiModule, err = rbi.NewRBIModule(rbi.DefaultConfig())
+	if err != nil {
+		t.Fatalf("Failed to create RBI module: %v", err)
+	}
+	euaiactModule, err = euaiact.NewModule(euaiact.ModuleConfig{})
+	if err != nil {
+		t.Fatalf("Failed to create EU AI Act module: %v", err)
+	}
+
+	// Initialize planning modules with LLMRouterInterface
+	planningEngine = NewPlanningEngine(llmRouterWrapper)
+	resultAggregator = NewResultAggregator(llmRouterWrapper)
+
+	defer func() {
+		sebiModule = savedSEBI
+		rbiModule = savedRBI
+		euaiactModule = savedEUAIAct
+		planningEngine = savedPlanningEngine
+		resultAggregator = savedResultAggregator
+	}()
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	healthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var health map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&health); err != nil {
+		t.Fatalf("Failed to decode health response: %v", err)
+	}
+
+	// Check that compliance modules are included
+	components, ok := health["components"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected 'components' to be a map")
+	}
+
+	// Check SEBI compliance
+	if _, exists := components["sebi_compliance"]; !exists {
+		t.Error("Expected 'sebi_compliance' in components")
+	}
+
+	// Check RBI compliance
+	if _, exists := components["rbi_compliance"]; !exists {
+		t.Error("Expected 'rbi_compliance' in components")
+	}
+
+	// Check EU AI Act compliance
+	if _, exists := components["euaiact_compliance"]; !exists {
+		t.Error("Expected 'euaiact_compliance' in components")
+	}
+
+	// Check planning engine
+	if _, exists := components["planning_engine"]; !exists {
+		t.Error("Expected 'planning_engine' in components")
+	}
+
+	// Check result aggregator
+	if _, exists := components["result_aggregator"]; !exists {
+		t.Error("Expected 'result_aggregator' in components")
+	}
+}
+
 func TestProviderStatusHandler(t *testing.T) {
 	// Initialize minimal components
 	ctx := context.Background()
@@ -530,6 +714,38 @@ func TestProviderStatusHandler(t *testing.T) {
 	// This is valid - an empty map means no providers are active
 	if status == nil {
 		t.Error("Expected non-nil provider status map")
+	}
+}
+
+func TestProviderStatusHandler_NilRouter(t *testing.T) {
+	// Initialize components but then set router to nil
+	ctx := context.Background()
+	setupTestComponents(ctx)
+	defer teardownTestComponents()
+
+	// Save current router and set to nil
+	savedRouter := llmRouterWrapper
+	llmRouterWrapper = nil
+	defer func() { llmRouterWrapper = savedRouter }()
+
+	req := httptest.NewRequest("GET", "/providers/status", nil)
+	w := httptest.NewRecorder()
+
+	providerStatusHandler(w, req)
+
+	// Should still return 200 with empty map
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	var status map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&status); err != nil {
+		t.Fatalf("Failed to decode provider status response: %v", err)
+	}
+
+	// Should be an empty map when router is nil
+	if len(status) != 0 {
+		t.Errorf("Expected empty map when router is nil, got %d entries", len(status))
 	}
 }
 
@@ -632,19 +848,9 @@ func setupTestComponents(ctx context.Context) {
 		dynamicPolicyEngine = NewDynamicPolicyEngine()
 	}
 
-	if llmRouter == nil {
-		llmRouter = NewLLMRouter(LLMRouterConfig{
-			OpenAIKey:     "test-key",
-			AnthropicKey:  "test-key",
-			LocalEndpoint: "",
-		})
-	}
-
-	// Create a test wrapper for llmRouterWrapper (uses legacy router for testing)
-	// Note: In production, llmRouterWrapper wraps UnifiedRouter
-	if llmRouterWrapper == nil && llmRouter != nil {
-		// Use the legacy router directly since *LLMRouter implements LLMRouterInterface
-		llmRouterWrapper = llmRouter
+	// Create a mock router for testing
+	if llmRouterWrapper == nil {
+		llmRouterWrapper = NewMockLLMRouter()
 	}
 
 	if responseProcessor == nil {
@@ -713,6 +919,89 @@ func TestMetricsHandler(t *testing.T) {
 	}
 }
 
+func TestCalculatePercentileOrchestrator(t *testing.T) {
+	tests := []struct {
+		name       string
+		timings    []int64
+		percentile float64
+		expected   float64
+	}{
+		{
+			name:       "empty slice returns 0",
+			timings:    []int64{},
+			percentile: 0.50,
+			expected:   0,
+		},
+		{
+			name:       "single value p50",
+			timings:    []int64{100},
+			percentile: 0.50,
+			expected:   100,
+		},
+		{
+			name:       "single value p99",
+			timings:    []int64{100},
+			percentile: 0.99,
+			expected:   100,
+		},
+		{
+			name:       "multiple values p50",
+			timings:    []int64{10, 20, 30, 40, 50},
+			percentile: 0.50,
+			expected:   30,
+		},
+		{
+			name:       "multiple values p95",
+			timings:    []int64{10, 20, 30, 40, 50},
+			percentile: 0.95,
+			expected:   50,
+		},
+		{
+			name:       "unsorted values",
+			timings:    []int64{50, 10, 40, 20, 30},
+			percentile: 0.50,
+			expected:   30,
+		},
+		{
+			name:       "percentile 1.0 returns last",
+			timings:    []int64{10, 20, 30},
+			percentile: 1.0,
+			expected:   30,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := calculatePercentileOrchestrator(tt.timings, tt.percentile)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCalculateP50P95P99Orchestrator(t *testing.T) {
+	timings := []int64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
+
+	// Test p50 - index = int(10 * 0.50) = 5, value at index 5 is 60
+	p50 := calculateP50Orchestrator(timings)
+	if p50 != 60 {
+		t.Errorf("P50 expected 60, got %v", p50)
+	}
+
+	// Test p95 - index = int(10 * 0.95) = 9, value at index 9 is 100
+	p95 := calculateP95Orchestrator(timings)
+	if p95 != 100 {
+		t.Errorf("P95 expected 100, got %v", p95)
+	}
+
+	// Test p99 - index = int(10 * 0.99) = 9, value at index 9 is 100
+	p99 := calculateP99Orchestrator(timings)
+	if p99 != 100 {
+		t.Errorf("P99 expected 100, got %v", p99)
+	}
+}
+
 func TestUpdateProviderWeightsHandler(t *testing.T) {
 	// Initialize minimal components
 	ctx := context.Background()
@@ -771,6 +1060,173 @@ func TestUpdateProviderWeightsHandler(t *testing.T) {
 
 			if w.Code != tt.expectedCode {
 				t.Errorf("Expected status %d, got %d", tt.expectedCode, w.Code)
+			}
+		})
+	}
+}
+
+func TestUpdateProviderWeightsHandler_NilRouter(t *testing.T) {
+	// Save current router and set to nil
+	savedRouter := llmRouterWrapper
+	llmRouterWrapper = nil
+	defer func() { llmRouterWrapper = savedRouter }()
+
+	body, _ := json.Marshal(map[string]float64{"openai": 1.0})
+	req := httptest.NewRequest("POST", "/providers/weights", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	updateProviderWeightsHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
+	}
+}
+
+func TestUpdateProviderWeightsHandler_RouterError(t *testing.T) {
+	// Initialize components
+	ctx := context.Background()
+	setupTestComponents(ctx)
+	defer teardownTestComponents()
+
+	// Configure mock to return error
+	if mockRouter, ok := llmRouterWrapper.(*MockLLMRouter); ok {
+		mockRouter.UpdateWeightsError = fmt.Errorf("router error")
+		defer func() { mockRouter.UpdateWeightsError = nil }()
+	}
+
+	body, _ := json.Marshal(map[string]float64{"openai": 1.0})
+	req := httptest.NewRequest("POST", "/providers/weights", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	updateProviderWeightsHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+}
+
+func TestMinFunction(t *testing.T) {
+	tests := []struct {
+		name     string
+		a        int
+		b        int
+		expected int
+	}{
+		{"a less than b", 1, 5, 1},
+		{"b less than a", 5, 1, 1},
+		{"equal values", 3, 3, 3},
+		{"negative a", -5, 1, -5},
+		{"negative b", 1, -5, -5},
+		{"both negative", -5, -3, -5},
+		{"zero and positive", 0, 5, 0},
+		{"zero and negative", 0, -5, -5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := min(tt.a, tt.b)
+			if result != tt.expected {
+				t.Errorf("min(%d, %d) = %d, expected %d", tt.a, tt.b, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateProviderWeights(t *testing.T) {
+	tests := []struct {
+		name        string
+		weights     map[string]float64
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "valid weights summing to 1",
+			weights: map[string]float64{
+				"openai":    0.5,
+				"anthropic": 0.5,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid weights summing to less than 1",
+			weights: map[string]float64{
+				"openai":    0.3,
+				"anthropic": 0.3,
+			},
+			expectError: false,
+		},
+		{
+			name: "single provider with weight 1",
+			weights: map[string]float64{
+				"openai": 1.0,
+			},
+			expectError: false,
+		},
+		{
+			name:        "empty weights",
+			weights:     map[string]float64{},
+			expectError: false, // Empty is valid (no providers)
+		},
+		{
+			name: "negative weight",
+			weights: map[string]float64{
+				"openai": -0.5,
+			},
+			expectError: true,
+			errorMsg:    "cannot be negative",
+		},
+		{
+			name: "weight exceeds 1",
+			weights: map[string]float64{
+				"openai": 1.5,
+			},
+			expectError: true,
+			errorMsg:    "cannot exceed 1.0",
+		},
+		{
+			name: "sum exceeds 1",
+			weights: map[string]float64{
+				"openai":    0.7,
+				"anthropic": 0.7,
+			},
+			expectError: true,
+			errorMsg:    "exceeds 1.0",
+		},
+		{
+			name: "zero weight is valid",
+			weights: map[string]float64{
+				"openai":    0.0,
+				"anthropic": 0.5,
+			},
+			expectError: false,
+		},
+		{
+			name: "many providers valid",
+			weights: map[string]float64{
+				"openai":    0.25,
+				"anthropic": 0.25,
+				"bedrock":   0.25,
+				"ollama":    0.25,
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderWeights(tt.weights)
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				} else if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("Expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
 			}
 		})
 	}

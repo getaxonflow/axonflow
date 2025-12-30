@@ -236,20 +236,12 @@ func TestFunctionCallProcessor(t *testing.T) {
 // TestLLMCallProcessor tests LLM step execution with mock router
 func TestLLMCallProcessor(t *testing.T) {
 	// Create mock router
-	mockRouter := &LLMRouter{
-		providers: map[string]LLMProvider{
-			"test": &TestMockProvider{
-				name:         "test",
-				healthy:      true,
-				responseTime: 10 * time.Millisecond,
-				costPerToken: 0.00001,
-			},
-		},
-		weights: map[string]float64{
-			"test": 1.0,
-		},
-		loadBalancer:   NewLoadBalancer(),
-		metricsTracker: NewProviderMetricsTracker(),
+	mockRouter := NewMockLLMRouter()
+	mockRouter.RouteResponse = &LLMResponse{
+		Content:      "Analyzed output",
+		Model:        "test-model",
+		TokensUsed:   100,
+		ResponseTime: 10 * time.Millisecond,
 	}
 
 	processor := NewLLMCallProcessor(mockRouter)

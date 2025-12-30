@@ -25,12 +25,9 @@ func clearRuntimeConfigService() {
 	runtimeConfigMu.Unlock()
 }
 
-// clearLLMRouter safely clears the LLM router for testing.
-func clearLLMRouter() {
-	llmRouterMu.Lock()
-	llmRouter = nil
-	llmRouterMu.Unlock()
-}
+// Note: clearLLMRouter removed in v2.3.0 as part of legacy LLMRouter cleanup.
+// LLM routing now uses llmRouterWrapper (LLMRouterInterface) which is managed
+// by the production code in run.go.
 
 func TestInitRuntimeConfigService(t *testing.T) {
 	// Clear any existing instance
@@ -118,32 +115,23 @@ func TestRefreshLLMConfig_WithService(t *testing.T) {
 	}
 }
 
-func TestRefreshLLMConfig_WithRouterReconfiguration(t *testing.T) {
+func TestRefreshLLMConfig_RefreshesCache(t *testing.T) {
 	// Initialize service
 	InitRuntimeConfigService(nil, false)
 
 	// Use t.Setenv for automatic cleanup
 	t.Setenv("OPENAI_API_KEY", "router-test-key")
 
-	// Clean up router at end of test
-	t.Cleanup(func() {
-		clearLLMRouter()
-	})
-
-	// Create an LLM router using thread-safe setter
-	SetLLMRouter(NewLLMRouter(LLMRouterConfig{OpenAIKey: "initial-key"}))
-
 	ctx := context.Background()
 	err := RefreshLLMConfig(ctx, "test-tenant")
 
 	if err != nil {
-		t.Errorf("Expected no error for refresh with router, got: %v", err)
+		t.Errorf("Expected no error for refresh, got: %v", err)
 	}
 
-	// Verify router was reconfigured (it should be non-nil)
-	if GetLLMRouter() == nil {
-		t.Error("Expected llmRouter to be reconfigured, but it's nil")
-	}
+	// Note: As of v2.3.0, RefreshLLMConfig only refreshes the config cache.
+	// Router reconfiguration must be done separately by the caller.
+	// This test verifies the function completes without error.
 }
 
 func TestLoadLLMConfigFromService_AllProviders(t *testing.T) {
@@ -289,28 +277,10 @@ func TestProviderConstants(t *testing.T) {
 	}
 }
 
-// Test thread-safe getter/setter for LLM router
-func TestGetSetLLMRouter(t *testing.T) {
-	// Clear router
-	clearLLMRouter()
-	t.Cleanup(func() {
-		clearLLMRouter()
-	})
-
-	// Initially should be nil
-	if GetLLMRouter() != nil {
-		t.Error("Expected GetLLMRouter() to return nil initially")
-	}
-
-	// Set a router
-	router := NewLLMRouter(LLMRouterConfig{OpenAIKey: "test-key"})
-	SetLLMRouter(router)
-
-	// Should return the router we set
-	if GetLLMRouter() != router {
-		t.Error("Expected GetLLMRouter() to return the router we set")
-	}
-}
+// Note: TestGetSetLLMRouter removed in v2.3.0.
+// The GetLLMRouter() and SetLLMRouter() functions were removed as part of
+// the legacy LLMRouter cleanup. LLM routing now uses llmRouterWrapper
+// (LLMRouterInterface) which is managed by the production code in run.go.
 
 // =============================================================================
 // Config File Loader Tests (ADR-007 Phase 9)

@@ -76,8 +76,9 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	router.HandleFunc("/api/v1/static-policies", handler.HandleCreateStaticPolicy).Methods("POST")
 	router.HandleFunc("/api/v1/static-policies/effective", handler.HandleGetEffectivePolicies).Methods("GET")
 	router.HandleFunc("/api/v1/static-policies/test", handler.HandleTestPattern).Methods("POST")
+	router.HandleFunc("/api/v1/static-policies/overrides", handler.HandleListOverrides).Methods("GET")
 
-	// Single policy operations
+	// Single policy operations (must come after literal path routes)
 	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleGetStaticPolicy).Methods("GET")
 	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleUpdateStaticPolicy).Methods("PUT")
 	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleDeleteStaticPolicy).Methods("DELETE")
@@ -90,7 +91,7 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleCreateOverride).Methods("POST")
 	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
 
-	log.Println("✅ Static Policy API routes registered (11 endpoints)")
+	log.Println("✅ Static Policy API routes registered (12 endpoints)")
 }
 
 // HandleListStaticPolicies handles GET /api/v1/static-policies
@@ -603,6 +604,48 @@ func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *
 	log.Printf("[StaticPolicyAPI] Deleted override for policy %s (tenant: %s)", policyID, tenantIDHeader)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleListOverrides handles GET /api/v1/static-policies/overrides
+// Lists all policy overrides for a tenant
+// Headers:
+//   - X-Tenant-ID: Tenant ID (required)
+//   - X-Organization-ID: Organization ID (optional)
+func (h *StaticPolicyAPIHandler) HandleListOverrides(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	tenantIDHeader := r.Header.Get("X-Tenant-ID")
+	orgIDHeader := r.Header.Get("X-Organization-ID")
+
+	if tenantIDHeader == "" {
+		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		return
+	}
+
+	// Convert orgID to pointer (nil if empty)
+	var orgID *string
+	if orgIDHeader != "" {
+		orgID = &orgIDHeader
+	}
+
+	// Parse include_expired query param
+	includeExpired := r.URL.Query().Get("include_expired") == "true"
+
+	// List overrides using repository
+	overrides, err := h.overrideRepo.ListOverridesForTenant(ctx, tenantIDHeader, orgID, includeExpired)
+	if err != nil {
+		log.Printf("[StaticPolicyAPI] Error listing overrides: %v", err)
+		writeJSONError(w, "Failed to list overrides", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[StaticPolicyAPI] Returning %d overrides for tenant %s", len(overrides), tenantIDHeader)
+
+	response := map[string]interface{}{
+		"overrides": overrides,
+		"count":     len(overrides),
+	}
+
+	writeJSONResponse(w, response, http.StatusOK)
 }
 
 // writeJSONResponse writes a JSON response with the given status code

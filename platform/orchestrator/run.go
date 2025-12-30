@@ -60,7 +60,8 @@ var (
 		ListActivePolicies() []DynamicPolicy
 		IsHealthy() bool
 	}
-	llmRouter          *LLMRouter
+	// Note: Legacy llmRouter *LLMRouter removed in v2.3.0.
+	// All LLM routing now uses llmRouterWrapper LLMRouterInterface.
 	responseProcessor  *ResponseProcessor
 	auditLogger        *AuditLogger
 	metricsCollector   *MetricsCollector
@@ -643,24 +644,23 @@ func initializeComponents() {
 		log.Println("Dynamic Policy Engine initialized with DATABASE backing ✅")
 	}
 
-	// Initialize LLM Router using RuntimeConfigService (ADR-007)
-	// Falls back to env vars if database not available
+	// Initialize LLM Router context (ADR-007)
 	ctx := context.Background()
 	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
 	if tenantID == "" {
 		tenantID = "default" // Fallback for single-tenant deployments
 	}
-	SetLLMRouter(NewLLMRouter(LoadLLMConfigFromService(ctx, tenantID)))
-	log.Println("LLM Router initialized with multi-provider support (ADR-007 compliant)")
+	// Load config for logging purposes (actual router initialization is below)
+	_ = LoadLLMConfigFromService(ctx, tenantID)
 
-	// Initialize new pluggable LLM provider system (ADR-007 Phase 2)
+	// Initialize pluggable LLM provider system (ADR-007 Phase 2, ADR-022)
 	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
 	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
 		SkipHealthCheck: false, // Perform health checks on startup
 	})
 	if err != nil {
-		log.Printf("⚠️  LLM bootstrap warning: %v (falling back to legacy router)", err)
+		log.Printf("⚠️  LLM bootstrap error: %v (LLM features may be unavailable)", err)
 	} else if len(bootstrapResult.ProvidersBootstrapped) == 0 {
 		log.Println("ℹ️  No LLM providers bootstrapped (check ANTHROPIC_API_KEY, OPENAI_API_KEY, or OLLAMA_ENDPOINT)")
 	} else {
@@ -1168,6 +1168,12 @@ func updateProviderWeightsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate weights before passing to router
+	if err := validateProviderWeights(weights); err != nil {
+		sendErrorResponse(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	if llmRouterWrapper == nil {
 		sendErrorResponse(w, "LLM router not initialized", http.StatusServiceUnavailable)
 		return
@@ -1185,6 +1191,24 @@ func updateProviderWeightsHandler(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+// validateProviderWeights validates provider weight configuration.
+func validateProviderWeights(weights map[string]float64) error {
+	var totalWeight float64
+	for provider, weight := range weights {
+		if weight < 0 {
+			return fmt.Errorf("invalid weight for provider %s: weight cannot be negative", provider)
+		}
+		if weight > 1 {
+			return fmt.Errorf("invalid weight for provider %s: weight cannot exceed 1.0", provider)
+		}
+		totalWeight += weight
+	}
+	if totalWeight > 1.0 {
+		return fmt.Errorf("invalid weights: total weight (%.2f) exceeds 1.0", totalWeight)
+	}
+	return nil
 }
 
 func listDynamicPoliciesHandler(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -24,10 +25,7 @@ import (
 
 // TestNewResultAggregator verifies proper initialization
 func TestNewResultAggregator(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 
 	aggregator := NewResultAggregator(router)
 
@@ -46,10 +44,7 @@ func TestNewResultAggregator(t *testing.T) {
 
 // TestFilterSuccessfulResults verifies filtering logic
 func TestFilterSuccessfulResults(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -83,10 +78,7 @@ func TestFilterSuccessfulResults(t *testing.T) {
 
 // TestSimpleConcatenation verifies fallback concatenation
 func TestSimpleConcatenation(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -119,10 +111,7 @@ func TestSimpleConcatenation(t *testing.T) {
 
 // TestBuildSynthesisPromptResultAggregator verifies synthesis prompt construction
 func TestBuildSynthesisPromptResultAggregator(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -155,11 +144,9 @@ func TestBuildSynthesisPromptResultAggregator(t *testing.T) {
 
 // TestAggregateResultsWithFallback tests fallback to concatenation
 func TestAggregateResultsWithFallback(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey:    "invalid-key",
-		AnthropicKey: "invalid-key",
-	}
-	router := NewLLMRouter(config)
+	// Create a mock router that simulates an error condition
+	router := NewMockLLMRouter()
+	router.RouteError = fmt.Errorf("provider error")
 	aggregator := NewResultAggregator(router)
 
 	ctx := context.Background()
@@ -197,10 +184,7 @@ func TestAggregateResultsWithFallback(t *testing.T) {
 
 // TestGetAggregationStats verifies stats calculation
 func TestGetAggregationStats(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	now := time.Now()
@@ -251,10 +235,7 @@ func TestGetAggregationStats(t *testing.T) {
 
 // TestAggregateEmptyResults verifies handling of empty results
 func TestAggregateEmptyResults(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	ctx := context.Background()

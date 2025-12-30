@@ -1,15 +1,16 @@
 """
 LLM Provider Routing Example
 
-This example demonstrates how to:
-1. Use default routing (server-side configuration)
-2. Specify a preferred provider in requests
-3. Query provider status
+This example demonstrates how AxonFlow routes requests to LLM providers.
+Provider selection is controlled SERVER-SIDE via environment variables,
+not per-request. This ensures consistent routing policies across your org.
 
 Server-side configuration (environment variables):
-  LLM_ROUTING_STRATEGY=weighted|round_robin|failover
-  PROVIDER_WEIGHTS=openai:50,anthropic:30,bedrock:20
-  DEFAULT_LLM_PROVIDER=bedrock
+  LLM_ROUTING_STRATEGY=weighted|round_robin|failover|cost_optimized*
+  PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20
+  DEFAULT_LLM_PROVIDER=openai
+
+* cost_optimized is Enterprise only
 """
 
 import asyncio
@@ -28,56 +29,40 @@ async def main():
     )
 
     print("=== LLM Provider Routing Examples ===\n")
+    print("Provider selection is server-side. Configure via environment variables:")
+    print("  LLM_ROUTING_STRATEGY=weighted")
+    print("  PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20\n")
 
-    # Example 1: Default routing (uses server-side strategy)
-    print("1. Default routing (server decides provider):")
+    # Example 1: Send a request (server decides which provider to use)
+    print("1. Send request (server routes based on configured strategy):")
     try:
-        default_response = await client.execute_query(
+        response = await client.execute_query(
             user_token="demo-user",
             query="What is 2 + 2?",
             request_type="chat",
         )
-        data = str(default_response.data)[:100] if default_response.data else "N/A"
+        data = str(response.data)[:100] if response.data else "N/A"
         print(f"   Response: {data}...")
-        print(f"   Success: {default_response.success}\n")
+        print(f"   Success: {response.success}\n")
     except Exception as e:
         print(f"   Error: {e}\n")
 
-    # Example 2: Request specific provider (Ollama - local)
-    print("2. Request specific provider (Ollama):")
-    try:
-        ollama_response = await client.execute_query(
-            user_token="demo-user",
-            query="What is the capital of France?",
-            request_type="chat",
-            context={"provider": "ollama"},  # Request specific provider
-        )
-        data = str(ollama_response.data)[:100] if ollama_response.data else "N/A"
-        print(f"   Response: {data}...")
-        print(f"   Success: {ollama_response.success}\n")
-    except Exception as e:
-        print(f"   Error: {e}\n")
+    # Example 2: Multiple requests show distribution based on weights
+    print("2. Multiple requests (observe provider distribution):")
+    for i in range(1, 4):
+        try:
+            response = await client.execute_query(
+                user_token="demo-user",
+                query=f"Question {i}: What is the capital of France?",
+                request_type="chat",
+            )
+            print(f"   Request {i}: Success (provider selected by server)")
+        except Exception as e:
+            print(f"   Request {i} Error: {e}")
+    print()
 
-    # Example 3: Request with model override
-    print("3. Request with specific model:")
-    try:
-        model_response = await client.execute_query(
-            user_token="demo-user",
-            query="What is machine learning in one sentence?",
-            request_type="chat",
-            context={
-                "provider": "ollama",
-                "model": "tinyllama",  # Specify exact model
-            },
-        )
-        data = str(model_response.data)[:100] if model_response.data else "N/A"
-        print(f"   Response: {data}...")
-        print(f"   Success: {model_response.success}\n")
-    except Exception as e:
-        print(f"   Error: {e}\n")
-
-    # Example 4: Health check
-    print("4. Check agent health:")
+    # Example 3: Health check
+    print("3. Check agent health:")
     try:
         is_healthy = await client.health_check()
         print(f"   Healthy: {is_healthy}")
@@ -85,6 +70,10 @@ async def main():
         print(f"   Error: {e}")
 
     print("\n=== Examples Complete ===")
+    print("\nTo change provider routing, update server environment variables:")
+    print("  - LLM_ROUTING_STRATEGY: weighted, round_robin, failover")
+    print("  - PROVIDER_WEIGHTS: distribution percentages")
+    print("  - DEFAULT_LLM_PROVIDER: fallback for failover strategy")
 
 
 if __name__ == "__main__":

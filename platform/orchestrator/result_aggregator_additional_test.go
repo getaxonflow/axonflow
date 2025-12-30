@@ -13,6 +13,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -22,10 +23,7 @@ import (
 
 // Test extractSynthesizedResult with different response types
 func TestResultAggregator_ExtractSynthesizedResult(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	tests := []struct {
@@ -76,12 +74,11 @@ func TestResultAggregator_ExtractSynthesizedResult(t *testing.T) {
 	}
 }
 
-// Test AggregateWithCustomPrompt with successful synthesis
+// Test AggregateWithCustomPrompt with fallback to concatenation
 func TestResultAggregator_AggregateWithCustomPrompt_Success(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
+	// Set RouteError to trigger fallback to concatenation
+	router.RouteError = fmt.Errorf("LLM unavailable for testing")
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -126,10 +123,7 @@ func TestResultAggregator_AggregateWithCustomPrompt_Success(t *testing.T) {
 
 // Test AggregateWithCustomPrompt with no successful tasks
 func TestResultAggregator_AggregateWithCustomPrompt_NoSuccessfulTasks(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -163,11 +157,9 @@ func TestResultAggregator_AggregateWithCustomPrompt_NoSuccessfulTasks(t *testing
 
 // Test AggregateWithCustomPrompt with LLM failure (fallback to concatenation)
 func TestResultAggregator_AggregateWithCustomPrompt_LLMFailure(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey:    "invalid-key",
-		AnthropicKey: "invalid-key",
-	}
-	router := NewLLMRouter(config)
+	// Create a mock router that simulates failure
+	router := NewMockLLMRouter()
+	router.RouteError = fmt.Errorf("LLM unavailable")
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -207,10 +199,7 @@ func TestResultAggregator_AggregateWithCustomPrompt_LLMFailure(t *testing.T) {
 
 // Test simpleConcatenation with various output formats
 func TestResultAggregator_SimpleConcatenation_VariousFormats(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -273,10 +262,9 @@ func TestResultAggregator_SimpleConcatenation_VariousFormats(t *testing.T) {
 
 // Test AggregateResults with mixed success/failure and output types
 func TestResultAggregator_AggregateResults_MixedOutputTypes(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
+	// Set RouteError to trigger fallback to concatenation
+	router.RouteError = fmt.Errorf("LLM unavailable for testing")
 	aggregator := NewResultAggregator(router)
 
 	taskResults := []StepExecution{
@@ -338,10 +326,7 @@ func TestResultAggregator_AggregateResults_MixedOutputTypes(t *testing.T) {
 
 // Test buildSynthesisPrompt with edge cases
 func TestResultAggregator_BuildSynthesisPrompt_EdgeCases(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	aggregator := NewResultAggregator(router)
 
 	tests := []struct {

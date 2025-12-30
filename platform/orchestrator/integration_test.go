@@ -24,10 +24,7 @@ import (
 
 // TestPlanningEngineWorkflowIntegration tests planning engine generating executable workflows
 func TestPlanningEngineWorkflowIntegration(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 
 	ctx := context.Background()
@@ -73,10 +70,7 @@ func TestPlanningEngineWorkflowIntegration(t *testing.T) {
 
 // TestEndToEndPlanningToExecution tests planning → workflow execution flow
 func TestEndToEndPlanningToExecution(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 
 	planningEngine := NewPlanningEngine(router)
 	workflowEngine := NewWorkflowEngine()
@@ -188,10 +182,7 @@ func TestDynamicPolicyEngineIntegration(t *testing.T) {
 
 // TestLLMRouterHealthCheck tests LLM router health across planning and workflow
 func TestLLMRouterHealthCheck(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 
 	if !router.IsHealthy() {
 		t.Error("Expected router to be healthy")
@@ -316,10 +307,7 @@ func TestConcurrentWorkflowExecution(t *testing.T) {
 
 // TestPlanningWithSynthesisSteps tests that planning engine creates synthesis steps
 func TestPlanningWithSynthesisSteps(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 
 	ctx := context.Background()
@@ -341,9 +329,9 @@ func TestPlanningWithSynthesisSteps(t *testing.T) {
 	hasSynthesis := false
 	for _, step := range workflow.Spec.Steps {
 		stepNameLower := strings.ToLower(step.Name)
-		if stringContains(stepNameLower, "synthesize") ||
-			stringContains(stepNameLower, "combine") ||
-			stringContains(stepNameLower, "summary") {
+		if strings.Contains(stepNameLower, "synthesize") ||
+			strings.Contains(stepNameLower, "combine") ||
+			strings.Contains(stepNameLower, "summary") {
 			hasSynthesis = true
 			t.Logf("Found synthesis step: %s", step.Name)
 			break
@@ -357,11 +345,10 @@ func TestPlanningWithSynthesisSteps(t *testing.T) {
 
 // TestLLMRouterFailover tests LLM provider failover mechanism
 func TestLLMRouterFailover(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey:    "invalid-key", // Will fail
-		AnthropicKey: "invalid-key", // Will fail
-	}
-	router := NewLLMRouter(config)
+	// Create a mock router that simulates unhealthy state with route error
+	router := NewMockLLMRouter()
+	router.Healthy = false
+	router.RouteError = fmt.Errorf("all providers unavailable")
 
 	planningEngine := NewPlanningEngine(router)
 
@@ -401,10 +388,7 @@ func TestWorkflowEngineHealthCheck(t *testing.T) {
 
 // TestMultiDomainPlanning tests planning across multiple domains
 func TestMultiDomainPlanning(t *testing.T) {
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key",
-	}
-	router := NewLLMRouter(config)
+	router := NewMockLLMRouter()
 	planningEngine := NewPlanningEngine(router)
 
 	ctx := context.Background()

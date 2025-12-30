@@ -7,9 +7,18 @@ These examples demonstrate how to work with AxonFlow's LLM provider routing capa
 AxonFlow supports flexible LLM provider routing through server-side configuration. This allows operators to:
 
 - **Optimize costs** by preferring cheaper providers
-- **Meet compliance requirements** (e.g., HIPAA with Bedrock-only routing)
 - **Improve performance** by favoring faster providers
 - **Configure failover** for high availability
+
+## Community vs Enterprise Providers
+
+| Provider | Community | Enterprise |
+|----------|:---------:|:----------:|
+| OpenAI | ✅ | ✅ |
+| Anthropic | ✅ | ✅ |
+| Ollama | ✅ | ✅ |
+| AWS Bedrock | ❌ | ✅ |
+| Google Gemini | ❌ | ✅ |
 
 ## Server Configuration
 
@@ -18,9 +27,9 @@ Configure routing via environment variables on the AxonFlow Orchestrator:
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `LLM_ROUTING_STRATEGY` | `weighted`, `round_robin`, `failover`, `cost_optimized`* | `weighted` | Routing strategy |
-| `PROVIDER_WEIGHTS` | `openai:50,anthropic:30,bedrock:20` | Equal weights | Provider distribution |
-| `DEFAULT_LLM_PROVIDER` | `bedrock`, `openai`, etc. | None | Primary provider for failover |
-| `PROVIDER_COSTS`* | `ollama:0,bedrock:0.02,openai:0.03` | See defaults | Cost per 1K tokens |
+| `PROVIDER_WEIGHTS` | `openai:50,anthropic:30,ollama:20` | Equal weights | Provider distribution |
+| `DEFAULT_LLM_PROVIDER` | `openai`, `anthropic`, etc. | None | Primary provider for failover |
+| `PROVIDER_COSTS`* | `ollama:0,anthropic:0.025,openai:0.03` | See defaults | Cost per 1K tokens |
 
 \* Enterprise only
 
@@ -31,8 +40,8 @@ Configure routing via environment variables on the AxonFlow Orchestrator:
 Distributes requests based on configured weights:
 
 ```bash
-PROVIDER_WEIGHTS=openai:50,anthropic:30,bedrock:20
-# ~50% to OpenAI, ~30% to Anthropic, ~20% to Bedrock
+PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20
+# ~50% to OpenAI, ~30% to Anthropic, ~20% to Ollama
 ```
 
 ### Round Robin
@@ -41,7 +50,7 @@ Cycles through healthy providers equally:
 
 ```bash
 LLM_ROUTING_STRATEGY=round_robin
-# openai -> anthropic -> bedrock -> openai -> ...
+# openai -> anthropic -> ollama -> openai -> ...
 ```
 
 ### Failover
@@ -50,8 +59,8 @@ Uses primary provider, falls back on failure:
 
 ```bash
 LLM_ROUTING_STRATEGY=failover
-DEFAULT_LLM_PROVIDER=bedrock
-# Always uses Bedrock, falls back to others if unhealthy
+DEFAULT_LLM_PROVIDER=openai
+# Always uses OpenAI, falls back to others if unhealthy
 ```
 
 ### Cost Optimized (Enterprise)
@@ -60,13 +69,12 @@ Automatically routes to the cheapest healthy provider:
 
 ```bash
 LLM_ROUTING_STRATEGY=cost_optimized
-PROVIDER_COSTS=ollama:0,bedrock:0.02,anthropic:0.025,openai:0.03
+PROVIDER_COSTS=ollama:0,anthropic:0.025,openai:0.03
 # Selects cheapest healthy provider automatically
 ```
 
 Default costs (if `PROVIDER_COSTS` not set):
 - ollama: $0.00 (self-hosted)
-- bedrock: $0.02
 - anthropic/gemini: $0.025
 - openai: $0.03
 
@@ -145,22 +153,12 @@ const response = await client.proxy({
 
 ## Use Cases
 
-### HIPAA Compliance (Healthcare)
-
-Force all traffic through AWS Bedrock:
-
-```bash
-LLM_ROUTING_STRATEGY=failover
-DEFAULT_LLM_PROVIDER=bedrock
-PROVIDER_WEIGHTS=bedrock:100
-```
-
 ### Cost Optimization (Community)
 
 Prefer cheaper providers via weights:
 
 ```bash
-PROVIDER_WEIGHTS=bedrock:60,anthropic:30,openai:10
+PROVIDER_WEIGHTS=ollama:60,anthropic:30,openai:10
 ```
 
 ### Cost Optimization (Enterprise)
@@ -169,7 +167,7 @@ Automatic cheapest provider selection:
 
 ```bash
 LLM_ROUTING_STRATEGY=cost_optimized
-PROVIDER_COSTS=ollama:0,bedrock:0.02,anthropic:0.025,openai:0.03
+PROVIDER_COSTS=ollama:0,anthropic:0.025,openai:0.03
 ```
 
 ### High Availability
@@ -180,3 +178,7 @@ Round-robin with automatic failover:
 LLM_ROUTING_STRATEGY=round_robin
 # Unhealthy providers automatically skipped
 ```
+
+### Compliance Routing (Enterprise)
+
+For HIPAA/compliance use cases requiring AWS Bedrock, see [ee/examples/llm-providers/bedrock/](../../ee/examples/llm-providers/bedrock/).

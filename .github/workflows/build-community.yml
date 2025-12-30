@@ -103,7 +103,7 @@ jobs:
           load: true
           tags: axonflow/agent:local
           build-args: |
-            EDITION=oss
+            EDITION=community
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -140,7 +140,7 @@ jobs:
           load: true
           tags: axonflow/orchestrator:local
           build-args: |
-            EDITION=oss
+            EDITION=community
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

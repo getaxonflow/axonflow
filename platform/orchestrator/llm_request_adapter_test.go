@@ -15,10 +15,10 @@ import (
 // TestLLMRouterInterfaceCompliance verifies compile-time interface implementation
 func TestLLMRouterInterfaceCompliance(t *testing.T) {
 	// These will fail at compile time if interfaces are not satisfied
-	var _ LLMRouterInterface = (*LLMRouter)(nil)
 	var _ LLMRouterInterface = (*UnifiedRouterWrapper)(nil)
+	var _ LLMRouterInterface = (*MockLLMRouter)(nil)
 
-	t.Log("LLMRouter and UnifiedRouterWrapper both implement LLMRouterInterface")
+	t.Log("UnifiedRouterWrapper and MockLLMRouter both implement LLMRouterInterface")
 }
 
 // TestNewUnifiedRouterWrapper tests wrapper creation
@@ -822,18 +822,23 @@ func TestUnifiedRouterWrapper_RouteRequest_ErrorHandling(t *testing.T) {
 	}
 }
 
-// TestLLMRouterInterface_LLMRouter tests that LLMRouter satisfies interface
-func TestLLMRouterInterface_LLMRouter(t *testing.T) {
-	// Create a minimal LLMRouter
-	config := LLMRouterConfig{}
-	router := NewLLMRouter(config)
+// TestLLMRouterInterface_MockRouter tests that MockLLMRouter satisfies interface
+func TestLLMRouterInterface_MockRouter(t *testing.T) {
+	// Create a MockLLMRouter for testing
+	router := NewMockLLMRouter()
 
 	// Test interface methods
 	t.Run("IsHealthy", func(t *testing.T) {
-		// With no providers, should not be healthy
+		// By default, mock router is healthy
 		healthy := router.IsHealthy()
-		if healthy {
-			t.Error("Expected unhealthy with no providers")
+		if !healthy {
+			t.Error("Expected healthy by default")
+		}
+
+		// Test unhealthy state
+		router.Healthy = false
+		if router.IsHealthy() {
+			t.Error("Expected unhealthy after setting Healthy=false")
 		}
 	})
 
@@ -844,11 +849,11 @@ func TestLLMRouterInterface_LLMRouter(t *testing.T) {
 		}
 	})
 
-	t.Run("UpdateProviderWeights with empty weights", func(t *testing.T) {
-		err := router.UpdateProviderWeights(map[string]float64{})
-		// Empty weights should fail validation
-		if err == nil {
-			t.Error("Expected error with empty weights")
+	t.Run("UpdateProviderWeights", func(t *testing.T) {
+		err := router.UpdateProviderWeights(map[string]float64{"test": 1.0})
+		// Default mock router should accept weights
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 }
