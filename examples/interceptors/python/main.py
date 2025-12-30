@@ -6,13 +6,17 @@ Demonstrates how to wrap LLM provider clients with AxonFlow governance
 using interceptors. This provides transparent policy enforcement without
 changing your existing LLM call patterns.
 
+This example uses Community Mode (self-hosted) which doesn't require
+authentication credentials. For enterprise deployments, you can add
+client_id and client_secret parameters.
+
 Interceptors automatically:
 - Pre-check queries against policies before LLM calls
 - Block requests that violate policies
 - Audit LLM responses for compliance tracking
 
 Requirements:
-    pip install axonflow openai
+    pip install axonflow>=0.10.0 openai
 
 Usage:
     export AXONFLOW_AGENT_URL=http://localhost:8080
@@ -20,7 +24,6 @@ Usage:
     python main.py
 """
 
-import asyncio
 import os
 
 from openai import OpenAI
@@ -35,10 +38,10 @@ def main():
     print("=" * 60)
     print()
 
-    # Initialize AxonFlow client
+    # Initialize AxonFlow client in Community Mode (no authentication required)
+    # For enterprise deployments, add: client_id="...", client_secret="..."
     axonflow = AxonFlow(
         agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        license_key=os.getenv("AXONFLOW_LICENSE_KEY", ""),
     )
 
     # Initialize OpenAI client

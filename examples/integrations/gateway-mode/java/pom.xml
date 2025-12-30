@@ -21,8 +21,8 @@
     <dependencies>
         <dependency>
             <groupId>com.getaxonflow</groupId>
-            <artifactId>axonflow-sdk-java</artifactId>
-            <version>1.7.0</version>
+            <artifactId>axonflow-sdk</artifactId>
+            <version>1.8.0</version>
         </dependency>
 
         <!-- OpenAI Java client -->
