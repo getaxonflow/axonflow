@@ -128,9 +128,9 @@ docker exec axonflow-ollama ollama pull codellama      # 7B, code generation
 curl http://localhost:11434/api/version
 
 # 5. Configure AxonFlow to use Ollama
-export LLM_PROVIDER=ollama
-export LLM_OLLAMA_BASE_URL=http://ollama:11434
-export LLM_OLLAMA_MODEL=llama3.1
+# Ollama is auto-enabled when OLLAMA_ENDPOINT is set
+export OLLAMA_ENDPOINT=http://ollama:11434
+export OLLAMA_MODEL=llama3.1
 
 # 6. Restart orchestrator
 docker-compose restart orchestrator
@@ -172,10 +172,10 @@ services:
   orchestrator:
     # ... existing config ...
     environment:
-      - LLM_PROVIDER=ollama
-      - LLM_OLLAMA_BASE_URL=http://ollama:11434
-      - LLM_OLLAMA_MODEL=llama3.1
-      - LLM_OLLAMA_TIMEOUT=60s
+      # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
+      - OLLAMA_ENDPOINT=http://ollama:11434
+      - OLLAMA_MODEL=llama3.1
+      - OLLAMA_TIMEOUT_SECONDS=60
     depends_on:
       - ollama
 ```

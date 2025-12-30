@@ -63,12 +63,9 @@ var runtimeConfigMu sync.RWMutex
 // Access to this variable must be protected by runtimeConfigMu.
 var runtimeConfigService *config.RuntimeConfigService
 
-// llmRouterMu protects access to llmRouter global variable during refresh operations.
-// This prevents race conditions when RefreshLLMConfig updates the router.
-//
-// Lock ordering: Always acquire runtimeConfigMu before llmRouterMu when both are needed.
-// See RefreshLLMConfig for the canonical lock ordering pattern.
-var llmRouterMu sync.RWMutex
+// Note: Legacy llmRouterMu and GetLLMRouter/SetLLMRouter removed in v2.3.0.
+// All LLM routing now uses LLMRouterInterface via llmRouterWrapper.
+// See ADR-022 for migration details.
 
 // InitRuntimeConfigService initializes the RuntimeConfigService for the orchestrator.
 // This should be called during orchestrator startup, after database connection is established.
@@ -235,7 +232,11 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 
 // RefreshLLMConfig refreshes the LLM configuration from the RuntimeConfigService.
 // This can be called to pick up configuration changes without restarting.
-// Thread-safe: uses mutexes to protect access to global state.
+// Thread-safe: uses mutex to protect access to global state.
+//
+// Note: As of v2.3.0, this only refreshes the config cache. The global router
+// (llmRouterWrapper in run.go) must be recreated separately if provider changes
+// are needed. For runtime weight updates, use llmRouterWrapper.UpdateProviderWeights().
 func RefreshLLMConfig(ctx context.Context, tenantID string) error {
 	runtimeConfigMu.RLock()
 	svc := runtimeConfigService
@@ -248,40 +249,14 @@ func RefreshLLMConfig(ctx context.Context, tenantID string) error {
 	// Invalidate cache and reload
 	svc.RefreshAllConfigs()
 
-	// Reload configuration
-	newConfig := LoadLLMConfigFromService(ctx, tenantID)
+	// Reload configuration (callers can use this for new router initialization)
+	_ = LoadLLMConfigFromService(ctx, tenantID)
 
-	// Update the global LLM router if it exists
-	// Use mutex to prevent race condition during router swap
-	llmRouterMu.Lock()
-	defer llmRouterMu.Unlock()
-
-	if llmRouter != nil {
-		// Note: This creates a new router. In future, we could add a
-		// ReconfigureRouter method to update config without recreation.
-		llmRouter = NewLLMRouter(newConfig)
-		log.Println("[LLM Config] LLM Router reconfigured with refreshed config")
-	}
+	log.Println("[LLM Config] Configuration cache refreshed")
 
 	return nil
 }
 
-// GetLLMRouter returns the global LLM router with thread-safe access.
-// This should be used instead of directly accessing llmRouter when
-// RefreshLLMConfig may be called concurrently.
-func GetLLMRouter() *LLMRouter {
-	llmRouterMu.RLock()
-	defer llmRouterMu.RUnlock()
-	return llmRouter
-}
-
-// SetLLMRouter sets the global LLM router with thread-safe access.
-// This should be used during initialization.
-func SetLLMRouter(router *LLMRouter) {
-	llmRouterMu.Lock()
-	defer llmRouterMu.Unlock()
-	llmRouter = router
-}
 
 // SetConfigFileLoaderFromEnv initializes a config file loader from environment variables.
 // This completes the ADR-007 three-tier configuration: Database > Config File > Env Vars

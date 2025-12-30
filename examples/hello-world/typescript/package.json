@@ -13,7 +13,7 @@
   "author": "AxonFlow",
   "license": "MIT",
   "dependencies": {
-    "@axonflow/sdk": "^1.9.0",
+    "@axonflow/sdk": "^1.10.0",
     "dotenv": "^16.3.0",
     "openai": "^4.0.0"
   },

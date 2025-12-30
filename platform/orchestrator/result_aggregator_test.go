@@ -89,23 +89,9 @@ func TestResultAggregator_AggregateResults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock LLM router
-			mockRouter := &LLMRouter{
-				providers: map[string]LLMProvider{
-					"mock": &MockProvider{
-						name:    "mock",
-						healthy: true,
-					},
-				},
-				weights: map[string]float64{
-					"mock": 1.0,
-				},
-				loadBalancer:   NewLoadBalancer(),
-				metricsTracker: NewProviderMetricsTracker(),
-			}
+			mockRouter := NewMockLLMRouter()
 
-			aggregator := &ResultAggregator{
-				llmRouter: mockRouter,
-			}
+			aggregator := NewResultAggregator(mockRouter)
 
 			ctx := context.Background()
 			user := UserContext{
@@ -233,23 +219,9 @@ func TestResultAggregator_BuildSynthesisPrompt(t *testing.T) {
 
 // TestResultAggregator_AggregateWithCustomPrompt tests custom prompt aggregation
 func TestResultAggregator_AggregateWithCustomPrompt(t *testing.T) {
-	mockRouter := &LLMRouter{
-		providers: map[string]LLMProvider{
-			"mock": &MockProvider{
-				name:    "mock",
-				healthy: true,
-			},
-		},
-		weights: map[string]float64{
-			"mock": 1.0,
-		},
-		loadBalancer:   NewLoadBalancer(),
-		metricsTracker: NewProviderMetricsTracker(),
-	}
+	mockRouter := NewMockLLMRouter()
 
-	aggregator := &ResultAggregator{
-		llmRouter: mockRouter,
-	}
+	aggregator := NewResultAggregator(mockRouter)
 
 	ctx := context.Background()
 	results := []StepExecution{
@@ -300,11 +272,7 @@ func ptrTime(t time.Time) *time.Time {
 
 // TestResultAggregator_IsHealthy tests health check
 func TestResultAggregator_IsHealthy(t *testing.T) {
-	mockRouter := &LLMRouter{
-		providers: map[string]LLMProvider{
-			"test": &MockProvider{healthy: true},
-		},
-	}
+	mockRouter := NewMockLLMRouter()
 
 	aggregator := NewResultAggregator(mockRouter)
 

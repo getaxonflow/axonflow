@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package llm
 
@@ -20,6 +12,14 @@ import (
 	"strings"
 	"time"
 )
+
+// additionalBootstrapProviders allows enterprise builds to add additional providers.
+// This is populated by init() in bootstrap_enterprise.go for enterprise builds.
+var additionalBootstrapProviders []struct {
+	name      string
+	ptype     ProviderType
+	bootstrap func() (*ProviderConfig, error)
+}
 
 // Environment variable names for provider configuration.
 const (
@@ -165,6 +165,15 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		{"openai", ProviderTypeOpenAI, bootstrapOpenAI},
 		{"ollama", ProviderTypeOllama, bootstrapOllama},
 		{"gemini", ProviderTypeGemini, bootstrapGemini},
+	}
+
+	// Add enterprise providers if available (populated by init() in bootstrap_enterprise.go)
+	for _, ep := range additionalBootstrapProviders {
+		providers = append(providers, struct {
+			name      string
+			ptype     ProviderType
+			bootstrap func() (*ProviderConfig, error)
+		}{ep.name, ep.ptype, ep.bootstrap})
 	}
 
 	ctx := context.Background()

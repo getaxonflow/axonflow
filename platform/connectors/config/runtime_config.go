@@ -576,7 +576,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
 		model := os.Getenv("ANTHROPIC_MODEL")
 		if model == "" {
-			model = "claude-3-5-sonnet-20241022"
+			model = "claude-sonnet-4-20250514"
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "anthropic",

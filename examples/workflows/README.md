@@ -13,7 +13,7 @@ cp .env.example .env
 go run main.go
 ```
 
-## Basic Patterns (Community Features)
+## Basic Patterns
 
 ### 1. Simple Sequential
 **File:** `01-simple-sequential/`
@@ -59,35 +59,9 @@ Build multi-step data pipelines with different connector types.
 
 Implement approval flows with policy enforcement at each step.
 
-## Advanced Patterns (Enterprise Features)
+## Enterprise Workflows
 
-### 7. Healthcare Patient Diagnosis
-**File:** `07-healthcare-diagnosis/`
-**Lines:** ~80 lines
-**What it shows:** Symptoms → lab results → imaging → diagnosis (sequential dependencies)
-
-HIPAA-compliant workflow with PII redaction and compliance logging.
-
-### 8. E-commerce Order Processing
-**File:** `08-ecommerce-order/`
-**Lines:** ~90 lines
-**What it shows:** Validate inventory → payment → ship → notify
-
-Transaction-like workflow with rollback capabilities.
-
-### 9. Financial Report Generation
-**File:** `09-financial-report/`
-**Lines:** ~100 lines
-**What it shows:** Fetch from Snowflake → analyze → PDF → email
-
-Compliance reporting with SOC2 audit trails.
-
-### 10. Chatbot with Memory
-**File:** `10-chatbot-memory/`
-**Lines:** ~80 lines
-**What it shows:** Query → load context from Redis → LLM → save context
-
-Stateful conversations with context persistence.
+For advanced enterprise workflow examples (healthcare, e-commerce, financial reporting, chatbot with memory), see [ee/examples/workflows/](../../ee/examples/workflows/).
 
 ## Requirements
 

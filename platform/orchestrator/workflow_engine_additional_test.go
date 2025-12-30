@@ -42,11 +42,8 @@ func TestInitializeWithDependencies(t *testing.T) {
 func TestInitializeWithDependencies_WithRouter(t *testing.T) {
 	engine := NewWorkflowEngine()
 
-	// Create real router with test config
-	config := LLMRouterConfig{
-		OpenAIKey: "test-key-init",
-	}
-	router := NewLLMRouter(config)
+	// Create mock router for testing
+	router := NewMockLLMRouter()
 
 	engine.InitializeWithDependencies(router, nil)
 

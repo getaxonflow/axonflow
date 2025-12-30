@@ -56,27 +56,23 @@ The bootstrap system initializes LLM providers from environment variables at sta
 ### Environment Variable Configuration
 
 ```bash
-# Enable specific providers
-export LLM_OPENAI_ENABLED=true
-export LLM_ANTHROPIC_ENABLED=true
-export LLM_BEDROCK_ENABLED=true
-export LLM_OLLAMA_ENABLED=true
+# Providers are auto-enabled when their credentials/endpoints are set
 
-# OpenAI configuration
+# OpenAI configuration (auto-enabled when OPENAI_API_KEY is set)
 export OPENAI_API_KEY=sk-...
 export OPENAI_MODEL=gpt-4
 
-# Anthropic configuration
+# Anthropic configuration (auto-enabled when ANTHROPIC_API_KEY is set)
 export ANTHROPIC_API_KEY=sk-ant-...
 export ANTHROPIC_MODEL=claude-3-sonnet-20240229
 
-# AWS Bedrock configuration
-export AWS_REGION=us-east-1
-export LLM_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
+# AWS Bedrock configuration (auto-enabled when BEDROCK_REGION is set)
+export BEDROCK_REGION=us-east-1
+export BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
 
-# Ollama configuration
-export LLM_OLLAMA_ENDPOINT=http://localhost:11434
-export LLM_OLLAMA_MODEL=llama3
+# Ollama configuration (auto-enabled when OLLAMA_ENDPOINT is set)
+export OLLAMA_ENDPOINT=http://localhost:11434
+export OLLAMA_MODEL=llama3
 ```
 
 ### Bootstrap Process

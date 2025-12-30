@@ -39,11 +39,10 @@ func BenchmarkNewDynamicPolicyEngine(b *testing.B) {
 	}
 }
 
-// BenchmarkNewLLMRouter benchmarks LLM router creation
-func BenchmarkNewLLMRouter(b *testing.B) {
-	config := LLMRouterConfig{OpenAIKey: "test-key", AnthropicKey: "test-key"}
+// BenchmarkNewMockLLMRouter benchmarks mock LLM router creation
+func BenchmarkNewMockLLMRouter(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = NewLLMRouter(config)
+		_ = NewMockLLMRouter()
 	}
 }
 

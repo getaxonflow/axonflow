@@ -161,21 +161,19 @@ export AWS_REGION=us-east-1
 
 ```yaml
 # config/environments/airgap.yaml
-LLM_PROVIDER: ollama
-LLM_OLLAMA_ENABLED: true
-LLM_OLLAMA_BASE_URL: http://ollama.internal.axonflow.com:11434
-LLM_OLLAMA_MODEL: llama3.1
-LLM_OLLAMA_TIMEOUT: 120s
+# Ollama is auto-enabled when OLLAMA_ENDPOINT is set
+OLLAMA_ENDPOINT: http://ollama.internal.axonflow.com:11434
+OLLAMA_MODEL: llama3.1
+OLLAMA_TIMEOUT_SECONDS: 120
 ```
 
 **Environment Variables**:
 
 ```bash
-export LLM_PROVIDER=ollama
-export LLM_OLLAMA_ENABLED=true
-export LLM_OLLAMA_BASE_URL=http://localhost:11434  # or http://ollama-server:11434
-export LLM_OLLAMA_MODEL=llama3.1  # or mistral, codellama, etc.
-export LLM_OLLAMA_TIMEOUT=60s
+# Ollama is auto-enabled when OLLAMA_ENDPOINT is set
+export OLLAMA_ENDPOINT=http://localhost:11434  # or http://ollama-server:11434
+export OLLAMA_MODEL=llama3.1  # or mistral, codellama, etc.
+export OLLAMA_TIMEOUT_SECONDS=60
 ```
 
 **Docker Compose Example**:
@@ -202,9 +200,9 @@ services:
     depends_on:
       - ollama
     environment:
-      - LLM_PROVIDER=ollama
-      - LLM_OLLAMA_BASE_URL=http://ollama:11434
-      - LLM_OLLAMA_MODEL=llama3.1
+      # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
+      - OLLAMA_ENDPOINT=http://ollama:11434
+      - OLLAMA_MODEL=llama3.1
 
 volumes:
   ollama-data:

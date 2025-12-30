@@ -1,0 +1,16 @@
+{
+  "name": "llm-provider-tests",
+  "version": "1.0.0",
+  "description": "Community LLM Provider E2E Tests",
+  "main": "main.ts",
+  "scripts": {
+    "test": "ts-node main.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^1.8.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

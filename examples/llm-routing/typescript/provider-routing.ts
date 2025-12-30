@@ -1,15 +1,16 @@
 /**
  * LLM Provider Routing Example
  *
- * This example demonstrates how to:
- * 1. Use default routing (server-side configuration)
- * 2. Specify a preferred provider in requests
- * 3. Query provider status
+ * This example demonstrates how AxonFlow routes requests to LLM providers.
+ * Provider selection is controlled SERVER-SIDE via environment variables,
+ * not per-request. This ensures consistent routing policies across your org.
  *
  * Server-side configuration (environment variables):
- *   LLM_ROUTING_STRATEGY=weighted|round_robin|failover
- *   PROVIDER_WEIGHTS=openai:50,anthropic:30,bedrock:20
- *   DEFAULT_LLM_PROVIDER=bedrock
+ *   LLM_ROUTING_STRATEGY=weighted|round_robin|failover|cost_optimized*
+ *   PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20
+ *   DEFAULT_LLM_PROVIDER=openai
+ *
+ * * cost_optimized is Enterprise only
  */
 
 import { AxonFlow } from "@axonflow/sdk";
@@ -22,76 +23,57 @@ async function main() {
   });
 
   console.log("=== LLM Provider Routing Examples ===\n");
+  console.log("Provider selection is server-side. Configure via environment variables:");
+  console.log("  LLM_ROUTING_STRATEGY=weighted");
+  console.log("  PROVIDER_WEIGHTS=openai:50,anthropic:30,ollama:20\n");
 
-  // Example 1: Default routing (uses server-side strategy)
-  console.log("1. Default routing (server decides provider):");
+  // Example 1: Send a request (server decides which provider to use)
+  console.log("1. Send request (server routes based on configured strategy):");
   try {
-    const defaultResponse = await client.executeQuery({
+    const response = await client.executeQuery({
       userToken: "demo-user",
       query: "What is 2 + 2?",
       requestType: "chat",
     });
-    const data = typeof defaultResponse.data === 'object'
-      ? JSON.stringify(defaultResponse.data).substring(0, 100)
-      : String(defaultResponse.data).substring(0, 100);
+    const data = typeof response.data === 'object'
+      ? JSON.stringify(response.data).substring(0, 100)
+      : String(response.data).substring(0, 100);
     console.log(`   Response: ${data}...`);
-    console.log(`   Success: ${defaultResponse.success}\n`);
+    console.log(`   Success: ${response.success}\n`);
   } catch (error) {
     console.log(`   Error: ${error}\n`);
   }
 
-  // Example 2: Request specific provider (Ollama - local)
-  console.log("2. Request specific provider (Ollama):");
-  try {
-    const ollamaResponse = await client.executeQuery({
-      userToken: "demo-user",
-      query: "What is the capital of France?",
-      requestType: "chat",
-      context: {
-        provider: "ollama", // Request specific provider
-      },
-    });
-    const data = typeof ollamaResponse.data === 'object'
-      ? JSON.stringify(ollamaResponse.data).substring(0, 100)
-      : String(ollamaResponse.data).substring(0, 100);
-    console.log(`   Response: ${data}...`);
-    console.log(`   Success: ${ollamaResponse.success}\n`);
-  } catch (error) {
-    console.log(`   Error: ${error}\n`);
+  // Example 2: Multiple requests show distribution based on weights
+  console.log("2. Multiple requests (observe provider distribution):");
+  for (let i = 1; i <= 3; i++) {
+    try {
+      const response = await client.executeQuery({
+        userToken: "demo-user",
+        query: `Question ${i}: What is the capital of France?`,
+        requestType: "chat",
+      });
+      console.log(`   Request ${i}: Success (provider selected by server)`);
+    } catch (error) {
+      console.log(`   Request ${i} Error: ${error}`);
+    }
   }
+  console.log();
 
-  // Example 3: Request with model override
-  console.log("3. Request with specific model:");
-  try {
-    const modelResponse = await client.executeQuery({
-      userToken: "demo-user",
-      query: "What is machine learning in one sentence?",
-      requestType: "chat",
-      context: {
-        provider: "ollama",
-        model: "tinyllama", // Specify exact model
-      },
-    });
-    const data = typeof modelResponse.data === 'object'
-      ? JSON.stringify(modelResponse.data).substring(0, 100)
-      : String(modelResponse.data).substring(0, 100);
-    console.log(`   Response: ${data}...`);
-    console.log(`   Success: ${modelResponse.success}\n`);
-  } catch (error) {
-    console.log(`   Error: ${error}\n`);
-  }
-
-  // Example 4: Health check
-  console.log("4. Check agent health:");
+  // Example 3: Health check
+  console.log("3. Check agent health:");
   try {
     const health = await client.healthCheck();
     console.log(`   Status: ${health.status}`);
-    console.log(`   Version: ${health.version || "N/A"}\n`);
   } catch (error) {
-    console.log(`   Error: ${error}\n`);
+    console.log(`   Error: ${error}`);
   }
 
-  console.log("=== Examples Complete ===");
+  console.log("\n=== Examples Complete ===");
+  console.log("\nTo change provider routing, update server environment variables:");
+  console.log("  - LLM_ROUTING_STRATEGY: weighted, round_robin, failover");
+  console.log("  - PROVIDER_WEIGHTS: distribution percentages");
+  console.log("  - DEFAULT_LLM_PROVIDER: fallback for failover strategy");
 }
 
 main().catch(console.error);

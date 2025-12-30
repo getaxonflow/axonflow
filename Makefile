@@ -9,7 +9,7 @@ GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m
 
-# Build edition (oss or enterprise)
+# Build edition (community or enterprise)
 EDITION ?= enterprise
 
 help: ## Show this help message
@@ -79,7 +79,7 @@ build: ## Build all Docker images (enterprise by default)
 
 build-community: ## Build Community Docker images (no enterprise features)
 	@echo "$(YELLOW)Building Community images...$(NC)"
-	@docker-compose build --build-arg EDITION=oss
+	@docker-compose build --build-arg EDITION=community
 	@echo "$(GREEN)✅ Community images built$(NC)"
 
 build-enterprise: ## Build Enterprise Docker images (all features)

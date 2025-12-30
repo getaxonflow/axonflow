@@ -26,8 +26,9 @@ type LLMRouterInterface interface {
 	UpdateProviderWeights(weights map[string]float64) error
 }
 
-// Compile-time verification that LLMRouter implements LLMRouterInterface
-var _ LLMRouterInterface = (*LLMRouter)(nil)
+// Note: Compile-time verification for legacy LLMRouter removed in v2.3.0.
+// UnifiedRouterWrapper is now the only implementation of LLMRouterInterface.
+var _ LLMRouterInterface = (*UnifiedRouterWrapper)(nil)
 
 // UnifiedRouterWrapper wraps llm.UnifiedRouter to implement LLMRouterInterface.
 // This enables the UnifiedRouter to be used as a drop-in replacement for LLMRouter.
