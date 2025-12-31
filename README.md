@@ -345,6 +345,20 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## Links
 
 - **Docs:** https://docs.getaxonflow.com
-- **Issues:** https://github.com/getaxonflow/axonflow/issues
 - **License:** [BSL 1.1](LICENSE) (converts to Apache 2.0 after 4 years)
+- **Issues:** https://github.com/getaxonflow/axonflow/issues
 - **Enterprise:** [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
+
+---
+
+### Public Issues (Technical Questions Welcome)
+
+If you're evaluating AxonFlow and encounter unclear behavior, edge cases, or questions around guarantees (e.g. policy enforcement, audit semantics, failure modes), opening a GitHub issue is welcome.
+
+We're especially interested in questions that surface ambiguous semantics or runtime edge cases rather than general feedback.
+
+### Private Evaluation Questions
+
+If you're evaluating AxonFlow internally and prefer not to open a public issue, you can reach us at hello@getaxonflow.com.
+
+This channel is intended for technical questions about semantics, guarantees, or runtime behavior. We treat these as engineering discussions, not sales conversations.
