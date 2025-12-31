@@ -5,8 +5,7 @@ services:
       context: ../..
       dockerfile: platform/agent/Dockerfile
     environment:
-      - SELF_HOSTED_MODE=true
-      - SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH
+      - DEPLOYMENT_MODE=community
       - ORCHESTRATOR_URL=http://axonflow-orchestrator:8081
       - LOG_LEVEL=info
       # Allow PII through for role-based demo (detect but don't block)

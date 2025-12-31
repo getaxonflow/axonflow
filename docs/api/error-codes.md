@@ -66,7 +66,7 @@ For validation errors with multiple issues:
 curl -H "X-License-Key: axf_live_your_key" ...
 ```
 
-**Note:** Not required when `SELF_HOSTED_MODE=true`.
+**Note:** Not required when `DEPLOYMENT_MODE=community`.
 
 ---
 

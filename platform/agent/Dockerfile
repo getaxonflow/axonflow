@@ -58,6 +58,11 @@ RUN --mount=type=bind,source=.,target=/src \
         go mod edit -replace axonflow/ee/platform=/go/src/axonflow/ee/platform && \
         echo "  Copied enterprise SQLi scanner (ML-based) and configured modules"; \
       fi && \
+      if [ -d "/src/ee/platform/agent/connectors" ]; then \
+        mkdir -p /go/src/axonflow/ee/platform/agent/connectors && \
+        cp -r /src/ee/platform/agent/connectors/* /go/src/axonflow/ee/platform/agent/connectors/ && \
+        echo "  Copied enterprise connector factory registration"; \
+      fi && \
       echo "Enterprise agent code copied successfully" && \
       echo "=== Enterprise build: copying EE connectors ===" && \
       for connector in amadeus salesforce slack snowflake hubspot jira servicenow; do \

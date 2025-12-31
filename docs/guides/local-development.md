@@ -319,34 +319,25 @@ cp .env.example .env
 
 ---
 
-## Self-Hosted Mode Security
+## Community Mode
 
-When running in self-hosted mode (`SELF_HOSTED_MODE=true`), authentication is bypassed for local development convenience. This mode has security safeguards to prevent accidental misuse.
+When running in community mode (`DEPLOYMENT_MODE=community` or unset), authentication is bypassed for local development convenience.
 
-### Required Environment Variables
+### Configuration
 
-For self-hosted mode to work, you MUST set:
+Set the deployment mode in your environment:
 
 ```bash
-SELF_HOSTED_MODE=true
-SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH
-ENVIRONMENT=development  # MUST NOT be "production" or "prod"
+DEPLOYMENT_MODE=community  # Or leave unset (defaults to community)
 ```
 
-### Security Safeguards
+### What Community Mode Does
 
-1. **Production Block**: Self-hosted mode is completely blocked when `ENVIRONMENT=production` or `ENVIRONMENT=prod`. This prevents accidental deployment without authentication.
-
-2. **Explicit Acknowledgment**: You must set `SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH` to confirm you understand that all authentication is bypassed.
-
-3. **Log Warnings**: Clear warnings are logged when self-hosted mode is active to ensure operators are aware.
-
-### What Self-Hosted Mode Does
-
-When properly configured, self-hosted mode:
+In community mode:
 - Accepts **any** token value (no JWT validation)
 - Returns a local dev user with admin permissions
 - Grants access to all features (query, llm, mcp_query, admin)
+- Skips license validation
 
 ### docker-compose.yml Configuration
 
@@ -354,20 +345,26 @@ The included `docker-compose.yml` already has the correct configuration:
 
 ```yaml
 environment:
-  SELF_HOSTED_MODE: "true"
-  SELF_HOSTED_MODE_ACKNOWLEDGED: "I_UNDERSTAND_NO_AUTH"
-  ENVIRONMENT: "development"
+  DEPLOYMENT_MODE: community
 ```
 
-### Disabling Self-Hosted Mode
+### Enabling Enterprise Mode
 
-For production or secure environments, simply remove or set to false:
+For production or secure environments, set the deployment mode to enterprise:
 
 ```yaml
 environment:
-  SELF_HOSTED_MODE: "false"  # or remove entirely
-  # Use real JWT authentication
+  DEPLOYMENT_MODE: enterprise
+  # Requires valid license and JWT authentication
 ```
+
+### DEPLOYMENT_MODE Values
+
+| Value | Auth Required | Features | Use Case |
+|-------|---------------|----------|----------|
+| `community` (or unset) | No | Core | Local development |
+| `enterprise` | Yes | Core + Enterprise | Production |
+| `saas` | Yes | All | Multi-tenant SaaS |
 
 ---
 

@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -298,9 +297,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate license key from header
+	// Validate license key from header (not required in Community mode)
 	licenseKey := r.Header.Get("X-License-Key")
-	if licenseKey == "" && os.Getenv("SELF_HOSTED_MODE") != "true" {
+	if licenseKey == "" && !isCommunityMode() {
 		log.Printf("❌ [Pre-check] Missing X-License-Key header")
 		sendGatewayError(w, "X-License-Key header required", http.StatusUnauthorized)
 		return
@@ -311,11 +310,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	var err error
 	ctx := r.Context()
 
-	if os.Getenv("SELF_HOSTED_MODE") == "true" {
+	if isCommunityMode() {
 		client = &Client{
 			ID:          req.ClientID,
-			Name:        "Self-Hosted",
-			OrgID:       "self-hosted",
+			Name:        "Community",
+			OrgID:       "community",
 			TenantID:    req.ClientID,
 			Enabled:     true,
 			LicenseTier: "Community",
@@ -518,9 +517,9 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate license key
+	// Validate license key (not required in Community mode)
 	licenseKey := r.Header.Get("X-License-Key")
-	if licenseKey == "" && os.Getenv("SELF_HOSTED_MODE") != "true" {
+	if licenseKey == "" && !isCommunityMode() {
 		sendGatewayError(w, "X-License-Key header required", http.StatusUnauthorized)
 		return
 	}

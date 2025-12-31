@@ -47,12 +47,14 @@ import (
 // AxonFlow Agent - Authentication, Authorization & Static Policy Enforcement Gateway
 // This service sits between clients and the AxonFlow Orchestrator
 
-// Security constants
-const (
-	// SelfHostedModeAcknowledgment is the required value for SELF_HOSTED_MODE_ACKNOWLEDGED
-	// to explicitly confirm understanding that authentication is bypassed in self-hosted mode
-	SelfHostedModeAcknowledgment = "I_UNDERSTAND_NO_AUTH"
-)
+// isCommunityMode returns true if running in Community mode.
+// Community mode bypasses license validation and authentication for local development.
+// Pattern: DEPLOYMENT_MODE == "community" || DEPLOYMENT_MODE == "" (unset)
+// This is the canonical way to check for Community mode across the codebase.
+func isCommunityMode() bool {
+	mode := os.Getenv("DEPLOYMENT_MODE")
+	return mode == "community" || mode == ""
+}
 
 // Configuration
 var (
@@ -357,15 +359,14 @@ func Run() {
 	port := getEnv("PORT", "8080")
 	initServerImmediately(port)
 
-	// License validation (optional for central agent deployments and self-hosted mode)
+	// License validation (optional for central agent deployments and community mode)
 	// Central agents validate CLIENT license keys during request processing
-	// Self-hosted mode skips license validation entirely (for Community/local development)
+	// Community mode skips license validation entirely (for local development)
 	// This validation is only needed for customer-deployed agents
-	selfHostedMode := os.Getenv("SELF_HOSTED_MODE") == "true"
 	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
 
-	if selfHostedMode {
-		log.Println("🏠 SELF_HOSTED_MODE enabled - skipping license validation")
+	if isCommunityMode() {
+		log.Println("🏠 Community mode - skipping license validation")
 		log.Println("   Perfect for Community contributors and local development")
 	} else {
 		// Validate HMAC secret is properly configured before any license operations
@@ -862,19 +863,16 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 1. Validate client authentication
 	validateClientStart := time.Now()
 
-	// Check if running in self-hosted mode (no license validation)
-	selfHostedMode := os.Getenv("SELF_HOSTED_MODE") == "true"
-
 	var client *Client
 	var err error
 
-	if selfHostedMode {
-		log.Printf("🏠 Self-hosted mode: Skipping authentication for client '%s'", req.ClientID)
-		// Create a dummy client for self-hosted deployments
+	if isCommunityMode() {
+		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", req.ClientID)
+		// Create a dummy client for community deployments
 		client = &Client{
 			ID:          req.ClientID,
-			Name:        "Self-Hosted",
-			OrgID:       "self-hosted",
+			Name:        "Community",
+			OrgID:       "community",
 			TenantID:    req.ClientID,
 			Enabled:     true,
 			LicenseTier: "Community",
@@ -1236,25 +1234,10 @@ func validateClient(clientID string) (*Client, error) {
 }
 
 func validateUserToken(tokenString string, expectedTenantID string) (*User, error) {
-	// Self-hosted mode: Don't require a token for local development
-	// SECURITY: This bypass requires explicit safeguards
-	if os.Getenv("SELF_HOSTED_MODE") == "true" {
-		// Safeguard 1: Block in production environment (case-insensitive)
-		env := strings.ToLower(os.Getenv("ENVIRONMENT"))
-		if env == "production" || env == "prod" {
-			log.Printf("[SECURITY] CRITICAL: SELF_HOSTED_MODE blocked in production environment")
-			return nil, fmt.Errorf("self-hosted mode is not allowed in production environment")
-		}
-
-		// Safeguard 2: Require explicit acknowledgment
-		acknowledgment := os.Getenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
-		if acknowledgment != SelfHostedModeAcknowledgment {
-			log.Printf("[SECURITY] SELF_HOSTED_MODE requires explicit acknowledgment")
-			return nil, fmt.Errorf("self-hosted mode requires SELF_HOSTED_MODE_ACKNOWLEDGED=%s environment variable", SelfHostedModeAcknowledgment)
-		}
-
-		// Safeguard 3: Clear warning in logs
-		log.Printf("[SECURITY] WARNING: Self-hosted mode active - ALL AUTHENTICATION BYPASSED for tenant %s", expectedTenantID)
+	// Community mode: Don't require a token for local development
+	// Uses DEPLOYMENT_MODE check - simple and clean pattern
+	if isCommunityMode() {
+		log.Printf("[Community] Authentication bypassed for tenant %s", expectedTenantID)
 		return &User{
 			ID:          1,
 			Email:       "local-dev@axonflow.local",

@@ -1,0 +1,16 @@
+{
+  "name": "axonflow-workflow-06-multi-step-approval",
+  "version": "1.0.0",
+  "description": "Example 6: Multi-Step Approval Workflow",
+  "main": "main.ts",
+  "scripts": {
+    "start": "npx ts-node main.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^1.11.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
