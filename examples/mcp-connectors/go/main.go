@@ -63,8 +63,9 @@ func main() {
 	fmt.Println("==============================================")
 	fmt.Printf("Orchestrator URL: %s\n\n", orchestratorURL)
 
-	// Test 1: Query postgres connector through orchestrator
-	fmt.Println("Test 1: Query postgres connector via orchestrator...")
+	// Test 1: Query axonflow_rds connector through orchestrator
+	// Note: "axonflow_rds" is the default postgres connector registered when DATABASE_URL is set
+	fmt.Println("Test 1: Query axonflow_rds connector via orchestrator...")
 
 	req := OrchestratorRequest{
 		RequestID:   fmt.Sprintf("mcp-test-%d", time.Now().UnixNano()),
@@ -80,7 +81,7 @@ func main() {
 			TenantID: "default",
 		},
 		Context: map[string]interface{}{
-			"connector": "postgres",
+			"connector": "axonflow_rds",
 			"params":    map[string]interface{}{},
 		},
 	}
@@ -108,11 +109,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Test 2: Query with database alias connector
-	fmt.Println("\nTest 2: Query 'database' connector (alias for postgres)...")
+	// Test 2: Query with a different statement
+	fmt.Println("\nTest 2: Query current timestamp...")
 
 	req.RequestID = fmt.Sprintf("mcp-test-%d", time.Now().UnixNano())
-	req.Context["connector"] = "database"
+	req.Query = "SELECT NOW() as current_time, 'AxonFlow MCP' as source"
 
 	result, err = sendRequest(orchestratorURL+"/api/v1/process", req)
 	if err != nil {
@@ -121,7 +122,12 @@ func main() {
 	}
 
 	if result.Success {
-		fmt.Println("SUCCESS: Database alias connector worked!")
+		fmt.Println("SUCCESS: Timestamp query worked!")
+		if result.Data != nil {
+			if rows, ok := result.Data["rows"].([]interface{}); ok && len(rows) > 0 {
+				fmt.Printf("  Result: %v\n", rows[0])
+			}
+		}
 	} else {
 		fmt.Printf("FAILED: %s\n", result.Error)
 		os.Exit(1)
