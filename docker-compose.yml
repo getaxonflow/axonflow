@@ -112,9 +112,8 @@ services:
       ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
 
       # MCP Connector configuration
-      AXONFLOW_CONFIG_FILE: /config/axonflow.yaml
-    volumes:
-      - ./config/axonflow.yaml:/config/axonflow.yaml:ro
+      # DATABASE_URL enables the axonflow_rds connector for MCP queries
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
     ports:
       - "8080:8080"
     depends_on:
