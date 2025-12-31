@@ -1,5 +1,5 @@
 # AxonFlow SDK
-axonflow>=0.10.0
+axonflow>=0.10.1
 
 # Environment management
 python-dotenv>=1.0.0
