@@ -101,11 +101,7 @@ public class AuditLoggingExample {
                     .clientId(CLIENT_ID)
                     .provider("openai")
                     .model("gpt-3.5-turbo")
-                    .tokenUsage(TokenUsage.builder()
-                        .promptTokens(promptTokens)
-                        .completionTokens(completionTokens)
-                        .totalTokens(totalTokens)
-                        .build())
+                    .tokenUsage(TokenUsage.of(promptTokens, completionTokens))
                     .latencyMs((int) llmLatency)
                     .success(true)
                     .build());

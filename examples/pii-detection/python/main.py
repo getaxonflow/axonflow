@@ -73,7 +73,7 @@ async def main():
             {
                 "name": "Phone Number",
                 "query": "Call customer at +1-555-123-4567",
-                "should_block": True,
+                "should_block": False,  # sys_pii_phone policy warns but doesn't block
                 "pii_type": "phone",
             },
         ]

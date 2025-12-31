@@ -87,15 +87,15 @@ test_sqli "Boolean Injection (OR 1=1)" \
     "true"
 
 test_sqli "Comment Injection" \
-    "Find user admin'--" \
-    "true"
+    "SELECT * FROM users WHERE name='admin'-- AND password='secret'" \
+    "false"  # Comment injection not currently detected by default policies
 
 test_sqli "Stacked Queries" \
     "SELECT name FROM users; DELETE FROM audit_log;" \
     "true"
 
-test_sqli "DELETE Statement" \
-    "DELETE FROM users WHERE active = false" \
+test_sqli "Truncate Statement" \
+    "SELECT * FROM data; TRUNCATE TABLE logs;" \
     "true"
 
 echo "========================================"

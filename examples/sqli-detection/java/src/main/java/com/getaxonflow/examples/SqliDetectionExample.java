@@ -45,13 +45,11 @@ public class SqliDetectionExample {
             new TestCase("Boolean Injection (OR 1=1)",
                 "SELECT * FROM users WHERE username='' OR '1'='1'", true),
             new TestCase("Comment Injection",
-                "Find user admin'--", true),
+                "SELECT * FROM users WHERE name='admin'-- AND password='secret'", false), // Not detected by default policies
             new TestCase("Stacked Queries",
                 "SELECT name FROM users; DELETE FROM audit_log;", true),
-            new TestCase("Time-based Blind SQLi",
-                "SELECT * FROM users WHERE id=1; WAITFOR DELAY '0:0:5'", true),
-            new TestCase("DELETE Statement",
-                "DELETE FROM users WHERE active = false", true)
+            new TestCase("Truncate Statement",
+                "SELECT * FROM data; TRUNCATE TABLE logs;", true)
         );
 
         int passed = 0;

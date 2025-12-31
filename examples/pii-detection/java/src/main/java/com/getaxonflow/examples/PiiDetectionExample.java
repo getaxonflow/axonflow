@@ -51,7 +51,7 @@ public class PiiDetectionExample {
             new TestCase("Email Address",
                 "Send invoice to john.doe@example.com", true, "email"),
             new TestCase("Phone Number",
-                "Call customer at +1-555-123-4567", true, "phone")
+                "Call customer at +1-555-123-4567", false, "phone") // sys_pii_phone warns but doesn't block
         );
 
         int passed = 0;

@@ -109,7 +109,7 @@ test_pii "Email Address" \
 
 test_pii "Phone Number" \
     "Call customer at +1-555-123-4567" \
-    "true"
+    "false"
 
 echo "========================================"
 echo "PII Detection Tests Complete"

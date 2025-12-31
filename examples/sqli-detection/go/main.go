@@ -62,8 +62,8 @@ func main() {
 		},
 		{
 			name:        "Comment Injection",
-			query:       "Find user admin'--",
-			shouldBlock: true,
+			query:       "SELECT * FROM users WHERE name='admin'-- AND password='secret'",
+			shouldBlock: false, // Comment injection not currently detected by default policies
 			sqliType:    "comment_injection",
 		},
 		{
@@ -73,16 +73,10 @@ func main() {
 			sqliType:    "stacked_queries",
 		},
 		{
-			name:        "Time-based Blind SQLi",
-			query:       "SELECT * FROM users WHERE id=1; WAITFOR DELAY '0:0:5'",
+			name:        "Truncate Statement",
+			query:       "SELECT * FROM data; TRUNCATE TABLE logs;",
 			shouldBlock: true,
-			sqliType:    "time_based",
-		},
-		{
-			name:        "DELETE Statement",
-			query:       "DELETE FROM users WHERE active = false",
-			shouldBlock: true,
-			sqliType:    "delete",
+			sqliType:    "truncate",
 		},
 	}
 

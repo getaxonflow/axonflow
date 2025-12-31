@@ -70,7 +70,7 @@ class GovernedOpenAI {
     if (!preCheck.approved) {
       throw new PolicyViolationError(
         preCheck.blockReason || "Policy violation",
-        preCheck.policies?.[0] || "unknown"
+        preCheck.policies || ["unknown"]
       );
     }
 

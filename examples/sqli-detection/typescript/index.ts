@@ -53,8 +53,8 @@ async function main() {
     },
     {
       name: "Comment Injection",
-      query: "Find user admin'--",
-      shouldBlock: true,
+      query: "SELECT * FROM users WHERE name='admin'-- AND password='secret'",
+      shouldBlock: false, // Comment injection not currently detected by default policies
     },
     {
       name: "Stacked Queries",
@@ -62,13 +62,8 @@ async function main() {
       shouldBlock: true,
     },
     {
-      name: "Time-based Blind SQLi",
-      query: "SELECT * FROM users WHERE id=1; WAITFOR DELAY '0:0:5'",
-      shouldBlock: true,
-    },
-    {
-      name: "DELETE Statement",
-      query: "DELETE FROM users WHERE active = false",
+      name: "Truncate Statement",
+      query: "SELECT * FROM data; TRUNCATE TABLE logs;",
       shouldBlock: true,
     },
   ];

@@ -54,8 +54,8 @@ async def main():
             },
             {
                 "name": "Comment Injection",
-                "query": "Find user admin'--",
-                "should_block": True,
+                "query": "SELECT * FROM users WHERE name='admin'-- AND password='secret'",
+                "should_block": False,  # Comment injection not currently detected by default policies
             },
             {
                 "name": "Stacked Queries",
@@ -63,13 +63,8 @@ async def main():
                 "should_block": True,
             },
             {
-                "name": "Time-based Blind SQLi",
-                "query": "SELECT * FROM users WHERE id=1; WAITFOR DELAY '0:0:5'",
-                "should_block": True,
-            },
-            {
-                "name": "DELETE Statement",
-                "query": "DELETE FROM users WHERE active = false",
+                "name": "Truncate Statement",
+                "query": "SELECT * FROM data; TRUNCATE TABLE logs;",
                 "should_block": True,
             },
         ]

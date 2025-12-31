@@ -71,7 +71,7 @@ async function main() {
     {
       name: "Phone Number",
       query: "Call customer at +1-555-123-4567",
-      shouldBlock: true,
+      shouldBlock: false, // sys_pii_phone policy warns but doesn't block
       piiType: "phone",
     },
   ];
