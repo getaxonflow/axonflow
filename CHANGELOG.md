@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.0] - 2025-12-31
+
+### Changed
+
+- **DEPLOYMENT_MODE Unification**: Single env var for auth (`community` = no auth, `enterprise` = license required)
+  - Replaces `SELF_HOSTED_MODE` with clearer naming
+  - New `isCommunityMode()` helper for consistent mode checks
+
+### Added
+
+- **MCP Connector Examples**: Python, TypeScript, Java implementations
+- **Workflow Examples**: 6 patterns (sequential, parallel, conditional, fallbacks, pipelines, approvals)
+
+### Fixed
+
+- Shell script audit endpoint URL corrected
+- Unit tests for enterprise mode validation
+
+---
+
 ## [2.3.0] - 2025-12-30
 
 ### Changed
