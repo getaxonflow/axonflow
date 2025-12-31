@@ -17,6 +17,9 @@ import (
 
 // TestValidateUserToken_TenantIDExtraction tests that tenant_id is correctly extracted from JWT claims
 func TestValidateUserToken_TenantIDExtraction(t *testing.T) {
+	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	tests := []struct {
 		name             string
 		token            string
@@ -117,6 +120,9 @@ func TestTenantIsolation_Match(t *testing.T) {
 
 // TestValidateUserToken_MismatchToken tests the mismatch token path
 func TestValidateUserToken_MismatchToken(t *testing.T) {
+	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	// This token triggers the mismatch user path (user_id 2)
 	mismatchToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoy.test"
 
@@ -145,6 +151,9 @@ func TestValidateUserToken_MismatchToken(t *testing.T) {
 
 // TestValidateUserToken_DemoUserToken tests the demo user token path
 func TestValidateUserToken_DemoUserToken(t *testing.T) {
+	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	// This token triggers the demo user path (demo-traveler-1)
 	demoToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZGVtby10cmF2ZWxlci0xIi.test"
 
@@ -184,6 +193,9 @@ func TestValidateUserToken_DemoUserToken(t *testing.T) {
 
 // TestValidateUserToken_InvalidJWT tests handling of invalid JWT tokens
 func TestValidateUserToken_InvalidJWT(t *testing.T) {
+	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	tests := []struct {
 		name    string
 		token   string

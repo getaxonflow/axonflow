@@ -562,49 +562,84 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// 1. Validate client authentication
-	client, err := validateClient(req.ClientID)
-	if err != nil {
-		sendErrorResponse(w, "Invalid client", http.StatusUnauthorized, nil)
-		return
-	}
-
-	if !client.Enabled {
-		sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
-		return
-	}
-
-	// 2. Validate user token
-	// For internal orchestrator-to-agent routing, bypass token validation
-	// This allows the orchestrator to call MCP connectors without requiring user tokens
-	// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token
+	// 1. Check authentication - with multiple bypass modes
+	// Priority: Community mode > Internal service request > Enterprise validation
+	// Pattern follows PR #97: DEPLOYMENT_MODE == "community" || mode == ""
+	var client *Client
 	var user *User
-	if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
-		log.Printf("[MCP] Internal orchestrator request - bypassing user token validation")
+
+	deploymentMode := os.Getenv("DEPLOYMENT_MODE")
+
+	if deploymentMode == "community" || deploymentMode == "" {
+		// Community mode: Skip client/user authentication
+		// This allows Community deployments to work without client/user registration.
+		// When user upgrades to Enterprise (sets DEPLOYMENT_MODE=enterprise), full validation kicks in.
+		log.Printf("[MCP] Community mode - bypassing client and user token validation")
+		client = &Client{
+			ID:          "community",
+			Name:        "Community Client",
+			TenantID:    "default",
+			Permissions: []string{"query", "execute", "mcp"},
+			RateLimit:   0,
+			Enabled:     true,
+		}
+		user = &User{
+			ID:          0,
+			Email:       "user@community.local",
+			Name:        "Community User",
+			TenantID:    "default",
+			Role:        "admin",
+			Permissions: []string{"query", "execute", "mcp"},
+		}
+	} else if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
+		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
+		// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token.
+		log.Printf("[MCP] Internal orchestrator request - bypassing client and user token validation")
+		client = &Client{
+			ID:          internalServiceClientID,
+			Name:        "Orchestrator Internal",
+			TenantID:    "", // Internal service has no tenant restriction
+			Permissions: []string{"query", "execute", "mcp"},
+			RateLimit:   0, // No rate limit for internal service
+			Enabled:     true,
+		}
 		user = &User{
 			ID:          0,
 			Email:       "orchestrator@axonflow.internal",
 			Name:        "Orchestrator Internal",
-			TenantID:    client.TenantID,
+			TenantID:    "", // Internal service has no tenant restriction
 			Role:        "service",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
 	} else {
+		// Enterprise/SaaS mode: Full client and user validation
 		var err error
+		client, err = validateClient(req.ClientID)
+		if err != nil {
+			sendErrorResponse(w, "Invalid client", http.StatusUnauthorized, nil)
+			return
+		}
+
+		if !client.Enabled {
+			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
+			return
+		}
+
+		// Validate user token
 		user, err = validateUserToken(req.UserToken, client.TenantID)
 		if err != nil {
 			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
 			return
 		}
+
+		// Verify tenant isolation
+		if user.TenantID != client.TenantID {
+			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+			return
+		}
 	}
 
-	// 3. Verify tenant isolation
-	if user.TenantID != client.TenantID {
-		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
-		return
-	}
-
-	// 4. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
+	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	servicePermissionGranted := false
 	if req.LicenseKey != "" {
 		// Validate license key
@@ -644,7 +679,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. Validate tenant has access to connector (only for non-service licenses)
+	// 3. Validate tenant has access to connector (only for non-service licenses)
 	// V2 service licenses already validated permissions via EvaluateMCPPermission above
 	if !servicePermissionGranted {
 		if err := mcpRegistry.ValidateTenantAccess(req.Connector, user.TenantID); err != nil {
@@ -653,7 +688,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 6. Get connector (uses TenantConnectorRegistry with fallback to static registry)
+	// 4. Get connector (uses TenantConnectorRegistry with fallback to static registry)
 	connector, err := GetConnectorForTenant(ctx, user.TenantID, req.Connector)
 	if err != nil {
 		log.Printf("[MCP] Connector not found: %v", err)
@@ -661,7 +696,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Parse timeout
+	// 5. Parse timeout
 	var timeout time.Duration
 	if req.Timeout != "" {
 		timeout, err = time.ParseDuration(req.Timeout)
@@ -671,7 +706,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 8. Execute query
+	// 6. Execute query
 	// Use operation as statement for API connectors (e.g., "search_flights" for Amadeus)
 	// For SQL connectors, statement would contain the actual SQL query
 	statement := req.Statement
@@ -696,7 +731,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 9. Scan response for SQL injection (if enabled)
+	// 7. Scan response for SQL injection (if enabled)
 	scanResult, scanErr := sqli.GetGlobalMiddleware().ScanQueryResponse(ctx, req.Connector, result.Rows)
 	if scanErr != nil {
 		log.Printf("[MCP] SQLi scan error: %v", scanErr)
@@ -708,7 +743,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 10. Return results
+	// 8. Return results
 	// SDK expects "data" field (ConnectorResponse.Data), not "rows"
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
@@ -757,25 +792,73 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		req.LicenseKey = r.Header.Get("X-License-Key")
 	}
 
-	// Authentication and authorization (same as query handler)
-	client, err := validateClient(req.ClientID)
-	if err != nil || !client.Enabled {
-		sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
-		return
-	}
-
-	user, err := validateUserToken(req.UserToken, client.TenantID)
-	if err != nil {
-		sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-		return
-	}
-
-	if user.TenantID != client.TenantID {
-		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
-		return
-	}
-
 	ctx := r.Context()
+
+	// Authentication - same pattern as mcpQueryHandler
+	// Priority: Community mode > Internal service request > Enterprise validation
+	var client *Client
+	var user *User
+
+	deploymentMode := os.Getenv("DEPLOYMENT_MODE")
+
+	if deploymentMode == "community" || deploymentMode == "" {
+		// Community mode: Skip client/user authentication
+		log.Printf("[MCP Execute] Community mode - bypassing client and user token validation")
+		client = &Client{
+			ID:          "community",
+			Name:        "Community Client",
+			TenantID:    "default",
+			Permissions: []string{"query", "execute", "mcp"},
+			RateLimit:   0,
+			Enabled:     true,
+		}
+		user = &User{
+			ID:          0,
+			Email:       "user@community.local",
+			Name:        "Community User",
+			TenantID:    "default",
+			Role:        "admin",
+			Permissions: []string{"query", "execute", "mcp"},
+		}
+	} else if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
+		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
+		log.Printf("[MCP Execute] Internal orchestrator request - bypassing client and user token validation")
+		client = &Client{
+			ID:          internalServiceClientID,
+			Name:        "Orchestrator Internal",
+			TenantID:    "",
+			Permissions: []string{"query", "execute", "mcp"},
+			RateLimit:   0,
+			Enabled:     true,
+		}
+		user = &User{
+			ID:          0,
+			Email:       "orchestrator@axonflow.internal",
+			Name:        "Orchestrator Internal",
+			TenantID:    "",
+			Role:        "service",
+			Permissions: []string{"query", "execute", "mcp"},
+		}
+	} else {
+		// Enterprise/SaaS mode: Full client and user validation
+		var err error
+		client, err = validateClient(req.ClientID)
+		if err != nil || !client.Enabled {
+			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+			return
+		}
+
+		user, err = validateUserToken(req.UserToken, client.TenantID)
+		if err != nil {
+			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
+			return
+		}
+
+		if user.TenantID != client.TenantID {
+			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+			return
+		}
+	}
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	servicePermissionGranted := false

@@ -594,6 +594,9 @@ connectors:
 
 // TestMCPQueryHandler_TimeoutParsing tests timeout parsing in query handler
 func TestMCPQueryHandler_TimeoutParsing(t *testing.T) {
+	// Set enterprise mode to test auth behavior (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	tests := []struct {
 		name           string
 		requestBody    MCPQueryRequest
@@ -638,6 +641,9 @@ func TestMCPQueryHandler_TimeoutParsing(t *testing.T) {
 
 // TestMCPExecuteHandler_TimeoutParsing tests timeout parsing in execute handler
 func TestMCPExecuteHandler_TimeoutParsing(t *testing.T) {
+	// Set enterprise mode to test auth behavior (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	tests := []struct {
 		name           string
 		requestBody    MCPExecuteRequest

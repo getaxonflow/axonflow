@@ -23,6 +23,9 @@ import (
 	"time"
 )
 
+// Note: Internal service authentication constants and getInternalServiceToken()
+// are defined in mcp_connector_processor.go to avoid duplication.
+
 // MCPQueryRouter handles routing MCP queries to agent's MCP handler
 // This bridges the gap between SDK "mcp-query" requests and agent MCP endpoints
 type MCPQueryRouter struct {
@@ -82,13 +85,12 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 
 	// Build agent MCP request
 	// Format matches platform/agent/mcp_handler.go:228-242 (MCPQueryRequest)
-	// Note: OrchestratorRequest doesn't have UserToken field - it's in the SDK layer
-	// Extract user token from context if provided, otherwise use empty string
-	userToken, _ := req.Context["user_token"].(string)
-
+	// Use internal service credentials for orchestrator-to-agent authentication.
+	// This allows the agent to recognize this as an internal service call and bypass
+	// normal client validation (see isValidInternalServiceRequest in mcp_handler.go).
 	agentReq := map[string]interface{}{
-		"client_id":  req.Client.ID,
-		"user_token": userToken,
+		"client_id":  InternalServiceClientID,
+		"user_token": getInternalServiceToken(),
 		"connector":  connector,
 		"statement":  req.Query, // e.g., "search_flights", "search_hotels"
 		"parameters": params,

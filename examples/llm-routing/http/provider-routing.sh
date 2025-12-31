@@ -14,7 +14,7 @@
 #
 # Prerequisites:
 #   - AxonFlow Agent running at http://localhost:8080
-#   - Valid license key (or SELF_HOSTED_MODE=true for testing)
+#   - Valid license key (or DEPLOYMENT_MODE=community for testing)
 #   - At least one LLM provider configured (OpenAI, Anthropic, Ollama, Gemini)
 #
 # Usage:
@@ -118,21 +118,26 @@ if [ "$approved" = "true" ]; then
     echo "   Step 2: (Skipped) Make direct LLM call..."
     echo "   Step 3: Audit the result..."
 
-    audit=$(curl -s -X POST "$AGENT_URL/api/policy/audit" \
+    audit=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
         -H "Content-Type: application/json" \
         -H "X-License-Key: $LICENSE_KEY" \
         -d "{
             \"context_id\": \"$context_id\",
-            \"response_metadata\": {
-                \"provider\": \"openai\",
-                \"model\": \"gpt-4o\",
-                \"tokens_used\": 150,
-                \"latency_ms\": 500
-            }
+            \"client_id\": \"http-example\",
+            \"provider\": \"openai\",
+            \"model\": \"gpt-4o\",
+            \"token_usage\": {
+                \"prompt_tokens\": 50,
+                \"completion_tokens\": 100,
+                \"total_tokens\": 150
+            },
+            \"latency_ms\": 500
         }")
 
     audit_success=$(echo "$audit" | jq -r '.success // false')
+    audit_id=$(echo "$audit" | jq -r '.audit_id // "none"')
     echo -e "   Audit logged: ${GREEN}$audit_success${NC}"
+    echo "   Audit ID: $audit_id"
 else
     block_reason=$(echo "$precheck" | jq -r '.block_reason // "Unknown"')
     echo -e "   Pre-check: ${RED}Blocked - $block_reason${NC}"

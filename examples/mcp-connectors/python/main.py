@@ -1,28 +1,23 @@
-#!/usr/bin/env python3
 """
 MCP Connector Example - Tests Orchestrator-to-Agent Routing
 
 This example tests the FULL MCP connector flow:
   SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
 
-This is different from direct agent calls and exercises the
-internal service authentication between orchestrator and agent.
-
 Usage:
   docker compose up -d  # Start AxonFlow
   cd examples/mcp-connectors/python
-  pip install requests
-  python mcp_connector.py
+  python main.py
 """
 
 import os
-import json
+import sys
 import time
 import requests
 
 
 def main():
-    orchestrator_url = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8081")
+    orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://localhost:8081")
 
     print("==============================================")
     print("MCP Connector Example - Orchestrator Routing")
@@ -39,24 +34,24 @@ def main():
         "user": {
             "email": "test@example.com",
             "role": "user",
-            "tenant_id": "default"
+            "tenant_id": "default",
         },
         "client": {
             "id": "test-client",
-            "tenant_id": "default"
+            "tenant_id": "default",
         },
         "context": {
             "connector": "postgres",
-            "params": {}
-        }
+            "params": {},
+        },
     }
 
     try:
         response = requests.post(
-            f"{orchestrator_url}/api/request",
-            headers={"Content-Type": "application/json"},
+            f"{orchestrator_url}/api/v1/process",
             json=request,
-            timeout=30
+            headers={"Content-Type": "application/json"},
+            timeout=30,
         )
         result = response.json()
 
@@ -64,48 +59,42 @@ def main():
             print("SUCCESS: MCP query through orchestrator worked!")
             print(f"  Request ID: {result.get('request_id')}")
             print(f"  Processing Time: {result.get('processing_time')}")
-            data = result.get("data", {})
-            if data:
-                rows = data.get("rows", [])
+            if result.get("data"):
+                rows = result["data"].get("rows") or []
                 print(f"  Rows returned: {len(rows)}")
-                print(f"  Connector: {data.get('connector')}")
+                connector = result["data"].get("connector", "unknown")
+                print(f"  Connector: {connector}")
         else:
             print(f"FAILED: {result.get('error')}")
-            exit(1)
+            sys.exit(1)
 
-        # Test 2: Query with database alias connector
+        # Test 2: Query with database alias
         print("\nTest 2: Query 'database' connector (alias for postgres)...")
 
         request["request_id"] = f"mcp-test-{int(time.time() * 1000)}"
         request["context"]["connector"] = "database"
 
-        response = requests.post(
-            f"{orchestrator_url}/api/request",
-            headers={"Content-Type": "application/json"},
+        response2 = requests.post(
+            f"{orchestrator_url}/api/v1/process",
             json=request,
-            timeout=30
+            headers={"Content-Type": "application/json"},
+            timeout=30,
         )
-        result = response.json()
+        result2 = response2.json()
 
-        if result.get("success"):
+        if result2.get("success"):
             print("SUCCESS: Database alias connector worked!")
         else:
-            print(f"FAILED: {result.get('error')}")
-            exit(1)
+            print(f"FAILED: {result2.get('error')}")
+            sys.exit(1)
 
         print("\n==============================================")
         print("All MCP connector tests PASSED!")
         print("==============================================")
 
-    except requests.RequestException as e:
-        print(f"FAILED: Request error - {e}")
-        exit(1)
-    except json.JSONDecodeError as e:
-        print(f"FAILED: JSON decode error - {e}")
-        exit(1)
     except Exception as e:
         print(f"FAILED: {e}")
-        exit(1)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,14 @@
 {
-  "name": "axonflow-mcp-connector-example",
+  "name": "mcp-connector-example",
   "version": "1.0.0",
-  "description": "AxonFlow MCP Connector Example - TypeScript",
-  "main": "dist/index.js",
+  "description": "MCP Connector Example - Tests Orchestrator-to-Agent Routing",
+  "main": "index.ts",
   "scripts": {
-    "build": "tsc",
-    "start": "npx tsx src/index.ts"
-  },
-  "dependencies": {
-    "@axonflow/sdk": "^1.11.0"
+    "start": "npx ts-node index.ts"
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }
 }

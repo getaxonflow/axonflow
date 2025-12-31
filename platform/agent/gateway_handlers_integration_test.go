@@ -32,22 +32,14 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		t.Skip("DATABASE_URL not set, skipping integration test")
 	}
 
-	// Enable self-hosted mode for testing (no license validation)
-	// Both env vars are required after security hardening in PR #302
-	originalSelfHosted := os.Getenv("SELF_HOSTED_MODE")
-	originalAcknowledged := os.Getenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	// Enable community mode for testing (no license validation)
+	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer func() {
-		if originalSelfHosted != "" {
-			os.Setenv("SELF_HOSTED_MODE", originalSelfHosted)
+		if originalDeploymentMode != "" {
+			os.Setenv("DEPLOYMENT_MODE", originalDeploymentMode)
 		} else {
-			os.Unsetenv("SELF_HOSTED_MODE")
-		}
-		if originalAcknowledged != "" {
-			os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", originalAcknowledged)
-		} else {
-			os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+			os.Unsetenv("DEPLOYMENT_MODE")
 		}
 	}()
 
@@ -258,14 +250,14 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 
 // TestGatewayValidationErrors tests validation error cases
 func TestGatewayValidationErrors(t *testing.T) {
-	// Enable self-hosted mode (no license validation)
-	originalSelfHosted := os.Getenv("SELF_HOSTED_MODE")
-	os.Setenv("SELF_HOSTED_MODE", "true")
+	// Enable community mode (no license validation)
+	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer func() {
-		if originalSelfHosted != "" {
-			os.Setenv("SELF_HOSTED_MODE", originalSelfHosted)
+		if originalDeploymentMode != "" {
+			os.Setenv("DEPLOYMENT_MODE", originalDeploymentMode)
 		} else {
-			os.Unsetenv("SELF_HOSTED_MODE")
+			os.Unsetenv("DEPLOYMENT_MODE")
 		}
 	}()
 
@@ -322,14 +314,14 @@ func TestGatewayValidationErrors(t *testing.T) {
 
 // TestAuditValidationErrors tests audit endpoint validation
 func TestAuditValidationErrors(t *testing.T) {
-	// Enable self-hosted mode (no license validation)
-	originalSelfHosted := os.Getenv("SELF_HOSTED_MODE")
-	os.Setenv("SELF_HOSTED_MODE", "true")
+	// Enable community mode (no license validation)
+	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	defer func() {
-		if originalSelfHosted != "" {
-			os.Setenv("SELF_HOSTED_MODE", originalSelfHosted)
+		if originalDeploymentMode != "" {
+			os.Setenv("DEPLOYMENT_MODE", originalDeploymentMode)
 		} else {
-			os.Unsetenv("SELF_HOSTED_MODE")
+			os.Unsetenv("DEPLOYMENT_MODE")
 		}
 	}()
 

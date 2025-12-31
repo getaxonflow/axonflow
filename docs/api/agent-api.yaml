@@ -19,9 +19,9 @@ info:
 
     ## Deployment Modes
 
-    - **SaaS**: Hosted by AxonFlow, multi-tenant
-    - **In-VPC**: Customer-deployed, single-tenant
-    - **Self-Hosted**: `SELF_HOSTED_MODE=true` bypasses license validation
+    - **SaaS**: Hosted by AxonFlow, multi-tenant (`DEPLOYMENT_MODE=saas`)
+    - **Enterprise**: Customer-deployed (`DEPLOYMENT_MODE=enterprise`)
+    - **Community**: Local development (`DEPLOYMENT_MODE=community`) - bypasses license validation
 
   version: 2.0.0
   contact:
@@ -1916,7 +1916,7 @@ components:
       required: true
       description: |
         Client license key for authorization.
-        Not required when `SELF_HOSTED_MODE=true`.
+        Not required when `DEPLOYMENT_MODE=community`.
       schema:
         type: string
         example: "axf_live_abc123def456"

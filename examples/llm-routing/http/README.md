@@ -5,7 +5,7 @@ Direct HTTP/curl examples for LLM provider routing without requiring an SDK.
 ## Prerequisites
 
 - AxonFlow Agent running at `http://localhost:8080`
-- Valid license key (or `SELF_HOSTED_MODE=true` for testing)
+- Valid license key (or `DEPLOYMENT_MODE=community` for testing)
 - LLM provider configured (OpenAI, Anthropic, Ollama, or Gemini)
 
 ## Quick Start

@@ -392,8 +392,11 @@ func TestRecordLatency(t *testing.T) {
 	}
 }
 
-// TestClientRequestHandler_MissingLicenseKey tests request handler with missing auth
+// TestClientRequestHandler_MissingLicenseKey tests request handler with missing auth in enterprise mode
 func TestClientRequestHandler_MissingLicenseKey(t *testing.T) {
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	// Initialize agentMetrics to avoid nil pointer
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
@@ -478,6 +481,9 @@ func TestValidateClient(t *testing.T) {
 
 // TestValidateUserToken tests user token validation
 func TestValidateUserToken(t *testing.T) {
+	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	tests := []struct {
 		name      string
 		token     string
@@ -1110,7 +1116,11 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 	}))
 	defer mockOrch.Close()
 
-	// Override orchestrator URL
+	// Save and restore the orchestratorURL package variable
+	oldOrchURL := orchestratorURL
+	defer func() {
+		orchestratorURL = oldOrchURL
+	}()
 	orchestratorURL = mockOrch.URL
 
 	// Create request with valid auth
@@ -1208,6 +1218,9 @@ func TestClientRequestHandler_ClientDisabled(t *testing.T) {
 
 // TestClientRequestHandler_TenantMismatch tests tenant isolation
 func TestClientRequestHandler_TenantMismatch(t *testing.T) {
+	// Set enterprise mode to properly test tenant isolation (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
 			latencies:     []int64{},
@@ -1258,6 +1271,9 @@ func TestClientRequestHandler_TenantMismatch(t *testing.T) {
 
 // TestClientRequestHandler_PolicyBlocked tests static policy blocking
 func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	if agentMetrics == nil {
 		agentMetrics = &AgentMetrics{
 			latencies:              []int64{},
@@ -1270,6 +1286,28 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 	if staticPolicyEngine == nil {
 		staticPolicyEngine = NewStaticPolicyEngine()
 	}
+
+	// Create mock orchestrator that returns a success response
+	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"blocked":      false,
+			"block_reason": "",
+			"data":         "OK",
+			"policy_info": map[string]interface{}{
+				"policies_evaluated": []string{"pii-detection"},
+				"processing_time":    "5ms",
+			},
+		})
+	}))
+	defer mockOrch.Close()
+
+	// Save and restore orchestratorURL to prevent test pollution
+	oldOrchURL := orchestratorURL
+	defer func() {
+		orchestratorURL = oldOrchURL
+	}()
+	orchestratorURL = mockOrch.URL
 
 	testLicenseKey := generateTestLicenseKey("policy-test", "ENT", "20351231")
 
@@ -1342,6 +1380,11 @@ func TestClientRequestHandler_OrchestratorError(t *testing.T) {
 	}
 	defer delete(knownClients, "test-client-orch-error")
 
+	// Save and restore the orchestratorURL package variable
+	oldOrchURL := orchestratorURL
+	defer func() {
+		orchestratorURL = oldOrchURL
+	}()
 	// Set orchestrator URL to an invalid address to simulate connection failure
 	orchestratorURL = "http://localhost:99999" // Port that doesn't exist
 
@@ -1433,6 +1476,11 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 	}))
 	defer mockOrch.Close()
 
+	// Save and restore the orchestratorURL package variable
+	oldOrchURL := orchestratorURL
+	defer func() {
+		orchestratorURL = oldOrchURL
+	}()
 	orchestratorURL = mockOrch.URL
 
 	reqBody := ClientRequest{
@@ -1562,6 +1610,9 @@ func TestMCPQueryHandler_InvalidJSON(t *testing.T) {
 
 // TestMCPQueryHandler_MissingLicenseKey tests MCP query without license key
 func TestMCPQueryHandler_MissingLicenseKey(t *testing.T) {
+	// Set enterprise mode to test auth behavior (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	reqBody := map[string]interface{}{
 		"client_id":     "test-client",
 		"user_token":    "test-token",
@@ -1643,6 +1694,9 @@ func TestMCPExecuteHandler_InvalidJSON(t *testing.T) {
 
 // TestMCPExecuteHandler_MissingLicenseKey tests MCP execute without license key
 func TestMCPExecuteHandler_MissingLicenseKey(t *testing.T) {
+	// Set enterprise mode to test auth behavior (community mode bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
 	reqBody := map[string]interface{}{
 		"client_id":     "test-client",
 		"user_token":    "test-token",

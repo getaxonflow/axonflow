@@ -31,14 +31,12 @@ import (
 	"axonflow/platform/connectors/registry"
 )
 
-// TestPreCheckHandler_SelfHostedMode tests pre-check in self-hosted mode
-func TestPreCheckHandler_SelfHostedMode(t *testing.T) {
-	// Enable self-hosted mode with required safeguards
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+// TestPreCheckHandler_CommunityMode tests pre-check in community mode
+func TestPreCheckHandler_CommunityMode(t *testing.T) {
+	// Enable community mode with required safeguards
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	// Initialize policy engine for testing
@@ -88,11 +86,9 @@ func TestPreCheckHandler_SelfHostedMode(t *testing.T) {
 
 // TestPreCheckHandler_PolicyBlock tests pre-check blocking by policy
 func TestPreCheckHandler_PolicyBlock(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
@@ -147,10 +143,10 @@ func TestPreCheckHandler_InvalidBody(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_MissingLicenseKey tests pre-check without license key
+// TestPreCheckHandler_MissingLicenseKey tests pre-check without license key in enterprise mode
 func TestPreCheckHandler_MissingLicenseKey(t *testing.T) {
-	// Ensure self-hosted mode is disabled
-	os.Unsetenv("SELF_HOSTED_MODE")
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	reqBody := PreCheckRequest{
 		UserToken: "test-token",
@@ -172,13 +168,11 @@ func TestPreCheckHandler_MissingLicenseKey(t *testing.T) {
 	}
 }
 
-// TestAuditLLMCallHandler_SelfHostedMode tests audit in self-hosted mode
+// TestAuditLLMCallHandler_SelfHostedMode tests audit in community mode
 func TestAuditLLMCallHandler_SelfHostedMode(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -240,9 +234,10 @@ func TestAuditLLMCallHandler_InvalidBody(t *testing.T) {
 	}
 }
 
-// TestAuditLLMCallHandler_MissingLicenseKey tests audit without license key
+// TestAuditLLMCallHandler_MissingLicenseKey tests audit without license key in enterprise mode
 func TestAuditLLMCallHandler_MissingLicenseKey(t *testing.T) {
-	os.Unsetenv("SELF_HOSTED_MODE")
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID: "test-context",
@@ -547,10 +542,10 @@ func TestPreCheckHandler_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_NoSelfHostedNoLicense tests missing license key without self-hosted mode
+// TestPreCheckHandler_NoSelfHostedNoLicense tests missing license key in enterprise mode
 func TestPreCheckHandler_NoSelfHostedNoLicense(t *testing.T) {
-	// Ensure self-hosted mode is disabled
-	os.Unsetenv("SELF_HOSTED_MODE")
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	reqBody := PreCheckRequest{
 		UserToken: "token",
@@ -574,11 +569,9 @@ func TestPreCheckHandler_NoSelfHostedNoLicense(t *testing.T) {
 
 // TestAuditHandler_InvalidJSON tests handling of invalid JSON
 func TestAuditHandler_InvalidJSON(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBufferString("not json"))
@@ -593,10 +586,10 @@ func TestAuditHandler_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestAuditHandler_MissingLicenseKey tests missing license key without self-hosted mode
+// TestAuditHandler_MissingLicenseKey tests missing license key in enterprise mode
 func TestAuditHandler_MissingLicenseKey(t *testing.T) {
-	// Ensure self-hosted mode is disabled
-	os.Unsetenv("SELF_HOSTED_MODE")
+	// Set enterprise mode to require authentication
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	reqBody := AuditLLMCallRequest{
 		ContextID: "ctx-123",
@@ -668,11 +661,9 @@ func TestLLMPricing(t *testing.T) {
 
 // TestPreCheckHandler_MissingQuery tests pre-check with missing query
 func TestPreCheckHandler_MissingQuery(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := PreCheckRequest{
@@ -702,11 +693,9 @@ func TestPreCheckHandler_MissingQuery(t *testing.T) {
 
 // TestPreCheckHandler_MissingClientID tests pre-check with missing client_id
 func TestPreCheckHandler_MissingClientID(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := PreCheckRequest{
@@ -736,11 +725,9 @@ func TestPreCheckHandler_MissingClientID(t *testing.T) {
 
 // TestAuditHandler_MissingContextID tests audit with missing context_id
 func TestAuditHandler_MissingContextID(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -771,11 +758,9 @@ func TestAuditHandler_MissingContextID(t *testing.T) {
 
 // TestAuditHandler_MissingClientID tests audit with missing client_id
 func TestAuditHandler_MissingClientID(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -806,11 +791,9 @@ func TestAuditHandler_MissingClientID(t *testing.T) {
 
 // TestAuditHandler_MissingProvider tests audit with missing provider
 func TestAuditHandler_MissingProvider(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -841,11 +824,9 @@ func TestAuditHandler_MissingProvider(t *testing.T) {
 
 // TestAuditHandler_MissingModel tests audit with missing model
 func TestAuditHandler_MissingModel(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -876,11 +857,9 @@ func TestAuditHandler_MissingModel(t *testing.T) {
 
 // TestPreCheckHandler_WithDataSources tests pre-check with data sources
 func TestPreCheckHandler_WithDataSources(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
@@ -918,11 +897,9 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 
 // TestPreCheckHandler_PIIDetection tests PII detection (blocks critical PII by default)
 func TestPreCheckHandler_PIIDetection(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	// Ensure we use staticPolicyEngine, not dbPolicyEngine
@@ -972,12 +949,10 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 
 // TestPreCheckHandler_PIIDetection_Disabled tests that PII blocking can be disabled
 func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
 	os.Setenv("PII_BLOCK_CRITICAL", "false") // Disable PII blocking
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 	defer os.Unsetenv("PII_BLOCK_CRITICAL")
 
@@ -1028,11 +1003,9 @@ func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
 
 // TestPreCheckHandler_DangerousQuery tests dangerous query blocking (DROP TABLE)
 func TestPreCheckHandler_DangerousQuery(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
@@ -1071,11 +1044,9 @@ func TestPreCheckHandler_DangerousQuery(t *testing.T) {
 
 // TestAuditHandler_WithMetadata tests audit with metadata
 func TestAuditHandler_WithMetadata(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	reqBody := AuditLLMCallRequest{
@@ -1158,11 +1129,9 @@ func TestPreCheckHandler_EmptyBody(t *testing.T) {
 
 // TestAuditHandler_EmptyBody tests audit with empty body
 func TestAuditHandler_EmptyBody(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBuffer([]byte{}))
@@ -2543,11 +2512,9 @@ func TestGetRBIKillSwitchChecker(t *testing.T) {
 // TestPreCheckHandler_KillSwitchIntegration tests that kill switch check is integrated into pre-check flow
 // In Community mode, kill switch is not enforced, so requests pass through. In enterprise mode, active kill switches block requests.
 func TestPreCheckHandler_KillSwitchIntegration(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
@@ -2667,11 +2634,9 @@ func TestGetRBIPIIDetector(t *testing.T) {
 // Both Community and Enterprise editions detect critical India PII (Aadhaar, PAN, UPI, Bank Account).
 // Community uses pattern-based detection (0.7 confidence), Enterprise adds Verhoeff checksum validation (0.98 confidence).
 func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
-	os.Setenv("SELF_HOSTED_MODE", "true")
-	os.Setenv("SELF_HOSTED_MODE_ACKNOWLEDGED", "I_UNDERSTAND_NO_AUTH")
+	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	defer os.Unsetenv("SELF_HOSTED_MODE")
-	defer os.Unsetenv("SELF_HOSTED_MODE_ACKNOWLEDGED")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
