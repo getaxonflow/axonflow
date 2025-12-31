@@ -332,16 +332,32 @@ const response = await client.executeQuery({
 ```
 hello-world/
 ├── README.md           # This file
+├── go/
+│   ├── go.mod          # Dependencies
+│   └── main.go         # Main code
+├── python/
+│   ├── requirements.txt
+│   └── main.py
 ├── typescript/
-│   ├── package.json    # Dependencies
-│   ├── index.ts        # Main code (30 lines)
-│   └── .env.example    # Configuration template
-└── go/
-    ├── go.mod          # Dependencies
-    ├── main.go         # Main code (35 lines)
-    └── .env.example    # Configuration template
+│   ├── package.json
+│   └── index.ts
+├── java/
+│   ├── pom.xml
+│   └── src/main/java/...
+└── http/
+    └── hello-world.sh  # curl/HTTP example
 ```
+
+## Run HTTP Example (No SDK Required)
+
+```bash
+cd http
+chmod +x hello-world.sh
+./hello-world.sh
+```
+
+This uses raw HTTP/curl and works with any language.
 
 ---
 
-**This is the simplest possible AxonFlow example.** Perfect for getting started! 🚀
+**This is the simplest possible AxonFlow example.** Perfect for getting started!

@@ -14,33 +14,55 @@ providing transparent policy enforcement without changing your existing code pat
 
 | Language | Directory | SDK Version |
 |----------|-----------|-------------|
-| Go | [go/](./go/) | v1.8.0 |
-| Python | [python/](./python/) | v0.5.0 |
-| Java | [java/](./java/) | v1.3.1 |
-| TypeScript | [typescript/](./typescript/) | v1.6.0 |
+| Go | [go/](./go/) | v1.14.0 |
+| Python | [python/](./python/) | v0.10.1 |
+| Java | [java/](./java/) | v1.8.0 |
+| TypeScript | [typescript/](./typescript/) | v1.11.1 |
 
 ## Quick Start
 
-### TypeScript
+### TypeScript (Gateway Mode - Recommended)
 
 ```typescript
-import { AxonFlow, wrapOpenAIClient } from '@axonflow/sdk';
+import { AxonFlow, PolicyViolationError } from '@axonflow/sdk';
 import OpenAI from 'openai';
 
-const axonflow = new AxonFlow({
-  endpoint: 'http://localhost:8080',
-});
-
+const axonflow = new AxonFlow({ endpoint: 'http://localhost:8080' });
 const openai = new OpenAI();
-const governedClient = wrapOpenAIClient(openai, axonflow, {
-  userToken: 'user-123',
-});
 
-// All calls through governedClient are policy-checked
-const response = await governedClient.chat.completions.create({
-  model: 'gpt-3.5-turbo',
-  messages: [{ role: 'user', content: 'Hello!' }],
-});
+async function governedCall(query: string) {
+  // Step 1: Pre-check policies
+  const ctx = await axonflow.getPolicyApprovedContext({
+    userToken: 'user-123',
+    query,
+  });
+
+  if (!ctx.approved) {
+    throw new PolicyViolationError(ctx.blockReason, ctx.policies?.[0]);
+  }
+
+  // Step 2: Make LLM call
+  const response = await openai.chat.completions.create({
+    model: 'gpt-3.5-turbo',
+    messages: [{ role: 'user', content: query }],
+  });
+
+  // Step 3: Audit
+  await axonflow.auditLLMCall({
+    contextId: ctx.contextId,
+    responseSummary: response.choices[0]?.message?.content?.substring(0, 100),
+    provider: 'openai',
+    model: 'gpt-3.5-turbo',
+    tokenUsage: {
+      promptTokens: response.usage?.prompt_tokens || 0,
+      completionTokens: response.usage?.completion_tokens || 0,
+      totalTokens: response.usage?.total_tokens || 0,
+    },
+    latencyMs: 250,
+  });
+
+  return response;
+}
 ```
 
 ### Python
