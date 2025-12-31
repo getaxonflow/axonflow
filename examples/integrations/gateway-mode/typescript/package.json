@@ -14,7 +14,7 @@
   "author": "AxonFlow",
   "license": "MIT",
   "dependencies": {
-    "@axonflow/sdk": "^1.11.0",
+    "@axonflow/sdk": "^1.11.1",
     "dotenv": "^16.3.0",
     "openai": "^4.20.0",
     "@anthropic-ai/sdk": "^0.10.0"
