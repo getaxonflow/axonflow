@@ -113,6 +113,8 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 **SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
 
+**Code Governance** — Detect LLM-generated code, identify language and security issues (secrets, eval, shell injection). Logged for compliance.
+
 **Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
 
 **Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
@@ -310,6 +312,7 @@ if (approval.isApproved()) {
 | Example | Description |
 |---------|-------------|
 | **[Support Demo](examples/support-demo/)** | Customer support with PII redaction and RBAC |
+| **[Code Governance](examples/code-governance/)** | Detect and audit LLM-generated code |
 | **[Hello World](examples/hello-world/)** | Minimal SDK example (30 lines) |
 
 → **[More examples](https://docs.getaxonflow.com/docs/examples/overview)**
