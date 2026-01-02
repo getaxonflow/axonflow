@@ -1,0 +1,17 @@
+{
+  "name": "azure-openai-example",
+  "version": "1.0.0",
+  "description": "Azure OpenAI integration example with AxonFlow",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

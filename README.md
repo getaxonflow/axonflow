@@ -48,9 +48,10 @@ curl http://localhost:8081/health
 |----------|:---------:|:----------:|-------|
 | **OpenAI** | ✅ | ✅ | GPT-4, GPT-4o, GPT-3.5 |
 | **Anthropic** | ✅ | ✅ | Claude 3.5 Sonnet, Claude 3 Opus |
+| **Azure OpenAI** | ✅ | ✅ | Azure AI Foundry & Classic endpoints |
+| **Google Gemini** | ✅ | ✅ | Gemini 2.0 Flash, Gemini Pro |
 | **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
-| **Google Gemini** | ✅ | ✅ | Gemini Pro, Gemini Ultra |
 
 → **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 

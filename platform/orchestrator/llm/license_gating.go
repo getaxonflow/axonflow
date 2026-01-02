@@ -40,10 +40,11 @@ const (
 // Enterprise providers require at least Professional tier.
 var providerTierRequirement = map[ProviderType]LicenseTier{
 	// Community providers - available without license
-	ProviderTypeOllama:    LicenseTierCommunity,
-	ProviderTypeOpenAI:    LicenseTierCommunity,
-	ProviderTypeAnthropic: LicenseTierCommunity,
-	ProviderTypeGemini:    LicenseTierCommunity, // Gemini available in Community edition
+	ProviderTypeOllama:      LicenseTierCommunity,
+	ProviderTypeOpenAI:      LicenseTierCommunity,
+	ProviderTypeAnthropic:   LicenseTierCommunity,
+	ProviderTypeGemini:      LicenseTierCommunity, // Gemini available in Community edition
+	ProviderTypeAzureOpenAI: LicenseTierCommunity, // Azure OpenAI available in Community edition
 
 	// Enterprise providers - require license
 	ProviderTypeBedrock: LicenseTierProfessional,
@@ -95,21 +96,22 @@ func NewCommunityLicenseValidator() *CommunityLicenseValidator {
 	return &CommunityLicenseValidator{
 		tier: LicenseTierCommunity,
 		features: map[string]bool{
-			"multi_provider":       true,  // Community supports multiple providers
-			"load_balancing":       true,  // Basic load balancing
-			"health_checks":        true,  // Provider health monitoring
-			"bedrock_provider":     false, // Enterprise only
-			"gemini_provider":      true,  // Community supports Gemini
-			"custom_providers":     false, // Enterprise only
-			"advanced_routing":     false, // Enterprise only
-			"provider_priority":    false, // Enterprise only
-			"cost_optimization":    false, // Enterprise only
-			"dedicated_support":    false, // Enterprise only
-			"sla_guarantee":        false, // Enterprise only
-			"audit_logging":        true,  // Community includes basic audit
-			"metrics_collection":   true,  // Community includes basic metrics
-			"advanced_metrics":     false, // Enterprise only
-			"provider_rate_limits": false, // Enterprise only
+			"multi_provider":        true,  // Community supports multiple providers
+			"load_balancing":        true,  // Basic load balancing
+			"health_checks":         true,  // Provider health monitoring
+			"bedrock_provider":      false, // Enterprise only
+			"gemini_provider":       true,  // Community supports Gemini
+			"azure_openai_provider": true,  // Community supports Azure OpenAI
+			"custom_providers":      false, // Enterprise only
+			"advanced_routing":      false, // Enterprise only
+			"provider_priority":     false, // Enterprise only
+			"cost_optimization":     false, // Enterprise only
+			"dedicated_support":     false, // Enterprise only
+			"sla_guarantee":         false, // Enterprise only
+			"audit_logging":         true,  // Community includes basic audit
+			"metrics_collection":    true,  // Community includes basic metrics
+			"advanced_metrics":      false, // Enterprise only
+			"provider_rate_limits":  false, // Enterprise only
 		},
 	}
 }

@@ -41,6 +41,9 @@ const (
 	// ProviderTypeGemini represents Google's Gemini models.
 	ProviderTypeGemini ProviderType = "gemini"
 
+	// ProviderTypeAzureOpenAI represents Azure OpenAI Service models.
+	ProviderTypeAzureOpenAI ProviderType = "azure-openai"
+
 	// ProviderTypeCustom represents a custom/third-party provider.
 	ProviderTypeCustom ProviderType = "custom"
 )

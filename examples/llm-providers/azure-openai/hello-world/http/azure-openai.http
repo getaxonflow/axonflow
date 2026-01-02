@@ -1,0 +1,118 @@
+# Azure OpenAI with AxonFlow - HTTP Examples
+#
+# These examples show both Gateway Mode and Proxy Mode integrations.
+# Use with VS Code REST Client extension or convert to curl commands.
+#
+# Prerequisites:
+# - Set environment variables in .env or export them:
+#   - AZURE_OPENAI_ENDPOINT
+#   - AZURE_OPENAI_API_KEY
+#   - AZURE_OPENAI_DEPLOYMENT_NAME
+#   - AZURE_OPENAI_API_VERSION (optional, default: 2024-08-01-preview)
+
+@axonflow_url = http://localhost:8080
+@azure_endpoint = {{$dotenv AZURE_OPENAI_ENDPOINT}}
+@azure_key = {{$dotenv AZURE_OPENAI_API_KEY}}
+@deployment = {{$dotenv AZURE_OPENAI_DEPLOYMENT_NAME}}
+@api_version = 2024-08-01-preview
+
+
+### ============================================
+### Gateway Mode - Step 1: Pre-check
+### ============================================
+
+# Pre-check the request with AxonFlow before calling Azure OpenAI
+POST {{axonflow_url}}/api/v1/pre-check
+Content-Type: application/json
+
+{
+  "query": "What are the benefits of Azure OpenAI?",
+  "context": {
+    "provider": "azure-openai",
+    "model": "{{deployment}}"
+  }
+}
+
+
+### ============================================
+### Gateway Mode - Step 2a: Call Azure OpenAI (Classic - api-key header)
+### Use this for endpoints like: https://yourresource.openai.azure.com
+### ============================================
+
+POST {{azure_endpoint}}/openai/deployments/{{deployment}}/chat/completions?api-version={{api_version}}
+Content-Type: application/json
+api-key: {{azure_key}}
+
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the benefits of Azure OpenAI?"
+    }
+  ],
+  "max_tokens": 500,
+  "temperature": 0.7
+}
+
+
+### ============================================
+### Gateway Mode - Step 2b: Call Azure OpenAI (Foundry - Bearer token)
+### Use this for endpoints like: https://yourresource.cognitiveservices.azure.com
+### ============================================
+
+POST {{azure_endpoint}}/openai/deployments/{{deployment}}/chat/completions?api-version={{api_version}}
+Content-Type: application/json
+Authorization: Bearer {{azure_key}}
+
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are the benefits of Azure OpenAI?"
+    }
+  ],
+  "max_tokens": 500,
+  "temperature": 0.7
+}
+
+
+### ============================================
+### Gateway Mode - Step 3: Audit the response
+### Call after receiving response from Azure OpenAI
+### Replace context_id with value from pre-check response
+### ============================================
+
+POST {{axonflow_url}}/api/v1/audit
+Content-Type: application/json
+
+{
+  "context_id": "YOUR_CONTEXT_ID_FROM_PRECHECK",
+  "response": "Azure OpenAI provides enterprise-grade security, compliance certifications...",
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 150
+  }
+}
+
+
+### ============================================
+### Proxy Mode - Single call through AxonFlow
+### AxonFlow handles the Azure OpenAI call for you
+### ============================================
+
+POST {{axonflow_url}}/api/request
+Content-Type: application/json
+
+{
+  "query": "Explain Azure OpenAI Classic vs Foundry patterns in 2 sentences.",
+  "context": {
+    "provider": "azure-openai"
+  }
+}
+
+
+### ============================================
+### Health Check - Verify AxonFlow is running
+### ============================================
+
+GET {{axonflow_url}}/health
