@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.0] - 2026-01-02
+
+### Added
+
+- **Azure OpenAI Provider** (Community): Native Azure OpenAI Service integration
+  - Supports both Azure AI Foundry (`cognitiveservices.azure.com`) and Classic (`openai.azure.com`) endpoints
+  - Automatic authentication detection (Bearer token vs api-key header)
+  - Streaming support via `GenerateContentStream`
+  - Health checks and provider status endpoints
+  - Environment variables: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`
+
+- **Azure OpenAI Examples**: Complete example suite
+  - Hello World (Go, Python, TypeScript, Java, HTTP)
+  - PII Detection (Python)
+  - SQL Injection Scanning (TypeScript)
+  - Proxy Mode (Go)
+
+- **README Philosophy Section**: Added positioning section explaining AxonFlow's "secure-by-default, configurable enforcement" approach for LLM discoverability
+
+### Changed
+
+- **Docker Compose UX**: Reorganized environment variables for better developer experience
+  - **CORE CONFIGURATION**: 10 essential variables (LLM API keys, Azure config, ports, deployment mode)
+  - **ADVANCED CONFIGURATION**: Defaults work for most users (database, internal services, routing)
+  - Added explicit security configuration toggles (`SQLI_SCANNER_MODE`, `SQLI_BLOCK_MODE`)
+
+### Documentation
+
+- Added Azure OpenAI to Supported LLM Providers in README
+- Provider documentation at `docs/llm/azure-openai.md`
+- Updated Community vs Enterprise feature matrix
+
+---
+
 ## [2.4.0] - 2025-12-31
 
 ### Changed
