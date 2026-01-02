@@ -66,7 +66,29 @@ services:
     container_name: axonflow-agent
     restart: unless-stopped
     environment:
-      # Database Configuration
+      # ============================================================
+      # CORE CONFIGURATION (most users only need to set these)
+      # ============================================================
+
+      # LLM Provider API Keys - set at least one to enable AI features
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+      # Azure OpenAI - use instead of/alongside OpenAI for Azure-hosted models
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+
+      # Service ports and mode
+      PORT: 8080
+      DEPLOYMENT_MODE: community
+
+      # ============================================================
+      # ADVANCED CONFIGURATION (defaults work for most use cases)
+      # ============================================================
+
+      # Database
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_NAME: axonflow
@@ -74,46 +96,31 @@ services:
       DATABASE_PASSWORD: localdev123
       DATABASE_SSLMODE: disable
 
-      # Grafana Password (for migration 017_grafana_database.sql)
-      GRAFANA_PASSWORD: grafana_localdev456
+      # Internal services
+      REDIS_URL: redis://redis:6379
+      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
 
-      # Organization
-      ORG_ID: local-dev-org
-
-      # LLM API Keys (set in .env file or environment)
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      GOOGLE_MODEL: ${GOOGLE_MODEL:-}
-
-      # Ollama (local LLM)
+      # Ollama (for local/air-gapped LLM deployments)
       OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
 
-      # LLM Routing Configuration
+      # LLM routing (multi-provider setups)
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
-      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
 
-      # Service configuration
-      PORT: 8080
-      ENVIRONMENT: "development"
-      DEPLOYMENT_MODE: community  # Controls auth bypass + feature set
-      LOG_LEVEL: debug
-
-      # SQL Injection Scanner
+      # Security scanning
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
       SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
-      # Redis
-      REDIS_URL: redis://redis:6379
-
-      # Orchestrator URL (for Proxy Mode)
-      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
-
-      # MCP Connector configuration
-      # DATABASE_URL enables the axonflow_rds connector for MCP queries
-      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+      # Misc
+      ORG_ID: local-dev-org
+      ENVIRONMENT: development
+      LOG_LEVEL: debug
+      GOOGLE_MODEL: ${GOOGLE_MODEL:-}
+      GRAFANA_PASSWORD: grafana_localdev456
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
     ports:
       - "8080:8080"
     depends_on:
@@ -140,7 +147,29 @@ services:
     container_name: axonflow-orchestrator
     restart: unless-stopped
     environment:
-      # Database Configuration
+      # ============================================================
+      # CORE CONFIGURATION (most users only need to set these)
+      # ============================================================
+
+      # LLM Provider API Keys - set at least one to enable AI features
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+      # Azure OpenAI - use instead of/alongside OpenAI for Azure-hosted models
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+
+      # Service ports and mode
+      PORT: 8081
+      DEPLOYMENT_MODE: community
+
+      # ============================================================
+      # ADVANCED CONFIGURATION (defaults work for most use cases)
+      # ============================================================
+
+      # Database
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_NAME: axonflow
@@ -148,35 +177,28 @@ services:
       DATABASE_PASSWORD: localdev123
       DATABASE_SSLMODE: disable
 
-      # Organization
-      ORG_ID: local-dev-org
+      # Internal services
+      AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
 
-      # LLM API Keys and Models
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Model overrides (optional - providers use sensible defaults)
       OPENAI_MODEL: ${OPENAI_MODEL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       GOOGLE_MODEL: ${GOOGLE_MODEL:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
 
-      # Ollama (local LLM)
+      # Ollama (for local/air-gapped LLM deployments)
       OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       LOCAL_LLM_ENDPOINT: ${LOCAL_LLM_ENDPOINT:-}
 
-      # LLM Routing Configuration
-      # Strategies: "weighted" (default), "round_robin", "failover"
+      # LLM routing (multi-provider setups)
+      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
-      DEFAULT_LLM_PROVIDER: ${DEFAULT_LLM_PROVIDER:-}
 
-      # Service configuration
-      PORT: 8081
+      # Misc
+      ORG_ID: local-dev-org
       LOG_LEVEL: debug
-      DEPLOYMENT_MODE: community
-
-      # Agent MCP endpoint
-      AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
     ports:
       - "8081:8081"
     depends_on:

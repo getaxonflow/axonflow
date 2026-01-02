@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"axonflow/platform/orchestrator/llm/anthropic"
+	"axonflow/platform/orchestrator/llm/azure"
 	"axonflow/platform/orchestrator/llm/gemini"
 )
 
@@ -34,6 +35,7 @@ func init() {
 	RegisterFactory(ProviderTypeOpenAI, NewOpenAIProviderFactory)
 	RegisterFactory(ProviderTypeOllama, NewOllamaProviderFactory)
 	RegisterFactory(ProviderTypeGemini, NewGeminiProviderFactory)
+	RegisterFactory(ProviderTypeAzureOpenAI, NewAzureOpenAIProviderFactory)
 }
 
 // NewAnthropicProviderFactory creates an Anthropic provider from configuration.
@@ -1341,3 +1343,231 @@ func (a *GeminiProviderAdapter) EstimateCost(req CompletionRequest) *CostEstimat
 // Verify interface compliance at compile time.
 var _ Provider = (*GeminiProviderAdapter)(nil)
 var _ StreamingProvider = (*GeminiProviderAdapter)(nil)
+
+// Azure OpenAI provider implementation
+
+// Azure OpenAI pricing constants per 1K tokens (GPT-4o).
+const (
+	azureOpenAIInputCostPer1K  = 0.0025 // $2.50/1M input
+	azureOpenAIOutputCostPer1K = 0.01   // $10/1M output
+)
+
+// NewAzureOpenAIProviderFactory creates an Azure OpenAI provider from configuration.
+func NewAzureOpenAIProviderFactory(config ProviderConfig) (Provider, error) {
+	if config.APIKey == "" && config.APIKeySecretARN == "" {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeAzureOpenAI,
+			Code:         ErrFactoryInvalidConfig,
+			Message:      "API key is required for Azure OpenAI provider",
+		}
+	}
+
+	if config.Endpoint == "" {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeAzureOpenAI,
+			Code:         ErrFactoryInvalidConfig,
+			Message:      "endpoint is required for Azure OpenAI provider",
+		}
+	}
+
+	// Deployment name is required (from model field or explicit config)
+	deploymentName := config.Model
+	if deploymentName == "" {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeAzureOpenAI,
+			Code:         ErrFactoryInvalidConfig,
+			Message:      "deployment name (model) is required for Azure OpenAI provider",
+		}
+	}
+
+	// Default timeout
+	timeout := azure.DefaultTimeout
+	if config.TimeoutSeconds > 0 {
+		timeout = time.Duration(config.TimeoutSeconds) * time.Second
+	}
+
+	// Default API version (can be overridden via Settings)
+	apiVersion := azure.DefaultAPIVersion
+	if config.Settings != nil {
+		if v, ok := config.Settings["api_version"].(string); ok && v != "" {
+			apiVersion = v
+		}
+	}
+
+	provider, err := azure.NewProvider(azure.Config{
+		Endpoint:       config.Endpoint,
+		APIKey:         config.APIKey,
+		DeploymentName: deploymentName,
+		APIVersion:     apiVersion,
+		Timeout:        timeout,
+	})
+	if err != nil {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeAzureOpenAI,
+			Code:         ErrFactoryCreationFailed,
+			Message:      fmt.Sprintf("failed to create Azure OpenAI provider: %v", err),
+			Cause:        err,
+		}
+	}
+
+	// Wrap in adapter that implements the unified Provider interface
+	return &AzureOpenAIProviderAdapter{
+		provider: provider,
+		name:     config.Name,
+		config:   config,
+	}, nil
+}
+
+// AzureOpenAIProviderAdapter adapts the azure.Provider to the unified Provider interface.
+type AzureOpenAIProviderAdapter struct {
+	provider *azure.Provider
+	name     string
+	config   ProviderConfig
+}
+
+// Name returns the provider instance name.
+func (a *AzureOpenAIProviderAdapter) Name() string {
+	return a.name
+}
+
+// Type returns the provider type.
+func (a *AzureOpenAIProviderAdapter) Type() ProviderType {
+	return ProviderTypeAzureOpenAI
+}
+
+// Complete generates a completion for the given request.
+func (a *AzureOpenAIProviderAdapter) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
+	// Convert to azure-specific request
+	azureReq := azure.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		Model:         req.Model, // Deployment name override
+		StopSequences: req.StopSequences,
+		Stream:        req.Stream,
+	}
+
+	resp, err := a.provider.Complete(ctx, azureReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider":  "azure-openai",
+			"auth_type": string(a.provider.GetAuthType()),
+		},
+	}, nil
+}
+
+// CompleteStream generates a streaming completion for the given request.
+func (a *AzureOpenAIProviderAdapter) CompleteStream(ctx context.Context, req CompletionRequest, handler StreamHandler) (*CompletionResponse, error) {
+	// Convert to azure-specific request
+	azureReq := azure.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		Model:         req.Model,
+		StopSequences: req.StopSequences,
+		Stream:        true,
+	}
+
+	resp, err := a.provider.CompleteStream(ctx, azureReq, func(chunk azure.StreamChunk) error {
+		return handler(StreamChunk{
+			Type:    chunk.Type,
+			Content: chunk.Content,
+			Done:    chunk.Done,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider":  "azure-openai",
+			"auth_type": string(a.provider.GetAuthType()),
+			"streamed":  true,
+		},
+	}, nil
+}
+
+// HealthCheck verifies the provider is operational.
+func (a *AzureOpenAIProviderAdapter) HealthCheck(ctx context.Context) (*HealthCheckResult, error) {
+	start := time.Now()
+	healthy := a.provider.IsHealthy()
+
+	status := HealthStatusUnhealthy
+	message := "provider reports unhealthy"
+	if healthy {
+		status = HealthStatusHealthy
+		message = fmt.Sprintf("provider is operational (auth: %s)", a.provider.GetAuthType())
+	}
+
+	return &HealthCheckResult{
+		Status:      status,
+		Latency:     time.Since(start),
+		Message:     message,
+		LastChecked: time.Now(),
+	}, nil
+}
+
+// Capabilities returns the list of features this provider supports.
+func (a *AzureOpenAIProviderAdapter) Capabilities() []Capability {
+	return []Capability{
+		CapabilityChat,
+		CapabilityCompletion,
+		CapabilityStreaming,
+		CapabilityVision,
+		CapabilityFunctionCalling,
+		CapabilityCodeGeneration,
+		CapabilityEmbeddings,
+	}
+}
+
+// SupportsStreaming indicates if the provider supports streaming responses.
+func (a *AzureOpenAIProviderAdapter) SupportsStreaming() bool {
+	return a.provider.SupportsStreaming()
+}
+
+// EstimateCost provides a cost estimate for a given request.
+func (a *AzureOpenAIProviderAdapter) EstimateCost(req CompletionRequest) *CostEstimate {
+	estimatedInputTokens, estimatedOutputTokens := estimateTokens(req)
+	totalEstimate := calculateCost(estimatedInputTokens, estimatedOutputTokens,
+		azureOpenAIInputCostPer1K, azureOpenAIOutputCostPer1K)
+
+	return &CostEstimate{
+		InputCostPer1K:        azureOpenAIInputCostPer1K,
+		OutputCostPer1K:       azureOpenAIOutputCostPer1K,
+		EstimatedInputTokens:  estimatedInputTokens,
+		EstimatedOutputTokens: estimatedOutputTokens,
+		TotalEstimate:         totalEstimate,
+		Currency:              "USD",
+	}
+}
+
+// Verify interface compliance at compile time.
+var _ Provider = (*AzureOpenAIProviderAdapter)(nil)
+var _ StreamingProvider = (*AzureOpenAIProviderAdapter)(nil)

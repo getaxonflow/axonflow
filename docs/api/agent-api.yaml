@@ -2354,7 +2354,7 @@ components:
         provider:
           type: string
           description: LLM provider name
-          enum: [openai, anthropic, bedrock, ollama]
+          enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini]
         model:
           type: string
           description: Model identifier
@@ -3631,7 +3631,7 @@ components:
         LLM provider used (if any). EU AI Act Article 13 transparency requirement.
       schema:
         type: string
-        enum: [openai, anthropic, bedrock, ollama, none]
+        enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, none]
       example: "anthropic"
 
     X-AI-Model-ID:

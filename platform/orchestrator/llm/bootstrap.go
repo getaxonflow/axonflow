@@ -46,6 +46,13 @@ const (
 	EnvGoogleEndpoint = "GOOGLE_ENDPOINT"
 	EnvGoogleTimeout  = "GOOGLE_TIMEOUT_SECONDS"
 
+	// Azure OpenAI environment variables
+	EnvAzureOpenAIEndpoint       = "AZURE_OPENAI_ENDPOINT"
+	EnvAzureOpenAIAPIKey         = "AZURE_OPENAI_API_KEY"
+	EnvAzureOpenAIDeploymentName = "AZURE_OPENAI_DEPLOYMENT_NAME"
+	EnvAzureOpenAIAPIVersion     = "AZURE_OPENAI_API_VERSION"
+	EnvAzureOpenAITimeout        = "AZURE_OPENAI_TIMEOUT_SECONDS"
+
 	// AWS Bedrock environment variables (Enterprise)
 	EnvBedrockRegion = "BEDROCK_REGION"
 	EnvBedrockModel  = "BEDROCK_MODEL"
@@ -113,6 +120,10 @@ type BootstrapResult struct {
 //   - OLLAMA_MODEL: Default Ollama model (optional)
 //   - GOOGLE_API_KEY: Google API key (enables Gemini provider)
 //   - GOOGLE_MODEL: Default Gemini model (optional)
+//   - AZURE_OPENAI_ENDPOINT: Azure OpenAI endpoint (enables Azure OpenAI provider)
+//   - AZURE_OPENAI_API_KEY: Azure OpenAI API key
+//   - AZURE_OPENAI_DEPLOYMENT_NAME: Azure OpenAI deployment name
+//   - AZURE_OPENAI_API_VERSION: Azure OpenAI API version (optional, default: 2024-08-01-preview)
 //   - BEDROCK_REGION: AWS Bedrock region (enables Bedrock provider, Enterprise only)
 //   - BEDROCK_MODEL: Default Bedrock model (optional)
 //   - LLM_DEFAULT_PROVIDER: Name of the default provider
@@ -165,6 +176,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		{"openai", ProviderTypeOpenAI, bootstrapOpenAI},
 		{"ollama", ProviderTypeOllama, bootstrapOllama},
 		{"gemini", ProviderTypeGemini, bootstrapGemini},
+		{"azure-openai", ProviderTypeAzureOpenAI, bootstrapAzureOpenAI},
 	}
 
 	// Add enterprise providers if available (populated by init() in bootstrap_enterprise.go)
@@ -247,7 +259,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		len(result.ProvidersBootstrapped), len(result.ProvidersFailed))
 
 	if len(result.ProvidersBootstrapped) == 0 && len(result.ProvidersFailed) == 0 {
-		logger.Println("WARNING: No LLM providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, or OLLAMA_ENDPOINT.")
+		logger.Println("WARNING: No LLM providers configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, AZURE_OPENAI_ENDPOINT, or OLLAMA_ENDPOINT.")
 	}
 
 	return result, nil
@@ -373,6 +385,43 @@ func bootstrapGemini() (*ProviderConfig, error) {
 	return config, nil
 }
 
+// bootstrapAzureOpenAI creates an Azure OpenAI provider config from environment variables.
+// Supports both Classic (*.openai.azure.com) and Foundry (*.cognitiveservices.azure.com) patterns.
+// Auth type is auto-detected from the endpoint URL.
+func bootstrapAzureOpenAI() (*ProviderConfig, error) {
+	endpoint := os.Getenv(EnvAzureOpenAIEndpoint)
+	apiKey := os.Getenv(EnvAzureOpenAIAPIKey)
+	deploymentName := os.Getenv(EnvAzureOpenAIDeploymentName)
+
+	// All three are required
+	if endpoint == "" || apiKey == "" || deploymentName == "" {
+		return nil, nil // Not configured
+	}
+
+	config := &ProviderConfig{
+		Name:     "azure-openai",
+		Type:     ProviderTypeAzureOpenAI,
+		Endpoint: endpoint,
+		APIKey:   apiKey,
+		Model:    deploymentName, // In Azure OpenAI, deployment name is the model
+		Enabled:  true,
+		Settings: make(map[string]any),
+	}
+
+	// Optional API version override
+	if apiVersion := os.Getenv(EnvAzureOpenAIAPIVersion); apiVersion != "" {
+		config.Settings["api_version"] = apiVersion
+	}
+
+	if timeoutStr := os.Getenv(EnvAzureOpenAITimeout); timeoutStr != "" {
+		if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+			config.TimeoutSeconds = timeout
+		}
+	}
+
+	return config, nil
+}
+
 // containsProviderType checks if a provider type is in the list.
 func containsProviderType(types []ProviderType, t ProviderType) bool {
 	for _, pt := range types {
@@ -437,6 +486,14 @@ func DetectConfiguredProviders() []ProviderType {
 		configured = append(configured, ProviderTypeOllama)
 	}
 
+	if os.Getenv(EnvGoogleAPIKey) != "" {
+		configured = append(configured, ProviderTypeGemini)
+	}
+
+	if os.Getenv(EnvAzureOpenAIEndpoint) != "" && os.Getenv(EnvAzureOpenAIAPIKey) != "" {
+		configured = append(configured, ProviderTypeAzureOpenAI)
+	}
+
 	if os.Getenv(EnvBedrockRegion) != "" {
 		configured = append(configured, ProviderTypeBedrock)
 	}
@@ -470,6 +527,19 @@ func GetProviderEnvVars(providerType ProviderType) map[string]string {
 	case ProviderTypeBedrock:
 		vars[EnvBedrockRegion] = os.Getenv(EnvBedrockRegion)
 		vars[EnvBedrockModel] = os.Getenv(EnvBedrockModel)
+
+	case ProviderTypeGemini:
+		vars[EnvGoogleAPIKey] = maskAPIKey(os.Getenv(EnvGoogleAPIKey))
+		vars[EnvGoogleModel] = os.Getenv(EnvGoogleModel)
+		vars[EnvGoogleEndpoint] = os.Getenv(EnvGoogleEndpoint)
+		vars[EnvGoogleTimeout] = os.Getenv(EnvGoogleTimeout)
+
+	case ProviderTypeAzureOpenAI:
+		vars[EnvAzureOpenAIEndpoint] = os.Getenv(EnvAzureOpenAIEndpoint)
+		vars[EnvAzureOpenAIAPIKey] = maskAPIKey(os.Getenv(EnvAzureOpenAIAPIKey))
+		vars[EnvAzureOpenAIDeploymentName] = os.Getenv(EnvAzureOpenAIDeploymentName)
+		vars[EnvAzureOpenAIAPIVersion] = os.Getenv(EnvAzureOpenAIAPIVersion)
+		vars[EnvAzureOpenAITimeout] = os.Getenv(EnvAzureOpenAITimeout)
 	}
 
 	return vars

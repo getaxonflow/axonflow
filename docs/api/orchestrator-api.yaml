@@ -938,7 +938,7 @@ paths:
           description: Filter by provider type
           schema:
             type: string
-            enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+            enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, custom]
         - name: enabled
           in: query
           description: Filter by enabled status
@@ -2844,7 +2844,7 @@ components:
       properties:
         provider:
           type: string
-          enum: [openai, anthropic, bedrock, ollama, mock]
+          enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, mock]
         model:
           type: string
         response_time_ms:
@@ -3768,7 +3768,7 @@ components:
           description: Unique provider name
         type:
           type: string
-          enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+          enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, custom]
           description: Provider type
         endpoint:
           type: string
@@ -3830,7 +3830,7 @@ components:
           description: Unique provider name
         type:
           type: string
-          enum: [openai, anthropic, bedrock, ollama, gemini, custom]
+          enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, custom]
         api_key:
           type: string
           description: API key (mutually exclusive with api_key_secret_arn)
