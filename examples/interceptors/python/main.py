@@ -16,7 +16,7 @@ Interceptors automatically:
 - Audit LLM responses for compliance tracking
 
 Requirements:
-    pip install axonflow>=0.10.0 openai
+    pip install axonflow>=0.11.0 openai
 
 Usage:
     export AXONFLOW_AGENT_URL=http://localhost:8080
