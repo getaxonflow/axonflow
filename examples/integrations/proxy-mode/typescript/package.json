@@ -10,7 +10,7 @@
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^1.13.0",
+    "@axonflow/sdk": "^1.14.0",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {
