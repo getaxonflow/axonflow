@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Execution Replay API**: Debug and audit workflow executions with full state capture
+- **Decision & Execution Replay API**: Debug and audit workflow executions with full state capture and policy decisions
   - `GET /api/v1/executions` - List executions with filtering (status, time range, agent/workflow)
   - `GET /api/v1/executions/{id}` - Get execution with all step snapshots
   - `GET /api/v1/executions/{id}/steps` - Get individual step snapshots

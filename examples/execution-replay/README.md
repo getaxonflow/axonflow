@@ -1,17 +1,17 @@
-# Execution Replay Examples
+# Decision & Execution Replay Examples
 
-This directory contains examples demonstrating how to use the AxonFlow Execution Replay API with the AxonFlow SDKs.
+This directory contains examples demonstrating how to use the AxonFlow Decision & Execution Replay API with the AxonFlow SDKs.
 
 ## Overview
 
-The Execution Replay feature captures every step of workflow execution for:
+The Decision & Execution Replay feature captures every step of workflow execution and policy decisions for:
 - **Debugging**: Step-by-step inspection of workflow execution
 - **Auditing**: Complete audit trail of AI decisions
 - **Compliance**: Export execution data for regulatory requirements
 
 ## SDK Methods
 
-All examples use the official AxonFlow SDKs which provide native methods for the Execution Replay API:
+All examples use the official AxonFlow SDKs which provide native methods for the Decision & Execution Replay API:
 
 | SDK | Methods |
 |-----|---------|
