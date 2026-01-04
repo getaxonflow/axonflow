@@ -1,0 +1,25 @@
+{
+  "name": "axonflow-sdk-audit",
+  "version": "1.0.0",
+  "description": "Comprehensive SDK audit for AxonFlow",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "dev": "ts-node-dev src/index.ts"
+  },
+  "keywords": ["axonflow", "example", "sdk-audit"],
+  "author": "AxonFlow",
+  "license": "MIT",
+  "dependencies": {
+    "@axonflow/sdk": "^1.13.0",
+    "dotenv": "^16.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0"
+  }
+}
