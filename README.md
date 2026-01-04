@@ -46,10 +46,10 @@ curl http://localhost:8081/health
 
 | Provider | Community | Enterprise | Notes |
 |----------|:---------:|:----------:|-------|
-| **OpenAI** | ✅ | ✅ | GPT-4, GPT-4o, GPT-3.5 |
-| **Anthropic** | ✅ | ✅ | Claude 3.5 Sonnet, Claude 3 Opus |
+| **OpenAI** | ✅ | ✅ | GPT-5.2, GPT-4o, GPT-4 |
+| **Anthropic** | ✅ | ✅ | Claude Sonnet 4, Claude Opus 4.5 |
 | **Azure OpenAI** | ✅ | ✅ | Azure AI Foundry & Classic endpoints |
-| **Google Gemini** | ✅ | ✅ | Gemini 2.0 Flash, Gemini Pro |
+| **Google Gemini** | ✅ | ✅ | Gemini 3 Flash, Gemini 3 Pro |
 | **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
 
@@ -230,7 +230,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>1.0.0</version>
+    <version>1.10.0</version>
 </dependency>
 ```
 
@@ -308,7 +308,7 @@ if (approval.isApproved()) {
 }
 ```
 
-→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)**
+→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
 
 ---
 
@@ -320,7 +320,7 @@ if (approval.isApproved()) {
 | **[Code Governance](examples/code-governance/)** | Detect and audit LLM-generated code |
 | **[Hello World](examples/hello-world/)** | Minimal SDK example (30 lines) |
 
-→ **[More examples](https://docs.getaxonflow.com/docs/examples/overview)**
+→ **[Browse all examples](examples/)**
 
 ---
 
