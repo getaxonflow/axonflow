@@ -76,10 +76,10 @@ tags:
       Enterprise feature for EU regulatory compliance.
   - name: Metrics
     description: Performance monitoring
-  - name: Execution Replay
+  - name: Decision & Execution Replay
     description: |
-      Execution Replay API for debugging, auditing, and compliance.
-      Captures every step of workflow execution with full input/output snapshots.
+      Decision & Execution Replay API for debugging, auditing, and compliance.
+      Captures every step of workflow execution with full input/output snapshots and policy decisions.
   - name: Cost Controls
     description: |
       Budget management and LLM usage tracking for cost optimization.
@@ -3248,7 +3248,7 @@ paths:
   /api/v1/executions:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: List workflow executions
       description: |
         List all workflow executions with optional filtering and pagination.
@@ -3311,7 +3311,7 @@ paths:
   /api/v1/executions/{id}:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Get execution details
       description: Get full execution details including summary and all steps.
       operationId: getExecution
@@ -3337,7 +3337,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Delete execution
       description: Delete an execution and all its step data.
       operationId: deleteExecution
@@ -3357,7 +3357,7 @@ paths:
   /api/v1/executions/{id}/steps:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Get execution steps
       description: Get all steps for an execution.
       operationId: getExecutionSteps
@@ -3383,7 +3383,7 @@ paths:
   /api/v1/executions/{id}/steps/{stepIndex}:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Get specific step
       description: Get a specific step by index.
       operationId: getExecutionStep
@@ -3413,7 +3413,7 @@ paths:
   /api/v1/executions/{id}/timeline:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Get execution timeline
       description: Get a timeline view of execution steps with status indicators.
       operationId: getExecutionTimeline
@@ -3439,7 +3439,7 @@ paths:
   /api/v1/executions/{id}/export:
     get:
       tags:
-        - Execution Replay
+        - Decision & Execution Replay
       summary: Export execution
       description: |
         Export full execution record for compliance and auditing.
