@@ -13,6 +13,7 @@ package postgres
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -821,5 +822,122 @@ func TestPostgresConnector_Query_ByteConversion(t *testing.T) {
 	// Check that byte array was converted to string
 	if val, ok := result.Rows[0]["data"].(string); !ok || val != "hello world" {
 		t.Errorf("expected string 'hello world', got %v", result.Rows[0]["data"])
+	}
+}
+
+// TestPostgresConnector_buildArgs_Determinism verifies that buildArgs produces
+// consistent, deterministic ordering across multiple invocations.
+// This is critical because Go map iteration order is non-deterministic.
+func TestPostgresConnector_buildArgs_Determinism(t *testing.T) {
+	conn := NewPostgresConnector()
+
+	params := map[string]interface{}{
+		"zebra":    "z-value",
+		"apple":    "a-value",
+		"mango":    "m-value",
+		"banana":   "b-value",
+		"cherry":   "c-value",
+		"date":     "d-value",
+		"elephant": "e-value",
+		"fig":      "f-value",
+	}
+
+	// Expected order: alphabetically sorted keys
+	expectedOrder := []interface{}{
+		"a-value", // apple
+		"b-value", // banana
+		"c-value", // cherry
+		"d-value", // date
+		"e-value", // elephant
+		"f-value", // fig
+		"m-value", // mango
+		"z-value", // zebra
+	}
+
+	// Run 100 iterations to catch non-deterministic behavior
+	for i := 0; i < 100; i++ {
+		args, err := conn.buildArgs(params)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+
+		if !reflect.DeepEqual(args, expectedOrder) {
+			t.Fatalf("iteration %d: args not in expected order\ngot:  %v\nwant: %v", i, args, expectedOrder)
+		}
+	}
+}
+
+// TestPostgresConnector_buildArgs_EmptyParams verifies empty parameter handling.
+func TestPostgresConnector_buildArgs_EmptyParams(t *testing.T) {
+	conn := NewPostgresConnector()
+
+	tests := []struct {
+		name   string
+		params map[string]interface{}
+	}{
+		{
+			name:   "nil map",
+			params: nil,
+		},
+		{
+			name:   "empty map",
+			params: map[string]interface{}{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := conn.buildArgs(tc.params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if args != nil {
+				t.Errorf("expected nil args for %s, got %v", tc.name, args)
+			}
+		})
+	}
+}
+
+// TestPostgresConnector_buildArgs_SingleParam verifies single parameter handling.
+func TestPostgresConnector_buildArgs_SingleParam(t *testing.T) {
+	conn := NewPostgresConnector()
+
+	tests := []struct {
+		name     string
+		params   map[string]interface{}
+		expected []interface{}
+	}{
+		{
+			name:     "single string",
+			params:   map[string]interface{}{"name": "John"},
+			expected: []interface{}{"John"},
+		},
+		{
+			name:     "single int",
+			params:   map[string]interface{}{"id": 42},
+			expected: []interface{}{42},
+		},
+		{
+			name:     "single nil",
+			params:   map[string]interface{}{"value": nil},
+			expected: []interface{}{nil},
+		},
+		{
+			name:     "single bool",
+			params:   map[string]interface{}{"active": true},
+			expected: []interface{}{true},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := conn.buildArgs(tc.params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(args, tc.expected) {
+				t.Errorf("expected %v, got %v", tc.expected, args)
+			}
+		})
 	}
 }

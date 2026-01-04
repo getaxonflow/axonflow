@@ -118,6 +118,10 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 **Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
 
+**Decision & Execution Replay** — Debug governed workflows with step-by-step state and policy decisions. Timeline view and compliance exports included.
+
+**Cost Controls** — Set budgets at org, team, agent, or user level. Track LLM spend across providers with configurable alerts and enforcement actions.
+
 **Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
 
 **Multi-Agent Planning** — Define agents in YAML, let AxonFlow turn natural language requests into executable workflows.

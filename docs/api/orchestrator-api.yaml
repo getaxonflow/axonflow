@@ -76,6 +76,15 @@ tags:
       Enterprise feature for EU regulatory compliance.
   - name: Metrics
     description: Performance monitoring
+  - name: Execution Replay
+    description: |
+      Execution Replay API for debugging, auditing, and compliance.
+      Captures every step of workflow execution with full input/output snapshots.
+  - name: Cost Controls
+    description: |
+      Budget management and LLM usage tracking for cost optimization.
+      Supports budgets at organization, team, agent, workflow, and user scopes.
+      Provides usage summaries, breakdowns, and pre-request budget checks.
 
 paths:
   /health:
@@ -923,6 +932,68 @@ paths:
           $ref: '#/components/responses/BadRequest'
 
   # New Pluggable LLM Provider Management API (Issue #388)
+  /api/v1/llm-provider-types:
+    get:
+      tags:
+        - LLM Providers
+      summary: List available provider types
+      description: |
+        Returns a list of available LLM provider types (factory info).
+        This endpoint helps clients discover what provider types can be configured.
+      operationId: listLLMProviderTypes
+      responses:
+        '200':
+          description: List of available provider types
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider_types:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [openai, azure-openai, anthropic, bedrock, ollama, gemini, custom]
+                        name:
+                          type: string
+                          description: Human-readable name
+                        description:
+                          type: string
+                        supports_streaming:
+                          type: boolean
+                        requires_api_key:
+                          type: boolean
+                        configuration_schema:
+                          type: object
+                          description: JSON Schema for provider configuration
+              example:
+                provider_types:
+                  - type: openai
+                    name: OpenAI
+                    description: "OpenAI GPT models (gpt-4, gpt-3.5-turbo)"
+                    supports_streaming: true
+                    requires_api_key: true
+                  - type: anthropic
+                    name: Anthropic
+                    description: "Anthropic Claude models"
+                    supports_streaming: true
+                    requires_api_key: true
+                  - type: bedrock
+                    name: AWS Bedrock
+                    description: "AWS Bedrock models (Claude, Titan, Llama)"
+                    supports_streaming: true
+                    requires_api_key: false
+                  - type: ollama
+                    name: Ollama
+                    description: "Local Ollama models"
+                    supports_streaming: true
+                    requires_api_key: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/llm-providers:
     get:
       tags:
@@ -1123,6 +1194,135 @@ paths:
               schema:
                 $ref: '#/components/schemas/LLMProviderAPIError'
 
+  /api/v1/llm-providers/{name}/test:
+    post:
+      tags:
+        - LLM Providers
+      summary: Test LLM provider connection
+      description: |
+        Tests a provider connection by making a simple API call.
+        Returns success status and latency information.
+      operationId: testLLMProvider
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Provider name
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+                  description: Optional test prompt (default is simple greeting)
+                  example: "Say hello in one word."
+                model:
+                  type: string
+                  description: Optional model to test with
+      responses:
+        '200':
+          description: Provider test result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  provider:
+                    type: string
+                  latency_ms:
+                    type: number
+                  response:
+                    type: string
+                    description: Model response (if successful)
+                  error:
+                    type: string
+                    description: Error message (if failed)
+              example:
+                success: true
+                provider: "openai"
+                latency_ms: 245
+                response: "Hello!"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Provider not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMProviderAPIError'
+        '503':
+          description: Provider connection failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "Connection timeout"
+
+  /api/v1/llm-providers/status:
+    get:
+      tags:
+        - LLM Providers
+      summary: Get all providers status
+      description: |
+        Returns status information for all configured LLM providers.
+        Includes enabled status, configuration summary, and last health check.
+      operationId: getAllLLMProvidersStatus
+      responses:
+        '200':
+          description: All providers status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        enabled:
+                          type: boolean
+                        healthy:
+                          type: boolean
+                        last_check:
+                          type: string
+                          format: date-time
+                        models_count:
+                          type: integer
+              example:
+                providers:
+                  - name: "openai-primary"
+                    type: "openai"
+                    enabled: true
+                    healthy: true
+                    last_check: "2025-01-03T10:30:00Z"
+                    models_count: 5
+                  - name: "anthropic-backup"
+                    type: "anthropic"
+                    enabled: true
+                    healthy: true
+                    last_check: "2025-01-03T10:30:00Z"
+                    models_count: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/llm-providers/health:
     get:
       tags:
@@ -1182,6 +1382,420 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # =============================================================================
+  # Policy CRUD API
+  # =============================================================================
+  /api/v1/policies:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: List policies
+      description: |
+        Returns a paginated list of policies with filtering support.
+        Use this for policy management in the Customer Portal.
+      operationId: listPolicies
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Filter by policy type
+          schema:
+            type: string
+            enum: [static, dynamic]
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          description: Search in name and description
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [name, created_at, updated_at, priority]
+        - name: sort_dir
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoliciesListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - Dynamic Policies
+      summary: Create policy
+      description: Create a new policy
+      operationId: createPolicy
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePolicyRequest'
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/policies/import:
+    post:
+      tags:
+        - Dynamic Policies
+      summary: Import policies
+      description: |
+        Bulk import policies from JSON or YAML format.
+        Supports create or update semantics based on policy_id.
+      operationId: importPolicies
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - policies
+              properties:
+                policies:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CreatePolicyRequest'
+                mode:
+                  type: string
+                  enum: [create, upsert]
+                  default: upsert
+                  description: Import mode - create only or upsert (create or update)
+      responses:
+        '200':
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: integer
+                  updated:
+                    type: integer
+                  failed:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/policies/export:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Export policies
+      description: Export all policies in JSON or YAML format for backup or migration
+      operationId: exportPolicies
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Export format
+          schema:
+            type: string
+            enum: [json, yaml]
+            default: json
+        - name: type
+          in: query
+          description: Filter by policy type
+          schema:
+            type: string
+            enum: [static, dynamic, all]
+            default: all
+      responses:
+        '200':
+          description: Exported policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "1.0"
+                  exported_at:
+                    type: string
+                    format: date-time
+                  policies:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Policy'
+            application/x-yaml:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/policies/{id}:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Get policy by ID
+      operationId: getPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Policy not found
+    put:
+      tags:
+        - Dynamic Policies
+      summary: Update policy
+      operationId: updatePolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePolicyRequest'
+      responses:
+        '200':
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Policy not found
+    delete:
+      tags:
+        - Dynamic Policies
+      summary: Delete policy
+      operationId: deletePolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Policy deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Policy not found
+
+  /api/v1/policies/{id}/test:
+    post:
+      tags:
+        - Dynamic Policies
+      summary: Test policy against input
+      description: Test how a specific policy evaluates against sample input
+      operationId: testPolicyById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: Input to evaluate
+                context:
+                  type: object
+                  description: Additional context
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluationResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Policy not found
+
+  /api/v1/policies/{id}/versions:
+    get:
+      tags:
+        - Dynamic Policies
+      summary: Get policy version history
+      description: |
+        Returns version history for a policy.
+        Community edition limited to 5 versions.
+      operationId: getPolicyVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy_id:
+                    type: string
+                  versions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        version:
+                          type: integer
+                        snapshot:
+                          type: object
+                        change_type:
+                          type: string
+                        changed_by:
+                          type: string
+                        changed_at:
+                          type: string
+                          format: date-time
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Policy not found
 
   /api/v1/policies/dynamic:
     get:
@@ -2630,6 +3244,719 @@ paths:
         '200':
           description: List of policy templates
 
+  # Execution Replay API
+  /api/v1/executions:
+    get:
+      tags:
+        - Execution Replay
+      summary: List workflow executions
+      description: |
+        List all workflow executions with optional filtering and pagination.
+        Supports filtering by status, workflow, tenant, time range.
+      operationId: listExecutions
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of results (default 50)
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          description: Pagination offset (default 0)
+          schema:
+            type: integer
+            default: 0
+        - name: status
+          in: query
+          description: Filter by execution status
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+        - name: workflow_id
+          in: query
+          description: Filter by workflow name
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          description: Filter by start time (RFC3339 format)
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          description: Filter by end time (RFC3339 format)
+          schema:
+            type: string
+            format: date-time
+        - name: X-Tenant-ID
+          in: header
+          description: Filter by tenant ID
+          schema:
+            type: string
+        - name: X-Org-ID
+          in: header
+          description: Filter by organization ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of executions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionListResponse'
+
+  /api/v1/executions/{id}:
+    get:
+      tags:
+        - Execution Replay
+      summary: Get execution details
+      description: Get full execution details including summary and all steps.
+      operationId: getExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Execution details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '404':
+          description: Execution not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Execution Replay
+      summary: Delete execution
+      description: Delete an execution and all its step data.
+      operationId: deleteExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Execution deleted
+        '404':
+          description: Execution not found
+
+  /api/v1/executions/{id}/steps:
+    get:
+      tags:
+        - Execution Replay
+      summary: Get execution steps
+      description: Get all steps for an execution.
+      operationId: getExecutionSteps
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of execution steps
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExecutionSnapshot'
+        '404':
+          description: Execution not found
+
+  /api/v1/executions/{id}/steps/{stepIndex}:
+    get:
+      tags:
+        - Execution Replay
+      summary: Get specific step
+      description: Get a specific step by index.
+      operationId: getExecutionStep
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+        - name: stepIndex
+          in: path
+          required: true
+          description: Step index (0-based)
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Step details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionSnapshot'
+        '404':
+          description: Step not found
+
+  /api/v1/executions/{id}/timeline:
+    get:
+      tags:
+        - Execution Replay
+      summary: Get execution timeline
+      description: Get a timeline view of execution steps with status indicators.
+      operationId: getExecutionTimeline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Execution timeline
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimelineEntry'
+        '404':
+          description: Execution not found
+
+  /api/v1/executions/{id}/export:
+    get:
+      tags:
+        - Execution Replay
+      summary: Export execution
+      description: |
+        Export full execution record for compliance and auditing.
+        Returns a downloadable JSON file.
+      operationId: exportExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Execution request ID
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Export format (default json)
+          schema:
+            type: string
+            default: json
+        - name: include_input
+          in: query
+          description: Include step inputs (default true)
+          schema:
+            type: boolean
+            default: true
+        - name: include_output
+          in: query
+          description: Include step outputs (default true)
+          schema:
+            type: boolean
+            default: true
+        - name: include_policies
+          in: query
+          description: Include policy events (default true)
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Execution export
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionExport'
+        '404':
+          description: Execution not found
+
+  # Cost Controls API
+  /api/v1/budgets:
+    post:
+      tags:
+        - Cost Controls
+      summary: Create a budget
+      description: |
+        Create a new budget with spending limits. Budgets can be scoped to
+        organization, team, agent, workflow, or user level.
+      operationId: createBudget
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetCreate'
+            example:
+              id: "monthly-budget"
+              name: "Monthly Production Budget"
+              scope: "organization"
+              limit_usd: 1000.00
+              period: "monthly"
+              on_exceed: "warn"
+              alert_thresholds: [50, 80, 100]
+      responses:
+        '201':
+          description: Budget created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Budget'
+        '400':
+          description: Invalid budget configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Budget with this ID already exists
+    get:
+      tags:
+        - Cost Controls
+      summary: List budgets
+      description: List all budgets for the organization
+      operationId: listBudgets
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization ID
+          schema:
+            type: string
+        - name: scope
+          in: query
+          description: Filter by budget scope
+          schema:
+            type: string
+            enum: [organization, team, agent, workflow, user]
+        - name: limit
+          in: query
+          description: Maximum number of results
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of budgets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetList'
+
+  /api/v1/budgets/{id}:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get a budget
+      description: Get a specific budget by ID
+      operationId: getBudget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Budget ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Budget'
+        '404':
+          description: Budget not found
+    put:
+      tags:
+        - Cost Controls
+      summary: Update a budget
+      description: Update an existing budget configuration
+      operationId: updateBudget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Budget ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetUpdate'
+      responses:
+        '200':
+          description: Budget updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Budget'
+        '404':
+          description: Budget not found
+        '400':
+          description: Invalid budget configuration
+    delete:
+      tags:
+        - Cost Controls
+      summary: Delete a budget
+      description: Delete a budget by ID
+      operationId: deleteBudget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Budget ID
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Budget deleted
+        '404':
+          description: Budget not found
+
+  /api/v1/budgets/{id}/status:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get budget status
+      description: |
+        Get real-time status of a budget including current usage,
+        remaining amount, and whether the budget is exceeded.
+      operationId: getBudgetStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Budget ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Budget status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetStatus'
+              example:
+                budget:
+                  id: "monthly-budget"
+                  name: "Monthly Production Budget"
+                  limit_usd: 1000.00
+                  period: "monthly"
+                used_usd: 450.25
+                remaining_usd: 549.75
+                percentage: 45.025
+                period_start: "2026-01-01T00:00:00Z"
+                period_end: "2026-02-01T00:00:00Z"
+                is_exceeded: false
+                is_blocked: false
+        '404':
+          description: Budget not found
+
+  /api/v1/budgets/{id}/alerts:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get budget alerts
+      description: Get alerts triggered for a specific budget
+      operationId: getBudgetAlerts
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Budget ID
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of alerts to return
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Budget alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetAlertList'
+        '404':
+          description: Budget not found
+
+  /api/v1/budgets/check:
+    post:
+      tags:
+        - Cost Controls
+      summary: Check budget before request
+      description: |
+        Check if a request should be allowed based on budget constraints.
+        Returns whether the request is allowed and the applicable budget status.
+      operationId: checkBudget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetCheckRequest'
+            example:
+              org_id: "your-org-id"
+              team_id: "engineering"
+              agent_id: "support-bot"
+      responses:
+        '200':
+          description: Budget check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetCheckResponse'
+              examples:
+                allowed:
+                  summary: Request allowed
+                  value:
+                    allowed: true
+                blocked:
+                  summary: Request blocked
+                  value:
+                    allowed: false
+                    action: "block"
+                    budget_id: "team-budget"
+                    budget_name: "Engineering Team Budget"
+                    used_usd: 520.00
+                    limit_usd: 500.00
+                    percentage: 104.0
+                    message: "Budget 'Engineering Team Budget' exceeded - requests blocked"
+
+  /api/v1/usage:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get usage summary
+      description: Get aggregated LLM usage for the current period
+      operationId: getUsageSummary
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization ID
+          schema:
+            type: string
+        - name: period
+          in: query
+          description: Time period for aggregation
+          schema:
+            type: string
+            enum: [daily, weekly, monthly, quarterly, yearly]
+            default: monthly
+      responses:
+        '200':
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+              example:
+                total_cost_usd: 450.25
+                total_tokens_in: 1250000
+                total_tokens_out: 375000
+                total_requests: 5420
+                average_cost_per_request: 0.083
+
+  /api/v1/usage/breakdown:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get usage breakdown
+      description: Get usage broken down by a specific dimension
+      operationId: getUsageBreakdown
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization ID
+          schema:
+            type: string
+        - name: group_by
+          in: query
+          required: true
+          description: Dimension to group by
+          schema:
+            type: string
+            enum: [provider, model, agent, team, user]
+        - name: period
+          in: query
+          description: Time period for aggregation
+          schema:
+            type: string
+            enum: [daily, weekly, monthly, quarterly, yearly]
+            default: monthly
+      responses:
+        '200':
+          description: Usage breakdown
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageBreakdown'
+              example:
+                group_by: "provider"
+                total_cost_usd: 450.25
+                items:
+                  - group_by: "provider"
+                    group_value: "anthropic"
+                    cost_usd: 320.50
+                    tokens_in: 890000
+                    tokens_out: 245000
+                    request_count: 3200
+                    percentage: 71.2
+                  - group_by: "provider"
+                    group_value: "openai"
+                    cost_usd: 129.75
+                    tokens_in: 360000
+                    tokens_out: 130000
+                    request_count: 2220
+                    percentage: 28.8
+
+  /api/v1/usage/records:
+    get:
+      tags:
+        - Cost Controls
+      summary: List usage records
+      description: List individual usage records with filtering
+      operationId: listUsageRecords
+      parameters:
+        - name: X-Org-ID
+          in: header
+          required: true
+          description: Organization ID
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          description: Filter records after this time
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          description: Filter records before this time
+          schema:
+            type: string
+            format: date-time
+        - name: provider
+          in: query
+          description: Filter by LLM provider
+          schema:
+            type: string
+        - name: model
+          in: query
+          description: Filter by model name
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          description: Filter by agent ID
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of records
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Usage records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageRecordList'
+
+  /api/v1/pricing:
+    get:
+      tags:
+        - Cost Controls
+      summary: Get model pricing
+      description: Get pricing information for LLM models
+      operationId: getPricing
+      parameters:
+        - name: provider
+          in: query
+          description: Filter by provider name
+          schema:
+            type: string
+        - name: model
+          in: query
+          description: Filter by model name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pricing information
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PricingInfo'
+                  - $ref: '#/components/schemas/PricingList'
+              examples:
+                single_model:
+                  summary: Single model pricing
+                  value:
+                    provider: "anthropic"
+                    model: "claude-sonnet-4"
+                    pricing:
+                      input_per_1k: 0.003
+                      output_per_1k: 0.015
+                all_providers:
+                  summary: All providers pricing
+                  value:
+                    providers:
+                      anthropic:
+                        claude-sonnet-4:
+                          input_per_1k: 0.003
+                          output_per_1k: 0.015
+                        claude-opus-4:
+                          input_per_1k: 0.015
+                          output_per_1k: 0.075
+                      openai:
+                        gpt-4o:
+                          input_per_1k: 0.0025
+                          output_per_1k: 0.01
+
 components:
   schemas:
     HealthResponse:
@@ -2972,6 +4299,162 @@ components:
                 type: string
               limit:
                 type: integer
+
+    # Policy CRUD API schemas
+    Policy:
+      type: object
+      description: A policy with full metadata
+      properties:
+        id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+          description: Human-readable identifier
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [static, dynamic]
+        category:
+          type: string
+        tier:
+          type: string
+          enum: [system, organization, tenant]
+        pattern:
+          type: string
+          description: Regex pattern (for static policies)
+        action:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        priority:
+          type: integer
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          items:
+            type: object
+          description: Conditions (for dynamic policies)
+        actions:
+          type: array
+          items:
+            type: object
+          description: Actions (for dynamic policies)
+        version:
+          type: integer
+        tenant_id:
+          type: string
+        organization_id:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    PoliciesListResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            page_size:
+              type: integer
+            total_items:
+              type: integer
+            total_pages:
+              type: integer
+
+    CreatePolicyRequest:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [static, dynamic]
+        category:
+          type: string
+        tier:
+          type: string
+          enum: [organization, tenant]
+          default: tenant
+        pattern:
+          type: string
+          description: Required for static policies
+        action:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        priority:
+          type: integer
+          default: 100
+        enabled:
+          type: boolean
+          default: true
+        conditions:
+          type: array
+          items:
+            type: object
+          description: Required for dynamic policies
+        actions:
+          type: array
+          items:
+            type: object
+          description: Required for dynamic policies
+
+    UpdatePolicyRequest:
+      type: object
+      description: All fields optional for partial update
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        pattern:
+          type: string
+        action:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        priority:
+          type: integer
+        enabled:
+          type: boolean
+        conditions:
+          type: array
+          items:
+            type: object
+        actions:
+          type: array
+          items:
+            type: object
 
     AuditSearchRequest:
       type: object
@@ -4343,6 +5826,529 @@ components:
           format: date-time
         resolved_by:
           type: string
+
+    # Execution Replay Schemas
+    ExecutionListResponse:
+      type: object
+      properties:
+        executions:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/ExecutionSummary'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    ExecutionSummary:
+      type: object
+      properties:
+        request_id:
+          type: string
+        workflow_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        total_steps:
+          type: integer
+        completed_steps:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        total_tokens:
+          type: integer
+        total_cost_usd:
+          type: number
+          format: double
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        error_message:
+          type: string
+
+    ExecutionSnapshot:
+      type: object
+      properties:
+        request_id:
+          type: string
+        step_index:
+          type: integer
+        step_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, paused]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        input:
+          type: object
+        output:
+          type: object
+        provider:
+          type: string
+        model:
+          type: string
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        policies_checked:
+          type: array
+          items:
+            type: string
+        policies_triggered:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyEvent'
+        error_message:
+          type: string
+        retry_count:
+          type: integer
+
+    PolicyEvent:
+      type: object
+      properties:
+        policy_id:
+          type: string
+        policy_name:
+          type: string
+        action:
+          type: string
+          enum: [block, warn, require_approval]
+        matched:
+          type: string
+        resolution:
+          type: string
+
+    Execution:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/ExecutionSummary'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExecutionSnapshot'
+
+    TimelineEntry:
+      type: object
+      properties:
+        step_index:
+          type: integer
+        step_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, paused]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        has_error:
+          type: boolean
+        has_approval:
+          type: boolean
+
+    ExecutionExport:
+      type: object
+      properties:
+        exported_at:
+          type: string
+          format: date-time
+        format:
+          type: string
+        execution:
+          $ref: '#/components/schemas/Execution'
+
+    # Cost Controls Schemas
+    Budget:
+      type: object
+      required:
+        - id
+        - name
+        - scope
+        - limit_usd
+        - period
+      properties:
+        id:
+          type: string
+          description: Unique budget identifier
+        name:
+          type: string
+          description: Human-readable budget name
+        scope:
+          type: string
+          enum: [organization, team, agent, workflow, user]
+          description: Budget scope level
+        scope_id:
+          type: string
+          description: ID of the scoped entity (team_id, agent_id, etc.)
+        limit_usd:
+          type: number
+          format: double
+          description: Maximum spending limit in USD
+        period:
+          type: string
+          enum: [daily, weekly, monthly, quarterly, yearly]
+          description: Budget reset period
+        on_exceed:
+          type: string
+          enum: [warn, block, downgrade]
+          default: warn
+          description: Action when budget is exceeded
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+          description: Percentage thresholds for alerts (e.g., [50, 80, 100])
+        org_id:
+          type: string
+          description: Organization ID
+        tenant_id:
+          type: string
+          description: Tenant ID (multi-tenant deployments)
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BudgetCreate:
+      type: object
+      required:
+        - id
+        - name
+        - scope
+        - limit_usd
+        - period
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        scope:
+          type: string
+          enum: [organization, team, agent, workflow, user]
+        scope_id:
+          type: string
+        limit_usd:
+          type: number
+          format: double
+        period:
+          type: string
+          enum: [daily, weekly, monthly, quarterly, yearly]
+        on_exceed:
+          type: string
+          enum: [warn, block, downgrade]
+          default: warn
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+
+    BudgetUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        limit_usd:
+          type: number
+          format: double
+        on_exceed:
+          type: string
+          enum: [warn, block, downgrade]
+        alert_thresholds:
+          type: array
+          items:
+            type: integer
+
+    BudgetList:
+      type: object
+      properties:
+        budgets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Budget'
+        count:
+          type: integer
+
+    BudgetStatus:
+      type: object
+      properties:
+        budget:
+          $ref: '#/components/schemas/Budget'
+        used_usd:
+          type: number
+          format: double
+          description: Amount spent in current period
+        remaining_usd:
+          type: number
+          format: double
+          description: Remaining budget
+        percentage:
+          type: number
+          format: double
+          description: Percentage of budget used
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+        is_exceeded:
+          type: boolean
+          description: Whether budget limit has been exceeded
+        is_blocked:
+          type: boolean
+          description: Whether requests are being blocked
+
+    BudgetAlert:
+      type: object
+      properties:
+        id:
+          type: integer
+        budget_id:
+          type: string
+        threshold:
+          type: integer
+          description: Threshold percentage that triggered alert
+        percentage_reached:
+          type: number
+          format: double
+        amount_usd:
+          type: number
+          format: double
+        alert_type:
+          type: string
+          enum: [threshold_reached, budget_exceeded, budget_blocked]
+        message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        acknowledged:
+          type: boolean
+
+    BudgetAlertList:
+      type: object
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetAlert'
+        count:
+          type: integer
+
+    BudgetCheckRequest:
+      type: object
+      required:
+        - org_id
+      properties:
+        org_id:
+          type: string
+        team_id:
+          type: string
+        agent_id:
+          type: string
+        workflow_id:
+          type: string
+        user_id:
+          type: string
+
+    BudgetCheckResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the request should be allowed
+        action:
+          type: string
+          enum: [warn, block, downgrade]
+          description: Action that was taken (if budget exceeded)
+        budget_id:
+          type: string
+          description: ID of the budget that blocked the request
+        budget_name:
+          type: string
+        used_usd:
+          type: number
+          format: double
+        limit_usd:
+          type: number
+          format: double
+        percentage:
+          type: number
+          format: double
+        message:
+          type: string
+
+    UsageSummary:
+      type: object
+      properties:
+        total_cost_usd:
+          type: number
+          format: double
+        total_tokens_in:
+          type: integer
+        total_tokens_out:
+          type: integer
+        total_requests:
+          type: integer
+        average_cost_per_request:
+          type: number
+          format: double
+        period_start:
+          type: string
+          format: date-time
+        period_end:
+          type: string
+          format: date-time
+
+    UsageBreakdownItem:
+      type: object
+      properties:
+        group_by:
+          type: string
+          description: Dimension name (provider, model, agent, etc.)
+        group_value:
+          type: string
+          description: Value of the dimension
+        cost_usd:
+          type: number
+          format: double
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        request_count:
+          type: integer
+        percentage:
+          type: number
+          format: double
+
+    UsageBreakdown:
+      type: object
+      properties:
+        group_by:
+          type: string
+        total_cost_usd:
+          type: number
+          format: double
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageBreakdownItem'
+
+    UsageRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        request_id:
+          type: string
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        team_id:
+          type: string
+        agent_id:
+          type: string
+        user_id:
+          type: string
+        workflow_id:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        tokens_in:
+          type: integer
+        tokens_out:
+          type: integer
+        cost_usd:
+          type: number
+          format: double
+        latency_ms:
+          type: integer
+        success:
+          type: boolean
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    UsageRecordList:
+      type: object
+      properties:
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageRecord'
+        count:
+          type: integer
+        total:
+          type: integer
+
+    ModelPricing:
+      type: object
+      properties:
+        input_per_1k:
+          type: number
+          format: double
+          description: Cost per 1,000 input tokens in USD
+        output_per_1k:
+          type: number
+          format: double
+          description: Cost per 1,000 output tokens in USD
+
+    PricingInfo:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        pricing:
+          $ref: '#/components/schemas/ModelPricing'
+
+    PricingList:
+      type: object
+      properties:
+        providers:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              $ref: '#/components/schemas/ModelPricing'
 
   responses:
     BadRequest:
