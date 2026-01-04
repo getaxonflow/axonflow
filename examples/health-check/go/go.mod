@@ -2,4 +2,4 @@ module health-check
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go v1.16.0
+require github.com/getaxonflow/axonflow-sdk-go v1.17.0

@@ -230,7 +230,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>1.10.0</version>
+    <version>1.12.0</version>
 </dependency>
 ```
 
