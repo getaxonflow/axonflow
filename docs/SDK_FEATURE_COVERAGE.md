@@ -161,10 +161,10 @@ All 4 SDKs should have identical method coverage:
 
 | SDK | Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v1.14.0 | ~21 | ✅ |
-| Python | v0.10.1 | ~21 | ✅ |
-| TypeScript | v1.11.1 | ~22 | ✅ (+protect) |
-| Java | v1.9.0 | ~21 | ✅ |
+| Go | v1.15.0 | ~21 | ✅ |
+| Python | v0.11.0 | ~21 | ✅ |
+| TypeScript | v1.12.0 | ~22 | ✅ (+protect) |
+| Java | v1.10.0 | ~21 | ✅ |
 
 ---
 

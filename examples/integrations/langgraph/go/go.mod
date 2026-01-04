@@ -2,4 +2,4 @@ module langgraph-axonflow-example
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go v1.14.0
+require github.com/getaxonflow/axonflow-sdk-go v1.15.0

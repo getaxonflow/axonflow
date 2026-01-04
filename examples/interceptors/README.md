@@ -14,10 +14,10 @@ providing transparent policy enforcement without changing your existing code pat
 
 | Language | Directory | SDK Version |
 |----------|-----------|-------------|
-| Go | [go/](./go/) | v1.14.0 |
-| Python | [python/](./python/) | v0.10.1 |
-| Java | [java/](./java/) | v1.8.0 |
-| TypeScript | [typescript/](./typescript/) | v1.11.1 |
+| Go | [go/](./go/) | v1.15.0 |
+| Python | [python/](./python/) | v0.11.0 |
+| Java | [java/](./java/) | v1.10.0 |
+| TypeScript | [typescript/](./typescript/) | v1.12.0 |
 
 ## Quick Start
 
