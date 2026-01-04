@@ -118,7 +118,7 @@ jobs:
                 echo "1" > "$WORKDIR/${name}.status"
               else
                 cd "$path"
-                if golangci-lint run --timeout=5m --config="$GOLANGCI_CONFIG" > "$WORKDIR/${name}.out" 2>&1; then
+                if golangci-lint run --timeout=10m --config="$GOLANGCI_CONFIG" > "$WORKDIR/${name}.out" 2>&1; then
                   echo "0" > "$WORKDIR/${name}.status"
                 else
                   echo "1" > "$WORKDIR/${name}.status"
