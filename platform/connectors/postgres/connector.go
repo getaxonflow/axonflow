@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"time"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -294,18 +295,26 @@ func (c *PostgresConnector) Capabilities() []string {
 	}
 }
 
-// buildArgs converts parameter map to positional argument slice
-// PostgreSQL uses $1, $2, etc. for positional parameters
+// buildArgs converts parameter map to positional argument slice.
+// PostgreSQL uses $1, $2, etc. for positional parameters.
+// Keys are sorted alphabetically to ensure deterministic ordering,
+// since Go map iteration order is non-deterministic.
 func (c *PostgresConnector) buildArgs(params map[string]interface{}) ([]interface{}, error) {
 	if len(params) == 0 {
 		return nil, nil
 	}
 
-	// For now, assume parameters are already in correct order
-	// In production, this should parse the SQL and match parameter names
+	// Extract and sort keys for deterministic ordering
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Build args slice in sorted key order
 	args := make([]interface{}, 0, len(params))
-	for _, v := range params {
-		args = append(args, v)
+	for _, k := range keys {
+		args = append(args, params[k])
 	}
 
 	return args, nil

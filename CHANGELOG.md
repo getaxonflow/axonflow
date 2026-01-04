@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.0] - 2026-01-04
+
+### Added
+
+- **Execution Replay API**: Debug and audit workflow executions with full state capture
+  - `GET /api/v1/executions` - List executions with filtering (status, time range, agent/workflow)
+  - `GET /api/v1/executions/{id}` - Get execution with all step snapshots
+  - `GET /api/v1/executions/{id}/steps` - Get individual step snapshots
+  - `GET /api/v1/executions/{id}/timeline` - Timeline view for visualization
+  - `GET /api/v1/executions/{id}/export` - Export for compliance and archival
+  - `DELETE /api/v1/executions/{id}` - Delete execution records
+  - SDK examples for Go, Python, TypeScript, Java
+
+- **Cost Controls Phase 1**: Budget management and LLM usage tracking
+  - Budget scopes: Organization, Team, Agent, Workflow, User
+  - Budget periods: Daily, Weekly, Monthly, Quarterly, Yearly
+  - Enforcement actions: Warn, Block, Downgrade on exceed
+  - Configurable alert thresholds (default 50%, 80%, 100%)
+  - Usage aggregation: Hourly, Daily, Weekly, Monthly
+  - Provider pricing for OpenAI, Anthropic, Azure, Gemini, Bedrock, Ollama
+  - SDK examples for Go, Python, TypeScript, Java
+
+### Fixed
+
+- **Replay Data Race**: Fixed race condition in background summary update when multiple goroutines access execution state
+
+### Documentation
+
+- **ADR-024**: SDK method inclusion criteria for feature parity decisions
+- **SDK Feature Coverage**: Cross-SDK method availability matrix
+
+---
+
 ## [2.5.0] - 2026-01-02
 
 ### Added

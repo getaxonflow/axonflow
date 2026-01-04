@@ -35,10 +35,12 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/node_enforcement"
+	"axonflow/platform/orchestrator/cost"   // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/rbi"  // RBI FREE-AI module - Community stub or EE impl
-	"axonflow/platform/orchestrator/sebi" // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
+	"axonflow/platform/orchestrator/replay" // Execution replay/debug mode (#763)
+	"axonflow/platform/orchestrator/sebi"   // SEBI AI/ML module - Community stub or EE impl
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -83,6 +85,14 @@ var (
 	sebiModule    *sebi.SEBIModule // SEBI AI/ML Guidelines compliance (India)
 	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
 	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
+
+	// Execution Replay/Debug Mode (#763)
+	replayService *replay.Service // Execution replay service
+	replayHandler *replay.Handler // Execution replay HTTP handlers
+
+	// Cost Controls & Budget Management (#764)
+	costService *cost.Service // Cost tracking and budget management
+	costHandler *cost.Handler // Cost control HTTP handlers
 )
 
 // Per-stage metrics (similar to Agent)
@@ -429,6 +439,18 @@ func Run() {
 	if euaiactModule != nil {
 		euaiactModule.RegisterRoutesWithMux(r)
 		log.Println("EU AI Act Compliance API routes registered (/api/v1/euaiact/...)")
+	}
+
+	// Execution Replay/Debug Mode (#763)
+	if replayHandler != nil {
+		replayHandler.RegisterRoutes(r)
+		log.Println("Execution Replay API routes registered (/api/v1/executions/...)")
+	}
+
+	// Cost Controls & Budget Management (#764)
+	if costHandler != nil {
+		costHandler.RegisterRoutes(r)
+		log.Println("Cost Controls API routes registered (/api/v1/budgets/..., /api/v1/usage/...)")
 	}
 
 	// Start server
@@ -818,6 +840,28 @@ func initializeComponents() {
 		templateService := NewTemplateService(templateRepo, policyRepo)
 		templateAPIHandler = NewTemplateAPIHandler(templateService)
 		log.Println("Policy Templates API initialized ✅")
+
+		// Initialize Execution Replay/Debug Mode (#763)
+		log.Println("Initializing Execution Replay Service...")
+		replayRepo := replay.NewPostgresRepository(usageDB)
+		replayService = replay.NewService(replayRepo)
+		replayHandler = replay.NewHandler(replayService)
+
+		// Wire replay recorder to workflow engine
+		if workflowEngine != nil {
+			replayAdapter := NewReplayServiceAdapter(replayService)
+			workflowEngine.SetReplayRecorder(replayAdapter)
+			log.Println("Execution Replay Service wired to Workflow Engine ✅")
+		}
+		log.Println("Execution Replay Service initialized ✅")
+
+		// Initialize Cost Controls & Budget Management (#764)
+		log.Println("Initializing Cost Controls Service...")
+		costRepo := cost.NewPostgresRepository(usageDB)
+		pricing := cost.LoadPricingFromEnv()
+		costService = cost.NewService(costRepo, pricing)
+		costHandler = cost.NewHandler(costService)
+		log.Println("Cost Controls Service initialized ✅")
 
 		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
 		log.Println("Initializing SEBI Compliance Module...")
