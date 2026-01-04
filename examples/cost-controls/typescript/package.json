@@ -1,0 +1,21 @@
+{
+  "name": "axonflow-cost-controls-example",
+  "version": "1.0.0",
+  "description": "AxonFlow Cost Controls Example",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npx tsx src/index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^1.11.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "comments": {
+    "local-dev": "For local development: npm link @axonflow/sdk (after running npm link in SDK repo)"
+  }
+}

@@ -48,12 +48,20 @@ tags:
     description: Policy templates for quick policy creation
 
 paths:
+  # =============================================================================
+  # Unified Policies API (PLANNED - NOT YET IMPLEMENTED)
+  # =============================================================================
+  # These endpoints are designed to provide a unified view across Agent (static)
+  # and Orchestrator (dynamic) policies. Implementation is pending.
+  # =============================================================================
   /api/v1/unified-policies:
     get:
       tags:
         - Unified Policies
       summary: List all policies (unified view)
       description: |
+        **PLANNED - NOT YET IMPLEMENTED**
+
         Retrieves a unified view of policies from both Agent (static) and Orchestrator (dynamic).
 
         Static policies are pre-configured security patterns (SQL injection, PII detection)
@@ -135,6 +143,8 @@ paths:
         - Unified Policies
       summary: Get unified policy by ID
       description: |
+        **PLANNED - NOT YET IMPLEMENTED**
+
         Retrieves a single policy by its ID from either Agent (static) or Orchestrator (dynamic).
         The policy_id format indicates the source:
         - `static-*`: Static policy from Agent
@@ -212,6 +222,43 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/static-policies/overrides:
+    get:
+      tags:
+        - Static Policies
+      summary: List policy overrides
+      description: |
+        Lists all policy overrides for a tenant.
+        Overrides allow Enterprise customers to modify system policy behavior
+        without changing the underlying pattern.
+      operationId: listStaticPolicyOverrides
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: include_expired
+          in: query
+          description: Include expired overrides in results
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: List of policy overrides
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PolicyOverride'
+                  count:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/v1/static-policies/{policy_id}:
     get:
       tags:
@@ -234,6 +281,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StaticPolicy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags:
+        - Static Policies
+      summary: Toggle policy enabled status
+      description: |
+        Toggles the enabled status of a policy.
+        System-tier policies cannot be disabled via this endpoint (use overrides).
+      operationId: toggleStaticPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantID'
+        - name: policy_id
+          in: path
+          required: true
+          description: Static policy ID
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enabled
+              properties:
+                enabled:
+                  type: boolean
+                  description: New enabled status
+      responses:
+        '200':
+          description: Policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '403':
+          description: System policies cannot be disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':

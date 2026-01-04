@@ -32,10 +32,39 @@ func init() {
 	_ = time.Now() // Initialize timezone
 }
 
+// ReplayRecorder interface for execution snapshot recording
+type ReplayRecorder interface {
+	StartExecution(ctx context.Context, requestID, workflowName string, totalSteps int, orgID, tenantID, userID string) error
+	RecordStep(ctx context.Context, snapshot *ReplaySnapshotInput) error
+	CompleteExecution(ctx context.Context, requestID string, outputSummary json.RawMessage) error
+	FailExecution(ctx context.Context, requestID string, errorMessage string) error
+}
+
+// ReplaySnapshotInput captures step execution state for recording
+// This is the input type passed to the ReplayRecorder interface
+type ReplaySnapshotInput struct {
+	RequestID   string
+	StepIndex   int
+	StepName    string
+	Status      string
+	StartedAt   time.Time
+	CompletedAt *time.Time
+	DurationMs  *int
+	Input       json.RawMessage
+	Output      json.RawMessage
+	Provider    string
+	Model       string
+	TokensIn    int
+	TokensOut   int
+	CostUSD     float64
+	Error       string
+}
+
 // WorkflowEngine handles basic 2-3 step workflow execution
 type WorkflowEngine struct {
 	stepProcessors map[string]StepProcessor
 	storage        WorkflowStorage
+	replayRecorder ReplayRecorder // Execution replay recorder (#763)
 }
 
 // Workflow represents a workflow definition
@@ -518,6 +547,11 @@ func (e *WorkflowEngine) InitializeWithDependencies(router LLMRouterInterface, a
 	e.stepProcessors["connector-call"] = mcpProcessor
 }
 
+// SetReplayRecorder sets the execution replay recorder for snapshot capture
+func (e *WorkflowEngine) SetReplayRecorder(recorder ReplayRecorder) {
+	e.replayRecorder = recorder
+}
+
 // Execute a workflow
 func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
 	// Create execution instance
@@ -531,25 +565,32 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		StartTime:    time.Now(),
 		UserContext:  user,
 	}
-	
+
 	// Save initial state
 	if err := e.storage.SaveExecution(execution); err != nil {
 		return nil, fmt.Errorf("failed to save execution: %v", err)
 	}
-	
+
 	log.Printf("Starting workflow execution: %s (%s)", execution.ID, workflow.Metadata.Name)
+
+	// Start replay tracking (#763)
+	if e.replayRecorder != nil {
+		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), "", user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
+			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
+		}
+	}
 	
 	// Execute steps sequentially (basic implementation)
-	for _, step := range workflow.Spec.Steps {
+	for stepIndex, step := range workflow.Spec.Steps {
 		stepExecution := StepExecution{
 			Name:      step.Name,
 			Status:    "running",
 			StartTime: time.Now(),
 			Input:     input, // Pass current input to step
 		}
-		
+
 		execution.Steps = append(execution.Steps, stepExecution)
-		
+
 		// Get step processor
 		processor, exists := e.stepProcessors[step.Type]
 		if !exists {
@@ -559,15 +600,24 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			execution.Status = "failed"
 			execution.Error = err.Error()
 			_ = e.storage.UpdateExecution(execution)
+
+			// Record failed step snapshot (#763)
+			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, nil, nil, nil, err.Error())
+
+			// Mark execution as failed
+			if e.replayRecorder != nil {
+				_ = e.replayRecorder.FailExecution(ctx, execution.ID, err.Error())
+			}
 			return execution, err
 		}
-		
+
 		// Execute step
 		stepOutput, err := processor.ExecuteStep(ctx, step, input, execution)
 		now := time.Now()
 		stepExecution.EndTime = &now
 		stepExecution.ProcessTime = now.Sub(stepExecution.StartTime).String()
-		
+		durationMs := int(now.Sub(stepExecution.StartTime).Milliseconds())
+
 		if err != nil {
 			stepExecution.Status = "failed"
 			stepExecution.Error = err.Error()
@@ -577,15 +627,26 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			// Update execution state
 			execution.Steps[len(execution.Steps)-1] = stepExecution
 			_ = e.storage.UpdateExecution(execution)
+
+			// Record failed step snapshot (#763)
+			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, &now, &durationMs, stepOutput, err.Error())
+
+			// Mark execution as failed
+			if e.replayRecorder != nil {
+				_ = e.replayRecorder.FailExecution(ctx, execution.ID, err.Error())
+			}
 			return execution, err
 		}
-		
+
 		stepExecution.Status = "completed"
 		stepExecution.Output = stepOutput
-		
+
 		// Update execution state
 		execution.Steps[len(execution.Steps)-1] = stepExecution
-		
+
+		// Record completed step snapshot (#763)
+		e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "completed", stepExecution.StartTime, &now, &durationMs, stepOutput, "")
+
 		// Update input for next step (pass output of current step)
 		// Merge step output into available context for template replacement
 		if stepOutput != nil {
@@ -593,7 +654,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 				input[fmt.Sprintf("step_%s_%s", step.Name, key)] = value
 			}
 		}
-		
+
 		log.Printf("Completed step: %s in %s", step.Name, stepExecution.ProcessTime)
 	}
 	
@@ -601,7 +662,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 	execution.Status = "completed"
 	now := time.Now()
 	execution.EndTime = &now
-	
+
 	// Generate final output based on workflow output specification
 	for key, template := range workflow.Spec.Output {
 		execution.Output[key] = e.resolveOutputTemplate(template, execution)
@@ -609,8 +670,65 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 
 	_ = e.storage.UpdateExecution(execution)
 
+	// Complete replay tracking (#763)
+	if e.replayRecorder != nil {
+		outputSummary, _ := json.Marshal(execution.Output)
+		if err := e.replayRecorder.CompleteExecution(ctx, execution.ID, outputSummary); err != nil {
+			log.Printf("[Replay] Warning: Failed to complete execution tracking: %v", err)
+		}
+	}
+
 	log.Printf("Workflow execution completed: %s in %s", execution.ID, now.Sub(execution.StartTime).String())
 	return execution, nil
+}
+
+// recordStepSnapshot records a step execution snapshot for replay (#763)
+func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID string, stepIndex int, stepName, status string, startedAt time.Time, completedAt *time.Time, durationMs *int, output map[string]interface{}, errMsg string) {
+	if e.replayRecorder == nil {
+		return
+	}
+
+	// Convert output to JSON
+	var outputJSON json.RawMessage
+	if output != nil {
+		outputJSON, _ = json.Marshal(output)
+	}
+
+	// Extract LLM details from output if available
+	var provider, model string
+	var tokensIn, tokensOut int
+	if output != nil {
+		if p, ok := output["provider"].(string); ok {
+			provider = p
+		}
+		if m, ok := output["model"].(string); ok {
+			model = m
+		}
+		if t, ok := output["tokens_used"].(int); ok {
+			tokensIn = t / 2  // Approximate split
+			tokensOut = t / 2
+		}
+	}
+
+	snapshot := &ReplaySnapshotInput{
+		RequestID:   requestID,
+		StepIndex:   stepIndex,
+		StepName:    stepName,
+		Status:      status,
+		StartedAt:   startedAt,
+		CompletedAt: completedAt,
+		DurationMs:  durationMs,
+		Output:      outputJSON,
+		Provider:    provider,
+		Model:       model,
+		TokensIn:    tokensIn,
+		TokensOut:   tokensOut,
+		Error:       errMsg,
+	}
+
+	if err := e.replayRecorder.RecordStep(ctx, snapshot); err != nil {
+		log.Printf("[Replay] Warning: Failed to record step snapshot: %v", err)
+	}
 }
 
 func (e *WorkflowEngine) resolveOutputTemplate(template string, execution *WorkflowExecution) interface{} {

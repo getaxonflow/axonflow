@@ -1862,6 +1862,209 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - Static Policies
+      summary: Create static policy
+      description: |
+        Creates a new static policy for the tenant.
+
+        **Tier restrictions:**
+        - `system` tier: Cannot be created via API (managed by AxonFlow)
+        - `organization` tier: Requires Enterprise license
+        - `tenant` tier: Default, limited to 30 policies in Community mode
+
+        Part of ADR-018: Unified Policy Management System.
+      operationId: createStaticPolicy
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for multi-tenant scoping
+          schema:
+            type: string
+        - name: X-Organization-ID
+          in: header
+          required: false
+          description: Organization ID (required for organization-tier policies)
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStaticPolicyRequest'
+            examples:
+              customPII:
+                summary: Create custom PII detection policy
+                value:
+                  name: "Custom Employee ID Detection"
+                  description: "Detects internal employee ID format"
+                  category: "custom"
+                  tier: "tenant"
+                  pattern: "EMP-[0-9]{6}"
+                  action: "warn"
+                  severity: "medium"
+                  enabled: true
+                  tags: ["custom", "pii", "employee"]
+      responses:
+        '201':
+          description: Policy created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Invalid request body or missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Operation forbidden (e.g., system tier creation, license required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/effective:
+    get:
+      tags:
+        - Static Policies
+      summary: Get effective policies
+      description: |
+        Returns all effective policies for a tenant with overrides applied.
+
+        This endpoint resolves the three-tier hierarchy:
+        1. System policies (base)
+        2. Organization overrides (if any)
+        3. Tenant overrides (if any)
+
+        Used by the Customer Portal for the unified policy view.
+      operationId: getEffectivePolicies
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for policy resolution
+          schema:
+            type: string
+        - name: X-Organization-ID
+          in: header
+          required: false
+          description: Organization ID for organization-level overrides
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Effective policies with overrides applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EffectivePoliciesResponse'
+        '400':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/test:
+    post:
+      tags:
+        - Static Policies
+      summary: Test regex pattern
+      description: |
+        Tests a regex pattern against input strings without creating a policy.
+
+        Useful for validating patterns before creating policies.
+        Has a 5-second timeout to prevent ReDoS attacks.
+      operationId: testStaticPolicyPattern
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestPatternRequest'
+            examples:
+              singleInput:
+                summary: Test against single input
+                value:
+                  pattern: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"
+                  input: "My SSN is 123-45-6789"
+              multipleInputs:
+                summary: Test against multiple inputs
+                value:
+                  pattern: "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"
+                  inputs:
+                    - "My SSN is 123-45-6789"
+                    - "No SSN here"
+                    - "Another SSN: 987-65-4321"
+      responses:
+        '200':
+          description: Pattern test results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestPatternResponse'
+        '400':
+          description: Invalid request body or pattern
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/overrides:
+    get:
+      tags:
+        - Static Policies
+      summary: List policy overrides
+      description: |
+        Lists all policy overrides for a tenant.
+
+        Overrides allow Enterprise customers to modify system policy behavior
+        (action, enabled status) without changing the underlying pattern.
+      operationId: listStaticPolicyOverrides
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for filtering overrides
+          schema:
+            type: string
+        - name: X-Organization-ID
+          in: header
+          required: false
+          description: Organization ID for filtering org-level overrides
+          schema:
+            type: string
+        - name: include_expired
+          in: query
+          required: false
+          description: Include expired overrides in results
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: List of policy overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverridesListResponse'
+        '400':
+          description: Missing X-Tenant-ID header
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/v1/static-policies/{id}:
     get:
@@ -1903,6 +2106,330 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags:
+        - Static Policies
+      summary: Update static policy
+      description: |
+        Updates an existing static policy.
+
+        **Restrictions:**
+        - System-tier policies cannot be modified (use overrides instead)
+        - Pattern changes trigger version increment
+      operationId: updateStaticPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStaticPolicyRequest'
+      responses:
+        '200':
+          description: Policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: System policies cannot be modified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Static Policies
+      summary: Delete static policy
+      description: |
+        Soft-deletes a static policy (sets deleted_at timestamp).
+
+        **Restrictions:**
+        - System-tier policies cannot be deleted
+      operationId: deleteStaticPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Policy deleted successfully
+        '403':
+          description: System policies cannot be deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags:
+        - Static Policies
+      summary: Toggle policy enabled status
+      description: |
+        Toggles the enabled status of a policy.
+
+        **Restrictions:**
+        - System-tier policies cannot be disabled via this endpoint (use overrides)
+      operationId: toggleStaticPolicy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - enabled
+              properties:
+                enabled:
+                  type: boolean
+                  description: New enabled status
+      responses:
+        '200':
+          description: Policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaticPolicy'
+        '403':
+          description: System policies cannot be disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/{id}/versions:
+    get:
+      tags:
+        - Static Policies
+      summary: Get policy version history
+      description: |
+        Returns the version history for a policy.
+
+        **Edition limits:**
+        - Community: Last 5 versions
+        - Enterprise: Unlimited history
+      operationId: getStaticPolicyVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: false
+          description: Tenant ID for authorization
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyVersionsResponse'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/static-policies/{id}/override:
+    post:
+      tags:
+        - Static Policies
+      summary: Create policy override
+      description: |
+        Creates an override for a system policy.
+
+        **Enterprise only.** Overrides allow modifying policy behavior
+        (action, enabled status) without changing the underlying pattern.
+
+        Overrides can be scoped to organization or tenant level and
+        can have an optional expiration date.
+      operationId: createStaticPolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID to override
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for override scope
+          schema:
+            type: string
+        - name: X-Organization-ID
+          in: header
+          required: false
+          description: Organization ID for org-level overrides
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOverrideRequest'
+            examples:
+              disablePolicy:
+                summary: Disable a system policy
+                value:
+                  enabled_override: false
+                  override_reason: "False positive rate too high for this tenant"
+                  expires_at: "2025-06-01T00:00:00Z"
+              changeAction:
+                summary: Change action from block to warn
+                value:
+                  action_override: "warn"
+                  override_reason: "Regulatory requirement to warn instead of block"
+      responses:
+        '201':
+          description: Override created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyOverride'
+        '400':
+          description: Invalid request body or missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Enterprise license required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags:
+        - Static Policies
+      summary: Delete policy override
+      description: |
+        Deletes an override, restoring the original policy behavior.
+
+        **Enterprise only.**
+      operationId: deleteStaticPolicyOverride
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Static policy UUID
+          schema:
+            type: string
+            format: uuid
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant ID for override scope
+          schema:
+            type: string
+        - name: X-Organization-ID
+          in: header
+          required: false
+          description: Organization ID for org-level overrides
+          schema:
+            type: string
+        - name: X-User-ID
+          in: header
+          required: false
+          description: User ID for audit trail
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Override deleted successfully
+        '403':
+          description: Enterprise license required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Override not found
           content:
             application/json:
               schema:
@@ -2074,6 +2601,16 @@ components:
         policy_id:
           type: string
           description: ID of the policy being overridden
+        policy_type:
+          type: string
+          enum: [static, dynamic]
+          description: Type of policy being overridden
+        organization_id:
+          type: string
+          description: Organization ID for org-level overrides
+        tenant_id:
+          type: string
+          description: Tenant ID for tenant-level overrides
         enabled_override:
           type: boolean
           description: Override enabled status (null = no override)
@@ -2094,6 +2631,227 @@ components:
         created_at:
           type: string
           format: date-time
+        updated_by:
+          type: string
+          description: User who last updated the override
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateStaticPolicyRequest:
+      type: object
+      description: Request body for creating a static policy
+      required:
+        - name
+        - pattern
+        - category
+        - action
+      properties:
+        name:
+          type: string
+          description: Display name of the policy
+          example: "Custom Employee ID Detection"
+        description:
+          type: string
+          description: Detailed policy description
+        category:
+          type: string
+          enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, custom]
+          description: Policy category
+        tier:
+          type: string
+          enum: [organization, tenant]
+          description: Policy tier (system not allowed via API). Default is tenant.
+          default: tenant
+        pattern:
+          type: string
+          description: Regex pattern for detection
+          example: "EMP-[0-9]{6}"
+        action:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+          description: Action to take when pattern matches
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+          description: Severity level
+        priority:
+          type: integer
+          description: Priority order (lower = higher priority)
+          default: 100
+        enabled:
+          type: boolean
+          description: Whether the policy is active
+          default: true
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization
+
+    UpdateStaticPolicyRequest:
+      type: object
+      description: Request body for updating a static policy (all fields optional)
+      properties:
+        name:
+          type: string
+          description: Display name of the policy
+        description:
+          type: string
+          description: Detailed policy description
+        pattern:
+          type: string
+          description: Regex pattern (only for non-system policies)
+        action:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        priority:
+          type: integer
+        enabled:
+          type: boolean
+        tags:
+          type: array
+          items:
+            type: string
+
+    CreateOverrideRequest:
+      type: object
+      description: Request body for creating a policy override
+      required:
+        - override_reason
+      properties:
+        action_override:
+          type: string
+          enum: [block, require_approval, redact, warn, log]
+          description: Override the policy action
+        enabled_override:
+          type: boolean
+          description: Override the enabled status
+        override_reason:
+          type: string
+          description: Required explanation for audit trail
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiration for the override
+
+    TestPatternRequest:
+      type: object
+      description: Request body for testing a regex pattern
+      required:
+        - pattern
+      properties:
+        pattern:
+          type: string
+          description: Regex pattern to test
+        input:
+          type: string
+          description: Single input string to test (for backward compatibility)
+        inputs:
+          type: array
+          items:
+            type: string
+          description: Multiple input strings to test
+
+    TestPatternResponse:
+      type: object
+      description: Response from pattern testing
+      properties:
+        valid:
+          type: boolean
+          description: Whether the pattern is valid regex
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              input:
+                type: string
+                description: The input that was tested
+              matched:
+                type: boolean
+                description: Whether the pattern matched
+              matches:
+                type: array
+                items:
+                  type: string
+                description: Captured match groups
+        error:
+          type: string
+          description: Error message if pattern is invalid
+
+    EffectivePoliciesResponse:
+      type: object
+      description: Effective policies with overrides resolved
+      properties:
+        static:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaticPolicy'
+          description: Static policies with overrides applied
+        tenant_id:
+          type: string
+        organization_id:
+          type: string
+        computed_at:
+          type: string
+          format: date-time
+          description: When the effective policies were computed
+
+    PolicyVersionsResponse:
+      type: object
+      description: Version history for a policy
+      properties:
+        policy_id:
+          type: string
+          description: Policy UUID
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyVersion'
+        count:
+          type: integer
+          description: Number of versions returned
+
+    PolicyVersion:
+      type: object
+      description: A version snapshot of a policy
+      properties:
+        id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+        version:
+          type: integer
+        snapshot:
+          type: object
+          description: Complete policy state at this version
+        change_type:
+          type: string
+          enum: [created, updated, deleted, enabled, disabled]
+        change_summary:
+          type: string
+        changed_by:
+          type: string
+        changed_at:
+          type: string
+          format: date-time
+
+    PolicyOverridesListResponse:
+      type: object
+      description: List of policy overrides
+      properties:
+        overrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyOverride'
+        count:
+          type: integer
+          description: Total number of overrides
 
     MetricsResponse:
       type: object
