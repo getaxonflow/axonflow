@@ -128,7 +128,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 **Proxy Mode** — Full request lifecycle: policy, planning, routing, audit. Recommended for new projects.
 
-**Gateway Mode** — Governance for existing stacks (LangChain, CrewAI). Pre-check → your call → audit.
+**Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
 
 → **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
 
