@@ -21,7 +21,7 @@ docker-compose ps
 ## Prerequisites
 
 - **Docker & Docker Compose** - For running AxonFlow services
-- **Python 3.8+** - For running demo examples
+- **Python 3.9+** - For running demo examples (required by axonflow SDK)
 - **Python packages** - Installed automatically (see `requirements.txt`)
 
 Required (for LLM features):
@@ -177,8 +177,14 @@ docker-compose logs axonflow-orchestrator
 
 ### Python SDK not found
 
+If you see `ModuleNotFoundError: No module named 'axonflow'`:
+
 ```bash
-pip install axonflow
+# Ensure pip installs to the same Python that runs the scripts
+python3 -m pip install axonflow
+
+# Verify installation
+python3 -c "import axonflow; print(axonflow.__version__)"
 ```
 
 ### No LLM responses

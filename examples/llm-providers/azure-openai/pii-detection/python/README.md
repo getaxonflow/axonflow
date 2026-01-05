@@ -14,7 +14,7 @@ Demonstrates AxonFlow's PII detection with Azure OpenAI as the LLM provider.
 ## Prerequisites
 
 - AxonFlow running with Azure OpenAI configured
-- Python 3.8+
+- Python 3.9+
 
 ## Run
 

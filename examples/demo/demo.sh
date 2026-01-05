@@ -92,14 +92,32 @@ check_services() {
 check_python() {
     if ! command -v python3 &> /dev/null; then
         echo -e "${RED}Error: Python 3 not found${NC}"
-        echo "Install Python 3 to run the demo examples"
+        echo "Install Python 3.9+ to run the demo examples"
         exit 1
     fi
 
+    # Check Python version (3.9+ required for axonflow SDK)
+    PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
+    PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 9 ]); then
+        echo -e "${RED}Error: Python 3.9+ required (found $PYTHON_VERSION)${NC}"
+        echo "The axonflow SDK requires Python 3.9 or later."
+        echo "Please upgrade Python: https://www.python.org/downloads/"
+        exit 1
+    fi
+    print_success "Python $PYTHON_VERSION"
+
     # Only install if packages are missing
+    # Use python3 -m pip to ensure we install to the same Python that runs the scripts
     if ! python3 -c "import axonflow, httpx, openai" 2>/dev/null; then
         echo -e "${YELLOW}Installing Python dependencies...${NC}"
-        pip3 install -r "$SCRIPT_DIR/requirements.txt" --quiet --disable-pip-version-check
+        if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt" --disable-pip-version-check; then
+            echo -e "${RED}Error: Failed to install Python dependencies${NC}"
+            echo "Try running manually: python3 -m pip install -r $SCRIPT_DIR/requirements.txt"
+            exit 1
+        fi
     fi
 }
 
