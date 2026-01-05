@@ -37,7 +37,7 @@ import (
 	"github.com/rs/cors"
 	_ "github.com/lib/pq"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 //go:embed migrations/*.sql
@@ -131,13 +131,18 @@ var demoUsers = map[string]User{
 	},
 	"sarah.manager@company.com": {
 		ID: 2, Email: "sarah.manager@company.com", Name: "Sarah Manager",
-		Department: "support", Role: "manager", Region: "us-east",
+		Department: "support", Role: "manager", Region: "us-west",
 		Permissions: []string{"read_customers", "read_tickets", "read_pii", "escalate"},
 	},
 	"admin@company.com": {
 		ID: 3, Email: "admin@company.com", Name: "Admin User",
 		Department: "admin", Role: "admin", Region: "global",
 		Permissions: []string{"read_customers", "read_tickets", "read_pii", "admin", "write"},
+	},
+	"eu.agent@company.com": {
+		ID: 4, Email: "eu.agent@company.com", Name: "EU Agent",
+		Department: "support", Role: "agent", Region: "eu-west",
+		Permissions: []string{"read_customers", "read_tickets"},
 	},
 }
 
@@ -245,14 +250,9 @@ func main() {
 	}
 
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint: agentURL,
-		Mode:     "production", // Fail-open if AxonFlow is unavailable
+		Endpoint: agentURL, // ADR-026: Agent proxies all routes (single entry point)
+		ClientID: "demo-org", // Tenant ID for dynamic policy evaluation
 		Debug:    os.Getenv("AXONFLOW_DEBUG") == "true",
-		Retry: axonflow.RetryConfig{
-			Enabled:      true,
-			MaxAttempts:  3,
-			InitialDelay: time.Second,
-		},
 	})
 	log.Printf("AxonFlow Client initialized (agent: %s, orchestrator: %s, mode: proxy)", agentURL, orchestratorURL)
 
@@ -317,11 +317,16 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate JWT token
+	// Generate JWT token with full user context for AxonFlow policy evaluation
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id": user.ID,
-		"email":   user.Email,
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
+		"user_id":     user.ID,
+		"email":       user.Email,
+		"name":        user.Name,
+		"role":        user.Role,
+		"region":      user.Region,
+		"department":  user.Department,
+		"permissions": user.Permissions,
+		"exp":         time.Now().Add(24 * time.Hour).Unix(),
 	})
 
 	tokenString, err := token.SignedString(jwtSecret)
@@ -510,7 +515,9 @@ Return only the SQL query, no explanation.`, query)
 		return
 	}
 
-	respondWithResults(w, user, sqlQuery, results, "axonflow")
+	// Fetch latest audit entry from AxonFlow to get actual provider info
+	llmInfo := fetchLatestAuditInfo()
+	respondWithResultsAndLLM(w, user, sqlQuery, results, llmInfo)
 }
 
 // llmChatHandler processes chat messages via AxonFlow
@@ -800,6 +807,64 @@ func respondWithResults(w http.ResponseWriter, user User, query string, results 
 	})
 }
 
+// fetchLatestAuditInfo fetches the most recent audit entry from AxonFlow to get LLM provider details
+func fetchLatestAuditInfo() *LLMProviderInfo {
+	reqBody, _ := json.Marshal(map[string]interface{}{"limit": 1})
+	resp, err := http.Post(orchestratorURL+"/api/v1/audit/search", "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		log.Printf("Failed to fetch audit info: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil
+	}
+
+	var auditEntries []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&auditEntries); err != nil || len(auditEntries) == 0 {
+		return nil
+	}
+
+	entry := auditEntries[0]
+	provider, _ := entry["provider"].(string)
+	model, _ := entry["model"].(string)
+	tokensUsed, _ := entry["tokens_used"].(float64)
+	responseTimeMs, _ := entry["response_time_ms"].(float64)
+
+	// Format provider name for display
+	displayName := provider
+	if provider == "openai" {
+		displayName = "OpenAI"
+	} else if provider == "anthropic" {
+		displayName = "Anthropic"
+	}
+
+	return &LLMProviderInfo{
+		Name:       displayName,
+		Reason:     fmt.Sprintf("Model: %s", model),
+		TokensUsed: int(tokensUsed),
+		Duration:   fmt.Sprintf("%.0fms", responseTimeMs),
+	}
+}
+
+// respondWithResultsAndLLM responds with results and LLM provider info from audit
+func respondWithResultsAndLLM(w http.ResponseWriter, user User, query string, results []map[string]interface{}, llmInfo *LLMProviderInfo) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(QueryResponse{
+		Results:      results,
+		Count:        len(results),
+		QueryBlocked: false,
+		LLMProvider:  llmInfo,
+		SecurityLog: SecurityLog{
+			UserEmail:     user.Email,
+			QueryExecuted: query,
+			AccessGranted: true,
+			Timestamp:     time.Now(),
+		},
+	})
+}
+
 // auditHandler proxies audit log requests to AxonFlow orchestrator
 func auditHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
@@ -822,6 +887,14 @@ func auditHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// If orchestrator returns error, return empty array gracefully
+	if resp.StatusCode >= 400 {
+		log.Printf("AxonFlow audit search returned %d, returning empty array", resp.StatusCode)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{})
+		return
+	}
 
 	// Forward the response
 	w.Header().Set("Content-Type", "application/json")
@@ -878,25 +951,171 @@ func stubHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
 
-// userAccessHandler returns user's LLM provider access
+// userAccessHandler returns actual LLM provider availability and active policies
 func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"user_role": user.Role,
-		"providers": map[string]interface{}{
-			"openai": map[string]interface{}{
-				"name":   "OpenAI GPT-4",
-				"access": "Full access",
-				"color":  "green",
-			},
-			"anthropic": map[string]interface{}{
-				"name":   "Anthropic Claude",
-				"access": "Full access",
-				"color":  "green",
-			},
+
+	// Show actual provider availability based on configured API keys
+	openaiConfigured := os.Getenv("OPENAI_API_KEY") != ""
+	anthropicConfigured := os.Getenv("ANTHROPIC_API_KEY") != ""
+
+	// Check what policies apply to this user
+	activePolicies := getActivePoliciesForUser(user)
+
+	// Determine if user is restricted from certain providers by policy
+	openaiRestricted := false
+	restrictionReason := ""
+	for _, policy := range activePolicies {
+		if policy["routing"] == "anthropic" || policy["routing"] == "local_llm" {
+			openaiRestricted = true
+			restrictionReason = policy["name"].(string)
+			break
+		}
+	}
+
+	providers := map[string]interface{}{
+		"openai": map[string]interface{}{
+			"name":   "OpenAI GPT-4",
+			"status": getProviderStatusWithPolicy(openaiConfigured, openaiRestricted, restrictionReason),
+			"color":  getProviderColorWithPolicy(openaiConfigured, openaiRestricted),
 		},
+		"anthropic": map[string]interface{}{
+			"name":   "Anthropic Claude",
+			"status": getProviderStatus(anthropicConfigured),
+			"color":  getProviderColor(anthropicConfigured),
+		},
+	}
+
+	routingRules := []map[string]string{}
+	for _, policy := range activePolicies {
+		routingRules = append(routingRules, map[string]string{
+			"rule": fmt.Sprintf("Policy: %s → Routes to %s", policy["name"], policy["routing"]),
+		})
+	}
+	if len(routingRules) == 0 {
+		routingRules = append(routingRules, map[string]string{
+			"rule": "No routing policies - default provider selection",
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"user_role":        user.Role,
+		"user_region":      user.Region,
+		"providers":        providers,
+		"active_policies":  activePolicies,
+		"routing_priority": routingRules,
 	})
+}
+
+// getActivePoliciesForUser fetches policies that apply to this user from AxonFlow
+func getActivePoliciesForUser(user User) []map[string]interface{} {
+	var activePolicies []map[string]interface{}
+
+	req, err := http.NewRequest("GET", orchestratorURL+"/api/v1/policies?page_size=50", nil)
+	if err != nil {
+		log.Printf("Failed to create policy request: %v", err)
+		return activePolicies
+	}
+	req.Header.Set("X-Tenant-ID", "support-demo")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to fetch policies: %v", err)
+		return activePolicies
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Policies []struct {
+			Name       string `json:"name"`
+			Conditions []struct {
+				Field    string      `json:"field"`
+				Operator string      `json:"operator"`
+				Value    interface{} `json:"value"`
+			} `json:"conditions"`
+			Actions []struct {
+				Type   string                 `json:"type"`
+				Config map[string]interface{} `json:"config"`
+			} `json:"actions"`
+			Enabled bool `json:"enabled"`
+		} `json:"policies"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("Failed to decode policies: %v", err)
+		return activePolicies
+	}
+
+	for _, policy := range result.Policies {
+		if !policy.Enabled {
+			continue
+		}
+		matches := false
+		for _, cond := range policy.Conditions {
+			switch cond.Field {
+			case "user.role":
+				if cond.Operator == "equals" && cond.Value == user.Role {
+					matches = true
+				}
+			case "context.user_region":
+				if cond.Operator == "in" {
+					if values, ok := cond.Value.([]interface{}); ok {
+						for _, v := range values {
+							if v == user.Region {
+								matches = true
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if matches {
+			for _, action := range policy.Actions {
+				if action.Type == "route" {
+					preferredProvider := ""
+					if pp, ok := action.Config["preferred_provider"].(string); ok {
+						preferredProvider = pp
+					}
+					activePolicies = append(activePolicies, map[string]interface{}{
+						"name":    policy.Name,
+						"routing": preferredProvider,
+					})
+				}
+			}
+		}
+	}
+
+	return activePolicies
+}
+
+func getProviderStatusWithPolicy(configured, restricted bool, restrictionReason string) string {
+	if restricted {
+		return fmt.Sprintf("Restricted by policy: %s", restrictionReason)
+	}
+	return getProviderStatus(configured)
+}
+
+func getProviderColorWithPolicy(configured, restricted bool) string {
+	if restricted {
+		return "orange"
+	}
+	return getProviderColor(configured)
+}
+
+func getProviderStatus(configured bool) string {
+	if configured {
+		return "Available"
+	}
+	return "Not configured"
+}
+
+func getProviderColor(configured bool) string {
+	if configured {
+		return "green"
+	}
+	return "red"
 }
 
 // PII detection patterns

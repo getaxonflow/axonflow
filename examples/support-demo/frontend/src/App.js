@@ -401,7 +401,17 @@ function App() {
       // Update performance metrics
       updatePerformanceMetrics(responseTime, 'natural_query', false);
     } catch (err) {
-      setError('Natural language query failed: ' + (err.response?.data || err.message));
+      // Handle blocked responses from AxonFlow policies
+      const errorData = err.response?.data;
+      if (errorData?.blocked && errorData?.block_reason) {
+        setError(`🛡️ Query blocked by AxonFlow policy: ${errorData.block_reason}`);
+      } else if (typeof errorData === 'string') {
+        setError('Natural language query failed: ' + errorData);
+      } else if (errorData?.message) {
+        setError('Natural language query failed: ' + errorData.message);
+      } else {
+        setError('Natural language query failed: ' + err.message);
+      }
       console.error('Natural query error:', err);
     } finally {
       setLoading(false);
@@ -976,11 +986,13 @@ function App() {
                     <div>
                       <div style={{display: 'flex', flexWrap: 'wrap', gap: '15px', fontSize: '14px'}}>
                         <div>
-                          <strong>Provider:</strong> 
-                          <span className={`provider-badge ${queryResult.llm_provider.name}`}>
-                            {queryResult.llm_provider.name === 'openai' ? '⚡ OpenAI GPT' : 
-                             queryResult.llm_provider.name === 'anthropic' ? '🧠 Anthropic Claude' : 
-                             '🔒 Local Model'}
+                          <strong>Provider:</strong>
+                          <span className={`provider-badge ${queryResult.llm_provider.name?.toLowerCase()}`}>
+                            {queryResult.llm_provider.name === 'OpenAI' ? '⚡ OpenAI' :
+                             queryResult.llm_provider.name === 'Anthropic' ? '🧠 Anthropic' :
+                             queryResult.llm_provider.name === 'openai' ? '⚡ OpenAI' :
+                             queryResult.llm_provider.name === 'anthropic' ? '🧠 Anthropic' :
+                             `🤖 ${queryResult.llm_provider.name}`}
                           </span>
                         </div>
                         <div><strong>Tokens:</strong> {queryResult.llm_provider.tokens_used}</div>
@@ -1060,6 +1072,12 @@ function App() {
                       <p><strong>User:</strong> {queryResult.security_log.user_email}</p>
                       <p><strong>Query:</strong> {queryResult.security_log.query_executed}</p>
                       <p><strong>Access Granted:</strong> {queryResult.security_log.access_granted ? '✅ Yes' : '❌ No'}</p>
+                      {queryResult.llm_provider && (
+                        <p><strong>LLM Provider:</strong> {queryResult.llm_provider.name} | <strong>Tokens:</strong> {queryResult.llm_provider.tokens_used} | <strong>Latency:</strong> {queryResult.llm_provider.duration}</p>
+                      )}
+                      {queryResult.llm_provider?.reason && (
+                        <p><strong>Model:</strong> {queryResult.llm_provider.reason.replace('Model: ', '')}</p>
+                      )}
                       {!queryResult.security_log.access_granted && (
                         <p><strong>Query failed:</strong> <span style={{color: '#dc2626'}}>Blocked by policy: {queryResult.block_reason || 'security_violation'}</span></p>
                       )}
@@ -1067,19 +1085,20 @@ function App() {
                       <p><strong>Timestamp:</strong> {new Date(queryResult.security_log.timestamp).toLocaleString()} ({Intl.DateTimeFormat().resolvedOptions().timeZone})</p>
                     </>
                   ) : auditLogs.length > 0 ? (
-                    // Show most recent audit log from history
+                    // Show most recent audit log from AxonFlow
                     <>
                       <p style={{fontSize: '0.85rem', color: '#6366f1', marginBottom: '10px', fontStyle: 'italic'}}>
-                        📋 Showing your most recent query from history (no new query executed)
+                        📋 Showing your most recent query from AxonFlow audit (no new query executed)
                       </p>
                       <p><strong>User:</strong> {auditLogs[0].user_email}</p>
-                      <p><strong>Query:</strong> {auditLogs[0].query_text.substring(0, 100)}{auditLogs[0].query_text.length > 100 ? '...' : ''}</p>
-                      <p><strong>Access Granted:</strong> {auditLogs[0].access_granted ? '✅ Yes' : '❌ No'}</p>
-                      {!auditLogs[0].access_granted && (
-                        <p><strong>Query failed:</strong> <span style={{color: '#dc2626'}}>Blocked by policy: {auditLogs[0].block_reason || 'security_violation'}</span></p>
+                      <p><strong>Query:</strong> {(auditLogs[0].query || '').substring(0, 100)}{(auditLogs[0].query || '').length > 100 ? '...' : ''}</p>
+                      <p><strong>Policy Decision:</strong> {auditLogs[0].policy_decision === 'allowed' ? '✅ Allowed' : '❌ Blocked'}</p>
+                      {auditLogs[0].policy_decision !== 'allowed' && (
+                        <p><strong>Block Reason:</strong> <span style={{color: '#dc2626'}}>{auditLogs[0].policy_decision}</span></p>
                       )}
-                      <p><strong>PII Detected:</strong> {auditLogs[0].pii_detected?.length > 0 ? '✅ Yes (' + [...new Set(auditLogs[0].pii_detected)].join(', ') + ')' : '❌ No'}</p>
-                      <p><strong>Timestamp:</strong> {new Date(auditLogs[0].created_at).toLocaleString()} ({Intl.DateTimeFormat().resolvedOptions().timeZone})</p>
+                      <p><strong>Provider:</strong> {auditLogs[0].provider} ({auditLogs[0].model})</p>
+                      <p><strong>Tokens:</strong> {auditLogs[0].tokens_used} | <strong>Cost:</strong> ${auditLogs[0].cost?.toFixed(4)}</p>
+                      <p><strong>Timestamp:</strong> {new Date(auditLogs[0].timestamp).toLocaleString()} ({Intl.DateTimeFormat().resolvedOptions().timeZone})</p>
                     </>
                   ) : (
                     <p style={{color: '#666', fontStyle: 'italic'}}>No audit logs available yet. Execute a query to see security audit details.</p>
@@ -1098,15 +1117,15 @@ function App() {
                 {auditLogs.length > 1 ? auditLogs.slice(1, 5).map(log => (
                   <div key={log.id} className="audit-entry">
                     <h4>{log.user_email}</h4>
-                    <p><strong>Query:</strong> {log.query_text.substring(0, 80)}...</p>
-                    <p><strong>Results:</strong> {log.results_count} rows</p>
-                    {log.pii_detected?.length > 0 && (
-                      <p><strong>PII Detected:</strong> {[...new Set(log.pii_detected)].join(', ')}</p>
+                    <p><strong>Query:</strong> {(log.query || '').substring(0, 80)}...</p>
+                    <p><strong>Provider:</strong> {log.provider} | <strong>Tokens:</strong> {log.tokens_used}</p>
+                    {log.compliance_flags?.length > 0 && (
+                      <p><strong>Compliance Flags:</strong> {log.compliance_flags.join(', ')}</p>
                     )}
-                    {!log.access_granted && (
-                      <p><strong>Query failed:</strong> <span style={{color: '#dc2626'}}>Blocked by policy: {log.block_reason || 'security_violation'}</span></p>
+                    {log.policy_decision !== 'allowed' && (
+                      <p><strong>Policy:</strong> <span style={{color: '#dc2626'}}>{log.policy_decision}</span></p>
                     )}
-                    <p><strong>Timestamp:</strong> {new Date(log.created_at).toLocaleString()} ({Intl.DateTimeFormat().resolvedOptions().timeZone})</p>
+                    <p><strong>Timestamp:</strong> {new Date(log.timestamp).toLocaleString()} ({Intl.DateTimeFormat().resolvedOptions().timeZone})</p>
                   </div>
                 )) : (
                   <p style={{color: '#666', fontStyle: 'italic'}}>No additional audit logs available. Execute more queries to see history.</p>

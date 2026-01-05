@@ -32,6 +32,7 @@ async function main() {
   const client = new AxonFlow({
     endpoint,
     licenseKey: licenseKey || undefined,
+    tenant: process.env.AXONFLOW_TENANT_ID || "demo-tenant",
   });
 
   console.log("=== Dynamic Policy Management Example ===\n");
@@ -42,22 +43,35 @@ async function main() {
     // 1. List existing dynamic policies
     console.log("1. Listing existing dynamic policies...");
     const policies = await client.listDynamicPolicies();
-    console.log(`   Found ${policies.length} dynamic policies`);
-    for (const p of policies) {
+    console.log(`   Found ${(policies || []).length} dynamic policies`);
+    for (const p of (policies || [])) {
       console.log(`   - ${p.id}: ${p.name} (enabled: ${p.enabled})`);
     }
 
     // 2. Create a new dynamic policy
     console.log("\n2. Creating a new dynamic policy...");
     createdPolicy = await client.createDynamicPolicy({
-      name: "financial-advice-guard",
-      description: "Block requests that ask for specific financial advice",
-      prompt:
-        "Evaluate if this request is asking for specific financial advice like stock picks, investment amounts, or trading strategies. If so, block it.",
-      action: "block",
+      name: "high-risk-block",
+      description: "Block requests with high risk scores",
+      type: "risk",
+      category: "dynamic-risk",
+      conditions: [
+        {
+          field: "risk_score",
+          operator: "greater_than",
+          value: 0.8,
+        },
+      ],
+      actions: [
+        {
+          type: "block",
+          config: { reason: "High risk detected" },
+        },
+      ],
+      priority: 100,
       enabled: true,
       tenantId: "demo-tenant",
-    });
+    } as any);
     console.log(
       `   Created policy: ${createdPolicy.name} (ID: ${createdPolicy.id})`
     );
@@ -67,26 +81,28 @@ async function main() {
     const policy = await client.getDynamicPolicy(createdPolicy.id);
     console.log(`   Policy: ${policy.name}`);
     console.log(`   Description: ${policy.description}`);
-    console.log(`   Prompt: ${policy.prompt}`);
-    console.log(`   Action: ${policy.action}`);
+    console.log(`   Type: ${policy.type}`);
+    console.log(`   Priority: ${policy.priority}`);
+    console.log(`   Conditions: ${policy.conditions?.length || 0}`);
+    console.log(`   Actions: ${policy.actions?.length || 0}`);
 
     // 4. Update the policy
     console.log("\n4. Updating policy description...");
     const updated = await client.updateDynamicPolicy(createdPolicy.id, {
       description:
-        "Block requests asking for specific financial or investment advice",
+        "Block requests with risk scores above threshold (0.8)",
     });
     console.log(`   Updated description: ${updated.description}`);
 
     // 5. Toggle policy (disable it)
     console.log("\n5. Toggling policy (disabling)...");
-    const toggled = await client.toggleDynamicPolicy(createdPolicy.id);
+    const toggled = await client.toggleDynamicPolicy(createdPolicy.id, false);
     console.log(`   Policy enabled: ${toggled.enabled}`);
 
     // 6. Get effective dynamic policies
     console.log("\n6. Getting effective dynamic policies...");
     const effective = await client.getEffectiveDynamicPolicies();
-    console.log(`   Found ${effective.length} effective dynamic policies`);
+    console.log(`   Found ${(effective || []).length} effective dynamic policies`);
   } finally {
     // 7. Delete the test policy (cleanup)
     if (createdPolicy) {

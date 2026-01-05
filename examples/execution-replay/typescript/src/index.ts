@@ -19,12 +19,12 @@ async function main(): Promise<void> {
   console.log();
 
   // Initialize the AxonFlow client
-  const agentUrl = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
-  const orchestratorUrl = process.env.AXONFLOW_ORCHESTRATOR_URL || "http://localhost:8081";
+  // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+  // The Agent proxies orchestrator routes internally.
+  const endpoint = process.env.AXONFLOW_ENDPOINT || "http://localhost:8080";
 
   const client = new AxonFlow({
-    endpoint: agentUrl,
-    orchestratorEndpoint: orchestratorUrl,
+    endpoint,
     debug: true,
   });
 

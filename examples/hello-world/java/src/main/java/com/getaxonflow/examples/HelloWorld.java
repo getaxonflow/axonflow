@@ -54,7 +54,7 @@ public class HelloWorld {
         List<TestCase> testCases = Arrays.asList(
             new TestCase("Safe Query", "What is the weather today?", "approved"),
             new TestCase("SQL Injection", "SELECT * FROM users; DROP TABLE users;", "blocked"),
-            new TestCase("PII (SSN)", "Process payment for SSN 123-45-6789", "blocked")
+            new TestCase("PII (SSN)", "Process payment for SSN 123-45-6789", "approved") // v3.0.0: PII defaults to redact
         );
 
         for (TestCase test : testCases) {

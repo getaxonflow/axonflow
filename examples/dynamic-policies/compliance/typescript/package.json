@@ -1,0 +1,15 @@
+{
+  "name": "compliance-example",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "npx ts-node --esm index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "file:/Users/saurabhjain/Development/worktree-sdk-ts-allowed-providers"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

@@ -38,9 +38,10 @@ def main():
     print()
 
     # Create AxonFlow client (SyncAxonFlow wraps the async client for synchronous usage)
+    # Note: As of SDK v1.0.0 (ADR-026), all routes go through a single endpoint.
+    # The Agent proxies orchestrator routes internally.
     async_client = AxonFlow(
-        endpoint=get_env("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        orchestrator_url=get_env("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
+        endpoint=get_env("AXONFLOW_ENDPOINT", "http://localhost:8080"),
     )
     client = SyncAxonFlow(async_client)
 

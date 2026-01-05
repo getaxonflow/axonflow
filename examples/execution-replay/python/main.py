@@ -28,13 +28,13 @@ def main():
     print()
 
     # Initialize the AxonFlow client
-    agent_url = os.environ.get("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    orchestrator_url = os.environ.get("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+    # Note: As of SDK v1.0.0 (ADR-026), all routes go through a single endpoint.
+    # The Agent proxies orchestrator routes internally.
+    endpoint = os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:8080")
 
     # Use sync client for this example
     client = AxonFlow.sync(
-        endpoint=agent_url,
-        orchestrator_url=orchestrator_url,
+        endpoint=endpoint,
         debug=True,
     )
 

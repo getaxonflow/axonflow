@@ -31,12 +31,12 @@ public class ExecutionReplayExample {
         System.out.println();
 
         // Initialize the AxonFlow client
-        String agentUrl = System.getenv().getOrDefault("AXONFLOW_AGENT_URL", "http://localhost:8080");
-        String orchestratorUrl = System.getenv().getOrDefault("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081");
+        // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+        // The Agent proxies orchestrator routes internally.
+        String endpoint = System.getenv().getOrDefault("AXONFLOW_ENDPOINT", "http://localhost:8080");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .endpoint(agentUrl)
-                .orchestratorUrl(orchestratorUrl)
+                .endpoint(endpoint)
                 .debug(true)
                 .build();
 

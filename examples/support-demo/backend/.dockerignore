@@ -34,5 +34,5 @@ main
 *.out
 coverage.html
 
-# Dependencies that might exist locally
-vendor/
+# Dependencies - NOT ignoring vendor/ to allow local SDK testing
+# vendor/

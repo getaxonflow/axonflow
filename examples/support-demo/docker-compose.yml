@@ -1,44 +1,27 @@
+# Support Demo - Extends root AxonFlow docker-compose
+#
+# Usage:
+#   1. Start AxonFlow platform from repo root:
+#      docker compose up -d
+#
+#   2. Start support-demo:
+#      cd examples/support-demo
+#      docker compose up -d
+#
+#   3. (Optional) Setup demo policies for role-based LLM access:
+#      ./setup-policies.sh
+#
+# Demo Policies (setup via setup-policies.sh):
+#   - Agent role restricted from OpenAI (cost control)
+#   - PII queries route to local model (privacy)
+#   - EU users route to Ollama (data sovereignty)
+#
+# The demo connects to the AxonFlow platform running on axonflow-network
+
 services:
-  # AxonFlow Agent - Policy enforcement and LLM governance
-  axonflow-agent:
-    build:
-      context: ../..
-      dockerfile: platform/agent/Dockerfile
-    environment:
-      - DEPLOYMENT_MODE=community
-      - ORCHESTRATOR_URL=http://axonflow-orchestrator:8081
-      - LOG_LEVEL=info
-      # Allow PII through for role-based demo (detect but don't block)
-      - PII_BLOCK_CRITICAL=false
-    ports:
-      - "8085:8080"
-    depends_on:
-      - axonflow-orchestrator
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # AxonFlow Orchestrator - LLM routing
-  axonflow-orchestrator:
-    build:
-      context: ../..
-      dockerfile: platform/orchestrator/Dockerfile
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - LOG_LEVEL=info
-    ports:
-      - "8084:8081"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # PostgreSQL Database
-  postgres:
+  # PostgreSQL for demo-specific data (customers, tickets)
+  # Separate from AxonFlow's database to keep demo data isolated
+  postgres-demo:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: axonflow
@@ -47,39 +30,44 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_demo_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U axonflow -d support_demo"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - axonflow-network
 
-  # Go Backend
+  # Go Backend - Demo application
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      - DATABASE_URL=postgres://axonflow:axonflow_demo@postgres:5432/support_demo?sslmode=disable
+      # Demo database (customers, tickets, local audit)
+      - DATABASE_URL=postgres://axonflow:axonflow_demo@postgres-demo:5432/support_demo?sslmode=disable
       - JWT_SECRET=demo-secret-change-in-production
       - PORT=8080
-      - AXONFLOW_ENDPOINT=${AXONFLOW_ENDPOINT:-http://axonflow-agent:8080}
-      - AXONFLOW_ORCHESTRATOR_URL=${AXONFLOW_ORCHESTRATOR_URL:-http://axonflow-orchestrator:8081}
+      # Connect to AxonFlow platform services
+      - AXONFLOW_ENDPOINT=http://axonflow-agent:8080
+      - AXONFLOW_ORCHESTRATOR_URL=http://axonflow-orchestrator:8081
+      # LLM keys passed through to backend (for direct calls if needed)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
       - "8082:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
-      axonflow-agent:
+      postgres-demo:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - axonflow-network
 
   # React Frontend
   frontend:
@@ -90,10 +78,13 @@ services:
       - "3001:80"
     depends_on:
       - backend
+    networks:
+      - axonflow-network
 
 volumes:
-  postgres_data:
+  postgres_demo_data:
 
 networks:
-  default:
-    name: support-demo-network
+  axonflow-network:
+    name: worktree-883-test_axonflow-network
+    external: true

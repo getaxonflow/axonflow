@@ -24,14 +24,14 @@ async def main():
     print()
 
     # Initialize client
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    orchestrator_url = os.getenv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+    # Note: As of SDK v1.0.0 (ADR-026), all routes go through a single endpoint.
+    # The Agent proxies orchestrator routes internally.
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080")
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "demo")
 
     async with AxonFlow(
-        endpoint=agent_url,
-        orchestrator_url=orchestrator_url,
+        endpoint=endpoint,
         client_id=client_id,
         client_secret=client_secret,
         debug=True,

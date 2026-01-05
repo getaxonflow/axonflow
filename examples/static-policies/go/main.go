@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func getEnv(key, defaultVal string) string {
@@ -37,11 +37,12 @@ func main() {
 	fmt.Println()
 
 	// Create AxonFlow client
+	// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+	// The Agent proxies orchestrator routes internally.
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:        getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		OrchestratorURL: getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
-		ClientID:        getEnv("AXONFLOW_CLIENT_ID", "demo-client"),
-		ClientSecret:    getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-client"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
 	})
 
 	// Unique name for our test policy

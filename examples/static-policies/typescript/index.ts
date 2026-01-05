@@ -28,10 +28,10 @@ async function main(): Promise<void> {
   console.log();
 
   // Create AxonFlow client
-  // Note: TypeScript SDK uses 'endpoint' for agent URL
+  // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+  // The Agent proxies orchestrator routes internally.
   const client = new AxonFlow({
-    endpoint: getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-    orchestratorEndpoint: getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
+    endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
     tenant: getEnv("AXONFLOW_TENANT_ID", "demo-tenant"),
     debug: true,
   });

@@ -1,8 +1,8 @@
 // Dynamic Policy Management Example - Go
 //
 // Demonstrates CRUD operations for dynamic policies (LLM-powered policies).
-// Dynamic policies use an LLM to evaluate complex, context-aware rules that
-// can't be expressed with simple regex patterns.
+// Dynamic policies use conditions and actions to evaluate complex, context-aware
+// rules that can't be expressed with simple regex patterns.
 //
 // SDK Methods demonstrated:
 //   - ListDynamicPolicies()
@@ -17,8 +17,9 @@
 //   go run main.go
 //
 // Environment:
-//   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
-//   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+//   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+//   AXONFLOW_CLIENT_ID     - Client/Tenant ID for policy scoping
+//   AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
 
 package main
 
@@ -27,7 +28,7 @@ import (
 	"log"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -37,15 +38,16 @@ func main() {
 		endpoint = "http://localhost:8080"
 	}
 
-	config := axonflow.Config{
-		Endpoint:   endpoint,
-		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"),
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	if clientID == "" {
+		clientID = "demo-tenant"
 	}
 
-	client, err := axonflow.NewClient(config)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
+	client := axonflow.NewClient(axonflow.AxonFlowConfig{
+		Endpoint:     endpoint,
+		ClientID:     clientID,
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
+	})
 
 	fmt.Println("=== Dynamic Policy Management Example ===\n")
 
@@ -57,19 +59,32 @@ func main() {
 	} else {
 		fmt.Printf("   Found %d dynamic policies\n", len(policies))
 		for _, p := range policies {
-			fmt.Printf("   - %s: %s (enabled: %v)\n", p.ID, p.Name, p.Enabled)
+			fmt.Printf("   - %s: %s (type: %s, enabled: %v)\n", p.ID, p.Name, p.Type, p.Enabled)
 		}
 	}
 
 	// 2. Create a new dynamic policy
 	fmt.Println("\n2. Creating a new dynamic policy...")
-	newPolicy := axonflow.CreateDynamicPolicyRequest{
-		Name:        "financial-advice-guard",
-		Description: "Block requests that ask for specific financial advice",
-		Prompt:      "Evaluate if this request is asking for specific financial advice like stock picks, investment amounts, or trading strategies. If so, block it.",
-		Action:      axonflow.ActionBlock,
-		Enabled:     true,
-		TenantID:    "demo-tenant",
+	newPolicy := &axonflow.CreateDynamicPolicyRequest{
+		Name:        "high-risk-block",
+		Description: "Block requests with high risk scores",
+		Type:        "risk",
+		Category:    "dynamic-risk",
+		Conditions: []axonflow.DynamicPolicyCondition{
+			{
+				Field:    "risk_score",
+				Operator: "greater_than",
+				Value:    0.8,
+			},
+		},
+		Actions: []axonflow.DynamicPolicyAction{
+			{
+				Type:   "block",
+				Config: map[string]interface{}{"reason": "High risk detected"},
+			},
+		},
+		Priority: 100,
+		Enabled:  true,
 	}
 
 	created, err := client.CreateDynamicPolicy(newPolicy)
@@ -88,16 +103,19 @@ func main() {
 		} else {
 			fmt.Printf("   Policy: %s\n", policy.Name)
 			fmt.Printf("   Description: %s\n", policy.Description)
-			fmt.Printf("   Prompt: %s\n", policy.Prompt)
-			fmt.Printf("   Action: %s\n", policy.Action)
+			fmt.Printf("   Type: %s\n", policy.Type)
+			fmt.Printf("   Priority: %d\n", policy.Priority)
+			fmt.Printf("   Conditions: %d\n", len(policy.Conditions))
+			fmt.Printf("   Actions: %d\n", len(policy.Actions))
 		}
 	}
 
 	// 4. Update the policy
 	if created != nil {
 		fmt.Println("\n4. Updating policy description...")
-		update := axonflow.UpdateDynamicPolicyRequest{
-			Description: "Block requests asking for specific financial or investment advice",
+		newDesc := "Block requests with risk scores above threshold (0.8)"
+		update := &axonflow.UpdateDynamicPolicyRequest{
+			Description: &newDesc,
 		}
 		updated, err := client.UpdateDynamicPolicy(created.ID, update)
 		if err != nil {
@@ -110,7 +128,7 @@ func main() {
 	// 5. Toggle policy (disable it)
 	if created != nil {
 		fmt.Println("\n5. Toggling policy (disabling)...")
-		toggled, err := client.ToggleDynamicPolicy(created.ID)
+		toggled, err := client.ToggleDynamicPolicy(created.ID, false)
 		if err != nil {
 			log.Printf("   Failed to toggle policy: %v", err)
 		} else {

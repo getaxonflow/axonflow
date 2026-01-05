@@ -29,9 +29,10 @@ async function main() {
   console.log();
 
   // Create AxonFlow client
+  // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+  // The Agent proxies orchestrator routes internally.
   const client = new AxonFlow({
-    endpoint: getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-    orchestratorEndpoint: getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
+    endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
   });
 
   const budgetId = `demo-budget-ts-${Date.now()}`;
