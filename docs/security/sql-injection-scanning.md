@@ -94,7 +94,10 @@ For Docker and containerized deployments, configure SQL injection scanning using
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | Sets the scanning mode for both input and response |
-| `SQLI_BLOCK_MODE` | `block`, `warn` | `block` | Controls whether detections are blocked or just logged |
+| `SQLI_ACTION` | `block`, `warn`, `log` | `block` | Controls the action when SQLi is detected |
+| `SQLI_BLOCK_MODE` | `block`, `warn` | `block` | **Deprecated** - use `SQLI_ACTION` instead |
+
+> **Note (Issue #891):** `SQLI_BLOCK_MODE` is deprecated. Use `SQLI_ACTION` for unified detection configuration.
 
 **Example: docker-compose.yml**
 
@@ -104,8 +107,8 @@ services:
     environment:
       # Scanning mode: off, basic, advanced
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
-      # Block mode: block (reject requests), warn (log only)
-      SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+      # Action on detection: block (reject), warn (log+allow), log (audit only)
+      SQLI_ACTION: ${SQLI_ACTION:-block}
 ```
 
 **Usage Examples:**
@@ -118,10 +121,10 @@ docker compose up -d
 SQLI_SCANNER_MODE=off docker compose up -d
 
 # Enable scanning in warn-only mode (log but don't block)
-SQLI_BLOCK_MODE=warn docker compose up -d
+SQLI_ACTION=warn docker compose up -d
 
 # Use advanced scanning (Enterprise only) with blocking
-SQLI_SCANNER_MODE=advanced SQLI_BLOCK_MODE=block docker compose up -d
+SQLI_SCANNER_MODE=advanced SQLI_ACTION=block docker compose up -d
 ```
 
 > **Note:** Invalid environment variable values are logged and fall back to defaults (basic mode, blocking enabled) to ensure security-first behavior.
@@ -143,7 +146,7 @@ SQLI_SCANNER_MODE=advanced SQLI_BLOCK_MODE=block docker compose up -d
 
 When SQL injection is detected, behavior depends on the configured block mode:
 
-### Block Mode (`SQLI_BLOCK_MODE=block`, default)
+### Block Mode (`SQLI_ACTION=block`, default)
 
 Returns HTTP 403 Forbidden and rejects the request:
 ```json
@@ -153,7 +156,7 @@ Returns HTTP 403 Forbidden and rejects the request:
 }
 ```
 
-### Warn Mode (`SQLI_BLOCK_MODE=warn`)
+### Warn Mode (`SQLI_ACTION=warn`)
 
 Logs the detection but allows the request through. Useful for:
 - Initial deployment to assess false positive rates

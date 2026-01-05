@@ -1376,10 +1376,12 @@ func TestEvaluateStaticPolicies_PIIDetection(t *testing.T) {
 	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	engine := &DatabasePolicyEngine{
-		db:               db,
-		refreshInterval:  24 * time.Hour, // Long interval to prevent refresh
-		lastRefresh:      time.Now(),     // Set to now to prevent background refresh
-		piiBlockCritical: true,           // Default: block critical PII
+		db:              db,
+		refreshInterval: 24 * time.Hour, // Long interval to prevent refresh
+		lastRefresh:     time.Now(),     // Set to now to prevent background refresh
+		detectionConfig: DetectionConfig{
+			PIIAction: DetectionActionBlock, // Block critical PII
+		},
 	}
 	engine.loadDefaultPolicies()
 
@@ -1393,11 +1395,11 @@ func TestEvaluateStaticPolicies_PIIDetection(t *testing.T) {
 	query := "My SSN is 123-45-6789"
 	result := engine.EvaluateStaticPolicies(user, query, "natural_language")
 
-	// SSN is critical severity - should block
+	// SSN is critical severity - should block with PIIAction=block
 	if result != nil {
 		t.Logf("PII detection result: blocked=%v, triggered=%v", result.Blocked, result.TriggeredPolicies)
 		if !result.Blocked {
-			t.Error("Expected critical PII (SSN) to block when piiBlockCritical=true")
+			t.Error("Expected critical PII (SSN) to block when PIIAction=block")
 		}
 	}
 }
@@ -1502,10 +1504,12 @@ func TestEvaluateStaticPolicies_NonCriticalPII(t *testing.T) {
 	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	engine := &DatabasePolicyEngine{
-		db:               db,
-		refreshInterval:  24 * time.Hour,
-		lastRefresh:      time.Now(),
-		piiBlockCritical: true, // Even with this true, non-critical PII shouldn't block
+		db:              db,
+		refreshInterval: 24 * time.Hour,
+		lastRefresh:     time.Now(),
+		detectionConfig: DetectionConfig{
+			PIIAction: DetectionActionBlock, // Even with block, non-critical PII shouldn't block
+		},
 	}
 	engine.loadDefaultPolicies()
 
@@ -1540,10 +1544,12 @@ func TestEvaluateStaticPolicies_PIIBlockDisabled(t *testing.T) {
 	mock.ExpectExec("INSERT INTO policy_metrics").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	engine := &DatabasePolicyEngine{
-		db:               db,
-		refreshInterval:  24 * time.Hour,
-		lastRefresh:      time.Now(),
-		piiBlockCritical: false, // PII blocking disabled
+		db:              db,
+		refreshInterval: 24 * time.Hour,
+		lastRefresh:     time.Now(),
+		detectionConfig: DetectionConfig{
+			PIIAction: DetectionActionRedact, // PII redacted, not blocked
+		},
 	}
 	engine.loadDefaultPolicies()
 
@@ -1553,7 +1559,7 @@ func TestEvaluateStaticPolicies_PIIBlockDisabled(t *testing.T) {
 		Permissions: []string{"query"},
 	}
 
-	// SSN would normally block, but with piiBlockCritical=false, it should only log
+	// SSN would normally block, but with PIIAction=redact, it should only redact
 	query := "My SSN is 123-45-6789"
 	result := engine.EvaluateStaticPolicies(user, query, "natural_language")
 
@@ -1561,9 +1567,9 @@ func TestEvaluateStaticPolicies_PIIBlockDisabled(t *testing.T) {
 		t.Fatal("Expected result, got nil")
 	}
 
-	// With piiBlockCritical=false, critical PII should not block
+	// With PIIAction=redact, critical PII should not block
 	if result.Blocked {
-		t.Error("Expected SSN not to block when piiBlockCritical=false")
+		t.Error("Expected SSN not to block when PIIAction=redact")
 	}
 
 	// But it should still trigger the pattern

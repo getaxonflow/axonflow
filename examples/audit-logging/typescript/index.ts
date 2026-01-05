@@ -152,8 +152,67 @@ async function main() {
 
   console.log("Audit Logging Complete!");
   console.log();
-  console.log("Query audit logs via Orchestrator API:");
-  console.log("  curl http://localhost:8081/api/v1/audit/tenant/audit-logging-demo");
+
+  // =========================================================================
+  // Query Audit Logs (SDK Methods)
+  // =========================================================================
+
+  console.log("=".repeat(40));
+  console.log("Query Audit Logs via SDK");
+  console.log("=".repeat(40));
+  console.log();
+
+  // Get audit logs for tenant (default pagination)
+  console.log("1. getAuditLogsByTenant (default options):");
+  try {
+    const tenantLogs = await axonflow.getAuditLogsByTenant("audit-logging-demo");
+    console.log(`   Found ${tenantLogs.entries.length} entries`);
+    if (tenantLogs.entries.length > 0) {
+      const entry = tenantLogs.entries[0];
+      console.log(`   Latest: ${entry.timestamp} - ${entry.provider}/${entry.model}`);
+    }
+  } catch (error) {
+    console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+  }
+  console.log();
+
+  // Get audit logs with custom pagination
+  console.log("2. getAuditLogsByTenant (limit=5, offset=0):");
+  try {
+    const paginatedLogs = await axonflow.getAuditLogsByTenant("audit-logging-demo", {
+      limit: 5,
+      offset: 0,
+    });
+    const hasMore = paginatedLogs.total > paginatedLogs.offset + paginatedLogs.entries.length;
+    console.log(`   Found ${paginatedLogs.entries.length} entries (hasMore: ${hasMore})`);
+  } catch (error) {
+    console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+  }
+  console.log();
+
+  // Search audit logs with filters
+  console.log("3. searchAuditLogs (with filters):");
+  try {
+    const searchResult = await axonflow.searchAuditLogs({
+      clientId: "audit-logging-demo",
+      requestType: "chat",
+      limit: 10,
+    });
+    console.log(`   Found ${searchResult.entries.length} matching entries`);
+    searchResult.entries.slice(0, 3).forEach((entry) => {
+      const status = entry.blocked ? "blocked" : "allowed";
+      console.log(`   - ${entry.id}: ${status} (${entry.tokensUsed} tokens)`);
+    });
+    if (searchResult.entries.length > 3) {
+      console.log(`   ... and ${searchResult.entries.length - 3} more`);
+    }
+  } catch (error) {
+    console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+  }
+  console.log();
+
+  console.log("=".repeat(40));
+  console.log("Done!");
 }
 
 main();

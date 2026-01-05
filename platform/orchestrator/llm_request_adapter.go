@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"log"
 
 	"axonflow/platform/orchestrator/llm"
 )
@@ -86,6 +87,19 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 	temperature := 0.0
 	systemPrompt := ""
 
+	// Policy routing hints (Issue #883 - strict provider enforcement)
+	policyPreferredProvider := ""
+	var policyAllowedProviders []string
+	policyRoutingReason := ""
+
+	// Debug: Log the context to trace policy routing
+	if req.Context != nil && (req.Context["policy_preferred_provider"] != nil || req.Context["policy_allowed_providers"] != nil) {
+		log.Printf("[LLM_ADAPTER] Policy routing context detected: preferred=%v, allowed=%v, reason=%v",
+			req.Context["policy_preferred_provider"],
+			req.Context["policy_allowed_providers"],
+			req.Context["policy_routing_reason"])
+	}
+
 	if req.Context != nil {
 		if p, ok := req.Context["provider"].(string); ok {
 			provider = p
@@ -105,23 +119,37 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		if sp, ok := req.Context["system_prompt"].(string); ok {
 			systemPrompt = sp
 		}
+
+		// Extract policy routing hints injected by dynamic policy evaluation
+		if pp, ok := req.Context["policy_preferred_provider"].(string); ok {
+			policyPreferredProvider = pp
+		}
+		if ap, ok := req.Context["policy_allowed_providers"].([]string); ok {
+			policyAllowedProviders = ap
+		}
+		if pr, ok := req.Context["policy_routing_reason"].(string); ok {
+			policyRoutingReason = pr
+		}
 	}
 
 	return llm.RequestContext{
-		Query:           req.Query,
-		RequestType:     req.RequestType,
-		UserRole:        req.User.Role,
-		UserPermissions: req.User.Permissions,
-		ClientID:        req.Client.ID,
-		OrgID:           req.Client.OrgID,
-		TenantID:        req.Client.TenantID,
-		Provider:        provider,
-		Model:           model,
-		MaxTokens:       maxTokens,
-		Temperature:     temperature,
-		SystemPrompt:    systemPrompt,
-		AllowLocal:      true, // Allow local/ollama by default
-		Metadata:        req.Context,
+		Query:                   req.Query,
+		RequestType:             req.RequestType,
+		UserRole:                req.User.Role,
+		UserPermissions:         req.User.Permissions,
+		ClientID:                req.Client.ID,
+		OrgID:                   req.Client.OrgID,
+		TenantID:                req.Client.TenantID,
+		Provider:                provider,
+		Model:                   model,
+		MaxTokens:               maxTokens,
+		Temperature:             temperature,
+		SystemPrompt:            systemPrompt,
+		AllowLocal:              true, // Allow local/ollama by default
+		Metadata:                req.Context,
+		PolicyPreferredProvider: policyPreferredProvider,
+		PolicyAllowedProviders:  policyAllowedProviders,
+		PolicyRoutingReason:     policyRoutingReason,
 	}
 }
 

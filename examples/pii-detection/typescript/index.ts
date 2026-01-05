@@ -8,6 +8,11 @@
  * - India Aadhaar numbers
  * - Email addresses
  * - Phone numbers
+ *
+ * Default Behavior (Issue #891):
+ *   PII detection defaults to "redact" mode - requests are APPROVED but flagged
+ *   with requiresRedaction=true for downstream redaction by the Orchestrator.
+ *   Set PII_ACTION=block to restore blocking behavior.
  */
 
 import "dotenv/config";
@@ -16,8 +21,7 @@ import { AxonFlow } from "@axonflow/sdk";
 interface TestCase {
   name: string;
   query: string;
-  shouldBlock: boolean;
-  piiType: string;
+  expectRedact: boolean;
 }
 
 const axonflow = new AxonFlow({
@@ -30,49 +34,47 @@ async function main() {
   console.log("AxonFlow PII Detection - TypeScript");
   console.log("=".repeat(40));
   console.log();
+  console.log("Default Mode: redact (PII flagged for redaction, not blocked)");
+  console.log();
 
+  // PII test cases
+  // expectRedact: true = critical PII (requiresRedaction=true)
+  // expectRedact: false = non-critical or no PII (logged but not flagged)
   const testCases: TestCase[] = [
     {
       name: "Safe Query (No PII)",
       query: "What is the capital of France?",
-      shouldBlock: false,
-      piiType: "",
+      expectRedact: false,
     },
     {
-      name: "US Social Security Number",
+      name: "US Social Security Number (Critical PII)",
       query: "Process refund for customer with SSN 123-45-6789",
-      shouldBlock: true,
-      piiType: "ssn",
+      expectRedact: true,
     },
     {
-      name: "Credit Card Number",
+      name: "Credit Card Number (Critical PII)",
       query: "Charge card 4111-1111-1111-1111 for $99.99",
-      shouldBlock: true,
-      piiType: "credit_card",
+      expectRedact: true,
     },
     {
-      name: "India PAN",
+      name: "India PAN (Critical PII)",
       query: "Verify PAN number ABCDE1234F for tax filing",
-      shouldBlock: true,
-      piiType: "pan",
+      expectRedact: true,
     },
     {
-      name: "India Aadhaar",
+      name: "India Aadhaar (Critical PII)",
       query: "Link Aadhaar 2345 6789 0123 to account",
-      shouldBlock: true,
-      piiType: "aadhaar",
+      expectRedact: true,
     },
     {
-      name: "Email Address",
-      query: "Send invoice to john.doe@example.com",
-      shouldBlock: true,
-      piiType: "email",
+      name: "Email Address (Non-Critical PII)",
+      query: "Send invoice to john.doe@gmail.com",
+      expectRedact: false, // Medium severity - logged but not flagged
     },
     {
-      name: "Phone Number",
+      name: "Phone Number (Non-Critical PII)",
       query: "Call customer at +1-555-123-4567",
-      shouldBlock: false, // sys_pii_phone policy warns but doesn't block
-      piiType: "phone",
+      expectRedact: false, // Medium severity - logged but not flagged
     },
   ];
 
@@ -91,26 +93,43 @@ async function main() {
         query: test.query,
       });
 
-      const wasBlocked = !result.approved;
-
-      if (wasBlocked) {
-        console.log(`  Result: BLOCKED`);
-        console.log(`  Reason: ${result.blockReason}`);
-      } else {
-        console.log(`  Result: APPROVED`);
+      // Check if request was approved
+      if (result.approved) {
+        if (result.requiresRedaction) {
+          console.log("  Result: APPROVED (requires redaction)");
+        } else {
+          console.log("  Result: APPROVED");
+        }
         console.log(`  Context ID: ${result.contextId}`);
+      } else {
+        // Request was blocked (only if PII_ACTION=block)
+        console.log("  Result: BLOCKED");
+        console.log(`  Reason: ${result.blockReason}`);
       }
 
       if (result.policies && result.policies.length > 0) {
         console.log(`  Policies: ${result.policies.join(", ")}`);
       }
 
+      // Get actual redaction status (blocked also counts as "requires handling")
+      const actualRequiresRedaction =
+        result.requiresRedaction || !result.approved;
+
       // Verify expected behavior
-      if (wasBlocked === test.shouldBlock) {
-        console.log(`  Test: PASS`);
+      if (test.expectRedact && actualRequiresRedaction) {
+        console.log("  Test: PASS (PII detected, flagged for redaction)");
+        passed++;
+      } else if (
+        !test.expectRedact &&
+        !actualRequiresRedaction &&
+        result.approved
+      ) {
+        console.log("  Test: PASS (no critical PII detected)");
         passed++;
       } else {
-        const expected = test.shouldBlock ? "blocked" : "approved";
+        const expected = test.expectRedact
+          ? "requiresRedaction=true"
+          : "no critical PII";
         console.log(`  Test: FAIL (expected ${expected})`);
         failed++;
       }
@@ -134,6 +153,12 @@ async function main() {
   }
 
   console.log("All PII detection tests passed!");
+  console.log();
+  console.log("Configuration:");
+  console.log(
+    "  - Default: PII_ACTION=redact (PII flagged for redaction, not blocked)"
+  );
+  console.log("  - To block PII: PII_ACTION=block docker compose up -d");
   console.log();
   console.log("Next steps:");
   console.log("  - Custom Policies: ../policies/");

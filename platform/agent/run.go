@@ -56,11 +56,29 @@ func isCommunityMode() bool {
 	return mode == "community" || mode == ""
 }
 
+// Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
+// Docker Compose services communicate via service names on the axonflow-network.
+// No configuration required - the Agent detects Docker and uses appropriate URLs.
+const (
+	// DefaultOrchestratorURL is the internal URL for the Orchestrator service in Docker
+	DefaultOrchestratorURL = "http://axonflow-orchestrator:8081"
+
+	// DefaultPortalURL is the internal URL for the Customer Portal service in Docker
+	// Service name: axonflow-customer-portal, internal port: 8080 (mapped to 8082 externally)
+	DefaultPortalURL = "http://axonflow-customer-portal:8080"
+
+	// LocalOrchestratorURL is used for local development without Docker
+	LocalOrchestratorURL = "http://localhost:8081"
+
+	// LocalPortalURL is used for local development without Docker
+	LocalPortalURL = "http://localhost:8082"
+)
+
 // Configuration
 var (
 	jwtSecret              = []byte(os.Getenv("JWT_SECRET"))
-	orchestratorURL        = getEnv("ORCHESTRATOR_URL", "http://localhost:8081")
-	authDB                 *sql.DB // Database for Option 3 authentication
+	orchestratorURL        = getOrchestratorURL() // Auto-discovered based on environment
+	authDB                 *sql.DB                // Database for Option 3 authentication
 	usageDB                *sql.DB // Database for usage metering
 	staticPolicyEngine     *StaticPolicyEngine
 	dbPolicyEngine         *DatabasePolicyEngine
@@ -815,6 +833,18 @@ func Run() {
 	cbHandler.RegisterRoutes(globalRouter)
 	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
 
+	// Register Reverse Proxy routes (ADR-026: Single Entry Point Architecture)
+	// Proxies requests to Orchestrator and Portal based on path
+	proxyConfig := GetProxyConfig()
+	proxyHandler, err := NewReverseProxyHandler(proxyConfig)
+	if err != nil {
+		log.Printf("⚠️  Failed to initialize reverse proxy: %v", err)
+		log.Println("   SDK clients will need to connect directly to backend services")
+	} else {
+		proxyHandler.RegisterProxyRoutes(globalRouter)
+		log.Println("✅ Reverse proxy initialized (ADR-026: Single Entry Point)")
+	}
+
 	// Mark application as ready - /health will now return "healthy"
 	appReady.Store(true)
 	log.Println("✅ All initialization complete - application ready")
@@ -1505,6 +1535,41 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getOrchestratorURL returns the Orchestrator URL based on environment detection.
+// In Docker environments, services communicate via container names on the axonflow-network.
+// For local development, falls back to localhost.
+func getOrchestratorURL() string {
+	if isRunningInDocker() {
+		return DefaultOrchestratorURL
+	}
+	return LocalOrchestratorURL
+}
+
+// isRunningInDocker detects if the process is running inside a Docker container
+func isRunningInDocker() bool {
+	// Method 1: Check for /.dockerenv file (most reliable)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// Method 2: Check if HOSTNAME looks like a container ID (12+ hex chars)
+	hostname := os.Getenv("HOSTNAME")
+	if len(hostname) >= 12 {
+		isHex := true
+		for _, c := range hostname[:12] {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				isHex = false
+				break
+			}
+		}
+		if isHex {
+			return true
+		}
+	}
+
+	return false
 }
 
 func getClaimString(claims jwt.MapClaims, key string) string {

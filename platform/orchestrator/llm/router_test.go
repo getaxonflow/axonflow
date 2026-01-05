@@ -374,4 +374,318 @@ func TestRouteOptions(t *testing.T) {
 			t.Error("disableFailover should be true")
 		}
 	})
+
+	t.Run("WithAllowedProviders", func(t *testing.T) {
+		opts := &routeOptions{}
+		WithAllowedProviders([]string{"ollama", "azure"})(opts)
+		if len(opts.allowedProviders) != 2 {
+			t.Errorf("allowedProviders length = %d, want 2", len(opts.allowedProviders))
+		}
+		if opts.allowedProviders[0] != "ollama" || opts.allowedProviders[1] != "azure" {
+			t.Error("allowedProviders should contain ollama and azure")
+		}
+	})
 }
+
+// =============================================================================
+// Issue #883: Tests for allowedProviders strict provider enforcement
+// =============================================================================
+
+func TestRouter_AllowedProviders_SelectProvider(t *testing.T) {
+	ctx := context.Background()
+	router := setupTestRouter(t)
+
+	// Register multiple providers
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "openai-test",
+		Type:    ProviderTypeOpenAI,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "anthropic-test",
+		Type:    ProviderTypeAnthropic,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "ollama-test",
+		Type:    ProviderTypeOllama,
+		Enabled: true,
+	})
+
+	// Trigger lazy instantiation and health check
+	_, _ = router.registry.Get(ctx, "openai-test")
+	_, _ = router.registry.Get(ctx, "anthropic-test")
+	_, _ = router.registry.Get(ctx, "ollama-test")
+	router.registry.HealthCheck(ctx)
+
+	t.Run("routes only to allowed providers", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Route with only ollama-test allowed
+		counts := make(map[string]int)
+		for i := 0; i < 50; i++ {
+			_, info, err := router.RouteRequest(ctx, req, WithAllowedProviders([]string{"ollama-test"}))
+			if err != nil {
+				t.Fatalf("RouteRequest error: %v", err)
+			}
+			counts[info.ProviderName]++
+		}
+
+		// Should only have ollama-test
+		if counts["ollama-test"] != 50 {
+			t.Errorf("ollama-test count = %d, want 50", counts["ollama-test"])
+		}
+		if counts["openai-test"] != 0 || counts["anthropic-test"] != 0 {
+			t.Error("should not route to non-allowed providers")
+		}
+	})
+
+	t.Run("preferred provider must be in allowed list", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Prefer openai-test but only allow ollama-test
+		_, info, err := router.RouteRequest(ctx, req,
+			WithPreferredProvider("openai-test"),
+			WithAllowedProviders([]string{"ollama-test"}),
+		)
+		if err != nil {
+			t.Fatalf("RouteRequest error: %v", err)
+		}
+
+		// Should ignore preferred and use allowed
+		if info.ProviderName != "ollama-test" {
+			t.Errorf("provider = %q, want ollama-test (preferred was not in allowed list)", info.ProviderName)
+		}
+	})
+
+	t.Run("preferred provider in allowed list is used", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Prefer anthropic-test and it's in allowed list
+		_, info, err := router.RouteRequest(ctx, req,
+			WithPreferredProvider("anthropic-test"),
+			WithAllowedProviders([]string{"ollama-test", "anthropic-test"}),
+		)
+		if err != nil {
+			t.Fatalf("RouteRequest error: %v", err)
+		}
+
+		if info.ProviderName != "anthropic-test" {
+			t.Errorf("provider = %q, want anthropic-test", info.ProviderName)
+		}
+	})
+}
+
+func TestRouter_AllowedProviders_NoCompliantProviders(t *testing.T) {
+	ctx := context.Background()
+	router := setupTestRouter(t)
+
+	// Register only openai provider
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "openai-only",
+		Type:    ProviderTypeOpenAI,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_, _ = router.registry.Get(ctx, "openai-only")
+	router.registry.HealthCheck(ctx)
+
+	t.Run("fails when no compliant providers available", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Request ollama-test but only openai is available
+		_, _, err := router.RouteRequest(ctx, req, WithAllowedProviders([]string{"ollama-test"}))
+		if err == nil {
+			t.Fatal("expected error when no compliant providers available")
+		}
+		// Should mention compliance in error
+		if !containsString(err.Error(), "compliant") && !containsString(err.Error(), "allowed") {
+			t.Errorf("error should mention compliance context: %v", err)
+		}
+	})
+}
+
+func TestRouter_AllowedProviders_Failover(t *testing.T) {
+	ctx := context.Background()
+
+	// Create registry with custom factory that can simulate failures
+	fm := NewFactoryManager()
+
+	// Create a failing provider by setting completeErr
+	fm.Register(ProviderTypeOpenAI, func(config ProviderConfig) (Provider, error) {
+		mock := NewMockProvider(config.Name, config.Type)
+		mock.healthStatus = HealthStatusHealthy
+		if config.Name == "failing-provider" {
+			mock.completeErr = NewProviderError("failing-provider", ErrCodeRateLimit, "simulated failure")
+		}
+		return mock, nil
+	})
+	fm.Register(ProviderTypeAnthropic, func(config ProviderConfig) (Provider, error) {
+		mock := NewMockProvider(config.Name, config.Type)
+		mock.healthStatus = HealthStatusHealthy
+		return mock, nil
+	})
+	fm.Register(ProviderTypeOllama, func(config ProviderConfig) (Provider, error) {
+		mock := NewMockProvider(config.Name, config.Type)
+		mock.healthStatus = HealthStatusHealthy
+		return mock, nil
+	})
+
+	registry := NewRegistry(WithFactoryManager(fm))
+	router := NewRouter(WithRouterRegistry(registry))
+
+	// Register providers
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "failing-provider",
+		Type:    ProviderTypeOpenAI,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "anthropic-backup",
+		Type:    ProviderTypeAnthropic,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "ollama-compliant",
+		Type:    ProviderTypeOllama,
+		Enabled: true,
+	})
+
+	_, _ = router.registry.Get(ctx, "failing-provider")
+	_, _ = router.registry.Get(ctx, "anthropic-backup")
+	_, _ = router.registry.Get(ctx, "ollama-compliant")
+	router.registry.HealthCheck(ctx)
+
+	t.Run("failover respects allowed providers", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Prefer failing provider, allow only failing and ollama (not anthropic)
+		_, info, err := router.RouteRequest(ctx, req,
+			WithPreferredProvider("failing-provider"),
+			WithAllowedProviders([]string{"failing-provider", "ollama-compliant"}),
+		)
+
+		if err != nil {
+			t.Fatalf("RouteRequest error: %v", err)
+		}
+
+		// Should failover to ollama (not anthropic, which is healthier but not allowed)
+		if info.ProviderName != "ollama-compliant" {
+			t.Errorf("provider = %q, want ollama-compliant (failover should respect allowed list)", info.ProviderName)
+		}
+	})
+
+	t.Run("failover fails when no compliant fallback", func(t *testing.T) {
+		req := CompletionRequest{
+			Prompt:    "Hello",
+			MaxTokens: 100,
+		}
+
+		// Only allow the failing provider - no compliant fallback available
+		_, _, err := router.RouteRequest(ctx, req,
+			WithPreferredProvider("failing-provider"),
+			WithAllowedProviders([]string{"failing-provider"}),
+		)
+
+		if err == nil {
+			t.Fatal("expected error when no compliant fallback available")
+		}
+
+		// Should mention compliance in error
+		if !containsString(err.Error(), "compliant") && !containsString(err.Error(), "allowed") {
+			t.Errorf("error should mention compliance context: %v", err)
+		}
+	})
+}
+
+func TestRouter_GetFallbackProvider(t *testing.T) {
+	ctx := context.Background()
+	router := setupTestRouter(t)
+
+	// Register multiple providers
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "provider-a",
+		Type:    ProviderTypeOpenAI,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "provider-b",
+		Type:    ProviderTypeAnthropic,
+		APIKey:  "test",
+		Enabled: true,
+	})
+	_ = router.registry.Register(ctx, &ProviderConfig{
+		Name:    "provider-c",
+		Type:    ProviderTypeOllama,
+		Enabled: true,
+	})
+
+	_, _ = router.registry.Get(ctx, "provider-a")
+	_, _ = router.registry.Get(ctx, "provider-b")
+	_, _ = router.registry.Get(ctx, "provider-c")
+	router.registry.HealthCheck(ctx)
+
+	t.Run("returns fallback excluding failed provider", func(t *testing.T) {
+		fallback, err := router.getFallbackProvider(ctx, "provider-a", nil)
+		if err != nil {
+			t.Fatalf("getFallbackProvider error: %v", err)
+		}
+		if fallback.Name() == "provider-a" {
+			t.Error("fallback should not be the failed provider")
+		}
+	})
+
+	t.Run("respects allowed providers", func(t *testing.T) {
+		fallback, err := router.getFallbackProvider(ctx, "provider-a", []string{"provider-c"})
+		if err != nil {
+			t.Fatalf("getFallbackProvider error: %v", err)
+		}
+		if fallback.Name() != "provider-c" {
+			t.Errorf("fallback = %q, want provider-c", fallback.Name())
+		}
+	})
+
+	t.Run("returns error when no compliant fallback", func(t *testing.T) {
+		// Allow only provider-a, but it's the failed one
+		_, err := router.getFallbackProvider(ctx, "provider-a", []string{"provider-a"})
+		if err == nil {
+			t.Fatal("expected error when no compliant fallback")
+		}
+		if !containsString(err.Error(), "compliant") && !containsString(err.Error(), "allowed") {
+			t.Errorf("error should mention compliance: %v", err)
+		}
+	})
+
+	t.Run("empty allowed list means all providers OK", func(t *testing.T) {
+		fallback, err := router.getFallbackProvider(ctx, "provider-a", []string{})
+		if err != nil {
+			t.Fatalf("getFallbackProvider error: %v", err)
+		}
+		// Should return any healthy provider except provider-a
+		if fallback.Name() == "provider-a" {
+			t.Error("fallback should not be the failed provider")
+		}
+	})
+}
+
+// Note: containsString helper is already defined in factory_test.go

@@ -8,6 +8,11 @@ Demonstrates AxonFlow's built-in PII (Personally Identifiable Information) detec
 - India Aadhaar numbers
 - Email addresses
 - Phone numbers
+
+Default Behavior (Issue #891):
+  PII detection defaults to "redact" mode - requests are APPROVED but flagged
+  with requires_redaction=true for downstream redaction by the Orchestrator.
+  Set PII_ACTION=block to restore blocking behavior.
 """
 
 import asyncio
@@ -24,57 +29,54 @@ async def main():
     print("AxonFlow PII Detection - Python")
     print("=" * 40)
     print()
+    print("Default Mode: redact (PII flagged for redaction, not blocked)")
+    print()
 
     # Connect to AxonFlow
     async with AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "pii-detection-demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
 
         # PII test cases
+        # expect_redact: True = critical PII (requires_redaction=true)
+        # expect_redact: False = non-critical or no PII (logged but not flagged)
         test_cases = [
             {
                 "name": "Safe Query (No PII)",
                 "query": "What is the capital of France?",
-                "should_block": False,
-                "pii_type": "",
+                "expect_redact": False,
             },
             {
-                "name": "US Social Security Number",
+                "name": "US Social Security Number (Critical PII)",
                 "query": "Process refund for customer with SSN 123-45-6789",
-                "should_block": True,
-                "pii_type": "ssn",
+                "expect_redact": True,
             },
             {
-                "name": "Credit Card Number",
+                "name": "Credit Card Number (Critical PII)",
                 "query": "Charge card 4111-1111-1111-1111 for $99.99",
-                "should_block": True,
-                "pii_type": "credit_card",
+                "expect_redact": True,
             },
             {
-                "name": "India PAN",
+                "name": "India PAN (Critical PII)",
                 "query": "Verify PAN number ABCDE1234F for tax filing",
-                "should_block": True,
-                "pii_type": "pan",
+                "expect_redact": True,
             },
             {
-                "name": "India Aadhaar",
+                "name": "India Aadhaar (Critical PII)",
                 "query": "Link Aadhaar 2345 6789 0123 to account",
-                "should_block": True,
-                "pii_type": "aadhaar",
+                "expect_redact": True,
             },
             {
-                "name": "Email Address",
-                "query": "Send invoice to john.doe@example.com",
-                "should_block": True,
-                "pii_type": "email",
+                "name": "Email Address (Non-Critical PII)",
+                "query": "Send invoice to john.doe@gmail.com",
+                "expect_redact": False,  # Medium severity - logged but not flagged
             },
             {
-                "name": "Phone Number",
+                "name": "Phone Number (Non-Critical PII)",
                 "query": "Call customer at +1-555-123-4567",
-                "should_block": False,  # sys_pii_phone policy warns but doesn't block
-                "pii_type": "phone",
+                "expect_redact": False,  # Medium severity - logged but not flagged
             },
         ]
 
@@ -92,24 +94,35 @@ async def main():
                     query=test["query"],
                 )
 
-                was_blocked = not result.approved
-
-                if was_blocked:
-                    print(f"  Result: BLOCKED")
-                    print(f"  Reason: {result.block_reason}")
-                else:
-                    print(f"  Result: APPROVED")
+                # Check if request was approved
+                if result.approved:
+                    # Check for redaction flag
+                    requires_redaction = getattr(result, 'requires_redaction', False)
+                    if requires_redaction:
+                        print("  Result: APPROVED (requires redaction)")
+                    else:
+                        print("  Result: APPROVED")
                     print(f"  Context ID: {result.context_id}")
+                else:
+                    # Request was blocked (only if PII_ACTION=block)
+                    print("  Result: BLOCKED")
+                    print(f"  Reason: {result.block_reason}")
 
                 if result.policies:
                     print(f"  Policies: {', '.join(result.policies)}")
 
+                # Get actual redaction status
+                actual_requires_redaction = getattr(result, 'requires_redaction', False) or not result.approved
+
                 # Verify expected behavior
-                if was_blocked == test["should_block"]:
-                    print(f"  Test: PASS")
+                if test["expect_redact"] and actual_requires_redaction:
+                    print("  Test: PASS (PII detected, flagged for redaction)")
+                    passed += 1
+                elif not test["expect_redact"] and not actual_requires_redaction and result.approved:
+                    print("  Test: PASS (no critical PII detected)")
                     passed += 1
                 else:
-                    expected = "blocked" if test["should_block"] else "approved"
+                    expected = "requires_redaction=true" if test["expect_redact"] else "no critical PII"
                     print(f"  Test: FAIL (expected {expected})")
                     failed += 1
 
@@ -128,6 +141,10 @@ async def main():
             sys.exit(1)
 
         print("All PII detection tests passed!")
+        print()
+        print("Configuration:")
+        print("  - Default: PII_ACTION=redact (PII flagged for redaction, not blocked)")
+        print("  - To block PII: PII_ACTION=block docker compose up -d")
         print()
         print("Next steps:")
         print("  - Custom Policies: ../policies/")

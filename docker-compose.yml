@@ -96,9 +96,8 @@ services:
       DATABASE_PASSWORD: localdev123
       DATABASE_SSLMODE: disable
 
-      # Internal services
+      # Internal services (Orchestrator/Portal URLs auto-discovered via Docker service names)
       REDIS_URL: redis://redis:6379
-      ORCHESTRATOR_URL: http://axonflow-orchestrator:8081
       DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
 
       # Ollama (for local/air-gapped LLM deployments)
@@ -110,9 +109,21 @@ services:
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
 
-      # Security scanning
+      # Security scanning - detection actions (Issue #891)
+      # Philosophy: Block high-confidence threats, warn on heuristics, redact PII
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
-      SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+      # SQLI_ACTION: block|warn|log (default: block - high confidence attacks)
+      SQLI_ACTION: ${SQLI_ACTION:-block}
+      # PII_ACTION: block|warn|redact|log (default: redact - preserves UX)
+      PII_ACTION: ${PII_ACTION:-redact}
+      # SENSITIVE_DATA_ACTION: block|warn|log (default: warn - may have false positives)
+      SENSITIVE_DATA_ACTION: ${SENSITIVE_DATA_ACTION:-warn}
+      # HIGH_RISK_ACTION: block|warn|log (default: warn - composite score needs tuning)
+      HIGH_RISK_ACTION: ${HIGH_RISK_ACTION:-warn}
+      # DANGEROUS_QUERY_ACTION: block|warn|log (default: block - DROP/TRUNCATE)
+      DANGEROUS_QUERY_ACTION: ${DANGEROUS_QUERY_ACTION:-block}
+      # Deprecated: use SQLI_ACTION instead
+      # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
       # Misc
       ORG_ID: local-dev-org

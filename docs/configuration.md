@@ -2,33 +2,72 @@
 
 AxonFlow is designed with secure-by-default settings that are fully configurable. This document covers all environment variables for controlling security detection and policy enforcement.
 
-## Security Configuration
+## Security Detection Configuration (Issue #891)
+
+AxonFlow uses a tiered default approach: **block high-confidence threats, warn on heuristics, redact PII**.
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `PII_BLOCK_CRITICAL` | `true`, `false` | `true` | Block requests containing critical PII (SSN, Aadhaar, credit cards, etc.) |
+| `SQLI_ACTION` | `block`, `warn`, `log` | `block` | SQL injection detection action (high confidence) |
+| `PII_ACTION` | `block`, `warn`, `redact`, `log` | `redact` | PII detection action (preserves UX) |
+| `SENSITIVE_DATA_ACTION` | `block`, `warn`, `log` | `warn` | Credential/token detection action (may have false positives) |
+| `HIGH_RISK_ACTION` | `block`, `warn`, `log` | `warn` | High risk score (>0.8) action (needs tuning) |
+| `DANGEROUS_QUERY_ACTION` | `block`, `warn`, `log` | `block` | DROP/TRUNCATE detection action (destructive) |
 | `SQLI_SCANNER_MODE` | `off`, `basic`, `advanced` | `basic` | SQL injection scanning mode |
-| `SQLI_BLOCK_MODE` | `block`, `warn` | `block` | Action on SQLi detection |
 
-### Starting in Observe-Only Mode
+### Action Types
 
-For evaluation or development, you can run AxonFlow in observe-only mode where all detections are logged but not blocked:
+| Action | Behavior |
+|--------|----------|
+| `block` | Reject request immediately |
+| `redact` | Mask/redact detected content, allow request |
+| `warn` | Log warning, allow request |
+| `log` | Log for audit only, allow request |
 
-```yaml
-environment:
-  PII_BLOCK_CRITICAL: "false"  # Log only, don't block
-  SQLI_BLOCK_MODE: "warn"      # Warn only, don't block
-```
+### Deprecated Environment Variables
 
-This allows you to see what AxonFlow would detect without impacting your application. Once you've validated detection accuracy in your environment, you can enable blocking.
+These environment variables are deprecated and will be removed in a future release:
+
+| Deprecated | Replacement | Notes |
+|------------|-------------|-------|
+| `SQLI_BLOCK_MODE` | `SQLI_ACTION` | `block` → `SQLI_ACTION=block`, `warn` → `SQLI_ACTION=warn` |
+| `PII_BLOCK_CRITICAL` | `PII_ACTION` | `true` → `PII_ACTION=block`, `false` → `PII_ACTION=log` |
+
+### Philosophy: Tiered Defaults
+
+The default configuration is designed to minimize friction during evaluation while maintaining security:
+
+| Detection Type | Default | Rationale |
+|----------------|---------|-----------|
+| SQL Injection | `block` | High confidence, real attacks |
+| Dangerous Queries | `block` | Destructive operations |
+| PII | `redact` | Non-blocking, preserves user experience |
+| Sensitive Data | `warn` | May have false positives (e.g., "PRIMARY KEY") |
+| High Risk Score | `warn` | Composite score needs per-environment tuning |
 
 ### Progressive Enforcement
 
 A common adoption pattern:
 
-1. **Week 1-2: Observe** - Run with `PII_BLOCK_CRITICAL=false` and `SQLI_BLOCK_MODE=warn`
-2. **Week 3-4: Validate** - Review audit logs, tune any false positives
-3. **Week 5+: Enforce** - Enable blocking with confidence
+1. **Day 1: Out-of-the-box** - Start with defaults (PII redacted, SQLi blocked)
+2. **Week 1: Review** - Check audit logs for detection accuracy
+3. **Week 2: Tune** - Adjust actions based on your risk tolerance
+4. **Ongoing: Enforce** - Enable stricter blocking as confidence grows
+
+## Environment Variable Precedence
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Priority 1: Per-tenant policy override (Enterprise API)         │
+│   Enterprise users can override any policy via API              │
+├─────────────────────────────────────────────────────────────────┤
+│ Priority 2: Environment variable (docker-compose)               │
+│   SQLI_ACTION=warn overrides all SQLi policies                  │
+├─────────────────────────────────────────────────────────────────┤
+│ Priority 3: Per-policy DB default (migration seed)              │
+│   static_policies.action from seed data                         │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Deployment Mode
 
@@ -52,34 +91,47 @@ connectors:
     sqli_scanner_mode: off       # Disable for trusted internal cache
 ```
 
-## Environment Variable Precedence
-
-1. **Per-connector config** (highest priority)
-2. **Environment variables**
-3. **Default values** (lowest priority)
-
 ## Docker Compose Example
 
 ```yaml
 services:
   axonflow-agent:
     environment:
-      # === Security Detection Configuration ===
-      # All enforcement is configurable. Start in observe-only mode for evaluation,
-      # then progressively enable blocking as confidence grows.
-      #
-      # PII Detection: Set to "false" to log-only (no blocking)
-      PII_BLOCK_CRITICAL: "true"
-      #
+      # === Security Detection Configuration (Issue #891) ===
+      # Philosophy: Block high-confidence threats, warn on heuristics, redact PII
+
       # SQLi Scanner: "off", "basic" (default), "advanced" (enterprise)
       SQLI_SCANNER_MODE: "basic"
-      #
-      # SQLi Action: "block" (default) or "warn" (log + allow)
-      SQLI_BLOCK_MODE: "block"
+
+      # SQLI_ACTION: block|warn|log (default: block - high confidence attacks)
+      SQLI_ACTION: "block"
+
+      # PII_ACTION: block|warn|redact|log (default: redact - preserves UX)
+      PII_ACTION: "redact"
+
+      # SENSITIVE_DATA_ACTION: block|warn|log (default: warn - may have false positives)
+      SENSITIVE_DATA_ACTION: "warn"
+
+      # HIGH_RISK_ACTION: block|warn|log (default: warn - composite score needs tuning)
+      HIGH_RISK_ACTION: "warn"
+
+      # DANGEROUS_QUERY_ACTION: block|warn|log (default: block - DROP/TRUNCATE)
+      DANGEROUS_QUERY_ACTION: "block"
 
       # === Deployment Mode ===
       # "community" = no auth required, "enterprise" = license required
       DEPLOYMENT_MODE: "community"
+```
+
+## Legacy Configuration (Deprecated)
+
+For backwards compatibility, the old environment variables still work but will log deprecation warnings:
+
+```yaml
+# DEPRECATED - use new *_ACTION variables instead
+environment:
+  PII_BLOCK_CRITICAL: "true"  # Use PII_ACTION=block instead
+  SQLI_BLOCK_MODE: "warn"     # Use SQLI_ACTION=warn instead
 ```
 
 ## Related Documentation

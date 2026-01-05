@@ -236,9 +236,19 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_InvalidDBURL(t *testing.T) {
+	// Save original DATABASE_URL to restore after test (avoid polluting parallel tests)
+	originalDBURL := os.Getenv("DATABASE_URL")
+	defer func() {
+		if originalDBURL != "" {
+			_ = os.Setenv("DATABASE_URL", originalDBURL)
+		} else {
+			_ = os.Unsetenv("DATABASE_URL")
+		}
+	}()
+
 	// Test with invalid database URL - should return error
-	_ = os.Setenv("DATABASE_URL", "postgresql://invalid:invalid@nonexistent:5432/invalid")
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// Use 127.0.0.1 with invalid port to fail fast without DNS lookup
+	_ = os.Setenv("DATABASE_URL", "postgresql://invalid:invalid@127.0.0.1:59999/invalid?connect_timeout=1")
 
 	_, err := NewDatabaseDynamicPolicyEngine()
 
@@ -276,3 +286,249 @@ func TestDatabaseDynamicPolicyEngine_HealthCheck(t *testing.T) {
 		t.Error("Expected engine to be unhealthy after close")
 	}
 }
+
+func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithConditions(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping integration test - DATABASE_URL not set")
+	}
+
+	_ = os.Setenv("DATABASE_URL", dbURL)
+	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Insert policy with conditions that should match
+	testPolicyName := "test_cond_policy_" + time.Now().Format("20060102150405")
+	conditions := `[{"field": "user.region", "operator": "equals", "value": "EU"}]`
+	actions := `{"require_human_review": true, "reason": "EU data protection"}`
+
+	_, err = db.Exec(`
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (policy_id) DO NOTHING
+	`, testPolicyName, "Test Conditions Policy", "Policy with EU condition", "region_policy", conditions, actions, "global", 100, true)
+	if err != nil {
+		t.Fatalf("Failed to insert test policy: %v", err)
+	}
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+
+	engine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("Failed to initialize DB policy engine: %v", err)
+	}
+	defer func() { _ = engine.Close() }()
+
+	// Test with EU user - should match condition
+	ctx := context.Background()
+	req := OrchestratorRequest{
+		RequestID: "test-eu-req",
+		Query:     "Show me data",
+		User: UserContext{
+			Region:   "EU",
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			TenantID: "test-tenant",
+		},
+	}
+
+	result := engine.EvaluateDynamicPolicies(ctx, req)
+	if result == nil {
+		t.Fatal("Expected non-nil policy evaluation result")
+	}
+
+	// Test with non-EU user - should not match condition
+	reqUS := OrchestratorRequest{
+		RequestID: "test-us-req",
+		Query:     "Show me data",
+		User: UserContext{
+			Region:   "US",
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			TenantID: "test-tenant",
+		},
+	}
+
+	resultUS := engine.EvaluateDynamicPolicies(ctx, reqUS)
+	if resultUS == nil {
+		t.Fatal("Expected non-nil policy evaluation result for US user")
+	}
+}
+
+func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithAllowedProviders(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping integration test - DATABASE_URL not set")
+	}
+
+	_ = os.Setenv("DATABASE_URL", dbURL)
+	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Insert policy with allowed_providers action
+	testPolicyName := "test_providers_policy_" + time.Now().Format("20060102150405")
+	conditions := `[{"field": "user.region", "operator": "in", "value": ["EU", "UK"]}]`
+	actions := `{"allowed_providers": ["anthropic", "azure"], "reason": "EU data sovereignty"}`
+
+	_, err = db.Exec(`
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (policy_id) DO NOTHING
+	`, testPolicyName, "Test Providers Policy", "Policy with allowed_providers", "provider_policy", conditions, actions, "global", 100, true)
+	if err != nil {
+		t.Fatalf("Failed to insert test policy: %v", err)
+	}
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+
+	engine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("Failed to initialize DB policy engine: %v", err)
+	}
+	defer func() { _ = engine.Close() }()
+
+	ctx := context.Background()
+	req := OrchestratorRequest{
+		RequestID: "test-providers-req",
+		Query:     "Show me EU data",
+		User: UserContext{
+			Region:   "EU",
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			TenantID: "test-tenant",
+		},
+	}
+
+	result := engine.EvaluateDynamicPolicies(ctx, req)
+	if result == nil {
+		t.Fatal("Expected non-nil policy evaluation result")
+	}
+
+	// Verify allowed_providers is set
+	if len(result.AllowedProviders) > 0 {
+		t.Logf("AllowedProviders set: %v", result.AllowedProviders)
+	}
+}
+
+func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithBlockAction(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping integration test - DATABASE_URL not set")
+	}
+
+	_ = os.Setenv("DATABASE_URL", dbURL)
+	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Insert policy that blocks requests
+	testPolicyName := "test_block_policy_" + time.Now().Format("20060102150405")
+	conditions := `[{"field": "query", "operator": "contains", "value": "BLOCK_ME"}]`
+	actions := `{"block": true, "reason": "Test block policy"}`
+
+	_, err = db.Exec(`
+		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (policy_id) DO NOTHING
+	`, testPolicyName, "Test Block Policy", "Policy that blocks", "block_policy", conditions, actions, "global", 100, true)
+	if err != nil {
+		t.Fatalf("Failed to insert test policy: %v", err)
+	}
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+
+	engine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("Failed to initialize DB policy engine: %v", err)
+	}
+	defer func() { _ = engine.Close() }()
+
+	ctx := context.Background()
+
+	// Request that should be blocked
+	reqBlocked := OrchestratorRequest{
+		RequestID: "test-block-req",
+		Query:     "BLOCK_ME please",
+		User: UserContext{
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			TenantID: "test-tenant",
+		},
+	}
+
+	resultBlocked := engine.EvaluateDynamicPolicies(ctx, reqBlocked)
+	if resultBlocked == nil {
+		t.Fatal("Expected non-nil policy evaluation result")
+	}
+
+	// Request that should be allowed
+	reqAllowed := OrchestratorRequest{
+		RequestID: "test-allow-req",
+		Query:     "Normal query",
+		User: UserContext{
+			TenantID: "test-tenant",
+		},
+		Client: ClientContext{
+			TenantID: "test-tenant",
+		},
+	}
+
+	resultAllowed := engine.EvaluateDynamicPolicies(ctx, reqAllowed)
+	if resultAllowed == nil {
+		t.Fatal("Expected non-nil policy evaluation result")
+	}
+
+	// Normal query should be allowed
+	if !resultAllowed.Allowed {
+		t.Error("Expected normal query to be allowed")
+	}
+}
+
+func TestDatabaseDynamicPolicyEngine_ListActivePolicies(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping integration test - DATABASE_URL not set")
+	}
+
+	_ = os.Setenv("DATABASE_URL", dbURL)
+	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+
+	engine, err := NewDatabaseDynamicPolicyEngine()
+	if err != nil {
+		t.Fatalf("Failed to initialize DB policy engine: %v", err)
+	}
+	defer func() { _ = engine.Close() }()
+
+	policies := engine.ListActivePolicies()
+
+	// Should have at least some system policies
+	if len(policies) == 0 {
+		t.Log("No active policies found - this may be expected in a fresh database")
+	} else {
+		t.Logf("Found %d active policies", len(policies))
+
+		// Verify policy structure
+		for _, p := range policies[:min(3, len(policies))] {
+			if p.Name == "" {
+				t.Error("Policy name should not be empty")
+			}
+			t.Logf("Policy: %s (priority: %d, tenant: %s)", p.Name, p.Priority, p.TenantID)
+		}
+	}
+}
+

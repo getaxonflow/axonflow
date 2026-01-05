@@ -895,7 +895,7 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_PIIDetection tests PII detection (blocks critical PII by default)
+// TestPreCheckHandler_PIIDetection tests PII detection (redacts PII by default)
 func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
@@ -906,7 +906,7 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	dbPolicyEngine = nil
 	staticPolicyEngine = NewStaticPolicyEngine()
 
-	// Request with SSN (critical PII - blocks by default with PII_BLOCK_CRITICAL=true)
+	// Request with SSN (critical PII - flagged for redaction by default with PII_ACTION=redact)
 	reqBody := PreCheckRequest{
 		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
 		ClientID:  "test-client",
@@ -929,9 +929,14 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	var resp PreCheckResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
-	// Critical PII (SSN) blocks by default (PII_BLOCK_CRITICAL=true)
-	if resp.Approved {
-		t.Error("Expected request to be blocked (critical PII detected, PII_BLOCK_CRITICAL=true)")
+	// Critical PII (SSN) is now approved with redaction by default (PII_ACTION=redact)
+	if !resp.Approved {
+		t.Error("Expected request to be approved (PII_ACTION=redact allows request with redaction flag)")
+	}
+
+	// Should require redaction for PII
+	if !resp.RequiresRedaction {
+		t.Error("Expected RequiresRedaction=true for SSN detection")
 	}
 
 	// Should have triggered PII policy
@@ -947,20 +952,20 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 	}
 }
 
-// TestPreCheckHandler_PIIDetection_Disabled tests that PII blocking can be disabled
-func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
+// TestPreCheckHandler_PIIDetection_BlockMode tests that PII blocks when PII_ACTION=block
+func TestPreCheckHandler_PIIDetection_BlockMode(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
-	os.Setenv("PII_BLOCK_CRITICAL", "false") // Disable PII blocking
+	os.Setenv("PII_ACTION", "block") // Enable PII blocking
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
-	defer os.Unsetenv("PII_BLOCK_CRITICAL")
+	defer os.Unsetenv("PII_ACTION")
 
 	// Ensure we use staticPolicyEngine, not dbPolicyEngine
 	dbPolicyEngine = nil
 	staticPolicyEngine = NewStaticPolicyEngine()
 
-	// Request with SSN (should NOT be blocked when PII_BLOCK_CRITICAL=false)
+	// Request with SSN (should be blocked when PII_ACTION=block)
 	reqBody := PreCheckRequest{
 		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
 		ClientID:  "test-client",
@@ -983,9 +988,56 @@ func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
 	var resp PreCheckResponse
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
-	// With PII_BLOCK_CRITICAL=false, critical PII should NOT block
+	// Critical PII (SSN) blocks when PII_ACTION=block
+	if resp.Approved {
+		t.Error("Expected request to be blocked (critical PII detected, PII_ACTION=block)")
+	}
+}
+
+// TestPreCheckHandler_PIIDetection_LogOnly tests PII in log-only mode (no block, no redact)
+func TestPreCheckHandler_PIIDetection_LogOnly(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	os.Setenv("PII_ACTION", "log") // Log-only mode (no blocking or redaction)
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+	defer os.Unsetenv("PII_ACTION")
+
+	// Ensure we use staticPolicyEngine, not dbPolicyEngine
+	dbPolicyEngine = nil
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Request with SSN (should NOT be blocked when PII_ACTION=log)
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "My SSN is 123-45-6789, what can you tell me?",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+		return
+	}
+
+	var resp PreCheckResponse
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	// With PII_ACTION=log, request should be approved without redaction
 	if !resp.Approved {
-		t.Errorf("Expected request to be approved when PII_BLOCK_CRITICAL=false, got blocked: %s", resp.BlockReason)
+		t.Errorf("Expected request to be approved when PII_ACTION=log, got blocked: %s", resp.BlockReason)
+	}
+
+	// Should NOT require redaction in log-only mode
+	if resp.RequiresRedaction {
+		t.Error("Expected RequiresRedaction=false when PII_ACTION=log")
 	}
 
 	// Should still have triggered PII policy (detection still happens)
@@ -997,7 +1049,7 @@ func TestPreCheckHandler_PIIDetection_Disabled(t *testing.T) {
 		}
 	}
 	if !hasPIIPolicy {
-		t.Error("Expected SSN detection policy to be triggered even when blocking is disabled")
+		t.Error("Expected SSN detection policy to be triggered even in log-only mode")
 	}
 }
 
@@ -2598,7 +2650,8 @@ func TestCheckRBIPII_Community(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := checkRBIPII(tt.query)
+			// Pass false for blockOnCritical - we're testing detection, not blocking behavior
+			result := checkRBIPII(tt.query, false)
 
 			// Community edition detects India PII with pattern matching
 			if result.HasPII != tt.expectHasPII {
@@ -2632,7 +2685,7 @@ func TestGetRBIPIIDetector(t *testing.T) {
 
 // TestPreCheckHandler_RBIPIIIntegration tests that RBI PII detection is integrated into pre-check flow
 // Both Community and Enterprise editions detect critical India PII (Aadhaar, PAN, UPI, Bank Account).
-// Community uses pattern-based detection (0.7 confidence), Enterprise adds Verhoeff checksum validation (0.98 confidence).
+// Default action is redact (PII_ACTION=redact), which approves the request but flags for redaction.
 func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
@@ -2642,29 +2695,34 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	staticPolicyEngine = NewStaticPolicyEngine()
 
 	tests := []struct {
-		name           string
-		query          string
-		expectApproved bool // Critical PII is blocked in both Community and Enterprise
+		name              string
+		query             string
+		expectApproved    bool // With PII_ACTION=redact (default), all approved but PII flagged
+		expectRedaction   bool // Whether redaction is required
 	}{
 		{
-			name:           "Normal query without India PII",
-			query:          "What is the GDP of India?",
-			expectApproved: true,
+			name:              "Normal query without India PII",
+			query:             "What is the GDP of India?",
+			expectApproved:    true,
+			expectRedaction:   false,
 		},
 		{
-			name:           "Query with Aadhaar number (blocked - critical PII)",
-			query:          "My Aadhaar is 2234 5678 9012",
-			expectApproved: false, // Community detects and blocks critical PII
+			name:              "Query with Aadhaar number (approved with redaction)",
+			query:             "My Aadhaar is 2234 5678 9012",
+			expectApproved:    true, // Default PII_ACTION=redact approves with flag
+			expectRedaction:   true,
 		},
 		{
-			name:           "Query with PAN number (blocked - critical PII)",
-			query:          "My PAN number is ABCDE1234F",
-			expectApproved: false, // Community detects and blocks critical PII
+			name:              "Query with PAN number (approved with redaction)",
+			query:             "My PAN number is ABCDE1234F",
+			expectApproved:    true, // Default PII_ACTION=redact approves with flag
+			expectRedaction:   true,
 		},
 		{
-			name:           "Query with UPI ID (blocked - critical PII)",
-			query:          "Send money to user@ybl",
-			expectApproved: false, // Community detects and blocks critical PII
+			name:              "Query with UPI ID (approved with redaction)",
+			query:             "Send money to user@ybl",
+			expectApproved:    true, // Default PII_ACTION=redact approves with flag
+			expectRedaction:   true,
 		},
 	}
 
@@ -2694,10 +2752,14 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 				t.Fatalf("Failed to unmarshal response: %v", err)
 			}
 
-			// Community edition now detects critical India PII (Aadhaar, PAN, UPI, Bank Account)
 			if resp.Approved != tt.expectApproved {
 				t.Errorf("Expected Approved=%v, got %v. BlockReason: %s",
 					tt.expectApproved, resp.Approved, resp.BlockReason)
+			}
+
+			if resp.RequiresRedaction != tt.expectRedaction {
+				t.Errorf("Expected RequiresRedaction=%v, got %v",
+					tt.expectRedaction, resp.RequiresRedaction)
 			}
 		})
 	}

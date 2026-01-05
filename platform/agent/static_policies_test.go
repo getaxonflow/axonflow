@@ -516,6 +516,7 @@ func TestEmptyQueryValidation(t *testing.T) {
 
 // TestPIIDetection tests PII pattern detection
 func TestPIIDetection(t *testing.T) {
+	// Default behavior: PII_ACTION=redact (redacts but doesn't block)
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -524,45 +525,51 @@ func TestPIIDetection(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                string
-		query               string
-		shouldBlock         bool
-		shouldTriggerPolicy bool
-		policyID            string
+		name                 string
+		query                string
+		shouldBlock          bool
+		shouldRequireRedact  bool
+		shouldTriggerPolicy  bool
+		policyID             string
 	}{
 		{
-			name:                "Passport number",
-			query:               "Book flight for passenger with passport AB123456",
-			shouldBlock:         false, // PII detection doesn't block
-			shouldTriggerPolicy: true,
-			policyID:            "passport_number_detection",
+			name:                 "Passport number",
+			query:                "Book flight for passenger with passport AB123456",
+			shouldBlock:          false,
+			shouldRequireRedact:  false, // Passport has "high" severity, not "critical" - no redaction
+			shouldTriggerPolicy:  true,
+			policyID:             "passport_number_detection",
 		},
 		{
-			name:                "Credit card (Visa)",
-			query:               "Payment with card 4532015112830366",
-			shouldBlock:         true, // Critical PII blocks by default (PII_BLOCK_CRITICAL=true)
-			shouldTriggerPolicy: true,
-			policyID:            "credit_card_detection",
+			name:                 "Credit card (Visa)",
+			query:                "Payment with card 4532015112830366",
+			shouldBlock:          false, // Default PII_ACTION=redact doesn't block
+			shouldRequireRedact:  true,  // Critical PII flagged for redaction
+			shouldTriggerPolicy:  true,
+			policyID:             "credit_card_detection",
 		},
 		{
-			name:                "SSN",
-			query:               "Customer SSN is 123-45-6789",
-			shouldBlock:         true, // Critical PII blocks by default (PII_BLOCK_CRITICAL=true)
-			shouldTriggerPolicy: true,
-			policyID:            "ssn_detection",
+			name:                 "SSN",
+			query:                "Customer SSN is 123-45-6789",
+			shouldBlock:          false, // Default PII_ACTION=redact doesn't block
+			shouldRequireRedact:  true,  // Critical PII flagged for redaction
+			shouldTriggerPolicy:  true,
+			policyID:             "ssn_detection",
 		},
 		{
-			name:                "Booking reference",
-			query:               "Retrieve booking ABC123",
-			shouldBlock:         false,
-			shouldTriggerPolicy: true,
-			policyID:            "booking_reference_logging",
+			name:                 "Booking reference",
+			query:                "Retrieve booking ABC123",
+			shouldBlock:          false,
+			shouldRequireRedact:  false, // Non-critical PII
+			shouldTriggerPolicy:  true,
+			policyID:             "booking_reference_logging",
 		},
 		{
-			name:                "No PII",
-			query:               "SELECT * FROM flights WHERE departure='JFK'",
-			shouldBlock:         false,
-			shouldTriggerPolicy: false,
+			name:                 "No PII",
+			query:                "SELECT * FROM flights WHERE departure='JFK'",
+			shouldBlock:          false,
+			shouldRequireRedact:  false,
+			shouldTriggerPolicy:  false,
 		},
 	}
 
@@ -575,6 +582,11 @@ func TestPIIDetection(t *testing.T) {
 					tt.query, tt.shouldBlock, result.Blocked)
 			}
 
+			if result.RequiresRedaction != tt.shouldRequireRedact {
+				t.Errorf("Query: %s\nExpected requiresRedaction=%v, got requiresRedaction=%v",
+					tt.query, tt.shouldRequireRedact, result.RequiresRedaction)
+			}
+
 			if tt.shouldTriggerPolicy {
 				if !containsPolicy(result.TriggeredPolicies, tt.policyID) {
 					t.Errorf("Expected policy '%s' to be triggered for PII detection, got: %v",
@@ -582,7 +594,7 @@ func TestPIIDetection(t *testing.T) {
 				}
 			}
 
-			// Verify PII detection check was performed (not present if blocked early)
+			// Verify PII detection check was performed
 			if !tt.shouldBlock && !containsCheck(result.ChecksPerformed, "pii_detection") {
 				t.Error("Expected 'pii_detection' in checks performed")
 			}
@@ -590,11 +602,48 @@ func TestPIIDetection(t *testing.T) {
 	}
 }
 
+// TestPIIDetection_BlockMode tests that PII blocks when PII_ACTION=block
+func TestPIIDetection_BlockMode(t *testing.T) {
+	// Set env var to enable PII blocking
+	os.Setenv("PII_ACTION", "block")
+	defer os.Unsetenv("PII_ACTION")
+
+	engine := NewStaticPolicyEngine()
+	user := &User{
+		ID:          1,
+		Email:       "user1@test.com",
+		Permissions: []string{"query"},
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "SSN should block when PII_ACTION=block",
+			query: "Customer SSN is 123-45-6789",
+		},
+		{
+			name:  "Credit card should block when PII_ACTION=block",
+			query: "Payment with card 4532015112830366",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
+			if !result.Blocked {
+				t.Errorf("Expected query to be blocked with PII_ACTION=block, but it wasn't: %s", tt.query)
+			}
+		})
+	}
+}
+
 // TestPIIDetection_Disabled tests that PII blocking can be disabled via env var
 func TestPIIDetection_Disabled(t *testing.T) {
-	// Set env var to disable PII blocking
-	os.Setenv("PII_BLOCK_CRITICAL", "false")
-	defer os.Unsetenv("PII_BLOCK_CRITICAL")
+	// Set env var to log-only mode (no blocking or redaction)
+	os.Setenv("PII_ACTION", "log")
+	defer os.Unsetenv("PII_ACTION")
 
 	engine := NewStaticPolicyEngine()
 	user := &User{
@@ -1405,9 +1454,9 @@ func TestMultiplePIIInSingleQuery(t *testing.T) {
 
 	result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
 
-	// Should block - contains critical PII (SSN, credit card)
-	if !result.Blocked {
-		t.Error("Multiple critical PII detection should block (PII_BLOCK_CRITICAL=true)")
+	// Should flag for redaction - contains critical PII (SSN, credit card) (PII_ACTION=redact by default)
+	if !result.RequiresRedaction {
+		t.Error("Multiple critical PII detection should flag for redaction (PII_ACTION=redact)")
 	}
 
 	// Static engine returns after first PII match found
@@ -1595,12 +1644,12 @@ func TestStaticPANDetection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
 
-			// PAN is critical severity - should block by default (PII_BLOCK_CRITICAL=true)
-			if tt.shouldTriggerPolicy && !result.Blocked {
-				t.Errorf("PAN detection should block queries (critical PII), got not blocked")
+			// PAN is critical severity - flagged for redaction by default (PII_ACTION=redact)
+			if tt.shouldTriggerPolicy && !result.RequiresRedaction {
+				t.Errorf("PAN detection should flag for redaction (critical PII), got not flagged")
 			}
-			if !tt.shouldTriggerPolicy && result.Blocked {
-				t.Errorf("Should not block when no PAN detected, got blocked: %s", result.Reason)
+			if !tt.shouldTriggerPolicy && result.RequiresRedaction {
+				t.Errorf("Should not flag when no PAN detected, got flagged: %s", result.Reason)
 			}
 
 			// Check if policy was triggered
@@ -1727,12 +1776,12 @@ func TestStaticAadhaarDetection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := engine.EvaluateStaticPolicies(user, tt.query, "llm_chat")
 
-			// Aadhaar is critical severity - should block by default (PII_BLOCK_CRITICAL=true)
-			if tt.shouldTriggerPolicy && !result.Blocked {
-				t.Errorf("Aadhaar detection should block queries (critical PII), got not blocked")
+			// Aadhaar is critical severity - flagged for redaction by default (PII_ACTION=redact)
+			if tt.shouldTriggerPolicy && !result.RequiresRedaction {
+				t.Errorf("Aadhaar detection should flag for redaction (critical PII), got not flagged")
 			}
-			if !tt.shouldTriggerPolicy && result.Blocked {
-				t.Errorf("Should not block when no Aadhaar detected, got blocked: %s", result.Reason)
+			if !tt.shouldTriggerPolicy && result.RequiresRedaction {
+				t.Errorf("Should not flag when no Aadhaar detected, got flagged: %s", result.Reason)
 			}
 
 			// Check if policy was triggered
@@ -1874,9 +1923,9 @@ func TestCombinedIndianPII(t *testing.T) {
 	query := "KYC Details - PAN: ABCPD1234E, Aadhaar: 2345 6789 0123, Name: John Doe"
 	result := engine.EvaluateStaticPolicies(user, query, "llm_chat")
 
-	// Should block - both PAN and Aadhaar are critical severity PII
-	if !result.Blocked {
-		t.Error("Indian PII detection should block queries (critical PII, PII_BLOCK_CRITICAL=true)")
+	// Should flag for redaction - both PAN and Aadhaar are critical severity PII (PII_ACTION=redact by default)
+	if !result.RequiresRedaction {
+		t.Error("Indian PII detection should flag for redaction (critical PII, PII_ACTION=redact)")
 	}
 
 	// At least one Indian PII policy should be triggered (first match wins in static engine)

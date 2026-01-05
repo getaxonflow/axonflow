@@ -142,13 +142,14 @@ type PreCheckRequest struct {
 
 // PreCheckResponse is returned to SDK with context and approval status
 type PreCheckResponse struct {
-	ContextID    string                 `json:"context_id"`
-	Approved     bool                   `json:"approved"`
-	ApprovedData map[string]interface{} `json:"approved_data,omitempty"`
-	Policies     []string               `json:"policies"`
-	RateLimit    *RateLimitInfo         `json:"rate_limit,omitempty"`
-	ExpiresAt    time.Time              `json:"expires_at"`
-	BlockReason  string                 `json:"block_reason,omitempty"`
+	ContextID         string                 `json:"context_id"`
+	Approved          bool                   `json:"approved"`
+	RequiresRedaction bool                   `json:"requires_redaction,omitempty"`
+	ApprovedData      map[string]interface{} `json:"approved_data,omitempty"`
+	Policies          []string               `json:"policies"`
+	RateLimit         *RateLimitInfo         `json:"rate_limit,omitempty"`
+	ExpiresAt         time.Time              `json:"expires_at"`
+	BlockReason       string                 `json:"block_reason,omitempty"`
 }
 
 // RateLimitInfo provides rate limiting status to SDK
@@ -256,10 +257,14 @@ func getRBIPIIDetector() *rbi.IndiaPIIDetector {
 // checkRBIPII checks request query for India-specific PII.
 // Returns the check result with detected PII types and blocking recommendation.
 // In Community builds, this returns a no-PII result (detection is disabled).
-func checkRBIPII(query string) *rbi.RBIPIICheckResult {
+// The blockOnCritical parameter respects PII_ACTION env var (Issue #891):
+// - block: blockOnCritical=true (default legacy behavior)
+// - redact: blockOnCritical=false (flag for redaction instead of blocking)
+func checkRBIPII(query string, blockOnCritical bool) *rbi.RBIPIICheckResult {
 	detector := getRBIPIIDetector()
 	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI guidelines
-	return rbi.CheckRequestForPII(detector, query, true)
+	// unless PII_ACTION=redact is configured
+	return rbi.CheckRequestForPII(detector, query, blockOnCritical)
 }
 
 // getGatewayAuditQueue returns the audit queue for Gateway Mode handlers
@@ -371,7 +376,14 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	// RBI FREE-AI Compliance: Check for India-specific PII before policy evaluation
 	// This runs in both Community (no-op) and Enterprise (full detection) modes
-	piiResult := checkRBIPII(req.Query)
+	// Issue #891: Respect PII_ACTION setting - block only if PII_ACTION=block
+	detectionConfig := DetectionConfigFromEnv()
+	blockOnCriticalPII := detectionConfig.PIIAction == DetectionActionBlock
+	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
+
+	// Track if RBI PII requires redaction (for PII_ACTION=redact mode)
+	rbiPIIRequiresRedaction := false
+
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Pre-check] Request blocked by RBI PII detection: %s", piiResult.Reason)
 		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
@@ -395,7 +407,13 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		for _, piiType := range piiResult.DetectedTypes {
 			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "false").Inc()
 		}
-		log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
+		// Issue #891: If critical India PII detected but PII_ACTION=redact, flag for redaction
+		if piiResult.CriticalPII && detectionConfig.PIIAction == DetectionActionRedact {
+			log.Printf("🇮🇳 [Pre-check] Critical India PII detected - flagged for redaction (action=redact): %v", piiResult.DetectedTypes)
+			rbiPIIRequiresRedaction = true
+		} else {
+			log.Printf("⚠️ [Pre-check] India PII detected (non-critical): %v", piiResult.DetectedTypes)
+		}
 	}
 
 	// IMPORTANT: Gateway Mode Design Decision - Static Policies Only
@@ -432,16 +450,26 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(defaultContextExpiry)
 
 	// Build response
+	// Issue #891: Combine redaction flags from static policies and RBI PII detection
+	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction
 	response := PreCheckResponse{
-		ContextID: contextID,
-		Approved:  !policyResult.Blocked,
-		Policies:  policyResult.TriggeredPolicies,
-		ExpiresAt: expiresAt,
+		ContextID:         contextID,
+		Approved:          !policyResult.Blocked,
+		RequiresRedaction: requiresRedaction,
+		Policies:          policyResult.TriggeredPolicies,
+		ExpiresAt:         expiresAt,
+	}
+
+	// Add RBI PII policy to triggered policies if redaction required
+	if rbiPIIRequiresRedaction {
+		response.Policies = append(response.Policies, "rbi_pii_protection")
 	}
 
 	if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
+	} else if requiresRedaction {
+		log.Printf("⚠️ [Pre-check] Request approved with redaction required: %s", policyResult.Reason)
 	} else {
 		// Fetch data from MCP connectors if data sources specified
 		if len(req.DataSources) > 0 && mcpRegistry != nil {

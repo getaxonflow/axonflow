@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.0] - 2026-01-05
+
+### Breaking Changes
+
+- **Single Entry Point Architecture (ADR-026)**: All API routes now go through the Agent (port 8080)
+  - Agent proxies `/api/v1/dynamic-policies/*`, `/api/v1/budgets/*`, `/api/v1/usage/*`, `/api/v1/executions/*` to Orchestrator
+  - Agent proxies `/portal/*` routes to Customer Portal
+  - SDKs now use single `endpoint` parameter (default: `http://localhost:8080`)
+  - **Deprecated**: `agent_url` and `orchestrator_url` SDK parameters (use `endpoint` instead)
+  - **Deprecated**: Direct Orchestrator access on port 8081 (still works but not recommended)
+
+- **Detection Defaults Changed (ADR-027)**: More nuanced default actions based on detection confidence
+  - PII detection: `block` → `redact` (non-blocking, better UX)
+  - High risk score (>0.8): `block` → `warn` (composite score needs tuning)
+  - SQL injection: remains `block` (high confidence attacks)
+  - Dangerous queries (DROP/TRUNCATE): remains `block` (destructive operations)
+
+- **Environment Variable Changes**:
+  - **New**: `SQLI_ACTION` (values: `block`, `warn`, `log`) - replaces `SQLI_BLOCK_MODE`
+  - **New**: `PII_ACTION` (values: `block`, `warn`, `redact`, `log`) - replaces `PII_BLOCK_CRITICAL`
+  - **New**: `SENSITIVE_DATA_ACTION` (values: `block`, `warn`, `log`) - credentials/secrets detection
+  - **New**: `HIGH_RISK_ACTION` (values: `block`, `warn`, `log`) - high risk score threshold
+  - **New**: `DANGEROUS_QUERY_ACTION` (values: `block`, `warn`, `log`) - DROP/TRUNCATE detection
+  - **Deprecated**: `SQLI_BLOCK_MODE` (use `SQLI_ACTION` instead)
+  - **Deprecated**: `PII_BLOCK_CRITICAL` (use `PII_ACTION` instead)
+
+### Added
+
+- **Sensitive Data Patterns in Database**: Credential and secret detection patterns now stored in `static_policies` table
+  - Password, API key, token, secret, credentials, connection string patterns
+  - Context exclusions for SQL keywords (PRIMARY KEY, FOREIGN KEY no longer false positives)
+  - Per-tenant customization via policy overrides (Enterprise)
+
+- **Environment Variable Precedence**: Clear hierarchy for detection configuration
+  1. Per-tenant policy override (API) - highest priority
+  2. Environment variable (docker-compose)
+  3. Per-policy DB default (migration seed) - lowest priority
+
+- **PII Redaction Support in SDKs**: New `requiresRedaction` field in `PolicyApprovalResult`
+  - Returns `true` when PII was detected with `redact` action
+  - Callers should process response for redaction when this flag is set
+  - Available in all SDKs: `isRequiresRedaction()` (Java), `requires_redaction` (Python), `RequiresRedaction` (Go), `requiresRedaction` (TypeScript)
+
+- **Strict Provider Enforcement for Dynamic Policies** (Issue #883): Compliance-aware LLM routing
+  - Policies can specify `allowed_providers` to restrict which LLM providers handle requests
+  - Requests **fail** (instead of fallback) if no compliant provider is available
+  - Multiple policies use **intersection logic** (least privilege - most restrictive wins)
+  - Enables GDPR, HIPAA, RBI compliance scenarios (e.g., EU data stays on-premise)
+  - Example: `{"allowed_providers": ["ollama"]}` ensures only local model handles sensitive data
+
+### Fixed
+
+- **Dynamic policy condition evaluation**: `DatabaseDynamicPolicyEngine` now correctly evaluates conditions before applying actions
+  - Previously, all policy actions were applied regardless of whether conditions matched
+  - Now supports operators: `equals`, `not_equals`, `contains`, `not_contains`, `contains_any`, `regex`, `greater_than`, `less_than`, `in`, `not_in`
+
+- **Tenant extraction bug**: Fixed `Client.ID` → `Client.TenantID` in policy evaluation
+
+### Changed
+
+- **SDK Method Signatures**: All SDKs updated for single endpoint
+  - Go: `axonflow.NewClient(axonflow.AxonFlowConfig{Endpoint: "http://localhost:8080"})`
+  - Python: `AxonFlow(endpoint="http://localhost:8080")`
+  - TypeScript: `new AxonFlow({ endpoint: "http://localhost:8080" })`
+  - Java: `AxonFlow.create(AxonFlowConfig.builder().endpoint("http://localhost:8080").build())`
+
+### Migration Guide
+
+**SDK Migration:**
+```python
+# Before (v2.x)
+client = AxonFlow(
+    agent_url="http://localhost:8080",
+    orchestrator_url="http://localhost:8081"
+)
+
+# After (v3.0)
+client = AxonFlow(endpoint="http://localhost:8080")
+```
+
+**Environment Variable Migration:**
+```yaml
+# Before (v2.x)
+SQLI_BLOCK_MODE: "block"
+PII_BLOCK_CRITICAL: "true"
+
+# After (v3.0)
+SQLI_ACTION: "block"
+PII_ACTION: "redact"
+SENSITIVE_DATA_ACTION: "warn"
+HIGH_RISK_ACTION: "warn"
+```
+
+---
+
 ## [2.6.0] - 2026-01-04
 
 ### Added

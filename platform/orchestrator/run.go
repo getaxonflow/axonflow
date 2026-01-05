@@ -75,8 +75,9 @@ var (
 	usageDB            *sql.DB                            // Database for usage metering
 	heartbeatService   *node_enforcement.HeartbeatService // Node enforcement
 	nodeMonitor        *node_enforcement.NodeMonitor      // Node enforcement
-	policyAPIHandler      *PolicyAPIHandler                  // Policy CRUD API handler
-	templateAPIHandler    *TemplateAPIHandler                // Policy Templates API handler
+	policyAPIHandler         *PolicyAPIHandler         // Policy CRUD API handler
+	dynamicPolicyAPIHandler  *DynamicPolicyAPIHandler  // Dynamic Policy API handler (ADR-026)
+	templateAPIHandler       *TemplateAPIHandler       // Policy Templates API handler
 	llmProviderRouter     *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
 	llmRouterWrapper      LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
 	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
@@ -207,6 +208,7 @@ type UserContext struct {
 	ID          int      `json:"id"`
 	Email       string   `json:"email"`
 	Role        string   `json:"role"`
+	Region      string   `json:"region"` // User's region for geo-based routing policies
 	Permissions []string `json:"permissions"`
 	TenantID    string   `json:"tenant_id"`
 }
@@ -237,6 +239,11 @@ type PolicyEvaluationResult struct {
 	RequiredActions  []string `json:"required_actions"`
 	ProcessingTimeMs int64    `json:"processing_time_ms"`
 	DatabaseAccessed bool     `json:"database_accessed,omitempty"`
+
+	// LLM Routing overrides from dynamic policies
+	PreferredProvider string   `json:"preferred_provider,omitempty"` // Preferred LLM provider
+	AllowedProviders  []string `json:"allowed_providers,omitempty"`  // Strict list for compliance (failover only within this list)
+	RoutingReason     string   `json:"routing_reason,omitempty"`     // Why routing was changed
 }
 
 type ProviderInfo struct {
@@ -415,6 +422,13 @@ func Run() {
 	r.HandleFunc("/api/v1/templates/stats", templateAPIStatsHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/templates/{id}", templateAPIGetHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/templates/{id}/apply", templateAPIApplyHandler).Methods("POST", "OPTIONS")
+
+	// Dynamic Policy API (ADR-026: Single Entry Point Architecture)
+	// New consistent path: /api/v1/dynamic-policies (matches /api/v1/static-policies pattern)
+	if dynamicPolicyAPIHandler != nil {
+		dynamicPolicyAPIHandler.RegisterRoutes(r)
+		log.Println("Dynamic Policy API routes registered (/api/v1/dynamic-policies)")
+	}
 
 	// LLM Provider Management API (ADR-007 - Pluggable LLM Providers)
 	// Register routes only if bootstrap was successful
@@ -834,6 +848,10 @@ func initializeComponents() {
 		policyAPIHandler = NewPolicyAPIHandler(policyService)
 		log.Println("Policy CRUD API initialized ✅")
 
+		// Initialize Dynamic Policy API (ADR-026: Single Entry Point)
+		dynamicPolicyAPIHandler = NewDynamicPolicyAPIHandler(policyService)
+		log.Println("Dynamic Policy API initialized ✅ (ADR-026)")
+
 		// Initialize Policy Templates API (Track D - Policy Templates)
 		log.Println("Initializing Policy Templates API...")
 		templateRepo := NewTemplateRepository(usageDB)
@@ -1003,6 +1021,25 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		orchestratorMetrics.dynamicPolicyTimings = append(orchestratorMetrics.dynamicPolicyTimings, policyMs)
 		orchestratorMetrics.mu.Unlock()
+	}
+
+	// Inject policy routing hints into request context for LLM router (Issue #883)
+	// This ensures dynamic policies can enforce strict provider compliance
+	if policyResult.PreferredProvider != "" || len(policyResult.AllowedProviders) > 0 {
+		if req.Context == nil {
+			req.Context = make(map[string]interface{})
+		}
+		if policyResult.PreferredProvider != "" {
+			req.Context["policy_preferred_provider"] = policyResult.PreferredProvider
+		}
+		if len(policyResult.AllowedProviders) > 0 {
+			req.Context["policy_allowed_providers"] = policyResult.AllowedProviders
+		}
+		if policyResult.RoutingReason != "" {
+			req.Context["policy_routing_reason"] = policyResult.RoutingReason
+		}
+		log.Printf("[POLICY_ROUTING] Injected routing hints: preferred=%s, allowed=%v, reason=%s",
+			policyResult.PreferredProvider, policyResult.AllowedProviders, policyResult.RoutingReason)
 	}
 
 	if !policyResult.Allowed {

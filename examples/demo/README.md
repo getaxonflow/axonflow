@@ -39,7 +39,7 @@ The demo covers 7 parts, showcasing all major Community features:
 | Part | Name | Duration | What You'll See |
 |------|------|----------|-----------------|
 | 1 | The Problem | 1 min | Risks of unprotected AI |
-| 2 | Core Governance | 2 min | PII detection, SQL injection blocking |
+| 2 | Core Governance | 2 min | PII redaction, SQL injection blocking |
 | 3 | Integration Modes | 2 min | Proxy mode vs Gateway mode |
 | 4 | MCP Connectors | 2 min | AI querying PostgreSQL safely |
 | 5 | Multi-Agent Planning | 2 min | Orchestrated workflows |

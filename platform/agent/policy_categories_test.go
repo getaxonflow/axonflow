@@ -20,6 +20,7 @@ func TestStaticPolicyCategories(t *testing.T) {
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,
+		CategorySensitiveData, // Added for Issue #891 - credential detection
 	}
 
 	if len(categories) != len(expected) {
