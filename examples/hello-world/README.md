@@ -8,81 +8,140 @@
 
 This is the absolute minimum code needed to use AxonFlow. Perfect for:
 - Learning the basics
-- Testing your AxonFlow deployment
+- Testing your local AxonFlow deployment
 - Understanding the request/response flow
 - Verifying connectivity
 
 **Time to complete:** 5 minutes
-**Lines of code:** ~30 lines
-**Prerequisites:** AxonFlow deployed
+**Lines of code:** ~20 lines
+**Prerequisites:** AxonFlow running locally (`docker compose up -d`)
 
 ---
 
 ## What It Does
 
-1. Connects to your AxonFlow deployment
-2. Sends a simple query: "What is the capital of France?"
-3. Enforces a basic policy (allow all)
-4. Returns the response
-5. Logs the latency
-
-**Expected output:**
-```
-Response: The capital of France is Paris.
-Latency: 4ms
-```
+1. Connects to your local AxonFlow agent
+2. Sends a query through the governance layer
+3. AxonFlow enforces policies (PII detection, rate limits, etc.)
+4. Returns the response with audit metadata
 
 ---
 
 ## Quick Start
+
+Make sure AxonFlow is running:
+
+```bash
+# From the repo root
+docker compose ps   # Should show services as "healthy"
+```
+
+Then run any example:
 
 ### TypeScript
 
 ```bash
 cd typescript
 npm install
-npm start
+AGENT_URL=http://localhost:8080 npm start
+```
+
+### Python
+
+```bash
+cd python
+pip install -r requirements.txt
+AGENT_URL=http://localhost:8080 python main.py
 ```
 
 ### Go
 
 ```bash
 cd go
-go run main.go
+AGENT_URL=http://localhost:8080 go run main.go
+```
+
+### Java
+
+```bash
+cd java
+mvn compile exec:java
+```
+
+### HTTP (curl)
+
+```bash
+cd http
+./hello-world.sh
 ```
 
 ---
 
 ## Code Examples
 
-### TypeScript (30 lines)
+### TypeScript
 
 ```typescript
-import { AxonFlowClient } from '@axonflow/sdk';
+import { AxonFlow } from '@axonflow/sdk';
 
-const client = new AxonFlowClient({
-  endpoint: 'https://YOUR_AGENT_ENDPOINT',
-  licenseKey: 'YOUR_LICENSE_KEY',
-  organizationId: 'my-org'
+const ax = new AxonFlow({
+  endpoint: process.env.AGENT_URL || 'http://localhost:8080'
 });
 
 async function main() {
-  const response = await client.executeQuery({
+  // Gateway Mode: Pre-check → Your LLM call → Audit
+  const approval = await ax.preCheck({
     query: 'What is the capital of France?',
-    policy: `
-      package axonflow.policy
-      default allow = true
-    `
+    userToken: 'demo-user',
+    clientId: 'hello-world'
   });
 
-  console.log('Response:', response.result);
-  console.log('Latency:', response.metadata.latency_ms + 'ms');
+  console.log('Approved:', approval.approved);
+  console.log('Context ID:', approval.contextId);
+
+  if (approval.approved) {
+    // Make your LLM call here, then audit it
+    await ax.audit({
+      contextId: approval.contextId,
+      model: 'gpt-4',
+      success: true
+    });
+  }
 }
 
 main();
 ```
 
-### Go (35 lines)
+### Python
+
+```python
+import asyncio
+from axonflow import AxonFlow
+
+async def main():
+    async with AxonFlow(agent_url="http://localhost:8080") as ax:
+        # Gateway Mode: Pre-check → Your LLM call → Audit
+        approval = await ax.pre_check(
+            query="What is the capital of France?",
+            user_token="demo-user",
+            client_id="hello-world"
+        )
+
+        print(f"Approved: {approval.approved}")
+        print(f"Context ID: {approval.context_id}")
+
+        if approval.approved:
+            # Make your LLM call here, then audit it
+            await ax.audit(
+                context_id=approval.context_id,
+                model="gpt-4",
+                success=True
+            )
+
+asyncio.run(main())
+```
+
+### Go
 
 ```go
 package main
@@ -90,240 +149,116 @@ package main
 import (
     "context"
     "fmt"
-    "log"
+    "os"
+
     "github.com/getaxonflow/axonflow-sdk-go"
 )
 
 func main() {
-    client, _ := axonflow.NewClient(axonflow.Config{
-        Endpoint:       "https://YOUR_AGENT_ENDPOINT",
-        LicenseKey:     "YOUR_LICENSE_KEY",
-        OrganizationID: "my-org",
-    })
-
-    response, err := client.ExecuteQuery(context.Background(), &axonflow.QueryRequest{
-        Query: "What is the capital of France?",
-        Policy: `
-            package axonflow.policy
-            default allow = true
-        `,
-    })
-    if err != nil {
-        log.Fatal(err)
+    agentURL := os.Getenv("AGENT_URL")
+    if agentURL == "" {
+        agentURL = "http://localhost:8080"
     }
 
-    fmt.Println("Response:", response.Result)
-    fmt.Printf("Latency: %dms\n", response.Metadata.LatencyMS)
+    client := axonflow.NewClient(agentURL)
+
+    // Gateway Mode: Pre-check → Your LLM call → Audit
+    approval, err := client.PreCheck(context.Background(), axonflow.PreCheckRequest{
+        Query:     "What is the capital of France?",
+        UserToken: "demo-user",
+        ClientID:  "hello-world",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println("Approved:", approval.Approved)
+    fmt.Println("Context ID:", approval.ContextID)
 }
 ```
 
----
+### HTTP (curl)
 
-## Configuration
-
-Before running, update the code with your credentials:
-
-1. **Agent Endpoint** - From CloudFormation Outputs
-2. **License Key** - From CloudFormation Outputs
-3. **Organization ID** - Your organization identifier
-
-**Example:**
-```typescript
-const client = new AxonFlowClient({
-  endpoint: 'https://axonfl-AxonF-abc123.elb.us-east-1.amazonaws.com',
-  licenseKey: 'AXON-V2-eyJ0aWVyIjoiUExVUyJ9-abc123',
-  organizationId: 'my-company'
-});
+```bash
+# Pre-check a query
+curl -X POST http://localhost:8080/api/policy/pre-check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the capital of France?",
+    "user_token": "demo-user",
+    "client_id": "hello-world"
+  }'
 ```
 
 ---
 
-## Understanding the Code
+## Expected Output
 
-### 1. Client Initialization
-
-```typescript
-const client = new AxonFlowClient({
-  endpoint: 'https://YOUR_AGENT_ENDPOINT',
-  licenseKey: 'YOUR_LICENSE_KEY',
-  organizationId: 'my-org'
-});
+```json
+{
+  "approved": true,
+  "context_id": "ctx_abc123",
+  "policies_evaluated": ["pii_detection", "rate_limiting"],
+  "latency_ms": 4
+}
 ```
 
-- **endpoint**: Your AxonFlow Agent endpoint (from CloudFormation)
-- **licenseKey**: Authentication credential
-- **organizationId**: Your organization identifier (used for audit logs)
-
-### 2. Policy Definition
-
-```rego
-package axonflow.policy
-default allow = true
-```
-
-- **package**: Required namespace for AxonFlow policies
-- **default allow = true**: Allow all queries (permissive policy)
-- **Policy language**: Open Policy Agent (OPA) Rego
-
-### 3. Query Execution
-
-```typescript
-const response = await client.executeQuery({
-  query: 'What is the capital of France?',
-  policy: policyContent
-});
-```
-
-- **query**: Natural language query
-- **policy**: Policy rules for governance
-- Returns **response** with result and metadata
-
-### 4. Response Handling
-
-```typescript
-console.log('Response:', response.result);
-console.log('Latency:', response.metadata.latency_ms + 'ms');
-```
-
-- **response.result**: Query result
-- **response.metadata.latency_ms**: Policy evaluation latency (sub-10ms)
-- **response.metadata.policy_decision**: "allow" or "deny"
+**Performance:** Policy evaluation typically takes 3-5ms.
 
 ---
 
 ## What Happens Under the Hood
 
 ```
-1. Client sends query + policy to Agent
+1. Client sends query to Agent (:8080)
    ↓
-2. Agent validates license key
+2. Agent evaluates static policies (PII, SQLi, rate limits)
    ↓
-3. Agent compiles and evaluates policy (~4ms)
+3. Policy returns "approved: true"
    ↓
-4. Policy returns "allow"
+4. Agent returns context_id for audit tracking
    ↓
-5. Agent processes query
+5. You make your LLM call (with your own client)
    ↓
-6. Response returned to client
+6. You call audit() to complete the request lifecycle
    ↓
-7. Audit log written to CloudWatch
+7. Audit log written to PostgreSQL
 ```
-
-**Performance:** Policy evaluation typically takes 3-5ms (sub-10ms P95).
 
 ---
 
 ## Troubleshooting
 
-### Connection Failed
+### Connection Refused
 
-**Error:** `ECONNREFUSED` or timeout
+```
+Error: connect ECONNREFUSED 127.0.0.1:8080
+```
 
-**Solutions:**
-1. Verify Agent Endpoint URL
-2. Check security groups allow HTTPS (port 443)
-3. Ensure ECS tasks are running
-4. Test with curl:
-   ```bash
-   curl -k https://YOUR_AGENT_ENDPOINT/health
-   ```
+**Solution:** Make sure AxonFlow is running:
+```bash
+docker compose ps        # Check status
+docker compose up -d     # Start if needed
+docker compose logs -f agent  # Check logs
+```
 
-### Invalid License Key
+### Services Not Healthy
 
-**Error:** `License key validation failed`
+```bash
+# Wait for services to be healthy (~30 seconds after start)
+docker compose ps
 
-**Solutions:**
-1. Verify license key format: `AXON-V2-{base64}-{signature}`
-2. Check license key hasn't expired
-3. Ensure organization ID matches licensed tenant
-
-### Slow Response
-
-**Expected:** Sub-10ms policy evaluation
-
-**If slower:**
-1. Check CloudWatch metrics for agent CPU/memory
-2. Verify network latency
-3. Check policy complexity
+# If stuck, check logs
+docker compose logs agent orchestrator
+```
 
 ---
 
 ## Next Steps
 
-Now that you have a working AxonFlow query:
-
-### 1. Add Real Policies
-
-Replace `default allow = true` with real governance rules:
-
-```rego
-package axonflow.policy
-
-# Only allow admins
-allow {
-    input.context.user_role == "admin"
-}
-
-# Block sensitive queries
-deny["Sensitive operation not allowed"] {
-    contains(lower(input.query), "delete all")
-}
-```
-
-### 2. Add Context
-
-Include user information for audit trails:
-
-```typescript
-const response = await client.executeQuery({
-  query: 'Get customer data',
-  policy: policyContent,
-  context: {
-    user_id: 'user-123',
-    user_role: 'admin',
-    department: 'engineering'
-  }
-});
-```
-
-### 3. Connect to LLM
-
-Add AI capabilities:
-
-```typescript
-const response = await client.executeQuery({
-  query: 'Generate a product description',
-  policy: policyContent,
-  llm: {
-    provider: 'aws-bedrock',
-    model: 'anthropic.claude-3-sonnet-20240229-v1:0'
-  }
-});
-```
-
-### 4. Use MCP Connectors
-
-Query real data sources:
-
-```typescript
-const response = await client.executeQuery({
-  query: 'Get opportunities from Salesforce',
-  policy: policyContent,
-  mcp: {
-    connector: 'salesforce',
-    operation: 'query'
-  }
-});
-```
-
----
-
-## Learn More
-
-- **[First Agent Tutorial](/docs/tutorials/first-agent)** - Build your first agent in 10 minutes
-- **[Workflow Examples](/docs/tutorials/workflow-examples)** - Production-ready patterns
-- **[Policy Syntax](/docs/policies/syntax)** - Policy language reference
-- **[Examples Overview](/docs/examples/overview)** - Browse all examples
+- **[Support Demo](../support-demo/)** - Real-world customer support example with PII detection
+- **[PII Detection](../pii-detection/)** - See how AxonFlow blocks sensitive data
+- **[Gateway vs Proxy Mode](../../docs/guides/integration-modes.md)** - Choose your integration pattern
 
 ---
 
@@ -333,8 +268,8 @@ const response = await client.executeQuery({
 hello-world/
 ├── README.md           # This file
 ├── go/
-│   ├── go.mod          # Dependencies
-│   └── main.go         # Main code
+│   ├── go.mod
+│   └── main.go
 ├── python/
 │   ├── requirements.txt
 │   └── main.py
@@ -345,19 +280,5 @@ hello-world/
 │   ├── pom.xml
 │   └── src/main/java/...
 └── http/
-    └── hello-world.sh  # curl/HTTP example
+    └── hello-world.sh
 ```
-
-## Run HTTP Example (No SDK Required)
-
-```bash
-cd http
-chmod +x hello-world.sh
-./hello-world.sh
-```
-
-This uses raw HTTP/curl and works with any language.
-
----
-
-**This is the simplest possible AxonFlow example.** Perfect for getting started!

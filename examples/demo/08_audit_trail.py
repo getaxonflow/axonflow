@@ -81,7 +81,7 @@ async def query_audit_logs():
 
         except httpx.ConnectError:
             print(f"Could not connect to Agent at {agent_url}")
-            print("Ensure services are running: docker-compose up -d")
+            print("Ensure services are running: docker compose up -d")
         except Exception as e:
             print(f"Error: {e}")
 

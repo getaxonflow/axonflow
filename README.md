@@ -28,19 +28,37 @@ AxonFlow treats agents as long-running, stateful systems that require governance
 
 ## Quick Start
 
+**Prerequisites:** [Docker Desktop](https://docs.docker.com/get-docker/) installed and running.
+
 ```bash
 # Clone and start
 git clone https://github.com/getaxonflow/axonflow.git
 cd axonflow
-export OPENAI_API_KEY=sk-your-key-here  # or ANTHROPIC_API_KEY
-docker-compose up -d
+
+# Set your API key (at least one LLM provider required for AI features)
+echo "OPENAI_API_KEY=sk-your-key-here" > .env   # or ANTHROPIC_API_KEY
+
+# Start services
+docker compose up -d
+
+# Wait for services to be healthy (~30 seconds)
+docker compose ps   # All services should show "healthy"
 
 # Verify it's running
 curl http://localhost:8080/health
 curl http://localhost:8081/health
 ```
 
-**That's it.** Agent runs on `:8080`, Orchestrator on `:8081`.
+**That's it.** Services are now running:
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| Agent | http://localhost:8080 | Policy enforcement, PII detection |
+| Orchestrator | http://localhost:8081 | LLM routing, dynamic policies |
+| Grafana | http://localhost:3000 | Dashboards (admin / grafana_localdev456) |
+| Prometheus | http://localhost:9090 | Metrics |
+
+> **Note:** All commands in this README assume you're in the repository root directory (`cd axonflow`).
 
 ### Supported LLM Providers
 
@@ -73,11 +91,13 @@ curl -X POST http://localhost:8080/api/policy/pre-check \
 Experience the complete governance suite: PII detection, SQL injection blocking,
 proxy and gateway modes, MCP connectors, multi-agent planning, and observability.
 
-```bash
-# Create .env with your API key (containers read from this file at startup)
-echo "OPENAI_API_KEY=$OPENAI_API_KEY" > .env
+**Requires:** Python 3.9+ (for demo scripts)
 
-# Restart services to load the key
+```bash
+# Ensure your .env has a valid API key
+cat .env   # Should show OPENAI_API_KEY=sk-... or ANTHROPIC_API_KEY=sk-ant-...
+
+# Restart services if you just added the key
 docker compose up -d --force-recreate
 
 # Run the interactive demo
@@ -327,10 +347,17 @@ if (approval.isApproved()) {
 ## Development
 
 ```bash
-docker-compose up -d              # Start services
-docker-compose logs -f            # View logs
+docker compose up -d              # Start services
+docker compose logs -f            # View logs
 go test ./platform/... -cover     # Run tests
 ```
+
+For a full development environment with health checks and automatic waits, use:
+```bash
+./scripts/local-dev/start.sh      # Recommended for development
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development guide.
 
 | Package | Coverage |
 |---------|----------|
@@ -370,3 +397,7 @@ We're especially interested in questions that surface ambiguous semantics or run
 If you're evaluating AxonFlow internally and prefer not to open a public issue, you can reach us at hello@getaxonflow.com.
 
 This channel is intended for technical questions about semantics, guarantees, or runtime behavior. We treat these as engineering discussions, not sales conversations.
+
+---
+
+_Quick Start verified locally: Jan 2026_

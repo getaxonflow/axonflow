@@ -9,10 +9,10 @@ An AI agent helps support teams query customer data while AxonFlow ensures secur
 
 ```bash
 # 1. Start services
-docker-compose up -d
+docker compose up -d
 
 # 2. Wait for services to be healthy (~30 seconds)
-docker-compose ps
+docker compose ps
 
 # 3. Run the demo
 ./examples/demo/demo.sh
@@ -20,15 +20,17 @@ docker-compose ps
 
 ## Prerequisites
 
-- **Docker & Docker Compose** - For running AxonFlow services
+- **Docker Desktop** - For running AxonFlow services ([install](https://docs.docker.com/get-docker/))
 - **Python 3.9+** - For running demo examples (required by axonflow SDK)
 - **Python packages** - Installed automatically (see `requirements.txt`)
 
 Required (for LLM features):
-- **OpenAI API Key** - `export OPENAI_API_KEY=sk-your-key` (see main README)
+- **OpenAI API Key** - Add to `.env` file: `echo "OPENAI_API_KEY=sk-your-key" >> .env`
 
 Optional:
-- **Anthropic API Key** - `export ANTHROPIC_API_KEY=...` for multi-model demo
+- **Anthropic API Key** - Add to `.env`: `echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env`
+
+> **Note:** Run all commands from the repository root directory (`cd axonflow`).
 
 ## Demo Structure
 
@@ -168,11 +170,11 @@ Orchestrate complex workflows:
 
 ```bash
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs axonflow-agent
-docker-compose logs axonflow-orchestrator
+docker compose logs axonflow-agent
+docker compose logs axonflow-orchestrator
 ```
 
 ### Python SDK not found

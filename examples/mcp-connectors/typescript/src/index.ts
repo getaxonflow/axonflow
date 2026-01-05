@@ -8,7 +8,7 @@
  * external systems like databases, APIs, and more.
  *
  * Prerequisites:
- * - AxonFlow running with connectors enabled (docker-compose up -d)
+ * - AxonFlow running with connectors enabled (docker compose up -d)
  * - PostgreSQL connector configured in config/axonflow.yaml
  *
  * Usage:

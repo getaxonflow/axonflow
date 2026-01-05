@@ -66,7 +66,7 @@ For advanced enterprise workflow examples (healthcare, e-commerce, financial rep
 ## Requirements
 
 - **Go 1.23+**
-- **Running AxonFlow stack:** `docker-compose up` in the root directory
+- **Running AxonFlow stack:** `docker compose up` in the root directory
 - **API Keys:** OpenAI, Anthropic, or other LLM providers (see `.env.example` in each directory)
 
 ## Getting Help

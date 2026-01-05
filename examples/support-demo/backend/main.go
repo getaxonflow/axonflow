@@ -15,16 +15,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -42,9 +45,10 @@ var migrationsFS embed.FS
 
 // Configuration
 var (
-	db             *sql.DB
-	jwtSecret      = []byte(os.Getenv("JWT_SECRET"))
-	axonflowClient *axonflow.AxonFlowClient
+	db              *sql.DB
+	jwtSecret       = []byte(os.Getenv("JWT_SECRET"))
+	axonflowClient  *axonflow.AxonFlowClient
+	orchestratorURL string
 )
 
 // User represents a demo user with role-based permissions
@@ -70,16 +74,28 @@ type QueryResponse struct {
 	Count        int                      `json:"count"`
 	QueryBlocked bool                     `json:"query_blocked"`
 	BlockReason  string                   `json:"block_reason,omitempty"`
-	LLMProvider  string                   `json:"llm_provider,omitempty"`
+	LLMProvider  *LLMProviderInfo         `json:"llm_provider,omitempty"`
+	PIIDetected  []string                 `json:"pii_detected,omitempty"`
+	PIIRedacted  bool                     `json:"pii_redacted,omitempty"`
 	SecurityLog  SecurityLog              `json:"security_log"`
+}
+
+// LLMProviderInfo contains information about the LLM provider used
+type LLMProviderInfo struct {
+	Name       string `json:"name"`
+	Reason     string `json:"reason"`
+	TokensUsed int    `json:"tokens_used"`
+	Duration   string `json:"duration"`
 }
 
 // SecurityLog captures query execution metadata
 type SecurityLog struct {
-	UserEmail     string    `json:"user_email"`
-	QueryExecuted string    `json:"query_executed"`
-	AccessGranted bool      `json:"access_granted"`
-	Timestamp     time.Time `json:"timestamp"`
+	UserEmail       string    `json:"user_email"`
+	QueryExecuted   string    `json:"query_executed"`
+	AccessGranted   bool      `json:"access_granted"`
+	FilteredResults int       `json:"filtered_results,omitempty"`
+	PIIRedacted     bool      `json:"pii_redacted,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 // LoginRequest for authentication
@@ -222,6 +238,12 @@ func main() {
 		agentURL = "http://host.docker.internal:8080"
 	}
 
+	// Initialize Orchestrator URL for audit/metrics queries
+	orchestratorURL = os.Getenv("AXONFLOW_ORCHESTRATOR_URL")
+	if orchestratorURL == "" {
+		orchestratorURL = "http://host.docker.internal:8081"
+	}
+
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
 		AgentURL: agentURL,
 		Mode:     "production", // Fail-open if AxonFlow is unavailable
@@ -232,7 +254,7 @@ func main() {
 			InitialDelay: time.Second,
 		},
 	})
-	log.Printf("AxonFlow Client initialized (endpoint: %s, mode: proxy)", agentURL)
+	log.Printf("AxonFlow Client initialized (agent: %s, orchestrator: %s, mode: proxy)", agentURL, orchestratorURL)
 
 	// Setup router
 	r := mux.NewRouter()
@@ -254,10 +276,10 @@ func main() {
 	r.HandleFunc("/api/llm/natural-query", authMiddleware(naturalQueryHandler)).Methods("POST")
 	r.HandleFunc("/api/llm/status", authMiddleware(llmStatusHandler)).Methods("GET")
 	r.HandleFunc("/api/llm/user-access", authMiddleware(userAccessHandler)).Methods("GET")
-	r.HandleFunc("/api/audit", authMiddleware(auditStubHandler)).Methods("GET")
-	r.HandleFunc("/api/policy-metrics", authMiddleware(policyMetricsStubHandler)).Methods("GET")
+	r.HandleFunc("/api/audit", authMiddleware(auditHandler)).Methods("GET")
+	r.HandleFunc("/api/policy-metrics", authMiddleware(policyMetricsHandler)).Methods("GET")
 	r.HandleFunc("/api/policy-metrics/update", authMiddleware(stubHandler)).Methods("POST")
-	r.HandleFunc("/api/performance/metrics", authMiddleware(performanceStubHandler)).Methods("GET")
+	r.HandleFunc("/api/performance/metrics", authMiddleware(performanceMetricsHandler)).Methods("GET")
 
 	// Start server
 	port := os.Getenv("PORT")
@@ -584,21 +606,39 @@ func llmStatusHandler(w http.ResponseWriter, r *http.Request) {
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	var stats DashboardStats
 
+	// Get business data from local database
 	db.QueryRow("SELECT COUNT(*) FROM customers").Scan(&stats.TotalCustomers)
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE status != 'resolved'").Scan(&stats.OpenTickets)
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE resolved_at::date = CURRENT_DATE").Scan(&stats.ResolvedToday)
 	stats.AvgResponseTime = 45 // Demo value in minutes
-
-	// Query policy metrics from database
-	db.QueryRow("SELECT COALESCE(total_policies_enforced, 0), COALESCE(pii_redacted, 0) FROM policy_metrics WHERE date = CURRENT_DATE").Scan(&stats.TotalQueries, &stats.TotalPIIDetections)
-
-	// Count unique demo users
 	stats.TotalUsers = len(demoUsers)
 
-	// Calculate compliance score (100% - (blocked queries / total queries) * 100)
-	if stats.TotalQueries > 0 {
-		stats.ComplianceScore = 98.5 // Demo value - in production calculate from actual blocks
+	// Get governance metrics from AxonFlow orchestrator
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err == nil {
+		defer resp.Body.Close()
+		var metrics map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&metrics); err == nil {
+			// Extract metrics from AxonFlow response
+			if v, ok := metrics["total_requests"].(float64); ok {
+				stats.TotalQueries = int(v)
+			}
+			if v, ok := metrics["pii_detected"].(float64); ok {
+				stats.TotalPIIDetections = int(v)
+			}
+			if v, ok := metrics["blocked_requests"].(float64); ok {
+				blockedQueries := int(v)
+				if stats.TotalQueries > 0 {
+					stats.ComplianceScore = 100.0 - (float64(blockedQueries)/float64(stats.TotalQueries))*100
+				} else {
+					stats.ComplianceScore = 100.0
+				}
+			} else {
+				stats.ComplianceScore = 100.0
+			}
+		}
 	} else {
+		log.Printf("Failed to get metrics from AxonFlow: %v", err)
 		stats.ComplianceScore = 100.0
 	}
 
@@ -716,6 +756,8 @@ func extractSQL(response string) string {
 }
 
 func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) {
+	// Audit logging is handled by AxonFlow via ExecuteQuery
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(QueryResponse{
@@ -733,12 +775,22 @@ func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) 
 }
 
 func respondWithResults(w http.ResponseWriter, user User, query string, results []map[string]interface{}, provider string) {
+	// Audit logging is handled by AxonFlow via ExecuteQuery
+
+	// Create LLMProviderInfo if provider is specified
+	var llmProvider *LLMProviderInfo
+	if provider != "" {
+		llmProvider = &LLMProviderInfo{
+			Name: provider,
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(QueryResponse{
 		Results:      results,
 		Count:        len(results),
 		QueryBlocked: false,
-		LLMProvider:  provider,
+		LLMProvider:  llmProvider,
 		SecurityLog: SecurityLog{
 			UserEmail:     user.Email,
 			QueryExecuted: query,
@@ -748,12 +800,85 @@ func respondWithResults(w http.ResponseWriter, user User, query string, results 
 	})
 }
 
-// Stub handlers for frontend compatibility
+// auditHandler proxies audit log requests to AxonFlow orchestrator
+func auditHandler(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value("user").(User)
+
+	// Build search request for AxonFlow orchestrator
+	searchReq := map[string]interface{}{
+		"limit": 100,
+	}
+	// Non-admin users only see their own logs
+	if user.Role != "admin" {
+		searchReq["user_email"] = user.Email
+	}
+
+	reqBody, _ := json.Marshal(searchReq)
+	resp, err := http.Post(orchestratorURL+"/api/v1/audit/search", "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		log.Printf("Failed to query AxonFlow audit: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]interface{}{})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// policyMetricsHandler proxies metrics requests to AxonFlow orchestrator
+func policyMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err != nil {
+		log.Printf("Failed to get AxonFlow metrics: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"total_policies_enforced": 0,
+			"ai_queries":              0,
+			"pii_redacted":            0,
+			"regional_blocks":         0,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// performanceMetricsHandler proxies performance metrics from AxonFlow
+func performanceMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err != nil {
+		log.Printf("Failed to get AxonFlow performance metrics: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"avg_latency_ms": 0,
+			"requests_total": 0,
+			"cache_hit_rate": 0,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+// stubHandler for endpoints that don't need real implementation
 func stubHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
 
+// userAccessHandler returns user's LLM provider access
 func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 	w.Header().Set("Content-Type", "application/json")
@@ -774,31 +899,107 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func auditStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]map[string]interface{}{})
+// PII detection patterns
+var piiPatterns = map[string]*regexp.Regexp{
+	"ssn":         regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+	"credit_card": regexp.MustCompile(`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`),
+	"phone":       regexp.MustCompile(`\b\d{3}[-.]?\d{3}[-.]?\d{4}\b`),
+	"email":       regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
 }
 
-func policyMetricsStubHandler(w http.ResponseWriter, r *http.Request) {
-	var totalPolicies, aiQueries, piiRedacted, regionalBlocks int
-	db.QueryRow(`SELECT COALESCE(total_policies_enforced, 0), COALESCE(ai_queries, 0),
-		COALESCE(pii_redacted, 0), COALESCE(regional_blocks, 0)
-		FROM policy_metrics WHERE date = CURRENT_DATE`).Scan(&totalPolicies, &aiQueries, &piiRedacted, &regionalBlocks)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total_policies_enforced": totalPolicies,
-		"ai_queries":              aiQueries,
-		"pii_redacted":            piiRedacted,
-		"regional_blocks":         regionalBlocks,
-	})
+// getSecret retrieves a secret from environment variables or file
+func getSecret(key string) string {
+	// First check environment variable
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	// Check for file-based secret (Docker secrets style)
+	secretFile := "/run/secrets/" + strings.ToLower(key)
+	if data, err := os.ReadFile(secretFile); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
 }
 
-func performanceStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"avg_latency_ms": 45,
-		"requests_total": 0,
-		"cache_hit_rate": 0,
-	})
+// contains checks if a slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// detectAndRedactPII detects and optionally redacts PII in a string
+func detectAndRedactPII(value string, user User) ([]string, string) {
+	var detected []string
+	redacted := value
+
+	// Check for each PII pattern
+	for piiType, pattern := range piiPatterns {
+		if pattern.MatchString(value) {
+			detected = append(detected, piiType)
+			// Only redact if user doesn't have read_pii permission
+			if !contains(user.Permissions, "read_pii") {
+				redacted = pattern.ReplaceAllString(redacted, "[REDACTED-"+strings.ToUpper(piiType)+"]")
+			}
+		}
+	}
+
+	return detected, redacted
+}
+
+// detectPIIInQueryText detects PII patterns in query text
+func detectPIIInQueryText(query string) []string {
+	var detected []string
+	for piiType, pattern := range piiPatterns {
+		if pattern.MatchString(query) {
+			detected = append(detected, piiType)
+		}
+	}
+	return detected
+}
+
+// removeDuplicates removes duplicate strings from a slice
+func removeDuplicates(slice []string) []string {
+	seen := make(map[string]bool)
+	result := []string{}
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// applyRowLevelSecurity applies row-level security filters to SQL queries
+func applyRowLevelSecurity(query string, user User) string {
+	// Admin users have full access
+	if user.Role == "admin" {
+		return query
+	}
+
+	// For non-admin users, apply region filtering if the query involves customers or tickets
+	queryLower := strings.ToLower(query)
+	if strings.Contains(queryLower, "customers") || strings.Contains(queryLower, "support_tickets") {
+		// Check if WHERE clause already exists
+		if strings.Contains(queryLower, "where") {
+			// Add AND clause for region filter
+			query = strings.Replace(query, "WHERE", "WHERE region = '"+user.Region+"' AND", 1)
+			query = strings.Replace(query, "where", "WHERE region = '"+user.Region+"' AND", 1)
+		} else {
+			// Add WHERE clause before any ORDER BY, LIMIT, or end of query
+			if idx := strings.Index(strings.ToUpper(query), "ORDER BY"); idx > 0 {
+				query = query[:idx] + " WHERE region = '" + user.Region + "' " + query[idx:]
+			} else if idx := strings.Index(strings.ToUpper(query), "LIMIT"); idx > 0 {
+				query = query[:idx] + " WHERE region = '" + user.Region + "' " + query[idx:]
+			} else {
+				query = query + " WHERE region = '" + user.Region + "'"
+			}
+		}
+	}
+
+	return query
 }

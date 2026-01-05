@@ -27,7 +27,7 @@ Gateway Mode provides the lowest latency AI governance by separating policy enfo
 
 ```bash
 # From repository root
-docker-compose up -d
+docker compose up -d
 ```
 
 2. Set environment variables:

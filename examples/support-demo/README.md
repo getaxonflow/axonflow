@@ -40,7 +40,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 ### 2. Start the Demo
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 > **Note**: Natural language queries (e.g., "Find all customers") require valid API keys. SQL queries work without API keys.

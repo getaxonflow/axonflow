@@ -30,7 +30,7 @@ Demonstrates CRUD operations for dynamic policies (LLM-powered policies). Dynami
 
 1. Start AxonFlow services:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. Set your license key (required for dynamic policies):

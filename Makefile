@@ -28,24 +28,24 @@ start: ## Start all local services
 
 stop: ## Stop all services
 	@echo "$(YELLOW)Stopping services...$(NC)"
-	@docker-compose down
+	@docker compose down
 	@echo "$(GREEN)✅ Services stopped$(NC)"
 
 status: ## Show service status
 	@echo "$(GREEN)Service Status:$(NC)"
-	@docker-compose ps
+	@docker compose ps
 
 logs: ## View logs (use: make logs service=agent)
 	@if [ -n "$(service)" ]; then \
-		docker-compose logs -f axonflow-$(service); \
+		docker compose logs -f axonflow-$(service); \
 	else \
-		docker-compose logs -f; \
+		docker compose logs -f; \
 	fi
 
 clean: ## Stop services and remove volumes (WARNING: deletes all data)
 	@echo "$(RED)⚠️  This will delete all local data. Continue? [y/N]$(NC)" && read ans && [ $${ans:-N} = y ]
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	@docker-compose down -v
+	@docker compose down -v
 	@echo "$(GREEN)✅ Cleaned$(NC)"
 
 rebuild: ## Rebuild and restart a service (use: make rebuild service=agent)
@@ -54,7 +54,7 @@ rebuild: ## Rebuild and restart a service (use: make rebuild service=agent)
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Rebuilding axonflow-$(service)...$(NC)"
-	@docker-compose up -d --build axonflow-$(service)
+	@docker compose up -d --build axonflow-$(service)
 	@echo "$(GREEN)✅ Rebuilt axonflow-$(service)$(NC)"
 
 test: ## Run all tests
@@ -74,17 +74,17 @@ test-migrations: ## Test database migrations
 
 build: ## Build all Docker images (enterprise by default)
 	@echo "$(YELLOW)Building images (edition: $(EDITION))...$(NC)"
-	@docker-compose build --build-arg EDITION=$(EDITION)
+	@docker compose build --build-arg EDITION=$(EDITION)
 	@echo "$(GREEN)✅ Images built$(NC)"
 
 build-community: ## Build Community Docker images (no enterprise features)
 	@echo "$(YELLOW)Building Community images...$(NC)"
-	@docker-compose build --build-arg EDITION=community
+	@docker compose build --build-arg EDITION=community
 	@echo "$(GREEN)✅ Community images built$(NC)"
 
 build-enterprise: ## Build Enterprise Docker images (all features)
 	@echo "$(YELLOW)Building Enterprise images...$(NC)"
-	@docker-compose build --build-arg EDITION=enterprise
+	@docker compose build --build-arg EDITION=enterprise
 	@echo "$(GREEN)✅ Enterprise images built$(NC)"
 
 lint: ## Run linters
@@ -111,14 +111,14 @@ restart: ## Restart a service (use: make restart service=agent)
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Restarting axonflow-$(service)...$(NC)"
-	@docker-compose restart axonflow-$(service)
+	@docker compose restart axonflow-$(service)
 	@echo "$(GREEN)✅ Restarted axonflow-$(service)$(NC)"
 
 shell-agent: ## Open shell in agent container
-	@docker-compose exec axonflow-agent sh
+	@docker compose exec axonflow-agent sh
 
 shell-db: ## Open psql shell in database
-	@docker-compose exec postgres psql -U axonflow -d axonflow
+	@docker compose exec postgres psql -U axonflow -d axonflow
 
 endpoints: ## Show all service endpoints
 	@echo "$(GREEN)Service Endpoints:$(NC)"
