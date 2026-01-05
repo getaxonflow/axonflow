@@ -476,7 +476,7 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			req: OrchestratorRequest{
-				Client: ClientContext{ID: "test-tenant"},
+				Client: ClientContext{ID: "test-client", TenantID: "test-tenant"},
 				Query:  "test query",
 			},
 			expectedAllowed:  true,
@@ -502,7 +502,7 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			req: OrchestratorRequest{
-				Client: ClientContext{ID: "any-tenant"},
+				Client: ClientContext{ID: "any-client", TenantID: "any-tenant"},
 				Query:  "test query",
 			},
 			expectedAllowed:  true,
@@ -555,7 +555,7 @@ func TestEvaluateDynamicPolicies(t *testing.T) {
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			},
 			req: OrchestratorRequest{
-				Client: ClientContext{ID: "my-tenant"},
+				Client: ClientContext{ID: "my-client", TenantID: "my-tenant"},
 				Query:  "test query",
 			},
 			expectedAllowed:  true,
@@ -941,5 +941,904 @@ func TestLoadDefaultPolicies(t *testing.T) {
 		}
 	} else {
 		t.Error("Expected default policy to be a map")
+	}
+}
+
+// =============================================================================
+// Issue #883: Tests for evaluateCondition and getFieldValue
+// =============================================================================
+
+// TestEvaluateCondition_Equals tests the equals operator
+func TestEvaluateCondition_Equals(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "equals - string match",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "equals",
+				"value":    "admin",
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "admin"}},
+			expected: true,
+		},
+		{
+			name: "equals - string no match",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "equals",
+				"value":    "admin",
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "user"}},
+			expected: false,
+		},
+		{
+			name: "equals - region match",
+			condition: map[string]interface{}{
+				"field":    "user.region",
+				"operator": "equals",
+				"value":    "EU",
+			},
+			request:  OrchestratorRequest{User: UserContext{Region: "EU"}},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_NotEquals tests the not_equals operator
+func TestEvaluateCondition_NotEquals(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "not_equals - different values",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "not_equals",
+				"value":    "admin",
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "user"}},
+			expected: true,
+		},
+		{
+			name: "not_equals - same values",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "not_equals",
+				"value":    "admin",
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "admin"}},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_Contains tests the contains operator
+func TestEvaluateCondition_Contains(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "contains - query contains keyword",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains",
+				"value":    "PII",
+			},
+			request:  OrchestratorRequest{Query: "Process this PII data"},
+			expected: true,
+		},
+		{
+			name: "contains - case insensitive",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains",
+				"value":    "pii",
+			},
+			request:  OrchestratorRequest{Query: "Process this PII data"},
+			expected: true,
+		},
+		{
+			name: "contains - no match",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains",
+				"value":    "secret",
+			},
+			request:  OrchestratorRequest{Query: "Hello world"},
+			expected: false,
+		},
+		{
+			name: "contains - client ID contains substring",
+			condition: map[string]interface{}{
+				"field":    "client.id",
+				"operator": "contains",
+				"value":    "eu-",
+			},
+			request:  OrchestratorRequest{Client: ClientContext{ID: "eu-support-agent"}},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_ContainsAny tests the contains_any operator
+func TestEvaluateCondition_ContainsAny(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "contains_any - matches first item",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains_any",
+				"value":    []interface{}{"SSN", "credit card", "password"},
+			},
+			request:  OrchestratorRequest{Query: "My SSN is 123-45-6789"},
+			expected: true,
+		},
+		{
+			name: "contains_any - matches middle item",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains_any",
+				"value":    []interface{}{"SSN", "credit card", "password"},
+			},
+			request:  OrchestratorRequest{Query: "My credit card number is"},
+			expected: true,
+		},
+		{
+			name: "contains_any - no match",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains_any",
+				"value":    []interface{}{"SSN", "credit card", "password"},
+			},
+			request:  OrchestratorRequest{Query: "What is the weather?"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_Regex tests the regex operator
+func TestEvaluateCondition_Regex(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "regex - SSN pattern match",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "regex",
+				"value":    `\d{3}-\d{2}-\d{4}`,
+			},
+			request:  OrchestratorRequest{Query: "My SSN is 123-45-6789"},
+			expected: true,
+		},
+		{
+			name: "regex - no match",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "regex",
+				"value":    `\d{3}-\d{2}-\d{4}`,
+			},
+			request:  OrchestratorRequest{Query: "Hello world"},
+			expected: false,
+		},
+		{
+			name: "regex - email pattern",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "regex",
+				"value":    `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`,
+			},
+			request:  OrchestratorRequest{Query: "Contact me at user@example.com"},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_GreaterThan tests the greater_than operator
+func TestEvaluateCondition_GreaterThan(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "greater_than - true",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "greater_than",
+				"value":    0.5,
+			},
+			request: OrchestratorRequest{
+				Context: map[string]interface{}{"risk_score": 0.8},
+			},
+			expected: true,
+		},
+		{
+			name: "greater_than - false",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "greater_than",
+				"value":    0.5,
+			},
+			request: OrchestratorRequest{
+				Context: map[string]interface{}{"risk_score": 0.3},
+			},
+			expected: false,
+		},
+		{
+			name: "greater_than - equal is false",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "greater_than",
+				"value":    0.5,
+			},
+			request: OrchestratorRequest{
+				Context: map[string]interface{}{"risk_score": 0.5},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_In tests the in operator
+func TestEvaluateCondition_In(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "in - region in list",
+			condition: map[string]interface{}{
+				"field":    "user.region",
+				"operator": "in",
+				"value":    []interface{}{"EU", "UK", "CH"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Region: "EU"}},
+			expected: true,
+		},
+		{
+			name: "in - region not in list",
+			condition: map[string]interface{}{
+				"field":    "user.region",
+				"operator": "in",
+				"value":    []interface{}{"EU", "UK", "CH"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Region: "US"}},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestDatabaseDynamicPolicyEngine_GetFieldValue tests field extraction from requests
+func TestDatabaseDynamicPolicyEngine_GetFieldValue(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	request := OrchestratorRequest{
+		Query:       "Test query",
+		RequestType: "chat",
+		User: UserContext{
+			ID:       1,
+			Email:    "user@example.com",
+			Role:     "admin",
+			Region:   "EU",
+			TenantID: "tenant-123",
+		},
+		Client: ClientContext{
+			ID:       "client-456",
+			OrgID:    "org-789",
+			TenantID: "tenant-123",
+		},
+		Context: map[string]interface{}{
+			"risk_score":    0.75,
+			"cost_estimate": 0.05,
+			"environment":   "production",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		field    string
+		expected interface{}
+	}{
+		{"query", "query", "Test query"},
+		{"request_type", "request_type", "chat"},
+		{"user.role", "user.role", "admin"},
+		{"user.email", "user.email", "user@example.com"},
+		{"user.region", "user.region", "EU"},
+		{"user.tenant_id", "user.tenant_id", "tenant-123"},
+		{"client.id", "client.id", "client-456"},
+		{"client.org_id", "client.org_id", "org-789"},
+		{"client.tenant_id", "client.tenant_id", "tenant-123"},
+		{"risk_score", "risk_score", 0.75},
+		{"cost_estimate", "cost_estimate", 0.05},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.getFieldValue(tt.field, request)
+			// For float comparison
+			if expectedFloat, ok := tt.expected.(float64); ok {
+				if resultFloat, ok := result.(float64); ok {
+					if resultFloat != expectedFloat {
+						t.Errorf("Expected %v, got %v", tt.expected, result)
+					}
+					return
+				}
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_UnknownOperator tests handling of unknown operators
+func TestEvaluateCondition_UnknownOperator(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	condition := map[string]interface{}{
+		"field":    "user.role",
+		"operator": "unknown_operator",
+		"value":    "admin",
+	}
+	request := OrchestratorRequest{User: UserContext{Role: "admin"}}
+
+	result := engine.evaluateCondition(condition, request)
+	if result != false {
+		t.Error("Unknown operator should return false")
+	}
+}
+
+// TestDatabaseDynamicPolicyEngine_ToFloat64 tests conversion of various types to float64
+func TestDatabaseDynamicPolicyEngine_ToFloat64(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected float64
+	}{
+		{"float64", float64(3.14), 3.14},
+		{"float32", float32(2.5), 2.5},
+		{"int", int(42), 42.0},
+		{"int64", int64(100), 100.0},
+		{"string valid", "3.14159", 3.14159},
+		{"string invalid", "not a number", 0.0},
+		{"nil", nil, 0.0},
+		{"bool", true, 0.0},
+		{"struct", struct{}{}, 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.toFloat64(tt.input)
+			if result != tt.expected {
+				t.Errorf("toFloat64(%v) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetFieldValue_EdgeCases tests edge cases for field value extraction
+func TestGetFieldValue_EdgeCases(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	t.Run("request_id field", func(t *testing.T) {
+		request := OrchestratorRequest{RequestID: "req-12345"}
+		result := engine.getFieldValue("request_id", request)
+		if result != "req-12345" {
+			t.Errorf("Expected req-12345, got %v", result)
+		}
+	})
+
+	t.Run("user_id alias", func(t *testing.T) {
+		request := OrchestratorRequest{User: UserContext{ID: 456}}
+		result := engine.getFieldValue("user_id", request)
+		if result != 456 {
+			t.Errorf("Expected 456, got %v", result)
+		}
+	})
+
+	t.Run("user_email alias", func(t *testing.T) {
+		request := OrchestratorRequest{User: UserContext{Email: "test@test.com"}}
+		result := engine.getFieldValue("user_email", request)
+		if result != "test@test.com" {
+			t.Errorf("Expected test@test.com, got %v", result)
+		}
+	})
+
+	t.Run("region alias", func(t *testing.T) {
+		request := OrchestratorRequest{User: UserContext{Region: "US"}}
+		result := engine.getFieldValue("region", request)
+		if result != "US" {
+			t.Errorf("Expected US, got %v", result)
+		}
+	})
+
+	t.Run("client_id alias", func(t *testing.T) {
+		request := OrchestratorRequest{Client: ClientContext{ID: "client-789"}}
+		result := engine.getFieldValue("client_id", request)
+		if result != "client-789" {
+			t.Errorf("Expected client-789, got %v", result)
+		}
+	})
+
+	t.Run("agent_id alias", func(t *testing.T) {
+		request := OrchestratorRequest{Client: ClientContext{ID: "agent-001"}}
+		result := engine.getFieldValue("agent_id", request)
+		if result != "agent-001" {
+			t.Errorf("Expected agent-001, got %v", result)
+		}
+	})
+
+	t.Run("org_id alias", func(t *testing.T) {
+		request := OrchestratorRequest{Client: ClientContext{OrgID: "org-999"}}
+		result := engine.getFieldValue("org_id", request)
+		if result != "org-999" {
+			t.Errorf("Expected org-999, got %v", result)
+		}
+	})
+
+	t.Run("tenant_id alias", func(t *testing.T) {
+		request := OrchestratorRequest{Client: ClientContext{TenantID: "tenant-abc"}}
+		result := engine.getFieldValue("tenant_id", request)
+		if result != "tenant-abc" {
+			t.Errorf("Expected tenant-abc, got %v", result)
+		}
+	})
+
+	t.Run("environment from context", func(t *testing.T) {
+		request := OrchestratorRequest{
+			Context: map[string]interface{}{"environment": "production"},
+		}
+		result := engine.getFieldValue("environment", request)
+		if result != "production" {
+			t.Errorf("Expected production, got %v", result)
+		}
+	})
+
+	t.Run("env alias from context", func(t *testing.T) {
+		request := OrchestratorRequest{
+			Context: map[string]interface{}{"environment": "staging"},
+		}
+		result := engine.getFieldValue("env", request)
+		if result != "staging" {
+			t.Errorf("Expected staging, got %v", result)
+		}
+	})
+
+	t.Run("risk_score missing from context", func(t *testing.T) {
+		request := OrchestratorRequest{Context: map[string]interface{}{}}
+		result := engine.getFieldValue("risk_score", request)
+		if result != 0.0 {
+			t.Errorf("Expected 0.0, got %v", result)
+		}
+	})
+
+	t.Run("cost_estimate missing from context", func(t *testing.T) {
+		request := OrchestratorRequest{Context: map[string]interface{}{}}
+		result := engine.getFieldValue("cost_estimate", request)
+		if result != 0.0 {
+			t.Errorf("Expected 0.0, got %v", result)
+		}
+	})
+
+	t.Run("custom field from context", func(t *testing.T) {
+		request := OrchestratorRequest{
+			Context: map[string]interface{}{"custom_field": "custom_value"},
+		}
+		result := engine.getFieldValue("custom_field", request)
+		if result != "custom_value" {
+			t.Errorf("Expected custom_value, got %v", result)
+		}
+	})
+
+	t.Run("context.prefixed field", func(t *testing.T) {
+		request := OrchestratorRequest{
+			Context: map[string]interface{}{"nested_data": "nested_value"},
+		}
+		result := engine.getFieldValue("context.nested_data", request)
+		if result != "nested_value" {
+			t.Errorf("Expected nested_value, got %v", result)
+		}
+	})
+
+	t.Run("unknown field returns nil", func(t *testing.T) {
+		request := OrchestratorRequest{}
+		result := engine.getFieldValue("nonexistent_field", request)
+		if result != nil {
+			t.Errorf("Expected nil, got %v", result)
+		}
+	})
+
+	t.Run("nil context returns nil for custom field", func(t *testing.T) {
+		request := OrchestratorRequest{Context: nil}
+		result := engine.getFieldValue("some_custom_field", request)
+		if result != nil {
+			t.Errorf("Expected nil, got %v", result)
+		}
+	})
+}
+
+// TestEvaluateCondition_LessThan tests less_than operator
+func TestEvaluateCondition_LessThan(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "less_than - true",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "less_than",
+				"value":    0.5,
+			},
+			request:  OrchestratorRequest{Context: map[string]interface{}{"risk_score": 0.3}},
+			expected: true,
+		},
+		{
+			name: "less_than - false",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "less_than",
+				"value":    0.5,
+			},
+			request:  OrchestratorRequest{Context: map[string]interface{}{"risk_score": 0.7}},
+			expected: false,
+		},
+		{
+			name: "less_than - equal is false",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "less_than",
+				"value":    0.5,
+			},
+			request:  OrchestratorRequest{Context: map[string]interface{}{"risk_score": 0.5}},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_NotContains tests not_contains operator
+func TestEvaluateCondition_NotContains(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "not_contains - true (substring not present)",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "not_contains",
+				"value":    "DROP TABLE",
+			},
+			request:  OrchestratorRequest{Query: "SELECT * FROM users"},
+			expected: true,
+		},
+		{
+			name: "not_contains - false (substring present)",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "not_contains",
+				"value":    "DROP",
+			},
+			request:  OrchestratorRequest{Query: "DROP TABLE users"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_NotIn tests not_in operator
+func TestEvaluateCondition_NotIn(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "not_in - true (not in list)",
+			condition: map[string]interface{}{
+				"field":    "user.region",
+				"operator": "not_in",
+				"value":    []interface{}{"EU", "UK"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Region: "US"}},
+			expected: true,
+		},
+		{
+			name: "not_in - false (in list)",
+			condition: map[string]interface{}{
+				"field":    "user.region",
+				"operator": "not_in",
+				"value":    []interface{}{"EU", "UK", "US"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Region: "US"}},
+			expected: false,
+		},
+		{
+			name: "not_in - string list",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "not_in",
+				"value":    []string{"admin", "superuser"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "viewer"}},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_RegexEdgeCases tests additional regex operator edge cases
+func TestEvaluateCondition_RegexEdgeCases(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "regex - invalid pattern returns false",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "regex",
+				"value":    "[invalid(regex",
+			},
+			request:  OrchestratorRequest{Query: "any query"},
+			expected: false,
+		},
+		{
+			name: "regex - non-string value returns false",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "regex",
+				"value":    123, // not a string
+			},
+			request:  OrchestratorRequest{Query: "any query"},
+			expected: false,
+		},
+		{
+			name: "regex - non-string field value converts to string",
+			condition: map[string]interface{}{
+				"field":    "risk_score",
+				"operator": "regex",
+				"value":    "0\\.8",
+			},
+			request: OrchestratorRequest{
+				Context: map[string]interface{}{"risk_score": 0.8},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_ContainsAnyStringSlice tests contains_any with []string type
+func TestEvaluateCondition_ContainsAnyStringSlice(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "contains_any - match with string slice",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains_any",
+				"value":    []string{"drop", "delete", "truncate"},
+			},
+			request:  OrchestratorRequest{Query: "DROP TABLE users"},
+			expected: true,
+		},
+		{
+			name: "contains_any - no match with string slice",
+			condition: map[string]interface{}{
+				"field":    "query",
+				"operator": "contains_any",
+				"value":    []string{"drop", "delete"},
+			},
+			request:  OrchestratorRequest{Query: "SELECT * FROM users"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestEvaluateCondition_InOperator_StringSlice tests in operator with []string type
+func TestEvaluateCondition_InOperator_StringSlice(t *testing.T) {
+	engine := &DatabaseDynamicPolicyEngine{}
+
+	tests := []struct {
+		name      string
+		condition map[string]interface{}
+		request   OrchestratorRequest
+		expected  bool
+	}{
+		{
+			name: "in - match with string slice",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "in",
+				"value":    []string{"admin", "operator", "viewer"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "admin"}},
+			expected: true,
+		},
+		{
+			name: "in - no match with string slice",
+			condition: map[string]interface{}{
+				"field":    "user.role",
+				"operator": "in",
+				"value":    []string{"admin", "operator"},
+			},
+			request:  OrchestratorRequest{User: UserContext{Role: "viewer"}},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateCondition(tt.condition, tt.request)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
 	}
 }

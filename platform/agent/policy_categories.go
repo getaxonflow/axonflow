@@ -45,6 +45,14 @@ const (
 	// Includes: license headers, banned imports, deprecated APIs.
 	CategoryCodeCompliance PolicyCategory = "code-compliance"
 
+	// Static policy categories - Sensitive Data Detection (Issue #891)
+	// Detects credentials, tokens, and secrets in user queries.
+	// Default action: warn (may have false positives)
+
+	// CategorySensitiveData covers credential and secret detection in queries.
+	// Includes: passwords, API keys, tokens, connection strings.
+	CategorySensitiveData PolicyCategory = "sensitive-data"
+
 	// Dynamic policy categories
 
 	// CategoryDynamicRisk covers risk-based dynamic policies.
@@ -76,6 +84,7 @@ func StaticPolicyCategories() []PolicyCategory {
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,
+		CategorySensitiveData, // Issue #891
 	}
 }
 

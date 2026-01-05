@@ -4,7 +4,7 @@ Demonstrates AxonFlow's built-in PII (Personally Identifiable Information) detec
 
 ## What This Example Shows
 
-AxonFlow detects and blocks requests containing sensitive PII patterns:
+AxonFlow detects and redacts requests containing sensitive PII patterns (Issue #891: tiered defaults):
 
 | PII Type | Pattern | Region |
 |----------|---------|--------|
@@ -65,17 +65,23 @@ chmod +x pii-detection.sh
 
 Each example tests multiple PII patterns:
 - Safe query (no PII) - APPROVED
-- SSN pattern - BLOCKED
-- Credit card pattern - BLOCKED
-- India PAN - BLOCKED
-- India Aadhaar - BLOCKED (with Verhoeff checksum validation)
+- SSN pattern - REDACTED
+- Credit card pattern - REDACTED
+- India PAN - REDACTED
+- India Aadhaar - REDACTED (with Verhoeff checksum validation)
+
+> **Note:** PII detection now defaults to `redact` action instead of `block` (Issue #891).
+> To restore blocking behavior, set `PII_ACTION=block` in your environment.
 
 ## How It Works
 
 1. Client sends query to AxonFlow
 2. Policy engine scans for PII patterns
-3. If PII detected, request is blocked before reaching LLM
-4. Block reason indicates which PII type was detected
+3. If PII detected, it is redacted before the request reaches the LLM
+4. Response indicates which PII type was detected and redacted
+
+> **Tiered Detection (Issue #891):** PII is redacted by default to preserve UX.
+> SQLi and dangerous queries are still blocked (high-confidence threats).
 
 ## Policy Configuration
 

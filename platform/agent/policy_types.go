@@ -215,16 +215,17 @@ type EffectiveDynamicPolicy struct {
 
 // CreateStaticPolicyRequest is the request body for creating a static policy.
 type CreateStaticPolicyRequest struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Category    string     `json:"category"` // security-sqli, pii-global, etc.
-	Tier        PolicyTier `json:"tier"`     // Only 'organization' or 'tenant' allowed via API
-	Pattern     string     `json:"pattern"`
-	Action      string     `json:"action"`
-	Severity    string     `json:"severity"`
-	Priority    int        `json:"priority,omitempty"`
-	Enabled     bool       `json:"enabled"`
-	Tags        []string   `json:"tags,omitempty"`
+	Name           string     `json:"name"`
+	Description    string     `json:"description"`
+	Category       string     `json:"category"` // security-sqli, pii-global, etc.
+	Tier           PolicyTier `json:"tier"`     // Only 'organization' or 'tenant' allowed via API
+	OrganizationID string     `json:"organization_id,omitempty"`
+	Pattern        string     `json:"pattern"`
+	Action         string     `json:"action"`
+	Severity       string     `json:"severity"`
+	Priority       int        `json:"priority,omitempty"`
+	Enabled        bool       `json:"enabled"`
+	Tags           []string   `json:"tags,omitempty"`
 }
 
 // UpdateStaticPolicyRequest is the request body for updating a static policy.

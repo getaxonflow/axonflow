@@ -18,6 +18,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -447,8 +450,8 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 
 	// Apply policies based on tenant/client
 	tenantID := ""
-	if req.Client.ID != "" {
-		tenantID = req.Client.ID
+	if req.Client.TenantID != "" {
+		tenantID = req.Client.TenantID
 	}
 	if tenantID == "" && req.User.TenantID != "" {
 		tenantID = req.User.TenantID
@@ -470,6 +473,42 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			}
 		}
 
+		// CRITICAL: Evaluate conditions BEFORE applying actions
+		// Parse conditions from policy
+		var conditions []map[string]interface{}
+		switch condRaw := policyMap["conditions"].(type) {
+		case json.RawMessage:
+			if err := json.Unmarshal(condRaw, &conditions); err != nil {
+				log.Printf("[POLICY_EVAL] Failed to parse conditions for %s: %v", name, err)
+				continue
+			}
+		case []byte:
+			if err := json.Unmarshal(condRaw, &conditions); err != nil {
+				log.Printf("[POLICY_EVAL] Failed to parse conditions for %s: %v", name, err)
+				continue
+			}
+		case []interface{}:
+			for _, c := range condRaw {
+				if cm, ok := c.(map[string]interface{}); ok {
+					conditions = append(conditions, cm)
+				}
+			}
+		}
+
+		// If policy has conditions, ALL must match (AND logic)
+		if len(conditions) > 0 {
+			allMatch := true
+			for _, cond := range conditions {
+				if !e.evaluateCondition(cond, req) {
+					allMatch = false
+					break
+				}
+			}
+			if !allMatch {
+				continue // Skip this policy - conditions don't match
+			}
+		}
+
 		// Apply rate limiting if present
 		if rules, ok := policyMap["rules"].(map[string]interface{}); ok {
 			// Check for required actions
@@ -485,6 +524,91 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 			if riskScore, ok := rules["risk_score"].(float64); ok {
 				if riskScore > result.RiskScore {
 					result.RiskScore = riskScore
+				}
+			}
+		}
+
+		// Apply actions from the new JSON format (Issue #883 - strict provider enforcement)
+		// Actions may be stored as json.RawMessage ([]byte), so we need to parse it first
+		var actions []interface{}
+		switch actionsRaw := policyMap["actions"].(type) {
+		case json.RawMessage:
+			if err := json.Unmarshal(actionsRaw, &actions); err != nil {
+				log.Printf("[POLICY_ROUTE] Failed to parse actions JSON: %v", err)
+			}
+		case []byte:
+			if err := json.Unmarshal(actionsRaw, &actions); err != nil {
+				log.Printf("[POLICY_ROUTE] Failed to parse actions bytes: %v", err)
+			}
+		case []interface{}:
+			actions = actionsRaw
+		}
+
+		for _, action := range actions {
+			actionMap, ok := action.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			actionType, _ := actionMap["type"].(string)
+			actionConfig, _ := actionMap["config"].(map[string]interface{})
+
+			switch actionType {
+			case "route":
+				// Handle LLM routing override for compliance
+				if preferred, ok := actionConfig["preferred_provider"].(string); ok && preferred != "" {
+					result.PreferredProvider = preferred
+				}
+				if reason, ok := actionConfig["reason"].(string); ok {
+					result.RoutingReason = reason
+				}
+				// Handle allowed_providers for strict compliance
+				// Use INTERSECTION logic: if multiple policies specify allowed_providers,
+				// only providers in ALL lists are allowed (most restrictive wins)
+				if allowedRaw, ok := actionConfig["allowed_providers"]; ok {
+					var policyAllowed []string
+					switch v := allowedRaw.(type) {
+					case []interface{}:
+						for _, p := range v {
+							if ps, ok := p.(string); ok {
+								policyAllowed = append(policyAllowed, ps)
+							}
+						}
+					case []string:
+						policyAllowed = v
+					}
+
+					if len(policyAllowed) > 0 {
+						if len(result.AllowedProviders) == 0 {
+							// First policy with allowed_providers - set the initial list
+							result.AllowedProviders = policyAllowed
+						} else {
+							// Compute intersection with existing allowed list
+							intersection := make([]string, 0)
+							for _, p := range result.AllowedProviders {
+								for _, ap := range policyAllowed {
+									if p == ap {
+										intersection = append(intersection, p)
+										break
+									}
+								}
+							}
+							result.AllowedProviders = intersection
+						}
+					}
+				}
+				log.Printf("[POLICY_ROUTE] Applied routing: preferred=%s, allowed=%v, reason=%s",
+					result.PreferredProvider, result.AllowedProviders, result.RoutingReason)
+
+			case "block":
+				result.Allowed = false
+				if reason, ok := actionConfig["reason"].(string); ok {
+					result.RequiredActions = append(result.RequiredActions, "blocked: "+reason)
+				}
+
+			case "modify_risk":
+				if add, ok := actionConfig["add"].(float64); ok {
+					result.RiskScore += add
 				}
 			}
 		}
@@ -510,6 +634,234 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		time.Since(startTime), len(result.AppliedPolicies), time.Since(lastRefresh))
 
 	return result
+}
+
+// evaluateCondition checks if a single condition matches the request.
+// Supports operators: equals, not_equals, contains, not_contains, contains_any, regex, greater_than, less_than, in, not_in
+func (e *DatabaseDynamicPolicyEngine) evaluateCondition(cond map[string]interface{}, req OrchestratorRequest) bool {
+	field, _ := cond["field"].(string)
+	operator, _ := cond["operator"].(string)
+	value := cond["value"]
+
+	// Get the field value from the request
+	fieldValue := e.getFieldValue(field, req)
+
+	switch operator {
+	case "equals":
+		return fmt.Sprintf("%v", fieldValue) == fmt.Sprintf("%v", value)
+
+	case "not_equals":
+		return fmt.Sprintf("%v", fieldValue) != fmt.Sprintf("%v", value)
+
+	case "contains":
+		fieldStr, ok := fieldValue.(string)
+		if !ok {
+			fieldStr = fmt.Sprintf("%v", fieldValue)
+		}
+		valueStr, ok := value.(string)
+		if !ok {
+			valueStr = fmt.Sprintf("%v", value)
+		}
+		return strings.Contains(strings.ToLower(fieldStr), strings.ToLower(valueStr))
+
+	case "not_contains":
+		fieldStr, ok := fieldValue.(string)
+		if !ok {
+			fieldStr = fmt.Sprintf("%v", fieldValue)
+		}
+		valueStr, ok := value.(string)
+		if !ok {
+			valueStr = fmt.Sprintf("%v", value)
+		}
+		return !strings.Contains(strings.ToLower(fieldStr), strings.ToLower(valueStr))
+
+	case "contains_any":
+		fieldStr, ok := fieldValue.(string)
+		if !ok {
+			fieldStr = fmt.Sprintf("%v", fieldValue)
+		}
+		fieldLower := strings.ToLower(fieldStr)
+		// Value should be an array of strings
+		switch v := value.(type) {
+		case []interface{}:
+			for _, item := range v {
+				if itemStr, ok := item.(string); ok {
+					if strings.Contains(fieldLower, strings.ToLower(itemStr)) {
+						return true
+					}
+				}
+			}
+		case []string:
+			for _, item := range v {
+				if strings.Contains(fieldLower, strings.ToLower(item)) {
+					return true
+				}
+			}
+		}
+		return false
+
+	case "regex":
+		fieldStr, ok := fieldValue.(string)
+		if !ok {
+			fieldStr = fmt.Sprintf("%v", fieldValue)
+		}
+		pattern, ok := value.(string)
+		if !ok {
+			return false
+		}
+		matched, err := regexp.MatchString(pattern, fieldStr)
+		if err != nil {
+			log.Printf("[POLICY_EVAL] Regex error for pattern %s: %v", pattern, err)
+			return false
+		}
+		return matched
+
+	case "greater_than":
+		fieldFloat := e.toFloat64(fieldValue)
+		valueFloat := e.toFloat64(value)
+		return fieldFloat > valueFloat
+
+	case "less_than":
+		fieldFloat := e.toFloat64(fieldValue)
+		valueFloat := e.toFloat64(value)
+		return fieldFloat < valueFloat
+
+	case "in":
+		fieldStr := fmt.Sprintf("%v", fieldValue)
+		switch v := value.(type) {
+		case []interface{}:
+			for _, item := range v {
+				if fmt.Sprintf("%v", item) == fieldStr {
+					return true
+				}
+			}
+		case []string:
+			for _, item := range v {
+				if item == fieldStr {
+					return true
+				}
+			}
+		}
+		return false
+
+	case "not_in":
+		fieldStr := fmt.Sprintf("%v", fieldValue)
+		switch v := value.(type) {
+		case []interface{}:
+			for _, item := range v {
+				if fmt.Sprintf("%v", item) == fieldStr {
+					return false
+				}
+			}
+		case []string:
+			for _, item := range v {
+				if item == fieldStr {
+					return false
+				}
+			}
+		}
+		return true
+
+	default:
+		log.Printf("[POLICY_EVAL] Unknown operator: %s", operator)
+		return false
+	}
+}
+
+// getFieldValue extracts the value of a field from the request.
+// Supports dotted notation like "user.role" or "client.tenant_id"
+func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req OrchestratorRequest) interface{} {
+	switch field {
+	// Top-level fields
+	case "query":
+		return req.Query
+	case "request_type":
+		return req.RequestType
+	case "request_id":
+		return req.RequestID
+
+	// User fields
+	case "user.id", "user_id":
+		return req.User.ID
+	case "user.email", "user_email":
+		return req.User.Email
+	case "user.role", "user_role":
+		return req.User.Role
+	case "user.region", "user_region", "region":
+		return req.User.Region
+	case "user.tenant_id":
+		return req.User.TenantID
+
+	// Client fields
+	case "client.id", "client_id", "agent_id":
+		return req.Client.ID
+	case "client.org_id", "org_id":
+		return req.Client.OrgID
+	case "client.tenant_id", "tenant_id":
+		return req.Client.TenantID
+
+	// Context fields (from map)
+	case "environment", "env":
+		if req.Context != nil {
+			if env, ok := req.Context["environment"].(string); ok {
+				return env
+			}
+		}
+		// Also check environment variable
+		return os.Getenv("ENVIRONMENT")
+
+	case "risk_score":
+		if req.Context != nil {
+			if rs, ok := req.Context["risk_score"].(float64); ok {
+				return rs
+			}
+		}
+		return 0.0
+
+	case "cost_estimate":
+		if req.Context != nil {
+			if ce, ok := req.Context["cost_estimate"].(float64); ok {
+				return ce
+			}
+		}
+		return 0.0
+
+	default:
+		// Try to get from context map for custom fields
+		if req.Context != nil {
+			// Handle dotted notation like "user.access_pattern"
+			parts := strings.Split(field, ".")
+			if len(parts) == 2 && parts[0] == "context" {
+				if val, ok := req.Context[parts[1]]; ok {
+					return val
+				}
+			}
+			// Direct lookup
+			if val, ok := req.Context[field]; ok {
+				return val
+			}
+		}
+		return nil
+	}
+}
+
+// toFloat64 converts various types to float64 for numeric comparisons
+func (e *DatabaseDynamicPolicyEngine) toFloat64(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case string:
+		f, _ := strconv.ParseFloat(val, 64)
+		return f
+	default:
+		return 0
+	}
 }
 
 func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {

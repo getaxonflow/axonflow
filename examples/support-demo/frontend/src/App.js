@@ -800,26 +800,28 @@ function App() {
                       }}>
                         <span style={{fontWeight: 'bold'}}>{provider.name}</span>
                         <span style={{color: colors.text}}>
-                          {colors.icon} {provider.status}
+                          {colors.icon} {provider.status || provider.access || 'Available'}
                         </span>
                       </div>
                     );
                   })}
                   
-                  <div style={{
-                    background: '#f7fafc',
-                    border: '1px solid #e2e8f0',
-                    borderRadius: '6px',
-                    padding: '10px',
-                    marginTop: '10px',
-                    fontSize: '0.75rem',
-                    color: '#4a5568'
-                  }}>
-                    <strong>💡 Routing Priority:</strong><br/>
-                    {userAccess.routing_priority?.map((rule, index) => (
-                      <div key={index}>{rule}</div>
-                    ))}
-                  </div>
+                  {userAccess.routing_priority && userAccess.routing_priority.length > 0 && (
+                    <div style={{
+                      background: '#f7fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '6px',
+                      padding: '10px',
+                      marginTop: '10px',
+                      fontSize: '0.75rem',
+                      color: '#4a5568'
+                    }}>
+                      <strong>💡 Routing Priority:</strong><br/>
+                      {userAccess.routing_priority.map((item, index) => (
+                        <div key={index}>{typeof item === 'string' ? item : item.rule || JSON.stringify(item)}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div style={{padding: '20px', textAlign: 'center', color: '#666'}}>

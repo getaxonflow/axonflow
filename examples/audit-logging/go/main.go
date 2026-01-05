@@ -167,8 +167,76 @@ func main() {
 
 	fmt.Println("Audit Logging Complete!")
 	fmt.Println()
-	fmt.Println("Query audit logs via Orchestrator API:")
-	fmt.Println("  curl http://localhost:8081/api/v1/audit/tenant/audit-logging-demo")
+
+	// =========================================================================
+	// Query Audit Logs (SDK Methods)
+	// =========================================================================
+
+	fmt.Println("========================================")
+	fmt.Println("Query Audit Logs via SDK")
+	fmt.Println("========================================")
+	fmt.Println()
+
+	// Get audit logs for tenant (default pagination)
+	fmt.Println("1. GetAuditLogsByTenant (default options):")
+	tenantLogs, err := axClient.GetAuditLogsByTenant(ctx, "audit-logging-demo", nil)
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	} else {
+		fmt.Printf("   Found %d entries\n", len(tenantLogs.Entries))
+		if len(tenantLogs.Entries) > 0 {
+			fmt.Printf("   Latest: %s - %s/%s\n",
+				tenantLogs.Entries[0].Timestamp.Format(time.RFC3339),
+				tenantLogs.Entries[0].Provider,
+				tenantLogs.Entries[0].Model)
+		}
+	}
+	fmt.Println()
+
+	// Get audit logs with custom pagination
+	fmt.Println("2. GetAuditLogsByTenant (limit=5, offset=0):")
+	paginatedLogs, err := axClient.GetAuditLogsByTenant(ctx, "audit-logging-demo", &axonflow.AuditQueryOptions{
+		Limit:  5,
+		Offset: 0,
+	})
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	} else {
+		hasMore := paginatedLogs.Total > paginatedLogs.Offset+len(paginatedLogs.Entries)
+		fmt.Printf("   Found %d entries (hasMore: %v)\n", len(paginatedLogs.Entries), hasMore)
+	}
+	fmt.Println()
+
+	// Search audit logs with filters
+	fmt.Println("3. SearchAuditLogs (with filters):")
+	searchResult, err := axClient.SearchAuditLogs(ctx, &axonflow.AuditSearchRequest{
+		ClientID:    "audit-logging-demo",
+		RequestType: "chat",
+		Limit:       10,
+	})
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	} else {
+		fmt.Printf("   Found %d matching entries\n", len(searchResult.Entries))
+		for i, entry := range searchResult.Entries {
+			if i >= 3 {
+				fmt.Printf("   ... and %d more\n", len(searchResult.Entries)-3)
+				break
+			}
+			status := "allowed"
+			if entry.Blocked {
+				status = "blocked"
+			}
+			fmt.Printf("   - %s: %s (%d tokens)\n",
+				entry.ID,
+				status,
+				entry.TokensUsed)
+		}
+	}
+	fmt.Println()
+
+	fmt.Println("========================================")
+	fmt.Println("Done!")
 }
 
 func getEnv(key, defaultValue string) string {

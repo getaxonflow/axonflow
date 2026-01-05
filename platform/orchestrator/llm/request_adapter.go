@@ -59,6 +59,15 @@ type RequestContext struct {
 
 	// Metadata contains additional request-specific data
 	Metadata map[string]any
+
+	// Policy-based routing overrides (Issue #883 - strict provider enforcement)
+	// PolicyPreferredProvider is the preferred provider from dynamic policy evaluation
+	PolicyPreferredProvider string
+	// PolicyAllowedProviders is the strict list of allowed providers for compliance
+	// When set, failover can ONLY occur within this list (GDPR, PII, cost control)
+	PolicyAllowedProviders []string
+	// PolicyRoutingReason explains why routing was overridden by policy
+	PolicyRoutingReason string
 }
 
 // LegacyProviderInfo represents the legacy ProviderInfo format from run.go.

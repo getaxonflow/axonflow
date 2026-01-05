@@ -136,8 +136,74 @@ public class AuditLoggingExample {
 
         System.out.println("Audit Logging Complete!");
         System.out.println();
-        System.out.println("Query audit logs via Orchestrator API:");
-        System.out.println("  curl http://localhost:8081/api/v1/audit/tenant/audit-logging-demo");
+
+        // =========================================================================
+        // Query Audit Logs (SDK Methods)
+        // =========================================================================
+
+        System.out.println("========================================");
+        System.out.println("Query Audit Logs via SDK");
+        System.out.println("========================================");
+        System.out.println();
+
+        // Get audit logs for tenant (default pagination)
+        System.out.println("1. getAuditLogsByTenant (default options):");
+        try {
+            var tenantLogs = client.getAuditLogsByTenant(CLIENT_ID, null);
+            System.out.printf("   Found %d entries%n", tenantLogs.getEntries().size());
+            if (!tenantLogs.getEntries().isEmpty()) {
+                var entry = tenantLogs.getEntries().get(0);
+                System.out.printf("   Latest: %s - %s/%s%n",
+                    entry.getTimestamp(), entry.getProvider(), entry.getModel());
+            }
+        } catch (AxonFlowException e) {
+            System.out.printf("   Error: %s%n", e.getMessage());
+        }
+        System.out.println();
+
+        // Get audit logs with custom pagination
+        System.out.println("2. getAuditLogsByTenant (limit=5, offset=0):");
+        try {
+            var paginatedLogs = client.getAuditLogsByTenant(CLIENT_ID,
+                com.getaxonflow.sdk.types.AuditQueryOptions.builder()
+                    .limit(5)
+                    .offset(0)
+                    .build());
+            System.out.printf("   Found %d entries (hasMore: %s)%n",
+                paginatedLogs.getEntries().size(), paginatedLogs.hasMore());
+        } catch (AxonFlowException e) {
+            System.out.printf("   Error: %s%n", e.getMessage());
+        }
+        System.out.println();
+
+        // Search audit logs with filters
+        System.out.println("3. searchAuditLogs (with filters):");
+        try {
+            var searchResult = client.searchAuditLogs(
+                com.getaxonflow.sdk.types.AuditSearchRequest.builder()
+                    .clientId(CLIENT_ID)
+                    .requestType("chat")
+                    .limit(10)
+                    .build());
+            System.out.printf("   Found %d matching entries%n", searchResult.getEntries().size());
+            int count = 0;
+            for (var entry : searchResult.getEntries()) {
+                if (count >= 3) {
+                    System.out.printf("   ... and %d more%n", searchResult.getEntries().size() - 3);
+                    break;
+                }
+                String status = entry.isBlocked() ? "blocked" : "allowed";
+                System.out.printf("   - %s: %s (%d tokens)%n",
+                    entry.getId(), status, entry.getTokensUsed());
+                count++;
+            }
+        } catch (AxonFlowException e) {
+            System.out.printf("   Error: %s%n", e.getMessage());
+        }
+        System.out.println();
+
+        System.out.println("========================================");
+        System.out.println("Done!");
     }
 
     private static String getEnv(String key, String defaultValue) {

@@ -25,16 +25,18 @@ Environment:
 
 import asyncio
 import os
-from axonflow import AxonFlow, CreateDynamicPolicyRequest, UpdateDynamicPolicyRequest
+from axonflow import AxonFlow, CreateDynamicPolicyRequest, UpdateDynamicPolicyRequest, DynamicPolicyCondition, DynamicPolicyAction
 
 
 async def main():
     # Initialize client
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo-tenant")  # Used as tenant ID
     license_key = os.getenv("AXONFLOW_LICENSE_KEY", "")
 
     client = AxonFlow(
-        agent_url=agent_url,
+        endpoint=endpoint,
+        client_id=client_id,
         license_key=license_key if license_key else None,
     )
 
@@ -55,10 +57,21 @@ async def main():
         new_policy = CreateDynamicPolicyRequest(
             name="financial-advice-guard",
             description="Block requests that ask for specific financial advice",
-            prompt="Evaluate if this request is asking for specific financial advice like stock picks, investment amounts, or trading strategies. If so, block it.",
-            action="block",
+            type="risk",  # Dynamic policy type: risk, content, user, cost
+            conditions=[
+                DynamicPolicyCondition(
+                    field="query",
+                    operator="contains",
+                    value="investment",
+                )
+            ],
+            actions=[
+                DynamicPolicyAction(
+                    type="block",
+                    config={"message": "Financial advice requests are not allowed"},
+                )
+            ],
             enabled=True,
-            tenant_id="demo-tenant",
         )
 
         created_policy = await client.create_dynamic_policy(new_policy)
@@ -69,8 +82,9 @@ async def main():
         policy = await client.get_dynamic_policy(created_policy.id)
         print(f"   Policy: {policy.name}")
         print(f"   Description: {policy.description}")
-        print(f"   Prompt: {policy.prompt}")
-        print(f"   Action: {policy.action}")
+        print(f"   Type: {policy.type}")
+        print(f"   Conditions: {len(policy.conditions or [])} defined")
+        print(f"   Actions: {len(policy.actions or [])} defined")
 
         # 4. Update the policy
         print("\n4. Updating policy description...")
@@ -80,9 +94,10 @@ async def main():
         updated = await client.update_dynamic_policy(created_policy.id, update)
         print(f"   Updated description: {updated.description}")
 
-        # 5. Toggle policy (disable it)
+        # 5. Toggle policy (disable it) - using update since PATCH not supported
         print("\n5. Toggling policy (disabling)...")
-        toggled = await client.toggle_dynamic_policy(created_policy.id)
+        toggle_update = UpdateDynamicPolicyRequest(enabled=False)
+        toggled = await client.update_dynamic_policy(created_policy.id, toggle_update)
         print(f"   Policy enabled: {toggled.enabled}")
 
         # 6. Get effective dynamic policies

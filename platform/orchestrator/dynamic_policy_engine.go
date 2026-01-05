@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/agent"
 	"axonflow/platform/agent/sqli"
 
 	_ "github.com/lib/pq"
@@ -116,9 +117,10 @@ type PolicyAction struct {
 //   - Admin role: +0.5
 //   - SELECT * queries: +0.3
 type RiskCalculator struct {
-	sqliScanner        sqli.Scanner       // Unified SQL injection scanner from sqli package
-	sensitivePatterns  []*regexp.Regexp   // Non-SQLi sensitive data patterns (passwords, secrets)
+	sqliScanner        sqli.Scanner           // Unified SQL injection scanner from sqli package
+	sensitivePatterns  []*regexp.Regexp       // Non-SQLi sensitive data patterns (passwords, secrets)
 	riskWeights        map[string]float64
+	detectionConfig    agent.DetectionConfig  // Unified detection configuration (Issue #891)
 }
 
 // PolicyCache caches policy evaluation results to improve performance.
@@ -350,6 +352,8 @@ func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorReques
 				return req.User.Role
 			case "email":
 				return req.User.Email
+			case "region":
+				return req.User.Region
 			case "tenant_id":
 				return req.User.TenantID
 			case "permissions":
@@ -399,29 +403,72 @@ func (e *DynamicPolicyEngine) applyPolicyAction(ctx context.Context, action Poli
 		if modifier, ok := action.Config["modifier"].(float64); ok {
 			result.RiskScore *= modifier
 		}
+	case "route":
+		// LLM routing override for compliance (GDPR, PII, cost control)
+		fmt.Printf("!!!! ROUTE ACTION TRIGGERED !!!!\n")
+		if preferred, ok := action.Config["preferred_provider"].(string); ok && preferred != "" {
+			result.PreferredProvider = preferred
+			fmt.Printf("!!!! PREFERRED PROVIDER SET: %s !!!!\n", preferred)
+		}
+		if reason, ok := action.Config["reason"].(string); ok {
+			result.RoutingReason = reason
+		}
+		// Handle allowed_providers for strict compliance
+		// This ensures failover only happens within compliant providers
+		if allowedRaw, ok := action.Config["allowed_providers"]; ok {
+			switch v := allowedRaw.(type) {
+			case []interface{}:
+				for _, p := range v {
+					if ps, ok := p.(string); ok {
+						result.AllowedProviders = append(result.AllowedProviders, ps)
+					}
+				}
+			case []string:
+				result.AllowedProviders = append(result.AllowedProviders, v...)
+			}
+		}
+		// If no explicit allowed_providers, build from preferred + fallback
+		if len(result.AllowedProviders) == 0 {
+			if result.PreferredProvider != "" {
+				result.AllowedProviders = append(result.AllowedProviders, result.PreferredProvider)
+			}
+			if fallback, ok := action.Config["fallback_provider"].(string); ok && fallback != "" {
+				result.AllowedProviders = append(result.AllowedProviders, fallback)
+			}
+		}
+		log.Printf("[POLICY] Route action applied: preferred=%s, allowed=%v, reason=%s",
+			result.PreferredProvider, result.AllowedProviders, result.RoutingReason)
 	}
 }
 
 // getApplicablePolicies returns policies that should be evaluated for this request
 func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []DynamicPolicy {
 	var applicable []DynamicPolicy
-	
+
+	// Determine effective tenant ID from User.TenantID or Client.ID (SDK uses ClientID)
+	effectiveTenantID := req.User.TenantID
+	if effectiveTenantID == "" {
+		effectiveTenantID = req.Client.ID
+	}
+
 	for _, policy := range e.policies {
 		if !policy.Enabled {
 			continue
 		}
-		
+
 		// Check tenant-specific policies
-		if policy.TenantID != "" && policy.TenantID != req.User.TenantID {
+		// Policies with empty TenantID apply to all requests (community mode)
+		// Policies with TenantID only apply if it matches User.TenantID or Client.ID
+		if policy.TenantID != "" && policy.TenantID != effectiveTenantID {
 			continue
 		}
-		
+
 		applicable = append(applicable, policy)
 	}
-	
+
 	// Sort by priority (higher priority first)
 	// Implement sorting logic here if needed
-	
+
 	return applicable
 }
 
@@ -510,6 +557,13 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 			log.Printf("Error parsing actions for policy %s: %v", policy.ID, err)
 			continue
 		}
+		// DEBUG: Log loaded actions for route policies
+		for _, action := range policy.Actions {
+			if action.Type == "route" {
+				fmt.Printf("!!!! LOADED ROUTE POLICY: %s, action_type=%s, config=%v !!!!\n",
+					policy.Name, action.Type, action.Config)
+			}
+		}
 
 		if tenantID.Valid {
 			policy.TenantID = tenantID.String
@@ -533,6 +587,7 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	e.lastDBRefresh = time.Now()
 	e.policyMutex.Unlock()
 
+	fmt.Printf("!!!! XXXX DEBUG: Loaded %d policies from DB (marker to verify build) XXXX !!!!\n", policiesLoaded)
 	log.Printf("Loaded %d dynamic policies from database (+ %d defaults)", policiesLoaded, len(defaultPolicies))
 
 	// Log audit event
@@ -576,12 +631,16 @@ func (e *DynamicPolicyEngine) reloadPoliciesRoutine() {
 
 // RiskCalculator implementation
 func NewRiskCalculator() *RiskCalculator {
+	// Load unified detection configuration from environment (Issue #891)
+	detectionCfg := agent.DetectionConfigFromEnv()
+
 	return &RiskCalculator{
 		// Use unified sqli package for SQL injection detection
 		// This provides 35+ patterns with category-based severity classification
 		// and consistent detection across input and response scanning
 		sqliScanner: sqli.NewBasicScanner(),
 		// Sensitive data patterns (non-SQLi) for risk calculation
+		// TODO: Issue #891 - migrate these to database for customization
 		sensitivePatterns: []*regexp.Regexp{
 			regexp.MustCompile(`(?i)(password|secret|key|token)`),
 		},
@@ -591,6 +650,7 @@ func NewRiskCalculator() *RiskCalculator {
 			"large_result_set": 0.3,
 			"admin_query":      0.5,
 		},
+		detectionConfig: detectionCfg,
 	}
 }
 
@@ -722,4 +782,4 @@ func contains(slice interface{}, item interface{}) bool {
 		}
 	}
 	return false
-}
+}// Build marker: 1767635481

@@ -67,7 +67,7 @@ type DatabasePolicyEngine struct {
 	refreshInterval      time.Duration
 	performanceMode      bool  // When true, uses async writes for better performance
 	auditQueue           *AuditQueue  // Handles async audit logging with persistent fallback
-	piiBlockCritical     bool  // Block critical PII (SSN, credit cards) - default: true
+	detectionConfig      DetectionConfig // Unified detection configuration (Issue #891)
 	sqliScanner          sqli.Scanner // SQL injection scanner (respects SQLI_SCANNER_MODE)
 	sqliConfig           sqli.Config  // SQL injection configuration (mode, block/warn)
 }
@@ -153,12 +153,9 @@ func NewDatabasePolicyEngine() (*DatabasePolicyEngine, error) {
 		log.Println("Falling back to direct database writes (no queue)")
 	}
 
-	// PII blocking is ON by default; set PII_BLOCK_CRITICAL=false to disable
-	piiBlock := true
-	if val := os.Getenv("PII_BLOCK_CRITICAL"); val == "false" || val == "0" {
-		piiBlock = false
-		log.Println("[DatabasePolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
-	}
+	// Load unified detection configuration from environment (Issue #891)
+	// This handles both new env vars (PII_ACTION) and deprecated ones (PII_BLOCK_CRITICAL)
+	detectionCfg := DetectionConfigFromEnv()
 
 	// Initialize SQL injection scanner from environment variables
 	sqliCfg := sqli.ConfigFromEnv()
@@ -182,7 +179,7 @@ func NewDatabasePolicyEngine() (*DatabasePolicyEngine, error) {
 		refreshInterval:  60 * time.Second, // Refresh cache every 60 seconds
 		performanceMode:  performanceMode,
 		auditQueue:       auditQueue,
-		piiBlockCritical: piiBlock,
+		detectionConfig:  detectionCfg,
 		sqliScanner:      sqliScanner,
 		sqliConfig:       sqliCfg,
 	}
@@ -446,19 +443,31 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "admin_access")
 
-	// 4. PII Detection
-	// Critical PII (SSN, credit cards, Aadhaar, PAN) - block if piiBlockCritical is enabled
+	// 4. PII Detection (Issue #891 - tiered defaults)
+	// Action controlled by PII_ACTION env var (default: redact)
+	// Critical PII (SSN, credit cards, Aadhaar, PAN) - action based on config
 	// Non-critical PII (email, phone) - log and flag for redaction
 	if piiPattern := dpe.checkPatterns(queryLower, dpe.piiDetectionPatterns); piiPattern != nil {
 		result.TriggeredPolicies = append(result.TriggeredPolicies, piiPattern.ID)
 		log.Printf("PII detected in query: %s", piiPattern.Description)
-		if piiPattern.Severity == "critical" && dpe.piiBlockCritical {
-			result.Blocked = true
-			result.Reason = piiPattern.Description
-			result.Severity = piiPattern.Severity
-			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
-			dpe.logPolicyViolationToQueue(user, piiPattern, query)
-			return result
+		if piiPattern.Severity == "critical" {
+			switch dpe.detectionConfig.PIIAction {
+			case DetectionActionBlock:
+				result.Blocked = true
+				result.Reason = piiPattern.Description
+				result.Severity = piiPattern.Severity
+				result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+				dpe.logPolicyViolationToQueue(user, piiPattern, query)
+				return result
+			case DetectionActionRedact:
+				// Flag for redaction but don't block - handled by Orchestrator
+				log.Printf("[PII] Detected %s - flagged for redaction (action=redact)", piiPattern.ID)
+				result.RequiresRedaction = true
+			case DetectionActionWarn:
+				log.Printf("[PII] WARNING: Detected %s (action=warn)", piiPattern.ID)
+			case DetectionActionLog:
+				log.Printf("[PII] Detected %s (action=log)", piiPattern.ID)
+			}
 		}
 		// Non-critical PII: allow with redaction in Orchestrator
 	}

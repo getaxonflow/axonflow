@@ -76,7 +76,17 @@ const (
 	// EnvSQLIBlockMode sets whether to block or warn on detection.
 	// Valid values: "block", "warn"
 	// Default: "block"
+	//
+	// Deprecated: Use SQLI_ACTION instead for unified detection configuration.
+	// SQLI_ACTION supports: "block", "warn", "log"
+	// This env var will be removed in a future release.
 	EnvSQLIBlockMode = "SQLI_BLOCK_MODE"
+
+	// EnvSQLIAction is the new unified env var for SQL injection action.
+	// Valid values: "block", "warn", "log"
+	// Default: "block"
+	// Takes precedence over SQLI_BLOCK_MODE if both are set.
+	EnvSQLIAction = "SQLI_ACTION"
 )
 
 // ConfigFromEnv creates a configuration from environment variables.
@@ -84,7 +94,8 @@ const (
 //
 // Environment variables:
 //   - SQLI_SCANNER_MODE: off, basic, advanced (default: basic)
-//   - SQLI_BLOCK_MODE: block, warn (default: block)
+//   - SQLI_ACTION: block, warn, log (default: block) - NEW, takes precedence
+//   - SQLI_BLOCK_MODE: block, warn (default: block) - DEPRECATED
 //
 // Invalid values are logged and fall back to defaults.
 func ConfigFromEnv() Config {
@@ -103,8 +114,24 @@ func ConfigFromEnv() Config {
 		}
 	}
 
-	// Parse SQLI_BLOCK_MODE
-	if blockStr := os.Getenv(EnvSQLIBlockMode); blockStr != "" {
+	// Parse SQLI_ACTION (new) or SQLI_BLOCK_MODE (deprecated)
+	// SQLI_ACTION takes precedence if both are set
+	if actionStr := os.Getenv(EnvSQLIAction); actionStr != "" {
+		switch strings.ToLower(actionStr) {
+		case "block":
+			cfg.BlockOnDetection = true
+			log.Printf("[SQLi] Action=block - detections will be blocked")
+		case "warn", "log":
+			cfg.BlockOnDetection = false
+			log.Printf("[SQLi] Action=%s - detections will be logged but not blocked", strings.ToLower(actionStr))
+		default:
+			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'block'. Valid values: block, warn, log",
+				EnvSQLIAction, actionStr)
+			cfg.BlockOnDetection = true
+		}
+	} else if blockStr := os.Getenv(EnvSQLIBlockMode); blockStr != "" {
+		// Deprecated: SQLI_BLOCK_MODE
+		log.Printf("[SQLi] WARNING: %s is deprecated. Use %s instead.", EnvSQLIBlockMode, EnvSQLIAction)
 		switch strings.ToLower(blockStr) {
 		case "block":
 			cfg.BlockOnDetection = true
@@ -115,7 +142,7 @@ func ConfigFromEnv() Config {
 		default:
 			log.Printf("[SQLi] WARNING: Invalid %s=%q, using default 'block'. Valid values: block, warn",
 				EnvSQLIBlockMode, blockStr)
-			cfg.BlockOnDetection = true // Default to block for security
+			cfg.BlockOnDetection = true
 		}
 	} else {
 		// Default to block mode for security-first approach

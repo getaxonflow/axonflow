@@ -197,7 +197,8 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 
 		// Try failover if enabled
 		if !routeOpts.disableFailover {
-			fallback, fallbackErr := r.getFallbackProvider(ctx, provider.Name())
+			// Pass allowedProviders to enforce compliance during failover
+			fallback, fallbackErr := r.getFallbackProvider(ctx, provider.Name(), routeOpts.allowedProviders)
 			if fallbackErr == nil && fallback != nil {
 				r.logger.Printf("Failing over from %s to %s", provider.Name(), fallback.Name())
 				response, err = fallback.Complete(ctx, req)
@@ -207,6 +208,10 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 				}
 				provider = fallback
 			} else {
+				// Include compliance context in error message
+				if len(routeOpts.allowedProviders) > 0 {
+					return nil, nil, fmt.Errorf("primary provider failed and no compliant fallback available (allowed: %v): %w", routeOpts.allowedProviders, err)
+				}
 				return nil, nil, fmt.Errorf("primary provider failed and no fallback: %w", err)
 			}
 		} else {
@@ -237,13 +242,34 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 
 // selectProvider selects the best provider for a request.
 func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts *routeOptions) (Provider, error) {
-	// If a specific provider was requested, use it
+	// If a specific provider was requested, use it (but verify it's allowed)
 	if opts.preferredProvider != "" {
-		provider, err := r.registry.Get(ctx, opts.preferredProvider)
-		if err == nil {
-			return provider, nil
+		// Check if preferred provider is in allowed list (if restrictions apply)
+		if len(opts.allowedProviders) > 0 {
+			allowed := false
+			for _, p := range opts.allowedProviders {
+				if p == opts.preferredProvider {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				r.logger.Printf("Preferred provider %q not in allowed list %v", opts.preferredProvider, opts.allowedProviders)
+				// Fall through to select from allowed providers
+			} else {
+				provider, err := r.registry.Get(ctx, opts.preferredProvider)
+				if err == nil {
+					return provider, nil
+				}
+				r.logger.Printf("Requested provider %q not available: %v", opts.preferredProvider, err)
+			}
+		} else {
+			provider, err := r.registry.Get(ctx, opts.preferredProvider)
+			if err == nil {
+				return provider, nil
+			}
+			r.logger.Printf("Requested provider %q not available: %v", opts.preferredProvider, err)
 		}
-		r.logger.Printf("Requested provider %q not available: %v", opts.preferredProvider, err)
 	}
 
 	// Get healthy providers
@@ -253,7 +279,24 @@ func (r *Router) selectProvider(ctx context.Context, req CompletionRequest, opts
 		healthyNames = r.registry.ListEnabled()
 	}
 
+	// Filter by allowed providers if compliance restrictions apply
+	if len(opts.allowedProviders) > 0 {
+		var filtered []string
+		for _, name := range healthyNames {
+			for _, allowed := range opts.allowedProviders {
+				if name == allowed {
+					filtered = append(filtered, name)
+					break
+				}
+			}
+		}
+		healthyNames = filtered
+	}
+
 	if len(healthyNames) == 0 {
+		if len(opts.allowedProviders) > 0 {
+			return nil, fmt.Errorf("no compliant providers available (allowed: %v)", opts.allowedProviders)
+		}
 		return nil, fmt.Errorf("no providers available")
 	}
 
@@ -316,16 +359,34 @@ func (r *Router) getWeights(providers []string, overrides map[string]float64) ma
 	return weights
 }
 
-// getFallbackProvider returns a fallback provider.
-func (r *Router) getFallbackProvider(ctx context.Context, failedProvider string) (Provider, error) {
+// getFallbackProvider returns a fallback provider, respecting allowed providers for compliance.
+// If allowedProviders is empty, any healthy provider can be used.
+// If allowedProviders is set, only providers in that list can be used for failover.
+func (r *Router) getFallbackProvider(ctx context.Context, failedProvider string, allowedProviders []string) (Provider, error) {
 	healthyNames := r.registry.GetHealthyProviders()
 
+	// Helper to check if provider is in allowed list
+	isAllowed := func(name string) bool {
+		if len(allowedProviders) == 0 {
+			return true // No restrictions
+		}
+		for _, allowed := range allowedProviders {
+			if name == allowed {
+				return true
+			}
+		}
+		return false
+	}
+
 	for _, name := range healthyNames {
-		if name != failedProvider {
+		if name != failedProvider && isAllowed(name) {
 			return r.registry.Get(ctx, name)
 		}
 	}
 
+	if len(allowedProviders) > 0 {
+		return nil, fmt.Errorf("no compliant fallback provider available (allowed: %v)", allowedProviders)
+	}
 	return nil, fmt.Errorf("no fallback provider available")
 }
 
@@ -459,6 +520,7 @@ type routeOptions struct {
 	preferredProvider string
 	weights           map[string]float64
 	disableFailover   bool
+	allowedProviders  []string // Strict provider list for compliance (empty = all providers allowed)
 }
 
 // WithPreferredProvider sets a preferred provider for the request.
@@ -479,6 +541,16 @@ func WithRouteWeights(weights map[string]float64) RouteOption {
 func WithDisableFailover() RouteOption {
 	return func(o *routeOptions) {
 		o.disableFailover = true
+	}
+}
+
+// WithAllowedProviders sets a strict list of providers for compliance.
+// When set, failover can ONLY occur within these providers.
+// Use this for GDPR, PII, or other compliance scenarios where certain
+// providers must not be used regardless of availability.
+func WithAllowedProviders(providers []string) RouteOption {
+	return func(o *routeOptions) {
+		o.allowedProviders = providers
 	}
 }
 

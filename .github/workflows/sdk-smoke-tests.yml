@@ -147,41 +147,44 @@ jobs:
           echo ""
           echo "✅ All services are healthy!"
 
-      - name: Test PII Detection (SSN - Monitoring Mode)
+      - name: Test PII Detection (SSN - Redact Mode)
         shell: bash
         run: |
-          echo "🧪 Testing PII detection (SSN - monitoring mode)..."
+          echo "🧪 Testing PII detection (SSN - redact mode)..."
           response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
             -H "Content-Type: application/json" \
             -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Look up customer with SSN 123-45-6789"}')
 
           echo "Response: $response"
 
-          # SSN detection is in monitoring mode (approved=true but detected)
-          # Verify the policy was triggered even though request is approved
-          if echo "$response" | jq -e '.policies | length > 0' > /dev/null 2>&1; then
+          # SSN detection defaults to redact mode (approved=true, requires_redaction=true)
+          # Issue #891: PII now defaults to redact instead of block
+          if echo "$response" | jq -e '.requires_redaction == true' > /dev/null 2>&1; then
             policy=$(echo "$response" | jq -r '.policies[0]')
-            echo "✅ SSN detected by policy: $policy"
+            echo "✅ SSN detected, flagged for redaction (policy: $policy)"
           else
-            echo "❌ SSN not detected - no policies triggered"
+            echo "❌ SSN not flagged for redaction"
+            echo "Expected: requires_redaction=true"
             exit 1
           fi
 
-      - name: Test PII Detection (Credit Card)
+      - name: Test PII Detection (Credit Card - Redact Mode)
         shell: bash
         run: |
-          echo "🧪 Testing PII detection (Credit Card)..."
+          echo "🧪 Testing PII detection (Credit Card - redact mode)..."
           response=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
             -H "Content-Type: application/json" \
             -d '{"user_token": "test-user", "client_id": "smoke-test", "query": "Process payment for card 4111-1111-1111-1111"}')
 
           echo "Response: $response"
 
-          if echo "$response" | jq -e '.approved == false or .policyApproved == false or .blocked == true' > /dev/null 2>&1; then
-            echo "✅ Credit card correctly blocked"
+          # Credit card detection defaults to redact mode (approved=true, requires_redaction=true)
+          # Issue #891: PII now defaults to redact instead of block
+          if echo "$response" | jq -e '.requires_redaction == true' > /dev/null 2>&1; then
+            echo "✅ Credit card detected, flagged for redaction"
           else
-            echo "❌ Credit card not blocked"
-            echo "Expected: approved=false or blocked=true"
+            echo "❌ Credit card not flagged for redaction"
+            echo "Expected: requires_redaction=true"
             exit 1
           fi
 
@@ -274,7 +277,7 @@ jobs:
           echo "✅ SDK smoke tests passed!"
           echo ""
           echo "Validated:"
-          echo "  - PII Detection (SSN - monitoring mode)"
-          echo "  - PII Blocking (Credit Card)"
-          echo "  - SQL Injection Blocking"
-          echo "  - Safe Query Approval"
+          echo "  - PII Detection (SSN - redact mode, requires_redaction=true)"
+          echo "  - PII Detection (Credit Card - redact mode, requires_redaction=true)"
+          echo "  - SQL Injection Blocking (approved=false)"
+          echo "  - Safe Query Approval (approved=true)"

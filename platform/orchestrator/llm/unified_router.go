@@ -81,8 +81,23 @@ func (u *UnifiedRouter) RouteRequest(ctx context.Context, reqCtx RequestContext)
 
 	// Build route options
 	var opts []RouteOption
-	if reqCtx.Provider != "" {
+
+	// Policy-based routing takes precedence (Issue #883 - strict provider enforcement)
+	// This ensures dynamic policies can enforce compliance requirements (GDPR, PII, etc.)
+	if reqCtx.PolicyPreferredProvider != "" {
+		opts = append(opts, WithPreferredProvider(reqCtx.PolicyPreferredProvider))
+		u.logger.Printf("Policy routing: preferred provider=%s reason=%s",
+			reqCtx.PolicyPreferredProvider, reqCtx.PolicyRoutingReason)
+	} else if reqCtx.Provider != "" {
+		// Fall back to explicit provider request if no policy override
 		opts = append(opts, WithPreferredProvider(reqCtx.Provider))
+	}
+
+	// Strict provider enforcement: failover can ONLY occur within allowed providers
+	if len(reqCtx.PolicyAllowedProviders) > 0 {
+		opts = append(opts, WithAllowedProviders(reqCtx.PolicyAllowedProviders))
+		u.logger.Printf("Policy routing: allowed providers=%v (strict enforcement)",
+			reqCtx.PolicyAllowedProviders)
 	}
 
 	// Route using new router

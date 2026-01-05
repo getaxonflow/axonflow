@@ -15,7 +15,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -28,9 +27,9 @@ import (
 type StaticPolicyEngine struct {
 	sqliScanner         sqli.Scanner      // Unified SQL injection + dangerous query scanner
 	sqliConfig          sqli.Config       // SQL injection configuration (mode, block/warn)
+	detectionConfig     DetectionConfig   // Unified detection configuration (Issue #891)
 	adminAccessPatterns []*PolicyPattern
 	piiPatterns         []*PolicyPattern // PII detection (passports, credit cards, etc.)
-	piiBlockCritical    bool             // Block critical PII (SSN, credit cards) - default: true
 }
 
 // PolicyPattern represents a static policy rule
@@ -52,16 +51,14 @@ type StaticPolicyResult struct {
 	ChecksPerformed    []string
 	ProcessingTimeMs   int64
 	Severity           string
+	RequiresRedaction  bool   // True if PII detected and should be redacted (Issue #891)
 }
 
 // NewStaticPolicyEngine creates a new static policy engine with default rules
 func NewStaticPolicyEngine() *StaticPolicyEngine {
-	// PII blocking is ON by default; set PII_BLOCK_CRITICAL=false to disable
-	piiBlock := true
-	if val := os.Getenv("PII_BLOCK_CRITICAL"); val == "false" || val == "0" {
-		piiBlock = false
-		log.Println("[StaticPolicyEngine] PII blocking DISABLED - critical PII will be logged but not blocked")
-	}
+	// Load unified detection configuration from environment (Issue #891)
+	// This handles both new env vars (PII_ACTION) and deprecated ones (PII_BLOCK_CRITICAL)
+	detectionCfg := DetectionConfigFromEnv()
 
 	// Load SQL injection config from environment
 	sqliCfg := sqli.ConfigFromEnv()
@@ -80,9 +77,9 @@ func NewStaticPolicyEngine() *StaticPolicyEngine {
 	}
 
 	engine := &StaticPolicyEngine{
-		sqliScanner:      scanner,
-		sqliConfig:       sqliCfg,
-		piiBlockCritical: piiBlock,
+		sqliScanner:     scanner,
+		sqliConfig:      sqliCfg,
+		detectionConfig: detectionCfg,
 	}
 	engine.loadDefaultPolicies()
 	return engine
@@ -165,17 +162,29 @@ func (spe *StaticPolicyEngine) EvaluateStaticPolicies(user *User, query string, 
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "basic_validation")
 
-	// 6. PII Detection
-	// Critical PII (SSN, credit cards, Aadhaar, PAN) - block if piiBlockCritical is enabled
+	// 6. PII Detection (Issue #891 - tiered defaults)
+	// Action controlled by PII_ACTION env var (default: redact)
+	// Critical PII (SSN, credit cards, Aadhaar, PAN) - action based on config
 	// Non-critical PII (email, phone) - log and flag for redaction in Orchestrator
 	if piiPattern := spe.checkPatterns(query, spe.piiPatterns); piiPattern != nil {
 		result.TriggeredPolicies = append(result.TriggeredPolicies, piiPattern.ID)
-		if piiPattern.Severity == "critical" && spe.piiBlockCritical {
-			result.Blocked = true
-			result.Reason = piiPattern.Description
-			result.Severity = piiPattern.Severity
-			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
-			return result
+		if piiPattern.Severity == "critical" {
+			switch spe.detectionConfig.PIIAction {
+			case DetectionActionBlock:
+				result.Blocked = true
+				result.Reason = piiPattern.Description
+				result.Severity = piiPattern.Severity
+				result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
+				return result
+			case DetectionActionRedact:
+				// Flag for redaction but don't block - handled by Orchestrator
+				log.Printf("[PII] Detected %s - flagged for redaction (action=redact)", piiPattern.ID)
+				result.RequiresRedaction = true
+			case DetectionActionWarn:
+				log.Printf("[PII] WARNING: Detected %s (action=warn)", piiPattern.ID)
+			case DetectionActionLog:
+				log.Printf("[PII] Detected %s (action=log)", piiPattern.ID)
+			}
 		}
 		// For non-critical PII, allow with redaction in Orchestrator
 	}

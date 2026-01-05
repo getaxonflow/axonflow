@@ -231,8 +231,13 @@ func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter,
 	}
 
 	// Set organization ID for org-tier policies
-	if tier == TierOrganization && orgID != "" {
-		policy.OrganizationID = &orgID
+	// Prefer request body organization_id over header
+	effectiveOrgID := req.OrganizationID
+	if effectiveOrgID == "" {
+		effectiveOrgID = orgID // Fall back to X-Organization-ID header
+	}
+	if tier == TierOrganization && effectiveOrgID != "" {
+		policy.OrganizationID = &effectiveOrgID
 	}
 
 	// Create policy using repository

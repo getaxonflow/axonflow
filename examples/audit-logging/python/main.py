@@ -150,8 +150,71 @@ async def main():
 
     print("Audit Logging Complete!")
     print()
-    print("Query audit logs via Orchestrator API:")
-    print("  curl http://localhost:8081/api/v1/audit/tenant/audit-logging-demo")
+
+    # =========================================================================
+    # Query Audit Logs (SDK Methods)
+    # =========================================================================
+    # Import types for audit queries
+    from axonflow.types import AuditSearchRequest, AuditQueryOptions
+
+    print("=" * 40)
+    print("Query Audit Logs via SDK")
+    print("=" * 40)
+    print()
+
+    # Re-create client for query phase (previous context manager closed it)
+    async with AxonFlow(
+        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        client_id=os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
+        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+    ) as query_client:
+        # Get audit logs for tenant (default pagination)
+        print("1. get_audit_logs_by_tenant (default options):")
+        try:
+            tenant_logs = await query_client.get_audit_logs_by_tenant("audit-logging-demo")
+            print(f"   Found {len(tenant_logs.entries)} entries")
+            if tenant_logs.entries:
+                entry = tenant_logs.entries[0]
+                print(f"   Latest: {entry.timestamp} - {entry.provider}/{entry.model}")
+        except Exception as e:
+            print(f"   Error: {e}")
+        print()
+
+        # Get audit logs with custom pagination
+        print("2. get_audit_logs_by_tenant (limit=5, offset=0):")
+        try:
+            paginated_logs = await query_client.get_audit_logs_by_tenant(
+                "audit-logging-demo",
+                AuditQueryOptions(limit=5, offset=0),
+            )
+            has_more = paginated_logs.total > paginated_logs.offset + len(paginated_logs.entries)
+            print(f"   Found {len(paginated_logs.entries)} entries (has_more: {has_more})")
+        except Exception as e:
+            print(f"   Error: {e}")
+        print()
+
+        # Search audit logs with filters
+        print("3. search_audit_logs (with filters):")
+        try:
+            search_result = await query_client.search_audit_logs(
+                AuditSearchRequest(
+                    client_id="audit-logging-demo",
+                    request_type="chat",
+                    limit=10,
+                )
+            )
+            print(f"   Found {len(search_result.entries)} matching entries")
+            for i, entry in enumerate(search_result.entries[:3]):
+                status = "blocked" if entry.blocked else "allowed"
+                print(f"   - {entry.id}: {status} ({entry.tokens_used} tokens)")
+            if len(search_result.entries) > 3:
+                print(f"   ... and {len(search_result.entries) - 3} more")
+        except Exception as e:
+            print(f"   Error: {e}")
+        print()
+
+    print("=" * 40)
+    print("Done!")
 
 
 if __name__ == "__main__":

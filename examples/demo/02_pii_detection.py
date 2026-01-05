@@ -1,11 +1,14 @@
 """
 Part 2.1: PII Detection Suite
 
-AxonFlow detects and blocks PII across multiple jurisdictions:
+AxonFlow detects and redacts PII across multiple jurisdictions:
 - US: Social Security Numbers (SSN), Credit Cards
 - India: PAN (Permanent Account Number), Aadhaar
 
-Each pattern triggers the appropriate policy for blocking or redaction.
+Each pattern triggers the appropriate policy for redaction (default) or blocking.
+
+Note (Issue #891): PII is now redacted by default instead of blocked.
+To restore blocking behavior, set PII_ACTION=block in your environment.
 """
 
 import asyncio
@@ -15,30 +18,31 @@ from axonflow import AxonFlow
 
 
 # PII test cases with expected outcomes
+# Note: PII_ACTION=redact by default (Issue #891), so PII is detected but not blocked
 PII_TESTS = [
     {
         "name": "US Social Security Number",
         "query": "Customer SSN is 123-45-6789 for verification",
         "pattern": "SSN",
-        "expected": "blocked",
+        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
     },
     {
         "name": "Credit Card (Visa)",
         "query": "Charge card 4111-1111-1111-1111 for $99",
         "pattern": "Credit Card",
-        "expected": "blocked",
+        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
     },
     {
         "name": "Indian PAN",
         "query": "Customer PAN is ABCDE1234F for tax records",
         "pattern": "PAN",
-        "expected": "flagged",  # May be flagged for redaction rather than blocked
+        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
     },
     {
         "name": "Indian Aadhaar",
         "query": "Verify Aadhaar number 2345 6789 0123",
         "pattern": "Aadhaar",
-        "expected": "blocked",
+        "expected": "detected",  # Redacted by default (PII_ACTION=redact)
     },
 ]
 
@@ -64,7 +68,9 @@ async def test_pii_detection(client: AxonFlow) -> None:
             )
 
             if not ctx.approved:
-                print(f"  Result: BLOCKED")
+                # PII detected - action depends on PII_ACTION env var
+                # Default: redact (preserves UX), can be: block, warn, log
+                print(f"  Result: PII DETECTED")
                 print(f"  Reason: {ctx.block_reason}")
                 if ctx.policies:
                     print(f"  Policy: {ctx.policies[0] if ctx.policies else 'N/A'}")
@@ -72,7 +78,7 @@ async def test_pii_detection(client: AxonFlow) -> None:
             else:
                 # Check if flagged (policies triggered but not blocked)
                 if ctx.policies and len(ctx.policies) > 0:
-                    print(f"  Result: FLAGGED")
+                    print(f"  Result: PII FLAGGED")
                     print(f"  Policy: {ctx.policies[0]}")
                     passed += 1
                 else:
