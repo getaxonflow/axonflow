@@ -15,11 +15,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -43,9 +45,10 @@ var migrationsFS embed.FS
 
 // Configuration
 var (
-	db             *sql.DB
-	jwtSecret      = []byte(os.Getenv("JWT_SECRET"))
-	axonflowClient *axonflow.AxonFlowClient
+	db              *sql.DB
+	jwtSecret       = []byte(os.Getenv("JWT_SECRET"))
+	axonflowClient  *axonflow.AxonFlowClient
+	orchestratorURL string
 )
 
 // User represents a demo user with role-based permissions
@@ -235,6 +238,12 @@ func main() {
 		agentURL = "http://host.docker.internal:8080"
 	}
 
+	// Initialize Orchestrator URL for audit/metrics queries
+	orchestratorURL = os.Getenv("AXONFLOW_ORCHESTRATOR_URL")
+	if orchestratorURL == "" {
+		orchestratorURL = "http://host.docker.internal:8081"
+	}
+
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
 		AgentURL: agentURL,
 		Mode:     "production", // Fail-open if AxonFlow is unavailable
@@ -245,7 +254,7 @@ func main() {
 			InitialDelay: time.Second,
 		},
 	})
-	log.Printf("AxonFlow Client initialized (endpoint: %s, mode: proxy)", agentURL)
+	log.Printf("AxonFlow Client initialized (agent: %s, orchestrator: %s, mode: proxy)", agentURL, orchestratorURL)
 
 	// Setup router
 	r := mux.NewRouter()
@@ -597,24 +606,39 @@ func llmStatusHandler(w http.ResponseWriter, r *http.Request) {
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	var stats DashboardStats
 
+	// Get business data from local database
 	db.QueryRow("SELECT COUNT(*) FROM customers").Scan(&stats.TotalCustomers)
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE status != 'resolved'").Scan(&stats.OpenTickets)
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE resolved_at::date = CURRENT_DATE").Scan(&stats.ResolvedToday)
 	stats.AvgResponseTime = 45 // Demo value in minutes
-
-	// Query metrics from audit_log table
-	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE created_at::date = CURRENT_DATE").Scan(&stats.TotalQueries)
-	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE pii_redacted = true AND created_at::date = CURRENT_DATE").Scan(&stats.TotalPIIDetections)
-
-	// Count unique demo users
 	stats.TotalUsers = len(demoUsers)
 
-	// Calculate compliance score from audit log
-	var blockedQueries int
-	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE access_granted = false AND created_at::date = CURRENT_DATE").Scan(&blockedQueries)
-	if stats.TotalQueries > 0 {
-		stats.ComplianceScore = 100.0 - (float64(blockedQueries)/float64(stats.TotalQueries))*100
+	// Get governance metrics from AxonFlow orchestrator
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err == nil {
+		defer resp.Body.Close()
+		var metrics map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&metrics); err == nil {
+			// Extract metrics from AxonFlow response
+			if v, ok := metrics["total_requests"].(float64); ok {
+				stats.TotalQueries = int(v)
+			}
+			if v, ok := metrics["pii_detected"].(float64); ok {
+				stats.TotalPIIDetections = int(v)
+			}
+			if v, ok := metrics["blocked_requests"].(float64); ok {
+				blockedQueries := int(v)
+				if stats.TotalQueries > 0 {
+					stats.ComplianceScore = 100.0 - (float64(blockedQueries)/float64(stats.TotalQueries))*100
+				} else {
+					stats.ComplianceScore = 100.0
+				}
+			} else {
+				stats.ComplianceScore = 100.0
+			}
+		}
 	} else {
+		log.Printf("Failed to get metrics from AxonFlow: %v", err)
 		stats.ComplianceScore = 100.0
 	}
 
@@ -732,8 +756,7 @@ func extractSQL(response string) string {
 }
 
 func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) {
-	// Log blocked query to audit table
-	auditQuery(user, query, 0, []string{}, false, false)
+	// Audit logging is handled by AxonFlow via ExecuteQuery
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
@@ -752,8 +775,7 @@ func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) 
 }
 
 func respondWithResults(w http.ResponseWriter, user User, query string, results []map[string]interface{}, provider string) {
-	// Log successful query to audit table
-	auditQuery(user, query, len(results), []string{}, false, true)
+	// Audit logging is handled by AxonFlow via ExecuteQuery
 
 	// Create LLMProviderInfo if provider is specified
 	var llmProvider *LLMProviderInfo
@@ -778,118 +800,76 @@ func respondWithResults(w http.ResponseWriter, user User, query string, results 
 	})
 }
 
-// AuditLogEntry represents an entry in the audit log
-type AuditLogEntry struct {
-	ID            int       `json:"id"`
-	UserEmail     string    `json:"user_email"`
-	QueryText     string    `json:"query_text"`
-	ResultsCount  int       `json:"results_count"`
-	PIIDetected   []string  `json:"pii_detected"`
-	PIIRedacted   bool      `json:"pii_redacted"`
-	AccessGranted bool      `json:"access_granted"`
-	CreatedAt     time.Time `json:"created_at"`
-}
-
-// auditQuery writes an entry to the audit_log table
-func auditQuery(user User, query string, resultCount int, piiDetected []string, piiRedacted bool, accessGranted bool) {
-	_, err := db.Exec(`
-		INSERT INTO audit_log (user_id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, user.ID, user.Email, query, resultCount, piiDetected, piiRedacted, accessGranted)
-	if err != nil {
-		log.Printf("Failed to write audit log: %v", err)
-	}
-}
-
-// auditHandler returns audit log entries from the database
+// auditHandler proxies audit log requests to AxonFlow orchestrator
 func auditHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 
-	var rows *sql.Rows
-	var err error
-
-	// Admins see all logs, others see only their own
-	if user.Role == "admin" {
-		rows, err = db.Query(`
-			SELECT id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted, created_at
-			FROM audit_log ORDER BY created_at DESC LIMIT 100
-		`)
-	} else {
-		rows, err = db.Query(`
-			SELECT id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted, created_at
-			FROM audit_log WHERE user_email = $1 ORDER BY created_at DESC LIMIT 100
-		`, user.Email)
+	// Build search request for AxonFlow orchestrator
+	searchReq := map[string]interface{}{
+		"limit": 100,
+	}
+	// Non-admin users only see their own logs
+	if user.Role != "admin" {
+		searchReq["user_email"] = user.Email
 	}
 
+	reqBody, _ := json.Marshal(searchReq)
+	resp, err := http.Post(orchestratorURL+"/api/v1/audit/search", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
-		log.Printf("Failed to query audit log: %v", err)
+		log.Printf("Failed to query AxonFlow audit: %v", err)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]AuditLogEntry{})
+		json.NewEncoder(w).Encode([]map[string]interface{}{})
 		return
 	}
-	defer rows.Close()
+	defer resp.Body.Close()
 
-	var entries []AuditLogEntry
-	for rows.Next() {
-		var entry AuditLogEntry
-		var piiDetected []byte // PostgreSQL array comes as bytes
-		err := rows.Scan(&entry.ID, &entry.UserEmail, &entry.QueryText, &entry.ResultsCount,
-			&piiDetected, &entry.PIIRedacted, &entry.AccessGranted, &entry.CreatedAt)
-		if err != nil {
-			log.Printf("Failed to scan audit row: %v", err)
-			continue
-		}
-		// Parse PostgreSQL array format: {item1,item2}
-		if len(piiDetected) > 2 {
-			arrayStr := string(piiDetected[1 : len(piiDetected)-1]) // Remove { and }
-			if arrayStr != "" {
-				entry.PIIDetected = strings.Split(arrayStr, ",")
-			}
-		}
-		entries = append(entries, entry)
-	}
-
-	if entries == nil {
-		entries = []AuditLogEntry{}
-	}
-
+	// Forward the response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(entries)
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
-// policyMetricsHandler returns metrics calculated from audit_log
+// policyMetricsHandler proxies metrics requests to AxonFlow orchestrator
 func policyMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	var totalQueries, piiRedacted, blockedQueries int
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err != nil {
+		log.Printf("Failed to get AxonFlow metrics: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"total_policies_enforced": 0,
+			"ai_queries":              0,
+			"pii_redacted":            0,
+			"regional_blocks":         0,
+		})
+		return
+	}
+	defer resp.Body.Close()
 
-	// Count total queries today
-	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE created_at::date = CURRENT_DATE`).Scan(&totalQueries)
-
-	// Count PII redacted today
-	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE pii_redacted = true AND created_at::date = CURRENT_DATE`).Scan(&piiRedacted)
-
-	// Count blocked queries today
-	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE access_granted = false AND created_at::date = CURRENT_DATE`).Scan(&blockedQueries)
-
+	// Forward the response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total_policies_enforced": totalQueries,
-		"ai_queries":              totalQueries, // All queries go through AxonFlow
-		"pii_redacted":            piiRedacted,
-		"regional_blocks":         blockedQueries,
-	})
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
-// performanceMetricsHandler returns performance metrics
+// performanceMetricsHandler proxies performance metrics from AxonFlow
 func performanceMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	var totalRequests int
-	db.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&totalRequests)
+	resp, err := http.Get(orchestratorURL + "/api/v1/metrics")
+	if err != nil {
+		log.Printf("Failed to get AxonFlow performance metrics: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"avg_latency_ms": 0,
+			"requests_total": 0,
+			"cache_hit_rate": 0,
+		})
+		return
+	}
+	defer resp.Body.Close()
 
+	// Forward the response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"avg_latency_ms": 45, // Would need request timing to calculate actual latency
-		"requests_total": totalRequests,
-		"cache_hit_rate": 0,
-	})
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 // stubHandler for endpoints that don't need real implementation

@@ -65,6 +65,7 @@ services:
       - JWT_SECRET=demo-secret-change-in-production
       - PORT=8080
       - AXONFLOW_ENDPOINT=${AXONFLOW_ENDPOINT:-http://axonflow-agent:8080}
+      - AXONFLOW_ORCHESTRATOR_URL=${AXONFLOW_ORCHESTRATOR_URL:-http://axonflow-orchestrator:8081}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
