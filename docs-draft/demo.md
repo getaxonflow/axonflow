@@ -40,7 +40,7 @@ docker-compose up -d
 
 **Requirements:**
 - Docker & Docker Compose
-- Python 3.8+ (for example scripts)
+- Python 3.9+ (for example scripts)
 - Optional: OpenAI or Anthropic API key
 
 ## Demo Structure
