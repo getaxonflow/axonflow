@@ -24,7 +24,7 @@ async def main():
     license_key = os.getenv("AXONFLOW_LICENSE_KEY", "")
 
     client = AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         license_key=license_key if license_key else None,
     )
 

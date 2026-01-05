@@ -27,7 +27,7 @@ public class Main {
         }
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .licenseKey(licenseKey)
                 .build();
 

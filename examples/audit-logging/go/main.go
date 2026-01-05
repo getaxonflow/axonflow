@@ -27,7 +27,7 @@ func main() {
 
 	// Initialize clients
 	axClient := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
 		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),

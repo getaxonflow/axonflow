@@ -28,7 +28,7 @@ func main() {
 	}
 
 	config := axonflow.AxonFlowConfig{
-		AgentURL:   agentURL,
+		Endpoint:   agentURL,
 		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"), // Optional for community
 	}
 

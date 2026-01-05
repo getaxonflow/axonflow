@@ -20,7 +20,7 @@ def main():
         sys.exit(1)
 
     client = AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         license_key=license_key,
     )
 

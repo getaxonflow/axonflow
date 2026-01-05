@@ -90,7 +90,7 @@ Proxy Mode Demo Complete!
 
 ```java
 AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-    .agentUrl("http://localhost:8080")
+    .endpoint("http://localhost:8080")
     .licenseKey("your-license-key")
     .build());
 

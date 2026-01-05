@@ -26,7 +26,7 @@ async def main() -> None:
     # Initialize the client
     # For self-hosted Community, credentials not validated when running locally
     client = AxonFlow(
-        agent_url=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id="test-org-001",  # Used as tenant ID
         client_secret="test-secret",  # Not validated in Community mode
     )

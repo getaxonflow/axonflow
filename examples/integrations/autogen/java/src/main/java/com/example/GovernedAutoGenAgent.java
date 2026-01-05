@@ -52,7 +52,7 @@ public class GovernedAutoGenAgent {
         System.out.println("Checking AxonFlow at " + agentUrl + "...");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .build();
 
         try (AxonFlow client = AxonFlow.create(config)) {
@@ -83,7 +83,7 @@ public class GovernedAutoGenAgent {
         System.out.println("=".repeat(60));
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .build();
 
         try (AxonFlow client = AxonFlow.create(config)) {

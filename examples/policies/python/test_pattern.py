@@ -15,7 +15,7 @@ from axonflow import AxonFlow
 async def main() -> None:
     """Test various regex patterns."""
     client = AxonFlow(
-        agent_url=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id="test-org-001",  # Used as tenant ID
         client_secret="test-secret",  # Not validated in Community mode
     )

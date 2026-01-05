@@ -23,7 +23,7 @@ func main() {
 	}
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL: endpoint,
+		Endpoint: endpoint,
 		ClientID: "test-org-001", // Used as tenant ID
 	})
 

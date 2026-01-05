@@ -37,7 +37,7 @@ func main() {
 	}
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL:     agentURL,
+		Endpoint:     agentURL,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	})

@@ -547,7 +547,7 @@ func main() {
 
 	// Initialize AxonFlow client (community mode - no credentials needed for Proxy Mode)
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL: agentURL,
+		Endpoint: agentURL,
 	})
 
 	// Health check

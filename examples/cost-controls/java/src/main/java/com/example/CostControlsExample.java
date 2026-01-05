@@ -26,7 +26,7 @@ public class CostControlsExample {
 
         // Create AxonFlow client
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-            .agentUrl(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
+            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
             .orchestratorUrl(getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"))
             .build());
 

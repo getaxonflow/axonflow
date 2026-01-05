@@ -23,7 +23,7 @@ public class TestPattern {
         }
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-            .agentUrl(endpoint)
+            .endpoint(endpoint)
             .clientId("test-org-001")  // Used as tenant ID
             .build();
 

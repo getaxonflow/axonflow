@@ -125,7 +125,7 @@ async def main():
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 
     async with AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo-client"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as client:

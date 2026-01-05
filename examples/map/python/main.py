@@ -30,7 +30,7 @@ async def main():
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "demo")
 
     async with AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         orchestrator_url=orchestrator_url,
         client_id=client_id,
         client_secret=client_secret,

@@ -23,7 +23,7 @@ func main() {
 
 	// Create AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL:   agentURL,
+		Endpoint:   agentURL,
 		LicenseKey: licenseKey,
 	})
 

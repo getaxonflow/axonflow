@@ -12,7 +12,7 @@ from axonflow import AxonFlow
 
 async def main():
     async with AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo-client"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as ax:

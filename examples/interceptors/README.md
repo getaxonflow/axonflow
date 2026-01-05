@@ -72,7 +72,7 @@ from axonflow import AxonFlow
 from axonflow.interceptors.openai import wrap_openai_client
 from openai import OpenAI
 
-axonflow = AxonFlow(agent_url="http://localhost:8080")
+axonflow = AxonFlow(endpoint="http://localhost:8080")
 openai_client = OpenAI()
 governed_client = wrap_openai_client(openai_client, axonflow, user_token="user-123")
 
@@ -92,7 +92,7 @@ import (
 )
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    AgentURL: "http://localhost:8080",
+    Endpoint: "http://localhost:8080",
 })
 
 wrappedCall := interceptors.WrapOpenAIFunc(openAICall, client, "user-123")

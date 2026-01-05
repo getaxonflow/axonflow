@@ -22,7 +22,7 @@ from axonflow import AxonFlow
 async def main():
     # Initialize client
     client = AxonFlow(
-        agent_url=os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        endpoint=os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id="demo-client",
         client_secret="demo-secret",
         license_key=os.environ.get("AXONFLOW_LICENSE_KEY"),

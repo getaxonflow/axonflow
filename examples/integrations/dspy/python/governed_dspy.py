@@ -251,7 +251,7 @@ def run_tests():
     print("DSPy + AxonFlow Integration (Python SDK)")
     print("=" * 60)
 
-    with AxonFlow.sync(agent_url=agent_url) as client:
+    with AxonFlow.sync(endpoint=agent_url) as client:
         # Test 1: Safe Predict module
         print("\n" + "=" * 60)
         print("[Test 1] Safe Predict Module")
@@ -374,7 +374,7 @@ def test_health_check():
     print(f"Checking AxonFlow at {agent_url}...")
 
     try:
-        with AxonFlow.sync(agent_url=agent_url) as client:
+        with AxonFlow.sync(endpoint=agent_url) as client:
             is_healthy = client.health_check()
             if is_healthy:
                 print("Status: healthy")

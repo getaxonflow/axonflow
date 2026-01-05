@@ -52,7 +52,7 @@ def test_proxy_mode():
     # Initialize AxonFlow client (community mode - no auth required)
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 
-    with AxonFlow.sync(agent_url=agent_url) as client:
+    with AxonFlow.sync(endpoint=agent_url) as client:
         # Test 1: Safe query (should be approved and processed)
         print("\n[Test 1] Safe query - Research request")
         print("-" * 40)
@@ -192,7 +192,7 @@ def test_health_check():
     print(f"Checking AxonFlow at {agent_url}...")
 
     try:
-        with AxonFlow.sync(agent_url=agent_url) as client:
+        with AxonFlow.sync(endpoint=agent_url) as client:
             is_healthy = client.health_check()
             if is_healthy:
                 print("Status: healthy")
@@ -290,7 +290,7 @@ def autogen_with_governance():
             return str(result.data) if result.data else "[No response]"
 
     # Demo the governed agent
-    with AxonFlow.sync(agent_url=agent_url) as axonflow:
+    with AxonFlow.sync(endpoint=agent_url) as axonflow:
         governed_agent = GovernedAutoGenAgent(
             axonflow=axonflow,
             agent_name="research_assistant",

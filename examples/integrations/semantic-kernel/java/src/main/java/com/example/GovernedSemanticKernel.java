@@ -53,7 +53,7 @@ public class GovernedSemanticKernel {
         System.out.println("Checking AxonFlow at " + agentUrl + "...");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .build();
 
         try (AxonFlow client = AxonFlow.create(config)) {
@@ -201,7 +201,7 @@ public class GovernedSemanticKernel {
         System.out.println("=".repeat(60));
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .build();
 
         try (AxonFlow axonflow = AxonFlow.create(config)) {

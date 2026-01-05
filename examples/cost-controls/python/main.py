@@ -39,7 +39,7 @@ def main():
 
     # Create AxonFlow client (SyncAxonFlow wraps the async client for synchronous usage)
     async_client = AxonFlow(
-        agent_url=get_env("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=get_env("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         orchestrator_url=get_env("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
     )
     client = SyncAxonFlow(async_client)

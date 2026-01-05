@@ -76,14 +76,14 @@ curl http://localhost:8081/health
 ### See Governance in Action (30 seconds)
 
 ```bash
-# Example: Send a request containing an SSN — AxonFlow blocks it before it reaches an LLM
+# Example: Send a request containing an SSN — AxonFlow detects and flags it for redaction
 curl -X POST http://localhost:8080/api/policy/pre-check \
   -H "Content-Type: application/json" \
   -d '{"user_token": "demo-user", "client_id": "demo-client", "query": "Look up customer with SSN 123-45-6789"}'
 ```
 
 ```json
-{"approved": false, "block_reason": "PII detected: ssn", "policies": ["pii_ssn_detection"]}
+{"approved": true, "requires_redaction": true, "pii_detected": ["ssn"], "policies": ["pii_ssn_detection"]}
 ```
 
 ### Full Interactive Demo (10 min)
@@ -250,7 +250,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>1.12.0</version>
+    <version>2.0.0</version>
 </dependency>
 ```
 
@@ -259,7 +259,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 ```python
 from axonflow import AxonFlow
 
-async with AxonFlow(agent_url="http://localhost:8080") as ax:
+async with AxonFlow(endpoint="http://localhost:8080") as ax:
     response = await ax.execute_query(
         user_token="user-123",
         query="Analyze customer sentiment",
@@ -306,7 +306,7 @@ import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.*;
 
 AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-    .agentUrl("http://localhost:8080")
+    .endpoint("http://localhost:8080")
     .build());
 
 // Gateway Mode: Pre-check → Your LLM call → Audit

@@ -23,7 +23,7 @@ from axonflow import (
 async def main() -> None:
     """List and filter policies."""
     client = AxonFlow(
-        agent_url=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id="test-org-001",  # Used as tenant ID
         client_secret="test-secret",  # Not validated in Community mode
     )

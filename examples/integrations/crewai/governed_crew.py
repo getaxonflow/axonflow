@@ -44,7 +44,7 @@ class GovernedCrew:
         self.tasks = tasks
         self.process = process
         self.config = axonflow_config or {
-            "agent_url": os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+            "endpoint": os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
             "client_id": os.getenv("AXONFLOW_CLIENT_ID", "demo"),
             "client_secret": os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         }
@@ -68,7 +68,7 @@ class GovernedCrew:
         self.governance_results = []
 
         async with AxonFlow(
-            agent_url=self.config["agent_url"],
+            endpoint=self.config["endpoint"],
             client_id=self.config["client_id"],
             client_secret=self.config["client_secret"],
         ) as axonflow:

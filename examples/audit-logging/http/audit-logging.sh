@@ -17,6 +17,20 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Portable millisecond timestamp (works on macOS and Linux)
+get_ms() {
+    if command -v gdate &> /dev/null; then
+        # GNU date (Linux or macOS with coreutils)
+        gdate +%s%3N
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS: use python for milliseconds
+        python3 -c 'import time; print(int(time.time() * 1000))'
+    else
+        # Linux
+        date +%s%3N
+    fi
+}
+
 echo "AxonFlow Audit Logging - HTTP/curl"
 echo "========================================"
 echo ""
@@ -38,7 +52,7 @@ echo ""
 
 # Step 1: Pre-check
 echo -e "${YELLOW}Step 1: Policy Pre-Check...${NC}"
-PRECHECK_START=$(date +%s%3N)
+PRECHECK_START=$(get_ms)
 
 PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
@@ -49,7 +63,7 @@ PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
         \"client_id\": \"$CLIENT_ID\"
     }")
 
-PRECHECK_END=$(date +%s%3N)
+PRECHECK_END=$(get_ms)
 PRECHECK_LATENCY=$((PRECHECK_END - PRECHECK_START))
 
 APPROVED=$(echo "$PRECHECK_RESPONSE" | jq -r '.approved // false')
@@ -69,12 +83,12 @@ echo ""
 
 # Step 2: LLM Call (Simulated)
 echo -e "${YELLOW}Step 2: LLM Call (Simulated)...${NC}"
-LLM_START=$(date +%s%3N)
+LLM_START=$(get_ms)
 
 # Simulate LLM latency
 sleep 0.1
 
-LLM_END=$(date +%s%3N)
+LLM_END=$(get_ms)
 LLM_LATENCY=$((LLM_END - LLM_START))
 PROMPT_TOKENS=50
 COMPLETION_TOKENS=100
@@ -86,7 +100,7 @@ echo ""
 
 # Step 3: Audit
 echo -e "${YELLOW}Step 3: Audit Logging...${NC}"
-AUDIT_START=$(date +%s%3N)
+AUDIT_START=$(get_ms)
 
 AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
     -H "Content-Type: application/json" \
@@ -104,7 +118,7 @@ AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
         \"latency_ms\": $LLM_LATENCY
     }")
 
-AUDIT_END=$(date +%s%3N)
+AUDIT_END=$(get_ms)
 AUDIT_LATENCY=$((AUDIT_END - AUDIT_START))
 
 AUDIT_SUCCESS=$(echo "$AUDIT_RESPONSE" | jq -r '.success // false')

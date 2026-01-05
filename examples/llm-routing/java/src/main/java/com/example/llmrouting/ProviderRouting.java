@@ -33,7 +33,7 @@ public class ProviderRouting {
         String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-                .agentUrl(endpoint)
+                .endpoint(endpoint)
                 .licenseKey(licenseKey)
                 .build());
 

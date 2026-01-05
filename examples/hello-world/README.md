@@ -119,7 +119,7 @@ import asyncio
 from axonflow import AxonFlow
 
 async def main():
-    async with AxonFlow(agent_url="http://localhost:8080") as ax:
+    async with AxonFlow(endpoint="http://localhost:8080") as ax:
         # Gateway Mode: Pre-check → Your LLM call → Audit
         approval = await ax.pre_check(
             query="What is the capital of France?",

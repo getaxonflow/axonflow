@@ -33,7 +33,7 @@ def main():
 
     # Use sync client for this example
     client = AxonFlow.sync(
-        agent_url=agent_url,
+        endpoint=agent_url,
         orchestrator_url=orchestrator_url,
         debug=True,
     )
