@@ -2,8 +2,8 @@
  * Dynamic Policy Management Example - Java
  *
  * Demonstrates CRUD operations for dynamic policies (LLM-powered policies).
- * Dynamic policies use an LLM to evaluate complex, context-aware rules that
- * can't be expressed with simple regex patterns.
+ * Dynamic policies use conditions and actions to evaluate complex, context-aware
+ * rules that can't be expressed with simple regex patterns.
  *
  * SDK Methods demonstrated:
  *   - listDynamicPolicies()
@@ -19,7 +19,8 @@
  *
  * Environment:
  *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+ *   AXONFLOW_CLIENT_ID   - Client/Tenant ID for policy scoping
+ *   AXONFLOW_LICENSE_KEY - License key (optional for community mode)
  */
 
 package com.example;
@@ -28,6 +29,7 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.*;
 import java.util.List;
+import java.util.Map;
 
 public class DynamicPolicyExample {
     public static void main(String[] args) {
@@ -36,16 +38,20 @@ public class DynamicPolicyExample {
         if (endpoint == null || endpoint.isEmpty()) {
             endpoint = "http://localhost:8080";
         }
+        String clientId = System.getenv("AXONFLOW_CLIENT_ID");
+        if (clientId == null || clientId.isEmpty()) {
+            clientId = "demo-tenant";
+        }
         String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
 
-        AxonFlowConfig config = AxonFlowConfig.builder()
-            .endpoint(endpoint)
-            .licenseKey(licenseKey)
-            .build();
-
         DynamicPolicy createdPolicy = null;
+        AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
+            .endpoint(endpoint)
+            .clientId(clientId)
+            .licenseKey(licenseKey)
+            .build());
 
-        try (AxonFlow client = new AxonFlow(config)) {
+        try {
             System.out.println("=== Dynamic Policy Management Example ===\n");
 
             // 1. List existing dynamic policies
@@ -55,7 +61,7 @@ public class DynamicPolicyExample {
                 System.out.println("   Found " + policies.size() + " dynamic policies");
                 for (DynamicPolicy p : policies) {
                     System.out.println("   - " + p.getId() + ": " + p.getName() +
-                        " (enabled: " + p.isEnabled() + ")");
+                        " (type: " + p.getType() + ", enabled: " + p.isEnabled() + ")");
                 }
             } catch (Exception e) {
                 System.out.println("   Failed to list policies: " + e.getMessage());
@@ -65,12 +71,18 @@ public class DynamicPolicyExample {
             System.out.println("\n2. Creating a new dynamic policy...");
             try {
                 CreateDynamicPolicyRequest request = CreateDynamicPolicyRequest.builder()
-                    .name("financial-advice-guard")
-                    .description("Block requests that ask for specific financial advice")
-                    .prompt("Evaluate if this request is asking for specific financial advice like stock picks, investment amounts, or trading strategies. If so, block it.")
-                    .action("block")
+                    .name("high-risk-block")
+                    .description("Block requests with high risk scores")
+                    .type("risk")
+                    .category("dynamic-risk")
+                    .conditions(List.of(
+                        new DynamicPolicyCondition("risk_score", "greater_than", 0.8)
+                    ))
+                    .actions(List.of(
+                        new DynamicPolicyAction("block", Map.of("reason", "High risk detected"))
+                    ))
+                    .priority(100)
                     .enabled(true)
-                    .tenantId("demo-tenant")
                     .build();
 
                 createdPolicy = client.createDynamicPolicy(request);
@@ -87,8 +99,10 @@ public class DynamicPolicyExample {
                     DynamicPolicy policy = client.getDynamicPolicy(createdPolicy.getId());
                     System.out.println("   Policy: " + policy.getName());
                     System.out.println("   Description: " + policy.getDescription());
-                    System.out.println("   Prompt: " + policy.getPrompt());
-                    System.out.println("   Action: " + policy.getAction());
+                    System.out.println("   Type: " + policy.getType());
+                    System.out.println("   Priority: " + policy.getPriority());
+                    System.out.println("   Conditions: " + (policy.getConditions() != null ? policy.getConditions().size() : 0));
+                    System.out.println("   Actions: " + (policy.getActions() != null ? policy.getActions().size() : 0));
                 } catch (Exception e) {
                     System.out.println("   Failed to get policy: " + e.getMessage());
                 }
@@ -99,7 +113,7 @@ public class DynamicPolicyExample {
                 System.out.println("\n4. Updating policy description...");
                 try {
                     UpdateDynamicPolicyRequest update = UpdateDynamicPolicyRequest.builder()
-                        .description("Block requests asking for specific financial or investment advice")
+                        .description("Block requests with risk scores above threshold (0.8)")
                         .build();
                     DynamicPolicy updated = client.updateDynamicPolicy(createdPolicy.getId(), update);
                     System.out.println("   Updated description: " + updated.getDescription());
@@ -112,7 +126,7 @@ public class DynamicPolicyExample {
             if (createdPolicy != null) {
                 System.out.println("\n5. Toggling policy (disabling)...");
                 try {
-                    DynamicPolicy toggled = client.toggleDynamicPolicy(createdPolicy.getId());
+                    DynamicPolicy toggled = client.toggleDynamicPolicy(createdPolicy.getId(), false);
                     System.out.println("   Policy enabled: " + toggled.isEnabled());
                 } catch (Exception e) {
                     System.out.println("   Failed to toggle policy: " + e.getMessage());
@@ -140,6 +154,9 @@ public class DynamicPolicyExample {
             }
 
             System.out.println("\n=== Dynamic Policy Example Complete ===");
+        } catch (Exception e) {
+            System.err.println("Unexpected error: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 }

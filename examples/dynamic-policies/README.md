@@ -123,6 +123,10 @@ chemicals. Block any such requests.
 === Dynamic Policy Example Complete ===
 ```
 
+## Subdirectories
+
+- [compliance/](./compliance/) - Provider restriction examples for GDPR, HIPAA, RBI
+
 ## Related Examples
 
 - [Static Policies](../policies/) - Pattern-based policies

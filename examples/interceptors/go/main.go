@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go"
-	"github.com/getaxonflow/axonflow-sdk-go/interceptors"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
+	"github.com/getaxonflow/axonflow-sdk-go/v2/interceptors"
 )
 
 func main() {

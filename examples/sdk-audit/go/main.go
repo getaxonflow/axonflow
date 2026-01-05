@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -26,12 +26,13 @@ func main() {
 	fmt.Println()
 
 	// Initialize AxonFlow client
+	// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+	// The Agent proxies orchestrator routes internally.
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:        getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		OrchestratorURL: getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
-		ClientID:        getEnv("AXONFLOW_CLIENT_ID", "demo"),
-		ClientSecret:    getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:      getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
 	})
 
 	var passed, failed int

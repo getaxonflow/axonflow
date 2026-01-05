@@ -1,5 +1,5 @@
-github.com/getaxonflow/axonflow-sdk-go v1.17.0 h1:ZTghNObYHh+U8I4P3v5DNwG9nTTqdvKoZ/1WR6QXhtM=
-github.com/getaxonflow/axonflow-sdk-go v1.17.0/go.mod h1:6bdj+/BwCCBTugIsnFXw+VrnNouif+LUEPeBF9BeE44=
+github.com/getaxonflow/axonflow-sdk-go/v2 v2.1.0 h1:lIsZ676UmGpDR8Q0potCRF6fcmhjSikR2BVv5xV08Vc=
+github.com/getaxonflow/axonflow-sdk-go/v2 v2.1.0/go.mod h1:yKCyqjLDqI/2IHU/8BcMifhFURCAGsinBKjKcsLumC0=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
 github.com/golang-jwt/jwt/v5 v5.3.0/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=

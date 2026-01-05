@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -45,7 +45,7 @@ func main() {
 		{
 			name:     "PII (SSN)",
 			query:    "Process payment for SSN 123-45-6789",
-			expected: "blocked",
+			expected: "approved", // v3.0.0: PII defaults to redact (approved with redaction)
 		},
 	}
 

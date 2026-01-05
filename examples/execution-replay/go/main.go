@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -24,13 +24,13 @@ func main() {
 	fmt.Println()
 
 	// Initialize the AxonFlow client
-	agentURL := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-	orchestratorURL := getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+	// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+	// The Agent proxies orchestrator routes internally.
+	endpoint := getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080")
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:        agentURL,
-		OrchestratorURL: orchestratorURL,
-		Debug:           true,
+		Endpoint: endpoint,
+		Debug:    true,
 	})
 
 	// 1. List all executions

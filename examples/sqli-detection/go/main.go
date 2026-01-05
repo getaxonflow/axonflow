@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {

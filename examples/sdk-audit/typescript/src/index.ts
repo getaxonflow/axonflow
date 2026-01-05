@@ -15,10 +15,10 @@
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 
+// Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+// The Agent proxies orchestrator routes internally.
 const axonflow = new AxonFlow({
-  endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  orchestratorEndpoint:
-    process.env.AXONFLOW_ORCHESTRATOR_URL || "http://localhost:8081",
+  endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",
   licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
   tenant: process.env.AXONFLOW_TENANT || "demo",
   debug: true,

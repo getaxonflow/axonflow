@@ -16,7 +16,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 	openai "github.com/sashabaranov/go-openai"
 )
 

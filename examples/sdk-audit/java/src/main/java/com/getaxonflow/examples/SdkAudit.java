@@ -50,9 +50,10 @@ public class SdkAudit {
         String approvedContextId = null;
 
         // Initialize AxonFlow client
+        // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
+        // The Agent proxies orchestrator routes internally.
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .orchestratorUrl(getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"))
+            .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
             .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
             .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"))
             .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
