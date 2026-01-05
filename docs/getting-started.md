@@ -120,13 +120,13 @@ AWS_REGION=us-east-1
 Start AxonFlow:
 ```bash
 # Start all services (agent, orchestrator, database, portal)
-docker-compose up -d
+docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs -f agent
+docker compose logs -f agent
 ```
 
 **Access locally:**
@@ -438,7 +438,7 @@ AxonFlow supports multiple data connectors out of the box:
 POSTGRESQL_URL=postgresql://user:pass@host:5432/dbname
 
 # Restart agent to load connector
-docker-compose restart agent
+docker compose restart agent
 ```
 
 Now you can query your database with natural language:
@@ -566,17 +566,17 @@ AxonFlow includes 3 complete example applications:
 ```bash
 # Healthcare
 cd examples/healthcare
-docker-compose up -d
+docker compose up -d
 open http://localhost:3000
 
 # E-commerce
 cd examples/ecommerce
-docker-compose up -d
+docker compose up -d
 open http://localhost:3001
 
 # Travel
 cd examples/travel
-docker-compose up -d
+docker compose up -d
 open http://localhost:3002
 ```
 
@@ -619,7 +619,7 @@ docker exec -it axonflow-agent /app/keygen \
 docker ps | grep axonflow-agent
 
 # If not running, check logs
-docker-compose logs agent
+docker compose logs agent
 
 # Common issues:
 # - Database not ready (wait 30 seconds and retry)
@@ -642,7 +642,7 @@ docker exec -it axonflow-db psql -U axonflow -d axonflow
 # If connection fails:
 # 1. Check DATABASE_URL in .env
 # 2. Verify credentials
-# 3. Restart database: docker-compose restart db
+# 3. Restart database: docker compose restart db
 ```
 
 #### 4. "Rate limit exceeded"

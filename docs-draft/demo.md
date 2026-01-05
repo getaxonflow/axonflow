@@ -32,7 +32,7 @@ git clone https://github.com/getaxonflow/axonflow.git
 cd axonflow
 
 # Start services
-docker-compose up -d
+docker compose up -d
 
 # Run the demo
 ./examples/demo/demo.sh

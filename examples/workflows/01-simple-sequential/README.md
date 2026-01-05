@@ -40,4 +40,4 @@ The agent handles:
 
 - Try Example 2 to see parallel execution
 - Modify the query to test different prompts
-- Check `docker-compose logs axonflow-agent` to see policy enforcement in action
+- Check `docker compose logs axonflow-agent` to see policy enforcement in action

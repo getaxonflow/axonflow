@@ -24,7 +24,7 @@ export GOOGLE_MODEL=gemini-2.5-flash
 ### 3. Start AxonFlow
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Supported Models

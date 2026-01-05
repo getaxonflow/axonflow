@@ -15,7 +15,7 @@ Demonstrates how to check the health of AxonFlow Agent and Orchestrator services
 
 1. Start AxonFlow services:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. Verify services are running:

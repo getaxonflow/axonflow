@@ -76,14 +76,14 @@ check_services() {
 
     if ! curl -s "$AGENT_URL/health" > /dev/null 2>&1; then
         echo -e "${RED}Error: Agent not responding at $AGENT_URL${NC}"
-        echo -e "Run: ${CYAN}docker-compose up -d${NC}"
+        echo -e "Run: ${CYAN}docker compose up -d${NC}"
         exit 1
     fi
     print_success "Agent healthy at $AGENT_URL"
 
     if ! curl -s "$ORCHESTRATOR_URL/health" > /dev/null 2>&1; then
         echo -e "${RED}Error: Orchestrator not responding at $ORCHESTRATOR_URL${NC}"
-        echo -e "Run: ${CYAN}docker-compose up -d${NC}"
+        echo -e "Run: ${CYAN}docker compose up -d${NC}"
         exit 1
     fi
     print_success "Orchestrator healthy at $ORCHESTRATOR_URL"

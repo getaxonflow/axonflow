@@ -24,12 +24,19 @@ Get up and running in 5 minutes:
 git clone https://github.com/getaxonflow/axonflow.git
 cd axonflow
 
-# 2. Start local development environment
-./scripts/local-dev/start.sh
+# 2. (Optional) Set up LLM API keys for AI features
+cp .env.example .env
+# Edit .env and add your OPENAI_API_KEY or ANTHROPIC_API_KEY
 
-# 3. Verify all services are healthy (takes ~30 seconds)
-docker-compose ps
+# 3. Start local development environment
+./scripts/local-dev/start.sh   # Recommended: includes health checks and waits
+# OR: docker compose up -d     # Quick start (see README.md)
+
+# 4. Verify all services are healthy
+docker compose ps
 ```
+
+> **Tip:** The `start.sh` script builds images, waits for services to be healthy, and displays all endpoints. For a minimal setup without health checks, use `docker compose up -d` as shown in the main README.
 
 That's it! You now have:
 - Agent API running on http://localhost:8080
@@ -74,12 +81,12 @@ make start
 # 2. Check service health (should see all "healthy")
 make status
 # OR
-docker-compose ps
+docker compose ps
 
 # 3. View logs (optional)
 make logs
 # OR
-docker-compose logs -f agent orchestrator
+docker compose logs -f agent orchestrator
 
 # 4. Test API endpoints
 curl http://localhost:8080/health  # Agent
@@ -99,12 +106,12 @@ vim platform/agent/main.go
 # Rebuild and restart specific service
 make rebuild service=agent
 # OR
-docker-compose up -d --build axonflow-agent
+docker compose up -d --build axonflow-agent
 
 # View logs for debugging
 make logs service=agent
 # OR
-docker-compose logs -f axonflow-agent
+docker compose logs -f axonflow-agent
 
 # Run tests
 make test
@@ -114,7 +121,7 @@ go test ./...
 # Stop everything when done
 make stop
 # OR
-docker-compose down
+docker compose down
 ```
 
 ## Making Changes
@@ -496,16 +503,16 @@ golangci-lint run ./...
 make logs
 
 # View specific service logs
-docker-compose logs -f axonflow-agent
+docker compose logs -f axonflow-agent
 
 # Check service health
 curl http://localhost:8080/health
 
 # Connect to database
-docker-compose exec postgres psql -U axonflow -d axonflow
+docker compose exec postgres psql -U axonflow -d axonflow
 
 # Restart a service
-docker-compose restart axonflow-agent
+docker compose restart axonflow-agent
 ```
 
 ### Database Migrations
@@ -518,7 +525,7 @@ touch migrations/NNN_description.sql
 ./scripts/local-dev/test-migrations.sh
 
 # Verify in database
-docker-compose exec postgres psql -U axonflow -d axonflow -c "\\dt"
+docker compose exec postgres psql -U axonflow -d axonflow -c "\\dt"
 ```
 
 ## Getting Help
@@ -566,14 +573,14 @@ make start
 
 **Port already in use:**
 ```bash
-docker-compose down
+docker compose down
 lsof -i :8080
 kill -9 <PID>
 ```
 
 **Migrations fail:**
 ```bash
-docker-compose down -v  # WARNING: loses data
+docker compose down -v  # WARNING: loses data
 make start
 ```
 

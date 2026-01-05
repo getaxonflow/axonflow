@@ -21,7 +21,7 @@ open http://localhost:3000    # Grafana (admin / grafana_localdev456)
 open http://localhost:9090    # Prometheus
 
 # 3. Follow logs
-docker-compose logs -f agent
+docker compose logs -f agent
 
 # 4. Stop services (keep data for faster restart)
 ./scripts/local-dev/stop.sh --keep-data
@@ -117,7 +117,7 @@ networks:
 EOF
 
 # 2. Start Ollama
-docker-compose -f docker-compose.ollama.yaml up -d
+docker compose -f docker-compose.ollama.yaml up -d
 
 # 3. Pull models (choose one or more)
 docker exec axonflow-ollama ollama pull llama3.1       # 8B, general purpose
@@ -133,7 +133,7 @@ export OLLAMA_ENDPOINT=http://ollama:11434
 export OLLAMA_MODEL=llama3.1
 
 # 6. Restart orchestrator
-docker-compose restart orchestrator
+docker compose restart orchestrator
 ```
 
 #### Integrated Setup (Recommended)
@@ -288,10 +288,10 @@ Before deploying to AWS, test migrations locally:
 ./scripts/local-dev/test-migrations.sh
 
 # Verify specific migration
-docker-compose exec postgres psql -U axonflow -d axonflow -c "\dt"
+docker compose exec postgres psql -U axonflow -d axonflow -c "\dt"
 
 # Check Grafana database created (migration 017)
-docker-compose exec postgres psql -U postgres -l | grep grafana
+docker compose exec postgres psql -U postgres -l | grep grafana
 ```
 
 **What this verifies:**
@@ -388,40 +388,40 @@ lsof -i :3000   # Grafana
 ### Migrations failing
 ```bash
 # View Agent logs (migrations run in Agent)
-docker-compose logs agent
+docker compose logs agent
 
 # Connect to database directly
-docker-compose exec postgres psql -U axonflow -d axonflow
+docker compose exec postgres psql -U axonflow -d axonflow
 
 # Check if grafana password is set
-docker-compose exec axonflow-agent env | grep GRAFANA_PASSWORD
+docker compose exec axonflow-agent env | grep GRAFANA_PASSWORD
 ```
 
 ### Grafana can't connect
 ```bash
 # Verify grafana database exists
-docker-compose exec postgres psql -U postgres -l | grep grafana
+docker compose exec postgres psql -U postgres -l | grep grafana
 
 # Verify grafana user exists
-docker-compose exec postgres psql -U postgres -c "\du" | grep grafana
+docker compose exec postgres psql -U postgres -c "\du" | grep grafana
 
 # Check migration 017 ran
-docker-compose exec postgres psql -U axonflow -d axonflow -c \
+docker compose exec postgres psql -U axonflow -d axonflow -c \
   "SELECT version FROM schema_migrations WHERE version = '017';"
 ```
 
 ### Service unhealthy
 ```bash
 # Check service status
-docker-compose ps
+docker compose ps
 
 # View specific service logs
-docker-compose logs agent
-docker-compose logs orchestrator
-docker-compose logs customer-portal
+docker compose logs agent
+docker compose logs orchestrator
+docker compose logs customer-portal
 
 # Restart specific service
-docker-compose restart agent
+docker compose restart agent
 ```
 
 ---
@@ -439,11 +439,11 @@ vim platform/agent/handler.go
 
 ```bash
 # Rebuild and restart
-docker-compose build agent
-docker-compose up -d agent
+docker compose build agent
+docker compose up -d agent
 
 # Check logs
-docker-compose logs -f agent
+docker compose logs -f agent
 
 # Test endpoint
 curl http://localhost:8080/health
@@ -462,26 +462,26 @@ cd /Users/saurabhjain/Development/axonflow-worktree-deployment
 
 ```bash
 # View all service logs
-docker-compose logs -f
+docker compose logs -f
 
 # Follow specific service
-docker-compose logs -f agent
+docker compose logs -f agent
 
 # Check service status
-docker-compose ps
+docker compose ps
 
 # Restart specific service
-docker-compose restart agent
+docker compose restart agent
 
 # Rebuild after code changes
-docker-compose build agent
-docker-compose up -d agent
+docker compose build agent
+docker compose up -d agent
 
 # Access PostgreSQL
-docker-compose exec postgres psql -U axonflow -d axonflow
+docker compose exec postgres psql -U axonflow -d axonflow
 
 # Access Redis
-docker-compose exec redis redis-cli
+docker compose exec redis redis-cli
 
 # Clean restart (fresh database)
 ./scripts/local-dev/stop.sh --clean
@@ -509,7 +509,7 @@ open http://localhost:3000
 # Login: admin / grafana_localdev456
 
 # 5. Query database
-docker-compose exec postgres psql -U axonflow -d axonflow -c "SELECT * FROM schema_migrations;"
+docker compose exec postgres psql -U axonflow -d axonflow -c "SELECT * FROM schema_migrations;"
 ```
 
 ---
@@ -561,6 +561,6 @@ When AxonFlow goes source-available, contributors MUST have fast local testing:
 
 If you encounter issues:
 1. Check troubleshooting section above
-2. View logs: `docker-compose logs -f`
+2. View logs: `docker compose logs -f`
 3. Clean restart: `./scripts/local-dev/stop.sh --clean && ./scripts/local-dev/start.sh`
 4. File an issue with logs attached
