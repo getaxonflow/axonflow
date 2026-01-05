@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -70,16 +71,28 @@ type QueryResponse struct {
 	Count        int                      `json:"count"`
 	QueryBlocked bool                     `json:"query_blocked"`
 	BlockReason  string                   `json:"block_reason,omitempty"`
-	LLMProvider  string                   `json:"llm_provider,omitempty"`
+	LLMProvider  *LLMProviderInfo         `json:"llm_provider,omitempty"`
+	PIIDetected  []string                 `json:"pii_detected,omitempty"`
+	PIIRedacted  bool                     `json:"pii_redacted,omitempty"`
 	SecurityLog  SecurityLog              `json:"security_log"`
+}
+
+// LLMProviderInfo contains information about the LLM provider used
+type LLMProviderInfo struct {
+	Name       string `json:"name"`
+	Reason     string `json:"reason"`
+	TokensUsed int    `json:"tokens_used"`
+	Duration   string `json:"duration"`
 }
 
 // SecurityLog captures query execution metadata
 type SecurityLog struct {
-	UserEmail     string    `json:"user_email"`
-	QueryExecuted string    `json:"query_executed"`
-	AccessGranted bool      `json:"access_granted"`
-	Timestamp     time.Time `json:"timestamp"`
+	UserEmail       string    `json:"user_email"`
+	QueryExecuted   string    `json:"query_executed"`
+	AccessGranted   bool      `json:"access_granted"`
+	FilteredResults int       `json:"filtered_results,omitempty"`
+	PIIRedacted     bool      `json:"pii_redacted,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 // LoginRequest for authentication
@@ -254,10 +267,10 @@ func main() {
 	r.HandleFunc("/api/llm/natural-query", authMiddleware(naturalQueryHandler)).Methods("POST")
 	r.HandleFunc("/api/llm/status", authMiddleware(llmStatusHandler)).Methods("GET")
 	r.HandleFunc("/api/llm/user-access", authMiddleware(userAccessHandler)).Methods("GET")
-	r.HandleFunc("/api/audit", authMiddleware(auditStubHandler)).Methods("GET")
-	r.HandleFunc("/api/policy-metrics", authMiddleware(policyMetricsStubHandler)).Methods("GET")
+	r.HandleFunc("/api/audit", authMiddleware(auditHandler)).Methods("GET")
+	r.HandleFunc("/api/policy-metrics", authMiddleware(policyMetricsHandler)).Methods("GET")
 	r.HandleFunc("/api/policy-metrics/update", authMiddleware(stubHandler)).Methods("POST")
-	r.HandleFunc("/api/performance/metrics", authMiddleware(performanceStubHandler)).Methods("GET")
+	r.HandleFunc("/api/performance/metrics", authMiddleware(performanceMetricsHandler)).Methods("GET")
 
 	// Start server
 	port := os.Getenv("PORT")
@@ -589,15 +602,18 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM support_tickets WHERE resolved_at::date = CURRENT_DATE").Scan(&stats.ResolvedToday)
 	stats.AvgResponseTime = 45 // Demo value in minutes
 
-	// Query policy metrics from database
-	db.QueryRow("SELECT COALESCE(total_policies_enforced, 0), COALESCE(pii_redacted, 0) FROM policy_metrics WHERE date = CURRENT_DATE").Scan(&stats.TotalQueries, &stats.TotalPIIDetections)
+	// Query metrics from audit_log table
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE created_at::date = CURRENT_DATE").Scan(&stats.TotalQueries)
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE pii_redacted = true AND created_at::date = CURRENT_DATE").Scan(&stats.TotalPIIDetections)
 
 	// Count unique demo users
 	stats.TotalUsers = len(demoUsers)
 
-	// Calculate compliance score (100% - (blocked queries / total queries) * 100)
+	// Calculate compliance score from audit log
+	var blockedQueries int
+	db.QueryRow("SELECT COUNT(*) FROM audit_log WHERE access_granted = false AND created_at::date = CURRENT_DATE").Scan(&blockedQueries)
 	if stats.TotalQueries > 0 {
-		stats.ComplianceScore = 98.5 // Demo value - in production calculate from actual blocks
+		stats.ComplianceScore = 100.0 - (float64(blockedQueries)/float64(stats.TotalQueries))*100
 	} else {
 		stats.ComplianceScore = 100.0
 	}
@@ -716,6 +732,9 @@ func extractSQL(response string) string {
 }
 
 func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) {
+	// Log blocked query to audit table
+	auditQuery(user, query, 0, []string{}, false, false)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(QueryResponse{
@@ -733,12 +752,23 @@ func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) 
 }
 
 func respondWithResults(w http.ResponseWriter, user User, query string, results []map[string]interface{}, provider string) {
+	// Log successful query to audit table
+	auditQuery(user, query, len(results), []string{}, false, true)
+
+	// Create LLMProviderInfo if provider is specified
+	var llmProvider *LLMProviderInfo
+	if provider != "" {
+		llmProvider = &LLMProviderInfo{
+			Name: provider,
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(QueryResponse{
 		Results:      results,
 		Count:        len(results),
 		QueryBlocked: false,
-		LLMProvider:  provider,
+		LLMProvider:  llmProvider,
 		SecurityLog: SecurityLog{
 			UserEmail:     user.Email,
 			QueryExecuted: query,
@@ -748,12 +778,127 @@ func respondWithResults(w http.ResponseWriter, user User, query string, results 
 	})
 }
 
-// Stub handlers for frontend compatibility
+// AuditLogEntry represents an entry in the audit log
+type AuditLogEntry struct {
+	ID            int       `json:"id"`
+	UserEmail     string    `json:"user_email"`
+	QueryText     string    `json:"query_text"`
+	ResultsCount  int       `json:"results_count"`
+	PIIDetected   []string  `json:"pii_detected"`
+	PIIRedacted   bool      `json:"pii_redacted"`
+	AccessGranted bool      `json:"access_granted"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// auditQuery writes an entry to the audit_log table
+func auditQuery(user User, query string, resultCount int, piiDetected []string, piiRedacted bool, accessGranted bool) {
+	_, err := db.Exec(`
+		INSERT INTO audit_log (user_id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, user.ID, user.Email, query, resultCount, piiDetected, piiRedacted, accessGranted)
+	if err != nil {
+		log.Printf("Failed to write audit log: %v", err)
+	}
+}
+
+// auditHandler returns audit log entries from the database
+func auditHandler(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value("user").(User)
+
+	var rows *sql.Rows
+	var err error
+
+	// Admins see all logs, others see only their own
+	if user.Role == "admin" {
+		rows, err = db.Query(`
+			SELECT id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted, created_at
+			FROM audit_log ORDER BY created_at DESC LIMIT 100
+		`)
+	} else {
+		rows, err = db.Query(`
+			SELECT id, user_email, query_text, results_count, pii_detected, pii_redacted, access_granted, created_at
+			FROM audit_log WHERE user_email = $1 ORDER BY created_at DESC LIMIT 100
+		`, user.Email)
+	}
+
+	if err != nil {
+		log.Printf("Failed to query audit log: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]AuditLogEntry{})
+		return
+	}
+	defer rows.Close()
+
+	var entries []AuditLogEntry
+	for rows.Next() {
+		var entry AuditLogEntry
+		var piiDetected []byte // PostgreSQL array comes as bytes
+		err := rows.Scan(&entry.ID, &entry.UserEmail, &entry.QueryText, &entry.ResultsCount,
+			&piiDetected, &entry.PIIRedacted, &entry.AccessGranted, &entry.CreatedAt)
+		if err != nil {
+			log.Printf("Failed to scan audit row: %v", err)
+			continue
+		}
+		// Parse PostgreSQL array format: {item1,item2}
+		if len(piiDetected) > 2 {
+			arrayStr := string(piiDetected[1 : len(piiDetected)-1]) // Remove { and }
+			if arrayStr != "" {
+				entry.PIIDetected = strings.Split(arrayStr, ",")
+			}
+		}
+		entries = append(entries, entry)
+	}
+
+	if entries == nil {
+		entries = []AuditLogEntry{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+// policyMetricsHandler returns metrics calculated from audit_log
+func policyMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	var totalQueries, piiRedacted, blockedQueries int
+
+	// Count total queries today
+	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE created_at::date = CURRENT_DATE`).Scan(&totalQueries)
+
+	// Count PII redacted today
+	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE pii_redacted = true AND created_at::date = CURRENT_DATE`).Scan(&piiRedacted)
+
+	// Count blocked queries today
+	db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE access_granted = false AND created_at::date = CURRENT_DATE`).Scan(&blockedQueries)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"total_policies_enforced": totalQueries,
+		"ai_queries":              totalQueries, // All queries go through AxonFlow
+		"pii_redacted":            piiRedacted,
+		"regional_blocks":         blockedQueries,
+	})
+}
+
+// performanceMetricsHandler returns performance metrics
+func performanceMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	var totalRequests int
+	db.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&totalRequests)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"avg_latency_ms": 45, // Would need request timing to calculate actual latency
+		"requests_total": totalRequests,
+		"cache_hit_rate": 0,
+	})
+}
+
+// stubHandler for endpoints that don't need real implementation
 func stubHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
 
+// userAccessHandler returns user's LLM provider access
 func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 	w.Header().Set("Content-Type", "application/json")
@@ -774,31 +919,107 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func auditStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]map[string]interface{}{})
+// PII detection patterns
+var piiPatterns = map[string]*regexp.Regexp{
+	"ssn":         regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+	"credit_card": regexp.MustCompile(`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`),
+	"phone":       regexp.MustCompile(`\b\d{3}[-.]?\d{3}[-.]?\d{4}\b`),
+	"email":       regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
 }
 
-func policyMetricsStubHandler(w http.ResponseWriter, r *http.Request) {
-	var totalPolicies, aiQueries, piiRedacted, regionalBlocks int
-	db.QueryRow(`SELECT COALESCE(total_policies_enforced, 0), COALESCE(ai_queries, 0),
-		COALESCE(pii_redacted, 0), COALESCE(regional_blocks, 0)
-		FROM policy_metrics WHERE date = CURRENT_DATE`).Scan(&totalPolicies, &aiQueries, &piiRedacted, &regionalBlocks)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"total_policies_enforced": totalPolicies,
-		"ai_queries":              aiQueries,
-		"pii_redacted":            piiRedacted,
-		"regional_blocks":         regionalBlocks,
-	})
+// getSecret retrieves a secret from environment variables or file
+func getSecret(key string) string {
+	// First check environment variable
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	// Check for file-based secret (Docker secrets style)
+	secretFile := "/run/secrets/" + strings.ToLower(key)
+	if data, err := os.ReadFile(secretFile); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
 }
 
-func performanceStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"avg_latency_ms": 45,
-		"requests_total": 0,
-		"cache_hit_rate": 0,
-	})
+// contains checks if a slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// detectAndRedactPII detects and optionally redacts PII in a string
+func detectAndRedactPII(value string, user User) ([]string, string) {
+	var detected []string
+	redacted := value
+
+	// Check for each PII pattern
+	for piiType, pattern := range piiPatterns {
+		if pattern.MatchString(value) {
+			detected = append(detected, piiType)
+			// Only redact if user doesn't have read_pii permission
+			if !contains(user.Permissions, "read_pii") {
+				redacted = pattern.ReplaceAllString(redacted, "[REDACTED-"+strings.ToUpper(piiType)+"]")
+			}
+		}
+	}
+
+	return detected, redacted
+}
+
+// detectPIIInQueryText detects PII patterns in query text
+func detectPIIInQueryText(query string) []string {
+	var detected []string
+	for piiType, pattern := range piiPatterns {
+		if pattern.MatchString(query) {
+			detected = append(detected, piiType)
+		}
+	}
+	return detected
+}
+
+// removeDuplicates removes duplicate strings from a slice
+func removeDuplicates(slice []string) []string {
+	seen := make(map[string]bool)
+	result := []string{}
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// applyRowLevelSecurity applies row-level security filters to SQL queries
+func applyRowLevelSecurity(query string, user User) string {
+	// Admin users have full access
+	if user.Role == "admin" {
+		return query
+	}
+
+	// For non-admin users, apply region filtering if the query involves customers or tickets
+	queryLower := strings.ToLower(query)
+	if strings.Contains(queryLower, "customers") || strings.Contains(queryLower, "support_tickets") {
+		// Check if WHERE clause already exists
+		if strings.Contains(queryLower, "where") {
+			// Add AND clause for region filter
+			query = strings.Replace(query, "WHERE", "WHERE region = '"+user.Region+"' AND", 1)
+			query = strings.Replace(query, "where", "WHERE region = '"+user.Region+"' AND", 1)
+		} else {
+			// Add WHERE clause before any ORDER BY, LIMIT, or end of query
+			if idx := strings.Index(strings.ToUpper(query), "ORDER BY"); idx > 0 {
+				query = query[:idx] + " WHERE region = '" + user.Region + "' " + query[idx:]
+			} else if idx := strings.Index(strings.ToUpper(query), "LIMIT"); idx > 0 {
+				query = query[:idx] + " WHERE region = '" + user.Region + "' " + query[idx:]
+			} else {
+				query = query + " WHERE region = '" + user.Region + "'"
+			}
+		}
+	}
+
+	return query
 }
