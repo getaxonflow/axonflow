@@ -34,7 +34,7 @@ async def main():
     failed = 0
 
     async with AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         orchestrator_url=os.getenv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),

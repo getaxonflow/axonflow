@@ -49,7 +49,7 @@ public class McpConnectorExample {
 
         // Initialize AxonFlow client
         AxonFlow axonflow = AxonFlow.create(AxonFlowConfig.builder()
-            .agentUrl(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
+            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
             .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
             .build());
 

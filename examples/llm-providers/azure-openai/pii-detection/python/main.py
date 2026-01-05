@@ -15,7 +15,7 @@ def main():
 
     # Initialize AxonFlow client (using SyncAxonFlow for synchronous operations)
     async_client = AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "azure-pii-demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         license_key=os.getenv("AXONFLOW_LICENSE_KEY", ""),

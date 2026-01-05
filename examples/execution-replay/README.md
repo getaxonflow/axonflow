@@ -69,7 +69,7 @@ All SDKs accept an `orchestratorUrl` (or `orchestrator_url`) configuration optio
 ```go
 // Go
 client, _ := axonflow.NewClient(axonflow.AxonFlowConfig{
-    AgentURL:        "http://localhost:8080",
+    Endpoint:        "http://localhost:8080",
     OrchestratorURL: "http://localhost:8081", // For Execution Replay API
 })
 ```
@@ -77,7 +77,7 @@ client, _ := axonflow.NewClient(axonflow.AxonFlowConfig{
 ```python
 # Python
 client = AxonFlow.sync(
-    agent_url="http://localhost:8080",
+    endpoint="http://localhost:8080",
     orchestrator_url="http://localhost:8081",  # For Execution Replay API
 )
 ```
@@ -93,7 +93,7 @@ const client = new AxonFlow({
 ```java
 // Java
 AxonFlowConfig config = AxonFlowConfig.builder()
-    .agentUrl("http://localhost:8080")
+    .endpoint("http://localhost:8080")
     .orchestratorUrl("http://localhost:8081") // For Execution Replay API
     .build();
 ```

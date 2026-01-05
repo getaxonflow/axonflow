@@ -28,7 +28,7 @@ public class HealthCheckExample {
         String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-            .agentUrl(agentUrl)
+            .endpoint(agentUrl)
             .licenseKey(licenseKey)
             .build();
 

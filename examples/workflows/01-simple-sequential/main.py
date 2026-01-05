@@ -22,7 +22,7 @@ def main():
 
     # Create AxonFlow client
     client = AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         license_key=license_key,
     )
 

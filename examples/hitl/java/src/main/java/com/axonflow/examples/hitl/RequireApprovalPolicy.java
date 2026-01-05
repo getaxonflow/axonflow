@@ -41,7 +41,7 @@ public class RequireApprovalPolicy {
         }
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .clientId(clientId)
                 .build();
 

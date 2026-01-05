@@ -1,4 +1,4 @@
-axonflow>=0.14.0
+axonflow>=1.0.0
 
 # For local development, install from source:
 # pip install -e /Users/saurabhjain/Development/axonflow-sdk-python

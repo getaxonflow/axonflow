@@ -30,7 +30,7 @@ func main() {
 	}
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL:   endpoint,
+		Endpoint:   endpoint,
 		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"),
 		Mode:       "production",
 		Debug:      os.Getenv("DEBUG") == "true",

@@ -479,7 +479,7 @@ func main() {
 	fmt.Printf("\nChecking AxonFlow at %s...\n", agentURL)
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL: agentURL,
+		Endpoint: agentURL,
 	})
 
 	// Health check

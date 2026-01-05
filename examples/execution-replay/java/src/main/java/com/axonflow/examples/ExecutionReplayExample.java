@@ -35,7 +35,7 @@ public class ExecutionReplayExample {
         String orchestratorUrl = System.getenv().getOrDefault("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .agentUrl(agentUrl)
+                .endpoint(agentUrl)
                 .orchestratorUrl(orchestratorUrl)
                 .debug(true)
                 .build();

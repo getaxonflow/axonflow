@@ -41,7 +41,7 @@ def main():
     # Initialize AxonFlow client in Community Mode (no authentication required)
     # For enterprise deployments, add: client_id="...", client_secret="..."
     axonflow = AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
     )
 
     # Initialize OpenAI client

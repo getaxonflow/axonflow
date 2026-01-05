@@ -28,7 +28,7 @@ func main() {
 	orchestratorURL := getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL:        agentURL,
+		Endpoint:        agentURL,
 		OrchestratorURL: orchestratorURL,
 		Debug:           true,
 	})

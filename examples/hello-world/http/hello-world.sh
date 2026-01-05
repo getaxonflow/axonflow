@@ -64,11 +64,17 @@ test_query() {
     block_reason=$(echo "$response" | jq -r '.block_reason // ""')
     context_id=$(echo "$response" | jq -r '.context_id // ""')
     policies=$(echo "$response" | jq -r '.policies // [] | join(", ")')
+    requires_redaction=$(echo "$response" | jq -r '.requires_redaction // false')
 
     if [ "$approved" = "true" ]; then
-        echo -e "   Result: ${GREEN}APPROVED${NC}"
+        if [ "$requires_redaction" = "true" ]; then
+            echo -e "   Result: ${YELLOW}APPROVED (requires redaction)${NC}"
+            actual="redaction"
+        else
+            echo -e "   Result: ${GREEN}APPROVED${NC}"
+            actual="approved"
+        fi
         echo "   Context ID: $context_id"
-        actual="approved"
     else
         echo -e "   Result: ${RED}BLOCKED${NC}"
         echo "   Reason: $block_reason"
@@ -103,7 +109,7 @@ test_query "SQL Injection" \
 
 test_query "PII (SSN)" \
     "Process payment for SSN 123-45-6789" \
-    "blocked"
+    "redaction"
 
 echo "========================================"
 echo "Hello World Complete!"

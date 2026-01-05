@@ -245,7 +245,7 @@ func main() {
 	}
 
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
-		AgentURL: agentURL,
+		Endpoint: agentURL,
 		Mode:     "production", // Fail-open if AxonFlow is unavailable
 		Debug:    os.Getenv("AXONFLOW_DEBUG") == "true",
 		Retry: axonflow.RetryConfig{

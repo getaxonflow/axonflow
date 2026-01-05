@@ -30,7 +30,7 @@ async def main():
     print()
 
     async with AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -164,7 +164,7 @@ async def main():
 
     # Re-create client for query phase (previous context manager closed it)
     async with AxonFlow(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as query_client:
