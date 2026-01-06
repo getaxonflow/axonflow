@@ -75,13 +75,56 @@ GET /api/v1/providers/status
 - Performance metrics
 ```
 
-### Policy Management
+### Dynamic Policies (ADR-026)
 ```
-GET /api/v1/policies/dynamic
-- List active dynamic policies
+GET    /api/v1/dynamic-policies           - List all dynamic policies
+POST   /api/v1/dynamic-policies           - Create a dynamic policy
+GET    /api/v1/dynamic-policies/{id}      - Get policy by ID
+PUT    /api/v1/dynamic-policies/{id}      - Update policy
+DELETE /api/v1/dynamic-policies/{id}      - Delete policy
+GET    /api/v1/dynamic-policies/effective - Get effective policies
+POST   /api/v1/dynamic-policies/{id}/test - Test policy evaluation
+```
 
-POST /api/v1/policies/test
-- Test policy evaluation
+### LLM Providers
+```
+GET  /api/v1/llm-providers          - List configured providers
+POST /api/v1/llm-providers          - Add provider
+GET  /api/v1/llm-providers/{name}   - Get provider details
+PUT  /api/v1/llm-providers/{name}   - Update provider config
+GET  /api/v1/llm-providers/status   - All providers health status
+GET  /api/v1/llm-providers/routing  - Current routing weights
+```
+
+### Cost Controls
+```
+POST /api/v1/budgets        - Create budget
+GET  /api/v1/budgets        - List budgets
+GET  /api/v1/budgets/{id}   - Get budget
+PUT  /api/v1/budgets/{id}   - Update budget
+GET  /api/v1/usage          - Usage summary
+GET  /api/v1/usage/records  - Detailed usage records
+```
+
+### Execution Replay
+```
+GET    /api/v1/executions           - List executions
+GET    /api/v1/executions/{id}      - Get execution details
+GET    /api/v1/executions/{id}/steps - Get execution steps
+DELETE /api/v1/executions/{id}      - Delete execution
+```
+
+### Audit & Metrics
+```
+POST /api/v1/audit/search              - Search audit logs
+GET  /api/v1/audit/tenant/{tenant_id}  - Tenant audit logs
+GET  /api/v1/metrics                   - Service metrics
+```
+
+### Admin/Debugging (Legacy)
+```
+GET  /api/v1/policies/dynamic - List policies (legacy, use /api/v1/dynamic-policies)
+POST /api/v1/policies/test    - Test policy evaluation
 ```
 
 ## Configuration

@@ -81,7 +81,7 @@ class PolicyClient:
     async def list_dynamic_policies(self) -> dict:
         """List dynamic policies from Orchestrator."""
         resp = await self.client.get(
-            f"{self.orchestrator_url}/api/v1/policies/dynamic"
+            f"{self.orchestrator_url}/api/v1/dynamic-policies"
         )
         resp.raise_for_status()
         return resp.json()
@@ -278,8 +278,8 @@ async def main():
 
   Endpoints:
     Static:  GET /api/v1/static-policies
-    Dynamic: GET /api/v1/policies/dynamic
-    CRUD:    /api/v1/policies (GET, POST, PUT, DELETE)
+    Dynamic: GET /api/v1/dynamic-policies
+    CRUD:    /api/v1/dynamic-policies (GET, POST, PUT, DELETE)
 
   Common Policy Actions:
     - block: Reject the request
