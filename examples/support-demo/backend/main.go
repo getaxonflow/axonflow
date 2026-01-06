@@ -1026,12 +1026,12 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 func getActivePoliciesForUser(user User) []map[string]interface{} {
 	var activePolicies []map[string]interface{}
 
-	req, err := http.NewRequest("GET", orchestratorURL+"/api/v1/policies?page_size=50", nil)
+	req, err := http.NewRequest("GET", orchestratorURL+"/api/v1/dynamic-policies", nil)
 	if err != nil {
 		log.Printf("Failed to create policy request: %v", err)
 		return activePolicies
 	}
-	req.Header.Set("X-Tenant-ID", "support-demo")
+	req.Header.Set("X-Org-ID", "demo-org")
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -1134,10 +1134,6 @@ func getProviderColor(configured bool) string {
 
 func getOllamaStatus(configured bool) string {
 	if configured {
-		model := os.Getenv("OLLAMA_MODEL")
-		if model != "" {
-			return fmt.Sprintf("Available (%s)", model)
-		}
 		return "Available"
 	}
 	return "Not configured"
