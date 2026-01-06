@@ -957,33 +957,25 @@ func stubHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
 
-// userAccessHandler returns LLM provider availability
-// Note: Actual routing decisions are made by AxonFlow policies at request time
+// userAccessHandler returns LLM provider configuration
+// Actual policy enforcement happens in AxonFlow at request time
 func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 	w.Header().Set("Content-Type", "application/json")
 
-	// Show provider availability based on configured API keys
-	openaiConfigured := os.Getenv("OPENAI_API_KEY") != ""
-	anthropicConfigured := os.Getenv("ANTHROPIC_API_KEY") != ""
-	ollamaConfigured := os.Getenv("OLLAMA_ENDPOINT") != ""
-
+	// Show configured providers
 	providers := map[string]interface{}{
 		"openai": map[string]interface{}{
-			"name":   "OpenAI GPT-4",
-			"status": getProviderStatus(openaiConfigured),
-			"color":  getProviderColor(openaiConfigured),
+			"name":       "OpenAI GPT-4",
+			"configured": os.Getenv("OPENAI_API_KEY") != "",
 		},
 		"anthropic": map[string]interface{}{
-			"name":   "Anthropic Claude",
-			"status": getProviderStatus(anthropicConfigured),
-			"color":  getProviderColor(anthropicConfigured),
+			"name":       "Anthropic Claude",
+			"configured": os.Getenv("ANTHROPIC_API_KEY") != "",
 		},
 		"ollama": map[string]interface{}{
-			"name":   "Ollama (Local)",
-			"status": getProviderStatus(ollamaConfigured),
-			"color":  getProviderColor(ollamaConfigured),
-			"model":  os.Getenv("OLLAMA_MODEL"),
+			"name":       "Ollama (Local)",
+			"configured": os.Getenv("OLLAMA_ENDPOINT") != "",
 		},
 	}
 
@@ -991,23 +983,9 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 		"user_role":   user.Role,
 		"user_region": user.Region,
 		"providers":   providers,
-		"note":        "Routing decisions are made by AxonFlow policies at request time based on your role, region, and query content.",
 	})
 }
 
-func getProviderStatus(configured bool) string {
-	if configured {
-		return "Available"
-	}
-	return "Not configured"
-}
-
-func getProviderColor(configured bool) string {
-	if configured {
-		return "green"
-	}
-	return "red"
-}
 
 // PII detection patterns
 var piiPatterns = map[string]*regexp.Regexp{
