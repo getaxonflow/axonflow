@@ -34,8 +34,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
-	"github.com/rs/cors"
 	_ "github.com/lib/pq"
+	"github.com/rs/cors"
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
@@ -250,7 +250,7 @@ func main() {
 	}
 
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint: agentURL, // ADR-026: Agent proxies all routes (single entry point)
+		Endpoint: agentURL,   // ADR-026: Agent proxies all routes (single entry point)
 		ClientID: "demo-org", // Tenant ID for dynamic policy evaluation
 		Debug:    os.Getenv("AXONFLOW_DEBUG") == "true",
 	})
@@ -284,7 +284,7 @@ func main() {
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8082"
 	}
 
 	handler := c.Handler(r)

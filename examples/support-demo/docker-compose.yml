@@ -86,5 +86,5 @@ volumes:
 
 networks:
   axonflow-network:
-    name: worktree-883-test_axonflow-network
+    name: axonflow_axonflow-network
     external: true
