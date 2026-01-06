@@ -129,10 +129,10 @@ POLICY_1='{
 api_call "POST" "/api/v1/dynamic-policies" "$POLICY_1" "Creating PII routing policy..."
 
 # Policy 1b: EU Region routing (separate policy for region-based routing)
-echo -e "${BLUE}--- Policy 1b: EU Region → Ollama (Data Sovereignty) ---${NC}"
+echo -e "${BLUE}--- Policy 1b: EU Region → Ollama Only (Strict GDPR Data Sovereignty) ---${NC}"
 POLICY_1B='{
   "name": "eu-region-route-to-local",
-  "description": "Route EU region user queries to local Ollama for GDPR data sovereignty",
+  "description": "Route EU region user queries to local Ollama ONLY for strict GDPR data sovereignty - no US-based providers allowed",
   "type": "user",
   "category": "dynamic-compliance",
   "tier": "tenant",
@@ -148,8 +148,8 @@ POLICY_1B='{
       "type": "route",
       "config": {
         "preferred_provider": "ollama",
-        "fallback_provider": "anthropic",
-        "reason": "EU user - routing to EU-hosted model for GDPR compliance"
+        "allowed_providers": ["ollama"],
+        "reason": "EU user - strict GDPR compliance requires local model only"
       }
     },
     {
@@ -162,9 +162,9 @@ POLICY_1B='{
   ],
   "priority": 90,
   "enabled": true,
-  "tags": ["gdpr", "eu", "data-sovereignty", "compliance"]
+  "tags": ["gdpr", "eu", "data-sovereignty", "compliance", "strict"]
 }'
-api_call "POST" "/api/v1/dynamic-policies" "$POLICY_1B" "Creating EU region routing policy..."
+api_call "POST" "/api/v1/dynamic-policies" "$POLICY_1B" "Creating EU region routing policy (strict GDPR)..."
 
 # Policy 2: Confidential queries route to Anthropic or Local
 echo -e "${BLUE}--- Policy 2: Confidential Queries → Anthropic/Local (Data Protection) ---${NC}"

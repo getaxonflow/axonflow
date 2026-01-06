@@ -957,36 +957,22 @@ func stubHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
 }
 
-// userAccessHandler returns actual LLM provider availability and active policies
+// userAccessHandler returns LLM provider availability
+// Note: Actual routing decisions are made by AxonFlow policies at request time
 func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(User)
 	w.Header().Set("Content-Type", "application/json")
 
-	// Show actual provider availability based on configured API keys
+	// Show provider availability based on configured API keys
 	openaiConfigured := os.Getenv("OPENAI_API_KEY") != ""
 	anthropicConfigured := os.Getenv("ANTHROPIC_API_KEY") != ""
 	ollamaConfigured := os.Getenv("OLLAMA_ENDPOINT") != ""
 
-	// Check what policies apply to this user
-	activePolicies := getActivePoliciesForUser(user)
-
-	// Determine if user is restricted from certain providers by policy
-	openaiRestricted := false
-	restrictionReason := ""
-	for _, policy := range activePolicies {
-		// If policy routes to ollama or anthropic, OpenAI is restricted
-		if policy["routing"] == "anthropic" || policy["routing"] == "ollama" || policy["routing"] == "local_llm" {
-			openaiRestricted = true
-			restrictionReason = policy["name"].(string)
-			break
-		}
-	}
-
 	providers := map[string]interface{}{
 		"openai": map[string]interface{}{
 			"name":   "OpenAI GPT-4",
-			"status": getProviderStatusWithPolicy(openaiConfigured, openaiRestricted, restrictionReason),
-			"color":  getProviderColorWithPolicy(openaiConfigured, openaiRestricted),
+			"status": getProviderStatus(openaiConfigured),
+			"color":  getProviderColor(openaiConfigured),
 		},
 		"anthropic": map[string]interface{}{
 			"name":   "Anthropic Claude",
@@ -995,127 +981,18 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		"ollama": map[string]interface{}{
 			"name":   "Ollama (Local)",
-			"status": getOllamaStatus(ollamaConfigured),
+			"status": getProviderStatus(ollamaConfigured),
 			"color":  getProviderColor(ollamaConfigured),
 			"model":  os.Getenv("OLLAMA_MODEL"),
 		},
 	}
 
-	routingRules := []map[string]string{}
-	for _, policy := range activePolicies {
-		routingRules = append(routingRules, map[string]string{
-			"rule": fmt.Sprintf("Policy: %s → Routes to %s", policy["name"], policy["routing"]),
-		})
-	}
-	if len(routingRules) == 0 {
-		routingRules = append(routingRules, map[string]string{
-			"rule": "No routing policies - default provider selection",
-		})
-	}
-
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"user_role":        user.Role,
-		"user_region":      user.Region,
-		"providers":        providers,
-		"active_policies":  activePolicies,
-		"routing_priority": routingRules,
+		"user_role":   user.Role,
+		"user_region": user.Region,
+		"providers":   providers,
+		"note":        "Routing decisions are made by AxonFlow policies at request time based on your role, region, and query content.",
 	})
-}
-
-// getActivePoliciesForUser fetches policies that apply to this user from AxonFlow
-func getActivePoliciesForUser(user User) []map[string]interface{} {
-	var activePolicies []map[string]interface{}
-
-	req, err := http.NewRequest("GET", orchestratorURL+"/api/v1/dynamic-policies", nil)
-	if err != nil {
-		log.Printf("Failed to create policy request: %v", err)
-		return activePolicies
-	}
-	req.Header.Set("X-Org-ID", "demo-org")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to fetch policies: %v", err)
-		return activePolicies
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Policies []struct {
-			Name       string `json:"name"`
-			Conditions []struct {
-				Field    string      `json:"field"`
-				Operator string      `json:"operator"`
-				Value    interface{} `json:"value"`
-			} `json:"conditions"`
-			Actions []struct {
-				Type   string                 `json:"type"`
-				Config map[string]interface{} `json:"config"`
-			} `json:"actions"`
-			Enabled bool `json:"enabled"`
-		} `json:"policies"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("Failed to decode policies: %v", err)
-		return activePolicies
-	}
-
-	for _, policy := range result.Policies {
-		if !policy.Enabled {
-			continue
-		}
-		matches := false
-		for _, cond := range policy.Conditions {
-			switch cond.Field {
-			case "user.role":
-				if cond.Operator == "equals" && cond.Value == user.Role {
-					matches = true
-				}
-			case "context.user_region":
-				if cond.Operator == "in" {
-					if values, ok := cond.Value.([]interface{}); ok {
-						for _, v := range values {
-							if v == user.Region {
-								matches = true
-								break
-							}
-						}
-					}
-				}
-			}
-		}
-		if matches {
-			for _, action := range policy.Actions {
-				if action.Type == "route" {
-					preferredProvider := ""
-					if pp, ok := action.Config["preferred_provider"].(string); ok {
-						preferredProvider = pp
-					}
-					activePolicies = append(activePolicies, map[string]interface{}{
-						"name":    policy.Name,
-						"routing": preferredProvider,
-					})
-				}
-			}
-		}
-	}
-
-	return activePolicies
-}
-
-func getProviderStatusWithPolicy(configured, restricted bool, restrictionReason string) string {
-	if restricted {
-		return fmt.Sprintf("Restricted by policy: %s", restrictionReason)
-	}
-	return getProviderStatus(configured)
-}
-
-func getProviderColorWithPolicy(configured, restricted bool) string {
-	if restricted {
-		return "orange"
-	}
-	return getProviderColor(configured)
 }
 
 func getProviderStatus(configured bool) string {
@@ -1130,13 +1007,6 @@ func getProviderColor(configured bool) string {
 		return "green"
 	}
 	return "red"
-}
-
-func getOllamaStatus(configured bool) string {
-	if configured {
-		return "Available"
-	}
-	return "Not configured"
 }
 
 // PII detection patterns
