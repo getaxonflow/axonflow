@@ -7,21 +7,19 @@
 #   - RBI: India financial data sovereignty
 #
 # API Endpoints demonstrated:
-#   POST   /api/v1/policies/dynamic     - Create policy with allowed_providers
-#   GET    /api/v1/policies/dynamic     - List policies
-#   DELETE /api/v1/policies/dynamic/:id - Delete policy
+#   POST   /api/v1/dynamic-policies     - Create policy with allowed_providers
+#   GET    /api/v1/dynamic-policies     - List policies
+#   DELETE /api/v1/dynamic-policies/:id - Delete policy
 #
 # Usage:
 #   ./compliance-policies.sh
 #
 # Environment:
-#   AXONFLOW_ORCHESTRATOR_ENDPOINT - Orchestrator URL (default: http://localhost:8081)
-#
-# Note: Dynamic policies are managed by the Orchestrator, not the Agent.
+#   AXONFLOW_ENDPOINT - Agent URL (default: http://localhost:8080)
 
 set -e
 
-ENDPOINT="${AXONFLOW_ORCHESTRATOR_ENDPOINT:-http://localhost:8081}"
+ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
 ORG_ID="${ORG_ID:-demo-org}"
 TENANT_ID="${TENANT_ID:-demo-tenant}"
 
@@ -34,7 +32,7 @@ CREATED_IDS=()
 
 # 1. GDPR - EU Data Sovereignty
 echo "1. Creating GDPR policy for EU data sovereignty..."
-GDPR_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/policies/dynamic" \
+GDPR_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
   -H "X-Tenant-ID: $TENANT_ID" \
@@ -61,7 +59,7 @@ fi
 # 2. HIPAA - Healthcare Data Protection
 echo ""
 echo "2. Creating HIPAA policy for PHI protection..."
-HIPAA_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/policies/dynamic" \
+HIPAA_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
   -H "X-Tenant-ID: $TENANT_ID" \
@@ -89,7 +87,7 @@ fi
 # 3. RBI - India Financial Data Sovereignty
 echo ""
 echo "3. Creating RBI policy for financial data sovereignty..."
-RBI_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/policies/dynamic" \
+RBI_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
   -H "X-Tenant-ID: $TENANT_ID" \
@@ -117,7 +115,7 @@ fi
 # 4. List all compliance policies
 echo ""
 echo "4. Listing all compliance policies with provider restrictions..."
-POLICIES=$(curl -s "$ENDPOINT/api/v1/policies/dynamic" \
+POLICIES=$(curl -s "$ENDPOINT/api/v1/dynamic-policies" \
   -H "X-Org-ID: $ORG_ID" \
   -H "X-Tenant-ID: $TENANT_ID")
 
@@ -130,7 +128,7 @@ echo "   Found $COMPLIANCE_COUNT policies with provider restrictions"
 echo ""
 echo "5. Cleaning up test policies..."
 for ID in "${CREATED_IDS[@]}"; do
-  curl -s -X DELETE "$ENDPOINT/api/v1/policies/dynamic/$ID" \
+  curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$ID" \
     -H "X-Org-ID: $ORG_ID" \
     -H "X-Tenant-ID: $TENANT_ID" > /dev/null
 done
