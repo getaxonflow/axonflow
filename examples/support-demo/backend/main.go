@@ -601,6 +601,12 @@ func llmStatusHandler(w http.ResponseWriter, r *http.Request) {
 				"configured": os.Getenv("ANTHROPIC_API_KEY") != "",
 				"name":       "Anthropic Claude",
 			},
+			"ollama": map[string]interface{}{
+				"configured": os.Getenv("OLLAMA_ENDPOINT") != "",
+				"name":       "Ollama (Local)",
+				"endpoint":   os.Getenv("OLLAMA_ENDPOINT"),
+				"model":      os.Getenv("OLLAMA_MODEL"),
+			},
 		},
 		"mode": "proxy",
 	}
@@ -959,6 +965,7 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	// Show actual provider availability based on configured API keys
 	openaiConfigured := os.Getenv("OPENAI_API_KEY") != ""
 	anthropicConfigured := os.Getenv("ANTHROPIC_API_KEY") != ""
+	ollamaConfigured := os.Getenv("OLLAMA_ENDPOINT") != ""
 
 	// Check what policies apply to this user
 	activePolicies := getActivePoliciesForUser(user)
@@ -967,7 +974,8 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 	openaiRestricted := false
 	restrictionReason := ""
 	for _, policy := range activePolicies {
-		if policy["routing"] == "anthropic" || policy["routing"] == "local_llm" {
+		// If policy routes to ollama or anthropic, OpenAI is restricted
+		if policy["routing"] == "anthropic" || policy["routing"] == "ollama" || policy["routing"] == "local_llm" {
 			openaiRestricted = true
 			restrictionReason = policy["name"].(string)
 			break
@@ -984,6 +992,12 @@ func userAccessHandler(w http.ResponseWriter, r *http.Request) {
 			"name":   "Anthropic Claude",
 			"status": getProviderStatus(anthropicConfigured),
 			"color":  getProviderColor(anthropicConfigured),
+		},
+		"ollama": map[string]interface{}{
+			"name":   "Ollama (Local)",
+			"status": getOllamaStatus(ollamaConfigured),
+			"color":  getProviderColor(ollamaConfigured),
+			"model":  os.Getenv("OLLAMA_MODEL"),
 		},
 	}
 
@@ -1116,6 +1130,17 @@ func getProviderColor(configured bool) string {
 		return "green"
 	}
 	return "red"
+}
+
+func getOllamaStatus(configured bool) string {
+	if configured {
+		model := os.Getenv("OLLAMA_MODEL")
+		if model != "" {
+			return fmt.Sprintf("Available (%s)", model)
+		}
+		return "Available"
+	}
+	return "Not configured"
 }
 
 // PII detection patterns

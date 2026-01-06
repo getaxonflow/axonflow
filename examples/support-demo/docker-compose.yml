@@ -49,6 +49,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    env_file:
+      - .env  # Copy from .env.example and add your API keys
     environment:
       # Demo database (customers, tickets, local audit)
       - DATABASE_URL=postgres://axonflow:axonflow_demo@postgres-demo:5432/support_demo?sslmode=disable
@@ -57,9 +59,6 @@ services:
       # Connect to AxonFlow platform services
       - AXONFLOW_ENDPOINT=http://axonflow-agent:8080
       - AXONFLOW_ORCHESTRATOR_URL=http://axonflow-orchestrator:8081
-      # LLM keys passed through to backend (for direct calls if needed)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     ports:
       - "8082:8080"
     depends_on:
