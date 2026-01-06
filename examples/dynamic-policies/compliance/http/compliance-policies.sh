@@ -39,15 +39,29 @@ GDPR_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -d '{
     "name": "gdpr-eu-data-sovereignty",
     "description": "Route EU users to EU-hosted LLMs only (GDPR Article 44)",
-    "conditions": {
-      "user_region": "EU"
-    },
-    "allowed_providers": ["ollama", "azure-eu"],
-    "action": "allow",
+    "type": "content",
+    "category": "dynamic-compliance",
+    "conditions": [
+      {
+        "field": "user.region",
+        "operator": "equals",
+        "value": "EU"
+      }
+    ],
+    "actions": [
+      {
+        "type": "route",
+        "config": {
+          "allowed_providers": ["ollama", "azure-eu"],
+          "reason": "GDPR Article 44 - EU data sovereignty"
+        }
+      }
+    ],
+    "priority": 100,
     "enabled": true
   }')
 
-GDPR_ID=$(echo "$GDPR_RESPONSE" | jq -r '.id // empty')
+GDPR_ID=$(echo "$GDPR_RESPONSE" | jq -r '.policy.id // empty')
 if [ -n "$GDPR_ID" ]; then
   echo "   Created: gdpr-eu-data-sovereignty (ID: $GDPR_ID)"
   echo "   Allowed providers: ollama, azure-eu"
@@ -66,16 +80,29 @@ HIPAA_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -d '{
     "name": "hipaa-phi-protection",
     "description": "Route PHI queries to local LLM only (HIPAA Safe Harbor)",
-    "conditions": {
-      "request_type": "healthcare",
-      "contains_phi": true
-    },
-    "allowed_providers": ["ollama"],
-    "action": "allow",
+    "type": "content",
+    "category": "dynamic-compliance",
+    "conditions": [
+      {
+        "field": "request_type",
+        "operator": "equals",
+        "value": "healthcare"
+      }
+    ],
+    "actions": [
+      {
+        "type": "route",
+        "config": {
+          "allowed_providers": ["ollama"],
+          "reason": "HIPAA Safe Harbor - PHI must stay local"
+        }
+      }
+    ],
+    "priority": 100,
     "enabled": true
   }')
 
-HIPAA_ID=$(echo "$HIPAA_RESPONSE" | jq -r '.id // empty')
+HIPAA_ID=$(echo "$HIPAA_RESPONSE" | jq -r '.policy.id // empty')
 if [ -n "$HIPAA_ID" ]; then
   echo "   Created: hipaa-phi-protection (ID: $HIPAA_ID)"
   echo "   Allowed providers: ollama"
@@ -94,16 +121,34 @@ RBI_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
   -d '{
     "name": "rbi-financial-data-sovereignty",
     "description": "Route banking queries to India-hosted providers (RBI Data Localization)",
-    "conditions": {
-      "request_type": "banking",
-      "user_region": "IN"
-    },
-    "allowed_providers": ["azure-india", "ollama"],
-    "action": "allow",
+    "type": "content",
+    "category": "dynamic-compliance",
+    "conditions": [
+      {
+        "field": "request_type",
+        "operator": "equals",
+        "value": "banking"
+      },
+      {
+        "field": "user.region",
+        "operator": "equals",
+        "value": "IN"
+      }
+    ],
+    "actions": [
+      {
+        "type": "route",
+        "config": {
+          "allowed_providers": ["azure-india", "ollama"],
+          "reason": "RBI Data Localization - financial data must stay in India"
+        }
+      }
+    ],
+    "priority": 100,
     "enabled": true
   }')
 
-RBI_ID=$(echo "$RBI_RESPONSE" | jq -r '.id // empty')
+RBI_ID=$(echo "$RBI_RESPONSE" | jq -r '.policy.id // empty')
 if [ -n "$RBI_ID" ]; then
   echo "   Created: rbi-financial-data-sovereignty (ID: $RBI_ID)"
   echo "   Allowed providers: azure-india, ollama"
@@ -114,15 +159,15 @@ fi
 
 # 4. List all compliance policies
 echo ""
-echo "4. Listing all compliance policies with provider restrictions..."
-POLICIES=$(curl -s "$ENDPOINT/api/v1/dynamic-policies" \
+echo "4. Listing all compliance policies..."
+POLICIES=$(curl -s "$ENDPOINT/api/v1/dynamic-policies?category=dynamic-compliance" \
   -H "X-Org-ID: $ORG_ID" \
   -H "X-Tenant-ID: $TENANT_ID")
 
-echo "$POLICIES" | jq -r '.policies[] | select(.allowed_providers != null and (.allowed_providers | length) > 0) | "   - \(.name): providers=\(.allowed_providers)"'
+echo "$POLICIES" | jq -r '.policies[]? | "   - \(.name): \(.description)"' 2>/dev/null || echo "   No policies found or error parsing response"
 
-COMPLIANCE_COUNT=$(echo "$POLICIES" | jq '[.policies[] | select(.allowed_providers != null and (.allowed_providers | length) > 0)] | length')
-echo "   Found $COMPLIANCE_COUNT policies with provider restrictions"
+COMPLIANCE_COUNT=$(echo "$POLICIES" | jq '.pagination.total_items // 0')
+echo "   Found $COMPLIANCE_COUNT compliance policies"
 
 # 5. Cleanup
 echo ""
