@@ -15,11 +15,13 @@
 #   ./compliance-policies.sh
 #
 # Environment:
-#   AXONFLOW_ENDPOINT - Agent URL (default: http://localhost:8080)
+#   AXONFLOW_ORCHESTRATOR_ENDPOINT - Orchestrator URL (default: http://localhost:8081)
+#
+# Note: Dynamic policies are managed by the Orchestrator, not the Agent.
 
 set -e
 
-ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
+ENDPOINT="${AXONFLOW_ORCHESTRATOR_ENDPOINT:-http://localhost:8081}"
 ORG_ID="${ORG_ID:-demo-org}"
 TENANT_ID="${TENANT_ID:-demo-tenant}"
 
