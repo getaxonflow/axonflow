@@ -101,12 +101,16 @@ These APIs are intentionally NOT in SDKs. Use HTTP/curl for these operations.
 | `GET /api/v1/llm-providers/health` | Monitoring, not app code |
 | `PUT /api/v1/llm-providers/routing` | Rare config change |
 
-### Dynamic Policies
+### Dynamic Policies (Legacy Endpoints)
 | Endpoint | Reason for Exclusion |
 |----------|---------------------|
-| `GET /api/v1/policies/dynamic` | Admin/debugging |
+| `GET /api/v1/policies/dynamic` | Legacy path (use `/api/v1/dynamic-policies` via SDK) |
 | `POST /api/v1/policies/import` | One-time migration |
 | `GET /api/v1/policies/export` | One-time backup |
+
+> **Note:** Dynamic policies CRUD is available in all SDKs via `/api/v1/dynamic-policies` endpoints:
+> `listDynamicPolicies()`, `createDynamicPolicy()`, `getDynamicPolicy()`, `updateDynamicPolicy()`,
+> `deleteDynamicPolicy()`, `toggleDynamicPolicy()`, `getEffectiveDynamicPolicies()`
 
 ### Circuit Breaker
 | Endpoint | Reason for Exclusion |

@@ -69,7 +69,7 @@ curl -H "X-Tenant-ID: test-org-001" \
 
 ```bash
 curl -H "X-Tenant-ID: test-org-001" \
-  http://localhost:8081/api/v1/policies/dynamic
+  http://localhost:8081/api/v1/dynamic-policies
 ```
 
 ### Create Policy
