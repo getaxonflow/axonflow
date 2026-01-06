@@ -130,7 +130,7 @@ docker compose logs -f agent
 ```
 
 **Access locally:**
-- Agent API: http://localhost:8081
+- Agent API: http://localhost:8080 (Single Entry Point)
 - Customer Portal: http://localhost:8090
 - Database: localhost:5432
 
@@ -201,7 +201,7 @@ import (
 func main() {
     // Initialize AxonFlow client
     client := axonflow.NewClient(axonflow.Config{
-        BaseURL:    "https://your-axonflow-url.com",  // From CloudFormation or localhost:8081
+        Endpoint:   "https://your-axonflow.example.com",  // From CloudFormation or localhost:8080
         LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"), // Your license key
     })
 
@@ -611,7 +611,7 @@ docker exec -it axonflow-agent /app/keygen \
 
 #### 2. "Connection refused" when calling agent
 
-**Problem:** Agent not reachable on port 8081.
+**Problem:** Agent not reachable on port 8080.
 
 **Solution:**
 ```bash
@@ -623,7 +623,7 @@ docker compose logs agent
 
 # Common issues:
 # - Database not ready (wait 30 seconds and retry)
-# - Port 8081 already in use (change in docker-compose.yml)
+# - Port 8080 already in use (change in docker-compose.yml)
 # - Firewall blocking port (add firewall rule)
 ```
 

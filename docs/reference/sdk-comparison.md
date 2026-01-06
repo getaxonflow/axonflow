@@ -132,7 +132,7 @@ const response = await axonflow.protect(async () => {
 **Go:**
 ```go
 client := client_sdk.NewAxonFlowClientWithConfig(client_sdk.AxonFlowConfig{
-    AgentURL:     "http://10.0.2.67:8080",
+    Endpoint:     "http://10.0.2.67:8080",
     ClientID:     "client-id",
     ClientSecret: "client-secret",
     Mode:         "production",
@@ -426,7 +426,7 @@ client := client_sdk.NewAxonFlowClient(url, id, secret)
 
 // New (recommended - with all features)
 client := client_sdk.NewAxonFlowClientWithConfig(client_sdk.AxonFlowConfig{
-    AgentURL:     url,
+    Endpoint:     url,
     ClientID:     id,
     ClientSecret: secret,
     Mode:         "production",  // Enable fail-open

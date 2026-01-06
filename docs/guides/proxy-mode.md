@@ -68,7 +68,7 @@ const response = await axonflow.protect(async () => {
 import "github.com/getaxonflow/axonflow-sdk-go"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    AgentURL:     os.Getenv("AXONFLOW_AGENT_URL"),
+    Endpoint:     os.Getenv("AXONFLOW_AGENT_URL"),
     ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
     ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
 })
@@ -88,7 +88,7 @@ resp, err := client.ExecuteQuery(
 from axonflow import AxonFlow
 
 async with AxonFlow(
-    agent_url=os.environ["AXONFLOW_AGENT_URL"],
+    endpoint=os.environ["AXONFLOW_AGENT_URL"],
     client_id=os.environ["AXONFLOW_CLIENT_ID"],
     client_secret=os.environ["AXONFLOW_CLIENT_SECRET"]
 ) as client:

@@ -12,32 +12,48 @@ This directory contains OpenAPI 3.0 specifications for all AxonFlow APIs.
 
 ## Architecture Overview
 
+AxonFlow uses a **Single Entry Point Architecture** (ADR-026). All client requests go through the Agent service, which proxies to internal services automatically.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Client Application                        │
+│                   Client Application / SDK                       │
+│                                                                   │
+│  endpoint: "https://axonflow.example.com"   (Agent only)         │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      AxonFlow Agent (:8080)                      │
+│                   AxonFlow Agent (:8080)                         │
+│                   ** Single Entry Point **                       │
+│                                                                   │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
 │  │   Gateway   │  │    Proxy    │  │   MCP Connectors        │  │
 │  │    Mode     │  │    Mode     │  │ (PostgreSQL, Amadeus)   │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-│  • Pre-check       • Full proxy      • Query execution           │
-│  • Audit           • Policy enforce  • Write commands            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   AxonFlow Orchestrator (:8081)                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │  LLM Router │  │    MAP      │  │   Dynamic Policies      │  │
-│  │ (OpenAI,    │  │  Planning   │  │ (Risk scoring, audit)   │  │
-│  │  Bedrock)   │  │             │  │                         │  │
+│  │   Static    │  │  Reverse    │  │   Cost Controls         │  │
+│  │  Policies   │  │   Proxy     │  │   (proxied)             │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
+                              │ (internal only)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                 Internal Services (not client-facing)            │
+│                                                                   │
+│  ┌──────────────────────────┐  ┌──────────────────────────────┐ │
+│  │   Orchestrator (:8081)   │  │      Portal (:8082)          │ │
+│  │   • LLM Routing          │  │   • Code Governance          │ │
+│  │   • Dynamic Policies     │  │   • Customer Portal          │ │
+│  │   • Cost Controls        │  │   • Git Providers            │ │
+│  │   • Execution Replay     │  │                              │ │
+│  └──────────────────────────┘  └──────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Key Points:**
+- Clients only need one URL (Agent endpoint)
+- Agent routes requests to internal services automatically
+- Orchestrator and Portal are internal - never exposed to clients
 
 ## Quick Start Examples
 
@@ -167,24 +183,27 @@ curl -X POST "https://agent.getaxonflow.com/mcp/resources/query" \
   }'
 ```
 
-### Policy CRUD
+### Dynamic Policy CRUD
 
-**List policies**
+All policy management goes through the Agent (Single Entry Point).
+
+**List dynamic policies**
 ```bash
-curl -X GET "https://orchestrator.getaxonflow.com/api/v1/policies" \
-  -H "X-Tenant-ID: tenant-123"
+curl -X GET "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
+  -H "X-Org-ID: tenant-123"
 ```
 
-**Create a policy**
+**Create a dynamic policy**
 ```bash
-curl -X POST "https://orchestrator.getaxonflow.com/api/v1/policies" \
+curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: tenant-123" \
+  -H "X-Org-ID: tenant-123" \
   -H "X-User-ID: admin@company.com" \
   -d '{
     "name": "Block PII Access",
     "description": "Prevent unauthorized access to PII",
     "type": "content",
+    "category": "pii-protection",
     "conditions": [
       {
         "field": "query",
@@ -203,25 +222,43 @@ curl -X POST "https://orchestrator.getaxonflow.com/api/v1/policies" \
   }'
 ```
 
-**Test a policy**
+**Test a dynamic policy**
 ```bash
-curl -X POST "https://orchestrator.getaxonflow.com/api/v1/policies/pol_abc123/test" \
+curl -X POST "https://agent.getaxonflow.com/api/v1/dynamic-policies/pol_abc123/test" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: tenant-123" \
+  -H "X-Org-ID: tenant-123" \
   -d '{
     "query": "Show me the customer SSN",
     "user": {"email": "analyst@company.com", "role": "analyst"}
   }'
 ```
 
+### Static Policy Management
+
+Static policies (PII detection, SQL injection) are managed directly on the Agent.
+
+**List static policies**
+```bash
+curl -X GET "https://agent.getaxonflow.com/api/v1/static-policies" \
+  -H "X-Org-ID: tenant-123"
+```
+
+**Test a static policy pattern**
+```bash
+curl -X POST "https://agent.getaxonflow.com/api/v1/static-policies/test" \
+  -H "Content-Type: application/json" \
+  -H "X-Org-ID: tenant-123" \
+  -d '{
+    "input": "My SSN is 123-45-6789",
+    "policy_type": "pii"
+  }'
+```
+
 ### Health Checks
 
 ```bash
-# Agent health
+# Agent health (primary entry point)
 curl https://agent.getaxonflow.com/health
-
-# Orchestrator health
-curl https://orchestrator.getaxonflow.com/health
 
 # MCP connectors health
 curl https://agent.getaxonflow.com/mcp/health
@@ -230,66 +267,76 @@ curl https://agent.getaxonflow.com/mcp/health
 ### Metrics
 
 ```bash
-# Agent metrics (JSON)
+# Metrics (JSON)
 curl https://agent.getaxonflow.com/metrics
-
-# Orchestrator metrics (JSON)
-curl https://orchestrator.getaxonflow.com/metrics
 
 # Prometheus format
 curl https://agent.getaxonflow.com/prometheus
-curl https://orchestrator.getaxonflow.com/prometheus
 ```
+
+> **Note:** Internal service health (Orchestrator, Portal) is monitored via the Agent's health endpoint, which includes backend service status.
 
 ## API Endpoints Summary
 
-### Agent API (Port 8080)
+All endpoints are accessed via the Agent (port 8080). The Agent proxies requests to internal services automatically.
+
+### Agent API - Direct Routes (Port 8080)
 
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
 | Health | `/health` | GET | Service health |
 | Metrics | `/metrics` | GET | JSON metrics |
 | Metrics | `/prometheus` | GET | Prometheus format |
-| Proxy | `/api/request` | POST | Process request |
+| Proxy | `/api/request` | POST | Process LLM request |
 | Proxy | `/api/clients` | GET/POST | Manage clients |
-| Proxy | `/api/policies/test` | POST | Test policies |
 | Gateway | `/api/policy/pre-check` | POST | Pre-check request |
 | Gateway | `/api/audit/llm-call` | POST | Audit LLM call |
+| Static Policy | `/api/v1/static-policies` | GET/POST | List/create static policies |
+| Static Policy | `/api/v1/static-policies/{id}` | GET/PUT/DELETE | CRUD static policy |
+| Static Policy | `/api/v1/static-policies/test` | POST | Test pattern |
+| Static Policy | `/api/v1/static-policies/effective` | GET | Get effective policies |
 | MCP | `/mcp/connectors` | GET | List connectors |
 | MCP | `/mcp/connectors/{name}/health` | GET | Connector health |
 | MCP | `/mcp/resources/query` | POST | Execute query |
 | MCP | `/mcp/tools/execute` | POST | Execute command |
 | MCP | `/mcp/health` | GET | MCP health |
 
-### Orchestrator API (Port 8081)
+### Agent API - Proxied Routes (via Agent to Orchestrator)
+
+These routes are accessed via Agent but proxied to Orchestrator internally.
 
 | Category | Endpoint | Method | Description |
 |----------|----------|--------|-------------|
-| Health | `/health` | GET | Service health |
-| Metrics | `/metrics` | GET | JSON metrics |
-| Metrics | `/prometheus` | GET | Prometheus format |
-| Process | `/api/v1/process` | POST | Process request |
-| MAP | `/api/v1/plan` | POST | Multi-agent planning |
-| LLM | `/api/v1/providers/status` | GET | Provider status |
-| LLM | `/api/v1/providers/weights` | PUT | Update weights |
-| Policy | `/api/v1/policies` | GET/POST | List/create policies |
-| Policy | `/api/v1/policies/{id}` | GET/PUT/DELETE | CRUD policy |
-| Policy | `/api/v1/policies/{id}/test` | POST | Test policy |
-| Policy | `/api/v1/policies/{id}/versions` | GET | Version history |
-| Policy | `/api/v1/policies/import` | POST | Bulk import |
-| Policy | `/api/v1/policies/export` | GET | Bulk export |
-| Policy | `/api/v1/policies/dynamic` | GET | List dynamic |
-| Template | `/api/v1/templates` | GET | List templates |
-| Template | `/api/v1/templates/{id}` | GET | Get template |
-| Template | `/api/v1/templates/{id}/apply` | POST | Apply template |
-| Workflow | `/api/v1/workflows/execute` | POST | Execute workflow |
-| Workflow | `/api/v1/workflows/executions` | GET | List executions |
-| Workflow | `/api/v1/workflows/executions/{id}` | GET | Get execution |
-| Audit | `/api/v1/audit/search` | POST | Search logs |
-| Audit | `/api/v1/audit/tenant/{id}` | GET | Tenant logs |
-| Connectors | `/api/v1/connectors` | GET | List connectors |
-| Connectors | `/api/v1/connectors/{id}/install` | POST | Install |
-| Connectors | `/api/v1/connectors/{id}/uninstall` | DELETE | Uninstall |
+| Dynamic Policy | `/api/v1/dynamic-policies` | GET/POST | List/create dynamic policies |
+| Dynamic Policy | `/api/v1/dynamic-policies/{id}` | GET/PUT/DELETE | CRUD dynamic policy |
+| Dynamic Policy | `/api/v1/dynamic-policies/{id}/test` | POST | Test policy |
+| Dynamic Policy | `/api/v1/dynamic-policies/import` | POST | Bulk import |
+| Dynamic Policy | `/api/v1/dynamic-policies/export` | GET | Bulk export |
+| Connectors | `/api/v1/connectors` | GET | List marketplace connectors |
+| Connectors | `/api/v1/connectors/{id}/install` | POST | Install connector |
+| Connectors | `/api/v1/connectors/{id}/uninstall` | DELETE | Uninstall connector |
+| Cost Controls | `/api/v1/budgets` | GET/POST | Manage budgets |
+| Cost Controls | `/api/v1/budgets/{id}` | GET/PUT/DELETE | CRUD budget |
+| Cost Controls | `/api/v1/usage` | GET | Get usage data |
+| Execution Replay | `/api/v1/executions` | GET | List executions |
+| Execution Replay | `/api/v1/executions/{id}` | GET | Get execution details |
+| Execution Replay | `/api/v1/executions/{id}/replay` | POST | Replay execution |
+| LLM Providers | `/api/v1/llm-providers` | GET | List providers |
+| LLM Providers | `/api/v1/llm-providers/{id}` | GET/PUT | Manage provider |
+
+### Agent API - Proxied Routes (via Agent to Portal)
+
+These routes are accessed via Agent but proxied to Portal internally.
+
+| Category | Endpoint | Method | Description |
+|----------|----------|--------|-------------|
+| Code Governance | `/api/v1/code-governance/*` | Various | Code governance APIs |
+| Portal | `/api/v1/portal/*` | Various | Customer portal APIs |
+| Git Providers | `/api/v1/git-providers/*` | Various | Git provider management |
+
+### Internal Services (Not Client-Facing)
+
+> **Note:** Orchestrator (8081) and Portal (8082) are internal services. Do not expose them directly to clients. All client requests should go through the Agent.
 
 ## Authentication
 
@@ -311,12 +358,12 @@ JWT token identifying the end user. Include in request body.
 }
 ```
 
-### Tenant Headers (Policy API)
+### Organization Headers (Policy API)
 
 Required for policy management endpoints:
 
 ```bash
--H "X-Tenant-ID: tenant-123"
+-H "X-Org-ID: tenant-123"
 -H "X-User-ID: admin@company.com"
 ```
 

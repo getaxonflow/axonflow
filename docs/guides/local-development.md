@@ -14,9 +14,9 @@ Fast feedback loop for testing AxonFlow changes locally before deploying to AWS.
 ./scripts/local-dev/start.sh
 
 # 2. Access services
-open http://localhost:8080    # Agent
-open http://localhost:8081    # Orchestrator
-open http://localhost:8082    # Customer Portal
+open http://localhost:8080    # Agent (Single Entry Point - all API calls go here)
+open http://localhost:8081    # Orchestrator (internal - for debugging only)
+open http://localhost:8082    # Customer Portal (internal - for debugging only)
 open http://localhost:3000    # Grafana (admin / grafana_localdev456)
 open http://localhost:9090    # Prometheus
 
@@ -192,8 +192,8 @@ curl -X POST http://localhost:11434/api/generate \
     "stream": false
   }'
 
-# Test via AxonFlow orchestrator
-curl -X POST http://localhost:8081/api/v1/complete \
+# Test via AxonFlow (through Agent - Single Entry Point)
+curl -X POST http://localhost:8080/api/v1/complete \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "What is the capital of France?",
@@ -497,9 +497,9 @@ docker compose exec redis redis-cli
 ./scripts/local-dev/start.sh
 
 # 2. Verify all services healthy
-curl http://localhost:8080/health   # Agent
-curl http://localhost:8081/health   # Orchestrator
-curl http://localhost:8082/health   # Customer Portal
+curl http://localhost:8080/health   # Agent (Single Entry Point - clients use this)
+curl http://localhost:8081/health   # Orchestrator (internal - for debugging only)
+curl http://localhost:8082/health   # Customer Portal (internal - for debugging only)
 
 # 3. Check Prometheus targets
 open http://localhost:9090/targets
