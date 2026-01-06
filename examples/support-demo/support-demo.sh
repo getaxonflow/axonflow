@@ -29,8 +29,8 @@ print_ports() {
     echo -e "${GREEN}Services are running at:${NC}"
     echo -e "  Frontend:     ${YELLOW}http://localhost:3001${NC}"
     echo -e "  Backend API:  ${YELLOW}http://localhost:8082${NC}"
-    echo -e "  AxonFlow Agent:       ${YELLOW}http://localhost:8085${NC}"
-    echo -e "  AxonFlow Orchestrator: ${YELLOW}http://localhost:8084${NC}"
+    echo -e "  AxonFlow Agent:       ${YELLOW}http://localhost:8080${NC}"
+    echo -e "  AxonFlow Orchestrator: ${YELLOW}http://localhost:8081${NC}"
     echo -e "  PostgreSQL:   ${YELLOW}localhost:5433${NC}"
     echo ""
     echo -e "${GREEN}Demo Users (password: demo123):${NC}"
@@ -110,8 +110,17 @@ echo ""
 
 # Wait for health checks
 wait_for_health "http://localhost:8082/api/health" "Backend"
-wait_for_health "http://localhost:8085/health" "AxonFlow Agent"
-wait_for_health "http://localhost:8084/health" "AxonFlow Orchestrator"
+wait_for_health "http://localhost:8080/health" "AxonFlow Agent"
+wait_for_health "http://localhost:8081/health" "AxonFlow Orchestrator"
+
+# Setup demo policies
+echo ""
+echo -e "${BLUE}Setting up demo policies...${NC}"
+if [ -x "./setup-dynamic-policies.sh" ]; then
+    ./setup-dynamic-policies.sh > /dev/null 2>&1 && \
+        echo -e "${GREEN}Dynamic policies configured${NC}" || \
+        echo -e "${YELLOW}Note: Could not configure dynamic policies${NC}"
+fi
 
 echo ""
 print_ports

@@ -346,11 +346,11 @@
             <div class="policies-grid">
                 <div class="policy-card">
                     <div class="priority-badge priority-1">PRIORITY 1</div>
-                    <h4><span class="emoji">🇪🇺</span> EU GDPR Compliance</h4>
+                    <h4><span class="emoji">🇪🇺</span> Strict EU GDPR Compliance</h4>
                     <div class="condition">IF: user.region.startsWith("eu")</div>
-                    <div class="action">THEN: route to LOCAL model</div>
+                    <div class="action">THEN: ONLY local Ollama (OpenAI & Anthropic blocked)</div>
                     <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
-                        <strong>GDPR Article 44:</strong> EU user data must be processed locally to ensure data residency compliance.
+                        <strong>GDPR Article 44:</strong> EU user data must stay local. All US-based providers are blocked for strict data sovereignty.
                     </p>
                 </div>
                 
@@ -376,11 +376,11 @@
                 
                 <div class="policy-card">
                     <div class="priority-badge priority-3">PRIORITY 3</div>
-                    <h4><span class="emoji">🎭</span> Role-Based Model Access</h4>
+                    <h4><span class="emoji">💰</span> Agent Cost Control</h4>
                     <div class="condition">IF: user.role == "agent"</div>
-                    <div class="action">THEN: route to ANTHROPIC (restricted)</div>
+                    <div class="action">THEN: block OpenAI → route to Ollama/Anthropic</div>
                     <p style="margin: 15px 0 0 0; color: #4a5568; font-size: 0.9rem;">
-                        Support agents have restricted access to Anthropic only, while managers get full OpenAI access.
+                        Support agents are restricted from using OpenAI (cost control). Routes to local Ollama or Anthropic instead.
                     </p>
                 </div>
                 
@@ -475,9 +475,9 @@
                     <div class="example-number">4</div>
                     <div class="example-text">
                         <strong>John (Agent):</strong> "Show high priority tickets"<br>
-                        <small style="color: #666;">Agent role → Restricted model access</small>
+                        <small style="color: #666;">Agent role → OpenAI blocked, routes to Ollama</small>
                     </div>
-                    <div class="example-result anthropic">🧠 ANTHROPIC</div>
+                    <div class="example-result local">🔒 LOCAL</div>
                 </div>
                 
                 <div class="example">

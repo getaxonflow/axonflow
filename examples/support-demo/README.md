@@ -15,35 +15,50 @@ A complete example application demonstrating AxonFlow's AI governance capabiliti
 ### Prerequisites
 
 - Docker and Docker Compose
-- OpenAI or Anthropic API key (for natural language queries)
+- At least one LLM API key (OpenAI, Anthropic, or local Ollama)
 
-### 1. Configure API Keys
-
-Copy the example environment file and add your API keys:
+### 1. Start AxonFlow Platform (from repo root)
 
 ```bash
+# From the repository root directory
 cp .env.example .env
 ```
 
-Edit `.env` and add at least one API key:
+Edit `.env` and add your API keys. For policy routing demo, configure multiple providers:
 
 ```bash
 # OpenAI API Key (get from https://platform.openai.com/api-keys)
 OPENAI_API_KEY=sk-your-key-here
 
-# OR Anthropic API Key (get from https://console.anthropic.com/)
+# Anthropic API Key (get from https://console.anthropic.com/)
 ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Local Ollama (run: ollama serve)
+OLLAMA_ENDPOINT=http://host.docker.internal:11434
+OLLAMA_MODEL=llama3.1:latest
 ```
 
-> **Important**: The `.env` file is gitignored and will never be committed. Keep your API keys secure.
+> **Policy Routing Demo**: To test LLM routing policies (e.g., "agents can't use OpenAI"),
+> configure multiple LLM providers. The demo shows how policies can route requests
+> to different providers based on user role, content sensitivity, or region.
 
-### 2. Start the Demo
+Start the AxonFlow platform:
 
 ```bash
 docker compose up -d
 ```
 
-> **Note**: Natural language queries (e.g., "Find all customers") require valid API keys. SQL queries work without API keys.
+### 2. Start Support Demo
+
+```bash
+cd examples/support-demo
+./support-demo.sh
+```
+
+This will:
+1. Build and start the demo containers
+2. Wait for services to be healthy
+3. Configure demo policies automatically
 
 ### 3. Access the Demo
 
