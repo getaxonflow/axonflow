@@ -7,15 +7,16 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy all source files (including vendor directory with local SDK)
-COPY . ./
+# Copy module files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Fix vendor for Docker: remove replace directive and local path references
-RUN sed -i '/replace github.com\/getaxonflow\/axonflow-sdk-go/d' go.mod && \
-    sed -i 's| => /Users.*||g' vendor/modules.txt
+# Copy source files
+COPY *.go ./
+COPY migrations/ ./migrations/
 
-# Build the application using vendored dependencies
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -a -installsuffix cgo -o main .
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
 # Final stage - minimal runtime image
 FROM alpine:latest
