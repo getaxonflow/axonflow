@@ -49,7 +49,7 @@ When a budget is exceeded:
 ### HTTP API
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/budgets \
+curl -X POST http://localhost:8080/api/v1/budgets \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: your-org-id" \
   -d '{
@@ -67,7 +67,7 @@ curl -X POST http://localhost:8081/api/v1/budgets \
 
 ```go
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    OrchestratorURL: "http://localhost:8081",
+    Endpoint: "http://localhost:8080",
 })
 
 budget := axonflow.Budget{
@@ -88,7 +88,7 @@ err := client.CreateBudget(ctx, budget)
 ```python
 from axonflow import AxonFlow
 
-client = AxonFlow(orchestrator_url="http://localhost:8081")
+client = AxonFlow(endpoint="http://localhost:8080")
 
 client.create_budget(
     id="monthly-budget",
@@ -106,7 +106,7 @@ client.create_budget(
 Get real-time status of a budget:
 
 ```bash
-curl http://localhost:8081/api/v1/budgets/monthly-budget/status
+curl http://localhost:8080/api/v1/budgets/monthly-budget/status
 ```
 
 Response:
@@ -135,7 +135,7 @@ Response:
 Get aggregated usage for a period:
 
 ```bash
-curl "http://localhost:8081/api/v1/usage?period=monthly" \
+curl "http://localhost:8080/api/v1/usage?period=monthly" \
   -H "X-Org-ID: your-org-id"
 ```
 
@@ -156,13 +156,13 @@ Get usage broken down by dimension:
 
 ```bash
 # By provider
-curl "http://localhost:8081/api/v1/usage/breakdown?group_by=provider&period=monthly"
+curl "http://localhost:8080/api/v1/usage/breakdown?group_by=provider&period=monthly"
 
 # By model
-curl "http://localhost:8081/api/v1/usage/breakdown?group_by=model&period=monthly"
+curl "http://localhost:8080/api/v1/usage/breakdown?group_by=model&period=monthly"
 
 # By agent
-curl "http://localhost:8081/api/v1/usage/breakdown?group_by=agent&period=monthly"
+curl "http://localhost:8080/api/v1/usage/breakdown?group_by=agent&period=monthly"
 ```
 
 Response:
@@ -198,7 +198,7 @@ Response:
 Check if a request should be allowed before making an LLM call:
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/budgets/check \
+curl -X POST http://localhost:8080/api/v1/budgets/check \
   -H "Content-Type: application/json" \
   -d '{
     "org_id": "your-org-id",
@@ -234,13 +234,13 @@ Query pricing for models:
 
 ```bash
 # All providers
-curl http://localhost:8081/api/v1/pricing
+curl http://localhost:8080/api/v1/pricing
 
 # Specific provider
-curl "http://localhost:8081/api/v1/pricing?provider=anthropic"
+curl "http://localhost:8080/api/v1/pricing?provider=anthropic"
 
 # Specific model
-curl "http://localhost:8081/api/v1/pricing?provider=anthropic&model=claude-sonnet-4"
+curl "http://localhost:8080/api/v1/pricing?provider=anthropic&model=claude-sonnet-4"
 ```
 
 Response:
@@ -270,7 +270,7 @@ Budget alerts are triggered when usage crosses configured thresholds. In Phase 1
 ### Viewing Alerts
 
 ```bash
-curl http://localhost:8081/api/v1/budgets/monthly-budget/alerts
+curl http://localhost:8080/api/v1/budgets/monthly-budget/alerts
 ```
 
 Response:

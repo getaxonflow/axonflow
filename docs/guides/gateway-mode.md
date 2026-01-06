@@ -63,7 +63,7 @@ policyEngine := NewPolicyEngine()
 **After (Gateway Mode SDK):**
 ```go
 axonflow := axonflow.NewClient(axonflow.AxonFlowConfig{
-    AgentURL:     "https://your-axonflow-agent.com",
+    Endpoint:     "https://your-axonflow.example.com",
     ClientID:     "healthcare-demo",
     ClientSecret: os.Getenv("AXONFLOW_SECRET"),
     LicenseKey:   os.Getenv("AXONFLOW_LICENSE"),

@@ -83,7 +83,7 @@ Proxy mode routes requests through AxonFlow for simple integration:
 ```python
 from axonflow import AxonFlow
 
-async with AxonFlow(agent_url="http://localhost:8080") as client:
+async with AxonFlow(endpoint="http://localhost:8080") as client:
     # Execute query through AxonFlow (routes to configured Gemini provider)
     response = await client.execute_query(
         user_token="user-123",
@@ -198,7 +198,7 @@ AxonFlow automatically handles retries for transient errors (429, 500, 503).
 The Gemini provider reports health status at:
 
 ```bash
-curl http://localhost:8081/health
+curl http://localhost:8080/health
 ```
 
 Response includes Gemini provider status:

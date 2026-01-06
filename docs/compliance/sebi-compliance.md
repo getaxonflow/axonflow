@@ -100,12 +100,12 @@ AxonFlow includes pre-built policy templates for SEBI AI/ML guidelines. These ar
 # List available SEBI templates
 curl -X GET "https://api.getaxonflow.com/api/v1/templates?category=sebi" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-ID: your-tenant"
+  -H "X-Org-ID: your-tenant"
 
 # Apply a template
 curl -X POST "https://api.getaxonflow.com/api/v1/templates/sebi-aiml-ethics/apply" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-Tenant-ID: your-tenant" \
+  -H "X-Org-ID: your-tenant" \
   -H "Content-Type: application/json" \
   -d '{"priority": 100}'
 ```

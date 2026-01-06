@@ -281,8 +281,8 @@ export AXONFLOW_ENV=eu
 bash scripts/multi-tenant/deploy-central-axonflow.sh \
   --component orchestrator --orchestrator-replicas 10
 
-# 2. Install Amadeus connector
-curl -X POST http://10.0.2.67:8081/api/v1/connectors/amadeus-travel/install \
+# 2. Install Amadeus connector (via Agent - Single Entry Point)
+curl -X POST http://10.0.2.67:8080/api/v1/connectors/amadeus-travel/install \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Amadeus Travel API",
@@ -297,7 +297,7 @@ curl -X POST http://10.0.2.67:8081/api/v1/connectors/amadeus-travel/install \
   }'
 
 # 3. Verify connector installed
-curl http://10.0.2.67:8081/api/v1/connectors | jq
+curl http://10.0.2.67:8080/api/v1/connectors | jq
 ```
 
 ### Demo Flow (5 minutes)
@@ -403,7 +403,7 @@ client.accessToken = "placeholder_token"
 
 4. **Verify Health**:
    ```bash
-   curl http://10.0.2.67:8081/api/v1/connectors/amadeus-travel/health
+   curl http://10.0.2.67:8080/api/v1/connectors/amadeus-travel/health
    ```
 
 ### For New Tenants

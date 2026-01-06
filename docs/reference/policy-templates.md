@@ -8,10 +8,10 @@ All endpoints are prefixed with `/api/v1/templates`.
 
 ## Authentication
 
-All endpoints require authentication via the `X-Tenant-ID` header. Some endpoints also accept `X-User-ID` for audit tracking.
+All endpoints require authentication via the `X-Org-ID` header. Some endpoints also accept `X-User-ID` for audit tracking.
 
 ```
-X-Tenant-ID: your-tenant-id
+X-Org-ID: your-tenant-id
 X-User-ID: user-identifier (optional)
 ```
 
@@ -39,7 +39,7 @@ Retrieve a paginated list of policy templates with optional filtering.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates?category=rate_limiting&page=1&page_size=10" \
-  -H "X-Tenant-ID: tenant-123"
+  -H "X-Org-ID: tenant-123"
 ```
 
 **Example Response:**
@@ -122,7 +122,7 @@ Retrieve a single template by its ID.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/general_rate_limiting" \
-  -H "X-Tenant-ID: tenant-123"
+  -H "X-Org-ID: tenant-123"
 ```
 
 **Example Response:**
@@ -174,7 +174,7 @@ Create a new policy from a template by providing variable values.
 ```bash
 curl -X POST "http://localhost:8080/api/v1/templates/general_rate_limiting/apply" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: tenant-123" \
+  -H "X-Org-ID: tenant-123" \
   -H "X-User-ID: user-456" \
   -d '{
     "policy_name": "API Rate Limit - Production",
@@ -236,7 +236,7 @@ Retrieve all available template categories.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/categories" \
-  -H "X-Tenant-ID: tenant-123"
+  -H "X-Org-ID: tenant-123"
 ```
 
 **Example Response:**
@@ -266,7 +266,7 @@ Retrieve template usage statistics for your tenant.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/stats" \
-  -H "X-Tenant-ID: tenant-123"
+  -H "X-Org-ID: tenant-123"
 ```
 
 **Example Response:**
@@ -361,7 +361,7 @@ All endpoints support CORS with the following headers:
 ```
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type, Authorization, X-Tenant-ID, X-User-ID
+Access-Control-Allow-Headers: Content-Type, Authorization, X-Org-ID, X-User-ID
 ```
 
 Preflight requests (`OPTIONS`) return `200 OK` with the appropriate CORS headers.
