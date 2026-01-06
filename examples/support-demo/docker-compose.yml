@@ -2,6 +2,7 @@
 #
 # Usage:
 #   1. Start AxonFlow platform from repo root:
+#      cp .env.example .env  # Important: Sets COMPOSE_PROJECT_NAME=axonflow
 #      docker compose up -d
 #
 #   2. Start support-demo:
@@ -9,14 +10,17 @@
 #      docker compose up -d
 #
 #   3. (Optional) Setup demo policies for role-based LLM access:
-#      ./setup-policies.sh
+#      ./setup-dynamic-policies.sh
 #
-# Demo Policies (setup via setup-policies.sh):
+# Demo Policies (setup via setup-dynamic-policies.sh):
 #   - Agent role restricted from OpenAI (cost control)
 #   - PII queries route to local model (privacy)
 #   - EU users route to Ollama (data sovereignty)
 #
-# The demo connects to the AxonFlow platform running on axonflow-network
+# Network Configuration:
+#   This demo expects the AxonFlow network to be named 'axonflow_axonflow-network'.
+#   This requires COMPOSE_PROJECT_NAME=axonflow in your root .env file.
+#   If you get "network not found" error, check your .env has this setting.
 
 services:
   # PostgreSQL for demo-specific data (customers, tickets)
