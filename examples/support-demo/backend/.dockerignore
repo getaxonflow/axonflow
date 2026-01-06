@@ -34,5 +34,5 @@ main
 *.out
 coverage.html
 
-# Dependencies - NOT ignoring vendor/ to allow local SDK testing
-# vendor/
+# Dependencies - ignore vendor/ as SDK is now properly released
+vendor/
