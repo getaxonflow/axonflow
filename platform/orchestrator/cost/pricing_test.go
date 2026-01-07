@@ -282,3 +282,183 @@ func TestCostCalculationPrecision(t *testing.T) {
 		t.Errorf("cost = %v, want %v", cost, expected)
 	}
 }
+
+func TestLoadPricingFromFile(t *testing.T) {
+	// Create a temp file with pricing config
+	tmpFile, err := os.CreateTemp("", "pricing-*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	pricingJSON := `{
+		"providers": {
+			"custom-provider": {
+				"custom-model": {"input_per_1k": 0.01, "output_per_1k": 0.02}
+			}
+		}
+	}`
+	if _, err := tmpFile.WriteString(pricingJSON); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	pricing, err := LoadPricingFromFile(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("LoadPricingFromFile() error = %v", err)
+	}
+
+	if pricing == nil {
+		t.Fatal("expected non-nil pricing config")
+	}
+
+	// Verify custom pricing was loaded
+	modelPricing, ok := pricing.GetModelPricing("custom-provider", "custom-model")
+	if !ok {
+		t.Error("expected custom model pricing to be found")
+	}
+	if modelPricing.InputPer1K != 0.01 {
+		t.Errorf("InputPer1K = %v, want 0.01", modelPricing.InputPer1K)
+	}
+	if modelPricing.OutputPer1K != 0.02 {
+		t.Errorf("OutputPer1K = %v, want 0.02", modelPricing.OutputPer1K)
+	}
+}
+
+func TestLoadPricingFromFile_InvalidPath(t *testing.T) {
+	_, err := LoadPricingFromFile("/nonexistent/path/pricing.json")
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestLoadPricingFromFile_InvalidJSON(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "pricing-*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString("invalid json"); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	_, err = LoadPricingFromFile(tmpFile.Name())
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestSetModelPricing(t *testing.T) {
+	pricing := NewPricingConfig()
+
+	// Test adding new provider
+	pricing.SetModelPricing("new-provider", "new-model", ModelPricing{
+		InputPer1K:  0.005,
+		OutputPer1K: 0.015,
+	})
+
+	modelPricing, ok := pricing.GetModelPricing("new-provider", "new-model")
+	if !ok {
+		t.Error("expected new model pricing to be found")
+	}
+	if modelPricing.InputPer1K != 0.005 {
+		t.Errorf("InputPer1K = %v, want 0.005", modelPricing.InputPer1K)
+	}
+
+	// Test updating existing model
+	pricing.SetModelPricing("new-provider", "new-model", ModelPricing{
+		InputPer1K:  0.010,
+		OutputPer1K: 0.020,
+	})
+
+	modelPricing, _ = pricing.GetModelPricing("new-provider", "new-model")
+	if modelPricing.InputPer1K != 0.010 {
+		t.Errorf("InputPer1K = %v, want 0.010", modelPricing.InputPer1K)
+	}
+}
+
+func TestEstimateCost(t *testing.T) {
+	pricing := NewPricingConfig()
+
+	// EstimateCost should be equivalent to CalculateCost
+	estimated := pricing.EstimateCost("anthropic", "claude-sonnet-4", 1000, 500)
+	calculated := pricing.CalculateCost("anthropic", "claude-sonnet-4", 1000, 500)
+
+	if estimated != calculated {
+		t.Errorf("EstimateCost = %v, CalculateCost = %v, want equal", estimated, calculated)
+	}
+}
+
+func TestLoadPricingFromEnv_WithCustomConfig(t *testing.T) {
+	origPricing := os.Getenv("AXONFLOW_PRICING_CONFIG")
+	defer os.Setenv("AXONFLOW_PRICING_CONFIG", origPricing)
+
+	customPricing := `{"providers":{"env-provider":{"env-model":{"input_per_1k":0.003,"output_per_1k":0.006}}}}`
+	os.Setenv("AXONFLOW_PRICING_CONFIG", customPricing)
+
+	pricing := LoadPricingFromEnv()
+	if pricing == nil {
+		t.Fatal("expected non-nil pricing config")
+	}
+
+	// Verify custom pricing was merged
+	modelPricing, ok := pricing.GetModelPricing("env-provider", "env-model")
+	if !ok {
+		t.Error("expected env-provider model pricing to be found")
+	}
+	if modelPricing.InputPer1K != 0.003 {
+		t.Errorf("InputPer1K = %v, want 0.003", modelPricing.InputPer1K)
+	}
+
+	// Verify defaults still exist
+	_, ok = pricing.GetModelPricing("anthropic", "claude-sonnet-4")
+	if !ok {
+		t.Error("expected default anthropic pricing to be preserved")
+	}
+}
+
+func TestLoadPricingFromEnv_InvalidJSON(t *testing.T) {
+	origPricing := os.Getenv("AXONFLOW_PRICING_CONFIG")
+	defer os.Setenv("AXONFLOW_PRICING_CONFIG", origPricing)
+
+	os.Setenv("AXONFLOW_PRICING_CONFIG", "invalid-json")
+
+	// Should still return valid config with defaults
+	pricing := LoadPricingFromEnv()
+	if pricing == nil {
+		t.Fatal("expected non-nil pricing config even with invalid JSON")
+	}
+
+	// Verify defaults still work
+	_, ok := pricing.GetModelPricing("anthropic", "claude-sonnet-4")
+	if !ok {
+		t.Error("expected default pricing when env JSON is invalid")
+	}
+}
+
+func TestCalculateCost_NormalizedModel(t *testing.T) {
+	pricing := NewPricingConfig()
+
+	// Test with uppercase provider (should be normalized to lowercase)
+	cost := pricing.CalculateCost("ANTHROPIC", "claude-sonnet-4", 1000, 500)
+	if cost == 0 {
+		t.Error("expected non-zero cost for uppercase provider")
+	}
+}
+
+func TestCalculateCost_ModelFallbackToLowercase(t *testing.T) {
+	pricing := NewPricingConfig()
+
+	// Add a model with lowercase name
+	pricing.Providers["test"] = map[string]ModelPricing{
+		"my-model": {InputPer1K: 0.01, OutputPer1K: 0.02},
+	}
+
+	// Test with uppercase model name
+	cost := pricing.CalculateCost("test", "MY-MODEL", 1000, 1000)
+	if cost == 0 {
+		t.Error("expected non-zero cost for uppercase model")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"axonflow/platform/orchestrator/euaiact"
+	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/rbi"
 	"axonflow/platform/orchestrator/sebi"
 
@@ -1467,15 +1468,18 @@ func TestPlanRequestHandler(t *testing.T) {
 	// Save old state
 	oldPlanningEngine := planningEngine
 	oldWorkflowEngine := workflowEngine
+	oldPlanService := planService
 	defer func() {
 		planningEngine = oldPlanningEngine
 		workflowEngine = oldWorkflowEngine
+		planService = oldPlanService
 	}()
 
 	tests := []struct {
 		name               string
 		setupPlanningEngine bool
 		setupWorkflowEngine bool
+		setupPlanService   bool
 		requestBody        string
 		expectedStatus     int
 	}{
@@ -1483,13 +1487,15 @@ func TestPlanRequestHandler(t *testing.T) {
 			name:               "Error - planning engine not initialized",
 			setupPlanningEngine: false,
 			setupWorkflowEngine: true,
+			setupPlanService:   true,
 			requestBody:        `{"query":"test"}`,
 			expectedStatus:     http.StatusServiceUnavailable,
 		},
 		{
-			name:               "Error - workflow engine not initialized",
+			name:               "Error - plan service not initialized",
 			setupPlanningEngine: true,
-			setupWorkflowEngine: false,
+			setupWorkflowEngine: true,
+			setupPlanService:   false,
 			requestBody:        `{"query":"test"}`,
 			expectedStatus:     http.StatusServiceUnavailable,
 		},
@@ -1497,6 +1503,7 @@ func TestPlanRequestHandler(t *testing.T) {
 			name:               "Error - invalid JSON",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
+			setupPlanService:   true,
 			requestBody:        `{invalid json}`,
 			expectedStatus:     http.StatusBadRequest,
 		},
@@ -1504,6 +1511,7 @@ func TestPlanRequestHandler(t *testing.T) {
 			name:               "Error - missing user authentication",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
+			setupPlanService:   true,
 			requestBody:        `{"query":"test query"}`,
 			expectedStatus:     http.StatusUnauthorized,
 		},
@@ -1511,6 +1519,7 @@ func TestPlanRequestHandler(t *testing.T) {
 			name:               "Error - empty query",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
+			setupPlanService:   true,
 			requestBody:        `{"query":"","user":{"id":1,"email":"test@example.com"}}`,
 			expectedStatus:     http.StatusBadRequest,
 		},
@@ -1528,6 +1537,12 @@ func TestPlanRequestHandler(t *testing.T) {
 				workflowEngine = NewWorkflowEngine()
 			} else {
 				workflowEngine = nil
+			}
+
+			if tt.setupPlanService {
+				planService = &planning.Service{}
+			} else {
+				planService = nil
 			}
 
 			req := httptest.NewRequest("POST", "/plan", strings.NewReader(tt.requestBody))
@@ -2138,4 +2153,397 @@ func TestCalculateErrorRateOrchestrator(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateRandomStringVariation tests random string generation with different lengths
+func TestGenerateRandomStringVariation(t *testing.T) {
+	tests := []struct {
+		name   string
+		length int
+	}{
+		{"empty string", 0},
+		{"single char", 1},
+		{"short string", 4},
+		{"default length", 8},
+		{"longer string", 16},
+		{"long string", 32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generateRandomString(tt.length)
+			if len(result) != tt.length {
+				t.Errorf("Expected length %d, got %d", tt.length, len(result))
+			}
+		})
+	}
+
+	// Test uniqueness
+	set := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		s := generateRandomString(16)
+		if set[s] {
+			t.Error("Generated duplicate string")
+		}
+		set[s] = true
+	}
+}
+
+// TestPolicyAPIHandlers_NilHandler tests Policy API handlers return 503 when handler is nil
+func TestPolicyAPIHandlers_NilHandler(t *testing.T) {
+	// Save and restore policyAPIHandler
+	oldHandler := policyAPIHandler
+	defer func() { policyAPIHandler = oldHandler }()
+	policyAPIHandler = nil
+
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"ListCreate", "GET", "/api/v1/policies", policyAPIListCreateHandler},
+		{"GetUpdateDelete", "GET", "/api/v1/policies/123", policyAPIGetUpdateDeleteHandler},
+		{"Test", "POST", "/api/v1/policies/123/test", policyAPITestHandler},
+		{"Versions", "GET", "/api/v1/policies/123/versions", policyAPIVersionsHandler},
+		{"Import", "POST", "/api/v1/policies/import", policyAPIImportHandler},
+		{"Export", "GET", "/api/v1/policies/export", policyAPIExportHandler},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req = mux.SetURLVars(req, map[string]string{"id": "123"})
+			w := httptest.NewRecorder()
+
+			tt.handler(w, req)
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Errorf("Expected status 503, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// TestTemplateAPIHandlers_NilHandler tests Template API handlers return 503 when handler is nil
+func TestTemplateAPIHandlers_NilHandler(t *testing.T) {
+	// Save and restore templateAPIHandler
+	oldHandler := templateAPIHandler
+	defer func() { templateAPIHandler = oldHandler }()
+	templateAPIHandler = nil
+
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"List", "GET", "/api/v1/templates", templateAPIListHandler},
+		{"Get", "GET", "/api/v1/templates/test-template", templateAPIGetHandler},
+		{"Apply", "POST", "/api/v1/templates/test-template/apply", templateAPIApplyHandler},
+		{"Categories", "GET", "/api/v1/templates/categories", templateAPICategoriesHandler},
+		{"Stats", "GET", "/api/v1/templates/stats", templateAPIStatsHandler},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req = mux.SetURLVars(req, map[string]string{"name": "test-template"})
+			w := httptest.NewRecorder()
+
+			tt.handler(w, req)
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Errorf("Expected status 503, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// TestExecuteWorkflowHandler_NilEngine tests workflow handler returns error when engine is nil
+func TestExecuteWorkflowHandler_NilEngine(t *testing.T) {
+	// Save and restore workflowEngine
+	oldEngine := workflowEngine
+	defer func() { workflowEngine = oldEngine }()
+	workflowEngine = nil
+
+	req := httptest.NewRequest("POST", "/workflows/execute", strings.NewReader(`{"workflow_name":"test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	executeWorkflowHandler(w, req)
+
+	// Should return an error status (500 or 503)
+	if w.Code == http.StatusOK {
+		t.Error("Expected error status when workflowEngine is nil")
+	}
+}
+
+// TestExecutePlanHandler_NilService tests plan handler returns error when service is nil
+func TestExecutePlanHandler_NilService(t *testing.T) {
+	// Save and restore planService
+	oldService := planService
+	defer func() { planService = oldService }()
+	planService = nil
+
+	req := httptest.NewRequest("POST", "/api/v1/plans/test-plan/execute", nil)
+	req = mux.SetURLVars(req, map[string]string{"plan_id": "test-plan"})
+	w := httptest.NewRecorder()
+
+	executePlanHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", w.Code)
+	}
+}
+
+// TestAuditSearchHandler_WithLimit tests audit search with default limit
+func TestAuditSearchHandler_LimitDefault(t *testing.T) {
+	// Test that invalid JSON returns 400
+	req := httptest.NewRequest("POST", "/audit/search", strings.NewReader(`{invalid`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	auditSearchHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+// TestTenantWorkflowExecutionsHandler_WithEngine tests with working engine
+func TestTenantWorkflowExecutionsHandler_WithEngine(t *testing.T) {
+	// Save and restore workflowEngine
+	oldEngine := workflowEngine
+	defer func() { workflowEngine = oldEngine }()
+	workflowEngine = NewWorkflowEngine()
+
+	// Test with valid tenant ID - should return 200 with empty list
+	req := httptest.NewRequest("GET", "/workflows/tenant/test-tenant/executions", nil)
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "test-tenant"})
+	w := httptest.NewRecorder()
+
+	tenantWorkflowExecutionsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+}
+
+// TestTenantAuditLogsHandler_WithTenantID tests tenant audit with tenant ID
+func TestTenantAuditLogsHandler_WithTenantID(t *testing.T) {
+	// Test that missing tenant ID returns 400
+	req := httptest.NewRequest("GET", "/audit/tenant/", nil)
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": ""})
+	w := httptest.NewRecorder()
+
+	tenantAuditLogsHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for empty tenant ID, got %d", w.Code)
+	}
+}
+
+// TestListWorkflowExecutionsHandler_WithLimit tests workflow listing with limit parameter
+func TestListWorkflowExecutionsHandler_WithLimit(t *testing.T) {
+	// Save and restore workflowEngine
+	oldEngine := workflowEngine
+	defer func() { workflowEngine = oldEngine }()
+	workflowEngine = NewWorkflowEngine()
+
+	tests := []struct {
+		name   string
+		limit  string
+		expect int // expected status code
+	}{
+		{"default limit", "", http.StatusOK},
+		{"custom limit", "5", http.StatusOK},
+		{"invalid limit", "abc", http.StatusOK}, // Should use default
+		{"negative limit", "-1", http.StatusOK}, // Should use default
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := "/workflows/executions"
+			if tt.limit != "" {
+				url += "?limit=" + tt.limit
+			}
+			req := httptest.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+
+			listWorkflowExecutionsHandler(w, req)
+
+			if w.Code != tt.expect {
+				t.Errorf("Expected status %d, got %d", tt.expect, w.Code)
+			}
+		})
+	}
+}
+
+
+// TestMetricsHandler_EmptyMetrics tests metrics handler with no data
+func TestMetricsHandler_EmptyMetrics(t *testing.T) {
+	// Save and restore orchestratorMetrics
+	oldMetrics := orchestratorMetrics
+	defer func() { orchestratorMetrics = oldMetrics }()
+
+	orchestratorMetrics = &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+
+	metricsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+}
+
+// TestRecordRequest_AllBranches tests recordRequest with different scenarios
+func TestRecordRequest_AllBranches(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Test blocked request
+	metrics.recordRequest("test", "openai", 100, false, true, 100, 0.01)
+	if metrics.blockedRequests != 1 {
+		t.Error("Expected blocked request to be recorded")
+	}
+
+	// Test successful request
+	metrics.recordRequest("test", "openai", 100, true, false, 100, 0.01)
+	if metrics.successRequests != 1 {
+		t.Error("Expected success request to be recorded")
+	}
+
+	// Test failed request
+	metrics.recordRequest("test", "openai", 100, false, false, 100, 0.01)
+	if metrics.failedRequests != 1 {
+		t.Error("Expected failed request to be recorded")
+	}
+
+	// Test 5 consecutive failures triggers unhealthy
+	for i := 0; i < 5; i++ {
+		metrics.recordRequest("test", "openai", 100, false, false, 100, 0.01)
+	}
+	if metrics.healthCheckPassed {
+		t.Error("Expected health check to fail after 5 consecutive errors")
+	}
+
+	// Test request without type or provider
+	metrics.recordRequest("", "", 100, true, false, 0, 0)
+}
+
+// TestRecordRequest_LatencyTrimming tests latency array trimming
+func TestRecordRequest_LatencyTrimming(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Add over 1000 requests to trigger latency trimming
+	for i := 0; i < 1010; i++ {
+		metrics.recordRequest("test", "openai", int64(i), true, false, 100, 0.01)
+	}
+
+	rtm := metrics.requestTypeMetrics["test"]
+	if len(rtm.Latencies) > 1000 {
+		t.Errorf("Expected latencies to be trimmed to 1000, got %d", len(rtm.Latencies))
+	}
+
+	pm := metrics.providerMetrics["openai"]
+	if len(pm.Latencies) > 1000 {
+		t.Errorf("Expected provider latencies to be trimmed to 1000, got %d", len(pm.Latencies))
+	}
+}
+
+// TestRecordRequest_ErrorTimestampTrimming tests error timestamp trimming
+func TestRecordRequest_ErrorTimestampTrimming(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Add over 1000 failed requests to trigger error timestamp trimming
+	for i := 0; i < 1010; i++ {
+		metrics.recordRequest("test", "openai", 100, false, false, 100, 0.01)
+	}
+
+	if len(metrics.errorTimestamps) > 1000 {
+		t.Errorf("Expected error timestamps to be trimmed to 1000, got %d", len(metrics.errorTimestamps))
+	}
+}
+
+// TestRecordRequest_ProviderFailure tests recording provider failures
+func TestRecordRequest_ProviderFailure(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Record a provider failure (success=false, blocked=false)
+	metrics.recordRequest("chat", "anthropic", 500, false, false, 200, 0.05)
+
+	pm := metrics.providerMetrics["anthropic"]
+	if pm == nil {
+		t.Fatal("Expected provider metrics to be created")
+	}
+	if pm.FailedCalls != 1 {
+		t.Errorf("Expected 1 failed call, got %d", pm.FailedCalls)
+	}
+	if pm.TotalTokens != 200 {
+		t.Errorf("Expected 200 tokens, got %d", pm.TotalTokens)
+	}
+}
+
+// TestRecordRequest_RequestTypeBlocked tests blocked requests for a type
+func TestRecordRequest_RequestTypeBlocked(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Record a blocked request
+	metrics.recordRequest("sql_injection_test", "", 50, false, true, 0, 0)
+
+	rtm := metrics.requestTypeMetrics["sql_injection_test"]
+	if rtm == nil {
+		t.Fatal("Expected request type metrics to be created")
+	}
+	if rtm.BlockedRequests != 1 {
+		t.Errorf("Expected 1 blocked request, got %d", rtm.BlockedRequests)
+	}
+}
+
+// TestRecordRequest_RequestTypeFailed tests failed requests for a type
+func TestRecordRequest_RequestTypeFailed(t *testing.T) {
+	metrics := &OrchestratorMetrics{
+		startTime:          time.Now(),
+		requestTypeMetrics: make(map[string]*RequestTypeOrchestratorMetrics),
+		providerMetrics:    make(map[string]*LLMProviderMetrics),
+	}
+
+	// Record a failed request
+	metrics.recordRequest("timeout_test", "", 5000, false, false, 0, 0)
+
+	rtm := metrics.requestTypeMetrics["timeout_test"]
+	if rtm == nil {
+		t.Fatal("Expected request type metrics to be created")
+	}
+	if rtm.FailedRequests != 1 {
+		t.Errorf("Expected 1 failed request, got %d", rtm.FailedRequests)
+	}
+}
+
+
 

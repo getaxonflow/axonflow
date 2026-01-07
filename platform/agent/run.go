@@ -197,6 +197,7 @@ type ClientRequest struct {
 	RequestType string                 `json:"request_type"`       // "sql", "llm_chat", "rag_search"
 	SkipLLM     bool                   `json:"skip_llm,omitempty"` // Skip LLM calls for hourly tests
 	Context     map[string]interface{} `json:"context"`
+	PlanID      string                 `json:"plan_id,omitempty"`  // For execute-plan requests
 }
 
 type ClientResponse struct {
@@ -1143,9 +1144,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// For multi-agent planning requests, flatten orchestrator response fields to top level
+	// For multi-agent planning requests (GeneratePlan and ExecutePlan), flatten orchestrator response fields to top level
 	// This allows client SDKs to access plan_id, result, metadata directly
-	if req.RequestType == "multi-agent-plan" {
+	if req.RequestType == "multi-agent-plan" || req.RequestType == "execute-plan" {
 		if orchMap, ok := orchestratorResp.(map[string]interface{}); ok {
 			if planID, exists := orchMap["plan_id"]; exists {
 				if planIDStr, ok := planID.(string); ok {
@@ -1360,13 +1361,21 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 
 func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (interface{}, error) {
 	// Prepare orchestrator request
+	// Copy context and add plan_id if present (for execute-plan requests)
+	context := req.Context
+	if req.PlanID != "" {
+		if context == nil {
+			context = make(map[string]interface{})
+		}
+		context["plan_id"] = req.PlanID
+	}
 	orchestratorReq := map[string]interface{}{
 		"query":        req.Query,
 		"user":         user,
 		"client":       client,
 		"request_type": req.RequestType,
 		"skip_llm":     req.SkipLLM,
-		"context":      req.Context,
+		"context":      context,
 		"request_id":   fmt.Sprintf("req_%d", time.Now().UnixNano()),
 	}
 
@@ -1378,10 +1387,14 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 	// Determine orchestrator endpoint based on request type
 	var orchEndpoint string
 	switch req.RequestType {
-	case "multi-agent-plan":
-		// Route multi-agent planning requests to /api/v1/plan
+	case "multi-agent-plan", "generate-plan":
+		// Route GeneratePlan requests to /api/v1/plan (stores plan without executing)
 		orchEndpoint = "/api/v1/plan"
-		log.Printf("[ROUTING] Multi-agent planning request detected, routing to %s", orchEndpoint)
+		log.Printf("[ROUTING] GeneratePlan request detected, routing to %s", orchEndpoint)
+	case "execute-plan":
+		// Route ExecutePlan requests to /api/v1/plan/execute (executes stored plan)
+		orchEndpoint = "/api/v1/plan/execute"
+		log.Printf("[ROUTING] ExecutePlan request detected, routing to %s", orchEndpoint)
 	default:
 		// Route all other requests (sql, chat, completion, embedding) to /api/v1/process
 		orchEndpoint = "/api/v1/process"
@@ -1537,13 +1550,23 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getOrchestratorURL returns the Orchestrator URL based on environment detection.
-// In Docker environments, services communicate via container names on the axonflow-network.
-// For local development, falls back to localhost.
+// getOrchestratorURL returns the Orchestrator URL based on environment.
+// Priority:
+// 1. ORCHESTRATOR_URL env var (explicit override, required for ECS/K8s)
+// 2. Docker detection (/.dockerenv or hex hostname) → axonflow-orchestrator:8081
+// 3. Fallback to localhost:8081 for local development
 func getOrchestratorURL() string {
+	// Check for explicit override first (required for ECS, Kubernetes, etc.)
+	if envURL := os.Getenv("ORCHESTRATOR_URL"); envURL != "" {
+		log.Printf("[Agent] Using ORCHESTRATOR_URL from env: %s", envURL)
+		return envURL
+	}
+	// Auto-detect Docker Compose environments
 	if isRunningInDocker() {
+		log.Printf("[Agent] Docker detected, using orchestrator URL: %s", DefaultOrchestratorURL)
 		return DefaultOrchestratorURL
 	}
+	log.Printf("[Agent] Local mode, using orchestrator URL: %s", LocalOrchestratorURL)
 	return LocalOrchestratorURL
 }
 
