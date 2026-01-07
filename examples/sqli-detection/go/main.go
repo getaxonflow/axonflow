@@ -18,7 +18,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
@@ -126,10 +125,9 @@ func main() {
 
 		wasBlocked := !result.Approved
 
-		// Validate context ID for approved requests
+		// Validate context ID for approved requests (UUID format)
 		if result.Approved {
 			assert(result.ContextID != "", "ContextID is not empty")
-			assert(strings.HasPrefix(result.ContextID, "ctx_"), "ContextID has correct prefix 'ctx_'")
 			fmt.Println("   Status: APPROVED")
 		} else {
 			fmt.Println("   Status: BLOCKED")

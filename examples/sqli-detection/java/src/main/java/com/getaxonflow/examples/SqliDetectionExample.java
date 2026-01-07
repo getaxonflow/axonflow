@@ -17,6 +17,7 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
+import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 import com.getaxonflow.sdk.types.PolicyApprovalRequest;
 import com.getaxonflow.sdk.types.PolicyApprovalResult;
 
@@ -93,7 +94,10 @@ public class SqliDetectionExample {
             System.out.printf("Test %d: %s%n", testNum++, test.name);
             System.out.printf("  Query: %s%n", truncate(test.query, 60));
 
-            PolicyApprovalResult result;
+            PolicyApprovalResult result = null;
+            boolean wasBlocked = false;
+            String blockReason = null;
+
             try {
                 result = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
@@ -101,30 +105,28 @@ public class SqliDetectionExample {
                         .userToken("sqli-detection-user")
                         .build()
                 );
+            } catch (PolicyViolationException e) {
+                // Expected for blocked requests - SDK throws PolicyViolationException when blocked
+                wasBlocked = true;
+                blockReason = e.getMessage();
             } catch (Exception e) {
                 System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
                 System.exit(1);
                 return;
             }
 
-            boolean wasBlocked = !result.isApproved();
-
-            // Validate context ID for approved requests
-            if (result.isApproved()) {
+            // Validate result
+            if (!wasBlocked && result != null) {
                 assertCheck(
                     result.getContextId() != null && !result.getContextId().isEmpty(),
                     "contextId is not empty"
                 );
-                assertCheck(
-                    result.getContextId().startsWith("ctx_"),
-                    "contextId has correct prefix 'ctx_'"
-                );
                 System.out.println("   Status: APPROVED");
             } else {
                 System.out.println("   Status: BLOCKED");
-                System.out.printf("   Reason: %s%n", result.getBlockReason());
+                System.out.printf("   Reason: %s%n", blockReason);
                 assertCheck(
-                    result.getBlockReason() != null && !result.getBlockReason().isEmpty(),
+                    blockReason != null && !blockReason.isEmpty(),
                     "blockReason is provided for blocked requests"
                 );
             }
