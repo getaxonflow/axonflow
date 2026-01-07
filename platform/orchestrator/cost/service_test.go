@@ -848,3 +848,413 @@ func TestDuplicateBudget(t *testing.T) {
 		t.Errorf("expected ErrBudgetExists, got %v", err)
 	}
 }
+
+func TestGetPeriodStart_AllPeriods(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+
+	tests := []struct {
+		name   string
+		period BudgetPeriod
+	}{
+		{"daily", PeriodDaily},
+		{"weekly", PeriodWeekly},
+		{"monthly", PeriodMonthly},
+		{"quarterly", PeriodQuarterly},
+		{"yearly", PeriodYearly},
+		{"unknown", BudgetPeriod("unknown")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := service.getPeriodStart(tt.period)
+			if start.IsZero() {
+				t.Error("expected non-zero start time")
+			}
+		})
+	}
+}
+
+func TestGetPeriodEnd_AllPeriods(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		period     BudgetPeriod
+		start      time.Time
+		wantAfter  time.Time
+	}{
+		{"daily", PeriodDaily, start, start.AddDate(0, 0, 1).Add(-time.Second)},
+		{"weekly", PeriodWeekly, start, start.AddDate(0, 0, 7).Add(-time.Second)},
+		{"monthly", PeriodMonthly, start, start.AddDate(0, 1, 0).Add(-time.Second)},
+		{"quarterly", PeriodQuarterly, start, start.AddDate(0, 3, 0).Add(-time.Second)},
+		{"yearly", PeriodYearly, start, start.AddDate(1, 0, 0).Add(-time.Second)},
+		{"unknown", BudgetPeriod("unknown"), start, start.AddDate(0, 1, 0).Add(-time.Second)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			end := service.getPeriodEnd(tt.period, tt.start)
+			if !end.After(tt.wantAfter) {
+				t.Errorf("getPeriodEnd(%s) = %v, want after %v", tt.period, end, tt.wantAfter)
+			}
+		})
+	}
+}
+
+func TestCheckBudgetWithWarnAction(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Create budget with warn action
+	budget := &Budget{
+		ID:       "warn-test",
+		Name:     "Warn Test",
+		Scope:    ScopeOrganization,
+		ScopeID:  "org-1",
+		LimitUSD: 100.0,
+		Period:   PeriodMonthly,
+		OrgID:    "org-1",
+		OnExceed: OnExceedWarn,
+		Enabled:  true,
+	}
+	service.CreateBudget(ctx, budget)
+
+	// Set usage over limit
+	repo.SetUsageForScope(ScopeOrganization, "org-1", "org-1", 150.0)
+
+	decision, err := service.CheckBudget(ctx, "org-1", "", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !decision.Allowed {
+		t.Error("should be allowed with warn action")
+	}
+	if decision.Action != OnExceedWarn {
+		t.Errorf("action = %v, want %v", decision.Action, OnExceedWarn)
+	}
+}
+
+func TestCheckBudgetWithTeamAndAgent(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Create team budget
+	teamBudget := &Budget{
+		ID:       "team-test",
+		Name:     "Team Test",
+		Scope:    ScopeTeam,
+		ScopeID:  "team-1",
+		LimitUSD: 50.0,
+		Period:   PeriodMonthly,
+		OrgID:    "org-1",
+		OnExceed: OnExceedBlock,
+		Enabled:  true,
+	}
+	service.CreateBudget(ctx, teamBudget)
+
+	// Create agent budget
+	agentBudget := &Budget{
+		ID:       "agent-test",
+		Name:     "Agent Test",
+		Scope:    ScopeAgent,
+		ScopeID:  "agent-1",
+		LimitUSD: 25.0,
+		Period:   PeriodMonthly,
+		OrgID:    "org-1",
+		OnExceed: OnExceedBlock,
+		Enabled:  true,
+	}
+	service.CreateBudget(ctx, agentBudget)
+
+	// Test team and agent budget check
+	decision, err := service.CheckBudget(ctx, "org-1", "team-1", "agent-1", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !decision.Allowed {
+		t.Error("should be allowed when under budget")
+	}
+}
+
+func TestRecordUsageWithProviderAndAgent(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	record := &UsageRecord{
+		RequestID: "req-full",
+		Provider:  "anthropic",
+		Model:     "claude-sonnet-4",
+		TokensIn:  1000,
+		TokensOut: 500,
+		OrgID:     "org-1",
+		TeamID:    "team-1",
+		AgentID:   "agent-1",
+		UserID:    "user-1",
+	}
+
+	err := service.RecordUsage(ctx, record)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait for async operations
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify all aggregates were updated
+	if len(repo.aggregates) == 0 {
+		t.Error("expected aggregates to be updated")
+	}
+}
+
+func TestCheckBudgetsAsync_AllScopes(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Create budgets for all scope types
+	budgets := []*Budget{
+		{ID: "org-budget", Name: "Org", Scope: ScopeOrganization, ScopeID: "org-1", LimitUSD: 100, Period: PeriodMonthly, OrgID: "org-1", Enabled: true, AlertThresholds: []int{50, 80}},
+		{ID: "team-budget", Name: "Team", Scope: ScopeTeam, ScopeID: "team-1", LimitUSD: 50, Period: PeriodMonthly, OrgID: "org-1", Enabled: true, AlertThresholds: []int{50, 80}},
+		{ID: "agent-budget", Name: "Agent", Scope: ScopeAgent, ScopeID: "agent-1", LimitUSD: 25, Period: PeriodMonthly, OrgID: "org-1", Enabled: true, AlertThresholds: []int{50, 80}},
+		{ID: "user-budget", Name: "User", Scope: ScopeUser, ScopeID: "user-1", LimitUSD: 10, Period: PeriodMonthly, OrgID: "org-1", Enabled: true, AlertThresholds: []int{50, 80}},
+	}
+
+	for _, b := range budgets {
+		service.CreateBudget(ctx, b)
+	}
+
+	// Record usage that will trigger budget checks
+	record := &UsageRecord{
+		RequestID: "req-async",
+		Provider:  "anthropic",
+		Model:     "claude-sonnet-4",
+		TokensIn:  100,
+		TokensOut: 50,
+		OrgID:     "org-1",
+		TeamID:    "team-1",
+		AgentID:   "agent-1",
+		UserID:    "user-1",
+	}
+
+	err := service.RecordUsage(ctx, record)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait for async operations
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestAcknowledgeAlert(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Add an alert
+	repo.alerts = []BudgetAlert{
+		{ID: 1, BudgetID: "test", Threshold: 80, AlertType: AlertTypeThresholdReached},
+	}
+
+	err := service.AcknowledgeAlert(ctx, 1, "admin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetRecentAlerts(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Add alerts
+	repo.alerts = []BudgetAlert{
+		{ID: 1, BudgetID: "test", Threshold: 50},
+		{ID: 2, BudgetID: "test", Threshold: 80},
+		{ID: 3, BudgetID: "other", Threshold: 100},
+	}
+
+	alerts, err := service.GetRecentAlerts(ctx, "test", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(alerts) != 2 {
+		t.Errorf("expected 2 alerts, got %d", len(alerts))
+	}
+}
+
+func TestListUsageRecords(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Add records
+	repo.records = []UsageRecord{
+		{RequestID: "req-1", OrgID: "org-1"},
+		{RequestID: "req-2", OrgID: "org-1"},
+	}
+
+	records, count, err := service.ListUsageRecords(ctx, UsageQueryOptions{OrgID: "org-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if count != 2 {
+		t.Errorf("expected count 2, got %d", count)
+	}
+	if len(records) != 2 {
+		t.Errorf("expected 2 records, got %d", len(records))
+	}
+}
+
+func TestUpdateBudgetValidation(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Create budget first
+	budget := &Budget{
+		ID:       "update-val",
+		Name:     "Original",
+		Scope:    ScopeOrganization,
+		LimitUSD: 100.0,
+		Period:   PeriodMonthly,
+	}
+	service.CreateBudget(ctx, budget)
+
+	// Try to update with invalid data
+	budget.Name = ""
+	err := service.UpdateBudget(ctx, budget)
+	if err == nil {
+		t.Error("expected validation error for empty name")
+	}
+}
+
+func TestNewServiceWithOptionsNilAlerter(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewServiceWithOptions(repo, nil, nil, nil)
+
+	if service.alerter == nil {
+		t.Error("expected default alerter to be set")
+	}
+}
+
+func TestCheckSingleBudgetWithThresholds(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	// Create budget with thresholds
+	budget := &Budget{
+		ID:              "threshold-test",
+		Name:            "Threshold Test",
+		Scope:           ScopeOrganization,
+		ScopeID:         "org-1",
+		LimitUSD:        100.0,
+		Period:          PeriodMonthly,
+		OrgID:           "org-1",
+		Enabled:         true,
+		AlertThresholds: []int{50, 80, 100},
+		OnExceed:        OnExceedWarn,
+	}
+	service.CreateBudget(ctx, budget)
+
+	// Set usage at 85% to trigger 50 and 80 thresholds
+	repo.SetUsageForScope(ScopeOrganization, "org-1", "org-1", 85.0)
+
+	// Check the budget (this triggers checkSingleBudget internally)
+	service.checkBudgetForScope(ctx, ScopeOrganization, "org-1", "org-1", "")
+
+	// Wait for async operations
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify thresholds were marked as alerted
+	if !service.hasAlertedThreshold("threshold-test", 50) {
+		t.Error("expected 50% threshold to be marked as alerted")
+	}
+	if !service.hasAlertedThreshold("threshold-test", 80) {
+		t.Error("expected 80% threshold to be marked as alerted")
+	}
+}
+
+func TestSendAlert_BudgetExceeded(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	budget := &Budget{
+		ID:       "exceed-test",
+		Name:     "Exceed Test",
+		LimitUSD: 100,
+		OnExceed: OnExceedWarn,
+	}
+
+	// Trigger sendAlert for exceeded budget
+	service.sendAlert(ctx, budget, 100, 105.0, 105.0)
+
+	// Verify alert was saved
+	if len(repo.alerts) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(repo.alerts))
+	}
+	if repo.alerts[0].AlertType != AlertTypeBudgetExceeded {
+		t.Errorf("expected AlertTypeBudgetExceeded, got %s", repo.alerts[0].AlertType)
+	}
+}
+
+func TestSendAlert_BudgetBlocked(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	budget := &Budget{
+		ID:       "block-test",
+		Name:     "Block Test",
+		LimitUSD: 100,
+		OnExceed: OnExceedBlock,
+	}
+
+	// Trigger sendAlert for blocked budget
+	service.sendAlert(ctx, budget, 100, 110.0, 110.0)
+
+	// Verify alert was saved with blocked type
+	if len(repo.alerts) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(repo.alerts))
+	}
+	if repo.alerts[0].AlertType != AlertTypeBudgetBlocked {
+		t.Errorf("expected AlertTypeBudgetBlocked, got %s", repo.alerts[0].AlertType)
+	}
+}
+
+func TestSendAlert_ThresholdReached(t *testing.T) {
+	repo := NewMockRepository()
+	service := NewService(repo, nil)
+	ctx := context.Background()
+
+	budget := &Budget{
+		ID:       "threshold-reach",
+		Name:     "Threshold Reach",
+		LimitUSD: 100,
+		OnExceed: OnExceedWarn,
+	}
+
+	// Trigger sendAlert for threshold (not exceeded)
+	service.sendAlert(ctx, budget, 80, 85.0, 85.0)
+
+	// Verify alert was saved with threshold type
+	if len(repo.alerts) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(repo.alerts))
+	}
+	if repo.alerts[0].AlertType != AlertTypeThresholdReached {
+		t.Errorf("expected AlertTypeThresholdReached, got %s", repo.alerts[0].AlertType)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -150,6 +151,9 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Routes proxied to Portal (port 8082)
+	// Portal Authentication (login, logout, session)
+	r.PathPrefix("/api/v1/auth").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
 	// Code Governance
 	r.PathPrefix("/api/v1/code-governance").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
@@ -162,23 +166,39 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-026)")
 }
 
-// GetProxyConfig returns proxy configuration using internal service discovery.
-// In Docker environments, services communicate via container names on axonflow-network.
-// For local development, falls back to localhost.
-// Uses isRunningInDocker() and constants from run.go (same package).
+// GetProxyConfig returns proxy configuration for internal service communication.
+// Priority for each URL:
+// 1. Environment variable override (ORCHESTRATOR_URL, PORTAL_URL) - required for ECS/K8s
+// 2. Docker auto-detection → container names on axonflow-network
+// 3. Fallback to localhost for local development
 func GetProxyConfig() ProxyConfig {
-	if isRunningInDocker() {
-		return ProxyConfig{
-			OrchestratorInternalURL: DefaultOrchestratorURL,
-			PortalInternalURL:       DefaultPortalURL,
-		}
+	config := ProxyConfig{}
+
+	// Orchestrator URL
+	if envURL := os.Getenv("ORCHESTRATOR_URL"); envURL != "" {
+		config.OrchestratorInternalURL = envURL
+		log.Printf("[Proxy] Using ORCHESTRATOR_URL from env: %s", envURL)
+	} else if isRunningInDocker() {
+		config.OrchestratorInternalURL = DefaultOrchestratorURL
+		log.Printf("[Proxy] Docker detected, using orchestrator: %s", DefaultOrchestratorURL)
+	} else {
+		config.OrchestratorInternalURL = LocalOrchestratorURL
+		log.Printf("[Proxy] Local mode, using orchestrator: %s", LocalOrchestratorURL)
 	}
 
-	// Local development - use localhost
-	return ProxyConfig{
-		OrchestratorInternalURL: LocalOrchestratorURL,
-		PortalInternalURL:       LocalPortalURL,
+	// Portal URL
+	if envURL := os.Getenv("PORTAL_URL"); envURL != "" {
+		config.PortalInternalURL = envURL
+		log.Printf("[Proxy] Using PORTAL_URL from env: %s", envURL)
+	} else if isRunningInDocker() {
+		config.PortalInternalURL = DefaultPortalURL
+		log.Printf("[Proxy] Docker detected, using portal: %s", DefaultPortalURL)
+	} else {
+		config.PortalInternalURL = LocalPortalURL
+		log.Printf("[Proxy] Local mode, using portal: %s", LocalPortalURL)
 	}
+
+	return config
 }
 
 // IsProxiedPath returns true if the path should be proxied to a backend service
@@ -195,7 +215,8 @@ func IsProxiedPath(path string) bool {
 	}
 
 	// Portal paths
-	if strings.HasPrefix(path, "/api/v1/code-governance") ||
+	if strings.HasPrefix(path, "/api/v1/auth") ||
+		strings.HasPrefix(path, "/api/v1/code-governance") ||
 		strings.HasPrefix(path, "/api/v1/portal") ||
 		strings.HasPrefix(path, "/api/v1/git-providers") {
 		return true

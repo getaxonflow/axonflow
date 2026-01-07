@@ -17,4 +17,7 @@ var (
 
 	// ErrAlreadyExists is returned when trying to create a duplicate entry
 	ErrAlreadyExists = errors.New("execution already exists")
+
+	// ErrInternal is returned for internal errors that trigger 500 responses
+	ErrInternal = errors.New("internal error")
 )

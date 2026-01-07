@@ -189,6 +189,129 @@ func TestProxyToPortal_Success(t *testing.T) {
 	}
 }
 
+func TestProxyToPortal_AuthLogin(t *testing.T) {
+	// Create a mock backend server that simulates login response with session cookie
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify path is correct
+		if r.URL.Path != "/api/v1/auth/login" {
+			t.Errorf("Expected path /api/v1/auth/login, got %s", r.URL.Path)
+		}
+
+		// Verify method
+		if r.Method != "POST" {
+			t.Errorf("Expected POST method, got %s", r.Method)
+		}
+
+		// Simulate login response with session cookie
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Set-Cookie", "session_token=abc123; HttpOnly; Path=/")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true,"org_id":"test-org-001"}`))
+	}))
+	defer backend.Close()
+
+	handler, err := NewReverseProxyHandler(ProxyConfig{
+		PortalInternalURL: backend.URL,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/auth/login", nil)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ProxyToPortal(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	// Verify session cookie is passed through
+	cookies := w.Result().Cookies()
+	foundSessionCookie := false
+	for _, cookie := range cookies {
+		if cookie.Name == "session_token" {
+			foundSessionCookie = true
+			if cookie.Value != "abc123" {
+				t.Errorf("Expected session_token=abc123, got %s", cookie.Value)
+			}
+		}
+	}
+	if !foundSessionCookie {
+		t.Error("Expected session_token cookie to be passed through")
+	}
+}
+
+func TestProxyToPortal_AuthLogout(t *testing.T) {
+	// Create a mock backend server that simulates logout
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify path is correct
+		if r.URL.Path != "/api/v1/auth/logout" {
+			t.Errorf("Expected path /api/v1/auth/logout, got %s", r.URL.Path)
+		}
+
+		// Verify session cookie is passed through from client
+		cookie := r.Header.Get("Cookie")
+		if cookie == "" {
+			t.Error("Expected Cookie header to be passed through")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer backend.Close()
+
+	handler, err := NewReverseProxyHandler(ProxyConfig{
+		PortalInternalURL: backend.URL,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+	req.Header.Set("Cookie", "session_token=abc123")
+	w := httptest.NewRecorder()
+
+	handler.ProxyToPortal(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+}
+
+func TestProxyToPortal_BackendDown(t *testing.T) {
+	// Configure proxy with URL that will fail
+	handler, err := NewReverseProxyHandler(ProxyConfig{
+		PortalInternalURL: "http://localhost:99998", // Invalid port
+	})
+	if err != nil {
+		t.Fatalf("Failed to create handler: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	handler.ProxyToPortal(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("Expected status 502, got %d", w.Code)
+	}
+
+	var response map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response["error"] != "Backend service unavailable" {
+		t.Errorf("Unexpected error message: %s", response["error"])
+	}
+	if response["service"] != "portal" {
+		t.Errorf("Unexpected service: %s", response["service"])
+	}
+}
+
 func TestProxyToOrchestrator_BackendDown(t *testing.T) {
 	// Configure proxy with URL that will fail
 	handler, err := NewReverseProxyHandler(ProxyConfig{
@@ -246,6 +369,9 @@ func TestRegisterProxyRoutes(t *testing.T) {
 		{"GET", "/api/v1/executions", true},
 		{"GET", "/api/v1/llm-providers", true},
 		// Portal routes
+		{"POST", "/api/v1/auth/login", true},
+		{"POST", "/api/v1/auth/logout", true},
+		{"GET", "/api/v1/auth/session", true},
 		{"GET", "/api/v1/code-governance/metrics", true},
 		{"GET", "/api/v1/portal/status", true},
 		{"GET", "/api/v1/git-providers", true},
@@ -284,9 +410,13 @@ func TestIsProxiedPath(t *testing.T) {
 		{"/api/v1/executions/123", true},
 		{"/api/v1/llm-providers", true},
 		{"/api/v1/llm-providers/openai", true},
-		// Portal paths
+		// Portal paths - auth
+		{"/api/v1/auth/login", true},
+		{"/api/v1/auth/logout", true},
+		{"/api/v1/auth/session", true},
+		// Portal paths - code governance
 		{"/api/v1/code-governance/metrics", true},
-		{"/api/v1/portal/auth", true},
+		{"/api/v1/portal/status", true},
 		{"/api/v1/git-providers", true},
 		{"/api/v1/git-providers/github", true},
 		// Non-proxied paths

@@ -883,6 +883,11 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 			Priority: 0,
 		}
 
+		// Extract policy_id
+		if policyID, ok := policyMap["policy_id"].(string); ok {
+			dp.ID = policyID
+		}
+
 		// Extract metadata
 		if metadata, ok := policyMap["_metadata"].(map[string]interface{}); ok {
 			if priority, ok := metadata["priority"].(int); ok {

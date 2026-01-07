@@ -431,3 +431,97 @@ func TestNullString(t *testing.T) {
 		}
 	})
 }
+
+
+func TestPostgresRepository_SaveAlert(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewPostgresRepository(db)
+
+	t.Run("save alert", func(t *testing.T) {
+		alert := &BudgetAlert{
+			BudgetID:          "budget-1",
+			Threshold:         80,
+			PercentageReached: 85.0,
+			AmountUSD:         85.0,
+			AlertType:         AlertTypeThresholdReached,
+			Message:           "Budget threshold reached",
+		}
+
+		rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
+		mock.ExpectQuery("INSERT INTO budget_alerts").
+			WithArgs(alert.BudgetID, alert.Threshold, alert.PercentageReached, alert.AmountUSD, alert.AlertType, alert.Message, sqlmock.AnyArg()).
+			WillReturnRows(rows)
+
+		err := repo.SaveAlert(context.Background(), alert)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if alert.ID != 1 {
+			t.Errorf("Expected ID to be set to 1, got %d", alert.ID)
+		}
+	})
+}
+
+func TestPostgresRepository_GetRecentAlerts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewPostgresRepository(db)
+
+	t.Run("get recent alerts", func(t *testing.T) {
+		rows := sqlmock.NewRows([]string{
+			"id", "budget_id", "threshold", "percentage_reached", "amount_usd",
+			"alert_type", "message", "acknowledged", "acknowledged_by", "acknowledged_at", "created_at",
+		}).AddRow(
+			1, "budget-1", 80, 85.0, 85.0, AlertTypeThresholdReached, "Test", false, nil, nil, time.Now(),
+		)
+
+		mock.ExpectQuery("SELECT (.+) FROM budget_alerts WHERE").WillReturnRows(rows)
+
+		alerts, err := repo.GetRecentAlerts(context.Background(), "budget-1", 10)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if len(alerts) != 1 {
+			t.Errorf("Expected 1 alert, got %d", len(alerts))
+		}
+	})
+}
+
+
+func TestPostgresRepository_GetUnacknowledgedAlerts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewPostgresRepository(db)
+
+	t.Run("get unacknowledged alerts", func(t *testing.T) {
+		rows := sqlmock.NewRows([]string{
+			"id", "budget_id", "threshold", "percentage_reached", "amount_usd",
+			"alert_type", "message", "acknowledged", "acknowledged_by", "acknowledged_at", "created_at",
+		}).AddRow(
+			1, "budget-1", 80, 85.0, 85.0, AlertTypeThresholdReached, "Test", false, nil, nil, time.Now(),
+		)
+
+		mock.ExpectQuery("SELECT (.+) FROM budget_alerts WHERE").WillReturnRows(rows)
+
+		alerts, err := repo.GetUnacknowledgedAlerts(context.Background(), "budget-1")
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		if len(alerts) != 1 {
+			t.Errorf("Expected 1 alert, got %d", len(alerts))
+		}
+	})
+}

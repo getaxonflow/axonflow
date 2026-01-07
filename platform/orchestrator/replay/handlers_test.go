@@ -742,3 +742,207 @@ func TestHandler_WriteError(t *testing.T) {
 		t.Errorf("expected error 'bad_request', got '%s'", errResp.Error)
 	}
 }
+
+// TestHandler_GetTimeline_InternalError tests internal error handling
+func TestHandler_GetTimeline_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.GetSnapshotsErr = ErrInternal
+
+	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/timeline", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_DeleteExecution_InternalError tests internal error handling
+func TestHandler_DeleteExecution_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.DeleteErr = ErrInternal
+
+	req := httptest.NewRequest("DELETE", "/api/v1/executions/req-123", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_GetExecution_InternalError tests internal error handling
+func TestHandler_GetExecution_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.GetExecutionErr = ErrInternal
+
+	req := httptest.NewRequest("GET", "/api/v1/executions/req-123", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_GetSteps_InternalError tests internal error handling
+func TestHandler_GetSteps_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.GetSnapshotsErr = ErrInternal
+
+	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_GetStep_InternalError tests internal error handling
+func TestHandler_GetStep_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.GetSnapshotErr = ErrInternal
+
+	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/steps/0", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_ExportExecution_InternalError tests internal error handling
+func TestHandler_ExportExecution_InternalError(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Set up internal error
+	repo.GetExecutionErr = ErrInternal
+
+	req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", w.Code)
+	}
+}
+
+// TestHandler_ExportExecution_QueryParams tests export with various query params
+func TestHandler_ExportExecution_QueryParams(t *testing.T) {
+	h, repo := newTestHandler()
+	r := setupRouter(h)
+
+	// Add test data
+	repo.AddSummary(&ExecutionSummary{
+		RequestID:  "req-123",
+		Status:     ExecutionStatusCompleted,
+		TotalSteps: 1,
+		StartedAt:  time.Now(),
+	})
+	repo.AddSnapshot(&ExecutionSnapshot{
+		RequestID: "req-123",
+		StepIndex: 0,
+		StepName:  "step-1",
+		Status:    StepStatusCompleted,
+	})
+
+	tests := []struct {
+		name       string
+		queryStr   string
+		wantStatus int
+	}{
+		{"with format", "?format=json", http.StatusOK},
+		{"exclude input", "?include_input=false", http.StatusOK},
+		{"exclude output", "?include_output=false", http.StatusOK},
+		{"exclude policies", "?include_policies=false", http.StatusOK},
+		{"all options", "?format=json&include_input=false&include_output=false&include_policies=false", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/v1/executions/req-123/export"+tt.queryStr, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
+	}
+}
+
+// TestHandler_getTenantID_HeaderVariations tests tenant ID extraction
+func TestHandler_getTenantID_HeaderVariations(t *testing.T) {
+	h, _ := newTestHandler()
+
+	tests := []struct {
+		name       string
+		header     string
+		value      string
+		wantTenant string
+	}{
+		{"X-Tenant-ID", "X-Tenant-ID", "tenant-456", "tenant-456"},
+		{"no header", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test", nil)
+			if tt.header != "" {
+				req.Header.Set(tt.header, tt.value)
+			}
+
+			got := h.getTenantID(req)
+			if got != tt.wantTenant {
+				t.Errorf("expected tenant %q, got %q", tt.wantTenant, got)
+			}
+		})
+	}
+}
+
+// TestHandler_getOrgID_HeaderVariations tests org ID extraction
+func TestHandler_getOrgID_HeaderVariations(t *testing.T) {
+	h, _ := newTestHandler()
+
+	tests := []struct {
+		name    string
+		header  string
+		value   string
+		wantOrg string
+	}{
+		{"X-Org-ID", "X-Org-ID", "org-123", "org-123"},
+		{"no header", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/test", nil)
+			if tt.header != "" {
+				req.Header.Set(tt.header, tt.value)
+			}
+
+			got := h.getOrgID(req)
+			if got != tt.wantOrg {
+				t.Errorf("expected org %q, got %q", tt.wantOrg, got)
+			}
+		})
+	}
+}

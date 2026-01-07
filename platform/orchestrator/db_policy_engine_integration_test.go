@@ -30,9 +30,7 @@ func TestDatabaseDynamicPolicyEngine_Initialization(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	// Set DATABASE_URL for NewDatabaseDynamicPolicyEngine() which reads from env
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	engine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
@@ -56,9 +54,7 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	// Set DATABASE_URL for NewDatabaseDynamicPolicyEngine() which reads from env
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	// Create test database connection to insert test policy
 	db, err := sql.Open("postgres", dbURL)
@@ -68,18 +64,19 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Insert test policy directly using the actual schema
-	testPolicyName := "test_refresh_policy_" + time.Now().Format("20060102150405")
+	testPolicyID := "test_refresh_policy_" + time.Now().Format("20060102150405")
+	testPolicyName := "Test Refresh Policy"
 	_, err = db.Exec(`
 		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyName, "Test Refresh Policy", "Test policy for refresh", "test", "{}", "{}", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for refresh", "test", "{}", "{}", "test-tenant", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
 
 	// Clean up test policy after test
-	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyID) }()
 
 	// Create policy engine
 	engine, err := NewDatabaseDynamicPolicyEngine()
@@ -94,10 +91,10 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 		t.Error("Expected policies to be loaded from database")
 	}
 
-	// Verify our test policy is in the list
+	// Verify our test policy is in the list (check by ID since name might not be unique)
 	found := false
 	for _, policy := range policies {
-		if policy.Name == testPolicyName {
+		if policy.ID == testPolicyID {
 			found = true
 			break
 		}
@@ -114,9 +111,7 @@ func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	// Set DATABASE_URL for NewDatabaseDynamicPolicyEngine() which reads from env
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	// Create test database connection
 	db, err := sql.Open("postgres", dbURL)
@@ -126,16 +121,17 @@ func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Insert specific test policy
-	testPolicyName := "test_get_policy_" + time.Now().Format("20060102150405")
+	testPolicyID := "test_get_policy_" + time.Now().Format("20060102150405")
+	testPolicyName := "Test Get Policy"
 	_, err = db.Exec(`
 		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyName, "Test Get Policy", "Test policy for get", "test", "{}", "{}", "test-tenant", 50, true)
+	`, testPolicyID, testPolicyName, "Test policy for get", "test", "{}", "{}", "test-tenant", 50, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
-	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyID) }()
 
 	// Create policy engine
 	engine, err := NewDatabaseDynamicPolicyEngine()
@@ -144,7 +140,7 @@ func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
 	}
 	defer func() { _ = engine.Close() }()
 
-	// Get the specific policy - GetPolicy returns (map[string]interface{}, bool)
+	// Get the specific policy by name - GetPolicy looks up by name (the map key)
 	policy, exists := engine.GetPolicy(testPolicyName)
 	if !exists {
 		t.Fatal("Expected policy to be retrieved")
@@ -171,9 +167,7 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	// Set DATABASE_URL for NewDatabaseDynamicPolicyEngine() which reads from env
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	// Create test database connection
 	db, err := sql.Open("postgres", dbURL)
@@ -182,17 +176,18 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Insert test policy
-	testPolicyName := "test_eval_policy_" + time.Now().Format("20060102150405")
+	// Insert test policy with valid conditions array
+	testPolicyID := "test_eval_policy_" + time.Now().Format("20060102150405")
+	testPolicyName := "Test Eval Policy"
 	_, err = db.Exec(`
 		INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority, enabled)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (policy_id) DO NOTHING
-	`, testPolicyName, "Test Eval Policy", "Test policy for evaluation", "test", "{}", "{}", "test-tenant", 100, true)
+	`, testPolicyID, testPolicyName, "Test policy for evaluation", "test", "[]", "{}", "test-tenant", 100, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test policy: %v", err)
 	}
-	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyName) }()
+	defer func() { _, _ = db.Exec("DELETE FROM dynamic_policies WHERE policy_id = $1", testPolicyID) }()
 
 	// Create policy engine
 	engine, err := NewDatabaseDynamicPolicyEngine()
@@ -263,9 +258,7 @@ func TestDatabaseDynamicPolicyEngine_HealthCheck(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	// Set DATABASE_URL for NewDatabaseDynamicPolicyEngine() which reads from env
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	engine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
@@ -293,8 +286,7 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithConditions(t *testing.T
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -367,8 +359,7 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithAllowedProviders(t *tes
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -427,8 +418,7 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithBlockAction(t *testing.
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -505,8 +495,7 @@ func TestDatabaseDynamicPolicyEngine_ListActivePolicies(t *testing.T) {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
 
-	_ = os.Setenv("DATABASE_URL", dbURL)
-	defer func() { _ = os.Unsetenv("DATABASE_URL") }()
+	// DATABASE_URL is already set from environment
 
 	engine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {

@@ -134,6 +134,52 @@ environment:
   SQLI_BLOCK_MODE: "warn"     # Use SQLI_ACTION=warn instead
 ```
 
+## Service Ports and Single Entry Point (ADR-026)
+
+AxonFlow implements a **single entry point architecture** where all SDK requests go through the Agent on port 8080. The Agent automatically proxies requests to the appropriate backend service.
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Agent | 8080 | **Single entry point for all SDK requests** |
+| Orchestrator | 8081 | Internal - handles dynamic policies, LLM providers, cost controls |
+| Portal | 8082 | Internal - handles auth, code governance (Enterprise) |
+
+### Proxied Routes
+
+The Agent automatically proxies these routes:
+
+| Route Prefix | Proxied To | Purpose |
+|--------------|-----------|---------|
+| `/api/v1/auth/*` | Portal | Login, logout, session management |
+| `/api/v1/code-governance/*` | Portal | Code Governance API |
+| `/api/v1/portal/*` | Portal | Portal management |
+| `/api/v1/git-providers/*` | Portal | Git provider configuration |
+| `/api/v1/dynamic-policies/*` | Orchestrator | Dynamic policy CRUD |
+| `/api/v1/connectors/*` | Orchestrator | Connector management |
+| `/api/v1/cost/*` | Orchestrator | Cost controls |
+| `/api/v1/executions/*` | Orchestrator | Execution replay |
+| `/api/v1/llm-providers/*` | Orchestrator | LLM provider configuration |
+
+All other routes (e.g., `/api/v1/policies/*`, `/api/request`, `/health`) are handled directly by the Agent.
+
+### SDK Configuration
+
+Configure your SDK to use only the Agent endpoint:
+
+```go
+// Go SDK
+client := axonflow.NewClient(axonflow.AxonFlowConfig{
+    Endpoint: "http://localhost:8080",  // Single entry point
+})
+```
+
+```python
+# Python SDK
+client = AxonFlow(
+    endpoint="http://localhost:8080",  # Single entry point
+)
+```
+
 ## Related Documentation
 
 - [PII Detection](/docs/security/pii-detection.md) - Supported PII types and configuration

@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	mathRand "math/rand"
@@ -39,8 +40,9 @@ import (
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
-	"axonflow/platform/orchestrator/replay" // Execution replay/debug mode (#763)
-	"axonflow/platform/orchestrator/sebi"   // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
+	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
+	"axonflow/platform/orchestrator/sebi"     // SEBI AI/ML module - Community stub or EE impl
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -94,6 +96,9 @@ var (
 	// Cost Controls & Budget Management (#764)
 	costService *cost.Service // Cost tracking and budget management
 	costHandler *cost.Handler // Cost control HTTP handlers
+
+	// MAP Two-Step Execution (#925)
+	planService *planning.Service // Plan storage and retrieval for GeneratePlan/ExecutePlan
 )
 
 // Per-stage metrics (similar to Agent)
@@ -397,8 +402,9 @@ func Run() {
 	r.HandleFunc("/api/v1/workflows/executions/{id}", getWorkflowExecutionHandler).Methods("GET")
 	r.HandleFunc("/api/v1/workflows/executions", listWorkflowExecutionsHandler).Methods("GET")
 
-	// Multi-Agent Planning endpoint (v0.1)
-	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")
+	// Multi-Agent Planning endpoints (v0.1)
+	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")           // GeneratePlan (stores plan)
+	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")   // ExecutePlan (executes stored plan)
 
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
@@ -880,6 +886,14 @@ func initializeComponents() {
 		costService = cost.NewService(costRepo, pricing)
 		costHandler = cost.NewHandler(costService)
 		log.Println("Cost Controls Service initialized ✅")
+
+		// Initialize MAP Two-Step Execution (#925)
+		log.Println("Initializing Planning Service for MAP two-step execution...")
+		planRepo := planning.NewPostgresRepository(usageDB)
+		planService = planning.NewService(planRepo)
+		// Start background cleanup worker for expired plans
+		planService.StartCleanupWorker(context.Background(), 15*time.Minute)
+		log.Println("Planning Service initialized ✅")
 
 		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
 		log.Println("Initializing SEBI Compliance Module...")
@@ -1935,11 +1949,12 @@ type TaskMetadata struct {
 	TimeMs int64  `json:"time_ms"`
 }
 
-// planRequestHandler handles multi-agent planning requests
+// planRequestHandler handles GeneratePlan requests - generates and stores plan WITHOUT executing
+// This is step 1 of MAP two-step execution: GeneratePlan → ExecutePlan
 func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	log.Println("[PlanRequest] Received multi-agent planning request")
+	log.Println("[GeneratePlan] Received multi-agent planning request")
 
 	// Check if planning engine is available
 	if planningEngine == nil {
@@ -1947,8 +1962,9 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if workflowEngine == nil {
-		sendErrorResponse(w, "Multi-Agent Planning not available - Workflow Engine not initialized", http.StatusServiceUnavailable)
+	// Check if plan service is available for storing plans
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available - database connection required", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1964,7 +1980,7 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Direct access to /api/v1/plan is not supported for governance compliance
 
 	if req.User.ID == 0 {
-		log.Printf("[PlanRequest] BLOCKED: Missing user authentication (request must come through Agent)")
+		log.Printf("[GeneratePlan] BLOCKED: Missing user authentication (request must come through Agent)")
 		sendErrorResponse(w, "Authentication required: requests must be routed through AxonFlow Agent", http.StatusUnauthorized)
 		return
 	}
@@ -1972,6 +1988,8 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract client info for audit logging and multi-tenant logging
 	clientName := "unknown"
 	clientID := "unknown"
+	orgID := ""
+	tenantID := ""
 	if req.Client != nil {
 		if name, ok := req.Client["name"].(string); ok {
 			clientName = name
@@ -1982,12 +2000,15 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 				clientName = id
 			}
 		}
+		if org, ok := req.Client["org_id"].(string); ok {
+			orgID = org
+		}
+		if tenant, ok := req.Client["tenant_id"].(string); ok {
+			tenantID = tenant
+		}
 	}
 
-	// Generate request ID for tracing
-	requestID := fmt.Sprintf("plan-%d-%s", time.Now().UnixNano(), clientID)
-
-	log.Printf("[PlanRequest] Authenticated request - User: %s (ID: %d), Client: %s",
+	log.Printf("[GeneratePlan] Authenticated request - User: %s (ID: %d), Client: %s",
 		req.User.Email, req.User.ID, clientName)
 
 	// Validate request
@@ -2001,7 +2022,7 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// Try to extract domain from context (for clients that send it there)
 		if domain, ok := req.Context["domain"].(string); ok && domain != "" {
 			req.Domain = domain
-			log.Printf("[PlanRequest] Domain extracted from context: %s", domain)
+			log.Printf("[GeneratePlan] Domain extracted from context: %s", domain)
 		} else {
 			req.Domain = "generic"
 		}
@@ -2010,54 +2031,226 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		req.ExecutionMode = "auto"
 	}
 
-	log.Printf("[PlanRequest] Query: %s, Domain: %s, Mode: %s, RequestID: %s", req.Query, req.Domain, req.ExecutionMode, requestID)
+	// Generate plan ID
+	planID := fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8))
 
-	// Step 1: Generate execution plan
+	log.Printf("[GeneratePlan] Query: %s, Domain: %s, Mode: %s, PlanID: %s", req.Query, req.Domain, req.ExecutionMode, planID)
+
+	// Step 1: Generate execution plan (without executing)
 	planGenReq := PlanGenerationRequest{
 		Query:         req.Query,
 		Domain:        req.Domain,
 		ExecutionMode: req.ExecutionMode,
 		ClientID:      clientID,
-		RequestID:     requestID,
+		RequestID:     planID,
 		Context:       req.Context,
 	}
 
 	workflow, err := planningEngine.GeneratePlan(r.Context(), planGenReq)
 	if err != nil {
-		log.Printf("[PlanRequest] Plan generation failed: %v", err)
+		log.Printf("[GeneratePlan] Plan generation failed: %v", err)
 		sendErrorResponse(w, "Planning failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[PlanRequest] Plan generated: %d steps", len(workflow.Spec.Steps))
+	log.Printf("[GeneratePlan] Plan generated: %d steps", len(workflow.Spec.Steps))
 
-	// Step 2: Execute workflow (with parallel support)
-	// Add 25-second timeout for trip planning to ensure quick failover to mock data
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	// Step 2: Store the plan in database for later execution
+	workflowJSON, err := json.Marshal(workflow)
+	if err != nil {
+		log.Printf("[GeneratePlan] Failed to marshal workflow: %v", err)
+		sendErrorResponse(w, "Failed to store plan", http.StatusInternalServerError)
+		return
+	}
+
+	createReq := &planning.CreatePlanRequest{
+		PlanID:             planID,
+		Query:              req.Query,
+		Domain:             req.Domain,
+		ExecutionMode:      req.ExecutionMode,
+		WorkflowDefinition: workflowJSON,
+		Complexity:         len(workflow.Spec.Steps),
+		Parallel:           req.ExecutionMode == "auto" || req.ExecutionMode == "parallel",
+		StepCount:          len(workflow.Spec.Steps),
+		OrgID:              orgID,
+		TenantID:           tenantID,
+		UserID:             fmt.Sprintf("%d", req.User.ID),
+		ClientID:           clientID,
+	}
+
+	storedPlan, err := planService.StorePlan(r.Context(), createReq)
+	if err != nil {
+		log.Printf("[GeneratePlan] Failed to store plan: %v", err)
+		sendErrorResponse(w, "Failed to store plan: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Step 3: Build response (plan info only, no execution result)
+	executionTimeMs := time.Since(startTime).Milliseconds()
+
+	// Convert workflow steps to SDK-compatible format
+	planSteps := convertWorkflowStepsToResponse(workflow.Spec.Steps)
+
+	response := PlanResponse{
+		Success: true,
+		PlanID:  storedPlan.PlanID,
+		Steps:   planSteps,
+		// No WorkflowExecutionID - plan not executed yet
+		// No Result - plan not executed yet
+		Metadata: PlanMetadata{
+			TasksExecuted:   0, // Not executed yet
+			ExecutionMode:   req.ExecutionMode,
+			ExecutionTimeMs: executionTimeMs,
+			Tasks:           []TaskMetadata{}, // Empty - not executed
+		},
+	}
+
+	log.Printf("[GeneratePlan] Plan stored successfully in %dms: PlanID=%s, Steps=%d, Expires=%v",
+		executionTimeMs, storedPlan.PlanID, len(planSteps), storedPlan.ExpiresAt)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
+}
+
+// executePlanHandler handles ExecutePlan requests - retrieves and executes a stored plan
+// This is step 2 of MAP two-step execution: GeneratePlan → ExecutePlan
+func executePlanHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	log.Println("[ExecutePlan] Received execute plan request")
+
+	// Check if workflow engine is available
+	if workflowEngine == nil {
+		sendErrorResponse(w, "Multi-Agent Planning not available - Workflow Engine not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Check if plan service is available
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available - database connection required", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse request
+	var req PlanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// === GOVERNANCE: Validate Authentication (from Agent) ===
+	if req.User.ID == 0 {
+		log.Printf("[ExecutePlan] BLOCKED: Missing user authentication (request must come through Agent)")
+		sendErrorResponse(w, "Authentication required: requests must be routed through AxonFlow Agent", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract plan_id from context (SDK sends it here)
+	planID := ""
+	if req.Context != nil {
+		if id, ok := req.Context["plan_id"].(string); ok {
+			planID = id
+		}
+	}
+
+	if planID == "" {
+		log.Printf("[ExecutePlan] BLOCKED: Missing plan_id in request context")
+		sendErrorResponse(w, "plan_id is required in context", http.StatusBadRequest)
+		return
+	}
+
+	// Extract orgID from client info for authorization
+	orgID := ""
+	if req.Client != nil {
+		if org, ok := req.Client["org_id"].(string); ok {
+			orgID = org
+		}
+	}
+
+	log.Printf("[ExecutePlan] Authenticated request - User: %s (ID: %d), OrgID: %s, PlanID: %s",
+		req.User.Email, req.User.ID, orgID, planID)
+
+	// Step 1: Retrieve plan from database (with authorization check)
+	plan, err := planService.GetPlanForExecution(r.Context(), planID, orgID)
+	if err != nil {
+		log.Printf("[ExecutePlan] Failed to retrieve plan %s: %v", planID, err)
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			sendErrorResponse(w, "Plan not found: "+planID, http.StatusNotFound)
+		} else if errors.Is(err, planning.ErrPlanExpired) {
+			sendErrorResponse(w, "Plan has expired: "+planID, http.StatusGone)
+		} else if errors.Is(err, planning.ErrPlanAlreadyRun) {
+			sendErrorResponse(w, "Plan has already been executed: "+planID, http.StatusConflict)
+		} else {
+			sendErrorResponse(w, "Failed to retrieve plan: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	log.Printf("[ExecutePlan] Retrieved plan %s (domain: %s, steps: %d)", planID, plan.Domain, plan.StepCount)
+
+	// Step 2: Unmarshal workflow definition
+	var workflow Workflow
+	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
+		log.Printf("[ExecutePlan] Failed to unmarshal workflow: %v", err)
+		_ = planService.MarkPlanFailed(r.Context(), planID, "Invalid workflow definition")
+		sendErrorResponse(w, "Invalid workflow definition", http.StatusInternalServerError)
+		return
+	}
+
+	// Step 3: Execute workflow (with parallel support)
+	// 60-second timeout for MAP workflow execution (multiple LLM calls + connector calls)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	enableParallel := req.ExecutionMode == "auto" || req.ExecutionMode == "parallel"
-	execution, err := workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, *workflow, req.Context, req.User, enableParallel)
+	// Merge stored context with request context (request context takes precedence)
+	execContext := req.Context
+	if execContext == nil {
+		execContext = make(map[string]interface{})
+	}
+
+	enableParallel := plan.Parallel
+	execution, err := workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, enableParallel)
 	if err != nil {
-		log.Printf("[PlanRequest] Execution failed: %v", err)
+		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", planID, err)
+		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
 		sendErrorResponse(w, "Execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[PlanRequest] Execution completed: %s", execution.ID)
+	log.Printf("[ExecutePlan] Execution completed for plan %s: ExecutionID=%s", planID, execution.ID)
 
-	// Step 3: Build response
+	// Step 4: Extract final result
+	var finalResult interface{}
+	if execution.Output != nil {
+		if result, ok := execution.Output["final_result"]; ok {
+			log.Printf("[ExecutePlan] Found final_result, type: %T, length: %d", result, getResultLength(result))
+			finalResult = result
+		} else {
+			log.Printf("[ExecutePlan] WARNING: final_result key not found, using entire output map")
+			finalResult = execution.Output
+		}
+	} else {
+		log.Printf("[ExecutePlan] WARNING: execution.Output is nil")
+		finalResult = "Plan executed successfully (no output generated)"
+	}
+
+	// Step 5: Mark plan as completed
+	if err := planService.MarkPlanCompleted(r.Context(), planID, finalResult); err != nil {
+		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", planID, err)
+	}
+
+	// Step 6: Build response
 	executionTimeMs := time.Since(startTime).Milliseconds()
 
 	// Build task metadata
 	tasks := make([]TaskMetadata, len(execution.Steps))
 	for i, step := range execution.Steps {
-		// Parse process time (format: "123.45ms")
 		timeMs := int64(0)
 		if duration, err := time.ParseDuration(step.ProcessTime); err == nil {
 			timeMs = duration.Milliseconds()
 		}
-
 		tasks[i] = TaskMetadata{
 			Name:   step.Name,
 			Status: step.Status,
@@ -2065,43 +2258,24 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Extract final result
-	log.Printf("[PlanResponse] execution.Output: %+v", execution.Output)
-	log.Printf("[PlanResponse] execution.Output keys: %v", getOutputKeys(execution.Output))
-
-	var finalResult interface{}
-	if execution.Output != nil {
-		if result, ok := execution.Output["final_result"]; ok {
-			log.Printf("[PlanResponse] Found final_result, type: %T, length: %d", result, getResultLength(result))
-			finalResult = result
-		} else {
-			log.Printf("[PlanResponse] WARNING: final_result key not found in execution.Output, using entire output map")
-			// Fallback: return entire output
-			finalResult = execution.Output
-		}
-	} else {
-		log.Printf("[PlanResponse] WARNING: execution.Output is nil")
-		finalResult = "Plan executed successfully (no output generated)"
-	}
-
 	// Convert workflow steps to SDK-compatible format
 	planSteps := convertWorkflowStepsToResponse(workflow.Spec.Steps)
 
 	response := PlanResponse{
 		Success:             true,
-		PlanID:              fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8)),
+		PlanID:              planID,
 		Steps:               planSteps,
 		WorkflowExecutionID: execution.ID,
 		Result:              finalResult,
 		Metadata: PlanMetadata{
 			TasksExecuted:   len(execution.Steps),
-			ExecutionMode:   req.ExecutionMode,
+			ExecutionMode:   plan.ExecutionMode,
 			ExecutionTimeMs: executionTimeMs,
 			Tasks:           tasks,
 		},
 	}
 
-	log.Printf("[PlanRequest] Success in %dms: %d tasks executed", executionTimeMs, len(execution.Steps))
+	log.Printf("[ExecutePlan] Success in %dms: PlanID=%s, TasksExecuted=%d", executionTimeMs, planID, len(execution.Steps))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {

@@ -173,6 +173,60 @@ func TestListBudgetsHandler(t *testing.T) {
 	}
 }
 
+func TestListBudgetsHandler_WithQueryParams(t *testing.T) {
+	handler, repo := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	// Create budgets
+	repo.budgets["b1"] = &Budget{ID: "b1", Name: "Budget 1", OrgID: "org-1", Scope: ScopeOrganization, LimitUSD: 100, Period: PeriodMonthly, Enabled: true}
+	repo.budgets["b2"] = &Budget{ID: "b2", Name: "Budget 2", OrgID: "org-1", Scope: ScopeTeam, LimitUSD: 200, Period: PeriodMonthly, Enabled: false}
+
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+	}{
+		{"with limit", "/api/v1/budgets?org_id=org-1&limit=10", http.StatusOK},
+		{"with offset", "/api/v1/budgets?org_id=org-1&offset=0", http.StatusOK},
+		{"with enabled filter true", "/api/v1/budgets?org_id=org-1&enabled=true", http.StatusOK},
+		{"with enabled filter false", "/api/v1/budgets?org_id=org-1&enabled=false", http.StatusOK},
+		{"with invalid limit", "/api/v1/budgets?org_id=org-1&limit=-1", http.StatusOK},
+		{"with limit over max", "/api/v1/budgets?org_id=org-1&limit=2000", http.StatusOK},
+		{"with scope filter", "/api/v1/budgets?org_id=org-1&scope=organization", http.StatusOK},
+		{"with tenant header", "/api/v1/budgets?limit=5", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tt.query, nil)
+			if tt.name == "with tenant header" {
+				req.Header.Set("X-Tenant-ID", "tenant-1")
+			}
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("status = %v, want %v", rr.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestListBudgetsHandler_CORS(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("OPTIONS status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
 func TestGetBudgetHandler(t *testing.T) {
 	handler, repo := setupTestHandler()
 	r := mux.NewRouter()
@@ -248,6 +302,99 @@ func TestUpdateBudgetHandlerNotFound(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %v, want %v", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestUpdateBudgetHandler_InvalidJSON(t *testing.T) {
+	handler, repo := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	repo.budgets["update-test"] = &Budget{ID: "update-test", Name: "Original", Scope: ScopeOrganization, LimitUSD: 100, Period: PeriodMonthly}
+
+	req := httptest.NewRequest("PUT", "/api/v1/budgets/update-test", bytes.NewReader([]byte("invalid json")))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %v, want %v", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateBudgetHandler_AllFields(t *testing.T) {
+	handler, repo := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	repo.budgets["update-all"] = &Budget{
+		ID:       "update-all",
+		Name:     "Original",
+		Scope:    ScopeOrganization,
+		LimitUSD: 100,
+		Period:   PeriodMonthly,
+	}
+
+	update := Budget{
+		Name:            "Updated",
+		LimitUSD:        200,
+		OnExceed:        "warn",
+		AlertThresholds: []int{80, 90},
+	}
+	bodyBytes, _ := json.Marshal(update)
+
+	req := httptest.NewRequest("PUT", "/api/v1/budgets/update-all", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "test-user")
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+func TestUpdateBudgetHandler_CORS(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("OPTIONS status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+func TestDeleteBudgetHandler_CORS(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("OPTIONS status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+func TestGetBudgetHandler_CORS(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+	handler.RegisterRoutes(r)
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/budgets/any-id", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("OPTIONS status = %v, want %v", rr.Code, http.StatusOK)
 	}
 }
 
