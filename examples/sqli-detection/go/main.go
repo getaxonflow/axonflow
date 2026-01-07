@@ -1,4 +1,4 @@
-// Package main demonstrates AxonFlow's SQL injection detection capabilities.
+// Package main demonstrates and VALIDATES AxonFlow's SQL injection detection.
 //
 // AxonFlow detects and blocks various SQLi patterns:
 // - DROP/DELETE/TRUNCATE statements
@@ -7,26 +7,50 @@
 // - Comment injection
 // - Stacked queries
 // - Time-based blind SQLi
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
+// This ensures CI/CD pipelines catch regressions.
+//
+// Run with: go run main.go
+// Prerequisites: docker compose up -d
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
+var failures []string
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func assert(condition bool, message string) {
+	if !condition {
+		failures = append(failures, message)
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+	} else {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	}
+}
+
 func main() {
-	fmt.Println("AxonFlow SQL Injection Detection - Go")
-	fmt.Println("========================================")
+	fmt.Println("AxonFlow SQL Injection Detection - Go SDK")
+	fmt.Println("==========================================")
 	fmt.Println()
 
-	// Initialize AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "sqli-detection-demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo"),
+		Debug:        getEnv("AXONFLOW_DEBUG", "") == "true",
 	})
 
 	// SQLi test cases
@@ -80,11 +104,8 @@ func main() {
 		},
 	}
 
-	passed := 0
-	failed := 0
-
-	for _, tc := range testCases {
-		fmt.Printf("Test: %s\n", tc.name)
+	for i, tc := range testCases {
+		fmt.Printf("Test %d: %s\n", i+1, tc.name)
 		queryPreview := tc.query
 		if len(queryPreview) > 60 {
 			queryPreview = queryPreview[:60] + "..."
@@ -99,63 +120,50 @@ func main() {
 		)
 
 		if err != nil {
-			fmt.Printf("  Result: ERROR - %v\n", err)
-			failed++
-			fmt.Println()
-			continue
+			fmt.Printf("   ❌ FATAL: GetPolicyApprovedContext failed: %v\n", err)
+			os.Exit(1)
 		}
 
 		wasBlocked := !result.Approved
 
-		if wasBlocked {
-			fmt.Printf("  Result: BLOCKED\n")
-			fmt.Printf("  Reason: %s\n", result.BlockReason)
+		// Validate context ID for approved requests
+		if result.Approved {
+			assert(result.ContextID != "", "ContextID is not empty")
+			assert(strings.HasPrefix(result.ContextID, "ctx_"), "ContextID has correct prefix 'ctx_'")
+			fmt.Println("   Status: APPROVED")
 		} else {
-			fmt.Printf("  Result: APPROVED\n")
-			fmt.Printf("  Context ID: %s\n", result.ContextID)
+			fmt.Println("   Status: BLOCKED")
+			fmt.Printf("   Reason: %s\n", result.BlockReason)
+			assert(result.BlockReason != "", "BlockReason is provided for blocked requests")
 		}
 
-		if len(result.Policies) > 0 {
-			fmt.Printf("  Policies: %v\n", result.Policies)
-		}
-
-		if wasBlocked == tc.shouldBlock {
-			fmt.Printf("  Test: PASS\n")
-			passed++
+		// Verify expected behavior
+		if tc.shouldBlock {
+			assert(wasBlocked, fmt.Sprintf("SQLi type '%s' is blocked", tc.sqliType))
 		} else {
-			fmt.Printf("  Test: FAIL (expected %s)\n", expectedResult(tc.shouldBlock))
-			failed++
+			assert(!wasBlocked, "Safe query is approved")
 		}
 
 		fmt.Println()
 	}
 
-	fmt.Println("========================================")
-	fmt.Printf("Results: %d passed, %d failed\n", passed, failed)
-	fmt.Println()
-
-	if failed > 0 {
-		fmt.Println("Some tests failed. Check your AxonFlow policy configuration.")
+	fmt.Println("==========================================")
+	if len(failures) == 0 {
+		fmt.Println("✓ ALL TESTS PASSED")
+		fmt.Println()
+		fmt.Println("SQLi patterns validated:")
+		fmt.Println("  - Safe query (approved)")
+		fmt.Println("  - DROP TABLE (blocked)")
+		fmt.Println("  - UNION SELECT (blocked)")
+		fmt.Println("  - Boolean injection (blocked)")
+		fmt.Println("  - Comment injection (not detected)")
+		fmt.Println("  - Stacked queries (blocked)")
+		fmt.Println("  - TRUNCATE (blocked)")
+	} else {
+		fmt.Printf("❌ %d TEST(S) FAILED:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
 	}
-
-	fmt.Println("All SQLi detection tests passed!")
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  - PII Detection: ../pii-detection/")
-	fmt.Println("  - Custom Policies: ../policies/")
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-func expectedResult(shouldBlock bool) string {
-	if shouldBlock {
-		return "blocked"
-	}
-	return "approved"
 }

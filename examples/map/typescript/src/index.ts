@@ -1,53 +1,201 @@
 /**
  * AxonFlow MAP (Multi-Agent Planning) Example - TypeScript SDK
+ *
+ * This example demonstrates and VALIDATES all MAP SDK methods:
+ * - generatePlan()   - Create a multi-agent execution plan
+ * - executePlan()    - Execute a previously generated plan
+ * - getPlanStatus()  - Get status of a running or completed plan
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ * This ensures CI/CD pipelines catch regressions.
+ *
+ * Run with: npx ts-node src/index.ts
+ * Prerequisites: docker compose up -d
  */
 
 import { AxonFlow } from '@axonflow/sdk';
 
+const failures: string[] = [];
+
+function getEnv(key: string, defaultVal: string): string {
+  return process.env[key] || defaultVal;
+}
+
+function assert(condition: boolean, message: string): void {
+  if (!condition) {
+    failures.push(message);
+    console.log(`   \u274C FAIL: ${message}`);
+  } else {
+    console.log(`   \u2713 PASS: ${message}`);
+  }
+}
+
 async function main(): Promise<void> {
-  console.log('AxonFlow MAP Example - TypeScript');
-  console.log('==================================================');
+  console.log('AxonFlow MAP (Multi-Agent Planning) - TypeScript SDK');
+  console.log('=====================================================');
   console.log();
 
-  // Initialize client - uses environment variables or defaults for self-hosted
   const axonflow = new AxonFlow({
-    endpoint: process.env.AXONFLOW_AGENT_URL || 'http://localhost:8080',
-    licenseKey: process.env.AXONFLOW_LICENSE_KEY || '',
-    tenant: process.env.AXONFLOW_TENANT || 'demo',
-    debug: true,
+    endpoint: getEnv('AXONFLOW_ENDPOINT', 'http://localhost:8080'),
+    clientId: getEnv('AXONFLOW_CLIENT_ID', 'demo'),
+    clientSecret: getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
+    debug: getEnv('AXONFLOW_DEBUG', '') === 'true',
   });
 
-  // Simple query for testing
   const query = 'Create a brief plan to greet a new user and ask how to help them';
   const domain = 'generic';
 
   console.log(`Query: ${query}`);
   console.log(`Domain: ${domain}`);
-  console.log('--------------------------------------------------');
+  console.log('-----------------------------------------------------');
   console.log();
 
+  // ========================================
+  // 1. GENERATE PLAN
+  // ========================================
+  console.log('1. generatePlan - Creating a multi-agent plan...');
+  let plan;
   try {
-    // Generate a plan
-    const plan = await axonflow.generatePlan(query, domain);
-
-    console.log('✅ Plan Generated Successfully');
-    console.log(`Plan ID: ${plan.planId}`);
-    console.log(`Steps: ${plan.steps?.length || 0}`);
-
-    if (plan.steps) {
-      plan.steps.forEach((step, i) => {
-        console.log(`  ${i + 1}. ${step.name} (${step.type})`);
-      });
-    }
-
-    console.log();
-    console.log('==================================================');
-    console.log('✅ TypeScript MAP Test: PASS');
+    plan = await axonflow.generatePlan(query, domain);
   } catch (error) {
-    console.error(`❌ Error: ${error}`);
+    console.log(`   \u274C FATAL: generatePlan failed: ${error}`);
+    process.exit(1);
+  }
+
+  console.log(`   Plan ID: ${plan.planId}`);
+  console.log(`   Domain: ${plan.domain}`);
+  console.log(`   Steps: ${plan.steps?.length || 0}`);
+
+  // Validate generatePlan response
+  assert(plan.planId !== '', 'planId is not empty');
+  assert(plan.planId.startsWith('plan_'), "planId has correct prefix 'plan_'");
+  assert((plan.steps?.length || 0) > 0, 'Plan has at least one step');
+  assert(plan.domain === domain, 'Domain matches request');
+
+  if (plan.steps && plan.steps.length > 0) {
+    console.log('   Plan Steps:');
+    plan.steps.forEach((step, i) => {
+      console.log(`     ${i + 1}. ${step.name} (${step.type})`);
+      assert(step.name !== '', `Step ${i + 1} has a name`);
+      assert(step.type !== '', `Step ${i + 1} has a type`);
+    });
+  }
+  console.log();
+
+  const expectedStepCount = plan.steps?.length || 0;
+
+  // ========================================
+  // 2. GET PLAN STATUS (before execution)
+  // ========================================
+  console.log('2. getPlanStatus - Checking status before execution...');
+  let status;
+  try {
+    status = await axonflow.getPlanStatus(plan.planId);
+  } catch (error) {
+    console.log(`   \u274C FATAL: getPlanStatus failed: ${error}`);
+    process.exit(1);
+  }
+
+  console.log(`   Status: ${status.status}`);
+  console.log(`   Total Steps: ${status.totalSteps}`);
+
+  // Validate pre-execution status
+  assert(
+    status.status === 'pending' || status.status === 'created',
+    'Plan status is pending/created before execution'
+  );
+  assert(
+    status.totalSteps === expectedStepCount,
+    `totalSteps matches plan (${expectedStepCount})`
+  );
+  console.log();
+
+  // ========================================
+  // 3. EXECUTE PLAN
+  // ========================================
+  console.log('3. executePlan - Executing the plan...');
+  let execution;
+  try {
+    execution = await axonflow.executePlan(plan.planId);
+  } catch (error) {
+    console.log(`   \u274C FATAL: executePlan failed: ${error}`);
+    process.exit(1);
+  }
+
+  console.log(`   Execution Status: ${execution.status}`);
+  console.log(`   Completed Steps: ${execution.completedSteps}/${execution.totalSteps}`);
+
+  // Validate execution response
+  assert(
+    execution.status === 'completed' || execution.status === 'success',
+    'Execution status indicates success'
+  );
+  assert(
+    execution.totalSteps === expectedStepCount,
+    `Execution totalSteps matches plan (${expectedStepCount})`
+  );
+  assert(execution.completedSteps === expectedStepCount, 'All steps completed');
+
+  // Validate step results exist and correspond to plan steps
+  if (execution.stepResults && execution.stepResults.length > 0) {
+    console.log('   Step Results:');
+    assert(
+      execution.stepResults.length === expectedStepCount,
+      'stepResults count matches plan steps'
+    );
+    execution.stepResults.forEach((result, i) => {
+      console.log(`     - ${result.stepName}: ${result.status}`);
+      assert(
+        result.status === 'completed' || result.status === 'success',
+        `Step ${i + 1} completed successfully`
+      );
+    });
+  }
+  console.log();
+
+  // ========================================
+  // 4. GET PLAN STATUS (after execution)
+  // ========================================
+  console.log('4. getPlanStatus - Checking status after execution...');
+  let finalStatus;
+  try {
+    finalStatus = await axonflow.getPlanStatus(plan.planId);
+  } catch (error) {
+    console.log(`   \u274C FATAL: getPlanStatus (post-execution) failed: ${error}`);
+    process.exit(1);
+  }
+
+  console.log(`   Status: ${finalStatus.status}`);
+  console.log(`   Completed Steps: ${finalStatus.completedSteps}/${finalStatus.totalSteps}`);
+
+  // Validate post-execution status
+  assert(
+    finalStatus.status === 'completed' || finalStatus.status === 'success',
+    'Final status indicates completion'
+  );
+  assert(
+    finalStatus.completedSteps === expectedStepCount,
+    'All steps show as completed'
+  );
+  console.log();
+
+  // ========================================
+  // SUMMARY
+  // ========================================
+  console.log('=====================================================');
+  if (failures.length === 0) {
+    console.log('\u2713 ALL TESTS PASSED');
     console.log();
-    console.log('==================================================');
-    console.log('❌ TypeScript MAP Test: FAIL');
+    console.log('Methods validated:');
+    console.log('  1. generatePlan()   - Plan created with valid ID and steps');
+    console.log('  2. getPlanStatus()  - Pre-execution status is pending');
+    console.log('  3. executePlan()    - All plan steps executed successfully');
+    console.log('  4. getPlanStatus()  - Post-execution status is completed');
+  } else {
+    console.log(`\u274C ${failures.length} TEST(S) FAILED:`);
+    failures.forEach((f) => {
+      console.log(`   - ${f}`);
+    });
     process.exit(1);
   }
 }
