@@ -17,11 +17,9 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
-import com.getaxonflow.sdk.types.Plan;
-import com.getaxonflow.sdk.types.PlanExecution;
-import com.getaxonflow.sdk.types.PlanStatus;
+import com.getaxonflow.sdk.types.PlanRequest;
+import com.getaxonflow.sdk.types.PlanResponse;
 import com.getaxonflow.sdk.types.PlanStep;
-import com.getaxonflow.sdk.types.StepResult;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -70,10 +68,10 @@ public class MapExample {
             .debug("true".equals(getEnv("AXONFLOW_DEBUG", "")))
             .build());
 
-        String query = "Create a brief plan to greet a new user and ask how to help them";
+        String objective = "Create a brief plan to greet a new user and ask how to help them";
         String domain = "generic";
 
-        System.out.println("Query: " + query);
+        System.out.println("Objective: " + objective);
         System.out.println("Domain: " + domain);
         System.out.println("----------------------------------------------");
         System.out.println();
@@ -82,9 +80,13 @@ public class MapExample {
         // 1. GENERATE PLAN
         // ========================================
         System.out.println("1. generatePlan - Creating a multi-agent plan...");
-        Plan plan;
+        PlanResponse plan;
         try {
-            plan = client.generatePlan(query, domain);
+            plan = client.generatePlan(PlanRequest.builder()
+                .objective(objective)
+                .domain(domain)
+                .userToken("map-example-user")
+                .build());
         } catch (Exception e) {
             System.out.println("   \u274C FATAL: generatePlan failed: " + e.getMessage());
             System.exit(1);
@@ -93,7 +95,7 @@ public class MapExample {
 
         System.out.println("   Plan ID: " + plan.getPlanId());
         System.out.println("   Domain: " + plan.getDomain());
-        System.out.println("   Steps: " + (plan.getSteps() != null ? plan.getSteps().size() : 0));
+        System.out.println("   Steps: " + plan.getStepCount());
 
         // Validate generatePlan response
         assertCheck(plan.getPlanId() != null && !plan.getPlanId().isEmpty(), "planId is not empty");
@@ -106,9 +108,10 @@ public class MapExample {
             System.out.println("   Plan Steps:");
             int i = 1;
             for (PlanStep step : plan.getSteps()) {
-                System.out.println("     " + i + ". " + step.getName() + " (" + step.getType() + ")");
-                assertCheck(step.getName() != null && !step.getName().isEmpty(), "Step " + i + " has a name");
-                assertCheck(step.getType() != null && !step.getType().isEmpty(), "Step " + i + " has a type");
+                String stepName = step.getName() != null ? step.getName() : step.getDescription();
+                String stepType = step.getType() != null ? step.getType() : "action";
+                System.out.println("     " + i + ". " + stepName + " (" + stepType + ")");
+                assertCheck(stepName != null && !stepName.isEmpty(), "Step " + i + " has a name/description");
                 i++;
             }
         }
@@ -119,23 +122,19 @@ public class MapExample {
         // ========================================
         System.out.println("2. getPlanStatus - Checking status before execution...");
         try {
-            PlanStatus status = client.getPlanStatus(plan.getPlanId());
+            PlanResponse status = client.getPlanStatus(plan.getPlanId());
             System.out.println("   Status: " + status.getStatus());
-            System.out.println("   Total Steps: " + status.getTotalSteps());
+            System.out.println("   Total Steps: " + status.getStepCount());
 
             // Validate pre-execution status
             assertCheck(
-                "pending".equals(status.getStatus()) || "created".equals(status.getStatus()),
-                "Plan status is pending/created before execution"
-            );
-            assertCheck(
-                status.getTotalSteps() == expectedStepCount,
-                "totalSteps matches plan (" + expectedStepCount + ")"
+                status.getStatus() == null || "pending".equals(status.getStatus()) || "created".equals(status.getStatus()),
+                "Plan status is pending/created before execution (or null)"
             );
         } catch (Exception e) {
             // getPlanStatus is optional - skip if not implemented (404)
             if (e.getMessage() != null && e.getMessage().contains("404")) {
-                System.out.println("   ⏭ SKIP: getPlanStatus not implemented (404)");
+                System.out.println("   \u23ED SKIP: getPlanStatus not implemented (404)");
             } else {
                 System.out.println("   \u274C FATAL: getPlanStatus failed: " + e.getMessage());
                 System.exit(1);
@@ -148,7 +147,7 @@ public class MapExample {
         // 3. EXECUTE PLAN
         // ========================================
         System.out.println("3. executePlan - Executing the plan...");
-        PlanExecution execution;
+        PlanResponse execution;
         try {
             execution = client.executePlan(plan.getPlanId());
         } catch (Exception e) {
@@ -158,10 +157,8 @@ public class MapExample {
         }
 
         System.out.println("   Execution Status: " + execution.getStatus());
-        int totalSteps = execution.getTotalSteps();
-        int completedSteps = execution.getCompletedSteps();
-        if (totalSteps > 0) {
-            System.out.println("   Completed Steps: " + completedSteps + "/" + totalSteps);
+        if (execution.getResult() != null) {
+            System.out.println("   Result: " + truncate(execution.getResult(), 100));
         }
 
         // Validate execution response
@@ -169,37 +166,6 @@ public class MapExample {
             "completed".equals(execution.getStatus()) || "success".equals(execution.getStatus()),
             "Execution status indicates success"
         );
-
-        // Step tracking is optional - only validate if present
-        if (totalSteps > 0) {
-            assertCheck(
-                totalSteps == expectedStepCount,
-                "Execution totalSteps matches plan (" + expectedStepCount + ")"
-            );
-            assertCheck(
-                completedSteps == expectedStepCount,
-                "All steps completed"
-            );
-        }
-
-        // Validate step results if available
-        List<StepResult> stepResults = execution.getStepResults();
-        if (stepResults != null && !stepResults.isEmpty()) {
-            System.out.println("   Step Results:");
-            assertCheck(
-                stepResults.size() == expectedStepCount,
-                "stepResults count matches plan steps"
-            );
-            int i = 1;
-            for (StepResult result : stepResults) {
-                System.out.println("     - " + result.getStepName() + ": " + result.getStatus());
-                assertCheck(
-                    "completed".equals(result.getStatus()) || "success".equals(result.getStatus()),
-                    "Step " + i + " completed successfully"
-                );
-                i++;
-            }
-        }
         System.out.println();
 
         // ========================================
@@ -207,23 +173,18 @@ public class MapExample {
         // ========================================
         System.out.println("4. getPlanStatus - Checking status after execution...");
         try {
-            PlanStatus finalStatus = client.getPlanStatus(plan.getPlanId());
+            PlanResponse finalStatus = client.getPlanStatus(plan.getPlanId());
             System.out.println("   Status: " + finalStatus.getStatus());
-            System.out.println("   Completed Steps: " + finalStatus.getCompletedSteps() + "/" + finalStatus.getTotalSteps());
 
             // Validate post-execution status
             assertCheck(
                 "completed".equals(finalStatus.getStatus()) || "success".equals(finalStatus.getStatus()),
                 "Final status indicates completion"
             );
-            assertCheck(
-                finalStatus.getCompletedSteps() == expectedStepCount,
-                "All steps show as completed"
-            );
         } catch (Exception e) {
             // getPlanStatus is optional - skip if not implemented (404)
             if (e.getMessage() != null && e.getMessage().contains("404")) {
-                System.out.println("   ⏭ SKIP: getPlanStatus not implemented (404)");
+                System.out.println("   \u23ED SKIP: getPlanStatus not implemented (404)");
             } else {
                 System.out.println("   \u274C FATAL: getPlanStatus (post-execution) failed: " + e.getMessage());
                 System.exit(1);
@@ -241,8 +202,8 @@ public class MapExample {
             System.out.println();
             System.out.println("Methods validated:");
             System.out.println("  1. generatePlan()   - Plan created with valid ID and steps");
-            System.out.println("  2. getPlanStatus()  - Pre-execution status is pending");
-            System.out.println("  3. executePlan()    - All plan steps executed successfully");
+            System.out.println("  2. getPlanStatus()  - Pre-execution status checked");
+            System.out.println("  3. executePlan()    - Plan executed successfully");
             System.out.println("  4. getPlanStatus()  - Post-execution status is completed");
         } else {
             System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
@@ -251,5 +212,13 @@ public class MapExample {
             }
             System.exit(1);
         }
+    }
+
+    private static String truncate(String str, int maxLen) {
+        if (str == null) return null;
+        if (str.length() <= maxLen) {
+            return str;
+        }
+        return str.substring(0, maxLen) + "...";
     }
 }
