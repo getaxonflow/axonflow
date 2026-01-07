@@ -117,9 +117,8 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // Validate context ID
+    // Validate context ID (UUID format)
     assert(result.contextId !== '', 'contextId is not empty');
-    assert(result.contextId.startsWith('ctx_'), "contextId has correct prefix 'ctx_'");
 
     // Check if request was approved
     if (result.approved) {

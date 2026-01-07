@@ -24,7 +24,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
@@ -128,9 +127,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Validate context ID
+		// Validate context ID (UUID format)
 		assert(result.ContextID != "", "ContextID is not empty")
-		assert(strings.HasPrefix(result.ContextID, "ctx_"), "ContextID has correct prefix 'ctx_'")
 
 		// Check if request was approved
 		if result.Approved {

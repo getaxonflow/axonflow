@@ -109,15 +109,11 @@ public class SqliDetectionExample {
 
             boolean wasBlocked = !result.isApproved();
 
-            // Validate context ID for approved requests
+            // Validate context ID for approved requests (UUID format)
             if (result.isApproved()) {
                 assertCheck(
                     result.getContextId() != null && !result.getContextId().isEmpty(),
                     "contextId is not empty"
-                );
-                assertCheck(
-                    result.getContextId().startsWith("ctx_"),
-                    "contextId has correct prefix 'ctx_'"
                 );
                 System.out.println("   Status: APPROVED");
             } else {

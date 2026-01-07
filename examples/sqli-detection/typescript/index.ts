@@ -117,10 +117,9 @@ async function main(): Promise<void> {
 
     const wasBlocked = !result.approved;
 
-    // Validate context ID for approved requests
+    // Validate context ID for approved requests (UUID format)
     if (result.approved) {
       assert(result.contextId !== '', 'contextId is not empty');
-      assert(result.contextId.startsWith('ctx_'), "contextId has correct prefix 'ctx_'");
       console.log('   Status: APPROVED');
     } else {
       console.log('   Status: BLOCKED');

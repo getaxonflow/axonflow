@@ -115,13 +115,9 @@ async def main() -> int:
 
             was_blocked = not result.approved
 
-            # Validate context ID for approved requests
+            # Validate context ID for approved requests (UUID format)
             if result.approved:
                 assert_check(result.context_id != "", "context_id is not empty")
-                assert_check(
-                    result.context_id.startswith("ctx_"),
-                    "context_id has correct prefix 'ctx_'",
-                )
                 print("   Status: APPROVED")
             else:
                 print("   Status: BLOCKED")

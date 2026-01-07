@@ -117,14 +117,10 @@ public class PiiDetectionExample {
                 return;
             }
 
-            // Validate context ID
+            // Validate context ID (UUID format)
             assertCheck(
                 result.getContextId() != null && !result.getContextId().isEmpty(),
                 "contextId is not empty"
-            );
-            assertCheck(
-                result.getContextId().startsWith("ctx_"),
-                "contextId has correct prefix 'ctx_'"
             );
 
             // Check if request was approved

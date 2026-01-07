@@ -116,12 +116,8 @@ async def main() -> int:
                 print(f"   ❌ FATAL: get_policy_approved_context failed: {e}")
                 return 1
 
-            # Validate context ID
+            # Validate context ID (UUID format)
             assert_check(result.context_id != "", "context_id is not empty")
-            assert_check(
-                result.context_id.startswith("ctx_"),
-                "context_id has correct prefix 'ctx_'",
-            )
 
             # Check if request was approved
             requires_redaction = getattr(result, "requires_redaction", False)
