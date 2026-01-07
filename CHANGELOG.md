@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.1] - 2026-01-07
+
+### Fixed
+
+- **Multi-Agent Planning (MAP) Two-Step Execution**: Fixed race condition where plan execution started before DB commit
+  - `GeneratePlan` now stores workflow plan in database with 1-hour TTL before returning
+  - `ExecutePlan` retrieves stored plan by `plan_id` and executes workflow
+  - New `migrations/core/037_plans.sql` - Plans table for deferred execution
+  - New `migrations/core/038_plans_composite_index.sql` - Composite index for cross-tenant queries
+  - New `platform/orchestrator/planning/` package (service, repository, types)
+  - Agent routes `execute-plan` requests to `/api/v1/plan/execute`
+
+- **Agent Environment Variable Support for ECS/K8s**: Fixed orchestrator URL detection in containerized environments
+  - Agent now checks `ORCHESTRATOR_URL` env var first (required for ECS, Kubernetes)
+  - Priority: env var → Docker detection → localhost fallback
+  - Increased MAP timeout to 60s
+
+- **Support Demo Fixes**: Fixed broken support-demo in community repo
+  - Removed vendor dependency causing Docker build failures
+  - Fixed network naming (`axonflow_axonflow-network` requires `COMPOSE_PROJECT_NAME=axonflow`)
+  - Removed direct orchestrator calls (all requests go through Agent)
+  - Fixed role/region provider display for EU users
+
+- **Dynamic Policy API Path**: Fixed incorrect API path in examples
+  - Changed `/api/v1/policies/dynamic` → `/api/v1/dynamic-policies`
+
+- **Dynamic Policy Payload Format**: Fixed condition format in examples
+  - Changed `conditions: "{}"` → `conditions: "[]"` (array, not object)
+
+### Added
+
+- **Portal Proxy Routes (Enterprise)**: Agent now proxies `/api/v1/auth/*` for portal authentication
+
+---
+
 ## [3.0.0] - 2026-01-05
 
 ### Breaking Changes
