@@ -1,124 +1,166 @@
+#!/usr/bin/env python3
 """
-AxonFlow SQL Injection Detection - Python
+AxonFlow SQL Injection Detection - Python SDK
 
-Demonstrates AxonFlow's SQL injection detection capabilities:
+This example demonstrates and VALIDATES AxonFlow's SQLi detection:
 - DROP/DELETE/TRUNCATE statements
 - UNION SELECT attacks
 - Boolean-based injection (OR 1=1)
 - Comment injection
 - Stacked queries
 - Time-based blind SQLi
+
+VALIDATION: This example exits with code 1 if any assertion fails.
+This ensures CI/CD pipelines catch regressions.
+
+Run with: python main.py
+Prerequisites: docker compose up -d
 """
 
 import asyncio
 import os
 import sys
 
-from dotenv import load_dotenv
 from axonflow import AxonFlow
 
-load_dotenv()
+failures: list[str] = []
 
 
-async def main():
-    print("AxonFlow SQL Injection Detection - Python")
-    print("=" * 40)
+def get_env(key: str, default: str) -> str:
+    return os.getenv(key, default)
+
+
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if not condition:
+        failures.append(message)
+        print(f"   ❌ FAIL: {message}")
+    else:
+        print(f"   ✓ PASS: {message}")
+
+
+async def main() -> int:
+    print("AxonFlow SQL Injection Detection - Python SDK")
+    print("=" * 48)
     print()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        client_id=os.getenv("AXONFLOW_CLIENT_ID", "sqli-detection-demo"),
-        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-    ) as axonflow:
-
+        endpoint=get_env("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        client_id=get_env("AXONFLOW_CLIENT_ID", "demo"),
+        client_secret=get_env("AXONFLOW_CLIENT_SECRET", "demo"),
+        debug=get_env("AXONFLOW_DEBUG", "") == "true",
+    ) as client:
         test_cases = [
             {
                 "name": "Safe Query",
                 "query": "Find users who signed up in the last 30 days",
                 "should_block": False,
+                "sqli_type": "",
             },
             {
                 "name": "DROP TABLE",
                 "query": "SELECT * FROM users; DROP TABLE users;--",
                 "should_block": True,
+                "sqli_type": "drop_table",
             },
             {
                 "name": "UNION SELECT",
                 "query": "Get user where id = 1 UNION SELECT password FROM admin",
                 "should_block": True,
+                "sqli_type": "union_select",
             },
             {
                 "name": "Boolean Injection (OR 1=1)",
                 "query": "SELECT * FROM users WHERE username='' OR '1'='1'",
                 "should_block": True,
+                "sqli_type": "boolean_injection",
             },
             {
                 "name": "Comment Injection",
                 "query": "SELECT * FROM users WHERE name='admin'-- AND password='secret'",
-                "should_block": False,  # Comment injection not currently detected by default policies
+                "should_block": False,  # Not detected by default policies
+                "sqli_type": "comment_injection",
             },
             {
                 "name": "Stacked Queries",
                 "query": "SELECT name FROM users; DELETE FROM audit_log;",
                 "should_block": True,
+                "sqli_type": "stacked_queries",
             },
             {
                 "name": "Truncate Statement",
                 "query": "SELECT * FROM data; TRUNCATE TABLE logs;",
                 "should_block": True,
+                "sqli_type": "truncate",
             },
         ]
 
-        passed = 0
-        failed = 0
-
-        for test in test_cases:
-            print(f"Test: {test['name']}")
-            query_preview = test["query"][:60] + "..." if len(test["query"]) > 60 else test["query"]
+        for i, test in enumerate(test_cases, 1):
+            print(f"Test {i}: {test['name']}")
+            query_preview = (
+                test["query"][:60] + "..."
+                if len(test["query"]) > 60
+                else test["query"]
+            )
             print(f"  Query: {query_preview}")
 
             try:
-                result = await axonflow.get_policy_approved_context(
+                result = await client.get_policy_approved_context(
                     user_token="sqli-detection-user",
                     query=test["query"],
                 )
-
-                was_blocked = not result.approved
-
-                if was_blocked:
-                    print(f"  Result: BLOCKED")
-                    print(f"  Reason: {result.block_reason}")
-                else:
-                    print(f"  Result: APPROVED")
-                    print(f"  Context ID: {result.context_id}")
-
-                if result.policies:
-                    print(f"  Policies: {', '.join(result.policies)}")
-
-                if was_blocked == test["should_block"]:
-                    print(f"  Test: PASS")
-                    passed += 1
-                else:
-                    expected = "blocked" if test["should_block"] else "approved"
-                    print(f"  Test: FAIL (expected {expected})")
-                    failed += 1
-
             except Exception as e:
-                print(f"  Result: ERROR - {e}")
-                failed += 1
+                print(f"   ❌ FATAL: get_policy_approved_context failed: {e}")
+                return 1
+
+            was_blocked = not result.approved
+
+            # Validate context ID for approved requests
+            if result.approved:
+                assert_check(result.context_id != "", "context_id is not empty")
+                assert_check(
+                    result.context_id.startswith("ctx_"),
+                    "context_id has correct prefix 'ctx_'",
+                )
+                print("   Status: APPROVED")
+            else:
+                print("   Status: BLOCKED")
+                print(f"   Reason: {result.block_reason}")
+                assert_check(
+                    result.block_reason != "",
+                    "block_reason is provided for blocked requests",
+                )
+
+            # Verify expected behavior
+            if test["should_block"]:
+                assert_check(
+                    was_blocked,
+                    f"SQLi type '{test['sqli_type']}' is blocked",
+                )
+            else:
+                assert_check(not was_blocked, "Safe query is approved")
 
             print()
 
-        print("=" * 40)
-        print(f"Results: {passed} passed, {failed} failed")
-        print()
-
-        if failed > 0:
-            print("Some tests failed. Check your AxonFlow policy configuration.")
-            sys.exit(1)
-
-        print("All SQLi detection tests passed!")
+        print("=" * 48)
+        if not failures:
+            print("✓ ALL TESTS PASSED")
+            print()
+            print("SQLi patterns validated:")
+            print("  - Safe query (approved)")
+            print("  - DROP TABLE (blocked)")
+            print("  - UNION SELECT (blocked)")
+            print("  - Boolean injection (blocked)")
+            print("  - Comment injection (not detected)")
+            print("  - Stacked queries (blocked)")
+            print("  - TRUNCATE (blocked)")
+            return 0
+        else:
+            print(f"❌ {len(failures)} TEST(S) FAILED:")
+            for f in failures:
+                print(f"   - {f}")
+            return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

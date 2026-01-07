@@ -1,4 +1,4 @@
-// Package main demonstrates AxonFlow's PII detection capabilities.
+// Package main demonstrates and VALIDATES AxonFlow's PII detection capabilities.
 //
 // AxonFlow detects PII and flags it for redaction:
 // - US Social Security Numbers (SSN)
@@ -8,33 +8,58 @@
 // - Email addresses
 // - Phone numbers
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+// This ensures CI/CD pipelines catch regressions.
+//
 // Default Behavior (Issue #891):
 //
 //	PII detection defaults to "redact" mode - requests are APPROVED but flagged
 //	with RequiresRedaction=true for downstream redaction by the Orchestrator.
 //	Set PII_ACTION=block to restore blocking behavior.
+//
+// Run with: go run main.go
+// Prerequisites: docker compose up -d
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
+var failures []string
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func assert(condition bool, message string) {
+	if !condition {
+		failures = append(failures, message)
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+	} else {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	}
+}
+
 func main() {
-	fmt.Println("AxonFlow PII Detection - Go")
-	fmt.Println("========================================")
+	fmt.Println("AxonFlow PII Detection - Go SDK")
+	fmt.Println("================================")
 	fmt.Println()
 	fmt.Println("Default Mode: redact (PII flagged for redaction, not blocked)")
 	fmt.Println()
 
 	// Initialize AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "pii-detection-demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo"),
+		Debug:        getEnv("AXONFLOW_DEBUG", "") == "true",
 	})
 
 	// PII test cases
@@ -82,11 +107,8 @@ func main() {
 		},
 	}
 
-	passed := 0
-	failed := 0
-
-	for _, tc := range testCases {
-		fmt.Printf("Test: %s\n", tc.name)
+	for i, tc := range testCases {
+		fmt.Printf("Test %d: %s\n", i+1, tc.name)
 		queryPreview := tc.query
 		if len(queryPreview) > 60 {
 			queryPreview = queryPreview[:60] + "..."
@@ -102,75 +124,57 @@ func main() {
 		)
 
 		if err != nil {
-			fmt.Printf("  Result: ERROR - %v\n", err)
-			failed++
-			fmt.Println()
-			continue
+			fmt.Printf("   ❌ FATAL: GetPolicyApprovedContext failed: %v\n", err)
+			os.Exit(1)
 		}
+
+		// Validate context ID
+		assert(result.ContextID != "", "ContextID is not empty")
+		assert(strings.HasPrefix(result.ContextID, "ctx_"), "ContextID has correct prefix 'ctx_'")
 
 		// Check if request was approved
 		if result.Approved {
 			if result.RequiresRedaction {
-				fmt.Println("  Result: APPROVED (requires redaction)")
+				fmt.Println("   Status: APPROVED (requires redaction)")
 			} else {
-				fmt.Println("  Result: APPROVED")
+				fmt.Println("   Status: APPROVED")
 			}
-			fmt.Printf("  Context ID: %s\n", result.ContextID)
 		} else {
 			// Request was blocked (only if PII_ACTION=block)
-			fmt.Println("  Result: BLOCKED")
-			fmt.Printf("  Reason: %s\n", result.BlockReason)
-		}
-
-		if len(result.Policies) > 0 {
-			fmt.Printf("  Policies: %v\n", result.Policies)
+			fmt.Println("   Status: BLOCKED")
+			fmt.Printf("   Reason: %s\n", result.BlockReason)
 		}
 
 		// Get actual redaction status (blocked also counts as "requires handling")
 		actualRequiresRedaction := result.RequiresRedaction || !result.Approved
 
 		// Verify expected behavior
-		if tc.expectRedact && actualRequiresRedaction {
-			fmt.Println("  Test: PASS (PII detected, flagged for redaction)")
-			passed++
-		} else if !tc.expectRedact && !actualRequiresRedaction && result.Approved {
-			fmt.Println("  Test: PASS (no critical PII detected)")
-			passed++
+		if tc.expectRedact {
+			assert(actualRequiresRedaction, "Critical PII detected and flagged for redaction")
 		} else {
-			expected := "requires_redaction=true"
-			if !tc.expectRedact {
-				expected = "no critical PII"
-			}
-			fmt.Printf("  Test: FAIL (expected %s)\n", expected)
-			failed++
+			assert(!actualRequiresRedaction && result.Approved, "No critical PII detected, request approved")
 		}
 
 		fmt.Println()
 	}
 
-	fmt.Println("========================================")
-	fmt.Printf("Results: %d passed, %d failed\n", passed, failed)
-	fmt.Println()
-
-	if failed > 0 {
-		fmt.Println("Some tests failed. Check your AxonFlow policy configuration.")
+	fmt.Println("================================")
+	if len(failures) == 0 {
+		fmt.Println("✓ ALL TESTS PASSED")
+		fmt.Println()
+		fmt.Println("PII types validated:")
+		fmt.Println("  - Safe query (no PII)")
+		fmt.Println("  - US SSN (critical)")
+		fmt.Println("  - Credit card (critical)")
+		fmt.Println("  - India PAN (critical)")
+		fmt.Println("  - India Aadhaar (critical)")
+		fmt.Println("  - Email (non-critical)")
+		fmt.Println("  - Phone (non-critical)")
+	} else {
+		fmt.Printf("❌ %d TEST(S) FAILED:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
 	}
-
-	fmt.Println("All PII detection tests passed!")
-	fmt.Println()
-	fmt.Println("Configuration:")
-	fmt.Println("  - Default: PII_ACTION=redact (PII flagged for redaction, not blocked)")
-	fmt.Println("  - To block PII: PII_ACTION=block docker compose up -d")
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  - Custom Policies: ../policies/")
-	fmt.Println("  - Code Governance: ../code-governance/")
-}
-
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }

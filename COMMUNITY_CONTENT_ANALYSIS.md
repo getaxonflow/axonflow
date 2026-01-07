@@ -59,7 +59,6 @@ The current sync workflow only excludes `ee/` directory, but many other director
 | `platform/common/` | ✅ INCLUDE | Common utilities |
 | `platform/database/` | ✅ INCLUDE | Database utilities |
 | `platform/test/` | ✅ INCLUDE | Test utilities |
-| `platform/demo-portal/` | ❌ EXCLUDE | Contains investor.html, advisor.html |
 | `platform/monitoring/` | ❌ EXCLUDE | Internal monitoring |
 | `platform/observability/` | ❌ EXCLUDE | Internal observability |
 | `platform/scripts/` | ❌ EXCLUDE | Internal scripts |
@@ -113,7 +112,6 @@ init-db/
 docker/
 
 # Platform internals
-platform/demo-portal/
 platform/monitoring/
 platform/observability/
 platform/scripts/
@@ -219,7 +217,6 @@ rsync -av \
   --exclude='archive/' \
   --exclude='migrations/enterprise/' \
   --exclude='migrations/industry/' \
-  --exclude='platform/demo-portal/' \
   --exclude='platform/monitoring/' \
   --exclude='platform/observability/' \
   --exclude='platform/scripts/' \

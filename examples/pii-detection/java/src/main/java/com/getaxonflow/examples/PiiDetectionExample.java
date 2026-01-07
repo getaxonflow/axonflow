@@ -1,18 +1,17 @@
 /*
- * AxonFlow PII Detection - Java
+ * Copyright 2026 AxonFlow
  *
- * Demonstrates AxonFlow's built-in PII detection:
- * - US Social Security Numbers (SSN)
- * - Credit Card numbers
- * - India PAN (Permanent Account Number)
- * - India Aadhaar numbers
- * - Email addresses
- * - Phone numbers
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Default Behavior (Issue #891):
- *   PII detection defaults to "redact" mode - requests are APPROVED but flagged
- *   with isRequiresRedaction()=true for downstream redaction by the Orchestrator.
- *   Set PII_ACTION=block to restore blocking behavior.
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package com.getaxonflow.examples;
 
@@ -20,26 +19,63 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.PolicyApprovalRequest;
 import com.getaxonflow.sdk.types.PolicyApprovalResult;
-import com.getaxonflow.sdk.exceptions.AxonFlowException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+/**
+ * AxonFlow PII Detection - Java SDK
+ *
+ * This example demonstrates and VALIDATES AxonFlow's PII detection:
+ * - US Social Security Numbers (SSN)
+ * - Credit Card numbers
+ * - India PAN (Permanent Account Number)
+ * - India Aadhaar numbers
+ * - Email addresses
+ * - Phone numbers
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ * This ensures CI/CD pipelines catch regressions.
+ *
+ * Default Behavior (Issue #891):
+ *   PII detection defaults to "redact" mode - requests are APPROVED but flagged
+ *   with isRequiresRedaction()=true for downstream redaction by the Orchestrator.
+ *   Set PII_ACTION=block to restore blocking behavior.
+ *
+ * Run with: mvn compile exec:java
+ * Prerequisites: docker compose up -d
+ */
 public class PiiDetectionExample {
 
-    private static final String CLIENT_ID = "pii-detection-demo";
+    private static final List<String> failures = new ArrayList<>();
+
+    private static String getEnv(String key, String defaultValue) {
+        String value = System.getenv(key);
+        return (value != null && !value.isEmpty()) ? value : defaultValue;
+    }
+
+    private static void assertCheck(boolean condition, String message) {
+        if (!condition) {
+            failures.add(message);
+            System.out.println("   \u274C FAIL: " + message);
+        } else {
+            System.out.println("   \u2713 PASS: " + message);
+        }
+    }
 
     public static void main(String[] args) {
-        System.out.println("AxonFlow PII Detection - Java");
-        System.out.println("========================================");
+        System.out.println("AxonFlow PII Detection - Java SDK");
+        System.out.println("==================================");
         System.out.println();
         System.out.println("Default Mode: redact (PII flagged for redaction, not blocked)");
         System.out.println();
 
-        // Initialize AxonFlow client
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+            .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
+            .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
+            .debug("true".equals(getEnv("AXONFLOW_DEBUG", "")))
             .build());
 
         // PII test cases
@@ -62,89 +98,83 @@ public class PiiDetectionExample {
                 "Call customer at +1-555-123-4567", false) // Medium severity - logged but not flagged
         );
 
-        int passed = 0;
-        int failed = 0;
-
+        int testNum = 1;
         for (TestCase test : testCases) {
-            System.out.printf("Test: %s%n", test.name);
+            System.out.printf("Test %d: %s%n", testNum++, test.name);
             System.out.printf("  Query: %s%n", truncate(test.query, 60));
 
+            PolicyApprovalResult result;
             try {
-                PolicyApprovalResult result = client.getPolicyApprovedContext(
+                result = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
                         .query(test.query)
-                        .clientId(CLIENT_ID)
                         .userToken("pii-detection-user")
                         .build()
                 );
+            } catch (Exception e) {
+                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
+                System.exit(1);
+                return;
+            }
 
-                // Check if request was approved
-                if (result.isApproved()) {
-                    if (result.isRequiresRedaction()) {
-                        System.out.println("  Result: APPROVED (requires redaction)");
-                    } else {
-                        System.out.println("  Result: APPROVED");
-                    }
-                    System.out.printf("  Context ID: %s%n", result.getContextId());
+            // Validate context ID
+            assertCheck(
+                result.getContextId() != null && !result.getContextId().isEmpty(),
+                "contextId is not empty"
+            );
+            assertCheck(
+                result.getContextId().startsWith("ctx_"),
+                "contextId has correct prefix 'ctx_'"
+            );
+
+            // Check if request was approved
+            if (result.isApproved()) {
+                if (result.isRequiresRedaction()) {
+                    System.out.println("   Status: APPROVED (requires redaction)");
                 } else {
-                    // Request was blocked (only if PII_ACTION=block)
-                    System.out.println("  Result: BLOCKED");
-                    System.out.printf("  Reason: %s%n", result.getBlockReason());
+                    System.out.println("   Status: APPROVED");
                 }
+            } else {
+                // Request was blocked (only if PII_ACTION=block)
+                System.out.println("   Status: BLOCKED");
+                System.out.printf("   Reason: %s%n", result.getBlockReason());
+            }
 
-                if (result.getPolicies() != null && !result.getPolicies().isEmpty()) {
-                    System.out.printf("  Policies: %s%n",
-                        String.join(", ", result.getPolicies()));
-                }
+            // Get actual redaction status (blocked also counts as "requires handling")
+            boolean actualRequiresRedaction = result.isRequiresRedaction() || !result.isApproved();
 
-                // Get actual redaction status (blocked also counts as "requires handling")
-                boolean actualRequiresRedaction = result.isRequiresRedaction() || !result.isApproved();
-
-                // Verify expected behavior
-                if (test.expectRedact && actualRequiresRedaction) {
-                    System.out.println("  Test: PASS (PII detected, flagged for redaction)");
-                    passed++;
-                } else if (!test.expectRedact && !actualRequiresRedaction && result.isApproved()) {
-                    System.out.println("  Test: PASS (no critical PII detected)");
-                    passed++;
-                } else {
-                    String expected = test.expectRedact ? "isRequiresRedaction()=true" : "no critical PII";
-                    System.out.printf("  Test: FAIL (expected %s)%n", expected);
-                    failed++;
-                }
-
-            } catch (AxonFlowException e) {
-                System.out.println("  Result: ERROR");
-                System.out.printf("  Error: %s%n", e.getMessage());
-                failed++;
+            // Verify expected behavior
+            if (test.expectRedact) {
+                assertCheck(actualRequiresRedaction, "Critical PII detected and flagged for redaction");
+            } else {
+                assertCheck(
+                    !actualRequiresRedaction && result.isApproved(),
+                    "No critical PII detected, request approved"
+                );
             }
 
             System.out.println();
         }
 
-        System.out.println("========================================");
-        System.out.printf("Results: %d passed, %d failed%n", passed, failed);
-        System.out.println();
-
-        if (failed > 0) {
-            System.out.println("Some tests failed. Check your AxonFlow policy configuration.");
+        System.out.println("==================================");
+        if (failures.isEmpty()) {
+            System.out.println("\u2713 ALL TESTS PASSED");
+            System.out.println();
+            System.out.println("PII types validated:");
+            System.out.println("  - Safe query (no PII)");
+            System.out.println("  - US SSN (critical)");
+            System.out.println("  - Credit card (critical)");
+            System.out.println("  - India PAN (critical)");
+            System.out.println("  - India Aadhaar (critical)");
+            System.out.println("  - Email (non-critical)");
+            System.out.println("  - Phone (non-critical)");
+        } else {
+            System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
+            for (String f : failures) {
+                System.out.println("   - " + f);
+            }
             System.exit(1);
         }
-
-        System.out.println("All PII detection tests passed!");
-        System.out.println();
-        System.out.println("Configuration:");
-        System.out.println("  - Default: PII_ACTION=redact (PII flagged for redaction, not blocked)");
-        System.out.println("  - To block PII: PII_ACTION=block docker compose up -d");
-        System.out.println();
-        System.out.println("Next steps:");
-        System.out.println("  - Custom Policies: ../policies/java/");
-        System.out.println("  - Code Governance: ../code-governance/java/");
-    }
-
-    private static String getEnv(String key, String defaultValue) {
-        String value = System.getenv(key);
-        return (value != null && !value.isEmpty()) ? value : defaultValue;
     }
 
     private static String truncate(String str, int maxLen) {

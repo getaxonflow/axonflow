@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 AxonFlow
+ * Copyright 2026 AxonFlow
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,112 +17,226 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
-import com.getaxonflow.sdk.types.ClientRequest;
-import com.getaxonflow.sdk.types.ClientResponse;
-import com.getaxonflow.sdk.types.RequestType;
-import com.getaxonflow.sdk.exceptions.AxonFlowException;
+import com.getaxonflow.sdk.types.Plan;
+import com.getaxonflow.sdk.types.PlanExecution;
+import com.getaxonflow.sdk.types.PlanStatus;
+import com.getaxonflow.sdk.types.PlanStep;
+import com.getaxonflow.sdk.types.StepResult;
 
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * AxonFlow MAP (Multi-Agent Planning) Example - Java SDK
  *
- * Multi-Agent Planning allows you to orchestrate complex AI workflows
- * by having AxonFlow break down a goal into multiple steps and execute them.
+ * This example demonstrates and VALIDATES all MAP SDK methods:
+ * - generatePlan()   - Create a multi-agent execution plan
+ * - executePlan()    - Execute a previously generated plan
+ * - getPlanStatus()  - Get status of a running or completed plan
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ * This ensures CI/CD pipelines catch regressions.
+ *
+ * Run with: mvn compile exec:java
+ * Prerequisites: docker compose up -d
  */
 public class MapExample {
 
+    private static final List<String> failures = new ArrayList<>();
+
+    private static String getEnv(String key, String defaultValue) {
+        String value = System.getenv(key);
+        return (value != null && !value.isEmpty()) ? value : defaultValue;
+    }
+
+    private static void assertCheck(boolean condition, String message) {
+        if (!condition) {
+            failures.add(message);
+            System.out.println("   \u274C FAIL: " + message);
+        } else {
+            System.out.println("   \u2713 PASS: " + message);
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println("AxonFlow MAP Example - Java");
-        System.out.println("==================================================");
+        System.out.println("AxonFlow MAP (Multi-Agent Planning) - Java SDK");
+        System.out.println("==============================================");
         System.out.println();
 
-        // Initialize AxonFlow client
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+            .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
+            .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
+            .debug("true".equals(getEnv("AXONFLOW_DEBUG", "")))
             .build());
 
-        // Simple query for testing
         String query = "Create a brief plan to greet a new user and ask how to help them";
         String domain = "generic";
 
         System.out.println("Query: " + query);
         System.out.println("Domain: " + domain);
-        System.out.println("--------------------------------------------------");
+        System.out.println("----------------------------------------------");
         System.out.println();
 
-        long startTime = System.currentTimeMillis();
-
+        // ========================================
+        // 1. GENERATE PLAN
+        // ========================================
+        System.out.println("1. generatePlan - Creating a multi-agent plan...");
+        Plan plan;
         try {
-            // Generate a plan using executeQuery with multi-agent-plan request type
-            ClientRequest request = ClientRequest.builder()
-                .query(query)
-                .userToken("user-123")
-                .clientId("map-example")
-                .requestType(RequestType.MULTI_AGENT_PLAN)
-                .context(Map.of("domain", domain))
-                .build();
-
-            ClientResponse response = client.executeQuery(request);
-            long duration = System.currentTimeMillis() - startTime;
-
-            if (response.isSuccess() && !response.isBlocked()) {
-                System.out.println("✅ Plan Generated Successfully");
-                System.out.println("Duration: " + duration + "ms");
-
-                Object data = response.getData();
-                if (data != null) {
-                    String dataStr = data.toString();
-                    System.out.println();
-                    System.out.println("Response:");
-                    // Print first 500 chars
-                    if (dataStr.length() > 500) {
-                        System.out.println(dataStr.substring(0, 500) + "...");
-                    } else {
-                        System.out.println(dataStr);
-                    }
-                } else if (response.getResult() != null) {
-                    System.out.println();
-                    System.out.println("Response:");
-                    System.out.println(response.getResult());
-                }
-
-                System.out.println();
-                System.out.println("==================================================");
-                System.out.println("✅ Java MAP Test: PASS");
-            } else if (response.isBlocked()) {
-                System.out.println("❌ Request blocked: " + response.getBlockReason());
-                System.out.println();
-                System.out.println("==================================================");
-                System.out.println("❌ Java MAP Test: FAIL (blocked)");
-                System.exit(1);
-            } else {
-                System.out.println("❌ Request failed: " + response.getError());
-                System.out.println();
-                System.out.println("==================================================");
-                System.out.println("❌ Java MAP Test: FAIL");
-                System.exit(1);
-            }
-
-        } catch (AxonFlowException e) {
-            System.err.println("❌ AxonFlow Error: " + e.getMessage());
-            System.out.println();
-            System.out.println("==================================================");
-            System.out.println("❌ Java MAP Test: FAIL");
-            System.exit(1);
+            plan = client.generatePlan(query, domain);
         } catch (Exception e) {
-            System.err.println("❌ Error: " + e.getMessage());
-            e.printStackTrace();
+            System.out.println("   \u274C FATAL: generatePlan failed: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+
+        System.out.println("   Plan ID: " + plan.getPlanId());
+        System.out.println("   Domain: " + plan.getDomain());
+        System.out.println("   Steps: " + (plan.getSteps() != null ? plan.getSteps().size() : 0));
+
+        // Validate generatePlan response
+        assertCheck(plan.getPlanId() != null && !plan.getPlanId().isEmpty(), "planId is not empty");
+        assertCheck(plan.getPlanId().startsWith("plan_"), "planId has correct prefix 'plan_'");
+        assertCheck(plan.getSteps() != null && !plan.getSteps().isEmpty(), "Plan has at least one step");
+        assertCheck(domain.equals(plan.getDomain()), "Domain matches request");
+
+        int expectedStepCount = 0;
+        if (plan.getSteps() != null && !plan.getSteps().isEmpty()) {
+            expectedStepCount = plan.getSteps().size();
+            System.out.println("   Plan Steps:");
+            int i = 1;
+            for (PlanStep step : plan.getSteps()) {
+                System.out.println("     " + i + ". " + step.getName() + " (" + step.getType() + ")");
+                assertCheck(step.getName() != null && !step.getName().isEmpty(), "Step " + i + " has a name");
+                assertCheck(step.getType() != null && !step.getType().isEmpty(), "Step " + i + " has a type");
+                i++;
+            }
+        }
+        System.out.println();
+
+        // ========================================
+        // 2. GET PLAN STATUS (before execution)
+        // ========================================
+        System.out.println("2. getPlanStatus - Checking status before execution...");
+        PlanStatus status;
+        try {
+            status = client.getPlanStatus(plan.getPlanId());
+        } catch (Exception e) {
+            System.out.println("   \u274C FATAL: getPlanStatus failed: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+
+        System.out.println("   Status: " + status.getStatus());
+        System.out.println("   Total Steps: " + status.getTotalSteps());
+
+        // Validate pre-execution status
+        assertCheck(
+            "pending".equals(status.getStatus()) || "created".equals(status.getStatus()),
+            "Plan status is pending/created before execution"
+        );
+        assertCheck(
+            status.getTotalSteps() == expectedStepCount,
+            "totalSteps matches plan (" + expectedStepCount + ")"
+        );
+        System.out.println();
+
+        // ========================================
+        // 3. EXECUTE PLAN
+        // ========================================
+        System.out.println("3. executePlan - Executing the plan...");
+        PlanExecution execution;
+        try {
+            execution = client.executePlan(plan.getPlanId());
+        } catch (Exception e) {
+            System.out.println("   \u274C FATAL: executePlan failed: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+
+        System.out.println("   Execution Status: " + execution.getStatus());
+        System.out.println("   Completed Steps: " + execution.getCompletedSteps() + "/" + execution.getTotalSteps());
+
+        // Validate execution response
+        assertCheck(
+            "completed".equals(execution.getStatus()) || "success".equals(execution.getStatus()),
+            "Execution status indicates success"
+        );
+        assertCheck(
+            execution.getTotalSteps() == expectedStepCount,
+            "Execution totalSteps matches plan (" + expectedStepCount + ")"
+        );
+        assertCheck(
+            execution.getCompletedSteps() == expectedStepCount,
+            "All steps completed"
+        );
+
+        // Validate step results exist and correspond to plan steps
+        List<StepResult> stepResults = execution.getStepResults();
+        if (stepResults != null && !stepResults.isEmpty()) {
+            System.out.println("   Step Results:");
+            assertCheck(
+                stepResults.size() == expectedStepCount,
+                "stepResults count matches plan steps"
+            );
+            int i = 1;
+            for (StepResult result : stepResults) {
+                System.out.println("     - " + result.getStepName() + ": " + result.getStatus());
+                assertCheck(
+                    "completed".equals(result.getStatus()) || "success".equals(result.getStatus()),
+                    "Step " + i + " completed successfully"
+                );
+                i++;
+            }
+        }
+        System.out.println();
+
+        // ========================================
+        // 4. GET PLAN STATUS (after execution)
+        // ========================================
+        System.out.println("4. getPlanStatus - Checking status after execution...");
+        PlanStatus finalStatus;
+        try {
+            finalStatus = client.getPlanStatus(plan.getPlanId());
+        } catch (Exception e) {
+            System.out.println("   \u274C FATAL: getPlanStatus (post-execution) failed: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+
+        System.out.println("   Status: " + finalStatus.getStatus());
+        System.out.println("   Completed Steps: " + finalStatus.getCompletedSteps() + "/" + finalStatus.getTotalSteps());
+
+        // Validate post-execution status
+        assertCheck(
+            "completed".equals(finalStatus.getStatus()) || "success".equals(finalStatus.getStatus()),
+            "Final status indicates completion"
+        );
+        assertCheck(
+            finalStatus.getCompletedSteps() == expectedStepCount,
+            "All steps show as completed"
+        );
+        System.out.println();
+
+        // ========================================
+        // SUMMARY
+        // ========================================
+        System.out.println("==============================================");
+        if (failures.isEmpty()) {
+            System.out.println("\u2713 ALL TESTS PASSED");
             System.out.println();
-            System.out.println("==================================================");
-            System.out.println("❌ Java MAP Test: FAIL");
+            System.out.println("Methods validated:");
+            System.out.println("  1. generatePlan()   - Plan created with valid ID and steps");
+            System.out.println("  2. getPlanStatus()  - Pre-execution status is pending");
+            System.out.println("  3. executePlan()    - All plan steps executed successfully");
+            System.out.println("  4. getPlanStatus()  - Post-execution status is completed");
+        } else {
+            System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
+            for (String f : failures) {
+                System.out.println("   - " + f);
+            }
             System.exit(1);
         }
-    }
-
-    private static String getEnv(String name, String defaultValue) {
-        String value = System.getenv(name);
-        return (value != null && !value.isEmpty()) ? value : defaultValue;
     }
 }
