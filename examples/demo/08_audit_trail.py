@@ -101,7 +101,7 @@ async def query_audit_logs():
         print()
         print("  Request:")
         print("    - query: The original query text")
-        print("    - request_type: chat, connector, etc.")
+        print("    - request_type: llm_chat, mcp-query, etc.")
         print("    - timestamp: When it happened")
         print()
         print("  Policy:")
