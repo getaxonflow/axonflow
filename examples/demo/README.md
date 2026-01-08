@@ -153,9 +153,9 @@ Pre-check -> Your LLM Call -> Audit
 ### MCP Connectors
 
 Connect AI to your data with built-in governance:
-- Natural language to SQL conversion
-- Policy enforcement on queries
-- Response scanning for data leaks
+- Execute SQL queries through governed connectors
+- Policy enforcement on all queries
+- SQL injection and dangerous operations blocked
 
 ### Multi-Agent Planning (MAP)
 

@@ -1,0 +1,44 @@
+# AxonFlow Runtime Configuration (Community Edition)
+# This file configures MCP connectors for local development and demos.
+#
+# Environment Variables:
+#   - References: ${VAR_NAME} or ${VAR_NAME:-default}
+#   - The default values below work with docker-compose.yml settings
+#
+# For more connector examples, see: examples/config/axonflow.yaml.example
+
+version: "1.0"
+
+connectors:
+  # PostgreSQL connector - connects to the docker-compose PostgreSQL instance
+  # Used by examples/demo/ for MCP connector demonstrations
+  postgres:
+    type: postgres
+    enabled: true
+    display_name: "PostgreSQL Database"
+    description: "Local PostgreSQL database for MCP connector demos"
+    connection_url: "postgres://${DATABASE_USER:-axonflow}:${DATABASE_PASSWORD:-localdev123}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-axonflow}?sslmode=disable"
+    options:
+      max_open_conns: 25
+      max_idle_conns: 5
+      conn_max_lifetime: "5m"
+    timeout_ms: 30000
+    max_retries: 3
+    tenant_id: "*"
+
+  # Database alias - for SDK examples that use "database" as connector name
+  database:
+    type: postgres
+    enabled: true
+    display_name: "Database (Alias)"
+    description: "Alias for PostgreSQL connector for SDK examples"
+    connection_url: "postgres://${DATABASE_USER:-axonflow}:${DATABASE_PASSWORD:-localdev123}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-axonflow}?sslmode=disable"
+    options:
+      max_open_conns: 10
+      max_idle_conns: 2
+    timeout_ms: 30000
+    max_retries: 3
+    tenant_id: "*"
+
+# LLM providers are configured via environment variables in docker-compose.yml
+# (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)

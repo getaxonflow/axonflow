@@ -2,12 +2,12 @@
 Part 4: MCP Connectors - AI Meets Your Data
 
 MCP (Model Context Protocol) connectors let AI safely access your data:
-- PostgreSQL: Query databases with natural language
+- PostgreSQL: Execute SQL queries with policy enforcement
 - HTTP: Call external APIs
 - More connectors available in Enterprise
 
 All queries go through policy enforcement - SQL injection blocked,
-PII redacted, and everything audited.
+dangerous operations prevented, and everything audited.
 """
 
 import asyncio
@@ -17,26 +17,26 @@ from axonflow import AxonFlow
 from axonflow.exceptions import PolicyViolationError
 
 
-# Sample queries for the support ticket database
+# Sample SQL queries for the support ticket database
 CONNECTOR_QUERIES = [
     {
-        "name": "Open Tickets Summary",
-        "query": "How many support tickets are currently open?",
+        "name": "Open Tickets Count",
+        "query": "SELECT COUNT(*) as open_count FROM support_tickets WHERE status = 'open'",
         "expected": "count query",
     },
     {
         "name": "Priority Breakdown",
-        "query": "Show me a breakdown of tickets by priority level",
+        "query": "SELECT priority, COUNT(*) as count FROM support_tickets GROUP BY priority ORDER BY count DESC",
         "expected": "group by query",
     },
     {
         "name": "Agent Workload",
-        "query": "Which support agent has the most tickets assigned?",
+        "query": "SELECT assigned_agent, COUNT(*) as ticket_count FROM support_tickets WHERE assigned_agent IS NOT NULL GROUP BY assigned_agent ORDER BY ticket_count DESC LIMIT 5",
         "expected": "aggregation query",
     },
     {
         "name": "Recent Critical Issues",
-        "query": "List critical priority tickets from the last 24 hours",
+        "query": "SELECT ticket_id, subject, created_at FROM support_tickets WHERE priority = 'critical' AND created_at > NOW() - INTERVAL '24 hours'",
         "expected": "filtered query",
     },
 ]
@@ -46,8 +46,8 @@ async def demo_postgres_connector():
     print("PostgreSQL Connector Demo")
     print("=" * 60)
     print()
-    print("Natural language queries against the support_tickets table.")
-    print("AxonFlow converts to SQL and enforces governance.")
+    print("Execute SQL queries against the support_tickets table.")
+    print("AxonFlow enforces governance and blocks dangerous operations.")
     print()
 
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
@@ -62,7 +62,7 @@ async def demo_postgres_connector():
             print("-" * 60)
             print(f"Query: {q['name']}")
             print("-" * 60)
-            print(f"Natural language: \"{q['query']}\"")
+            print(f"SQL: {q['query'][:80]}{'...' if len(q['query']) > 80 else ''}")
             print()
 
             try:
@@ -70,7 +70,7 @@ async def demo_postgres_connector():
                 response = await client.execute_query(
                     user_token="support-agent-demo",
                     query=q["query"],
-                    request_type="connector",
+                    request_type="mcp-query",
                     context={
                         "connector": "postgres",
                         "database": "support_tickets",
@@ -127,7 +127,7 @@ async def demo_injection_blocking():
             response = await client.execute_query(
                 user_token="support-agent-demo",
                 query=malicious_query,
-                request_type="connector",
+                request_type="mcp-query",
                 context={"connector": "postgres"},
             )
 
@@ -159,10 +159,10 @@ async def main():
     print("=" * 60)
     print()
     print("Connectors let AI access your data safely:")
-    print("  - Natural language → SQL conversion")
-    print("  - All queries through policy enforcement")
+    print("  - Execute SQL through governed connectors")
+    print("  - All queries go through policy enforcement")
     print("  - SQL injection blocked automatically")
-    print("  - Response scanning for data leaks")
+    print("  - Dangerous operations (DROP, TRUNCATE) blocked")
     print("  - Complete audit trail")
     print()
 

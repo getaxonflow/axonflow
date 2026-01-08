@@ -139,6 +139,9 @@ services:
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
     ports:
       - "8080:8080"
+    volumes:
+      # MCP connector configuration (enables postgres connector for demos)
+      - ./config/axonflow.yaml:/app/config/axonflow.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
