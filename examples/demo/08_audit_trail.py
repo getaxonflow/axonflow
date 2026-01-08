@@ -20,15 +20,15 @@ import httpx
 
 
 async def query_audit_logs():
-    """Query recent audit logs from the Agent API."""
+    """Query recent audit logs via the Agent API."""
     print("Audit Trail Query")
     print("=" * 60)
     print()
 
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 
-    # Query audit logs via direct API call
-    # The Agent exposes /api/audit/logs endpoint for audit queries
+    # Query audit logs via Agent API (proxied to Orchestrator)
+    # POST /api/v1/audit/search - searches audit logs
     async with httpx.AsyncClient() as http_client:
 
         # Get recent logs
@@ -38,11 +38,12 @@ async def query_audit_logs():
         print()
 
         try:
-            response = await http_client.get(
-                f"{agent_url}/api/audit/logs",
-                params={
+            since_time = (datetime.utcnow() - timedelta(minutes=15)).isoformat() + "Z"
+            response = await http_client.post(
+                f"{agent_url}/api/v1/audit/search",
+                json={
                     "limit": 10,
-                    "since": (datetime.utcnow() - timedelta(minutes=15)).isoformat(),
+                    "start_time": since_time,
                 },
                 timeout=10.0,
             )
@@ -127,37 +128,47 @@ async def show_blocked_requests():
 
     async with httpx.AsyncClient() as http_client:
         try:
-            response = await http_client.get(
-                f"{agent_url}/api/audit/logs",
-                params={
-                    "decision": "blocked",
-                    "limit": 5,
+            response = await http_client.post(
+                f"{agent_url}/api/v1/audit/search",
+                json={
+                    "limit": 50,
                 },
                 timeout=10.0,
             )
 
             if response.status_code == 200:
-                logs = response.json()
+                all_logs = response.json()
 
-                if isinstance(logs, list) and len(logs) > 0:
-                    print(f"Found {len(logs)} blocked requests:")
+                # Filter for blocked requests client-side
+                blocked_logs = [
+                    log for log in (all_logs or [])
+                    if log.get('policy_decision') == 'blocked'
+                ]
+
+                if blocked_logs:
+                    print(f"Found {len(blocked_logs)} blocked requests:")
                     print()
 
-                    for log in logs:
-                        policy_details = log.get('policy_details', {})
+                    for log in blocked_logs[:5]:
+                        policy_details = log.get('policy_details') or {}
                         if isinstance(policy_details, str):
                             try:
                                 policy_details = json.loads(policy_details)
                             except (json.JSONDecodeError, ValueError):
-                                pass
+                                policy_details = {}
 
                         print(f"  Query: {str(log.get('query', ''))[:40]}...")
-                        print(f"  Policy: {policy_details.get('policy_violated', 'unknown')}")
-                        print(f"  Reason: {policy_details.get('block_reason', 'N/A')}")
+                        print(f"  Decision: {log.get('policy_decision', 'unknown')}")
+                        if policy_details:
+                            block_reason = policy_details.get('block_reason', 'N/A')
+                            print(f"  Reason: {block_reason}")
                         print()
                 else:
-                    print("No blocked requests found.")
+                    print("No blocked requests found in recent logs.")
                     print("This is good - your queries are clean!")
+                    print()
+                    print("Try running a SQL injection test to generate blocked logs:")
+                    print("  python3 03_sql_injection.py")
 
         except Exception as e:
             print(f"Error querying blocked requests: {e}")
