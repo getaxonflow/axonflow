@@ -14,8 +14,9 @@
 //   go run main.go
 //
 // Environment:
-//   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
-//   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+//   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+//   AXONFLOW_CLIENT_ID     - OAuth2 client ID (required for dynamic policies)
+//   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (required for dynamic policies)
 
 package main
 
@@ -40,9 +41,9 @@ func main() {
 	}
 
 	config := axonflow.AxonFlowConfig{
-		Endpoint:   endpoint,
-		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"),
-		ClientID:   clientID,
+		Endpoint:     endpoint,
+		ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
 	}
 
 	client := axonflow.NewClient(config)

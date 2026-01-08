@@ -31,7 +31,8 @@ docker compose up -d
 
 ```bash
 export AXONFLOW_AGENT_URL=http://localhost:8080
-export AXONFLOW_LICENSE_KEY=your-license-key
+export AXONFLOW_CLIENT_ID=your-client-id
+export AXONFLOW_CLIENT_SECRET=your-client-secret
 export OPENAI_API_KEY=your-openai-key
 ```
 
@@ -79,7 +80,8 @@ spring-boot/
 ```yaml
 axonflow:
   agent-url: ${AXONFLOW_AGENT_URL:http://localhost:8080}
-  license-key: ${AXONFLOW_LICENSE_KEY:}
+  client-id: ${AXONFLOW_CLIENT_ID:}
+  client-secret: ${AXONFLOW_CLIENT_SECRET:}
   timeout-seconds: 60
   debug: false
 ```
@@ -89,7 +91,8 @@ axonflow:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AXONFLOW_AGENT_URL` | AxonFlow Agent URL | `http://localhost:8080` |
-| `AXONFLOW_LICENSE_KEY` | License key for cloud | (empty) |
+| `AXONFLOW_CLIENT_ID` | OAuth2 client ID | (empty) |
+| `AXONFLOW_CLIENT_SECRET` | OAuth2 client secret | (empty) |
 | `AXONFLOW_DEBUG` | Enable debug logging | `false` |
 | `OPENAI_API_KEY` | OpenAI API key | (required) |
 

@@ -8,8 +8,9 @@
  *   mvn exec:java -Dexec.mainClass="com.example.HealthCheckExample"
  *
  * Environment:
- *   AXONFLOW_AGENT_URL   - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Optional for community mode
+ *   AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
+ *   AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
+ *   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
  */
 
 package com.example;
@@ -25,11 +26,13 @@ public class HealthCheckExample {
         if (agentUrl == null || agentUrl.isEmpty()) {
             agentUrl = "http://localhost:8080";
         }
-        String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
+        String clientId = System.getenv("AXONFLOW_CLIENT_ID");
+        String clientSecret = System.getenv("AXONFLOW_CLIENT_SECRET");
 
         AxonFlowConfig config = AxonFlowConfig.builder()
             .endpoint(agentUrl)
-            .licenseKey(licenseKey)
+            .clientId(clientId)
+                .clientSecret(clientSecret)
             .build();
 
         try (AxonFlow client = AxonFlow.create(config)) {

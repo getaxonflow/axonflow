@@ -18,6 +18,8 @@ import requests
 
 def main():
     orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://localhost:8081")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "mcp-connector-example")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     print("==============================================")
     print("MCP Connector Example - Orchestrator Routing")
@@ -34,11 +36,11 @@ def main():
         "user": {
             "email": "test@example.com",
             "role": "user",
-            "tenant_id": "default",
+            "tenant_id": client_id,
         },
         "client": {
-            "id": "test-client",
-            "tenant_id": "default",
+            "id": client_id,
+            "tenant_id": client_id,
         },
         "context": {
             "connector": "postgres",
@@ -46,11 +48,21 @@ def main():
         },
     }
 
+    # Build auth headers
+    import base64
+    headers = {
+        "Content-Type": "application/json",
+        "X-Tenant-ID": client_id,
+    }
+    if client_secret:
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers["Authorization"] = f"Basic {credentials}"
+
     try:
         response = requests.post(
             f"{orchestrator_url}/api/v1/process",
             json=request,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=30,
         )
         result = response.json()
@@ -77,7 +89,7 @@ def main():
         response2 = requests.post(
             f"{orchestrator_url}/api/v1/process",
             json=request,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=30,
         )
         result2 = response2.json()

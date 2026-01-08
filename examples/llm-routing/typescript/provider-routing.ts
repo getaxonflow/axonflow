@@ -19,8 +19,13 @@ async function main() {
   // Initialize client
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",
-    licenseKey: process.env.AXONFLOW_LICENSE_KEY,
+    clientId: process.env.AXONFLOW_CLIENT_ID,
+    clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
   });
+
+  // AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+  // In community mode, SDK defaults to "anonymous" if not set
+  const userToken = process.env.AXONFLOW_USER_TOKEN || "";
 
   console.log("=== LLM Provider Routing Examples ===\n");
   console.log("Provider selection is server-side. Configure via environment variables:");
@@ -31,9 +36,10 @@ async function main() {
   console.log("1. Send request (server routes based on configured strategy):");
   try {
     const response = await client.executeQuery({
-      userToken: "demo-user",
+      userToken,
       query: "What is 2 + 2?",
       requestType: "chat",
+      context: { provider: "openai" },
     });
     const data = typeof response.data === 'object'
       ? JSON.stringify(response.data).substring(0, 100)
@@ -49,9 +55,10 @@ async function main() {
   for (let i = 1; i <= 3; i++) {
     try {
       const response = await client.executeQuery({
-        userToken: "demo-user",
+        userToken,
         query: `Question ${i}: What is the capital of France?`,
         requestType: "chat",
+        context: { provider: "openai" },
       });
       console.log(`   Request ${i}: Success (provider selected by server)`);
     } catch (error) {

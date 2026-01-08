@@ -29,12 +29,22 @@ func main() {
 		endpoint = "http://localhost:8080"
 	}
 
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	if clientID == "" {
+		clientID = "llm-routing-example"
+	}
+
+	// AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+	// In community mode, SDK defaults to "anonymous" if not set
+	userToken := os.Getenv("AXONFLOW_USER_TOKEN")
+
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   endpoint,
-		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"),
-		Mode:       "production",
-		Debug:      os.Getenv("DEBUG") == "true",
-		Timeout:    60 * time.Second,
+		Endpoint:     endpoint,
+		ClientID:     clientID,
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"), // Optional for community mode
+		Mode:         "production",
+		Debug:        os.Getenv("DEBUG") == "true",
+		Timeout:      60 * time.Second,
 	})
 
 	fmt.Println("=== LLM Provider Routing Examples ===")
@@ -47,10 +57,10 @@ func main() {
 	// Example 1: Send a request (server decides which provider to use)
 	fmt.Println("1. Send request (server routes based on configured strategy):")
 	resp1, err := client.ExecuteQuery(
-		"demo-user",
+		userToken,
 		"What is 2 + 2?",
 		"chat",
-		nil,
+		map[string]interface{}{"provider": "openai"},
 	)
 	if err != nil {
 		log.Printf("   Error: %v\n", err)
@@ -66,10 +76,10 @@ func main() {
 	fmt.Println("2. Multiple requests (observe provider distribution):")
 	for i := 1; i <= 3; i++ {
 		resp, err := client.ExecuteQuery(
-			"demo-user",
+			userToken,
 			fmt.Sprintf("Question %d: What is the capital of France?", i),
 			"chat",
-			nil,
+			map[string]interface{}{"provider": "openai"},
 		)
 		if err != nil {
 			log.Printf("   Request %d Error: %v\n", i, err)

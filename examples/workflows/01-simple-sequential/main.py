@@ -5,25 +5,24 @@ Example 1: Simple Sequential Workflow - Python
 This example shows the most basic AxonFlow workflow: send a query to an LLM and get a response.
 """
 
+import asyncio
 import os
 import sys
 
 from axonflow import AxonFlow
 
 
-def main():
+async def main():
     # Get AxonFlow configuration from environment
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
-
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
-        sys.exit(1)
+    agent_url = os.getenv("AXONFLOW_AGENT_URL", os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "workflow-example")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     # Create AxonFlow client
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret if client_secret else None,
     )
 
     print("✅ Connected to AxonFlow")
@@ -33,18 +32,21 @@ def main():
     print(f"📤 Sending query: {query}")
 
     try:
-        # Send query to AxonFlow
-        response = client.execute_query(
+        # Send query to AxonFlow (async method)
+        response = await client.execute_query(
             user_token="user-123",
             query=query,
             request_type="chat",
-            context={
-                "model": "gpt-4",
-            },
+            context={"provider": "openai"},
         )
 
         # Print response
-        print(f"📥 Response: {response.data}")
+        if hasattr(response, 'data'):
+            print(f"📥 Response: {response.data}")
+        elif hasattr(response, 'result'):
+            print(f"📥 Response: {response.result}")
+        else:
+            print(f"📥 Response: {response}")
         print("✅ Workflow completed successfully")
     except Exception as e:
         print(f"❌ Query failed: {e}")
@@ -52,4 +54,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

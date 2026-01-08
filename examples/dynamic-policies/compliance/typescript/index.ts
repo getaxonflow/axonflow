@@ -15,8 +15,9 @@
  *   npx ts-node index.ts
  *
  * Environment:
- *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+ *   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+ *   AXONFLOW_CLIENT_ID     - Client ID for authentication
+ *   AXONFLOW_CLIENT_SECRET - Client secret (required for dynamic policies)
  */
 
 import { AxonFlow } from "@axonflow/sdk";
@@ -36,12 +37,14 @@ function getAllowedProviders(actions?: DynamicPolicyAction[]): string[] | undefi
 async function main(): Promise<void> {
   // Initialize client
   const endpoint = process.env.AXONFLOW_ENDPOINT || "http://localhost:8080";
-  const licenseKey = process.env.AXONFLOW_LICENSE_KEY || "";
+  const clientId = process.env.AXONFLOW_CLIENT_ID || "";
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET || "";
   const tenant = process.env.AXONFLOW_CLIENT_ID || "demo-tenant";
 
   const client = new AxonFlow({
     endpoint,
-    licenseKey,
+    clientId,
+    clientSecret,
     tenant,
   });
 

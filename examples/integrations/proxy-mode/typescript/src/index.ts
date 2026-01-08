@@ -14,7 +14,8 @@ import { AxonFlow } from "@axonflow/sdk";
 
 const config = {
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
   tenant: process.env.AXONFLOW_TENANT || "demo",
 };
 
@@ -25,7 +26,8 @@ async function main() {
 
   const axonflow = new AxonFlow({
     endpoint: config.endpoint,
-    licenseKey: config.licenseKey,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
     tenant: config.tenant,
     debug: true,
   });

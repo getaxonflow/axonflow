@@ -19,7 +19,8 @@ import { AxonFlow } from "@axonflow/sdk";
 // The Agent proxies orchestrator routes internally.
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
   tenant: process.env.AXONFLOW_TENANT || "demo",
   debug: true,
 });

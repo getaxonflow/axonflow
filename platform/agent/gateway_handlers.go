@@ -302,11 +302,11 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate license key from header (not required in Community mode)
-	licenseKey := r.Header.Get("X-License-Key")
-	if licenseKey == "" && !isCommunityMode() {
-		log.Printf("❌ [Pre-check] Missing X-License-Key header")
-		sendGatewayError(w, "X-License-Key header required", http.StatusUnauthorized)
+	// Validate credentials from OAuth2 Basic auth header (not required in Community mode)
+	clientSecret := extractClientSecret(r)
+	if clientSecret == "" && !isCommunityMode() {
+		log.Printf("❌ [Pre-check] Missing authentication - no Authorization header")
+		sendGatewayError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
 		return
 	}
 
@@ -325,9 +325,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			LicenseTier: "Community",
 		}
 	} else if authDB != nil {
-		client, err = validateClientLicenseDB(ctx, authDB, req.ClientID, licenseKey)
+		client, err = validateClientCredentialsDB(ctx, authDB, req.ClientID, clientSecret)
 	} else {
-		client, err = validateClientLicense(ctx, req.ClientID, licenseKey)
+		client, err = validateClientCredentials(ctx, req.ClientID, clientSecret)
 	}
 
 	if err != nil {
@@ -545,10 +545,10 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate license key (not required in Community mode)
-	licenseKey := r.Header.Get("X-License-Key")
-	if licenseKey == "" && !isCommunityMode() {
-		sendGatewayError(w, "X-License-Key header required", http.StatusUnauthorized)
+	// Validate credentials via OAuth2 Basic auth (not required in Community mode)
+	clientSecret := extractClientSecret(r)
+	if clientSecret == "" && !isCommunityMode() {
+		sendGatewayError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
 		return
 	}
 

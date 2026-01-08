@@ -5,23 +5,26 @@ Example 6: Multi-Step Approval Workflow - Python
 Demonstrates a multi-level approval chain: Manager → Director → Finance
 """
 
+import asyncio
 import os
 import sys
 
 from axonflow import AxonFlow
 
 
-def main():
+async def main():
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
+    if not client_id or not client_secret:
+        print("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
         sys.exit(1)
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret,
     )
 
     print("✅ Connected to AxonFlow")
@@ -39,11 +42,11 @@ def main():
             "Consider budget, necessity, and timing. Respond with APPROVED or REJECTED and brief reasoning."
         )
 
-        manager_resp = client.execute_query(
+        manager_resp = await client.execute_query(
             user_token="user-123",
             query=manager_query,
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         print("📥 Manager Response:", manager_resp.data)
@@ -65,11 +68,11 @@ def main():
                 "Consider strategic alignment and ROI. Respond with APPROVED or REJECTED and reasoning."
             )
 
-            director_resp = client.execute_query(
+            director_resp = await client.execute_query(
                 user_token="user-123",
                 query=director_query,
                 request_type="chat",
-                context={"model": "gpt-4"},
+                context={"provider": "openai"},
             )
 
             print("📥 Director Response:", director_resp.data)
@@ -92,11 +95,11 @@ def main():
                 "Verify budget availability and compliance with procurement policies. Respond with APPROVED or REJECTED and reasoning."
             )
 
-            finance_resp = client.execute_query(
+            finance_resp = await client.execute_query(
                 user_token="user-123",
                 query=finance_query,
                 request_type="chat",
-                context={"model": "gpt-4"},
+                context={"provider": "openai"},
             )
 
             print("📥 Finance Response:", finance_resp.data)
@@ -124,4 +127,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

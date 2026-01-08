@@ -6,23 +6,26 @@ Demonstrates intelligent fallback patterns: try premium options first,
 fall back to alternatives if unavailable.
 """
 
+import asyncio
 import os
 import sys
 
 from axonflow import AxonFlow
 
 
-def main():
+async def main():
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
+    if not client_id or not client_secret:
+        print("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
         sys.exit(1)
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret,
     )
 
     print("✅ Connected to AxonFlow")
@@ -34,11 +37,11 @@ def main():
     try:
         # STEP 1: Try direct flights first
         print("🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...")
-        flight_resp1 = client.execute_query(
+        flight_resp1 = await client.execute_query(
             user_token="user-123",
             query="Find direct flights from San Francisco to Tokyo next month",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         flight_result = str(flight_resp1.data).lower()
@@ -47,11 +50,11 @@ def main():
             print("⚠️  No direct flights available")
             print("📤 Step 2 (Fallback): Trying connecting flights...")
 
-            flight_resp2 = client.execute_query(
+            flight_resp2 = await client.execute_query(
                 user_token="user-123",
                 query="Find connecting flights from San Francisco to Tokyo with 1 stop",
                 request_type="chat",
-                context={"model": "gpt-4"},
+                context={"provider": "openai"},
             )
 
             fallback_result = str(flight_resp2.data).lower()
@@ -70,11 +73,11 @@ def main():
 
         # STEP 2: Try 5-star hotels first
         print("🔍 Step 3: Searching for 5-star hotels in Tokyo city center...")
-        hotel_resp1 = client.execute_query(
+        hotel_resp1 = await client.execute_query(
             user_token="user-123",
             query="Find 5-star hotels in Tokyo Shibuya district",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         hotel_result = str(hotel_resp1.data).lower()
@@ -83,11 +86,11 @@ def main():
             print("⚠️  5-star hotels fully booked")
             print("📤 Step 4 (Fallback): Trying 4-star hotels...")
 
-            hotel_resp2 = client.execute_query(
+            hotel_resp2 = await client.execute_query(
                 user_token="user-123",
                 query="Find 4-star hotels in Tokyo with good reviews",
                 request_type="chat",
-                context={"model": "gpt-4"},
+                context={"provider": "openai"},
             )
 
             fallback_result = str(hotel_resp2.data).lower()
@@ -111,11 +114,11 @@ def main():
             "Include top attractions, restaurants, and transportation tips."
         )
 
-        itinerary_resp = client.execute_query(
+        itinerary_resp = await client.execute_query(
             user_token="user-123",
             query=itinerary_query,
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         print("\n📥 Your Tokyo Itinerary:")
@@ -130,4 +133,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

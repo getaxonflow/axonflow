@@ -64,9 +64,8 @@ policyEngine := NewPolicyEngine()
 ```go
 axonflow := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "https://your-axonflow.example.com",
-    ClientID:     "healthcare-demo",
-    ClientSecret: os.Getenv("AXONFLOW_SECRET"),
-    LicenseKey:   os.Getenv("AXONFLOW_LICENSE"),
+    ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),          // Your organization ID
+    ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),      // Optional for community mode
 })
 ```
 
@@ -158,9 +157,9 @@ The Agent will handle all policy enforcement and audit logging.
 import { AxonFlow } from '@axonflow/sdk';
 
 const axonflow = new AxonFlow({
-  apiKey: process.env.AXONFLOW_LICENSE,
   endpoint: process.env.AXONFLOW_AGENT_URL,
-  tenant: 'healthcare-demo'
+  clientId: process.env.AXONFLOW_CLIENT_ID,          // Your organization ID
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,  // Optional for community mode
 });
 
 async function handlePatientQuery(userToken: string, query: string) {

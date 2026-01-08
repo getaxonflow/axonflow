@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -16,15 +16,17 @@ func main() {
 		agentURL = "http://localhost:8080"
 	}
 
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("❌ AXONFLOW_LICENSE_KEY must be set in .env file")
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		log.Fatal("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
 	}
 
 	// Create AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   agentURL,
-		LicenseKey: licenseKey,
+		Endpoint:     agentURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("✅ Connected to AxonFlow")
@@ -39,7 +41,7 @@ func main() {
 		"Include customer ID, purchase amount, product categories, and timestamps. " +
 		"Simulate 500 customer transactions."
 
-	_, err := client.ExecuteQuery("user-123", extractQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	_, err := client.ExecuteQuery("user-123", extractQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 1 failed: %v", err)
 	}
@@ -55,7 +57,7 @@ func main() {
 		"4. Validate all amounts are positive numbers\n" +
 		"5. Flag any anomalies (unusually high amounts)"
 
-	_, err = client.ExecuteQuery("user-123", transformQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	_, err = client.ExecuteQuery("user-123", transformQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 2 failed: %v", err)
 	}
@@ -70,7 +72,7 @@ func main() {
 		"3. Identify top-spending product categories per segment\n" +
 		"4. Calculate average order value per segment"
 
-	_, err = client.ExecuteQuery("user-123", enrichQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	_, err = client.ExecuteQuery("user-123", enrichQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 3 failed: %v", err)
 	}
@@ -86,7 +88,7 @@ func main() {
 		"4. Customer churn risk indicators\n" +
 		"5. Recommended actions for each segment"
 
-	_, err = client.ExecuteQuery("user-123", aggregateQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	_, err = client.ExecuteQuery("user-123", aggregateQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 4 failed: %v", err)
 	}
@@ -102,7 +104,7 @@ func main() {
 		"4. Risk alerts (if any)\n" +
 		"Format as a concise business report."
 
-	reportResp, err := client.ExecuteQuery("user-123", reportQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	reportResp, err := client.ExecuteQuery("user-123", reportQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 5 failed: %v", err)
 	}

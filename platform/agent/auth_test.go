@@ -13,72 +13,74 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
+	"net/http"
 	"testing"
 	"time"
 )
 
-// TestValidateClientLicense tests the whitelist-based client authentication
-func TestValidateClientLicense(t *testing.T) {
+// TestValidateClientCredentials tests the whitelist-based client authentication
+func TestValidateClientCredentials(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name        string
-		clientID    string
-		licenseKey  string
-		expectError bool
-		errorMsg    string
+		name         string
+		clientID     string
+		clientSecret string
+		expectError  bool
+		errorMsg     string
 	}{
 		{
-			name:        "valid healthcare demo client",
-			clientID:    "healthcare-demo",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f",
-			expectError: false,
+			name:         "valid healthcare demo client",
+			clientID:     "healthcare-demo",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f",
+			expectError:  false,
 		},
 		{
-			name:        "valid ecommerce demo client",
-			clientID:    "ecommerce-demo",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImVjb21tZXJjZSIsInNlcnZpY2VfbmFtZSI6ImVjb21tZXJjZS1kZW1vIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiLCJsbG0iLCJjb25uZWN0b3JzIl0sImV4cGlyZXNfYXQiOiIyMDM1MTEyNyJ9-e40f5f5d",
-			expectError: false,
+			name:         "valid ecommerce demo client",
+			clientID:     "ecommerce-demo",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImVjb21tZXJjZSIsInNlcnZpY2VfbmFtZSI6ImVjb21tZXJjZS1kZW1vIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiLCJsbG0iLCJjb25uZWN0b3JzIl0sImV4cGlyZXNfYXQiOiIyMDM1MTEyNyJ9-e40f5f5d",
+			expectError:  false,
 		},
 		{
-			name:        "valid loadtest client",
-			clientID:    "loadtest",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImxvYWR0ZXN0Iiwic2VydmljZV9uYW1lIjoibG9hZHRlc3QiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-8cc4ef10",
-			expectError: false,
+			name:         "valid loadtest client",
+			clientID:     "loadtest",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImxvYWR0ZXN0Iiwic2VydmljZV9uYW1lIjoibG9hZHRlc3QiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-8cc4ef10",
+			expectError:  false,
 		},
 		{
-			name:        "missing client ID",
-			clientID:    "",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InRlc3QiLCJzZXJ2aWNlX25hbWUiOiJ0ZXN0Iiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
-			expectError: true,
-			errorMsg:    "client ID required",
+			name:         "missing client ID",
+			clientID:     "",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InRlc3QiLCJzZXJ2aWNlX25hbWUiOiJ0ZXN0Iiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
+			expectError:  true,
+			errorMsg:     "client ID required",
 		},
 		{
-			name:        "missing license key",
-			clientID:    "healthcare-demo",
-			licenseKey:  "",
-			expectError: true,
-			errorMsg:    "license key required",
+			name:         "missing client secret",
+			clientID:     "healthcare-demo",
+			clientSecret: "",
+			expectError:  true,
+			errorMsg:     "client secret required",
 		},
 		{
-			name:        "unknown client",
-			clientID:    "unknown-client",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InVua25vd24iLCJzZXJ2aWNlX25hbWUiOiJ1bmtub3duIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
-			expectError: true,
-			errorMsg:    "not found in whitelist",
+			name:         "unknown client",
+			clientID:     "unknown-client",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InVua25vd24iLCJzZXJ2aWNlX25hbWUiOiJ1bmtub3duIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
+			expectError:  true,
+			errorMsg:     "not found in whitelist",
 		},
 		{
-			name:        "invalid license key for known client",
-			clientID:    "healthcare-demo",
-			licenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6Indyb25nIiwic2VydmljZV9uYW1lIjoid3JvbmciLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-wrong123",
-			expectError: true,
-			errorMsg:    "invalid license key",
+			name:         "invalid credentials for known client",
+			clientID:     "healthcare-demo",
+			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6Indyb25nIiwic2VydmljZV9uYW1lIjoid3JvbmciLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-wrong123",
+			expectError:  true,
+			errorMsg:     "invalid credentials",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := validateClientLicense(ctx, tt.clientID, tt.licenseKey)
+			client, err := validateClientCredentials(ctx, tt.clientID, tt.clientSecret)
 
 			if tt.expectError {
 				if err == nil {
@@ -128,12 +130,12 @@ func TestValidateClientLicense(t *testing.T) {
 	}
 }
 
-// TestValidateClientLicensePermissions tests permission handling
-func TestValidateClientLicensePermissions(t *testing.T) {
+// TestValidateClientCredentialsPermissions tests permission handling
+func TestValidateClientCredentialsPermissions(t *testing.T) {
 	ctx := context.Background()
 
 	// Test healthcare demo permissions (V2 license format)
-	client, err := validateClientLicense(ctx, "healthcare-demo", "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f")
+	client, err := validateClientCredentials(ctx, "healthcare-demo", "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -144,7 +146,7 @@ func TestValidateClientLicensePermissions(t *testing.T) {
 	}
 
 	// Test legacy client (should not have planning) - V2 license format
-	client2, err := validateClientLicense(ctx, "client_1", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoiY2xpZW50MSIsInNlcnZpY2VfbmFtZSI6ImNsaWVudDEiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-22b4e980")
+	client2, err := validateClientCredentials(ctx, "client_1", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoiY2xpZW50MSIsInNlcnZpY2VfbmFtZSI6ImNsaWVudDEiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-22b4e980")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -421,4 +423,109 @@ func hasPermission(permissions []string, permission string) bool {
 		}
 	}
 	return false
+}
+
+// TestExtractClientSecret tests OAuth2 Basic auth extraction
+func TestExtractClientSecret(t *testing.T) {
+	tests := []struct {
+		name           string
+		authHeader     string
+		expectedResult string
+	}{
+		{
+			name:           "OAuth2 Basic auth - valid",
+			authHeader:     "Basic " + base64.StdEncoding.EncodeToString([]byte("my-client-id:my-license-key")),
+			expectedResult: "my-license-key",
+		},
+		{
+			name:           "no auth provided",
+			authHeader:     "",
+			expectedResult: "",
+		},
+		{
+			name:           "OAuth2 Basic auth - invalid base64",
+			authHeader:     "Basic not-valid-base64!!!",
+			expectedResult: "",
+		},
+		{
+			name:           "OAuth2 Basic auth - missing colon",
+			authHeader:     "Basic " + base64.StdEncoding.EncodeToString([]byte("noclientid")),
+			expectedResult: "",
+		},
+		{
+			name:           "OAuth2 Basic auth - empty secret",
+			authHeader:     "Basic " + base64.StdEncoding.EncodeToString([]byte("client:")),
+			expectedResult: "",
+		},
+		{
+			name:           "Bearer token (not Basic)",
+			authHeader:     "Bearer some-jwt-token",
+			expectedResult: "",
+		},
+		{
+			name:           "real AXON license key via OAuth2",
+			authHeader:     "Basic " + base64.StdEncoding.EncodeToString([]byte("healthcare-demo:AXON-V2-eyJ0aWVyIjoiUExVUyJ9-abc123")),
+			expectedResult: "AXON-V2-eyJ0aWVyIjoiUExVUyJ9-abc123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("POST", "/api/request", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			result := extractClientSecret(req)
+
+			if result != tt.expectedResult {
+				t.Errorf("extractClientSecret() = %q, want %q", result, tt.expectedResult)
+			}
+		})
+	}
+}
+
+// TestExtractClientID tests OAuth2 Basic auth client ID extraction
+func TestExtractClientID(t *testing.T) {
+	tests := []struct {
+		name           string
+		authHeader     string
+		expectedResult string
+	}{
+		{
+			name:           "OAuth2 Basic auth - valid",
+			authHeader:     "Basic " + base64.StdEncoding.EncodeToString([]byte("my-client-id:my-secret")),
+			expectedResult: "my-client-id",
+		},
+		{
+			name:           "no auth provided",
+			authHeader:     "",
+			expectedResult: "",
+		},
+		{
+			name:           "OAuth2 Basic auth - invalid base64",
+			authHeader:     "Basic not-valid-base64!!!",
+			expectedResult: "",
+		},
+		{
+			name:           "Bearer token (not Basic)",
+			authHeader:     "Bearer some-jwt-token",
+			expectedResult: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("POST", "/api/request", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+
+			result := extractClientID(req)
+
+			if result != tt.expectedResult {
+				t.Errorf("extractClientID() = %q, want %q", result, tt.expectedResult)
+			}
+		})
+	}
 }

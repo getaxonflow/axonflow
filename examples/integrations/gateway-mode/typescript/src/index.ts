@@ -17,12 +17,12 @@ import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 import OpenAI from "openai";
 
-// Configuration from environment
+// Configuration from environment (OAuth2-style credentials)
 const config = {
   axonflow: {
     endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-    licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
-    tenant: process.env.AXONFLOW_TENANT || "demo",
+    clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
+    clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || "",
@@ -32,11 +32,11 @@ const config = {
 async function main() {
   console.log("AxonFlow Gateway Mode - TypeScript Example\n");
 
-  // Initialize clients
+  // Initialize clients with OAuth2-style credentials
   const axonflow = new AxonFlow({
     endpoint: config.axonflow.endpoint,
-    licenseKey: config.axonflow.licenseKey,
-    tenant: config.axonflow.tenant,
+    clientId: config.axonflow.clientId,
+    clientSecret: config.axonflow.clientSecret,
   });
 
   const openai = new OpenAI({

@@ -27,10 +27,9 @@ func main() {
 
 	// Initialize clients
 	axClient := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "audit-logging-example"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
 	openaiKey := getEnv("OPENAI_API_KEY", "")

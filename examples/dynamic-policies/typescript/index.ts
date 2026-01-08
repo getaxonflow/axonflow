@@ -19,7 +19,7 @@
  *
  * Environment:
  *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+ *   AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET - Required for dynamic policies
  */
 
 import { AxonFlow } from "@axonflow/sdk";
@@ -27,11 +27,13 @@ import { AxonFlow } from "@axonflow/sdk";
 async function main() {
   // Initialize client
   const endpoint = process.env.AXONFLOW_ENDPOINT || "http://localhost:8080";
-  const licenseKey = process.env.AXONFLOW_LICENSE_KEY;
+  const clientId = process.env.AXONFLOW_CLIENT_ID;
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET;
 
   const client = new AxonFlow({
     endpoint,
-    licenseKey: licenseKey || undefined,
+    clientId: clientId || undefined,
+    clientSecret: clientSecret || undefined,
     tenant: process.env.AXONFLOW_TENANT_ID || "demo-tenant",
   });
 

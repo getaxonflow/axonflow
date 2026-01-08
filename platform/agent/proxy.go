@@ -143,9 +143,16 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	r.PathPrefix("/api/v1/cost").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 	r.PathPrefix("/api/v1/budgets").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 	r.PathPrefix("/api/v1/usage").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
+	r.PathPrefix("/api/v1/pricing").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+
+	// Multi-Agent Planning (MAP)
+	r.PathPrefix("/api/v1/plan").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
 
 	// Execution Replay
 	r.PathPrefix("/api/v1/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
+
+	// Audit Logs
+	r.PathPrefix("/api/v1/audit").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
 
 	// LLM Providers
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
@@ -209,7 +216,10 @@ func IsProxiedPath(path string) bool {
 		strings.HasPrefix(path, "/api/v1/cost") ||
 		strings.HasPrefix(path, "/api/v1/budgets") ||
 		strings.HasPrefix(path, "/api/v1/usage") ||
+		strings.HasPrefix(path, "/api/v1/pricing") ||
+		strings.HasPrefix(path, "/api/v1/plan") ||
 		strings.HasPrefix(path, "/api/v1/executions") ||
+		strings.HasPrefix(path, "/api/v1/audit") ||
 		strings.HasPrefix(path, "/api/v1/llm-providers") {
 		return true
 	}

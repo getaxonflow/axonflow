@@ -199,10 +199,11 @@ import (
 )
 
 func main() {
-    // Initialize AxonFlow client
+    // Initialize AxonFlow client with OAuth2-style credentials
     client := axonflow.NewClient(axonflow.Config{
-        Endpoint:   "https://your-axonflow.example.com",  // From CloudFormation or localhost:8080
-        LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"), // Your license key
+        Endpoint:     "https://your-axonflow.example.com",      // From CloudFormation or localhost:8080
+        ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),          // Your organization ID
+        ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),      // Optional for community mode
     })
 
     // Define your query
@@ -235,8 +236,9 @@ func main() {
 ### Step 4: Run Your Agent (1 minute)
 
 ```bash
-# Set your license key
-export AXONFLOW_LICENSE_KEY="AXON-PLUS-my-company-20261231-a7f3b2c9"
+# Set your OAuth2-style credentials
+export AXONFLOW_CLIENT_ID="my-company"
+export AXONFLOW_CLIENT_SECRET="AXON-PLUS-my-company-20261231-a7f3b2c9"  # Optional for community
 
 # Run your agent
 go run customer-support-agent.go
@@ -350,7 +352,7 @@ response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
 **Key Components:**
 
 1. **Agent** - Entry point for your queries
-   - License key validation
+   - Client authentication (OAuth2-style credentials)
    - Policy enforcement (who can query what)
    - Rate limiting (prevent abuse)
    - Audit logging (every query tracked)
@@ -380,7 +382,7 @@ response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
    client.ExecuteQuery(ctx, "What were our top 3 customers last quarter?")
    ```
 
-2. **Agent** validates license, checks policies, applies rate limits
+2. **Agent** validates credentials, checks policies, applies rate limits
 
 3. **Orchestrator** decides:
    - "This needs data from PostgreSQL"
@@ -592,17 +594,20 @@ Each example includes:
 
 ### Common Issues
 
-#### 1. "License key invalid" error
+#### 1. "Authentication failed" error
 
-**Problem:** Agent rejects your license key.
+**Problem:** Agent rejects your credentials.
 
 **Solution:**
 ```bash
-# Verify your license key format
-echo $AXONFLOW_LICENSE_KEY
-# Should be: AXON-PLUS-org-20261231-signature
+# Verify your credentials are set
+echo $AXONFLOW_CLIENT_ID
+# Should be: my-company (your organization identifier)
 
-# Regenerate if needed
+echo $AXONFLOW_CLIENT_SECRET
+# Should be: AXON-PLUS-org-20261231-signature (optional for community mode)
+
+# Regenerate client secret if needed
 docker exec -it axonflow-agent /app/keygen \
   --tier PLUS \
   --org my-company \
@@ -652,7 +657,7 @@ docker exec -it axonflow-db psql -U axonflow -d axonflow
 **Solution:**
 ```bash
 # Check your rate limits
-curl -H "Authorization: Bearer $AXONFLOW_LICENSE_KEY" \
+curl -H "Authorization: Basic $(echo -n $AXONFLOW_CLIENT_ID:$AXONFLOW_CLIENT_SECRET | base64)" \
   https://your-agent-url/health
 
 # Response includes rate limit info:

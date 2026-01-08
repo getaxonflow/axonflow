@@ -61,9 +61,10 @@ AxonFlow uses a **Single Entry Point Architecture** (ADR-026). All client reques
 
 **Step 1: Pre-check before LLM call**
 ```bash
+# Using OAuth2-style Basic authentication
 curl -X POST "https://agent.getaxonflow.com/api/policy/pre-check" \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: axf_live_your_key" \
+  -H "Authorization: Basic $(echo -n 'travel-app:your_client_secret' | base64)" \
   -d '{
     "query": "What are the best flights to LAX?",
     "user_token": "eyJhbGciOiJIUzI1NiIs...",
@@ -92,7 +93,7 @@ Response:
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/audit/llm-call" \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: axf_live_your_key" \
+  -H "Authorization: Basic $(echo -n 'travel-app:your_client_secret' | base64)" \
   -d '{
     "context_id": "ctx_abc123def456",
     "client_id": "travel-app",
@@ -113,7 +114,7 @@ curl -X POST "https://agent.getaxonflow.com/api/audit/llm-call" \
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: axf_live_your_key" \
+  -H "Authorization: Basic $(echo -n 'analytics-app:your_client_secret' | base64)" \
   -d '{
     "query": "Summarize the quarterly sales report",
     "user_token": "eyJhbGciOiJIUzI1NiIs...",
@@ -130,7 +131,7 @@ curl -X POST "https://agent.getaxonflow.com/api/request" \
 ```bash
 curl -X POST "https://agent.getaxonflow.com/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: axf_live_your_key" \
+  -H "Authorization: Basic $(echo -n 'travel-planner:your_client_secret' | base64)" \
   -d '{
     "query": "Find flights from NYC to LAX and book a hotel near the beach",
     "user_token": "eyJhbGciOiJIUzI1NiIs...",
@@ -172,7 +173,7 @@ Response:
 ```bash
 curl -X POST "https://agent.getaxonflow.com/mcp/resources/query" \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: axf_live_your_key" \
+  -H "Authorization: Basic $(echo -n 'analytics-app:your_client_secret' | base64)" \
   -d '{
     "client_id": "analytics-app",
     "user_token": "eyJhbGciOiJIUzI1NiIs...",
@@ -340,13 +341,16 @@ These routes are accessed via Agent but proxied to Portal internally.
 
 ## Authentication
 
-### License Key (X-License-Key)
+### OAuth2-Style Basic Authentication (Recommended)
 
-Required for all client-facing endpoints. Obtained from the AxonFlow dashboard.
+Use Basic authentication with `clientId:clientSecret` credentials. Obtained from the AxonFlow dashboard.
 
 ```bash
--H "X-License-Key: axf_live_your_key"
+# Basic auth with client credentials
+-H "Authorization: Basic $(echo -n 'your_client_id:your_client_secret' | base64)"
 ```
+
+**Note:** `clientSecret` is optional for community/self-hosted mode. `clientId` is recommended for request identification.
 
 ### User Token (user_token)
 

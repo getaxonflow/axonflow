@@ -15,8 +15,9 @@ Usage:
   python main.py
 
 Environment:
-  AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
-  AXONFLOW_LICENSE_KEY - Required for dynamic policies
+  AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+  AXONFLOW_CLIENT_ID     - OAuth2 client ID (required for dynamic policies)
+  AXONFLOW_CLIENT_SECRET - OAuth2 client secret (required for dynamic policies)
 """
 
 import os
@@ -32,13 +33,13 @@ from axonflow import (
 def main():
     # Initialize client
     endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY", "")
-    client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo-tenant")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     async_client = AxonFlow(
         endpoint=endpoint,
-        license_key=license_key,
         client_id=client_id,
+        client_secret=client_secret,
     )
     client = SyncAxonFlow(async_client)
 

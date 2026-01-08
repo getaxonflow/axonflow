@@ -9,11 +9,11 @@ import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 import OpenAI from "openai";
 
-// Initialize AxonFlow client
+// Initialize AxonFlow client with OAuth2-style credentials
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
-  tenant: process.env.AXONFLOW_TENANT || "demo",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
   debug: true,
 });
 

@@ -22,7 +22,7 @@ package agent
 // 4. Reset session variable after request (cleanup for connection pooling)
 //
 // Usage in handler:
-//   client, err := validateClientLicense(...)
+//   client, err := validateClientCredentials(...)
 //   if err := SetRLSContext(ctx, db, client.OrgID); err != nil {
 //       // Handle error
 //   }

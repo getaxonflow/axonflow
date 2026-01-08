@@ -5,23 +5,26 @@ Example 3: Conditional Logic Workflow - Python
 Demonstrates if/else branching based on API responses.
 """
 
+import asyncio
 import os
 import sys
 
 from axonflow import AxonFlow
 
 
-def main():
+async def main():
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
+    if not client_id or not client_secret:
+        print("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
         sys.exit(1)
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret,
     )
 
     print("✅ Connected to AxonFlow")
@@ -31,11 +34,11 @@ def main():
     print("📤 Searching for flights to Paris...")
 
     try:
-        search_response = client.execute_query(
+        search_response = await client.execute_query(
             user_token="user-123",
             query=search_query,
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         print("✅ Received search results")
@@ -49,11 +52,11 @@ def main():
             print("💡 Trying alternative dates...")
 
             alt_query = "Find flights from New York to Paris for the following week instead"
-            alt_response = client.execute_query(
+            alt_response = await client.execute_query(
                 user_token="user-123",
                 query=alt_query,
                 request_type="chat",
-                context={"model": "gpt-4"},
+                context={"provider": "openai"},
             )
 
             print("📥 Alternative Options:")
@@ -69,11 +72,11 @@ def main():
         book_query = "Based on the search results above, what would be the recommended booking?"
         print("\n📤 Getting booking recommendation...")
 
-        book_response = client.execute_query(
+        book_response = await client.execute_query(
             user_token="user-123",
             query=book_query,
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         print("📥 Booking Recommendation:")
@@ -86,4 +89,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

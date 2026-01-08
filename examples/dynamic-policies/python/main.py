@@ -19,8 +19,9 @@ Usage:
     python main.py
 
 Environment:
-    AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
-    AXONFLOW_LICENSE_KEY - Required for dynamic policies
+    AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+    AXONFLOW_CLIENT_ID     - OAuth2 client ID (required for dynamic policies)
+    AXONFLOW_CLIENT_SECRET - OAuth2 client secret (required for dynamic policies)
 """
 
 import asyncio
@@ -31,13 +32,13 @@ from axonflow import AxonFlow, CreateDynamicPolicyRequest, UpdateDynamicPolicyRe
 async def main():
     # Initialize client
     endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-    client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo-tenant")  # Used as tenant ID
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY", "")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "dynamic-policies-example")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")  # Optional for community mode
 
     client = AxonFlow(
         endpoint=endpoint,
         client_id=client_id,
-        license_key=license_key if license_key else None,
+        client_secret=client_secret if client_secret else None,
     )
 
     print("=== Dynamic Policy Management Example ===\n")

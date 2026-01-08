@@ -5,6 +5,7 @@ Example 2: Parallel Execution Workflow - Python
 Demonstrates how AxonFlow MAP (Multi-Agent Plan) automatically parallelizes independent tasks.
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -12,17 +13,15 @@ import time
 from axonflow import AxonFlow
 
 
-def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
-
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
-        sys.exit(1)
+async def main():
+    agent_url = os.getenv("AXONFLOW_AGENT_URL", os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "workflow-example")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret if client_secret else None,
     )
 
     print("✅ Connected to AxonFlow")
@@ -40,18 +39,23 @@ def main():
 
     try:
         # Send query to AxonFlow (uses MAP for parallelization)
-        response = client.execute_query(
+        response = await client.execute_query(
             user_token="user-123",
             query=query,
             request_type="multi-agent-plan",  # Use MAP for parallel execution
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         duration = time.time() - start_time
 
         print(f"⏱️  Parallel execution completed in {duration:.1f}s")
         print("📥 Trip Plan:")
-        print(response.result)
+        if hasattr(response, 'result'):
+            print(response.result)
+        elif hasattr(response, 'data'):
+            print(response.data)
+        else:
+            print(response)
         print()
         print("✅ Workflow completed successfully")
         print("💡 Tip: MAP automatically parallelized the flight, hotel, and attractions search")
@@ -61,4 +65,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

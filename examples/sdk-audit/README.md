@@ -99,9 +99,8 @@ Summary: 8 passed, 0 failed
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | Agent service URL |
 | `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | Orchestrator service URL |
-| `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
-| `AXONFLOW_CLIENT_SECRET` | `demo-secret` | Client secret for authentication |
-| `AXONFLOW_LICENSE_KEY` | (empty) | License key (for enterprise features) |
+| `AXONFLOW_CLIENT_ID` | (empty) | OAuth2 client ID |
+| `AXONFLOW_CLIENT_SECRET` | (empty) | OAuth2 client secret |
 
 ## Issue Reference
 

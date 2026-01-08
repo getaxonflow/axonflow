@@ -16,7 +16,8 @@ set -e
 
 ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-LICENSE_KEY="${AXONFLOW_LICENSE_KEY:-}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 TENANT_ID="${AXONFLOW_TENANT:-demo}"
 
 RED='\033[0;31m'
@@ -39,7 +40,8 @@ echo -e "${CYAN}1. List System Policies${NC}"
 echo "========================================"
 
 response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static" \
-    -H "X-License-Key: $LICENSE_KEY")
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET")
 
 count=$(echo "$response" | jq -r 'if type == "array" then length else 0 end')
 echo "Found $count system policies"
@@ -59,14 +61,16 @@ echo "========================================"
 # Filter PII policies
 echo -e "${YELLOW}PII Detection Policies:${NC}"
 response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static?category=pii_detection" \
-    -H "X-License-Key: $LICENSE_KEY")
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET")
 echo "$response" | jq -r '.[] | "  - \(.name)"' 2>/dev/null || echo "  (No policies found)"
 echo ""
 
 # Filter SQLi policies
 echo -e "${YELLOW}SQL Injection Policies:${NC}"
 response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static?category=sql_injection" \
-    -H "X-License-Key: $LICENSE_KEY")
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET")
 echo "$response" | jq -r '.[] | "  - \(.name)"' 2>/dev/null || echo "  (No policies found)"
 echo ""
 
@@ -81,7 +85,8 @@ echo "Creating policy: $POLICY_NAME"
 
 response=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies/static" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
         \"name\": \"$POLICY_NAME\",
         \"description\": \"Blocks profanity in user queries (HTTP example)\",
@@ -119,7 +124,8 @@ echo "========================================"
 echo "Testing SSN pattern..."
 response=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies/patterns/test" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
         "test_strings": [
@@ -146,7 +152,8 @@ test_policy() {
 
     response=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
         -H "Content-Type: application/json" \
-        -H "X-License-Key: $LICENSE_KEY" \
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET" \
         -d "{
             \"query\": \"$query\",
             \"user_token\": \"policy-test-user\",
@@ -176,7 +183,8 @@ echo "========================================"
 if [ -n "$POLICY_ID" ]; then
     echo "Deleting test policy: $POLICY_NAME"
     response=$(curl -s -X DELETE "$ORCHESTRATOR_URL/api/v1/policies/static/$POLICY_ID" \
-        -H "X-License-Key: $LICENSE_KEY")
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET")
     echo -e "   Status: ${GREEN}Deleted${NC}"
 else
     echo "No test policy to clean up"

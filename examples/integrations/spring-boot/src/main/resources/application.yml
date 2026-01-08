@@ -8,7 +8,8 @@ spring:
 # AxonFlow Configuration
 axonflow:
   agent-url: ${AXONFLOW_AGENT_URL:http://localhost:8080}
-  license-key: ${AXONFLOW_LICENSE_KEY:}
+  client-id: ${AXONFLOW_CLIENT_ID:}
+  client-secret: ${AXONFLOW_CLIENT_SECRET:}
   timeout-seconds: 60
   debug: ${AXONFLOW_DEBUG:false}
 

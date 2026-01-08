@@ -137,9 +137,8 @@ Common environment variables:
 
 ```bash
 AXONFLOW_AGENT_URL=http://localhost:8080
-AXONFLOW_CLIENT_ID=demo
-AXONFLOW_CLIENT_SECRET=demo-secret
-AXONFLOW_LICENSE_KEY=your-license-key  # Enterprise only
+AXONFLOW_CLIENT_ID=your-client-id
+AXONFLOW_CLIENT_SECRET=your-client-secret
 ```
 
 ## Running with Docker

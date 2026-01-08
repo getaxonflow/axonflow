@@ -9,16 +9,18 @@ import { AxonFlow } from '@axonflow/sdk';
 
 async function main() {
   const agentUrl = process.env.AXONFLOW_AGENT_URL || 'http://localhost:8080';
-  const licenseKey = process.env.AXONFLOW_LICENSE_KEY;
+  const clientId = process.env.AXONFLOW_CLIENT_ID;
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET;
 
-  if (!licenseKey) {
-    console.error('❌ AXONFLOW_LICENSE_KEY must be set');
+  if (!clientId || !clientSecret) {
+    console.error('❌ AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set');
     process.exit(1);
   }
 
   const client = new AxonFlow({
     endpoint: agentUrl,
-    licenseKey: licenseKey,
+    clientId,
+    clientSecret,
   });
 
   console.log('✅ Connected to AxonFlow');

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.2] - 2026-01-08
+
+### Fixed
+
+- **Agent proxy routes**: Fixed missing proxy routes for `/api/v1/pricing`, `/api/v1/plan`, and `/api/v1/audit` endpoints. SDK methods like `getPricing()`, `generatePlan()`, `executePlan()`, and `searchAuditLogs()` now work correctly through the Agent single entry point (ADR-026). Previously these returned 404 errors.
+
+### Changed
+
+- **GoReleaser upgraded to v2**: Release workflow now uses GoReleaser v2 configuration format for better compatibility.
+
+### Enterprise
+
+- **OAuth2 Basic auth support**: Agent now accepts `Authorization: Basic base64(clientId:clientSecret)` for authentication (ADR-028), in addition to existing `X-License-Key` header.
+- **Code governance: ClosePR endpoint**: Added endpoint for closing PRs without merging, useful for cleaning up test/demo PRs.
+
+---
+
 ## [3.0.1] - 2026-01-07
 
 ### Fixed

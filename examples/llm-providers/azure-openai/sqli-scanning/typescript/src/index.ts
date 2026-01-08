@@ -22,7 +22,8 @@ async function main(): Promise<void> {
     endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
     tenant: process.env.AXONFLOW_CLIENT_ID || "azure-sqli-demo",
     apiKey: process.env.AXONFLOW_CLIENT_SECRET,
-    licenseKey: process.env.AXONFLOW_LICENSE_KEY,
+    clientId: process.env.AXONFLOW_CLIENT_ID,
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
   });
 
   const testCases: TestCase[] = [

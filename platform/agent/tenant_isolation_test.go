@@ -22,37 +22,50 @@ func TestValidateUserToken_TenantIDExtraction(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		token            string
+		userID           interface{}
+		tenantID         string
 		expectedTenantID string
+		permissions      []string
+		role             string
 		wantErr          bool
 		description      string
 	}{
 		{
-			name:             "test mode token - uses provided tenant_id",
-			token:            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+			name:             "valid JWT with travel-eu tenant",
+			userID:           1,
+			tenantID:         "travel-eu",
 			expectedTenantID: "travel-eu",
+			permissions:      []string{"query", "basic_pii"},
+			role:             "user",
 			wantErr:          false,
-			description:      "Test mode tokens should use the expected tenant_id parameter",
+			description:      "JWT with travel-eu tenant should extract correctly",
 		},
 		{
-			name:             "test mode token - different tenant",
-			token:            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+			name:             "valid JWT with healthcare-eu tenant",
+			userID:           2,
+			tenantID:         "healthcare-eu",
 			expectedTenantID: "healthcare-eu",
+			permissions:      []string{"query", "llm", "mcp_query"},
+			role:             "admin",
 			wantErr:          false,
-			description:      "Test mode should work with any tenant_id provided",
+			description:      "JWT with healthcare-eu tenant should extract correctly",
 		},
 		{
-			name:             "empty token",
-			token:            "",
-			expectedTenantID: "any-tenant",
-			wantErr:          true,
-			description:      "Empty token should return error",
+			name:             "valid JWT with string user_id",
+			userID:           "demo-user-1",
+			tenantID:         "demo-tenant",
+			expectedTenantID: "demo-tenant",
+			permissions:      []string{"query"},
+			role:             "user",
+			wantErr:          false,
+			description:      "JWT with string user_id should work",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			user, err := validateUserToken(tt.token, tt.expectedTenantID)
+			token := generateTestJWT(tt.userID, tt.tenantID, tt.permissions, tt.role)
+			user, err := validateUserToken(token, tt.expectedTenantID)
 
 			if tt.wantErr {
 				if err == nil {
@@ -79,6 +92,16 @@ func TestValidateUserToken_TenantIDExtraction(t *testing.T) {
 	}
 }
 
+// TestValidateUserToken_EmptyToken tests that empty tokens return error
+func TestValidateUserToken_EmptyToken(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	_, err := validateUserToken("", "any-tenant")
+	if err == nil {
+		t.Error("Expected error for empty token, got nil")
+	}
+}
+
 // TestTenantIsolation_Mismatch tests that tenant mismatch is properly detected
 func TestTenantIsolation_Mismatch(t *testing.T) {
 	// This test verifies that a user with tenant_id "travel-eu"
@@ -91,9 +114,8 @@ func TestTenantIsolation_Mismatch(t *testing.T) {
 		t.Error("Test setup error: tenants should be different")
 	}
 
-	// In the actual handler (clientRequestHandler), this check happens at line 578-582:
+	// In the actual handler (clientRequestHandler), this check happens:
 	// if user.TenantID != client.TenantID {
-	//     log.Printf("❌ TENANT MISMATCH: User TenantID='%s' does not match Client TenantID='%s'", user.TenantID, client.TenantID)
 	//     sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 	//     return
 	// }
@@ -118,44 +140,35 @@ func TestTenantIsolation_Match(t *testing.T) {
 	t.Logf("✅ Tenant isolation passed: user=%s can access client=%s", userTenantID, clientTenantID)
 }
 
-// TestValidateUserToken_MismatchToken tests the mismatch token path
-func TestValidateUserToken_MismatchToken(t *testing.T) {
-	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+// TestValidateUserToken_CrossTenantAccess tests that cross-tenant access is properly handled
+func TestValidateUserToken_CrossTenantAccess(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
-	// This token triggers the mismatch user path (user_id 2)
-	mismatchToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoy.test"
+	// Create a token for user in tenant A
+	tokenTenantA := generateTestJWT(1, "tenant-a", []string{"query"}, "user")
 
-	user, err := validateUserToken(mismatchToken, "travel-eu")
+	// Validate token - it should succeed and return tenant-a
+	user, err := validateUserToken(tokenTenantA, "tenant-a")
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
 	}
 
-	if user == nil {
-		t.Error("Expected user, got nil")
-		return
+	if user.TenantID != "tenant-a" {
+		t.Errorf("Expected tenant_id=tenant-a, got %s", user.TenantID)
 	}
 
-	// Mismatch token always returns tenant_id "trip_planner_tenant"
-	expectedTenantID := "trip_planner_tenant"
-	if user.TenantID != expectedTenantID {
-		t.Errorf("Expected tenant_id=%s, got %s", expectedTenantID, user.TenantID)
-	}
-
-	// Verify it's user_id 2
-	if user.ID != 2 {
-		t.Errorf("Expected user ID=2, got %d", user.ID)
-	}
+	// The cross-tenant check happens at the handler level, not in validateUserToken
+	// validateUserToken just extracts the tenant from the token
+	t.Log("✅ Token validation extracts tenant correctly; cross-tenant check is at handler level")
 }
 
-// TestValidateUserToken_DemoUserToken tests the demo user token path
-func TestValidateUserToken_DemoUserToken(t *testing.T) {
-	// Set enterprise mode to properly test token validation (community mode bypasses auth)
+// TestValidateUserToken_DemoUserScenario tests demo user token validation
+func TestValidateUserToken_DemoUserScenario(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
-	// This token triggers the demo user path (demo-traveler-1)
-	demoToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZGVtby10cmF2ZWxlci0xIi.test"
+	// Create a demo user token with MCP permissions
+	demoToken := generateTestJWT("demo-traveler-1", "travel-eu", []string{"query", "llm", "mcp_query", "amadeus"}, "user")
 
 	user, err := validateUserToken(demoToken, "travel-eu")
 	if err != nil {
@@ -168,14 +181,9 @@ func TestValidateUserToken_DemoUserToken(t *testing.T) {
 		return
 	}
 
-	// Demo token uses the expected tenant ID passed in
+	// Demo token uses the tenant ID from the token
 	if user.TenantID != "travel-eu" {
 		t.Errorf("Expected tenant_id=travel-eu, got %s", user.TenantID)
-	}
-
-	// Verify it's the demo user (ID 999)
-	if user.ID != 999 {
-		t.Errorf("Expected user ID=999, got %d", user.ID)
 	}
 
 	// Demo user should have MCP permissions
@@ -191,10 +199,37 @@ func TestValidateUserToken_DemoUserToken(t *testing.T) {
 	}
 }
 
+// TestValidateUserToken_ArrayPermissions tests JWT with permissions as JSON array
+func TestValidateUserToken_ArrayPermissions(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	// Create token with array-format permissions
+	token := generateTestJWTWithArrayPermissions(1, "test-tenant", []string{"query", "llm", "mcp_query"}, "admin")
+
+	user, err := validateUserToken(token, "test-tenant")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	if user == nil {
+		t.Error("Expected user, got nil")
+		return
+	}
+
+	// Should have all 3 permissions
+	if len(user.Permissions) != 3 {
+		t.Errorf("Expected 3 permissions, got %d: %v", len(user.Permissions), user.Permissions)
+	}
+}
+
 // TestValidateUserToken_InvalidJWT tests handling of invalid JWT tokens
 func TestValidateUserToken_InvalidJWT(t *testing.T) {
 	// Set enterprise mode to properly test token validation (community mode bypasses auth)
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	// Set JWT secret to ensure validation happens
+	jwtSecret = []byte(testJWTSecret)
 
 	tests := []struct {
 		name    string

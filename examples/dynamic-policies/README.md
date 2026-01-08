@@ -33,9 +33,10 @@ Demonstrates CRUD operations for dynamic policies (LLM-powered policies). Dynami
    docker compose up -d
    ```
 
-2. Set your license key (required for dynamic policies):
+2. Set your OAuth2 credentials (required for dynamic policies):
    ```bash
-   export AXONFLOW_LICENSE_KEY="your-license-key"
+   export AXONFLOW_CLIENT_ID="your-client-id"
+   export AXONFLOW_CLIENT_SECRET="your-client-secret"
    ```
 
 ### Run Examples

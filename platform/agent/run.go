@@ -911,30 +911,30 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Permissions: []string{},
 		}
 	} else {
-		// Production mode: Validate license key
-		licenseKey := r.Header.Get("X-License-Key")
-		if licenseKey == "" {
-			log.Printf("❌ Missing X-License-Key header")
-			sendErrorResponse(w, "X-License-Key header required", http.StatusUnauthorized, nil)
+		// Production mode: Validate credentials via OAuth2 Basic auth
+		clientSecret := extractClientSecret(r)
+		if clientSecret == "" {
+			log.Printf("❌ Missing authentication - no Authorization header")
+			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
 			return
 		}
-		log.Printf("🔐 Validating license for client '%s' with key '%s...'", req.ClientID, maskString(licenseKey))
+		log.Printf("🔐 Validating credentials for client '%s' with secret '%s...'", req.ClientID, maskString(clientSecret))
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
 		// Use Option 3 (database-backed) if available, otherwise Option 2 (whitelist)
 		if authDB != nil {
-			client, err = validateClientLicenseDB(ctx, authDB, req.ClientID, licenseKey)
+			client, err = validateClientCredentialsDB(ctx, authDB, req.ClientID, clientSecret)
 		} else {
-			client, err = validateClientLicense(ctx, req.ClientID, licenseKey)
+			client, err = validateClientCredentials(ctx, req.ClientID, clientSecret)
 		}
 		if err != nil {
-			log.Printf("❌ License validation failed for client '%s': %v", req.ClientID, err)
+			log.Printf("❌ Credentials validation failed for client '%s': %v", req.ClientID, err)
 			sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
 			return
 		}
-		log.Printf("✅ License validated successfully for client '%s' (Tier: %s)", client.ID, client.LicenseTier)
+		log.Printf("✅ Credentials validated successfully for client '%s' (Tier: %s)", client.ID, client.LicenseTier)
 	}
 
 	if !client.Enabled {
@@ -1042,7 +1042,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limiting is now handled inside validateClientLicense() during authentication
+	// Rate limiting is now handled inside validateClientCredentials() during authentication
 	rateLimitTime := time.Duration(0)
 
 	// Calculate auth time (client + user + tenant validation)
@@ -1282,49 +1282,8 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		return nil, fmt.Errorf("token required")
 	}
 
-	// Test mode: Tenant mismatch test token - user from trip_planner_tenant
-	if strings.HasPrefix(tokenString, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoy") {
-		testTenantID := "trip_planner_tenant" // Fixed user tenant for mismatch testing
-		log.Printf("Using test mode (mismatch) token validation with tenant_id: %s", testTenantID)
-		return &User{
-			ID:          2, // Different user ID for mismatch scenarios
-			Email:       "tenant_test@example.com",
-			Name:        "Tenant Test User",
-			Role:        "agent",
-			Region:      "us_west",
-			Permissions: []string{"query", "basic_pii"},
-			TenantID:    testTenantID, // Fixed for mismatch testing
-		}, nil
-	}
-
-	// Test mode: Normal test token - user from same tenant as client
-	if strings.HasPrefix(tokenString, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjox") {
-		log.Printf("Using test mode token validation with tenant_id: %s", expectedTenantID)
-		return &User{
-			ID:          1,
-			Email:       "test@example.com",
-			Name:        "Test User",
-			Role:        "agent",
-			Region:      "us_west",
-			Permissions: []string{"query", "basic_pii"},
-			TenantID:    expectedTenantID, // Uses client's tenant for same-tenant tests
-		}, nil
-	}
-
-	// Test mode: Demo user token with MCP permissions - for demo clients (trip planner, healthcare, etc.)
-	if strings.HasPrefix(tokenString, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZGVtby10cmF2ZWxlci0xIi") {
-		log.Printf("Using demo user token validation with tenant_id: %s", expectedTenantID)
-		return &User{
-			ID:          999, // Demo user ID
-			Email:       "demo@example.com",
-			Name:        "Demo Traveler",
-			Role:        "user",
-			Region:      "eu",
-			Permissions: []string{"query", "llm", "mcp_query", "amadeus"}, // Full MCP permissions
-			TenantID:    expectedTenantID,                                 // Uses client's tenant (travel-eu, healthcare-eu, etc.)
-		}, nil
-	}
-
+	// Validate JWT token using the configured secret
+	// Generate tokens using: scripts/generate-jwt.sh
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return jwtSecret, nil
 	})
@@ -1345,9 +1304,20 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		tenantID = "tenant_1" // Fallback for backward compatibility
 	}
 
+	// Extract user_id - handle both string and numeric types
+	var userID int
+	switch v := claims["user_id"].(type) {
+	case float64:
+		userID = int(v)
+	case string:
+		userID = 1 // Default for string-based user IDs
+	default:
+		userID = 1
+	}
+
 	return &User{
-		ID:          int(claims["user_id"].(float64)),
-		Email:       claims["email"].(string),
+		ID:          userID,
+		Email:       getClaimString(claims, "email"),
 		Name:        getClaimString(claims, "name"),
 		Department:  getClaimString(claims, "department"),
 		Role:        getClaimString(claims, "role"),
@@ -1603,6 +1573,17 @@ func getClaimString(claims jwt.MapClaims, key string) string {
 }
 
 func getClaimStringArray(claims jwt.MapClaims, key string) []string {
+	// Handle JSON array (from standard JWT)
+	if arr, ok := claims[key].([]interface{}); ok {
+		result := make([]string, 0, len(arr))
+		for _, v := range arr {
+			if s, ok := v.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	// Handle comma-separated string (legacy format)
 	if val, ok := claims[key].(string); ok {
 		if val == "" {
 			return []string{}

@@ -15,13 +15,14 @@
  *   mvn exec:java -Dexec.mainClass="com.example.CompliancePolicyExample"
  *
  * Environment:
- *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Required for dynamic policies
+ *   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+ *   AXONFLOW_CLIENT_ID     - Client ID for authentication
+ *   AXONFLOW_CLIENT_SECRET - Client secret (required for dynamic policies)
  */
 
 package com.example;
 
-import com.getaxonflow.sdk.AxonFlowClient;
+import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.DynamicPolicy;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.CreateDynamicPolicyRequest;
@@ -43,23 +44,17 @@ public class CompliancePolicyExample {
             endpoint = "http://localhost:8080";
         }
 
-        String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
-        if (licenseKey == null) {
-            licenseKey = "";
-        }
-
         String clientId = System.getenv("AXONFLOW_CLIENT_ID");
         if (clientId == null || clientId.isEmpty()) {
             clientId = "demo-tenant";
         }
+        String clientSecret = System.getenv("AXONFLOW_CLIENT_SECRET");
 
-        AxonFlowConfig config = AxonFlowConfig.builder()
+        AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(endpoint)
-            .licenseKey(licenseKey)
             .clientId(clientId)
-            .build();
-
-        AxonFlowClient client = new AxonFlowClient(config);
+            .clientSecret(clientSecret)
+            .build());
 
         System.out.println("=== Compliance Policy Examples ===\n");
 
