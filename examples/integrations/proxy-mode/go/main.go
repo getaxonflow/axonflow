@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -24,10 +24,9 @@ func main() {
 
 	// Initialize AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "proxy-mode-example"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
 	// Example queries

@@ -27,12 +27,13 @@ async function main(): Promise<void> {
   console.log("===================================================");
   console.log();
 
-  // Create AxonFlow client
-  // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
-  // The Agent proxies orchestrator routes internally.
+  // Create AxonFlow client with OAuth2-style credentials
+  // Note: As of SDK v3.0.0 (ADR-028), use clientId/clientSecret for authentication.
+  // The Agent proxies orchestrator routes internally (ADR-026).
   const client = new AxonFlow({
     endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-    tenant: getEnv("AXONFLOW_TENANT_ID", "demo-tenant"),
+    clientId: getEnv("AXONFLOW_CLIENT_ID", "demo-tenant"),
+    clientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     debug: true,
   });
 

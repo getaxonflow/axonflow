@@ -30,9 +30,13 @@ public class AuditLoggingExample {
         System.out.println("========================================");
         System.out.println();
 
+        String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
+        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .clientId(clientId)
+            .clientSecret(clientSecret)
             .build());
 
         List<QueryTest> queries = Arrays.asList(
@@ -150,11 +154,15 @@ public class AuditLoggingExample {
         System.out.println("1. getAuditLogsByTenant (default options):");
         try {
             var tenantLogs = client.getAuditLogsByTenant(CLIENT_ID, null);
-            System.out.printf("   Found %d entries%n", tenantLogs.getEntries().size());
-            if (!tenantLogs.getEntries().isEmpty()) {
-                var entry = tenantLogs.getEntries().get(0);
-                System.out.printf("   Latest: %s - %s/%s%n",
-                    entry.getTimestamp(), entry.getProvider(), entry.getModel());
+            if (tenantLogs != null && tenantLogs.getEntries() != null) {
+                System.out.printf("   Found %d entries%n", tenantLogs.getEntries().size());
+                if (!tenantLogs.getEntries().isEmpty()) {
+                    var entry = tenantLogs.getEntries().get(0);
+                    System.out.printf("   Latest: %s - %s/%s%n",
+                        entry.getTimestamp(), entry.getProvider(), entry.getModel());
+                }
+            } else {
+                System.out.println("   Found 0 entries (empty response)");
             }
         } catch (AxonFlowException e) {
             System.out.printf("   Error: %s%n", e.getMessage());
@@ -169,8 +177,12 @@ public class AuditLoggingExample {
                     .limit(5)
                     .offset(0)
                     .build());
-            System.out.printf("   Found %d entries (hasMore: %s)%n",
-                paginatedLogs.getEntries().size(), paginatedLogs.hasMore());
+            if (paginatedLogs != null && paginatedLogs.getEntries() != null) {
+                System.out.printf("   Found %d entries (hasMore: %s)%n",
+                    paginatedLogs.getEntries().size(), paginatedLogs.hasMore());
+            } else {
+                System.out.println("   Found 0 entries (empty response)");
+            }
         } catch (AxonFlowException e) {
             System.out.printf("   Error: %s%n", e.getMessage());
         }
@@ -185,17 +197,21 @@ public class AuditLoggingExample {
                     .requestType("chat")
                     .limit(10)
                     .build());
-            System.out.printf("   Found %d matching entries%n", searchResult.getEntries().size());
-            int count = 0;
-            for (var entry : searchResult.getEntries()) {
-                if (count >= 3) {
-                    System.out.printf("   ... and %d more%n", searchResult.getEntries().size() - 3);
-                    break;
+            if (searchResult != null && searchResult.getEntries() != null) {
+                System.out.printf("   Found %d matching entries%n", searchResult.getEntries().size());
+                int count = 0;
+                for (var entry : searchResult.getEntries()) {
+                    if (count >= 3) {
+                        System.out.printf("   ... and %d more%n", searchResult.getEntries().size() - 3);
+                        break;
+                    }
+                    String status = entry.isBlocked() ? "blocked" : "allowed";
+                    System.out.printf("   - %s: %s (%d tokens)%n",
+                        entry.getId(), status, entry.getTokensUsed());
+                    count++;
                 }
-                String status = entry.isBlocked() ? "blocked" : "allowed";
-                System.out.printf("   - %s: %s (%d tokens)%n",
-                    entry.getId(), status, entry.getTokensUsed());
-                count++;
+            } else {
+                System.out.println("   Found 0 matching entries (empty response)");
             }
         } catch (AxonFlowException e) {
             System.out.printf("   Error: %s%n", e.getMessage());

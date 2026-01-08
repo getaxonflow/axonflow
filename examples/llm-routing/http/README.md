@@ -5,7 +5,7 @@ Direct HTTP/curl examples for LLM provider routing without requiring an SDK.
 ## Prerequisites
 
 - AxonFlow Agent running at `http://localhost:8080`
-- Valid license key (or `DEPLOYMENT_MODE=community` for testing)
+- OAuth2 credentials (client ID and secret)
 - LLM provider configured (OpenAI, Anthropic, Ollama, or Gemini)
 
 ## Quick Start
@@ -27,7 +27,8 @@ chmod +x provider-routing.sh
 ```bash
 curl -X POST http://localhost:8080/api/request \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: ${AXONFLOW_LICENSE_KEY}" \
+  -H "X-Client-ID: ${AXONFLOW_CLIENT_ID}" \
+  -H "X-Client-Secret: ${AXONFLOW_CLIENT_SECRET}" \
   -d '{
     "query": "What is 2 + 2?",
     "user_token": "demo-user",
@@ -41,7 +42,8 @@ curl -X POST http://localhost:8080/api/request \
 ```bash
 curl -X POST http://localhost:8080/api/request \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: ${AXONFLOW_LICENSE_KEY}" \
+  -H "X-Client-ID: ${AXONFLOW_CLIENT_ID}" \
+  -H "X-Client-Secret: ${AXONFLOW_CLIENT_SECRET}" \
   -d '{
     "query": "What is the capital of France?",
     "user_token": "demo-user",
@@ -58,7 +60,8 @@ curl -X POST http://localhost:8080/api/request \
 ```bash
 curl -X POST http://localhost:8080/api/request \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: ${AXONFLOW_LICENSE_KEY}" \
+  -H "X-Client-ID: ${AXONFLOW_CLIENT_ID}" \
+  -H "X-Client-Secret: ${AXONFLOW_CLIENT_SECRET}" \
   -d '{
     "query": "Explain machine learning in one sentence",
     "user_token": "demo-user",
@@ -85,7 +88,8 @@ For SDK-managed LLM calls where you make direct calls to providers:
 # Step 1: Pre-check
 PRECHECK=$(curl -s -X POST http://localhost:8080/api/policy/pre-check \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: ${AXONFLOW_LICENSE_KEY}" \
+  -H "X-Client-ID: ${AXONFLOW_CLIENT_ID}" \
+  -H "X-Client-Secret: ${AXONFLOW_CLIENT_SECRET}" \
   -d '{
     "query": "What is AI?",
     "user_token": "demo-user",
@@ -101,7 +105,8 @@ echo "Context ID: $CONTEXT_ID"
 # Step 3: Audit the result
 curl -X POST http://localhost:8080/api/policy/audit \
   -H "Content-Type: application/json" \
-  -H "X-License-Key: ${AXONFLOW_LICENSE_KEY}" \
+  -H "X-Client-ID: ${AXONFLOW_CLIENT_ID}" \
+  -H "X-Client-Secret: ${AXONFLOW_CLIENT_SECRET}" \
   -d "{
     \"context_id\": \"$CONTEXT_ID\",
     \"response_metadata\": {

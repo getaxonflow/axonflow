@@ -555,9 +555,9 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract license key from headers if not in request body (SDK sends in X-License-Key header)
+	// Extract client secret from OAuth2 Basic auth header if not in request body
 	if req.LicenseKey == "" {
-		req.LicenseKey = r.Header.Get("X-License-Key")
+		req.LicenseKey = extractClientSecret(r)
 	}
 
 	ctx := r.Context()
@@ -787,9 +787,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract license key from headers if not in request body (SDK sends in X-License-Key header)
+	// Extract client secret from OAuth2 Basic auth header if not in request body
 	if req.LicenseKey == "" {
-		req.LicenseKey = r.Header.Get("X-License-Key")
+		req.LicenseKey = extractClientSecret(r)
 	}
 
 	ctx := r.Context()

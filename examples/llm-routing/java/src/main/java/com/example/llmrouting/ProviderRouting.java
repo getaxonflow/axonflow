@@ -22,6 +22,7 @@ import com.getaxonflow.sdk.types.ClientResponse;
 import com.getaxonflow.sdk.types.HealthStatus;
 import com.getaxonflow.sdk.types.RequestType;
 
+import java.util.Map;
 import java.util.Optional;
 
 public class ProviderRouting {
@@ -30,12 +31,18 @@ public class ProviderRouting {
         // Initialize client
         String endpoint = Optional.ofNullable(System.getenv("AXONFLOW_ENDPOINT"))
                 .orElse("http://localhost:8080");
-        String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
+        String clientId = System.getenv("AXONFLOW_CLIENT_ID");
+        String clientSecret = System.getenv("AXONFLOW_CLIENT_SECRET");
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
                 .endpoint(endpoint)
-                .licenseKey(licenseKey)
+                .clientId(clientId)
+                .clientSecret(clientSecret)
                 .build());
+
+        // AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+        // In community mode, SDK defaults to "anonymous" if not set
+        String userToken = System.getenv("AXONFLOW_USER_TOKEN");
 
         System.out.println("=== LLM Provider Routing Examples ===\n");
         System.out.println("Provider selection is server-side. Configure via environment variables:");
@@ -46,9 +53,10 @@ public class ProviderRouting {
         System.out.println("1. Send request (server routes based on configured strategy):");
         try {
             ClientResponse response = client.executeQuery(ClientRequest.builder()
-                    .userToken("demo-user")
+                    .userToken(userToken)
                     .query("What is 2 + 2?")
                     .requestType(RequestType.CHAT)
+                    .context(Map.of("provider", "openai"))
                     .build());
             printResponse(response);
         } catch (Exception e) {
@@ -60,9 +68,10 @@ public class ProviderRouting {
         for (int i = 1; i <= 3; i++) {
             try {
                 ClientResponse response = client.executeQuery(ClientRequest.builder()
-                        .userToken("demo-user")
+                        .userToken(userToken)
                         .query("Question " + i + ": What is the capital of France?")
                         .requestType(RequestType.CHAT)
+                        .context(Map.of("provider", "openai"))
                         .build());
                 System.out.println("   Request " + i + ": Success (provider selected by server)");
             } catch (Exception e) {

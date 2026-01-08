@@ -19,11 +19,11 @@ func main() {
 	fmt.Println()
 
 	// Initialize AxonFlow client
+	// ClientID is required; ClientSecret is optional for community mode
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "hello-world-example"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
 	// Test cases

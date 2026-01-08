@@ -54,9 +54,13 @@ public class GatewayModeExample {
         System.out.println();
 
         // Initialize AxonFlow client
+        String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
+        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+
         AxonFlow axonflow = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .clientId(clientId)
+            .clientSecret(clientSecret)
             .build());
 
         // Initialize OpenAI client

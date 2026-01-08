@@ -7,8 +7,9 @@
 //   go run main.go
 //
 // Environment:
-//   AXONFLOW_AGENT_URL   - Agent URL (default: http://localhost:8080)
-//   AXONFLOW_LICENSE_KEY - Optional for community mode
+//   AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
+//   AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
+//   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
 
 package main
 
@@ -29,7 +30,8 @@ func main() {
 
 	config := axonflow.AxonFlowConfig{
 		Endpoint:   agentURL,
-		LicenseKey: os.Getenv("AXONFLOW_LICENSE_KEY"), // Optional for community
+		ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"), // Optional for community
 	}
 
 	client := axonflow.NewClient(config)

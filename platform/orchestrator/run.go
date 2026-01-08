@@ -405,6 +405,7 @@ func Run() {
 	// Multi-Agent Planning endpoints (v0.1)
 	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")           // GeneratePlan (stores plan)
 	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")   // ExecutePlan (executes stored plan)
+	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")     // GetPlanStatus (retrieve plan)
 
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
@@ -2276,6 +2277,69 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[ExecutePlan] Success in %dms: PlanID=%s, TasksExecuted=%d", executionTimeMs, planID, len(execution.Steps))
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
+}
+
+// getPlanStatusHandler retrieves a stored plan by ID for status checking
+// SDK calls: GET /api/v1/plan/{id}
+func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[GetPlanStatus] Received get plan status request")
+
+	// Check if plan service is available
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available - database connection required", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract plan ID from URL path
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get plan from storage
+	plan, err := planService.GetPlan(r.Context(), planID)
+	if err != nil {
+		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", planID, err)
+		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Build response with plan status and metadata
+	response := map[string]interface{}{
+		"plan_id":    plan.PlanID,
+		"status":     string(plan.Status),
+		"org_id":     plan.OrgID,
+		"query":      plan.Query,
+		"domain":     plan.Domain,
+		"complexity": plan.Complexity,
+		"step_count": plan.StepCount,
+		"created_at": plan.CreatedAt,
+		"expires_at": plan.ExpiresAt,
+	}
+
+	// Include execution result if available
+	if len(plan.ExecutionResult) > 0 {
+		response["execution_result"] = plan.ExecutionResult
+	}
+
+	// Include workflow definition if available
+	if len(plan.WorkflowDefinition) > 0 {
+		response["workflow_definition"] = plan.WorkflowDefinition
+	}
+
+	// Include error if present
+	if plan.ErrorMessage != "" {
+		response["error"] = plan.ErrorMessage
+	}
+
+	log.Printf("[GetPlanStatus] Returning plan %s with status %s", planID, plan.Status)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {

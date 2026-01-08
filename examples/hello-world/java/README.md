@@ -21,7 +21,8 @@ docker compose up -d
 
 ```bash
 export AXONFLOW_AGENT_URL=http://localhost:8080
-export AXONFLOW_LICENSE_KEY=your-license-key  # Required for cloud
+export AXONFLOW_CLIENT_ID=your-client-id
+export AXONFLOW_CLIENT_SECRET=your-client-secret
 ```
 
 ## Run

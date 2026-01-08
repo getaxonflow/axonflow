@@ -9,8 +9,9 @@ Usage:
     python main.py
 
 Environment:
-    AXONFLOW_AGENT_URL   - Agent URL (default: http://localhost:8080)
-    AXONFLOW_LICENSE_KEY - Optional for community mode
+    AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
+    AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
+    AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
 """
 
 import asyncio
@@ -21,11 +22,13 @@ from axonflow import AxonFlow
 async def main():
     # Initialize client (credentials optional for community mode)
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY", "")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key if license_key else None,
+        client_id=client_id if client_id else None,
+        client_secret=client_secret if client_secret else None,
     )
 
     print("=== AxonFlow Health Check Example ===\n")

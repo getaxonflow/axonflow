@@ -79,32 +79,33 @@ type PricingTierInfo struct {
 	Active             bool
 }
 
-// validateClientLicenseDB validates a client using database lookup
-// Supports both api_keys (legacy) and organizations (new) tables
-func validateClientLicenseDB(ctx context.Context, db *sql.DB, clientID, licenseKey string) (*Client, error) {
+// validateClientCredentialsDB validates a client using database lookup.
+// The clientSecret is the AXON-V2-xxx license key format sent via OAuth2 Basic auth.
+// Supports both api_keys (legacy) and organizations (new) tables.
+func validateClientCredentialsDB(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("client ID required")
 	}
 
-	if licenseKey == "" {
-		return nil, fmt.Errorf("license key required")
+	if clientSecret == "" {
+		return nil, fmt.Errorf("client secret required")
 	}
 
 	// Try API keys authentication first (legacy path)
-	client, err := validateViaAPIKeys(ctx, db, clientID, licenseKey)
+	client, err := validateViaAPIKeys(ctx, db, clientID, clientSecret)
 	if err == nil {
 		return client, nil
 	}
 
 	// Fallback to organizations authentication (new path)
-	return validateViaOrganizations(ctx, db, clientID, licenseKey)
+	return validateViaOrganizations(ctx, db, clientID, clientSecret)
 }
 
 // validateViaAPIKeys validates using api_keys + customers tables (legacy)
-func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, licenseKey string) (*Client, error) {
-	// Hash the license key for lookup
-	hash := sha256.Sum256([]byte(licenseKey))
-	licenseKeyHash := hex.EncodeToString(hash[:])
+func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
+	// Hash the client secret (license key format) for lookup
+	hash := sha256.Sum256([]byte(clientSecret))
+	secretHash := hex.EncodeToString(hash[:])
 
 	// Query database for API key and customer information
 	query := `
@@ -150,7 +151,7 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, licenseKey st
 	// Permissions will be parsed from JSONB array
 	var permissionsJSON []byte
 
-	err := db.QueryRowContext(ctx, query, licenseKeyHash).Scan(
+	err := db.QueryRowContext(ctx, query, secretHash).Scan(
 		&apiKey.APIKeyID,
 		&apiKey.CustomerID,
 		&apiKey.LicenseKey,
@@ -176,15 +177,15 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, licenseKey st
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("invalid license key or client not found")
+		return nil, fmt.Errorf("invalid credentials or client not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Verify the license key matches (stored plaintext matches provided)
-	if apiKey.LicenseKey != licenseKey {
-		return nil, fmt.Errorf("license key mismatch")
+	// Verify the client secret matches the stored license key
+	if apiKey.LicenseKey != clientSecret {
+		return nil, fmt.Errorf("credentials mismatch")
 	}
 
 	// Check if revoked
@@ -192,8 +193,8 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, licenseKey st
 		return nil, fmt.Errorf("API key has been revoked")
 	}
 
-	// Validate license key using existing license validation system
-	validationResult, err := license.ValidateLicense(ctx, licenseKey)
+	// Validate license key format using license validation system
+	validationResult, err := license.ValidateLicense(ctx, clientSecret)
 	if err != nil {
 		return nil, fmt.Errorf("license validation failed: %w", err)
 	}
@@ -233,14 +234,14 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, licenseKey st
 }
 
 // validateViaOrganizations validates using organizations table (new customer portal path)
-func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, licenseKey string) (*Client, error) {
-	// Debug: Log license key format detection
-	isV2Format := len(licenseKey) > 8 && licenseKey[:8] == "AXON-V2-"
-	log.Printf("[V2-DEBUG] validateViaOrganizations: clientID=%s, isV2Format=%v, keyLen=%d, keyPrefix=%s",
-		clientID, isV2Format, len(licenseKey), safePrefix(licenseKey, 20))
+func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
+	// Debug: Log client secret format detection
+	isV2Format := len(clientSecret) > 8 && clientSecret[:8] == "AXON-V2-"
+	log.Printf("[V2-DEBUG] validateViaOrganizations: clientID=%s, isV2Format=%v, secretLen=%d, secretPrefix=%s",
+		clientID, isV2Format, len(clientSecret), safePrefix(clientSecret, 20))
 
-	// First, validate the license key cryptographically
-	validationResult, err := license.ValidateLicense(ctx, licenseKey)
+	// First, validate the license key format cryptographically
+	validationResult, err := license.ValidateLicense(ctx, clientSecret)
 	if err != nil {
 		log.Printf("[V2-DEBUG] License validation ERROR: %v", err)
 		return nil, fmt.Errorf("license validation failed: %w", err)

@@ -31,6 +31,78 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+// testJWTSecret matches the default JWT_SECRET in docker-compose.yml for local testing
+const testJWTSecret = "axonflow-local-dev-jwt-secret-do-not-use-in-production"
+
+// generateTestJWT creates a valid JWT token for testing with the specified claims.
+// This replaces the hardcoded test token bypasses that were removed for security.
+func generateTestJWT(userID interface{}, tenantID string, permissions []string, role string) string {
+	// Set JWT secret for token validation
+	jwtSecret = []byte(testJWTSecret)
+
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	}
+
+	now := time.Now().Unix()
+	claims := map[string]interface{}{
+		"user_id":     userID,
+		"tenant_id":   tenantID,
+		"permissions": strings.Join(permissions, ","),
+		"role":        role,
+		"iat":         now,
+		"exp":         now + 86400, // 24 hours
+	}
+
+	headerJSON, _ := json.Marshal(header)
+	claimsJSON, _ := json.Marshal(claims)
+
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	signingInput := headerB64 + "." + claimsB64
+	h := hmac.New(sha256.New, []byte(testJWTSecret))
+	h.Write([]byte(signingInput))
+	signature := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+
+	return signingInput + "." + signature
+}
+
+// generateTestJWTWithArrayPermissions creates a JWT with permissions as JSON array (not comma-separated)
+func generateTestJWTWithArrayPermissions(userID interface{}, tenantID string, permissions []string, role string) string {
+	// Set JWT secret for token validation
+	jwtSecret = []byte(testJWTSecret)
+
+	header := map[string]string{
+		"alg": "HS256",
+		"typ": "JWT",
+	}
+
+	now := time.Now().Unix()
+	claims := map[string]interface{}{
+		"user_id":     userID,
+		"tenant_id":   tenantID,
+		"permissions": permissions, // JSON array format
+		"role":        role,
+		"iat":         now,
+		"exp":         now + 86400, // 24 hours
+	}
+
+	headerJSON, _ := json.Marshal(header)
+	claimsJSON, _ := json.Marshal(claims)
+
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	signingInput := headerB64 + "." + claimsB64
+	h := hmac.New(sha256.New, []byte(testJWTSecret))
+	h.Write([]byte(signingInput))
+	signature := base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+
+	return signingInput + "." + signature
+}
+
 // TestHealthHandler tests the health endpoint
 func TestHealthHandler(t *testing.T) {
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -392,8 +464,8 @@ func TestRecordLatency(t *testing.T) {
 	}
 }
 
-// TestClientRequestHandler_MissingLicenseKey tests request handler with missing auth in enterprise mode
-func TestClientRequestHandler_MissingLicenseKey(t *testing.T) {
+// TestClientRequestHandler_MissingAuth tests request handler with missing auth in enterprise mode
+func TestClientRequestHandler_MissingAuth(t *testing.T) {
 	// Set enterprise mode to require authentication
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
@@ -417,7 +489,7 @@ func TestClientRequestHandler_MissingLicenseKey(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	// Intentionally NOT setting X-License-Key
+	// Intentionally NOT setting Authorization header
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -428,8 +500,8 @@ func TestClientRequestHandler_MissingLicenseKey(t *testing.T) {
 
 	var response map[string]interface{}
 	if err := json.NewDecoder(w.Body).Decode(&response); err == nil {
-		if !contains(response["error"].(string), "License-Key") {
-			t.Error("expected error about missing license key")
+		if !contains(response["error"].(string), "Authorization") && !contains(response["error"].(string), "Authentication") {
+			t.Errorf("expected error about missing auth, got: %v", response["error"])
 		}
 	}
 }
@@ -438,7 +510,7 @@ func TestClientRequestHandler_MissingLicenseKey(t *testing.T) {
 func TestClientRequestHandler_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBufferString("{invalid json"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", "test-key")
+	setOAuth2BasicAuth(req, "test-client", "test-secret")
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -570,7 +642,7 @@ func TestGetClaimStringArray(t *testing.T) {
 		{"comma-separated string", map[string]interface{}{"roles": "admin,user"}, "roles", 2},
 		{"missing claim", map[string]interface{}{}, "roles", 0},
 		{"single value", map[string]interface{}{"role": "admin"}, "role", 1},
-		{"array not supported", map[string]interface{}{"roles": []interface{}{"admin", "user"}}, "roles", 0},
+		{"json array", map[string]interface{}{"roles": []interface{}{"admin", "user"}}, "roles", 2},
 		{"empty string value", map[string]interface{}{"roles": ""}, "roles", 0},
 	}
 
@@ -1036,6 +1108,13 @@ func TestMetricsHandler(t *testing.T) {
 
 // ==================== Comprehensive clientRequestHandler Tests ====================
 
+// setOAuth2BasicAuth sets the Authorization header with OAuth2 Basic auth format.
+// Format: Authorization: Basic base64(clientId:clientSecret)
+func setOAuth2BasicAuth(r *http.Request, clientID string, clientSecret string) {
+	credentials := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
+	r.Header.Set("Authorization", "Basic "+credentials)
+}
+
 // Helper function to generate valid V2 test license keys with known HMAC secret
 // V2 format: AXON-V2-{BASE64_JSON}-{SIGNATURE}
 func generateTestLicenseKey(orgID string, tier string, expiryDate string) string {
@@ -1134,7 +1213,7 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1196,7 +1275,7 @@ func TestClientRequestHandler_ClientDisabled(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1240,17 +1319,20 @@ func TestClientRequestHandler_TenantMismatch(t *testing.T) {
 	}
 	defer delete(knownClients, "test-client-tenant")
 
+	// Generate a valid JWT for a user in "trip_planner_tenant" - different from client's "different_tenant"
+	userToken := generateTestJWT(2, "trip_planner_tenant", []string{"query", "basic_pii"}, "agent")
+
 	reqBody := ClientRequest{
 		ClientID:    "test-client-tenant",
 		RequestType: "sql",
 		Query:       "SELECT 1",
-		UserToken:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoy", // Mismatch test token: user from trip_planner_tenant
+		UserToken:   userToken,
 	}
 
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1311,28 +1393,31 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 
 	testLicenseKey := generateTestLicenseKey("policy-test", "ENT", "20351231")
 
-	// Add test client
+	// Add test client - TenantID must match license org for tenant isolation to pass
 	knownClients["test-client-policy"] = &ClientAuth{
 		ClientID:   "test-client-policy",
 		LicenseKey: testLicenseKey,
 		Name:       "Policy Test Client",
-		TenantID:   "trip_planner_tenant",
+		TenantID:   "policy-test", // Must match license org
 		Enabled:    true,
 	}
 	defer delete(knownClients, "test-client-policy")
+
+	// Generate a valid JWT for the same tenant as client/license
+	userToken := generateTestJWT(1, "policy-test", []string{"query", "basic_pii"}, "agent")
 
 	// Create request with PII data (should be blocked for user without pii_access permission)
 	reqBody := ClientRequest{
 		ClientID:    "test-client-policy",
 		RequestType: "sql",
 		Query:       "SELECT ssn, credit_card FROM users", // Contains PII keywords
-		UserToken:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjox",
+		UserToken:   userToken,
 	}
 
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1398,7 +1483,7 @@ func TestClientRequestHandler_OrchestratorError(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1493,7 +1578,7 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
 
 	w := httptest.NewRecorder()
 	clientRequestHandler(w, req)
@@ -1580,7 +1665,7 @@ func TestMCPQueryHandler_Success(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/mcp/query", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody["client_id"].(string), testLicenseKey)
 
 	w := httptest.NewRecorder()
 	mcpQueryHandler(w, req)
@@ -1596,7 +1681,7 @@ func TestMCPQueryHandler_Success(t *testing.T) {
 func TestMCPQueryHandler_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp/query", bytes.NewBufferString("{invalid"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", "test-key")
+	setOAuth2BasicAuth(req, "test-client", "test-key")
 
 	w := httptest.NewRecorder()
 	mcpQueryHandler(w, req)
@@ -1608,8 +1693,8 @@ func TestMCPQueryHandler_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestMCPQueryHandler_MissingLicenseKey tests MCP query without license key
-func TestMCPQueryHandler_MissingLicenseKey(t *testing.T) {
+// TestMCPQueryHandler_MissingAuth tests MCP query without authorization
+func TestMCPQueryHandler_MissingAuth(t *testing.T) {
 	// Set enterprise mode to test auth behavior (community mode bypasses auth)
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
@@ -1628,7 +1713,7 @@ func TestMCPQueryHandler_MissingLicenseKey(t *testing.T) {
 	w := httptest.NewRecorder()
 	mcpQueryHandler(w, req)
 
-	// Missing license or MCP registry not initialized
+	// Missing auth or MCP registry not initialized
 	if w.Code != http.StatusUnauthorized && w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status 401 or 503, got %d", w.Code)
 	}
@@ -1667,7 +1752,7 @@ func TestMCPExecuteHandler_Success(t *testing.T) {
 	body, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/mcp/execute", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", testLicenseKey)
+	setOAuth2BasicAuth(req, reqBody["client_id"].(string), testLicenseKey)
 
 	w := httptest.NewRecorder()
 	mcpExecuteHandler(w, req)
@@ -1682,7 +1767,7 @@ func TestMCPExecuteHandler_Success(t *testing.T) {
 func TestMCPExecuteHandler_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp/execute", bytes.NewBufferString("{invalid"))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-License-Key", "test-key")
+	setOAuth2BasicAuth(req, "test-client", "test-key")
 
 	w := httptest.NewRecorder()
 	mcpExecuteHandler(w, req)

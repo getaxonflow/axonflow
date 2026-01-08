@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   const client = new AxonFlow({
     endpoint: getEnv('AXONFLOW_ENDPOINT', 'http://localhost:8080'),
     clientId: getEnv('AXONFLOW_CLIENT_ID', 'demo'),
-    clientSecret: getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
+  clientSecret: getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
     debug: getEnv('AXONFLOW_DEBUG', '') === 'true',
   });
 

@@ -14,8 +14,10 @@ info:
     ## Authentication
 
     All endpoints require authentication via:
-    - `X-License-Key`: Client/service license key for authorization
+    - `Authorization: Basic base64(clientId:clientSecret)`: OAuth2-style client credentials (recommended)
     - `user_token`: JWT token for user identification (in request body)
+
+    **Note:** `clientSecret` is optional for community/self-hosted deployments. `clientId` is recommended for request identification.
 
     ## Deployment Modes
 
@@ -2436,23 +2438,52 @@ paths:
                 $ref: '#/components/schemas/Error'
 
 components:
+  securitySchemes:
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: |
+        OAuth2-style Basic authentication using `clientId:clientSecret` credentials.
+
+        **Header format:** `Authorization: Basic base64(clientId:clientSecret)`
+
+        - `clientId` (required): Your organization/client identifier
+        - `clientSecret` (optional): Authentication credential. Optional for community/self-hosted mode.
+
+        **Example:**
+        ```bash
+        # With clientSecret (enterprise)
+        curl -H "Authorization: Basic $(echo -n 'my-org:AXON-V2-xxx' | base64)" ...
+
+        # Without clientSecret (community mode)
+        curl -H "Authorization: Basic $(echo -n 'my-org:' | base64)" ...
+        ```
+
   parameters:
     LicenseKey:
-      name: X-License-Key
+      name: Authorization
       in: header
       required: true
       description: |
-        Client license key for authorization.
+        OAuth2-style Basic authentication header.
+        Format: `Basic base64(clientId:clientSecret)`
+
+        - `clientId`: Your organization identifier (required)
+        - `clientSecret`: Authentication credential (optional for community mode)
+
         Not required when `DEPLOYMENT_MODE=community`.
       schema:
         type: string
-        example: "axf_live_abc123def456"
+        example: "Basic bXktb3JnOkFYT04tVjIteHh4"
 
     ClientSecret:
       name: X-Client-Secret
       in: header
       required: false
-      description: Optional client secret for additional authentication
+      deprecated: true
+      description: |
+        **DEPRECATED**: Use Basic authentication instead.
+        Legacy client secret header. Prefer using `Authorization: Basic` header.
       schema:
         type: string
 

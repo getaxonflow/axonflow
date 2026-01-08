@@ -213,7 +213,7 @@ func BenchmarkValidateClientLicenseDB_APIKeys(b *testing.B) {
 			WillReturnRows(rows)
 		b.StartTimer()
 
-		client, err := validateClientLicenseDB(ctx, db, clientID, licenseKey)
+		client, err := validateClientCredentialsDB(ctx, db, clientID, licenseKey)
 		if err != nil {
 			b.Fatalf("Expected successful validation, got error: %v", err)
 		}
@@ -270,7 +270,7 @@ func BenchmarkValidateClientLicenseDB_Organizations(b *testing.B) {
 			WillReturnRows(rows)
 		b.StartTimer()
 
-		client, err := validateClientLicenseDB(ctx, db, clientID, licenseKey)
+		client, err := validateClientCredentialsDB(ctx, db, clientID, licenseKey)
 		if err != nil {
 			b.Fatalf("Expected successful validation, got error: %v", err)
 		}
@@ -380,7 +380,7 @@ func BenchmarkFullRequestPath(b *testing.B) {
 		b.StartTimer()
 
 		// 1. Authenticate client (database lookup)
-		client, err := validateClientLicenseDB(ctx, db, clientID, licenseKey)
+		client, err := validateClientCredentialsDB(ctx, db, clientID, licenseKey)
 		if err != nil {
 			b.Fatalf("Authentication failed: %v", err)
 		}

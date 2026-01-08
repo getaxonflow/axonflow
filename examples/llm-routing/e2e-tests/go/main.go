@@ -20,7 +20,8 @@ func main() {
 		Endpoint:     agentURL,
 		ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
 		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
-		LicenseKey:   os.Getenv("AXONFLOW_LICENSE_KEY"),
+		ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
 	})
 
 	fmt.Println("=== Community LLM Provider Tests (Go SDK) ===")

@@ -37,6 +37,10 @@ func main() {
 	fmt.Println("This demo shows automatic code detection in LLM responses.")
 	fmt.Println()
 
+	// AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+	// In community mode, SDK defaults to "anonymous" if not set
+	userToken := os.Getenv("AXONFLOW_USER_TOKEN")
+
 	// Initialize AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
@@ -50,10 +54,10 @@ func main() {
 	fmt.Println("------------------------------------------------------------")
 
 	response, err := client.ExecuteQuery(
-		"developer-123",
+		userToken,
 		"Write a Go function to validate email addresses using regex",
 		"chat",
-		map[string]interface{}{},
+		map[string]interface{}{"provider": "openai"},
 	)
 
 	if err != nil {
@@ -100,10 +104,10 @@ func main() {
 	fmt.Println("------------------------------------------------------------")
 
 	response, err = client.ExecuteQuery(
-		"developer-123",
+		userToken,
 		"Write a Go function that uses os/exec to run shell commands from user input",
 		"chat",
-		map[string]interface{}{},
+		map[string]interface{}{"provider": "openai"},
 	)
 
 	if err != nil {

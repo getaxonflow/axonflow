@@ -13,7 +13,8 @@ import OpenAI from "openai";
 
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
   tenant: process.env.AXONFLOW_TENANT || "audit-logging-demo",
 });
 

@@ -50,8 +50,12 @@ import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 public class CodeGovernanceExample {
 
     private static final String CLIENT_ID = "code-governance-demo";
+    private static String userToken;
 
     public static void main(String[] args) {
+        // AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+        // In community mode, SDK defaults to "anonymous" if not set
+        userToken = System.getenv("AXONFLOW_USER_TOKEN");
         System.out.println("AxonFlow Code Governance - Java");
         System.out.println("============================================================");
         System.out.println();
@@ -59,9 +63,13 @@ public class CodeGovernanceExample {
         System.out.println();
 
         // Initialize AxonFlow client
+        String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
+        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .clientId(clientId)
+            .clientSecret(clientSecret)
             .build());
 
         // Example 1: Generate a Java function
@@ -105,7 +113,7 @@ public class CodeGovernanceExample {
             ClientResponse response = client.executeQuery(
                 ClientRequest.builder()
                     .query(query)
-                    .userToken("developer-123")
+                    .userToken(userToken)
                     .clientId(CLIENT_ID)
                     .model("gpt-3.5-turbo")
                     .llmProvider("openai")

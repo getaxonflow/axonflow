@@ -84,7 +84,8 @@ chmod +x health-check.sh
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AXONFLOW_ENDPOINT` | Agent URL | `http://localhost:8080` |
-| `AXONFLOW_LICENSE_KEY` | License key (optional for community) | - |
+| `AXONFLOW_CLIENT_ID` | OAuth2 client ID (optional for community) | - |
+| `AXONFLOW_CLIENT_SECRET` | OAuth2 client secret (optional for community) | - |
 
 ## Use Cases
 

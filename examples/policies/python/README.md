@@ -19,7 +19,8 @@ pip install -r requirements.txt
 ```bash
 export AXONFLOW_ENDPOINT=http://localhost:8080
 # For Enterprise examples:
-export AXONFLOW_LICENSE_KEY=your-license-key
+export AXONFLOW_CLIENT_ID=your-client-id
+export AXONFLOW_CLIENT_SECRET=your-client-secret
 ```
 
 Or copy the `.env.example` file:

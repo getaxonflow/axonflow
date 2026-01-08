@@ -9,7 +9,7 @@
  *
  * Environment:
  *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_LICENSE_KEY - Optional for community mode
+ *   AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET - Optional for community mode
  */
 
 import { AxonFlow } from "@axonflow/sdk";
@@ -17,11 +17,13 @@ import { AxonFlow } from "@axonflow/sdk";
 async function main() {
   // Initialize client (credentials optional for community mode)
   const endpoint = process.env.AXONFLOW_ENDPOINT || "http://localhost:8080";
-  const licenseKey = process.env.AXONFLOW_LICENSE_KEY;
+  const clientId = process.env.AXONFLOW_CLIENT_ID;
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET;
 
   const client = new AxonFlow({
     endpoint,
-    licenseKey: licenseKey || undefined,
+    clientId: clientId || undefined,
+    clientSecret: clientSecret || undefined,
   });
 
   console.log("=== AxonFlow Health Check Example ===\n");

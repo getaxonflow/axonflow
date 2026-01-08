@@ -13,7 +13,10 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,15 +109,15 @@ var knownClients = map[string]*ClientAuth{
 var rateLimitMap = make(map[string]*RateLimitEntry)
 var rateLimitMu sync.RWMutex
 
-// validateClientLicense validates a client using their license key
-// This replaces the old validateClient() function
-func validateClientLicense(ctx context.Context, clientID, licenseKey string) (*Client, error) {
+// validateClientCredentials validates a client using their OAuth2 client credentials.
+// The clientSecret is the AXON-V2-xxx license key format sent via Basic auth.
+func validateClientCredentials(ctx context.Context, clientID, clientSecret string) (*Client, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("client ID required")
 	}
 
-	if licenseKey == "" {
-		return nil, fmt.Errorf("license key required")
+	if clientSecret == "" {
+		return nil, fmt.Errorf("client secret required")
 	}
 
 	// Look up client in whitelist
@@ -127,14 +130,13 @@ func validateClientLicense(ctx context.Context, clientID, licenseKey string) (*C
 		return nil, fmt.Errorf("client '%s' is disabled", clientID)
 	}
 
-	// Verify license key matches (simple string comparison for now)
-	// In Option 3, we'll do database lookup
-	if licenseKey != clientAuth.LicenseKey {
-		return nil, fmt.Errorf("invalid license key for client '%s'", clientID)
+	// Verify client secret matches the stored license key
+	if clientSecret != clientAuth.LicenseKey {
+		return nil, fmt.Errorf("invalid credentials for client '%s'", clientID)
 	}
 
-	// Validate license key with license validation system
-	validationResult, err := license.ValidateLicense(ctx, licenseKey)
+	// Validate license key format with license validation system
+	validationResult, err := license.ValidateLicense(ctx, clientSecret)
 	if err != nil {
 		return nil, fmt.Errorf("license validation failed: %w", err)
 	}
@@ -222,4 +224,55 @@ func getRateLimitStatus(clientID string) (count int, limit int, resetTime time.T
 	}
 
 	return entry.Count, clientAuth.RateLimit, entry.ResetTime
+}
+
+// extractClientSecret extracts the client secret from OAuth2 Basic auth header.
+// Format: Authorization: Basic base64(clientId:clientSecret)
+//
+// The clientSecret is used as the license key for authentication.
+// Returns empty string if not found or invalid.
+func extractClientSecret(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Basic ") {
+		return ""
+	}
+
+	encoded := strings.TrimPrefix(authHeader, "Basic ")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+
+	// Format: clientId:clientSecret
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1] // clientSecret is the license key
+	}
+
+	return ""
+}
+
+// extractClientID extracts the client ID from OAuth2 Basic auth header.
+// Format: Authorization: Basic base64(clientId:clientSecret)
+//
+// Returns empty string if not found or invalid.
+func extractClientID(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Basic ") {
+		return ""
+	}
+
+	encoded := strings.TrimPrefix(authHeader, "Basic ")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+
+	// Format: clientId:clientSecret
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) >= 1 && parts[0] != "" {
+		return parts[0]
+	}
+
+	return ""
 }

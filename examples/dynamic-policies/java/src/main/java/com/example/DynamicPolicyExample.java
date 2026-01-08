@@ -18,9 +18,9 @@
  *   mvn exec:java -Dexec.mainClass="com.example.DynamicPolicyExample"
  *
  * Environment:
- *   AXONFLOW_ENDPOINT    - Agent URL (default: http://localhost:8080)
- *   AXONFLOW_CLIENT_ID   - Client/Tenant ID for policy scoping
- *   AXONFLOW_LICENSE_KEY - License key (optional for community mode)
+ *   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+ *   AXONFLOW_CLIENT_ID     - Client ID for authentication
+ *   AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
  */
 
 package com.example;
@@ -42,13 +42,13 @@ public class DynamicPolicyExample {
         if (clientId == null || clientId.isEmpty()) {
             clientId = "demo-tenant";
         }
-        String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
+        String clientSecret = System.getenv("AXONFLOW_CLIENT_SECRET");
 
         DynamicPolicy createdPolicy = null;
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(endpoint)
             .clientId(clientId)
-            .licenseKey(licenseKey)
+            .clientSecret(clientSecret)
             .build());
 
         try {

@@ -25,7 +25,8 @@ set -e
 
 # Configuration
 AGENT_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-LICENSE_KEY="${AXONFLOW_LICENSE_KEY:-}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -51,7 +52,8 @@ make_request() {
 
     response=$(curl -s -X POST "$AGENT_URL/api/request" \
         -H "Content-Type: application/json" \
-        -H "X-License-Key: $LICENSE_KEY" \
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET" \
         -d "$data")
 
     # Check if blocked
@@ -101,7 +103,8 @@ echo "4. Gateway Mode (Pre-check + Audit):"
 echo "   Step 1: Pre-check request..."
 precheck=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "query": "What is artificial intelligence?",
         "user_token": "demo-user",
@@ -120,7 +123,8 @@ if [ "$approved" = "true" ]; then
 
     audit=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
         -H "Content-Type: application/json" \
-        -H "X-License-Key: $LICENSE_KEY" \
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET" \
         -d "{
             \"context_id\": \"$context_id\",
             \"client_id\": \"http-example\",

@@ -40,8 +40,8 @@ interface CodeArtifact {
 
 const config = {
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  licenseKey: process.env.AXONFLOW_LICENSE_KEY || "",
-  tenant: process.env.AXONFLOW_TENANT || "demo",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
 };
 
 async function main(): Promise<void> {
@@ -53,9 +53,13 @@ async function main(): Promise<void> {
 
   const axonflow = new AxonFlow({
     endpoint: config.endpoint,
-    licenseKey: config.licenseKey,
-    tenant: config.tenant,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
   });
+
+  // AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+  // In community mode, SDK defaults to "anonymous" if not set
+  const userToken = process.env.AXONFLOW_USER_TOKEN || "";
 
   // Example 1: Generate a TypeScript function
   console.log("-".repeat(60));
@@ -64,7 +68,7 @@ async function main(): Promise<void> {
 
   try {
     const response = await axonflow.executeQuery({
-      userToken: "developer-123",
+      userToken,
       query: "Write a TypeScript function to validate email addresses using regex",
       requestType: "chat",
       context: {
@@ -120,7 +124,7 @@ async function main(): Promise<void> {
 
   try {
     const response = await axonflow.executeQuery({
-      userToken: "developer-123",
+      userToken,
       query: "Write a TypeScript function that uses child_process.exec to run shell commands from user input",
       requestType: "chat",
       context: {

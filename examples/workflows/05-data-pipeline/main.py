@@ -5,6 +5,7 @@ Example 5: Data Pipeline Workflow - Python
 Demonstrates a 5-stage data pipeline: Extract → Clean → Enrich → Aggregate → Report
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -12,17 +13,19 @@ import time
 from axonflow import AxonFlow
 
 
-def main():
+async def main():
     agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    license_key = os.getenv("AXONFLOW_LICENSE_KEY")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID")
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
-    if not license_key:
-        print("❌ AXONFLOW_LICENSE_KEY must be set")
+    if not client_id or not client_secret:
+        print("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
         sys.exit(1)
 
     client = AxonFlow(
         endpoint=agent_url,
-        license_key=license_key,
+        client_id=client_id,
+        client_secret=client_secret,
     )
 
     print("✅ Connected to AxonFlow")
@@ -33,17 +36,17 @@ def main():
     try:
         # Stage 1: Extract
         print("📥 Stage 1/5: Extracting customer transaction data...")
-        client.execute_query(
+        await client.execute_query(
             user_token="user-123",
             query="Extract customer purchase data from the last 30 days. Include customer ID, purchase amount, product categories, and timestamps. Simulate 500 customer transactions.",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
         print("✅ Stage 1 complete: Data extracted\n")
 
         # Stage 2: Transform (Clean & Normalize)
         print("🧹 Stage 2/5: Cleaning and normalizing data...")
-        client.execute_query(
+        await client.execute_query(
             user_token="user-123",
             query="""From the extracted data above, perform the following transformations:
 1. Remove duplicate transactions
@@ -52,13 +55,13 @@ def main():
 4. Validate all amounts are positive numbers
 5. Flag any anomalies (unusually high amounts)""",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
         print("✅ Stage 2 complete: Data cleaned and normalized\n")
 
         # Stage 3: Enrich
         print("💎 Stage 3/5: Enriching with customer segments and lifetime value...")
-        client.execute_query(
+        await client.execute_query(
             user_token="user-123",
             query="""Based on the cleaned transaction data:
 1. Calculate customer lifetime value (CLV)
@@ -66,13 +69,13 @@ def main():
 3. Identify top-spending product categories per segment
 4. Calculate average order value per segment""",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
         print("✅ Stage 3 complete: Data enriched with segments and metrics\n")
 
         # Stage 4: Aggregate
         print("📊 Stage 4/5: Aggregating insights and trends...")
-        client.execute_query(
+        await client.execute_query(
             user_token="user-123",
             query="""Generate aggregated insights:
 1. Total revenue by customer segment
@@ -81,13 +84,13 @@ def main():
 4. Customer churn risk indicators
 5. Recommended actions for each segment""",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
         print("✅ Stage 4 complete: Insights aggregated\n")
 
         # Stage 5: Report
         print("📈 Stage 5/5: Generating executive summary report...")
-        report_resp = client.execute_query(
+        report_resp = await client.execute_query(
             user_token="user-123",
             query="""Create an executive summary report with:
 1. Key metrics (total revenue, customer count, avg order value)
@@ -96,7 +99,7 @@ def main():
 4. Risk alerts (if any)
 Format as a concise business report.""",
             request_type="chat",
-            context={"model": "gpt-4"},
+            context={"provider": "openai"},
         )
 
         duration = time.time() - start_time
@@ -115,4 +118,4 @@ Format as a concise business report.""",
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -16,15 +16,17 @@ func main() {
 		agentURL = "http://localhost:8080"
 	}
 
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("❌ AXONFLOW_LICENSE_KEY must be set in .env file")
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		log.Fatal("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
 	}
 
 	// Create AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   agentURL,
-		LicenseKey: licenseKey,
+		Endpoint:     agentURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("✅ Connected to AxonFlow")
@@ -33,7 +35,7 @@ func main() {
 	searchQuery := "Find round-trip flights from New York to Paris for next week"
 	fmt.Println("📤 Searching for flights to Paris...")
 
-	searchResponse, err := client.ExecuteQuery("user-123", searchQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	searchResponse, err := client.ExecuteQuery("user-123", searchQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Search failed: %v", err)
 	}
@@ -55,7 +57,7 @@ func main() {
 		fmt.Println("💡 Trying alternative dates...")
 
 		altQuery := "Find flights from New York to Paris for the following week instead"
-		altResponse, err := client.ExecuteQuery("user-123", altQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+		altResponse, err := client.ExecuteQuery("user-123", altQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Alternative search failed: %v", err)
 		}
@@ -78,7 +80,7 @@ func main() {
 	bookQuery := "Based on the search results above, what would be the recommended booking?"
 	fmt.Println("\n📤 Getting booking recommendation...")
 
-	bookResponse, err := client.ExecuteQuery("user-123", bookQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	bookResponse, err := client.ExecuteQuery("user-123", bookQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Booking recommendation failed: %v", err)
 	}

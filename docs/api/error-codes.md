@@ -50,41 +50,41 @@ For validation errors with multiple issues:
 
 ## Authentication Errors (401)
 
-### Missing License Key
+### Missing Credentials
 
 ```json
 {
   "success": false,
-  "error": "X-License-Key header required"
+  "error": "Authorization header required"
 }
 ```
 
-**Cause:** No `X-License-Key` header provided.
+**Cause:** No `Authorization` header provided.
 
-**Solution:** Include license key header:
+**Solution:** Include Basic authentication header with OAuth2-style credentials:
 ```bash
-curl -H "X-License-Key: axf_live_your_key" ...
+curl -H "Authorization: Basic $(echo -n 'your_client_id:your_client_secret' | base64)" ...
 ```
 
-**Note:** Not required when `DEPLOYMENT_MODE=community`.
+**Note:** `clientSecret` is optional when `DEPLOYMENT_MODE=community`.
 
 ---
 
-### Invalid License Key
+### Invalid Credentials
 
 ```json
 {
   "success": false,
-  "error": "Authentication failed: invalid license key"
+  "error": "Authentication failed: invalid credentials"
 }
 ```
 
-**Cause:** License key is malformed, expired, or revoked.
+**Cause:** Client credentials are malformed, expired, or revoked.
 
 **Solution:**
-- Verify the key is correct (check for copy/paste errors)
-- Check license expiration in the AxonFlow dashboard
-- Contact support if the key should be valid
+- Verify the clientId and clientSecret are correct (check for copy/paste errors)
+- Check credential expiration in the AxonFlow dashboard
+- Contact support if the credentials should be valid
 
 ---
 
@@ -124,18 +124,18 @@ curl -H "X-License-Key: axf_live_your_key" ...
 
 ---
 
-### License Invalid or Expired
+### Credentials Invalid or Expired
 
 ```json
 {
   "success": false,
-  "error": "License invalid or expired"
+  "error": "Credentials invalid or expired"
 }
 ```
 
-**Cause:** Service license has expired.
+**Cause:** Client credentials have expired.
 
-**Solution:** Renew your license in the AxonFlow dashboard.
+**Solution:** Generate new credentials in the AxonFlow dashboard.
 
 ## Authorization Errors (403)
 
@@ -533,7 +533,7 @@ X-RateLimit-Reset: 1705312200
 1. **Verify authentication:**
    ```bash
    curl -I https://agent.getaxonflow.com/health \
-     -H "X-License-Key: axf_live_your_key"
+     -H "Authorization: Basic $(echo -n 'your_client_id:your_client_secret' | base64)"
    ```
 
 2. **Check service health:**
@@ -558,7 +558,7 @@ X-RateLimit-Reset: 1705312200
 
 | Issue | Likely Cause | Solution |
 |-------|--------------|----------|
-| 401 on all requests | Missing/invalid key | Check `X-License-Key` |
+| 401 on all requests | Missing/invalid credentials | Check `Authorization` header |
 | 403 on specific queries | PII detection | Remove sensitive data |
 | 503 after deploy | Service starting | Wait 30 seconds |
 | Timeout errors | Slow LLM/DB | Increase timeout |

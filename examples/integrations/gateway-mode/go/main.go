@@ -18,7 +18,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -28,14 +28,18 @@ func main() {
 
 	// Initialize AxonFlow client
 	axonflowClient := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "gateway-mode-example"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
 	// Initialize OpenAI client
-	openaiClient := openai.NewClient(getEnv("OPENAI_API_KEY", ""))
+	openaiKey := getEnv("OPENAI_API_KEY", "")
+	if openaiKey == "" {
+		fmt.Println("OPENAI_API_KEY not set. Will use mock LLM response.")
+		fmt.Println()
+	}
+	openaiClient := openai.NewClient(openaiKey)
 
 	// Example request
 	userToken := "user-789"
@@ -85,30 +89,43 @@ func main() {
 	fmt.Println("Step 2: LLM Call (OpenAI)...")
 	llmStart := time.Now()
 
-	chatReq := openai.ChatCompletionRequest{
-		Model: openai.GPT3Dot5Turbo,
-		Messages: []openai.ChatCompletionMessage{
-			{
-				Role:    openai.ChatMessageRoleSystem,
-				Content: "You are a helpful AI expert. Be concise.",
-			},
-			{
-				Role:    openai.ChatMessageRoleUser,
-				Content: query,
-			},
-		},
-		MaxTokens: 200,
-	}
+	var response string
+	var usage openai.Usage
 
-	completion, err := openaiClient.CreateChatCompletion(ctx, chatReq)
-	if err != nil {
-		log.Fatalf("OpenAI call failed: %v", err)
+	if openaiKey != "" {
+		chatReq := openai.ChatCompletionRequest{
+			Model: openai.GPT3Dot5Turbo,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: "You are a helpful AI expert. Be concise.",
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: query,
+				},
+			},
+			MaxTokens: 200,
+		}
+
+		completion, err := openaiClient.CreateChatCompletion(ctx, chatReq)
+		if err != nil {
+			log.Fatalf("OpenAI call failed: %v", err)
+		}
+		response = completion.Choices[0].Message.Content
+		usage = completion.Usage
+	} else {
+		// Mock response for testing without API key
+		time.Sleep(100 * time.Millisecond) // Simulate latency
+		response = "Mock response: Best practices include thorough testing, gradual rollouts, monitoring, and having rollback procedures."
+		usage = openai.Usage{
+			PromptTokens:     25,
+			CompletionTokens: 40,
+			TotalTokens:      65,
+		}
 	}
 
 	llmLatency := time.Since(llmStart)
-	response := completion.Choices[0].Message.Content
-	usage := completion.Usage
-
 	fmt.Printf("   Response received in %v\n", llmLatency)
 	fmt.Printf("   Tokens: %d prompt, %d completion\n",
 		usage.PromptTokens, usage.CompletionTokens)

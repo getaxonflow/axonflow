@@ -207,7 +207,7 @@ func TestTrackRequestUsage_Failure(t *testing.T) {
 
 // ==================================================================
 // PHASE 3: COMPREHENSIVE DATABASE AUTHENTICATION TESTS
-// Tests for validateClientLicenseDB, validateViaAPIKeys, and utility functions
+// Tests for validateClientCredentialsDB, validateViaAPIKeys, and utility functions
 // ==================================================================
 
 // TestValidateClientLicenseDB_ViaAPIKeys tests authentication through API keys path
@@ -240,7 +240,7 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 		WillReturnRows(rows)
 
 	ctx := context.Background()
-	client, err := validateClientLicenseDB(ctx, db, "test-client", testLicenseKey)
+	client, err := validateClientCredentialsDB(ctx, db, "test-client", testLicenseKey)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -264,7 +264,7 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 }
 
 // TestValidateClientLicenseDB_ViaOrganizations tests that V2 licenses work through the
-// validateClientLicenseDB function by first failing API keys lookup, then succeeding
+// validateClientCredentialsDB function by first failing API keys lookup, then succeeding
 // with V2 license validation (which bypasses database for organizations).
 func TestValidateClientLicenseDB_ViaOrganizations(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -283,7 +283,7 @@ func TestValidateClientLicenseDB_ViaOrganizations(t *testing.T) {
 	// No second mock expectation needed - the license signature is the authority
 
 	ctx := context.Background()
-	client, err := validateClientLicenseDB(ctx, db, "test-client", testLicenseKey)
+	client, err := validateClientCredentialsDB(ctx, db, "test-client", testLicenseKey)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -320,7 +320,7 @@ func TestValidateClientLicenseDB_MissingClientID(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	_, err = validateClientLicenseDB(ctx, db, "", "some-license-key")
+	_, err = validateClientCredentialsDB(ctx, db, "", "some-license-key")
 
 	if err == nil {
 		t.Error("expected error for missing client ID, got nil")
@@ -331,8 +331,8 @@ func TestValidateClientLicenseDB_MissingClientID(t *testing.T) {
 	}
 }
 
-// TestValidateClientLicenseDB_MissingLicenseKey tests error when license key is empty
-func TestValidateClientLicenseDB_MissingLicenseKey(t *testing.T) {
+// TestValidateClientCredentialsDB_MissingClientSecret tests error when client secret is empty
+func TestValidateClientCredentialsDB_MissingClientSecret(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create mock: %v", err)
@@ -340,14 +340,14 @@ func TestValidateClientLicenseDB_MissingLicenseKey(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	_, err = validateClientLicenseDB(ctx, db, "test-client", "")
+	_, err = validateClientCredentialsDB(ctx, db, "test-client", "")
 
 	if err == nil {
-		t.Error("expected error for missing license key, got nil")
+		t.Error("expected error for missing client secret, got nil")
 	}
 
-	if !contains(err.Error(), "license key required") {
-		t.Errorf("expected 'license key required' error, got: %s", err.Error())
+	if !contains(err.Error(), "client secret required") {
+		t.Errorf("expected 'client secret required' error, got: %s", err.Error())
 	}
 }
 

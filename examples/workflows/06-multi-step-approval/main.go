@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -14,14 +14,16 @@ func main() {
 		agentURL = "http://localhost:8080"
 	}
 
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("❌ AXONFLOW_LICENSE_KEY must be set in .env file")
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		log.Fatal("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
 	}
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   agentURL,
-		LicenseKey: licenseKey,
+		Endpoint:     agentURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("✅ Connected to AxonFlow")
@@ -38,7 +40,7 @@ func main() {
 		"Consider budget, necessity, and timing. Respond with APPROVED or REJECTED and brief reasoning.",
 		amount, item)
 
-	managerResp, err := client.ExecuteQuery("user-123", managerQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	managerResp, err := client.ExecuteQuery("user-123", managerQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Manager approval failed: %v", err)
 	}
@@ -62,7 +64,7 @@ func main() {
 			"Consider strategic alignment and ROI. Respond with APPROVED or REJECTED and reasoning.",
 			amount, item, managerResp.Data)
 
-		directorResp, err := client.ExecuteQuery("user-123", directorQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+		directorResp, err := client.ExecuteQuery("user-123", directorQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Director approval failed: %v", err)
 		}
@@ -90,7 +92,7 @@ func main() {
 			"Respond with APPROVED or REJECTED and reasoning.",
 			amount, item)
 
-		financeResp, err := client.ExecuteQuery("user-123", financeQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+		financeResp, err := client.ExecuteQuery("user-123", financeQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Finance approval failed: %v", err)
 		}

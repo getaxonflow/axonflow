@@ -125,6 +125,11 @@ services:
       # Deprecated: use SQLI_ACTION instead
       # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
+      # Authentication
+      # JWT_SECRET: Secret for signing/validating user tokens
+      # Generate tokens using: scripts/generate-jwt.sh
+      JWT_SECRET: ${JWT_SECRET:-axonflow-local-dev-jwt-secret-do-not-use-in-production}
+
       # Misc
       ORG_ID: local-dev-org
       ENVIRONMENT: development

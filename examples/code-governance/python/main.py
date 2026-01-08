@@ -37,6 +37,10 @@ async def main():
     print("This demo shows automatic code detection in LLM responses.")
     print()
 
+    # AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+    # In community mode, SDK defaults to "anonymous" if not set
+    user_token = os.getenv("AXONFLOW_USER_TOKEN", "")
+
     async with AxonFlow(
         endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo-client"),
@@ -49,9 +53,10 @@ async def main():
         print("-" * 60)
 
         response = await ax.execute_query(
-            user_token="developer-123",
+            user_token=user_token,
             query="Write a Python function to validate email addresses using regex",
             request_type="chat",
+            context={"provider": "openai"},
         )
 
         if response.blocked:
@@ -94,9 +99,10 @@ async def main():
         print("-" * 60)
 
         response = await ax.execute_query(
-            user_token="developer-123",
+            user_token=user_token,
             query="Write a Python script that reads user input and uses subprocess to run it as a shell command",
             request_type="chat",
+            context={"provider": "openai"},
         )
 
         if response.blocked:

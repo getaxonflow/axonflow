@@ -8,8 +8,8 @@ set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-LICENSE_KEY="${AXONFLOW_LICENSE_KEY:-}"
-CLIENT_ID="audit-logging-demo"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-audit-logging-demo}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,7 +56,8 @@ PRECHECK_START=$(get_ms)
 
 PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
         \"query\": \"$QUERY\",
         \"user_token\": \"audit-user\",
@@ -104,7 +105,8 @@ AUDIT_START=$(get_ms)
 
 AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
         \"context_id\": \"$CONTEXT_ID\",
         \"client_id\": \"$CLIENT_ID\",
@@ -158,7 +160,8 @@ echo -e "${YELLOW}GET /api/v1/audit/tenant/$CLIENT_ID${NC}"
 echo ""
 
 AUDIT_LOGS=$(curl -s "$ORCHESTRATOR_URL/api/v1/audit/tenant/$CLIENT_ID" \
-    -H "X-License-Key: $LICENSE_KEY")
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET")
 
 LOG_COUNT=$(echo "$AUDIT_LOGS" | jq -r 'if type == "array" then length else 0 end')
 
@@ -177,7 +180,8 @@ echo ""
 
 SEARCH_RESPONSE=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/audit/search" \
     -H "Content-Type: application/json" \
-    -H "X-License-Key: $LICENSE_KEY" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
         \"client_id\": \"$CLIENT_ID\",
         \"limit\": 5

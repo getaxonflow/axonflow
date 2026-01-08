@@ -18,16 +18,18 @@ public class Main {
     public static void main(String[] args) {
         String agentUrl = Optional.ofNullable(System.getenv("AXONFLOW_AGENT_URL"))
                 .orElse("http://localhost:8080");
-        String licenseKey = System.getenv("AXONFLOW_LICENSE_KEY");
+        String clientId = System.getenv("AXONFLOW_CLIENT_ID");
+        String clientSecret = System.getenv("AXONFLOW_CLIENT_SECRET");
 
-        if (licenseKey == null || licenseKey.isEmpty()) {
-            System.err.println("❌ AXONFLOW_LICENSE_KEY must be set");
+        if (clientId == null || clientId.isEmpty() || clientSecret == null || clientSecret.isEmpty()) {
+            System.err.println("❌ AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set");
             System.exit(1);
         }
 
         AxonFlowConfig config = AxonFlowConfig.builder()
                 .endpoint(agentUrl)
-                .licenseKey(licenseKey)
+                .clientId(clientId)
+                .clientSecret(clientSecret)
                 .build();
 
         AxonFlow client = new AxonFlow(config);

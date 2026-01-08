@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -16,15 +16,17 @@ func main() {
 		agentURL = "http://localhost:8080"
 	}
 
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("❌ AXONFLOW_LICENSE_KEY must be set in .env file")
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		log.Fatal("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
 	}
 
 	// Create AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   agentURL,
-		LicenseKey: licenseKey,
+		Endpoint:     agentURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("✅ Connected to AxonFlow")
@@ -43,9 +45,7 @@ func main() {
 		"user-123",
 		query,
 		"multi-agent-plan", // Use MAP for parallel execution
-		map[string]interface{}{
-			"model": "gpt-4",
-		},
+		map[string]interface{}{"provider": "openai"},
 	)
 	if err != nil {
 		log.Fatalf("❌ Query failed: %v", err)

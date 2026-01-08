@@ -23,10 +23,13 @@ async def main():
     # Initialize client
     client = AxonFlow(
         endpoint=os.environ.get("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-        client_id="demo-client",
-        client_secret="demo-secret",
-        license_key=os.environ.get("AXONFLOW_LICENSE_KEY"),
+        client_id=os.environ.get("AXONFLOW_CLIENT_ID", ""),
+        client_secret=os.environ.get("AXONFLOW_CLIENT_SECRET", ""),
     )
+
+    # AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+    # In community mode, SDK defaults to "anonymous" if not set
+    user_token = os.environ.get("AXONFLOW_USER_TOKEN", "")
 
     print("=== LLM Provider Routing Examples ===\n")
     print("Provider selection is server-side. Configure via environment variables:")
@@ -37,9 +40,10 @@ async def main():
     print("1. Send request (server routes based on configured strategy):")
     try:
         response = await client.execute_query(
-            user_token="demo-user",
+            user_token=user_token,
             query="What is 2 + 2?",
             request_type="chat",
+            context={"provider": "openai"},
         )
         data = str(response.data)[:100] if response.data else "N/A"
         print(f"   Response: {data}...")
@@ -52,9 +56,10 @@ async def main():
     for i in range(1, 4):
         try:
             response = await client.execute_query(
-                user_token="demo-user",
+                user_token=user_token,
                 query=f"Question {i}: What is the capital of France?",
                 request_type="chat",
+                context={"provider": "openai"},
             )
             print(f"   Request {i}: Success (provider selected by server)")
         except Exception as e:

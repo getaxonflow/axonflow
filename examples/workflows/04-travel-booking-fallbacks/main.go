@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -16,15 +16,17 @@ func main() {
 		agentURL = "http://localhost:8080"
 	}
 
-	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
-	if licenseKey == "" {
-		log.Fatal("❌ AXONFLOW_LICENSE_KEY must be set in .env file")
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		log.Fatal("AXONFLOW_CLIENT_ID and AXONFLOW_CLIENT_SECRET must be set")
 	}
 
 	// Create AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:   agentURL,
-		LicenseKey: licenseKey,
+		Endpoint:     agentURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("✅ Connected to AxonFlow")
@@ -37,7 +39,7 @@ func main() {
 	// STEP 1: Try direct flights first
 	fmt.Println("🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...")
 	flightQuery1 := "Find direct flights from San Francisco to Tokyo next month"
-	flightResp1, err := client.ExecuteQuery("user-123", flightQuery1, "chat", map[string]interface{}{"model": "gpt-4"})
+	flightResp1, err := client.ExecuteQuery("user-123", flightQuery1, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Flight search failed: %v", err)
 	}
@@ -50,7 +52,7 @@ func main() {
 
 		// Fallback to connecting flights
 		flightQuery2 := "Find connecting flights from San Francisco to Tokyo with 1 stop"
-		flightResp2, err := client.ExecuteQuery("user-123", flightQuery2, "chat", map[string]interface{}{"model": "gpt-4"})
+		flightResp2, err := client.ExecuteQuery("user-123", flightQuery2, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Fallback flight search failed: %v", err)
 		}
@@ -73,7 +75,7 @@ func main() {
 	// STEP 2: Try 5-star hotels first
 	fmt.Println("🔍 Step 3: Searching for 5-star hotels in Tokyo city center...")
 	hotelQuery1 := "Find 5-star hotels in Tokyo Shibuya district"
-	hotelResp1, err := client.ExecuteQuery("user-123", hotelQuery1, "chat", map[string]interface{}{"model": "gpt-4"})
+	hotelResp1, err := client.ExecuteQuery("user-123", hotelQuery1, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Hotel search failed: %v", err)
 	}
@@ -86,7 +88,7 @@ func main() {
 
 		// Fallback to 4-star hotels
 		hotelQuery2 := "Find 4-star hotels in Tokyo with good reviews"
-		hotelResp2, err := client.ExecuteQuery("user-123", hotelQuery2, "chat", map[string]interface{}{"model": "gpt-4"})
+		hotelResp2, err := client.ExecuteQuery("user-123", hotelQuery2, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Fallback hotel search failed: %v", err)
 		}
@@ -112,7 +114,7 @@ func main() {
 		"Include top attractions, restaurants, and transportation tips.",
 		flightOption, hotelOption)
 
-	itineraryResp, err := client.ExecuteQuery("user-123", itineraryQuery, "chat", map[string]interface{}{"model": "gpt-4"})
+	itineraryResp, err := client.ExecuteQuery("user-123", itineraryQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Itinerary generation failed: %v", err)
 	}

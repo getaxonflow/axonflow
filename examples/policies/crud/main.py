@@ -133,7 +133,7 @@ async def main():
     print("=" * 60)
 
     client = PolicyClient(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         orchestrator_url=os.getenv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         tenant_id=os.getenv("AXONFLOW_TENANT_ID", "test-org-001"),
@@ -187,19 +187,29 @@ async def main():
         print("3. CREATE CUSTOM POLICY")
         print("-" * 60)
 
+        # Policy payload must match CreatePolicyRequest schema:
+        # - type: required ("content", "user", "risk", "cost")
+        # - conditions: array of {field, operator, value}
+        # - actions: array of {type, config}
         new_policy = {
             "name": "demo-risk-threshold",
             "description": "Block queries with risk score above 0.8",
+            "type": "risk",
             "enabled": True,
-            "conditions": {
-                "risk_score": {"gt": 0.8},
-            },
-            "action": "block",
+            "conditions": [
+                {
+                    "field": "risk_score",
+                    "operator": "greater_than",
+                    "value": 0.8,
+                }
+            ],
+            "actions": [
+                {
+                    "type": "block",
+                    "config": {"reason": "Risk score exceeds threshold"},
+                }
+            ],
             "priority": 100,
-            "metadata": {
-                "created_by": "policy-crud-demo",
-                "purpose": "demonstration",
-            },
         }
 
         print(f"\n  Creating policy: {new_policy['name']}")
@@ -222,7 +232,9 @@ async def main():
                 print(f"    Name: {retrieved.get('name')}")
                 print(f"    Description: {retrieved.get('description')}")
                 print(f"    Enabled: {retrieved.get('enabled')}")
-                print(f"    Action: {retrieved.get('action')}")
+                actions = retrieved.get("actions", [])
+                action_type = actions[0].get("type") if actions else "none"
+                print(f"    Action: {action_type}")
 
                 # =====================================================================
                 # 5. Update the Policy
@@ -232,14 +244,14 @@ async def main():
                 print("-" * 60)
 
                 update_data = {
-                    "name": "demo-risk-threshold",
                     "description": "Block queries with risk score above 0.9 (updated)",
-                    "enabled": True,
-                    "conditions": {
-                        "risk_score": {"gt": 0.9},  # Changed threshold
-                    },
-                    "action": "block",
-                    "priority": 100,
+                    "conditions": [
+                        {
+                            "field": "risk_score",
+                            "operator": "greater_than",
+                            "value": 0.9,  # Changed threshold
+                        }
+                    ],
                 }
 
                 print(f"\n  Updating policy: lowering risk threshold to 0.9")
@@ -277,9 +289,18 @@ async def main():
     - Dynamic (Orchestrator): Condition-based (RBAC, risk scoring)
 
   Endpoints:
-    Static:  GET /api/v1/static-policies
-    Dynamic: GET /api/v1/dynamic-policies
-    CRUD:    /api/v1/dynamic-policies (GET, POST, PUT, DELETE)
+    Static:  GET /api/v1/static-policies (Agent)
+    Dynamic: GET /api/v1/dynamic-policies (Orchestrator)
+    CRUD:    /api/v1/policies (Orchestrator - GET, POST, PUT, DELETE)
+
+  Policy Payload Schema:
+    - name: string (required)
+    - description: string
+    - type: "content" | "user" | "risk" | "cost" (required)
+    - conditions: [{field, operator, value}] (array)
+    - actions: [{type, config}] (array)
+    - priority: int
+    - enabled: bool
 
   Common Policy Actions:
     - block: Reject the request

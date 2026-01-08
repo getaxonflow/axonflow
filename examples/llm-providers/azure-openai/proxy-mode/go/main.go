@@ -26,9 +26,8 @@ func main() {
 	// In proxy mode, Azure OpenAI credentials are configured on the server
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "azure-openai-proxy-demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
-		LicenseKey:   getEnv("AXONFLOW_LICENSE_KEY", ""),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", ""),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""),
 	})
 
 	// Example 1: Basic query routed to Azure OpenAI

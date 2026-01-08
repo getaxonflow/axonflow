@@ -20,10 +20,11 @@ import "dotenv/config";
 import { AxonFlow, PolicyViolationError } from "@axonflow/sdk";
 import OpenAI from "openai";
 
-// Initialize AxonFlow client (Community Mode - no auth required)
+// Initialize AxonFlow client with OAuth2-style credentials
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  tenant: process.env.AXONFLOW_TENANT || "interceptor-demo",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "interceptor-demo",
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
   debug: true,
 });
 

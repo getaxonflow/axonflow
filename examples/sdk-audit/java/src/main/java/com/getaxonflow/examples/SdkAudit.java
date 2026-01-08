@@ -52,11 +52,13 @@ public class SdkAudit {
         // Initialize AxonFlow client
         // Note: As of SDK v2.0.0 (ADR-026), all routes go through a single endpoint.
         // The Agent proxies orchestrator routes internally.
+        String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
+        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
-            .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
-            .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"))
-            .licenseKey(getEnv("AXONFLOW_LICENSE_KEY", ""))
+            .clientId(clientId)
+            .clientSecret(clientSecret)
             .build());
 
         // Test 1: Agent Health Check
@@ -91,8 +93,7 @@ public class SdkAudit {
             failed++;
         }
 
-        // Get client ID for requests
-        String clientId = getEnv("AXONFLOW_CLIENT_ID", "demo");
+        // Get client ID for requests (already set above)
 
         // Test 3: Gateway Mode - Safe Query
         System.out.println("Test 3: Gateway Mode - Safe Query");

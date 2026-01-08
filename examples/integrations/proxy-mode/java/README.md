@@ -28,7 +28,8 @@ docker compose up -d
 
 ```bash
 export AXONFLOW_AGENT_URL=http://localhost:8080
-export AXONFLOW_LICENSE_KEY=your-license-key  # Required for cloud
+export AXONFLOW_CLIENT_ID=your-client-id
+export AXONFLOW_CLIENT_SECRET=your-client-secret
 ```
 
 **Note**: Unlike Gateway Mode, Proxy Mode does not require an OpenAI API key on the client side. AxonFlow handles LLM calls server-side.
@@ -91,7 +92,8 @@ Proxy Mode Demo Complete!
 ```java
 AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
     .endpoint("http://localhost:8080")
-    .licenseKey("your-license-key")
+    .clientId("your-client-id")
+    .clientSecret("your-client-secret")
     .build());
 
 ClientResponse response = client.executeQuery(
