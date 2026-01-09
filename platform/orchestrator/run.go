@@ -2311,17 +2311,25 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Calculate completed steps based on plan status
+	completedSteps := 0
+	if plan.Status == planning.PlanStatusCompleted {
+		completedSteps = plan.StepCount
+	}
+
 	// Build response with plan status and metadata
+	// Note: SDK expects "total_steps" and "completed_steps" (not "step_count")
 	response := map[string]interface{}{
-		"plan_id":    plan.PlanID,
-		"status":     string(plan.Status),
-		"org_id":     plan.OrgID,
-		"query":      plan.Query,
-		"domain":     plan.Domain,
-		"complexity": plan.Complexity,
-		"step_count": plan.StepCount,
-		"created_at": plan.CreatedAt,
-		"expires_at": plan.ExpiresAt,
+		"plan_id":         plan.PlanID,
+		"status":          string(plan.Status),
+		"org_id":          plan.OrgID,
+		"query":           plan.Query,
+		"domain":          plan.Domain,
+		"complexity":      plan.Complexity,
+		"total_steps":     plan.StepCount,
+		"completed_steps": completedSteps,
+		"created_at":      plan.CreatedAt,
+		"expires_at":      plan.ExpiresAt,
 	}
 
 	// Include execution result if available

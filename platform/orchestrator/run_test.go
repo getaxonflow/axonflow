@@ -2545,5 +2545,308 @@ func TestRecordRequest_RequestTypeFailed(t *testing.T) {
 	}
 }
 
+// TestGetPlanStatusHandler tests the MAP GetPlanStatus endpoint
+// This verifies the fix for total_steps/completed_steps response format
+func TestGetPlanStatusHandler(t *testing.T) {
+	// Save old state
+	oldPlanService := planService
+	defer func() {
+		planService = oldPlanService
+	}()
+
+	tests := []struct {
+		name           string
+		planID         string
+		setupService   bool
+		setupPlan      *planning.Plan
+		expectedStatus int
+		validateBody   func(t *testing.T, body map[string]interface{})
+	}{
+		{
+			name:           "Error - plan service not initialized",
+			planID:         "plan_123",
+			setupService:   false,
+			expectedStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:           "Error - missing plan ID (route not matched)",
+			planID:         "",
+			setupService:   true,
+			expectedStatus: http.StatusNotFound, // mux returns 404 when path var is empty
+		},
+		{
+			name:           "Error - plan not found",
+			planID:         "nonexistent",
+			setupService:   true,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:         "Success - pending plan returns total_steps and completed_steps=0",
+			planID:       "plan_pending",
+			setupService: true,
+			setupPlan: &planning.Plan{
+				PlanID:    "plan_pending",
+				Status:    planning.PlanStatusPending,
+				StepCount: 5,
+				Query:     "test query",
+				Domain:    "generic",
+				OrgID:     "org_1",
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+				CreatedAt: time.Now(),
+			},
+			expectedStatus: http.StatusOK,
+			validateBody: func(t *testing.T, body map[string]interface{}) {
+				// Verify response uses total_steps (not step_count)
+				if _, ok := body["step_count"]; ok {
+					t.Error("Response should NOT contain 'step_count', should use 'total_steps'")
+				}
+				if totalSteps, ok := body["total_steps"].(float64); !ok || totalSteps != 5 {
+					t.Errorf("Expected total_steps=5, got %v", body["total_steps"])
+				}
+				if completedSteps, ok := body["completed_steps"].(float64); !ok || completedSteps != 0 {
+					t.Errorf("Expected completed_steps=0 for pending plan, got %v", body["completed_steps"])
+				}
+				if status, ok := body["status"].(string); !ok || status != "pending" {
+					t.Errorf("Expected status=pending, got %v", body["status"])
+				}
+			},
+		},
+		{
+			name:         "Success - completed plan returns completed_steps=total_steps",
+			planID:       "plan_completed",
+			setupService: true,
+			setupPlan: &planning.Plan{
+				PlanID:    "plan_completed",
+				Status:    planning.PlanStatusCompleted,
+				StepCount: 3,
+				Query:     "test query",
+				Domain:    "generic",
+				OrgID:     "org_1",
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+				CreatedAt: time.Now(),
+			},
+			expectedStatus: http.StatusOK,
+			validateBody: func(t *testing.T, body map[string]interface{}) {
+				if totalSteps, ok := body["total_steps"].(float64); !ok || totalSteps != 3 {
+					t.Errorf("Expected total_steps=3, got %v", body["total_steps"])
+				}
+				if completedSteps, ok := body["completed_steps"].(float64); !ok || completedSteps != 3 {
+					t.Errorf("Expected completed_steps=3 (all complete), got %v", body["completed_steps"])
+				}
+				if status, ok := body["status"].(string); !ok || status != "completed" {
+					t.Errorf("Expected status=completed, got %v", body["status"])
+				}
+			},
+		},
+		{
+			name:         "Success - executing plan returns completed_steps=0",
+			planID:       "plan_executing",
+			setupService: true,
+			setupPlan: &planning.Plan{
+				PlanID:    "plan_executing",
+				Status:    planning.PlanStatusExecuting,
+				StepCount: 4,
+				Query:     "test query",
+				Domain:    "travel",
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+				CreatedAt: time.Now(),
+			},
+			expectedStatus: http.StatusOK,
+			validateBody: func(t *testing.T, body map[string]interface{}) {
+				if totalSteps, ok := body["total_steps"].(float64); !ok || totalSteps != 4 {
+					t.Errorf("Expected total_steps=4, got %v", body["total_steps"])
+				}
+				// Executing plan shows 0 completed_steps (in-progress)
+				if completedSteps, ok := body["completed_steps"].(float64); !ok || completedSteps != 0 {
+					t.Errorf("Expected completed_steps=0 for executing plan, got %v", body["completed_steps"])
+				}
+				if status, ok := body["status"].(string); !ok || status != "executing" {
+					t.Errorf("Expected status=executing, got %v", body["status"])
+				}
+			},
+		},
+		{
+			name:         "Success - failed plan includes error message",
+			planID:       "plan_failed",
+			setupService: true,
+			setupPlan: &planning.Plan{
+				PlanID:       "plan_failed",
+				Status:       planning.PlanStatusFailed,
+				StepCount:    2,
+				ErrorMessage: "LLM provider timeout",
+				Query:        "test query",
+				Domain:       "generic",
+				ExpiresAt:    time.Now().Add(1 * time.Hour),
+				CreatedAt:    time.Now(),
+			},
+			expectedStatus: http.StatusOK,
+			validateBody: func(t *testing.T, body map[string]interface{}) {
+				if status, ok := body["status"].(string); !ok || status != "failed" {
+					t.Errorf("Expected status=failed, got %v", body["status"])
+				}
+				if errMsg, ok := body["error"].(string); !ok || errMsg != "LLM provider timeout" {
+					t.Errorf("Expected error message, got %v", body["error"])
+				}
+				// Failed plan should still return step counts
+				if totalSteps, ok := body["total_steps"].(float64); !ok || totalSteps != 2 {
+					t.Errorf("Expected total_steps=2, got %v", body["total_steps"])
+				}
+			},
+		},
+		{
+			name:         "Success - response includes all expected fields",
+			planID:       "plan_full",
+			setupService: true,
+			setupPlan: &planning.Plan{
+				PlanID:     "plan_full",
+				Status:     planning.PlanStatusPending,
+				StepCount:  1,
+				Query:      "full test query",
+				Domain:     "healthcare",
+				OrgID:      "org_healthcare",
+				Complexity: 3,
+				ExpiresAt:  time.Now().Add(1 * time.Hour),
+				CreatedAt:  time.Now(),
+			},
+			expectedStatus: http.StatusOK,
+			validateBody: func(t *testing.T, body map[string]interface{}) {
+				// Verify all expected fields are present
+				requiredFields := []string{
+					"plan_id", "status", "query", "domain",
+					"total_steps", "completed_steps", "created_at", "expires_at",
+				}
+				for _, field := range requiredFields {
+					if _, ok := body[field]; !ok {
+						t.Errorf("Missing required field: %s", field)
+					}
+				}
+				if body["plan_id"] != "plan_full" {
+					t.Errorf("Expected plan_id=plan_full, got %v", body["plan_id"])
+				}
+				if body["domain"] != "healthcare" {
+					t.Errorf("Expected domain=healthcare, got %v", body["domain"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setupService {
+				// Create mock repository and service
+				mockRepo := planning.NewMockRepository()
+				if tt.setupPlan != nil {
+					_ = mockRepo.SavePlan(context.Background(), tt.setupPlan)
+				}
+				planService = planning.NewService(mockRepo)
+			} else {
+				planService = nil
+			}
+
+			// Create request with proper URL path variable
+			path := "/api/v1/plan/" + tt.planID
+			req := httptest.NewRequest("GET", path, nil)
+			req.Header.Set("Content-Type", "application/json")
+
+			// Use gorilla/mux to properly parse path variables
+			w := httptest.NewRecorder()
+			router := mux.NewRouter()
+			router.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d. Body: %s", tt.expectedStatus, w.Code, w.Body.String())
+			}
+
+			// Validate response body for success cases
+			if tt.validateBody != nil && w.Code == http.StatusOK {
+				var body map[string]interface{}
+				if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+					t.Fatalf("Failed to decode response body: %v", err)
+				}
+				tt.validateBody(t, body)
+			}
+		})
+	}
+}
+
+// TestGetPlanStatusHandler_ResponseFormat specifically tests the API response format
+// to ensure SDK compatibility (uses total_steps not step_count)
+func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
+	oldPlanService := planService
+	defer func() {
+		planService = oldPlanService
+	}()
+
+	mockRepo := planning.NewMockRepository()
+	testPlan := &planning.Plan{
+		PlanID:             "plan_sdk_test",
+		Status:             planning.PlanStatusCompleted,
+		StepCount:          7,
+		Query:              "SDK compatibility test",
+		Domain:             "generic",
+		Complexity:         2,
+		OrgID:              "org_1",
+		ExecutionResult:    json.RawMessage(`{"output": "success"}`),
+		WorkflowDefinition: json.RawMessage(`{"steps": []}`),
+		ExpiresAt:          time.Now().Add(1 * time.Hour),
+		CreatedAt:          time.Now(),
+	}
+	_ = mockRepo.SavePlan(context.Background(), testPlan)
+	planService = planning.NewService(mockRepo)
+
+	req := httptest.NewRequest("GET", "/api/v1/plan/plan_sdk_test", nil)
+	w := httptest.NewRecorder()
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Critical: Verify SDK-compatible field names
+	t.Run("uses total_steps not step_count", func(t *testing.T) {
+		if _, exists := response["step_count"]; exists {
+			t.Error("API returns 'step_count' but should return 'total_steps'")
+		}
+		if _, exists := response["total_steps"]; !exists {
+			t.Error("API must return 'total_steps' for SDK compatibility")
+		}
+	})
+
+	t.Run("includes completed_steps", func(t *testing.T) {
+		if _, exists := response["completed_steps"]; !exists {
+			t.Error("API must return 'completed_steps' for SDK compatibility")
+		}
+	})
+
+	t.Run("completed plan has completed_steps equal to total_steps", func(t *testing.T) {
+		totalSteps := response["total_steps"].(float64)
+		completedSteps := response["completed_steps"].(float64)
+		if completedSteps != totalSteps {
+			t.Errorf("Completed plan should have completed_steps=%v, got %v", totalSteps, completedSteps)
+		}
+	})
+
+	t.Run("includes execution_result for completed plans", func(t *testing.T) {
+		if _, exists := response["execution_result"]; !exists {
+			t.Error("Completed plan should include execution_result")
+		}
+	})
+
+	t.Run("includes workflow_definition", func(t *testing.T) {
+		if _, exists := response["workflow_definition"]; !exists {
+			t.Error("Response should include workflow_definition")
+		}
+	})
+}
+
 
 
