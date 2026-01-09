@@ -1,2 +1,2 @@
-github.com/getaxonflow/axonflow-sdk-go v1.15.0 h1:gS5EltwJTpqLagB5A1U0UMLTVfi39Coc2rExFwGp+lI=
-github.com/getaxonflow/axonflow-sdk-go v1.15.0/go.mod h1:6bdj+/BwCCBTugIsnFXw+VrnNouif+LUEPeBF9BeE44=
+github.com/getaxonflow/axonflow-sdk-go/v2 v2.3.0 h1:eRN+54v31zgwDjB+4HXOizFuFpKfSaxPfra77s/DV1E=
+github.com/getaxonflow/axonflow-sdk-go/v2 v2.3.0/go.mod h1:yKCyqjLDqI/2IHU/8BcMifhFURCAGsinBKjKcsLumC0=
