@@ -25,6 +25,7 @@ import (
 
 	"axonflow/platform/agent/rbi"
 	"axonflow/platform/connectors/base"
+	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -430,11 +431,36 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	// For full policy support including dynamic policies, users should use Proxy Mode.
 	// See: docs.getaxonflow.com/docs/sdk/choosing-a-mode
 	//
-	// Evaluate static policies only (reuse existing policy engine)
+	// Evaluate policies using unified shared policy engine (Issues #963, #975)
+	// The shared engine provides comprehensive PII detection with validators
+	// (Luhn, MOD97, Verhoeff, SSN, Aadhaar, PAN) and SQL injection detection.
 	var policyResult *StaticPolicyResult
-	if dbPolicyEngine != nil {
+
+	// Try shared policy engine first for comprehensive PII/SQLi detection
+	sharedEngine := sharedpolicy.GetGlobalEngine()
+	if sharedEngine != nil {
+		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
+			TenantID:      user.TenantID,
+			ConnectorName: "gateway",
+			UserID:        fmt.Sprintf("%d", user.ID),
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategorySecuritySQLi,
+				sharedpolicy.CategorySecurityDangerous,
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+			},
+		})
+		// Convert to StaticPolicyResult for backward compatibility
+		policyResult = convertSharedResultToStatic(requestResult)
+		log.Printf("[Gateway] Shared policy engine evaluated %d policies in %dms",
+			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
+	} else if dbPolicyEngine != nil {
+		// Fallback to database-loaded policy engine
 		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, "llm_chat")
 	} else if staticPolicyEngine != nil {
+		// Fallback to hardcoded static policy engine
 		policyResult = staticPolicyEngine.EvaluateStaticPolicies(user, req.Query, "llm_chat")
 	} else {
 		// No policy engine available - allow by default
@@ -867,4 +893,57 @@ func queueLLMCallAudit(auditID string, req AuditLLMCallRequest, estimatedCost fl
 	}
 
 	return nil // No storage available, but don't fail the request
+}
+
+// convertSharedResultToStatic converts a shared policy engine RequestResult
+// to a StaticPolicyResult for backward compatibility with existing Gateway Mode code.
+// This allows gradual migration from StaticPolicyEngine to the unified shared engine.
+func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPolicyResult {
+	if result == nil {
+		return &StaticPolicyResult{
+			Blocked:           false,
+			TriggeredPolicies: []string{},
+			ChecksPerformed:   []string{"shared_policy_engine"},
+		}
+	}
+
+	staticResult := &StaticPolicyResult{
+		Blocked:          result.Blocked,
+		Reason:           result.BlockReason,
+		ProcessingTimeMs: result.ProcessingTimeMs,
+		ChecksPerformed:  []string{"shared_policy_engine"},
+	}
+
+	// Convert matched policies to triggered policy IDs
+	for _, match := range result.MatchedPolicies {
+		staticResult.TriggeredPolicies = append(staticResult.TriggeredPolicies, match.PolicyID)
+		// Capture severity from the blocking policy
+		if result.Blocked && result.BlockedBy != nil && match.PolicyID == result.BlockedBy.PolicyID {
+			staticResult.Severity = string(result.BlockedBy.Severity)
+		}
+	}
+
+	// Set RequiresRedaction based on matched PII policies that aren't blocking
+	// (e.g., when action is "redact" instead of "block")
+	for _, match := range result.MatchedPolicies {
+		if !result.Blocked && isPIICategory(match.Category) {
+			staticResult.RequiresRedaction = true
+			break
+		}
+	}
+
+	return staticResult
+}
+
+// isPIICategory returns true if the category is a PII-related category.
+func isPIICategory(category sharedpolicy.PolicyCategory) bool {
+	switch category {
+	case sharedpolicy.CategoryPIIGlobal,
+		sharedpolicy.CategoryPIIUS,
+		sharedpolicy.CategoryPIIIndia,
+		sharedpolicy.CategoryPIIEU:
+		return true
+	default:
+		return false
+	}
 }

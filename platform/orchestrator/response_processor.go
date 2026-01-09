@@ -19,16 +19,20 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // ResponseProcessor handles PII detection and redaction in LLM responses
 type ResponseProcessor struct {
 	piiDetector         *PIIDetector
 	enhancedPIIDetector *EnhancedPIIDetector
+	sharedPolicyEngine  *sharedpolicy.UnifiedPolicyEngine // Unified policy engine (Issues #963, #975)
 	redactor            *Redactor
 	enricher            *ResponseEnricher
 	validationRules     []ValidationRule
 	useEnhancedDetector bool
+	useSharedEngine     bool // Use shared policy engine for PII detection/redaction
 }
 
 // RedactionInfo contains information about redactions made
@@ -73,7 +77,7 @@ type EnrichmentRule struct {
 
 // NewResponseProcessor creates a new response processor
 func NewResponseProcessor() *ResponseProcessor {
-	return &ResponseProcessor{
+	rp := &ResponseProcessor{
 		piiDetector:         NewPIIDetector(),
 		enhancedPIIDetector: NewEnhancedPIIDetector(DefaultPIIDetectorConfig()),
 		redactor:            NewRedactor(),
@@ -81,11 +85,20 @@ func NewResponseProcessor() *ResponseProcessor {
 		validationRules:     getDefaultValidationRules(),
 		useEnhancedDetector: true, // Use enhanced detector by default
 	}
+
+	// Try to use shared policy engine if available (Issues #963, #975)
+	if engine := sharedpolicy.GetGlobalEngine(); engine != nil {
+		rp.sharedPolicyEngine = engine
+		rp.useSharedEngine = true
+		log.Println("[ResponseProcessor] Using shared policy engine for PII detection")
+	}
+
+	return rp
 }
 
 // NewResponseProcessorWithConfig creates a response processor with custom configuration
 func NewResponseProcessorWithConfig(useEnhanced bool, piiConfig PIIDetectorConfig) *ResponseProcessor {
-	return &ResponseProcessor{
+	rp := &ResponseProcessor{
 		piiDetector:         NewPIIDetector(),
 		enhancedPIIDetector: NewEnhancedPIIDetector(piiConfig),
 		redactor:            NewRedactor(),
@@ -93,6 +106,26 @@ func NewResponseProcessorWithConfig(useEnhanced bool, piiConfig PIIDetectorConfi
 		validationRules:     getDefaultValidationRules(),
 		useEnhancedDetector: useEnhanced,
 	}
+
+	// Try to use shared policy engine if available (Issues #963, #975)
+	if engine := sharedpolicy.GetGlobalEngine(); engine != nil {
+		rp.sharedPolicyEngine = engine
+		rp.useSharedEngine = true
+	}
+
+	return rp
+}
+
+// SetSharedPolicyEngine sets the shared policy engine for unified PII detection.
+// This enables phase-aware policy enforcement per ADR-022.
+func (p *ResponseProcessor) SetSharedPolicyEngine(engine *sharedpolicy.UnifiedPolicyEngine) {
+	p.sharedPolicyEngine = engine
+	p.useSharedEngine = engine != nil
+}
+
+// SetUseSharedEngine enables or disables the shared policy engine
+func (p *ResponseProcessor) SetUseSharedEngine(enabled bool) {
+	p.useSharedEngine = enabled && p.sharedPolicyEngine != nil
 }
 
 // SetUseEnhancedDetector enables or disables the enhanced PII detector
@@ -108,27 +141,65 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		// If not JSON, treat as plain text
 		responseData = response.Content
 	}
-	
-	// Detect PII
-	detectedPII := p.detectPII(responseData)
-	
-	// Apply redactions based on user permissions
-	redactedData, redactionInfo := p.applyRedactions(user, responseData, detectedPII)
-	
+
+	var redactedData interface{}
+	var redactionInfo *RedactionInfo
+
+	// Use shared policy engine if available (Issues #963, #975)
+	// This provides unified PII detection with validators (Luhn, MOD97, Verhoeff, etc.)
+	if p.useSharedEngine && p.sharedPolicyEngine != nil {
+		redactedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
+	} else {
+		// Fallback to legacy PII detection
+		detectedPII := p.detectPII(responseData)
+		redactedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
+	}
+
 	// Validate response
 	if err := p.validateResponse(redactedData); err != nil {
 		log.Printf("Response validation failed: %v", err)
 		// Return error response
 		return map[string]string{
-			"error": "Response validation failed",
+			"error":   "Response validation failed",
 			"details": err.Error(),
 		}, &RedactionInfo{}
 	}
-	
+
 	// Enrich response with metadata
 	enrichedData := p.enrichResponse(ctx, redactedData)
-	
+
 	return enrichedData, redactionInfo
+}
+
+// processWithSharedEngine uses the unified policy engine for PII detection and redaction.
+// This provides comprehensive validators (Luhn, MOD97, Verhoeff, SSN, Aadhaar, PAN).
+func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user UserContext, data interface{}) (interface{}, *RedactionInfo) {
+	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
+		TenantID: user.TenantID,
+		UserID:   fmt.Sprintf("%d", user.ID),
+		Categories: []sharedpolicy.PolicyCategory{
+			sharedpolicy.CategoryPIIGlobal,
+			sharedpolicy.CategoryPIIUS,
+			sharedpolicy.CategoryPIIIndia,
+			sharedpolicy.CategoryPIIEU,
+		},
+		MaxRedactions: 100, // Reasonable limit for LLM responses
+	})
+
+	redactionInfo := &RedactionInfo{
+		HasRedactions:  result.Redacted,
+		RedactionCount: len(result.RedactedFields),
+	}
+
+	// Convert redacted field paths to slice
+	for _, field := range result.RedactedFields {
+		redactionInfo.RedactedFields = append(redactionInfo.RedactedFields, field.Path)
+	}
+
+	log.Printf("[ResponseProcessor] Shared engine evaluated %d policies in %dms, redactions=%d",
+		result.PoliciesEvaluated, result.ProcessingTimeMs, len(result.RedactedFields))
+
+	return result.Content, redactionInfo
 }
 
 // detectPII detects PII in the response data

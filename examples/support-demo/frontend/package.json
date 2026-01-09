@@ -39,5 +39,8 @@
       "last 1 safari version"
     ]
   },
-  "proxy": "http://localhost:8080"
+  "proxy": "http://localhost:8080",
+  "overrides": {
+    "nth-check": "^2.0.1"
+  }
 }

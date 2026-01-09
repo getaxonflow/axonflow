@@ -492,3 +492,4 @@ func TestBuildCacheKey(t *testing.T) {
 }
 
 // strPtr helper is defined in static_policy_repository_test.go
+
