@@ -1,10 +1,16 @@
-# Multi-Agent Planning - Define agents in YAML
-# AxonFlow turns this into an executable workflow
+# Multi-Agent Planning - Define workflow steps
+# AxonFlow turns this into an executable governed workflow
 
-agents:
-  - name: flight_search
-    type: connector-call
-    connector: amadeus
-  - name: itinerary_builder
+# Generic domain - works with LLM-only steps (no external connectors needed)
+# For travel/healthcare domains with connectors, see Enterprise edition
+
+steps:
+  - name: research
     type: llm-call
-    prompt_template: "Build a 3-day itinerary for {{.destination}}"
+    description: "Research and gather information"
+  - name: summarize
+    type: llm-call
+    description: "Summarize findings into a report"
+  - name: recommend
+    type: llm-call
+    description: "Generate actionable recommendations"
