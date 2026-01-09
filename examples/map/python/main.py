@@ -302,11 +302,15 @@ async def main() -> int:
                 "All step names are unique",
             )
 
-            # Check for expected step types
-            valid_types = {"llm-call", "action", "connector", "synthesis", "task"}
-            for i, stype in enumerate(step_types):
-                is_valid = stype in valid_types or stype != ""
-                assert_check(is_valid, f"Step {i+1} has valid type '{stype}'")
+            # Validate each step has a type and log details
+            known_types = {"llm-call", "action", "connector", "synthesis", "task"}
+            for i, (sname, stype) in enumerate(zip(step_names, step_types)):
+                assert_check(stype != "", f"Step {i+1} has a type")
+                # Log step details (don't fail on unknown types for forward compatibility)
+                if stype in known_types:
+                    print(f"     Step {i+1}: type={stype}, name={sname}")
+                else:
+                    print(f"     Step {i+1}: type={stype} (unknown), name={sname}")
         print()
 
         # ========================================

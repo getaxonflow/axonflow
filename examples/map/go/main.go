@@ -265,10 +265,15 @@ func main() {
 			}
 			stepNames[step.Name] = true
 
-			// Check step type
-			validTypes := map[string]bool{"llm-call": true, "action": true, "connector": true, "synthesis": true, "task": true}
-			isValid := validTypes[step.Type] || step.Type != ""
-			assert(isValid, fmt.Sprintf("Step %d has valid type '%s'", i+1, step.Type))
+			// Validate step has a type (must not be empty)
+			assert(step.Type != "", fmt.Sprintf("Step %d has a type", i+1))
+			// Log step details (don't fail on unknown types for forward compatibility)
+			knownTypes := map[string]bool{"llm-call": true, "action": true, "connector": true, "synthesis": true, "task": true}
+			if knownTypes[step.Type] {
+				fmt.Printf("     Step %d: type=%s, name=%s\n", i+1, step.Type, step.Name)
+			} else {
+				fmt.Printf("     Step %d: type=%s (unknown), name=%s\n", i+1, step.Type, step.Name)
+			}
 		}
 
 		assert(allHaveNames, "All steps have names")
