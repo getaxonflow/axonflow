@@ -1,0 +1,6 @@
+module mcp-policies-example
+
+go 1.21
+
+require github.com/getaxonflow/axonflow-sdk-go/v2 v2.2.0
+

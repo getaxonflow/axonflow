@@ -27,6 +27,7 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
+	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
@@ -724,6 +725,32 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Request-phase policy evaluation (before connector.Query)
+	var requestPolicyResult *sharedpolicy.RequestResult
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	if policyEngine != nil {
+		requestPolicyResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
+			TenantID:      user.TenantID,
+			ConnectorName: req.Connector,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategorySecuritySQLi,
+				sharedpolicy.CategorySecurityDangerous,
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+			},
+		})
+		if requestPolicyResult.Blocked {
+			log.Printf("[MCP] Request blocked by policy '%s': %s",
+				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
+			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
+				http.StatusForbidden, nil)
+			return
+		}
+	}
+
 	result, err := connector.Query(ctx, query)
 	if err != nil {
 		log.Printf("[MCP] Query failed: %v", err)
@@ -743,16 +770,62 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Response-phase policy evaluation (after connector.Query, for PII redaction)
+	var responsePolicyResult *sharedpolicy.ResponseResult
+	responseData := result.Rows
+	if policyEngine != nil {
+		responsePolicyResult = policyEngine.EvaluateResponse(ctx, result.Rows, sharedpolicy.EvalOptions{
+			TenantID:      user.TenantID,
+			ConnectorName: req.Connector,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+			},
+			MaxRedactions: 100, // Limit redactions per response
+		})
+		if responsePolicyResult.Blocked {
+			log.Printf("[MCP] Response blocked by policy '%s': %s",
+				responsePolicyResult.BlockedBy.PolicyID, responsePolicyResult.BlockReason)
+			sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason),
+				http.StatusForbidden, nil)
+			return
+		}
+		// Use redacted content if available
+		if responsePolicyResult.Redacted {
+			if redactedRows, ok := responsePolicyResult.Content.([]map[string]interface{}); ok {
+				responseData = redactedRows
+			}
+		}
+	}
+
+	// Build policy info for response
+	policyInfo := sharedpolicy.BuildPolicyInfo(requestPolicyResult, responsePolicyResult)
+	redactedFields := sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+
 	// 8. Return results
 	// SDK expects "data" field (ConnectorResponse.Data), not "rows"
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]interface{}{
 		"success":     true,
 		"connector":   req.Connector,
-		"data":        result.Rows, // SDK looks for "data" field in sdk/golang/axonflow.go:595
+		"data":        responseData, // SDK looks for "data" field in sdk/golang/axonflow.go:595
 		"row_count":   result.RowCount,
 		"duration_ms": result.Duration.Milliseconds(),
-	}); err != nil {
+	}
+
+	// Add policy info fields (additive, backward compatible)
+	if responsePolicyResult != nil && responsePolicyResult.Redacted {
+		response["redacted"] = true
+		response["redacted_fields"] = redactedFields
+	}
+	if policyInfo != nil {
+		response["policy_info"] = policyInfo
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding MCP query response: %v", err)
 	}
 
@@ -937,6 +1010,31 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+
+	// Request-phase policy evaluation (before connector.Execute)
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	if policyEngine != nil {
+		requestPolicyResult := policyEngine.EvaluateRequest(ctx, req.Statement, sharedpolicy.EvalOptions{
+			TenantID:      user.TenantID,
+			ConnectorName: req.Connector,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategorySecuritySQLi,
+				sharedpolicy.CategorySecurityDangerous,
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+			},
+		})
+		if requestPolicyResult.Blocked {
+			log.Printf("[MCP] Execute blocked by policy '%s': %s",
+				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
+			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
+				http.StatusForbidden, nil)
+			return
+		}
+	}
 
 	result, err := connector.Execute(ctx, cmd)
 	if err != nil {

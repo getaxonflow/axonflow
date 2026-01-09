@@ -29,6 +29,7 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // TestPreCheckHandler_CommunityMode tests pre-check in community mode
@@ -896,7 +897,9 @@ func TestPreCheckHandler_WithDataSources(t *testing.T) {
 }
 
 // TestPreCheckHandler_PIIDetection tests PII detection (redacts PII by default)
+// DEPRECATED: PII detection in Gateway pre-check now uses shared policy engine
 func TestPreCheckHandler_PIIDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
@@ -954,6 +957,7 @@ func TestPreCheckHandler_PIIDetection(t *testing.T) {
 
 // TestPreCheckHandler_PIIDetection_BlockMode tests that PII blocks when PII_ACTION=block
 func TestPreCheckHandler_PIIDetection_BlockMode(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
 	os.Setenv("PII_ACTION", "block") // Enable PII blocking
@@ -996,6 +1000,7 @@ func TestPreCheckHandler_PIIDetection_BlockMode(t *testing.T) {
 
 // TestPreCheckHandler_PIIDetection_LogOnly tests PII in log-only mode (no block, no redact)
 func TestPreCheckHandler_PIIDetection_LogOnly(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
 	os.Setenv("PII_ACTION", "log") // Log-only mode (no blocking or redaction)
@@ -2760,6 +2765,222 @@ func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 			if resp.RequiresRedaction != tt.expectRedaction {
 				t.Errorf("Expected RequiresRedaction=%v, got %v",
 					tt.expectRedaction, resp.RequiresRedaction)
+			}
+		})
+	}
+}
+
+// TestConvertSharedResultToStatic tests the conversion from shared policy engine
+// results to StaticPolicyResult for backward compatibility.
+func TestConvertSharedResultToStatic(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             *sharedpolicy.RequestResult
+		expectBlocked     bool
+		expectRedaction   bool
+		expectPolicyCount int
+	}{
+		{
+			name:              "nil result returns empty non-blocking result",
+			input:             nil,
+			expectBlocked:     false,
+			expectRedaction:   false,
+			expectPolicyCount: 0,
+		},
+		{
+			name: "blocked SQLi result",
+			input: &sharedpolicy.RequestResult{
+				Blocked:     true,
+				BlockReason: "SQL injection detected",
+				BlockedBy: &sharedpolicy.CompiledPolicy{
+					PolicyID: "sqli_union",
+					Severity: sharedpolicy.SeverityCritical,
+				},
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sqli_union",
+						Category: sharedpolicy.CategorySecuritySQLi,
+						Action:   sharedpolicy.ActionBlock,
+					},
+				},
+				ProcessingTimeMs: 5,
+			},
+			expectBlocked:     true,
+			expectRedaction:   false,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "PII detection with warn action sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false, // Not blocked because action is warn
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_ssn",
+						Category: sharedpolicy.CategoryPIIUS,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+				ProcessingTimeMs: 3,
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "PII India category sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_aadhaar",
+						Category: sharedpolicy.CategoryPIIIndia,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+				ProcessingTimeMs: 2,
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "PII EU category sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_eu_vat",
+						Category: sharedpolicy.CategoryPIIEU,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+				ProcessingTimeMs: 2,
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "PII Global category sets RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_email",
+						Category: sharedpolicy.CategoryPIIGlobal,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+				ProcessingTimeMs: 2,
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "blocked PII does not set RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked:     true,
+				BlockReason: "PII blocked",
+				BlockedBy: &sharedpolicy.CompiledPolicy{
+					PolicyID: "sys_pii_ssn",
+					Severity: sharedpolicy.SeverityCritical,
+				},
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "sys_pii_ssn",
+						Category: sharedpolicy.CategoryPIIUS,
+						Action:   sharedpolicy.ActionBlock,
+					},
+				},
+			},
+			expectBlocked:     true,
+			expectRedaction:   false,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "non-PII policy does not set RequiresRedaction",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "admin_access",
+						Category: sharedpolicy.CategoryAdminAccess,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+			},
+			expectBlocked:     false,
+			expectRedaction:   false,
+			expectPolicyCount: 1,
+		},
+		{
+			name: "multiple policies including PII",
+			input: &sharedpolicy.RequestResult{
+				Blocked: false,
+				MatchedPolicies: []sharedpolicy.PolicyMatch{
+					{
+						PolicyID: "admin_access",
+						Category: sharedpolicy.CategoryAdminAccess,
+						Action:   sharedpolicy.ActionLog,
+					},
+					{
+						PolicyID: "sys_pii_ssn",
+						Category: sharedpolicy.CategoryPIIUS,
+						Action:   sharedpolicy.ActionWarn,
+					},
+				},
+			},
+			expectBlocked:     false,
+			expectRedaction:   true,
+			expectPolicyCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertSharedResultToStatic(tt.input)
+
+			if result.Blocked != tt.expectBlocked {
+				t.Errorf("Blocked = %v, want %v", result.Blocked, tt.expectBlocked)
+			}
+
+			if result.RequiresRedaction != tt.expectRedaction {
+				t.Errorf("RequiresRedaction = %v, want %v", result.RequiresRedaction, tt.expectRedaction)
+			}
+
+			if len(result.TriggeredPolicies) != tt.expectPolicyCount {
+				t.Errorf("TriggeredPolicies count = %d, want %d", len(result.TriggeredPolicies), tt.expectPolicyCount)
+			}
+		})
+	}
+}
+
+// TestIsPIICategory tests the isPIICategory helper function.
+func TestIsPIICategory(t *testing.T) {
+	tests := []struct {
+		category sharedpolicy.PolicyCategory
+		expected bool
+	}{
+		{sharedpolicy.CategoryPIIGlobal, true},
+		{sharedpolicy.CategoryPIIUS, true},
+		{sharedpolicy.CategoryPIIIndia, true},
+		{sharedpolicy.CategoryPIIEU, true},
+		{sharedpolicy.CategorySecuritySQLi, false},
+		{sharedpolicy.CategorySecurityDangerous, false},
+		{sharedpolicy.CategoryAdminAccess, false},
+		{sharedpolicy.CategoryDataExfiltration, false},
+		{sharedpolicy.CategoryComplianceGDPR, false},
+		{sharedpolicy.CategoryComplianceHIPAA, false},
+		{sharedpolicy.CategoryComplianceRBI, false},
+		{sharedpolicy.CategoryComplianceSEBI, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.category), func(t *testing.T) {
+			result := isPIICategory(tt.category)
+			if result != tt.expected {
+				t.Errorf("isPIICategory(%s) = %v, want %v", tt.category, result, tt.expected)
 			}
 		})
 	}

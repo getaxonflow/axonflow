@@ -102,23 +102,26 @@ const response = await protectedOpenAI.chat.completions.create({
 Try sending sensitive data:
 
 ```typescript
-// Test with sensitive PII - should be blocked
+// Test with sensitive PII - flagged for redaction by default
 const ctx = await axonflow.getPolicyApprovedContext({
   userToken: 'test-user',
   query: 'My SSN is 123-45-6789 and credit card is 4111-1111-1111-1111'
 });
 
+if (ctx.requiresRedaction) {
+  console.log('PII detected, will be redacted in response:', ctx.policies);
+  // Output: ["pii_ssn_detection", "pii_credit_card_detection"]
+}
+
 if (!ctx.approved) {
   console.log('Blocked:', ctx.blockReason);
-  // Output: "Blocked: pii_ssn_detection" or similar
-} else {
-  // If approved, make LLM call + audit
+  // Only shown if PII_ACTION=block is configured
 }
 
 // AxonFlow will automatically:
-// - Block requests with SSN, credit card numbers
+// - Detect PII (SSN, credit cards) and flag for redaction
+// - Redact PII in responses (default: PII_ACTION=redact)
 // - Log all policy evaluations for compliance
-// - Return clear block reasons for debugging
 ```
 
 ## 5. Deploy (30 seconds)

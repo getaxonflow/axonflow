@@ -17,6 +17,7 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
+import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 import com.getaxonflow.sdk.types.PolicyApprovalRequest;
 import com.getaxonflow.sdk.types.PolicyApprovalResult;
 
@@ -103,7 +104,10 @@ public class PiiDetectionExample {
             System.out.printf("Test %d: %s%n", testNum++, test.name);
             System.out.printf("  Query: %s%n", truncate(test.query, 60));
 
-            PolicyApprovalResult result;
+            PolicyApprovalResult result = null;
+            boolean wasBlocked = false;
+            String blockReason = null;
+
             try {
                 result = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
@@ -111,42 +115,59 @@ public class PiiDetectionExample {
                         .userToken("pii-detection-user")
                         .build()
                 );
+            } catch (PolicyViolationException e) {
+                // Request was blocked by policy - this is expected for critical PII
+                wasBlocked = true;
+                blockReason = e.getBlockReason();
             } catch (Exception e) {
                 System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
                 System.exit(1);
                 return;
             }
 
-            // Validate context ID (UUID format)
-            assertCheck(
-                result.getContextId() != null && !result.getContextId().isEmpty(),
-                "contextId is not empty"
-            );
+            if (wasBlocked) {
+                // Request was blocked by policy
+                System.out.println("   Status: BLOCKED");
+                System.out.printf("   Reason: %s%n", blockReason);
 
-            // Check if request was approved
-            if (result.isApproved()) {
-                if (result.isRequiresRedaction()) {
-                    System.out.println("   Status: APPROVED (requires redaction)");
+                // Verify expected behavior for blocked requests
+                if (test.expectRedact) {
+                    assertCheck(true, "Critical PII detected and flagged for redaction");
                 } else {
-                    System.out.println("   Status: APPROVED");
+                    assertCheck(false, "No critical PII detected, request approved");
                 }
             } else {
-                // Request was blocked (only if PII_ACTION=block)
-                System.out.println("   Status: BLOCKED");
-                System.out.printf("   Reason: %s%n", result.getBlockReason());
-            }
-
-            // Get actual redaction status (blocked also counts as "requires handling")
-            boolean actualRequiresRedaction = result.isRequiresRedaction() || !result.isApproved();
-
-            // Verify expected behavior
-            if (test.expectRedact) {
-                assertCheck(actualRequiresRedaction, "Critical PII detected and flagged for redaction");
-            } else {
+                // Validate context ID (UUID format)
                 assertCheck(
-                    !actualRequiresRedaction && result.isApproved(),
-                    "No critical PII detected, request approved"
+                    result.getContextId() != null && !result.getContextId().isEmpty(),
+                    "contextId is not empty"
                 );
+
+                // Check if request was approved
+                if (result.isApproved()) {
+                    if (result.isRequiresRedaction()) {
+                        System.out.println("   Status: APPROVED (requires redaction)");
+                    } else {
+                        System.out.println("   Status: APPROVED");
+                    }
+                } else {
+                    // Request was blocked (only if PII_ACTION=block)
+                    System.out.println("   Status: BLOCKED");
+                    System.out.printf("   Reason: %s%n", result.getBlockReason());
+                }
+
+                // Get actual redaction status (blocked also counts as "requires handling")
+                boolean actualRequiresRedaction = result.isRequiresRedaction() || !result.isApproved();
+
+                // Verify expected behavior
+                if (test.expectRedact) {
+                    assertCheck(actualRequiresRedaction, "Critical PII detected and flagged for redaction");
+                } else {
+                    assertCheck(
+                        !actualRequiresRedaction && result.isApproved(),
+                        "No critical PII detected, request approved"
+                    );
+                }
             }
 
             System.out.println();

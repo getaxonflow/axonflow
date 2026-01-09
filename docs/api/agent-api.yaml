@@ -327,8 +327,18 @@ paths:
                       remaining: 995
                       reset_at: "2025-01-15T11:00:00Z"
                     expires_at: "2025-01-15T10:35:00Z"
+                piiRedaction:
+                  summary: PII detected - flagged for redaction (default)
+                  description: Default behavior (PII_ACTION=redact). Request approved but PII will be redacted in response.
+                  value:
+                    context_id: "ctx_abc123def456"
+                    approved: true
+                    requires_redaction: true
+                    policies:
+                      - "pii-ssn"
+                    expires_at: "2025-01-15T10:35:00Z"
                 blocked:
-                  summary: Request blocked
+                  summary: Request blocked (when PII_ACTION=block)
                   value:
                     context_id: "ctx_abc123def456"
                     approved: false
@@ -3264,6 +3274,61 @@ components:
           type: integer
         duration_ms:
           type: integer
+        redacted:
+          type: boolean
+          description: Whether any fields in the response were redacted by policy enforcement
+        redacted_fields:
+          type: array
+          items:
+            type: string
+          description: JSON paths of fields that were redacted (e.g., "data.rows[0].ssn")
+        policy_info:
+          $ref: '#/components/schemas/PolicyInfo'
+
+    PolicyInfo:
+      type: object
+      description: Policy evaluation information included in MCP responses
+      properties:
+        policies_evaluated:
+          type: integer
+          description: Number of policies evaluated during request/response processing
+        blocked:
+          type: boolean
+          description: Whether the request was blocked by policy
+        block_reason:
+          type: string
+          description: Reason if the request was blocked
+        redactions_applied:
+          type: integer
+          description: Number of field redactions applied to the response
+        processing_time_ms:
+          type: integer
+          description: Time spent on policy evaluation in milliseconds
+        matched_policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyMatchInfo'
+          description: Policies that matched during evaluation
+
+    PolicyMatchInfo:
+      type: object
+      description: Information about a policy match during evaluation
+      properties:
+        policy_id:
+          type: string
+          description: Unique policy identifier
+        policy_name:
+          type: string
+          description: Human-readable policy name
+        category:
+          type: string
+          description: Policy category (e.g., "pii-us", "security-sqli")
+        severity:
+          type: string
+          description: Match severity (low, medium, high, critical)
+        action:
+          type: string
+          description: Action taken (block, redact, warn, log)
 
     MCPExecuteRequest:
       type: object

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.1.0] - 2026-01-09
+
+### Added
+
+- **MCP Tiered Policy Enforcement** (#963, #975): Phase-aware policy enforcement for MCP connector requests
+  - REQUEST phase: SQLi pattern blocking (DROP TABLE, UNION SELECT, OR 1=1, DELETE, TRUNCATE)
+  - REQUEST phase: Critical PII blocking (SSN, Credit Card, India PAN, Aadhaar)
+  - RESPONSE phase: PII redaction in connector data (SSN, Credit Card masked)
+  - PolicyInfo metadata in all MCP responses (`policies_evaluated`, `redactions_applied`, `processing_time_ms`)
+  - Non-critical PII (Email, Phone) allowed through with logging
+
+- **MCP PII Redaction Examples**: Comprehensive examples for all 4 SDKs + HTTP API
+  - `examples/mcp-policies/pii-redaction/go/` - Go SDK example
+  - `examples/mcp-policies/pii-redaction/python/` - Python SDK example
+  - `examples/mcp-policies/pii-redaction/typescript/` - TypeScript SDK example
+  - `examples/mcp-policies/pii-redaction/java/` - Java SDK example
+  - `examples/mcp-policies/pii-redaction/http/` - HTTP API examples (curl)
+
+### Enterprise
+
+- **Healthcare PHI Patterns**: Enterprise example for HIPAA-compliant PHI detection
+  - Medical Record Number (MRN) detection
+  - DEA Number detection
+  - NPI (National Provider Identifier) detection
+  - Medicare Beneficiary Identifier (MBI) detection
+  - ICD-10 code detection
+
+### Fixed
+
+- **Healthcare example**: Fixed policy verification to use `GetStaticPolicy` instead of `ListStaticPolicies`
+
+---
+
 ## [3.0.2] - 2026-01-08
 
 ### Fixed

@@ -380,3 +380,23 @@ func TestPolicyTypeConstants(t *testing.T) {
 		t.Errorf("TypeDynamic = %s, expected dynamic", TypeDynamic)
 	}
 }
+
+func TestCodeGovernanceCategories(t *testing.T) {
+	categories := CodeGovernanceCategories()
+
+	expected := []PolicyCategory{
+		CategoryCodeSecrets,
+		CategoryCodeUnsafe,
+		CategoryCodeCompliance,
+	}
+
+	if len(categories) != len(expected) {
+		t.Errorf("CodeGovernanceCategories() returned %d categories, expected %d", len(categories), len(expected))
+	}
+
+	for i, cat := range expected {
+		if categories[i] != cat {
+			t.Errorf("CodeGovernanceCategories()[%d] = %s, expected %s", i, categories[i], cat)
+		}
+	}
+}
