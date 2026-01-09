@@ -167,11 +167,13 @@ async def main():
 
         try:
             dynamic_policies = await client.list_dynamic_policies()
-            # API may return list directly or wrapped in dict
-            if isinstance(dynamic_policies, list):
+            # API may return list directly, wrapped in dict, or None
+            if dynamic_policies is None:
+                dyn_list = []
+            elif isinstance(dynamic_policies, list):
                 dyn_list = dynamic_policies
             else:
-                dyn_list = dynamic_policies.get("policies", dynamic_policies.get("data", []))
+                dyn_list = dynamic_policies.get("policies", dynamic_policies.get("data", [])) or []
 
             print(f"\n  Found {len(dyn_list)} dynamic policies:")
             for p in dyn_list[:5]:
