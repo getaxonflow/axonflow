@@ -95,7 +95,7 @@ func testParameterizedQuery(agentURL string) bool {
 	fmt.Println("  Expected order after sorting: alpha, middle, zebra")
 
 	req := MCPQueryRequest{
-		Connector: "axonflow_rds",
+		Connector: "postgres",
 		Statement: "SELECT $1::text as first_param, $2::text as second_param, $3::text as third_param",
 		Parameters: map[string]interface{}{
 			"zebra":  "Z",
@@ -152,7 +152,7 @@ func testDeterminism(agentURL string, iterations int) bool {
 
 	for i := 0; i < iterations; i++ {
 		req := MCPQueryRequest{
-			Connector: "axonflow_rds",
+			Connector: "postgres",
 			Statement: "SELECT $1::text as p1, $2::text as p2, $3::text as p3, $4::text as p4, $5::text as p5",
 			Parameters: map[string]interface{}{
 				"echo":    "E",
@@ -198,7 +198,7 @@ func testSingleParam(agentURL string) bool {
 	fmt.Println("\nTest 3: Single parameter query...")
 
 	req := MCPQueryRequest{
-		Connector: "axonflow_rds",
+		Connector: "postgres",
 		Statement: "SELECT $1::text as value",
 		Parameters: map[string]interface{}{
 			"only_param": "SINGLE",
@@ -236,7 +236,7 @@ func testEmptyParams(agentURL string) bool {
 	fmt.Println("\nTest 4: Query with no parameters...")
 
 	req := MCPQueryRequest{
-		Connector:  "axonflow_rds",
+		Connector:  "postgres",
 		Statement:  "SELECT 'no params' as result",
 		Parameters: map[string]interface{}{},
 	}

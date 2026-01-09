@@ -43,7 +43,7 @@ def test_parameterized_query(agent_url: str) -> bool:
     print("  Expected order after sorting: alpha, middle, zebra")
 
     request = {
-        "connector": "axonflow_rds",
+        "connector": "postgres",
         "statement": "SELECT $1::text as first_param, $2::text as second_param, $3::text as third_param",
         "parameters": {
             "zebra": "Z",
@@ -100,7 +100,7 @@ def test_determinism(agent_url: str, iterations: int = 10) -> bool:
     print(f"\nTest 2: Determinism test ({iterations} iterations)...")
 
     request = {
-        "connector": "axonflow_rds",
+        "connector": "postgres",
         "statement": "SELECT $1::text as p1, $2::text as p2, $3::text as p3, $4::text as p4, $5::text as p5",
         "parameters": {
             "echo": "E",
@@ -153,7 +153,7 @@ def test_single_param(agent_url: str) -> bool:
     print("\nTest 3: Single parameter query...")
 
     request = {
-        "connector": "axonflow_rds",
+        "connector": "postgres",
         "statement": "SELECT $1::text as value",
         "parameters": {
             "only_param": "SINGLE"
@@ -196,7 +196,7 @@ def test_empty_params(agent_url: str) -> bool:
     print("\nTest 4: Query with no parameters...")
 
     request = {
-        "connector": "axonflow_rds",
+        "connector": "postgres",
         "statement": "SELECT 'no params' as result",
         "parameters": {}
     }

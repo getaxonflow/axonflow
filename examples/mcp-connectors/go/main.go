@@ -63,9 +63,9 @@ func main() {
 	fmt.Println("==============================================")
 	fmt.Printf("Orchestrator URL: %s\n\n", orchestratorURL)
 
-	// Test 1: Query axonflow_rds connector through orchestrator
-	// Note: "axonflow_rds" is the default postgres connector registered when DATABASE_URL is set
-	fmt.Println("Test 1: Query axonflow_rds connector via orchestrator...")
+	// Test 1: Query postgres connector through orchestrator
+	// Note: "postgres" is the default postgres connector registered when DATABASE_URL is set
+	fmt.Println("Test 1: Query postgres connector via orchestrator...")
 
 	req := OrchestratorRequest{
 		RequestID:   fmt.Sprintf("mcp-test-%d", time.Now().UnixNano()),
@@ -81,7 +81,7 @@ func main() {
 			TenantID: "default",
 		},
 		Context: map[string]interface{}{
-			"connector": "axonflow_rds",
+			"connector": "postgres",
 			"params":    map[string]interface{}{},
 		},
 	}
