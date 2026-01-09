@@ -128,7 +128,7 @@ Content-Type: application/json
 X-Tenant-ID: default
 
 {
-  "connector": "axonflow_rds",
+  "connector": "postgres",
   "statement": "SELECT $1::text as value",
   "parameters": {"key": "value"}
 }
