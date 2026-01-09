@@ -42,6 +42,7 @@ import (
 	"axonflow/platform/agent/marketplace"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/common/usage"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // AxonFlow Agent - Authentication, Authorization & Static Policy Enforcement Gateway
@@ -636,6 +637,10 @@ func Run() {
 		// Initialize tier-aware policy engine for tenant-specific policy evaluation
 		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
 		log.Println("✅ Tier-aware policy engine initialized (tenant policies enabled)")
+
+		// Initialize unified shared policy engine for MCP request/response evaluation
+		sharedpolicy.InitGlobalEngine(authDB, sharedpolicy.DefaultEngineConfig(), nil)
+		log.Println("✅ Shared policy engine initialized for MCP (phase-aware enforcement)")
 
 		// Initialize AWS Marketplace metering (if enabled)
 		if os.Getenv("ENABLE_MARKETPLACE_METERING") == "true" {

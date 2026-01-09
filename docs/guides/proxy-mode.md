@@ -142,8 +142,10 @@ try {
       messages: [{ role: 'user', content: 'My SSN is 123-45-6789' }]
     });
   });
+  // Default: PII flagged for redaction (request proceeds, response redacted)
+  // If PII_ACTION=block configured: throws error
 } catch (error) {
-  // error.message: "Request blocked by AxonFlow: PII detected"
+  // Only if PII_ACTION=block: "Request blocked by AxonFlow: PII detected"
 }
 ```
 

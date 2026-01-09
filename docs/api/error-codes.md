@@ -473,7 +473,27 @@ X-RateLimit-Reset: 1705312200
 
 ## Policy-Specific Errors
 
-### PII Detection Block
+### PII Detection (Default: Redact)
+
+By default (`PII_ACTION=redact`), PII is flagged for redaction rather than blocked:
+
+```json
+{
+  "success": true,
+  "approved": true,
+  "requires_redaction": true,
+  "policies": ["pii-ssn"],
+  "policy_info": {
+    "policies_evaluated": ["pii-ssn", "pii-credit-card", "pii-email"],
+    "triggered_policies": ["pii-ssn"],
+    "processing_time": "0.8ms"
+  }
+}
+```
+
+### PII Detection Block (When PII_ACTION=block)
+
+When configured with `PII_ACTION=block`, PII triggers a blocking response:
 
 ```json
 {

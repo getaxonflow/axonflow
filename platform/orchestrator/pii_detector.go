@@ -9,13 +9,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// PII DETECTION - SHARED ENGINE INTEGRATION (Issues #963, #975)
+// =============================================================================
+// This file provides enhanced PII detection with context-aware validation.
+// As of Issue #963, the shared policy engine (platform/shared/policy/) is the
+// primary PII detection mechanism for MCP requests. This EnhancedPIIDetector
+// is used for:
+//   - LLM response scanning (response_processor.go)
+//   - Context-aware confidence scoring
+//   - Backward compatibility with existing consumers
+//
+// For MCP policy enforcement, use platform/shared/policy/ directly.
+// =============================================================================
+
 package orchestrator
 
 import (
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // PIIType represents different categories of personally identifiable information
@@ -937,4 +953,80 @@ func FilterByConfidence(results []PIIDetectionResult, minConfidence float64) []P
 		}
 	}
 	return filtered
+}
+
+// =============================================================================
+// Shared Policy Engine Integration (Issues #963, #975)
+// =============================================================================
+
+// DetectWithSharedEngine uses the shared policy engine for PII detection.
+// This is the preferred method for MCP request/response processing.
+// Falls back to EnhancedPIIDetector if shared engine is unavailable.
+func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID string) (*sharedpolicy.ResponseResult, bool) {
+	engine := sharedpolicy.GetGlobalEngine()
+	if engine == nil {
+		return nil, false
+	}
+
+	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
+		TenantID: tenantID,
+		Categories: []sharedpolicy.PolicyCategory{
+			sharedpolicy.CategoryPIIGlobal,
+			sharedpolicy.CategoryPIIUS,
+			sharedpolicy.CategoryPIIIndia,
+			sharedpolicy.CategoryPIIEU,
+		},
+	})
+
+	return result, true
+}
+
+// ConvertSharedResultToPIIResults converts shared engine results to legacy PIIDetectionResult format.
+// This allows existing consumers to use the shared engine without code changes.
+func ConvertSharedResultToPIIResults(result *sharedpolicy.ResponseResult) []PIIDetectionResult {
+	if result == nil {
+		return nil
+	}
+
+	var piiResults []PIIDetectionResult
+	for _, match := range result.MatchedPolicies {
+		piiResults = append(piiResults, PIIDetectionResult{
+			Type:       mapCategoryToPIIType(match.Category),
+			Value:      "[DETECTED]", // Actual value not exposed for security
+			Severity:   mapSeverityToPIISeverity(match.Severity),
+			Confidence: 1.0, // Shared engine uses validation, so high confidence
+		})
+	}
+
+	return piiResults
+}
+
+// mapCategoryToPIIType maps shared policy categories to PIIType
+func mapCategoryToPIIType(category sharedpolicy.PolicyCategory) PIIType {
+	switch category {
+	case sharedpolicy.CategoryPIIUS:
+		return PIITypeSSN // US PII commonly includes SSN
+	case sharedpolicy.CategoryPIIGlobal:
+		return PIITypeCreditCard // Global PII includes credit cards
+	case sharedpolicy.CategoryPIIIndia:
+		return PIITypeBankAccount // Placeholder for Aadhaar/PAN
+	case sharedpolicy.CategoryPIIEU:
+		return PIITypeIBAN // EU PII commonly includes IBAN
+	default:
+		return PIITypeEmail // Default to medium severity type
+	}
+}
+
+// mapSeverityToPIISeverity maps shared policy severity to PIISeverity
+func mapSeverityToPIISeverity(severity sharedpolicy.Severity) PIISeverity {
+	switch severity {
+	case sharedpolicy.SeverityCritical:
+		return PIISeverityCritical
+	case sharedpolicy.SeverityHigh:
+		return PIISeverityHigh
+	case sharedpolicy.SeverityMedium:
+		return PIISeverityMedium
+	default:
+		return PIISeverityLow
+	}
 }

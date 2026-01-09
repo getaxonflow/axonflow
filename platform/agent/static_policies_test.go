@@ -49,6 +49,7 @@ func TestNewStaticPolicyEngine(t *testing.T) {
 		t.Errorf("Expected 4 admin access patterns, got %v", adminPatterns)
 	}
 
+	// PII patterns include credit cards, SSN, PAN, Aadhaar, email, phone, IP, IBAN, passport, DOB, bank account, booking ref
 	piiPatterns, ok := stats["pii_patterns"].(int)
 	if !ok || piiPatterns != 12 {
 		t.Errorf("Expected 12 PII patterns (including PAN and Aadhaar), got %v", piiPatterns)
@@ -515,7 +516,10 @@ func TestEmptyQueryValidation(t *testing.T) {
 }
 
 // TestPIIDetection tests PII pattern detection
+// DEPRECATED: PII detection has been migrated to the unified shared policy engine
+// in platform/shared/policy/ (Issues #963, #975). See engine_test.go there for tests.
 func TestPIIDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	// Default behavior: PII_ACTION=redact (redacts but doesn't block)
 	engine := NewStaticPolicyEngine()
 	user := &User{
@@ -603,7 +607,9 @@ func TestPIIDetection(t *testing.T) {
 }
 
 // TestPIIDetection_BlockMode tests that PII blocks when PII_ACTION=block
+// DEPRECATED: PII detection migrated to shared policy engine
 func TestPIIDetection_BlockMode(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	// Set env var to enable PII blocking
 	os.Setenv("PII_ACTION", "block")
 	defer os.Unsetenv("PII_ACTION")
@@ -640,7 +646,9 @@ func TestPIIDetection_BlockMode(t *testing.T) {
 }
 
 // TestPIIDetection_Disabled tests that PII blocking can be disabled via env var
+// DEPRECATED: PII detection migrated to shared policy engine
 func TestPIIDetection_Disabled(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	// Set env var to log-only mode (no blocking or redaction)
 	os.Setenv("PII_ACTION", "log")
 	defer os.Unsetenv("PII_ACTION")
@@ -928,10 +936,14 @@ func containsCheck(checks []string, check string) bool {
 
 // =============================================================================
 // Enhanced PII Detection Tests
+// DEPRECATED: All PII detection has been migrated to the unified shared policy
+// engine in platform/shared/policy/ (Issues #963, #975). Tests for PII detection
+// are now in platform/shared/policy/engine_test.go and validators_test.go.
 // =============================================================================
 
 // TestEnhancedPIIDetection tests the expanded PII pattern detection
 func TestEnhancedPIIDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1031,6 +1043,7 @@ func TestEnhancedPIIDetection(t *testing.T) {
 
 // TestPIIFalsePositivePrevention tests that common patterns don't trigger false positives
 func TestPIIFalsePositivePrevention(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1148,6 +1161,7 @@ func TestValidateCreditCard(t *testing.T) {
 
 // TestCreditCardNetworkDetection tests detection of different card networks
 func TestCreditCardNetworkDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1183,7 +1197,9 @@ func TestCreditCardNetworkDetection(t *testing.T) {
 // TestCreditCardFormattedDetection tests detection of credit cards with separators
 // This is critical for Amex (15-digit, 4-4-4-3 format) and Diners Club (14-digit, 4-4-4-2 format)
 // which were NOT detected before this fix.
+// DEPRECATED: PII detection migrated to shared policy engine
 func TestCreditCardFormattedDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1264,6 +1280,7 @@ func TestCreditCardFormattedDetection(t *testing.T) {
 
 // TestCreditCardPatternRegex directly tests the regex pattern for credit cards
 func TestCreditCardPatternRegex(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 
 	// Find the credit card pattern
@@ -1352,6 +1369,7 @@ func TestCreditCardPatternRegex(t *testing.T) {
 // 2. Valid Aadhaar numbers are still detected correctly
 // This is a regression test for the pattern ordering fix.
 func TestCreditCardVsAadhaarRegression(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1423,6 +1441,7 @@ func TestCreditCardVsAadhaarRegression(t *testing.T) {
 
 // TestPIIPolicyStats tests that enhanced patterns are counted correctly
 func TestPIIPolicyStats(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	stats := engine.GetPolicyStats()
 
@@ -1437,6 +1456,7 @@ func TestPIIPolicyStats(t *testing.T) {
 
 // TestMultiplePIIInSingleQuery tests detection of multiple PII types
 func TestMultiplePIIInSingleQuery(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1483,6 +1503,7 @@ func TestMultiplePIIInSingleQuery(t *testing.T) {
 
 // TestPIIDetectionPerformance tests that PII detection is fast
 func TestPIIDetectionPerformance(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1511,10 +1532,12 @@ func TestPIIDetectionPerformance(t *testing.T) {
 // =============================================================================
 // Indian PII Detection Tests (SEBI AI/ML Guidelines & DPDP Act 2023)
 // These tests verify the StaticPolicyEngine detection of PAN and Aadhaar
+// DEPRECATED: Migrated to shared policy engine (platform/shared/policy/)
 // =============================================================================
 
 // TestStaticPANDetection tests Indian PAN detection in the StaticPolicyEngine
 func TestStaticPANDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1665,6 +1688,7 @@ func TestStaticPANDetection(t *testing.T) {
 
 // TestStaticAadhaarDetection tests Indian Aadhaar detection in the StaticPolicyEngine
 func TestStaticAadhaarDetection(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1886,6 +1910,7 @@ func TestValidateAadhaar(t *testing.T) {
 
 // TestIndianPIIPerformance tests that Indian PII detection is fast
 func TestIndianPIIPerformance(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,
@@ -1912,6 +1937,7 @@ func TestIndianPIIPerformance(t *testing.T) {
 
 // TestCombinedIndianPII tests detection when both PAN and Aadhaar are present
 func TestCombinedIndianPII(t *testing.T) {
+	t.Skip("PII detection migrated to shared policy engine (platform/shared/policy/) - Issues #963, #975")
 	engine := NewStaticPolicyEngine()
 	user := &User{
 		ID:          1,

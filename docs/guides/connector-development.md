@@ -700,6 +700,58 @@ log.Printf("[%s] Query executed: statement=%s, rows=%d, duration=%v",
 - Implement rate limiting if needed
 - Handle sensitive data carefully
 
+## Policy Enforcement
+
+As of Issue #963, all MCP connector requests go through phase-aware policy enforcement:
+
+### Request Phase
+
+Before `connector.Query()` is called, the policy engine evaluates the query:
+- SQL injection patterns are blocked
+- Dangerous operations (DROP, TRUNCATE) are blocked
+- Admin-only tables require authorization
+
+If a policy blocks the request, your connector's `Query()` method is never called.
+
+### Response Phase
+
+After your connector returns data, the policy engine scans for sensitive data:
+- PII (SSN, credit cards, Aadhaar, etc.) is automatically redacted
+- The response includes `redacted: true` and `redacted_fields` metadata
+- `policy_info` provides evaluation details
+
+### Response Schema
+
+Connector responses now include policy metadata:
+
+```json
+{
+  "success": true,
+  "data": [...],
+  "redacted": true,
+  "redacted_fields": ["data[0].ssn"],
+  "policy_info": {
+    "policies_evaluated": 15,
+    "blocked": false,
+    "redactions_applied": 1,
+    "processing_time_ms": 3
+  }
+}
+```
+
+### SDK Integration
+
+SDK consumers should handle the new fields:
+
+```go
+resp, err := client.MCPQuery(ctx, req)
+if resp.Redacted {
+    log.Printf("Fields redacted: %v", resp.RedactedFields)
+}
+```
+
+See the [MCP Policy Enforcement Guide](/mcp/policy-enforcement) for details.
+
 ## Contributing
 
 1. Fork the repository

@@ -304,6 +304,96 @@ func TestHandleCreateStaticPolicy(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateStaticPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		policyID       string
+		tenantID       string
+		requestBody    map[string]interface{}
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:           "invalid JSON body",
+			policyID:       "test-policy",
+			tenantID:       "test-tenant",
+			requestBody:    nil, // will send invalid JSON
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:     "policy not found",
+			policyID: "nonexistent",
+			tenantID: "test-tenant",
+			requestBody: map[string]interface{}{
+				"name":        "Updated Policy",
+				"pattern":     "new.*pattern",
+				"description": "Updated description",
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// Query to get existing policy returns empty
+				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+					WithArgs("nonexistent").
+					WillReturnRows(sqlmock.NewRows([]string{}))
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:     "missing policy ID in URL",
+			policyID: "",
+			tenantID: "test-tenant",
+			requestBody: map[string]interface{}{
+				"name": "Updated Policy",
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// Handler tries to query with empty ID, resulting in not found error
+				mock.ExpectQuery(`SELECT.*FROM static_policies WHERE`).
+					WithArgs("").
+					WillReturnRows(sqlmock.NewRows([]string{}))
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			var body []byte
+			if tt.requestBody != nil {
+				body, _ = json.Marshal(tt.requestBody)
+			} else {
+				body = []byte("invalid json{")
+			}
+
+			req := httptest.NewRequest("PUT", "/api/v1/static-policies/"+tt.policyID, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tt.policyID != "" {
+				req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
+			}
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				req.Header.Set("X-User-ID", "test-user")
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleUpdateStaticPolicy(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleDeleteStaticPolicy(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -740,6 +830,91 @@ func TestHandleDeleteOverride(t *testing.T) {
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleListOverrides(t *testing.T) {
+	tests := []struct {
+		name           string
+		tenantID       string
+		setupMock      func(sqlmock.Sqlmock)
+		expectedStatus int
+	}{
+		{
+			name:           "missing tenant ID",
+			tenantID:       "",
+			setupMock:      func(mock sqlmock.Sqlmock) {},
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:     "success - empty list",
+			tenantID: "test-tenant",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(`SELECT.*FROM policy_overrides`).
+					WillReturnRows(sqlmock.NewRows([]string{
+						"id", "policy_id", "policy_type", "organization_id", "tenant_id",
+						"action_override", "enabled_override", "override_reason", "expires_at",
+						"created_by", "created_at", "updated_by", "updated_at",
+					}))
+			},
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:     "success - with overrides",
+			tenantID: "test-tenant",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				rows := sqlmock.NewRows([]string{
+					"id", "policy_id", "policy_type", "organization_id", "tenant_id",
+					"action_override", "enabled_override", "override_reason", "expires_at",
+					"created_by", "created_at", "updated_by", "updated_at",
+				}).AddRow(
+					"override-1", "test-policy", "static", nil, "test-tenant",
+					"warn", true, "Testing", nil,
+					"user", testTime, "user", testTime,
+				)
+
+				mock.ExpectQuery(`SELECT.*FROM policy_overrides`).
+					WillReturnRows(rows)
+			},
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("failed to create mock db: %v", err)
+			}
+			defer db.Close()
+
+			tt.setupMock(mock)
+
+			handler := NewStaticPolicyAPIHandler(db)
+
+			req := httptest.NewRequest("GET", "/api/v1/static-policies/overrides", nil)
+			if tt.tenantID != "" {
+				req.Header.Set("X-Tenant-ID", tt.tenantID)
+			}
+			rr := httptest.NewRecorder()
+
+			handler.HandleListOverrides(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d: %s", tt.expectedStatus, rr.Code, rr.Body.String())
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var response map[string]interface{}
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Fatalf("failed to parse response: %v", err)
+				}
+
+				if _, ok := response["overrides"]; !ok {
+					t.Error("expected 'overrides' field in response")
+				}
 			}
 		})
 	}
