@@ -401,3 +401,5 @@ This channel is intended for technical questions about semantics, guarantees, or
 ---
 
 _Quick Start verified locally: Jan 2026_
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=ece81e19-1365-4ed9-b8c0-7a92ecf04292" />
