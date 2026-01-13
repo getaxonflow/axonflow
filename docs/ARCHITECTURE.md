@@ -273,6 +273,56 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 
 ## Core Services
 
+### System Components
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           AXONFLOW COMPONENTS                                │
+│                                                                              │
+│                              ┌─────────────────────────────────────────┐    │
+│                              │          LLM Providers                   │    │
+│                              │  ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │
+│                              │  │ OpenAI  │ │Anthropic│ │ Gemini  │   │    │
+│                              │  └─────────┘ └─────────┘ └─────────┘   │    │
+│                              │  ┌─────────┐ ┌─────────┐               │    │
+│                              │  │ Azure   │ │ Ollama  │               │    │
+│                              │  └─────────┘ └─────────┘               │    │
+│                              └──────────────────▲──────────────────────┘    │
+│                                                 │                            │
+│   ┌─────────┐      ┌──────────────────┐      ┌──────────────────┐          │
+│   │         │      │  Agent (:8080)   │      │Orchestrator(:8081)│          │
+│   │   App   │─────▶│                  │─────▶│                  │──────────┤
+│   │         │      │  • Static Policy │      │  • Dynamic Policy │          │
+│   └─────────┘      │  • PII Detection │      │  • LLM Routing    │          │
+│                    │  • SQLi Scanning │      │  • Cost Controls  │          │
+│                    │  • Rate Limits   │      │  • MAP Planning   │          │
+│                    │  • Gateway APIs  │      │  • Execution Replay│         │
+│                    │  • MCP Handler   │      │                    │          │
+│                    └────────┬─────────┘      └─────────┬──────────┘          │
+│                             │                          │                     │
+│                             │    ┌─────────────────────┘                     │
+│                             │    │                                           │
+│                             ▼    ▼                                           │
+│                    ┌─────────────────────┐    ┌──────────────────┐          │
+│                    │  PostgreSQL (:5432) │    │   Redis (:6379)  │          │
+│                    │                     │    │                  │          │
+│                    │  • Policies         │    │  • Rate Limits   │          │
+│                    │  • Audit Logs       │    │  • Policy Cache  │          │
+│                    │  • Cost Budgets     │    │  • Session State │          │
+│                    │  • Tenant Config    │    │                  │          │
+│                    └─────────────────────┘    └──────────────────┘          │
+│                                                                              │
+│   docker compose up -d                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Data Flow:**
+1. **App → Agent**: All requests enter through the Agent on port 8080
+2. **Agent → Orchestrator**: In Proxy Mode, approved requests route to Orchestrator for LLM execution
+3. **Agent ↔ Postgres**: Static policies loaded at startup, audit logs written per-request
+4. **Agent ↔ Redis**: Rate limit counters, policy cache (5-min TTL)
+5. **Orchestrator → LLM**: Routes to configured providers based on cost, latency, or policy rules
+
 ### Agent Service (`:8080`)
 
 **Location:** `platform/agent/`
