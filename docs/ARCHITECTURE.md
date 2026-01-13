@@ -26,6 +26,27 @@ AxonFlow treats agents as long-running, stateful systems that require governance
 
 AxonFlow is a **control plane**, not an orchestration framework. It doesn't replace LangChain or CrewAI — it makes them operable in production.
 
+```
+┌─────────────┐      ┌─────────────────────────────┐      ┌─────────────────┐
+│             │      │          AxonFlow           │      │  LLM Providers  │
+│    Your     │ ───▶ │  ┌─────────┐  ┌─────────┐  │ ───▶ │  OpenAI         │
+│    App      │      │  │ Policy  │  │  Audit  │  │      │  Anthropic      │
+│             │ ◀─── │  │ Engine  │  │   Log   │  │ ◀─── │  Gemini         │
+└─────────────┘      │  └─────────┘  └─────────┘  │      └─────────────────┘
+                     └─────────────────────────────┘
+                                  │
+                                  ▼
+                     ┌─────────────────────────────┐
+                     │      MCP Connectors         │
+                     │  Postgres, Salesforce, S3   │
+                     └─────────────────────────────┘
+```
+
+**AxonFlow provides:**
+- **Policy enforcement** — Block PII, SQLi, dangerous queries before they reach LLMs
+- **Audit logging** — Complete trail of every AI decision for compliance
+- **Cost controls** — Budget limits and usage tracking per tenant
+
 ### Gateway Mode (Recommended for Existing Stacks)
 
 AxonFlow wraps your existing agent framework with pre-execution checks and post-execution audit:
