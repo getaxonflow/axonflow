@@ -1,0 +1,302 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
+package policy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// DynamicPolicyEvaluator handles optional Orchestrator calls for dynamic policies.
+// Dynamic policies support rate limiting, budget controls, time-based access, and role-based access.
+//
+// Thread Safety: All methods are safe for concurrent use.
+//
+// Usage:
+//
+//	evaluator := NewDynamicPolicyEvaluator(DefaultDynamicPolicyConfig())
+//	if evaluator.IsEnabled("postgres") {
+//	    resp, err := evaluator.Evaluate(ctx, request)
+//	    if err != nil { /* handle graceful degradation */ }
+//	    if !resp.Allowed { /* block request */ }
+//	}
+type DynamicPolicyEvaluator struct {
+	config     DynamicPolicyConfig
+	httpClient *http.Client
+	mu         sync.RWMutex
+}
+
+// NewDynamicPolicyEvaluator creates a new dynamic policy evaluator.
+func NewDynamicPolicyEvaluator(config DynamicPolicyConfig) *DynamicPolicyEvaluator {
+	return &DynamicPolicyEvaluator{
+		config: config,
+		httpClient: &http.Client{
+			Timeout: config.Timeout,
+		},
+	}
+}
+
+// NewDynamicPolicyEvaluatorFromEnv creates a DynamicPolicyEvaluator configured from environment variables.
+//
+// Environment variables:
+//   - MCP_DYNAMIC_POLICIES_ENABLED: Enable/disable (default: false)
+//   - MCP_DYNAMIC_POLICIES_ENDPOINT: Orchestrator endpoint (default: http://localhost:8081)
+//   - MCP_DYNAMIC_POLICIES_TIMEOUT: Timeout in seconds (default: 5)
+//   - MCP_DYNAMIC_POLICIES_GRACEFUL: Graceful degradation (default: true)
+//   - MCP_DYNAMIC_POLICIES_CONNECTORS: Comma-separated connectors (empty = all)
+func NewDynamicPolicyEvaluatorFromEnv() *DynamicPolicyEvaluator {
+	config := DefaultDynamicPolicyConfig()
+
+	// Parse MCP_DYNAMIC_POLICIES_ENABLED
+	if val := os.Getenv("MCP_DYNAMIC_POLICIES_ENABLED"); val != "" {
+		config.Enabled = val == "true" || val == "1" || val == "yes"
+	}
+
+	// Parse MCP_DYNAMIC_POLICIES_ENDPOINT
+	if val := os.Getenv("MCP_DYNAMIC_POLICIES_ENDPOINT"); val != "" {
+		config.OrchestratorEndpoint = val
+	}
+
+	// Parse MCP_DYNAMIC_POLICIES_TIMEOUT
+	if val := os.Getenv("MCP_DYNAMIC_POLICIES_TIMEOUT"); val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			config.Timeout = d
+		} else {
+			log.Printf("[DynamicPolicyEvaluator] Invalid MCP_DYNAMIC_POLICIES_TIMEOUT: %s, using default", val)
+		}
+	}
+
+	// Parse MCP_DYNAMIC_POLICIES_GRACEFUL
+	if val := os.Getenv("MCP_DYNAMIC_POLICIES_GRACEFUL"); val != "" {
+		config.GracefulDegradation = val == "true" || val == "1" || val == "yes"
+	}
+
+	// Parse MCP_DYNAMIC_POLICIES_CONNECTORS
+	if val := os.Getenv("MCP_DYNAMIC_POLICIES_CONNECTORS"); val != "" {
+		connectors := strings.Split(val, ",")
+		for i, c := range connectors {
+			connectors[i] = strings.TrimSpace(c)
+		}
+		config.EnabledConnectors = connectors
+	}
+
+	log.Printf("[DynamicPolicyEvaluator] Initialized: enabled=%v, endpoint=%s, timeout=%v, graceful=%v, connectors=%v",
+		config.Enabled, config.OrchestratorEndpoint, config.Timeout, config.GracefulDegradation, config.EnabledConnectors)
+
+	return NewDynamicPolicyEvaluator(config)
+}
+
+// IsEnabled returns whether dynamic policy evaluation is enabled for a connector.
+func (e *DynamicPolicyEvaluator) IsEnabled(connectorName string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if !e.config.Enabled {
+		return false
+	}
+
+	// Empty EnabledConnectors means all are enabled
+	if len(e.config.EnabledConnectors) == 0 {
+		return true
+	}
+
+	// Check if connector is in the enabled list
+	for _, c := range e.config.EnabledConnectors {
+		if c == connectorName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Evaluate sends a request to Orchestrator for dynamic policy evaluation.
+// Returns the policy decision and any error encountered.
+//
+// Error handling follows graceful degradation setting:
+//   - If GracefulDegradation is true, errors are logged but don't block the request
+//   - If GracefulDegradation is false, errors should block the request
+func (e *DynamicPolicyEvaluator) Evaluate(ctx context.Context, req DynamicPolicyRequest) (*DynamicPolicyResponse, error) {
+	e.mu.RLock()
+	config := e.config
+	e.mu.RUnlock()
+
+	startTime := time.Now()
+
+	// Ensure request time is set
+	if req.RequestTime.IsZero() {
+		req.RequestTime = startTime
+	}
+
+	// Build request URL
+	url := fmt.Sprintf("%s/api/v1/mcp/evaluate-policies", config.OrchestratorEndpoint)
+
+	// Marshal request body
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Request-Source", "mcp-agent")
+
+	// Execute request
+	resp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for non-2xx status
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("orchestrator returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse response
+	var policyResp DynamicPolicyResponse
+	if err := json.Unmarshal(respBody, &policyResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Set processing time
+	policyResp.ProcessingTimeMs = time.Since(startTime).Milliseconds()
+
+	return &policyResp, nil
+}
+
+// EvaluateWithGracefulDegradation wraps Evaluate with graceful degradation handling.
+// Returns (response, info, error). If error is nil, check response.Allowed.
+// If error is not nil and GracefulDegradation is true, request should proceed.
+func (e *DynamicPolicyEvaluator) EvaluateWithGracefulDegradation(ctx context.Context, req DynamicPolicyRequest) (*DynamicPolicyResponse, *DynamicPolicyInfo, error) {
+	e.mu.RLock()
+	graceful := e.config.GracefulDegradation
+	e.mu.RUnlock()
+
+	startTime := time.Now()
+
+	resp, err := e.Evaluate(ctx, req)
+
+	// Build info structure regardless of success
+	info := &DynamicPolicyInfo{
+		ProcessingTimeMs: time.Since(startTime).Milliseconds(),
+	}
+
+	if err != nil {
+		info.OrchestratorReachable = false
+		log.Printf("[DynamicPolicyEvaluator] Evaluation failed: %v (graceful=%v)", err, graceful)
+
+		if graceful {
+			// Return empty response, let request proceed
+			return &DynamicPolicyResponse{
+				Allowed:           true,
+				PoliciesEvaluated: 0,
+			}, info, nil
+		}
+		return nil, info, err
+	}
+
+	info.OrchestratorReachable = true
+	info.PoliciesEvaluated = resp.PoliciesEvaluated
+	info.MatchedPolicies = resp.MatchedPolicies
+
+	return resp, info, nil
+}
+
+// GetConfig returns the current configuration.
+// Returns a copy to prevent external modification.
+func (e *DynamicPolicyEvaluator) GetConfig() DynamicPolicyConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config
+}
+
+// UpdateConfig updates the configuration.
+// Thread-safe; takes effect immediately for subsequent evaluations.
+func (e *DynamicPolicyEvaluator) UpdateConfig(config DynamicPolicyConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.config = config
+	e.httpClient.Timeout = config.Timeout
+	log.Printf("[DynamicPolicyEvaluator] Config updated: enabled=%v, endpoint=%s, timeout=%v",
+		config.Enabled, config.OrchestratorEndpoint, config.Timeout)
+}
+
+// IsGracefulDegradationEnabled returns whether graceful degradation is enabled.
+func (e *DynamicPolicyEvaluator) IsGracefulDegradationEnabled() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config.GracefulDegradation
+}
+
+// =============================================================================
+// Global DynamicPolicyEvaluator Instance (Singleton Pattern)
+// =============================================================================
+
+var (
+	globalDynamicEvaluator   *DynamicPolicyEvaluator
+	globalDynamicEvaluatorMu sync.RWMutex
+)
+
+// InitGlobalDynamicPolicyEvaluator initializes the global dynamic policy evaluator.
+// This should be called once during application startup.
+// If not called, GetGlobalDynamicPolicyEvaluator returns nil (dynamic evaluation disabled).
+func InitGlobalDynamicPolicyEvaluator() {
+	globalDynamicEvaluatorMu.Lock()
+	defer globalDynamicEvaluatorMu.Unlock()
+
+	if globalDynamicEvaluator == nil {
+		globalDynamicEvaluator = NewDynamicPolicyEvaluatorFromEnv()
+	}
+}
+
+// InitGlobalDynamicPolicyEvaluatorWithConfig initializes with specific config (for testing).
+func InitGlobalDynamicPolicyEvaluatorWithConfig(config DynamicPolicyConfig) {
+	globalDynamicEvaluatorMu.Lock()
+	defer globalDynamicEvaluatorMu.Unlock()
+
+	globalDynamicEvaluator = NewDynamicPolicyEvaluator(config)
+}
+
+// GetGlobalDynamicPolicyEvaluator returns the global dynamic policy evaluator.
+// Returns nil if not initialized (dynamic evaluation is skipped).
+func GetGlobalDynamicPolicyEvaluator() *DynamicPolicyEvaluator {
+	globalDynamicEvaluatorMu.RLock()
+	defer globalDynamicEvaluatorMu.RUnlock()
+	return globalDynamicEvaluator
+}
+
+// SetGlobalDynamicPolicyEvaluator sets the global evaluator (for testing).
+func SetGlobalDynamicPolicyEvaluator(evaluator *DynamicPolicyEvaluator) {
+	globalDynamicEvaluatorMu.Lock()
+	defer globalDynamicEvaluatorMu.Unlock()
+	globalDynamicEvaluator = evaluator
+}
+
+// ResetGlobalDynamicPolicyEvaluator resets the global evaluator (for testing).
+func ResetGlobalDynamicPolicyEvaluator() {
+	globalDynamicEvaluatorMu.Lock()
+	defer globalDynamicEvaluatorMu.Unlock()
+	globalDynamicEvaluator = nil
+}

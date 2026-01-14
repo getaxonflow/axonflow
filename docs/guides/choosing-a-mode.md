@@ -1,6 +1,16 @@
-# Choosing Between Proxy Mode and Gateway Mode
+# Choosing an Integration Mode
 
-AxonFlow offers two integration modes to fit different requirements. This guide helps you choose the right one for your application.
+**Last Updated:** January 14, 2026
+
+AxonFlow offers three integration modes to fit different requirements. This guide helps you choose the right one for your application.
+
+## Overview
+
+| Mode | Purpose | Latency |
+|------|---------|---------|
+| **Gateway Mode** | LLM pre-check with direct provider calls | ~15-20ms |
+| **Proxy Mode** | Full LLM governance with response filtering | ~50-100ms |
+| **MCP Mode** | Data connector operations (databases, APIs) | ~20-50ms |
 
 ## Quick Decision Guide
 
@@ -297,8 +307,102 @@ app.post('/api/analyze', async (req, res) => {
 - **Performance critical**: Gateway Mode
 - **Compliance critical**: Proxy Mode (100% automatic audit)
 
+---
+
+## MCP Mode (Connector Operations)
+
+MCP (Model Context Protocol) Mode is for data connector operations - querying databases, calling APIs, and integrating with external services.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    A[Your App] -->|1. MCP Query| B[Agent :8080]
+    B -->|2. Policy Check| B
+    B -->|3. Connector Call| C[PostgreSQL/API/etc]
+    C -->|4. Response| B
+    B -->|5. PII Redaction| B
+    B -->|6. Response| A
+```
+
+### When to Use MCP Mode
+
+- Querying databases (PostgreSQL, MySQL, MongoDB)
+- Calling external APIs (REST, GraphQL)
+- Workflow connector operations
+- Data retrieval with PII protection
+
+### Code Example
+
+```typescript
+// MCP Mode - Query connectors with full policy enforcement
+const result = await axonflow.mcpQuery('postgres', `
+  SELECT name, email, ssn FROM customers
+  WHERE region = $1
+`, ['US']);
+
+// Response includes policy info (v3.2.0+)
+console.log(`Rows: ${result.rowCount}`);
+console.log(`PII redacted: ${result.redacted}`);
+
+// Check exfiltration limits
+if (result.policyInfo?.exfiltrationCheck?.withinLimits) {
+  console.log('Query within limits');
+}
+
+// Check dynamic policies (if enabled)
+if (result.policyInfo?.dynamicPolicyInfo?.orchestratorReachable) {
+  console.log(`Policies evaluated: ${result.policyInfo.dynamicPolicyInfo.policiesEvaluated}`);
+}
+```
+
+### Policy Enforcement (v3.1.0+)
+
+MCP queries go through two-phase policy evaluation:
+
+| Phase | Checks | Action |
+|-------|--------|--------|
+| **REQUEST** | SQLi patterns, Critical PII in query | Block |
+| **RESPONSE** | PII in data, Exfiltration limits | Redact/Block |
+
+### Exfiltration Protection (v3.2.0+)
+
+Configure limits to prevent large-scale data extraction:
+
+```bash
+MCP_MAX_ROWS_PER_QUERY=10000      # Default: 10,000 rows
+MCP_MAX_BYTES_PER_QUERY=10485760  # Default: 10MB
+```
+
+### Dynamic Policies (v3.2.0+, Optional)
+
+Enable runtime policy evaluation for rate limiting, budgets, time-based access:
+
+```bash
+MCP_DYNAMIC_POLICIES_ENABLED=true   # Enable (default: false)
+MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
+```
+
+---
+
+## Mode Comparison Summary
+
+| Aspect | Gateway | Proxy | MCP |
+|--------|---------|-------|-----|
+| **Use Case** | LLM calls | LLM calls | Data connectors |
+| **Latency** | ~15-20ms | ~50-100ms | ~20-50ms |
+| **INPUT Policy** | ✅ | ✅ | ✅ |
+| **OUTPUT Policy** | ❌ | ✅ | ✅ |
+| **PII Redaction** | ❌ | ✅ | ✅ |
+| **Exfiltration Limits** | ❌ | ✅ | ✅ |
+| **Dynamic Policies** | ❌ | ✅ | ✅ (v3.2.0+) |
+| **Control** | Full LLM | AxonFlow | Full query |
+
+---
+
 ## Next Steps
 
 - [Proxy Mode Guide](./proxy-mode.md) - Deep dive into Proxy Mode
 - [Gateway Mode Migration Guide](./gateway-mode.md) - Deep dive into Gateway Mode
+- [MCP Connector Architecture](../../technical-docs/MCP_CONNECTOR_ARCHITECTURE.md) - Full MCP architecture
 - [SDK Comparison](../reference/sdk-comparison.md) - TypeScript vs Go vs Python SDKs
