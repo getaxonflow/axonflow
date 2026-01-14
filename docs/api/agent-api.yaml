@@ -3309,6 +3309,89 @@ components:
           items:
             $ref: '#/components/schemas/PolicyMatchInfo'
           description: Policies that matched during evaluation
+        exfiltration_check:
+          $ref: '#/components/schemas/ExfiltrationCheckInfo'
+        dynamic_policy_info:
+          $ref: '#/components/schemas/DynamicPolicyInfo'
+
+    ExfiltrationCheckInfo:
+      type: object
+      description: Information about exfiltration limit checks (v3.2.0+)
+      properties:
+        exceeded:
+          type: boolean
+          description: Whether any exfiltration limit was exceeded
+        limit_type:
+          type: string
+          enum: [rows, bytes, none]
+          description: Type of limit that was exceeded (if any)
+        rows_returned:
+          type: integer
+          description: Number of rows in the response
+        row_limit:
+          type: integer
+          description: Configured row limit (MCP_MAX_ROWS_PER_QUERY)
+        bytes_returned:
+          type: integer
+          description: Response size in bytes
+        byte_limit:
+          type: integer
+          description: Configured byte limit (MCP_MAX_BYTES_PER_QUERY)
+
+    DynamicPolicyInfo:
+      type: object
+      description: Information about dynamic policy evaluation via Orchestrator (v3.2.0+)
+      properties:
+        enabled:
+          type: boolean
+          description: Whether dynamic policy evaluation was enabled
+        evaluated:
+          type: boolean
+          description: Whether policies were actually evaluated (may skip if disabled or error)
+        policies_checked:
+          type: integer
+          description: Number of dynamic policies checked
+        policies_matched:
+          type: integer
+          description: Number of policies that matched
+        blocked:
+          type: boolean
+          description: Whether request was blocked by a dynamic policy
+        block_reason:
+          type: string
+          description: Reason for block (if blocked)
+        matched_policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/DynamicPolicyMatch'
+          description: Details of matched dynamic policies
+        evaluation_time_ms:
+          type: integer
+          description: Time spent evaluating dynamic policies in milliseconds
+        error:
+          type: string
+          description: Error message if evaluation failed (only present on error)
+
+    DynamicPolicyMatch:
+      type: object
+      description: Information about a matched dynamic policy
+      properties:
+        policy_id:
+          type: string
+          description: Unique identifier of the matched policy
+        policy_name:
+          type: string
+          description: Human-readable policy name
+        policy_type:
+          type: string
+          description: Type of policy (e.g., rate-limit, budget, time-based, role-based)
+        action:
+          type: string
+          enum: [allow, deny, warn]
+          description: Action taken by the policy
+        message:
+          type: string
+          description: Optional message from the policy evaluation
 
     PolicyMatchInfo:
       type: object

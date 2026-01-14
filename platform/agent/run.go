@@ -642,6 +642,22 @@ func Run() {
 		sharedpolicy.InitGlobalEngine(authDB, sharedpolicy.DefaultEngineConfig(), nil)
 		log.Println("✅ Shared policy engine initialized for MCP (phase-aware enforcement)")
 
+		// Initialize exfiltration checker for MCP data extraction limits (Issue #966)
+		sharedpolicy.InitGlobalExfiltrationChecker()
+		exfilLimits := sharedpolicy.GetGlobalExfiltrationChecker().GetLimits()
+		log.Printf("✅ Exfiltration checker initialized (enabled=%v, maxRows=%d, maxBytes=%d)",
+			exfilLimits.Enabled, exfilLimits.MaxRowsPerQuery, exfilLimits.MaxBytesPerQuery)
+
+		// Initialize dynamic policy evaluator for MCP (Issue #968)
+		// Disabled by default - enable via MCP_DYNAMIC_POLICIES_ENABLED=true
+		sharedpolicy.InitGlobalDynamicPolicyEvaluator()
+		dynamicEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+		if dynamicEval != nil {
+			config := dynamicEval.GetConfig()
+			log.Printf("✅ Dynamic policy evaluator initialized (enabled=%v, endpoint=%s, graceful=%v)",
+				config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
+		}
+
 		// Initialize AWS Marketplace metering (if enabled)
 		if os.Getenv("ENABLE_MARKETPLACE_METERING") == "true" {
 			productCode := os.Getenv("MARKETPLACE_PRODUCT_CODE")

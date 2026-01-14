@@ -437,6 +437,14 @@ func Run() {
 		log.Println("Dynamic Policy API routes registered (/api/v1/dynamic-policies)")
 	}
 
+	// MCP Dynamic Policy Evaluation Endpoint (Issue #968)
+	// Called by Agent for dynamic policy evaluation before MCP queries
+	if engine, ok := dynamicPolicyEngine.(*DynamicPolicyEngine); ok {
+		mcpDynamicPolicyHandler := NewMCPDynamicPolicyHandler(engine)
+		mcpDynamicPolicyHandler.RegisterRoutes(r)
+		log.Println("MCP Dynamic Policy API routes registered (/api/v1/mcp/evaluate-policies)")
+	}
+
 	// LLM Provider Management API (ADR-007 - Pluggable LLM Providers)
 	// Register routes only if bootstrap was successful
 	if llmProviderAPIHandler != nil {
