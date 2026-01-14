@@ -109,6 +109,10 @@ services:
       LLM_ROUTING_STRATEGY: ${LLM_ROUTING_STRATEGY:-weighted}
       PROVIDER_WEIGHTS: ${PROVIDER_WEIGHTS:-}
 
+      # MCP Policy Features (Issue #966, #968)
+      # Dynamic policy evaluation is opt-in - enable via MCP_DYNAMIC_POLICIES_ENABLED=true
+      MCP_DYNAMIC_POLICIES_ENABLED: ${MCP_DYNAMIC_POLICIES_ENABLED:-false}
+
       # Security scanning - detection actions (Issue #891)
       # Philosophy: Block high-confidence threats, warn on heuristics, redact PII
       SQLI_SCANNER_MODE: ${SQLI_SCANNER_MODE:-basic}
@@ -124,6 +128,12 @@ services:
       DANGEROUS_QUERY_ACTION: ${DANGEROUS_QUERY_ACTION:-block}
       # Deprecated: use SQLI_ACTION instead
       # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
+
+      # Exfiltration detection (Issue #966)
+      # MCP_MAX_ROWS_PER_QUERY: Maximum rows allowed per query (default: 10000)
+      MCP_MAX_ROWS_PER_QUERY: ${MCP_MAX_ROWS_PER_QUERY:-10000}
+      # MCP_MAX_BYTES_PER_QUERY: Maximum response size in bytes (default: 10MB)
+      MCP_MAX_BYTES_PER_QUERY: ${MCP_MAX_BYTES_PER_QUERY:-10485760}
 
       # Authentication
       # JWT_SECRET: Secret for signing/validating user tokens
