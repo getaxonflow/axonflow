@@ -60,6 +60,12 @@ const (
 	// Data governance categories
 	CategoryDataExfiltration PolicyCategory = "data-exfiltration"
 
+	// Dynamic policy categories (Issue #968)
+	CategoryDynamicRateLimit  PolicyCategory = "dynamic-rate-limit"
+	CategoryDynamicBudget     PolicyCategory = "dynamic-budget"
+	CategoryDynamicTimeAccess PolicyCategory = "dynamic-time-access"
+	CategoryDynamicRoleAccess PolicyCategory = "dynamic-role-access"
+
 	// Compliance categories
 	CategoryComplianceGDPR  PolicyCategory = "compliance-gdpr"
 	CategoryComplianceHIPAA PolicyCategory = "compliance-hipaa"
@@ -252,6 +258,14 @@ type PolicyInfo struct {
 	RedactionsApplied int               `json:"redactions_applied"`
 	MatchedPolicies   []PolicyMatchInfo `json:"matched_policies,omitempty"`
 	ProcessingTimeMs  int64             `json:"processing_time_ms"`
+
+	// ExfiltrationCheck contains data extraction limit information (Issue #966).
+	// Present when exfiltration checking is enabled, nil otherwise.
+	ExfiltrationCheck *ExfiltrationCheckInfo `json:"exfiltration_check,omitempty"`
+
+	// DynamicPolicyInfo contains dynamic policy evaluation results (Issue #968).
+	// Present when dynamic policy evaluation is enabled, nil otherwise.
+	DynamicPolicyInfo *DynamicPolicyInfo `json:"dynamic_policy_info,omitempty"`
 }
 
 // PolicyMatchInfo is the serializable version of PolicyMatch for API responses.
@@ -419,4 +433,192 @@ type EvaluatorStats struct {
 	MaxPatternCache   int
 	ValidatorsEnabled bool
 	RegisteredTypes   []string
+}
+
+// =============================================================================
+// Dynamic Policy Evaluation Types (Issue #968)
+// =============================================================================
+
+// DynamicPolicyConfig configures dynamic policy evaluation for MCP requests.
+// Dynamic policies are evaluated via Orchestrator before connector execution.
+//
+// The Orchestrator endpoint is determined automatically using the same logic as
+// other Agent→Orchestrator calls (ORCHESTRATOR_URL env var, Docker detection, or localhost).
+//
+// Configuration via environment variables:
+//   - MCP_DYNAMIC_POLICIES_ENABLED: Enable/disable (default: false)
+//   - MCP_DYNAMIC_POLICIES_TIMEOUT: Orchestrator call timeout (default: 5s)
+//   - MCP_DYNAMIC_POLICIES_GRACEFUL: Continue if Orchestrator unavailable (default: true)
+//   - MCP_DYNAMIC_POLICIES_CONNECTORS: Comma-separated connectors (empty = all)
+type DynamicPolicyConfig struct {
+	// Enabled controls whether dynamic policy evaluation is performed.
+	// Disabled by default - must be explicitly enabled.
+	Enabled bool `json:"enabled"`
+
+	// OrchestratorEndpoint is the base URL for the Orchestrator service.
+	// Default: http://localhost:8081 (same-host deployment)
+	OrchestratorEndpoint string `json:"orchestrator_endpoint"`
+
+	// Timeout is the maximum time to wait for Orchestrator response.
+	// Default: 5 seconds
+	Timeout time.Duration `json:"timeout"`
+
+	// GracefulDegradation controls behavior when Orchestrator is unavailable.
+	// If true (default), requests proceed without dynamic policy evaluation.
+	// If false, requests are blocked when Orchestrator is unavailable.
+	GracefulDegradation bool `json:"graceful_degradation"`
+
+	// EnabledConnectors lists connectors that use dynamic policies.
+	// Empty list means all connectors are enabled.
+	// Community edition has 2-connector limit.
+	EnabledConnectors []string `json:"enabled_connectors"`
+
+	// MaxConnectorsInCommunity is the limit for community edition.
+	// Enterprise has unlimited connectors.
+	MaxConnectorsInCommunity int `json:"max_connectors_community"`
+}
+
+// DefaultDynamicPolicyConfig returns production-safe defaults.
+// Dynamic policies are disabled by default for backward compatibility.
+func DefaultDynamicPolicyConfig() DynamicPolicyConfig {
+	return DynamicPolicyConfig{
+		Enabled:                  false,
+		OrchestratorEndpoint:     "http://localhost:8081",
+		Timeout:                  5 * time.Second,
+		GracefulDegradation:      true,
+		EnabledConnectors:        nil, // All connectors when enabled
+		MaxConnectorsInCommunity: 2,   // Community edition limit
+	}
+}
+
+// DynamicPolicyRequest is sent to Orchestrator for policy evaluation.
+type DynamicPolicyRequest struct {
+	// Request context
+	TenantID       string `json:"tenant_id"`
+	OrganizationID string `json:"organization_id,omitempty"`
+	UserID         string `json:"user_id"`
+	UserRole       string `json:"user_role,omitempty"`
+
+	// MCP request details
+	ConnectorName string                 `json:"connector_name"`
+	Operation     string                 `json:"operation"` // "query" or "execute"
+	Statement     string                 `json:"statement"`
+	Parameters    map[string]interface{} `json:"parameters,omitempty"`
+
+	// Additional context for policy decisions
+	RequestTime time.Time              `json:"request_time"`
+	ClientIP    string                 `json:"client_ip,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// DynamicPolicyResponse is the response from Orchestrator policy evaluation.
+type DynamicPolicyResponse struct {
+	// Primary decision
+	Allowed     bool   `json:"allowed"`
+	BlockReason string `json:"block_reason,omitempty"`
+
+	// Matched policies
+	PoliciesEvaluated int                  `json:"policies_evaluated"`
+	MatchedPolicies   []DynamicPolicyMatch `json:"matched_policies,omitempty"`
+
+	// Additional data
+	ProcessingTimeMs int64                  `json:"processing_time_ms"`
+	Metadata         map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// DynamicPolicyMatch represents a dynamic policy that matched the request.
+type DynamicPolicyMatch struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	PolicyType string `json:"policy_type"` // rate-limit, budget, time-access, role-access
+	Action     string `json:"action"`      // allow, block, warn
+	Reason     string `json:"reason,omitempty"`
+}
+
+// DynamicPolicyInfo is the API-serializable structure for dynamic policy results.
+// Included in PolicyInfo when dynamic policy evaluation is enabled.
+type DynamicPolicyInfo struct {
+	// Evaluation results
+	PoliciesEvaluated int                  `json:"policies_evaluated"`
+	MatchedPolicies   []DynamicPolicyMatch `json:"matched_policies,omitempty"`
+
+	// Orchestrator metadata
+	OrchestratorReachable bool  `json:"orchestrator_reachable"`
+	ProcessingTimeMs      int64 `json:"processing_time_ms"`
+}
+
+// =============================================================================
+// Exfiltration Detection Types (Issue #966)
+// =============================================================================
+
+// ExfiltrationLimits configures data extraction limits for MCP responses.
+// These limits prevent large-scale data extraction via MCP queries.
+//
+// Configuration via environment variables:
+//   - MCP_MAX_ROWS_PER_QUERY: Maximum rows per query (default: 10000)
+//   - MCP_MAX_BYTES_PER_QUERY: Maximum bytes per response (default: 10MB)
+//   - MCP_EXFILTRATION_ENABLED: Enable/disable checks (default: true)
+type ExfiltrationLimits struct {
+	// MaxRowsPerQuery is the maximum number of rows allowed per query.
+	// Queries returning more rows will be blocked with HTTP 403.
+	// Default: 10,000 rows. Set to 0 for unlimited.
+	MaxRowsPerQuery int `json:"max_rows_per_query"`
+
+	// MaxBytesPerQuery is the maximum response size in bytes.
+	// Responses exceeding this will be blocked with HTTP 403.
+	// Default: 10MB (10,485,760 bytes). Set to 0 for unlimited.
+	MaxBytesPerQuery int64 `json:"max_bytes_per_query"`
+
+	// Enabled controls whether exfiltration checks are performed.
+	// When disabled, queries are allowed regardless of size.
+	// Default: true
+	Enabled bool `json:"enabled"`
+}
+
+// DefaultExfiltrationLimits returns production-safe defaults.
+// These defaults balance security with usability for typical workloads.
+func DefaultExfiltrationLimits() ExfiltrationLimits {
+	return ExfiltrationLimits{
+		MaxRowsPerQuery:  10000,            // 10K rows
+		MaxBytesPerQuery: 10 * 1024 * 1024, // 10MB
+		Enabled:          true,
+	}
+}
+
+// ExfiltrationResult contains the result of an exfiltration check.
+type ExfiltrationResult struct {
+	// Exceeded is true if any limit was exceeded.
+	Exceeded bool `json:"exceeded"`
+
+	// LimitType indicates which limit was exceeded: "rows" or "bytes".
+	// Empty if no limit was exceeded.
+	LimitType string `json:"limit_type,omitempty"`
+
+	// ActualValue is the actual count/size that triggered the limit.
+	ActualValue int64 `json:"actual_value,omitempty"`
+
+	// LimitValue is the configured limit that was exceeded.
+	LimitValue int64 `json:"limit_value,omitempty"`
+
+	// BlockReason is a human-readable explanation for blocking.
+	BlockReason string `json:"block_reason,omitempty"`
+}
+
+// ExfiltrationCheckInfo is the API-serializable version of exfiltration check results.
+// Included in PolicyInfo when exfiltration checking is enabled.
+type ExfiltrationCheckInfo struct {
+	// RowsReturned is the number of rows in the response.
+	RowsReturned int64 `json:"rows_returned"`
+
+	// RowLimit is the configured maximum rows per query.
+	RowLimit int `json:"row_limit"`
+
+	// BytesReturned is the approximate size of the response in bytes.
+	BytesReturned int64 `json:"bytes_returned"`
+
+	// ByteLimit is the configured maximum bytes per query.
+	ByteLimit int64 `json:"byte_limit"`
+
+	// WithinLimits is true if all limits were respected.
+	WithinLimits bool `json:"within_limits"`
 }

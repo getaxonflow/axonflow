@@ -26,6 +26,7 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // Mock connector for testing
@@ -985,5 +986,893 @@ func TestLogInternalServiceAuthWarning_OnlyLogsOnce_Agent(t *testing.T) {
 	// Flag should still be true
 	if !internalServiceAuthWarningLogged {
 		t.Error("Flag should remain true")
+	}
+}
+
+// =============================================================================
+// Exfiltration Detection Integration Tests (Issue #966)
+// =============================================================================
+
+// setupCommunityModeForTest sets up community mode for integration testing.
+// Returns a cleanup function that restores the original state.
+func setupCommunityModeForTest(t *testing.T) func() {
+	// Save original value
+	originalMode := os.Getenv("DEPLOYMENT_MODE")
+
+	// Set community mode (bypasses auth)
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
+	// Setup registry with mock connector
+	// Use TenantID: "*" to allow access from any tenant (including "community" tenant in community mode)
+	mcpRegistry = registry.NewRegistry()
+	connector := &mockConnector{}
+	if err := mcpRegistry.Register("test-db", connector, &base.ConnectorConfig{
+		Name:     "test-db",
+		Type:     "postgres",
+		TenantID: "*", // Wildcard allows access from any tenant
+	}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	return func() {
+		if originalMode != "" {
+			os.Setenv("DEPLOYMENT_MODE", originalMode)
+		} else {
+			os.Unsetenv("DEPLOYMENT_MODE")
+		}
+	}
+}
+
+// TestMCPQueryHandler_ExfiltrationRowLimitExceeded tests that queries exceeding row limits are blocked.
+func TestMCPQueryHandler_ExfiltrationRowLimitExceeded(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global exfiltration checker
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+
+	// Set up exfiltration checker with low row limit
+	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
+		MaxRowsPerQuery:  5,                   // Very low limit for testing
+		MaxBytesPerQuery: 10 * 1024 * 1024,    // 10MB - won't be hit
+		Enabled:          true,
+	})
+
+	// Create mock connector that returns many rows
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows: []map[string]interface{}{
+				{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5},
+				{"id": 6}, {"id": 7}, {"id": 8}, {"id": 9}, {"id": 10}, // 10 rows > 5 limit
+			},
+			RowCount: 10,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 403 Forbidden due to row limit exceeded
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify error response contains limit info
+	var response map[string]interface{}
+	bodyBytes := w.Body.Bytes()
+	if err := json.Unmarshal(bodyBytes, &response); err != nil {
+		t.Fatalf("failed to decode response: %v. Body: %s", err, string(bodyBytes))
+	}
+
+	t.Logf("Response body: %s", string(bodyBytes))
+
+	if response["success"] != false {
+		t.Errorf("expected success=false, got %v", response["success"])
+	}
+	if response["limit_type"] != "rows" {
+		t.Errorf("expected limit_type='rows', got %v", response["limit_type"])
+	}
+	// Use type assertions with ok check to avoid panics
+	if actualVal, ok := response["actual_value"].(float64); !ok || actualVal != 10 {
+		t.Errorf("expected actual_value=10, got %v", response["actual_value"])
+	}
+	if limitVal, ok := response["limit_value"].(float64); !ok || limitVal != 5 {
+		t.Errorf("expected limit_value=5, got %v", response["limit_value"])
+	}
+}
+
+// TestMCPQueryHandler_ExfiltrationByteLimitExceeded tests that queries exceeding byte limits are blocked.
+func TestMCPQueryHandler_ExfiltrationByteLimitExceeded(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global exfiltration checker
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+
+	// Set up exfiltration checker with low byte limit
+	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
+		MaxRowsPerQuery:  10000,  // High row limit - won't be hit
+		MaxBytesPerQuery: 100,    // Very low byte limit - will be hit
+		Enabled:          true,
+	})
+
+	// Create mock connector that returns data exceeding byte limit
+	mcpRegistry = registry.NewRegistry()
+	largeData := make([]byte, 200)
+	for i := range largeData {
+		largeData[i] = 'X'
+	}
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows: []map[string]interface{}{
+				{"data": string(largeData)}, // ~200 bytes > 100 byte limit
+			},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM large_data",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 403 Forbidden due to byte limit exceeded
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["limit_type"] != "bytes" {
+		t.Errorf("expected limit_type='bytes', got %v", response["limit_type"])
+	}
+}
+
+// TestMCPQueryHandler_ExfiltrationWithinLimits tests that queries within limits succeed.
+func TestMCPQueryHandler_ExfiltrationWithinLimits(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global exfiltration checker
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+
+	// Set up exfiltration checker with reasonable limits
+	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
+		MaxRowsPerQuery:  100,
+		MaxBytesPerQuery: 10 * 1024 * 1024,
+		Enabled:          true,
+	})
+
+	// Create mock connector that returns small result
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users WHERE id = 1",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - within limits
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+
+	// Verify exfiltration_check info is included
+	policyInfo, ok := response["policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected policy_info in response")
+	}
+
+	exfilCheck, ok := policyInfo["exfiltration_check"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected exfiltration_check in policy_info")
+	}
+
+	if exfilCheck["within_limits"] != true {
+		t.Errorf("expected within_limits=true, got %v", exfilCheck["within_limits"])
+	}
+	if exfilCheck["rows_returned"].(float64) != 1 {
+		t.Errorf("expected rows_returned=1, got %v", exfilCheck["rows_returned"])
+	}
+	if exfilCheck["row_limit"].(float64) != 100 {
+		t.Errorf("expected row_limit=100, got %v", exfilCheck["row_limit"])
+	}
+}
+
+// TestMCPQueryHandler_ExfiltrationDisabled tests that queries proceed when exfiltration is disabled.
+func TestMCPQueryHandler_ExfiltrationDisabled(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global exfiltration checker
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+
+	// Disable exfiltration checker
+	sharedpolicy.ResetGlobalExfiltrationChecker()
+
+	// Create mock connector that returns many rows (would fail if limits were checked)
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows: []map[string]interface{}{
+				{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5},
+				{"id": 6}, {"id": 7}, {"id": 8}, {"id": 9}, {"id": 10},
+			},
+			RowCount: 10,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - exfiltration checking disabled
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+
+	// No exfiltration_check should be present when disabled
+	if policyInfo, ok := response["policy_info"].(map[string]interface{}); ok {
+		if _, hasExfilCheck := policyInfo["exfiltration_check"]; hasExfilCheck {
+			t.Error("expected no exfiltration_check when checker is disabled")
+		}
+	}
+}
+
+// =============================================================================
+// Dynamic Policy Evaluation Integration Tests (Issue #968)
+// =============================================================================
+
+// mockOrchestratorServer creates a test HTTP server that mimics the Orchestrator's
+// dynamic policy evaluation endpoint.
+func mockOrchestratorServer(t *testing.T, response sharedpolicy.DynamicPolicyResponse) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/mcp/evaluate-policies" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+}
+
+// TestMCPQueryHandler_DynamicPolicyBlocks tests that dynamic policy can block requests.
+func TestMCPQueryHandler_DynamicPolicyBlocks(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Create mock orchestrator server that denies requests
+	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
+		Allowed:           false,
+		BlockReason:       "Rate limit exceeded: max 10 queries per minute",
+		PoliciesEvaluated: 1, // Add this field
+		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
+			{
+				PolicyID:   "rate-limit-1",
+				PolicyType: "rate-limit",
+				Action:     "block",
+			},
+		},
+	})
+	defer server.Close()
+
+	// Initialize dynamic policy evaluator pointing to mock server
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:             true,
+		OrchestratorEndpoint: server.URL,
+		Timeout:             5 * time.Second,
+		GracefulDegradation: false, // Don't fall back on error
+		EnabledConnectors:   []string{"test-db"},
+	})
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 403 Forbidden due to dynamic policy block
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != false {
+		t.Error("expected success=false")
+	}
+	if response["error"] != "Rate limit exceeded: max 10 queries per minute" {
+		t.Errorf("expected rate limit error message, got %v", response["error"])
+	}
+
+	// Verify dynamic_policy_info is included
+	dynamicInfo, ok := response["dynamic_policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected dynamic_policy_info in response")
+	}
+	if dynamicInfo["policies_evaluated"].(float64) != 1 {
+		t.Errorf("expected policies_evaluated=1, got %v", dynamicInfo["policies_evaluated"])
+	}
+}
+
+// TestMCPQueryHandler_DynamicPolicyAllows tests that allowed dynamic policy lets requests through.
+func TestMCPQueryHandler_DynamicPolicyAllows(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Create mock orchestrator server that allows requests
+	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
+		Allowed:           true,
+		BlockReason:       "",
+		PoliciesEvaluated: 1, // Add this field
+		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
+			{
+				PolicyID:   "rate-limit-1",
+				PolicyType: "rate-limit",
+				Action:     "allow",
+			},
+		},
+	})
+	defer server.Close()
+
+	// Initialize dynamic policy evaluator pointing to mock server
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: server.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false,
+		EnabledConnectors:    []string{"test-db"},
+	})
+
+	// Create mock connector
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users WHERE id = 1",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - dynamic policy allowed
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+
+	// Verify policy_info includes dynamic_policy_info
+	policyInfo, ok := response["policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected policy_info in response")
+	}
+
+	dynamicInfo, ok := policyInfo["dynamic_policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected dynamic_policy_info in policy_info")
+	}
+
+	if dynamicInfo["policies_evaluated"].(float64) != 1 {
+		t.Errorf("expected policies_evaluated=1, got %v", dynamicInfo["policies_evaluated"])
+	}
+}
+
+// TestMCPQueryHandler_DynamicPolicyDisabled tests that queries proceed when dynamic policy is disabled.
+func TestMCPQueryHandler_DynamicPolicyDisabled(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Disable dynamic policy evaluator
+	sharedpolicy.ResetGlobalDynamicPolicyEvaluator()
+
+	// Create mock connector
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - dynamic policy checking disabled
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+}
+
+// TestMCPQueryHandler_DynamicPolicyGracefulDegradation tests graceful degradation when
+// the Orchestrator is unavailable.
+func TestMCPQueryHandler_DynamicPolicyGracefulDegradation(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Initialize dynamic policy evaluator pointing to non-existent server
+	// With graceful degradation enabled
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: "http://localhost:99999", // Won't connect
+		Timeout:              100 * time.Millisecond,   // Short timeout
+		GracefulDegradation:  true,                     // Enable graceful degradation
+		EnabledConnectors:    []string{"test-db"},
+	})
+
+	// Create mock connector
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - graceful degradation allows request to proceed
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+}
+
+// TestMCPQueryHandler_DynamicPolicyGracefulDegradationDisabled tests that requests
+// are blocked when graceful degradation is disabled and Orchestrator is unavailable.
+func TestMCPQueryHandler_DynamicPolicyGracefulDegradationDisabled(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Initialize dynamic policy evaluator pointing to non-existent server
+	// With graceful degradation DISABLED
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: "http://localhost:99999", // Won't connect
+		Timeout:              100 * time.Millisecond,   // Short timeout
+		GracefulDegradation:  false,                    // Disable graceful degradation
+		EnabledConnectors:    []string{"test-db"},
+	})
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 503 Service Unavailable - graceful degradation disabled
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d. Body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestMCPQueryHandler_DynamicPolicyConnectorNotEnabled tests that dynamic policy
+// is skipped for connectors not in the enabled list.
+func TestMCPQueryHandler_DynamicPolicyConnectorNotEnabled(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global dynamic evaluator
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Create mock orchestrator server that blocks all requests
+	// This server should NOT be called since connector is not enabled
+	serverCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalled = true
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(sharedpolicy.DynamicPolicyResponse{
+			Allowed:     false,
+			BlockReason: "Should not be called",
+		})
+	}))
+	defer server.Close()
+
+	// Initialize dynamic policy evaluator with different connector enabled
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: server.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false,
+		EnabledConnectors:    []string{"other-connector"}, // NOT test-db
+	})
+
+	// Create mock connector
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - dynamic policy skipped for this connector
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Server should NOT have been called
+	if serverCalled {
+		t.Error("expected orchestrator server to NOT be called for non-enabled connector")
+	}
+}
+
+// =============================================================================
+// Combined Policy Info Tests
+// =============================================================================
+
+// TestMCPQueryHandler_PolicyInfoContainsBothExfiltrationAndDynamic tests that
+// PolicyInfo includes both exfiltration_check and dynamic_policy_info when both are enabled.
+func TestMCPQueryHandler_PolicyInfoContainsBothExfiltrationAndDynamic(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore globals
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	// Set up exfiltration checker
+	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
+		MaxRowsPerQuery:  100,
+		MaxBytesPerQuery: 10 * 1024 * 1024,
+		Enabled:          true,
+	})
+
+	// Create mock orchestrator server that allows requests
+	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
+		Allowed:           true,
+		PoliciesEvaluated: 1, // Add this field
+		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
+			{PolicyID: "budget-1", PolicyType: "budget", Action: "allow"},
+		},
+	})
+	defer server.Close()
+
+	// Initialize dynamic policy evaluator
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: server.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false,
+		EnabledConnectors:    []string{"test-db"},
+	})
+
+	// Create mock connector
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows:     []map[string]interface{}{{"id": 1, "name": "test"}},
+			RowCount: 1,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users WHERE id = 1",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
+	}
+
+	// Verify policy_info contains BOTH exfiltration_check and dynamic_policy_info
+	policyInfo, ok := response["policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected policy_info in response")
+	}
+
+	// Check exfiltration_check
+	exfilCheck, ok := policyInfo["exfiltration_check"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected exfiltration_check in policy_info")
+	}
+	if exfilCheck["within_limits"] != true {
+		t.Errorf("expected within_limits=true, got %v", exfilCheck["within_limits"])
+	}
+
+	// Check dynamic_policy_info
+	dynamicInfo, ok := policyInfo["dynamic_policy_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected dynamic_policy_info in policy_info")
+	}
+	if dynamicInfo["policies_evaluated"].(float64) != 1 {
+		t.Errorf("expected policies_evaluated=1, got %v", dynamicInfo["policies_evaluated"])
+	}
+}
+
+// TestMCPQueryHandler_ExfiltrationWithEnabledFalse tests that exfiltration limits
+// struct can be present but with Enabled=false.
+func TestMCPQueryHandler_ExfiltrationWithEnabledFalse(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// Save and restore global exfiltration checker
+	originalChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	defer sharedpolicy.SetGlobalExfiltrationChecker(originalChecker)
+
+	// Set up exfiltration checker with Enabled=false
+	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
+		MaxRowsPerQuery:  5,  // Would fail if enabled
+		MaxBytesPerQuery: 100,
+		Enabled:          false, // Disabled
+	})
+
+	// Create mock connector that returns many rows (would fail if limits were checked)
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		queryResult: &base.QueryResult{
+			Rows: []map[string]interface{}{
+				{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5},
+				{"id": 6}, {"id": 7}, {"id": 8}, {"id": 9}, {"id": 10},
+			},
+			RowCount: 10,
+			Duration: 10 * time.Millisecond,
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "test-client",
+		UserToken: "test-token",
+		Connector: "test-db",
+		Statement: "SELECT * FROM users",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpQueryHandler(w, req)
+
+	// Should return 200 OK - exfiltration checking disabled (Enabled=false)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Error("expected success=true")
 	}
 }

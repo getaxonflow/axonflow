@@ -725,6 +725,44 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Dynamic policy evaluation via Orchestrator (Issue #968)
+	// Called BEFORE static policy evaluation - can block based on rate limits, budgets, time/role access
+	var dynamicPolicyInfo *sharedpolicy.DynamicPolicyInfo
+	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(req.Connector) {
+		dynamicReq := sharedpolicy.DynamicPolicyRequest{
+			TenantID:      user.TenantID,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			UserRole:      user.Role,
+			ConnectorName: req.Connector,
+			Operation:     "query",
+			Statement:     statement,
+			Parameters:    req.Parameters,
+		}
+
+		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
+		dynamicPolicyInfo = info
+
+		if err != nil {
+			// If graceful degradation is disabled and eval failed, block
+			log.Printf("[MCP] Dynamic policy evaluation failed: %v", err)
+			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+			return
+		}
+
+		if !dynamicResp.Allowed {
+			log.Printf("[MCP] Request blocked by dynamic policy: %s", dynamicResp.BlockReason)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":             false,
+				"error":               dynamicResp.BlockReason,
+				"dynamic_policy_info": info,
+			})
+			return
+		}
+	}
+
 	// Request-phase policy evaluation (before connector.Query)
 	var requestPolicyResult *sharedpolicy.RequestResult
 	policyEngine := sharedpolicy.GetGlobalEngine()
@@ -801,8 +839,49 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Exfiltration detection (Issue #966): Check row count and data volume limits
+	var exfiltrationCheckInfo *sharedpolicy.ExfiltrationCheckInfo
+	exfiltrationChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+	if exfiltrationChecker != nil && exfiltrationChecker.IsEnabled() {
+		exfilResult, exfilInfo := exfiltrationChecker.CheckWithInfo(ctx, result.RowCount, responseData)
+		exfiltrationCheckInfo = exfilInfo
+
+		if exfilResult.Exceeded {
+			log.Printf("[MCP] Exfiltration limit exceeded for connector '%s': %s (actual=%d, limit=%d)",
+				req.Connector, exfilResult.LimitType, exfilResult.ActualValue, exfilResult.LimitValue)
+			// Return 403 with detailed error message including limit info
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":      false,
+				"error":        exfilResult.BlockReason,
+				"limit_type":   exfilResult.LimitType,
+				"actual_value": exfilResult.ActualValue,
+				"limit_value":  exfilResult.LimitValue,
+			})
+			return
+		}
+	}
+
 	// Build policy info for response
 	policyInfo := sharedpolicy.BuildPolicyInfo(requestPolicyResult, responsePolicyResult)
+	// Add exfiltration check info to policy info (Issue #966)
+	if policyInfo != nil && exfiltrationCheckInfo != nil {
+		policyInfo.ExfiltrationCheck = exfiltrationCheckInfo
+	} else if policyInfo == nil && exfiltrationCheckInfo != nil {
+		// Create minimal policy info just for exfiltration data
+		policyInfo = &sharedpolicy.PolicyInfo{
+			ExfiltrationCheck: exfiltrationCheckInfo,
+		}
+	}
+	// Add dynamic policy info (Issue #968)
+	if policyInfo != nil && dynamicPolicyInfo != nil {
+		policyInfo.DynamicPolicyInfo = dynamicPolicyInfo
+	} else if policyInfo == nil && dynamicPolicyInfo != nil {
+		policyInfo = &sharedpolicy.PolicyInfo{
+			DynamicPolicyInfo: dynamicPolicyInfo,
+		}
+	}
 	redactedFields := sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
 
 	// 8. Return results

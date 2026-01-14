@@ -1,6 +1,6 @@
 # SDK Feature Coverage
 
-**Last Updated:** 2026-01-03
+**Last Updated:** 2026-01-14
 **Reference:** ADR-024 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.
@@ -57,6 +57,12 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 | `installConnector()` | Install a connector | ✅ All SDKs |
 | `queryConnector()` | Query a connector | ✅ All SDKs |
 | `executeQuery()` | Execute connector query | ✅ All SDKs |
+
+#### MCP Policy Response Fields (Platform v3.2.0+)
+| Field | Description | Status |
+|-------|-------------|--------|
+| `policy_info.exfiltration_check` | Row/byte limits info | ✅ All SDKs |
+| `policy_info.dynamic_policy_info` | Dynamic policy evaluation info | ✅ All SDKs |
 
 #### Replay/Debug (Planned - #763)
 | Method | Description | Status |
@@ -163,12 +169,12 @@ If you need an excluded API in the SDK:
 
 All 4 SDKs should have identical method coverage:
 
-| SDK | Version | Methods | Parity |
+| SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v2.0.0 | ~21 | ✅ |
-| Python | v1.0.0 | ~21 | ✅ |
-| TypeScript | v2.0.0 | ~22 | ✅ (+protect) |
-| Java | v2.0.0 | ~21 | ✅ |
+| Go | v2.3.0 | ~21 | ✅ |
+| Python | v1.3.0 | ~21 | ✅ |
+| TypeScript | v2.3.0 | ~22 | ✅ (+protect) |
+| Java | v2.3.0 | ~21 | ✅ |
 
 ---
 
@@ -176,4 +182,5 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
+| 2026-01-14 | Added MCP policy response fields (exfiltration_check, dynamic_policy_info) |
 | 2026-01-03 | Initial document created |
