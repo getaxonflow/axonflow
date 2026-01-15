@@ -1,1 +1,1 @@
-axonflow>=1.3.0
+axonflow>=1.4.0

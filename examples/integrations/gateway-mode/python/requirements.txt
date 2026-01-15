@@ -1,5 +1,5 @@
 # AxonFlow SDK
-axonflow>=1.3.0
+axonflow>=1.4.0
 
 # LLM Providers
 openai>=1.6.0
