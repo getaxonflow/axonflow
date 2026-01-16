@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.3.0] - 2026-01-16
+
+### Added
+
+- **MCP Connector Audit Logging** (#1006): Full audit trail for all MCP connector queries and commands
+  - New `mcp_query_audits` table captures all MCP operations with policy evaluation results
+  - REQUEST phase logging: SQLi detection, PII blocking, matched policies
+  - RESPONSE phase logging: PII redaction, redacted field paths (JSONPath format)
+  - EXFILTRATION logging: Row counts, volume limit violations
+  - Compliance mode (sync) for violations, performance mode (async) for success
+  - Statement privacy: SHA256 hash stored instead of raw queries
+  - `audit_id` field correlates with SDK `PolicyInfo` for traceability
+
+- **MCP Audit Examples**: Comprehensive examples for all 4 SDKs + HTTP API
+  - `examples/mcp-audit/http/` - HTTP API examples (curl/bash)
+  - `examples/mcp-audit/go/` - Go SDK example
+  - `examples/mcp-audit/python/` - Python SDK example
+  - `examples/mcp-audit/typescript/` - TypeScript SDK example
+  - `examples/mcp-audit/java/` - Java SDK example
+
+### Documentation
+
+- New guide: `docs/guides/audit-logging.md` - Comprehensive audit logging architecture guide
+- New guide: `docs/guides/mcp-audit-logging.md` - MCP audit logging configuration and usage
+- Updated API docs: `docs/api/agent-api.yaml` - Added audit logging details to MCP endpoints
+
+---
+
+## [3.2.0] - 2026-01-14
+
+### Added
+
+- **MCP Exfiltration Detection** (#966): Row and data volume limits for MCP connector queries
+  - Configurable row count limits (default: 10,000 per query)
+  - Configurable data volume limits (default: 10MB per response)
+  - Returns 403 with detailed limit information when exceeded
+  - `ExfiltrationCheck` field in `PolicyInfo` response
+
+- **MCP Dynamic Policy Evaluation** (#968): Real-time policy evaluation via Orchestrator
+  - Pre-query policy evaluation for rate limits, budgets, time/role access
+  - Graceful degradation when Orchestrator is unavailable
+  - `DynamicPolicyInfo` field in `PolicyInfo` response
+
+### Fixed
+
+- Removed unused `MCP_DYNAMIC_POLICIES_ENDPOINT` environment variable (#1003)
+
+### Tests
+
+- Added integration tests for MCP exfiltration and dynamic policy features (#1002)
+
+### Documentation
+
+- Updated community/enterprise feature matrix with MCP policy features (#1000)
+
+---
+
 ## [3.1.0] - 2026-01-09
 
 ### Added

@@ -13,7 +13,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/agent/license"
@@ -105,6 +108,54 @@ func isValidInternalServiceRequest(clientID, userToken string) bool {
 
 	// Fallback for Community/dev: accept hardcoded token
 	return userToken == internalServiceTokenFallback
+}
+
+// getMCPAuditQueue returns the audit queue for MCP handlers.
+// Returns nil if DatabasePolicyEngine is not initialized (e.g., in tests).
+func getMCPAuditQueue() *AuditQueue {
+	if dbPolicyEngine != nil {
+		return dbPolicyEngine.GetAuditQueue()
+	}
+	return nil
+}
+
+// computeStatementHash computes a SHA256 hash of the statement for audit logging.
+// This provides linkage without storing the raw query for privacy.
+func computeStatementHash(statement string) string {
+	if statement == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(statement))
+	return hex.EncodeToString(hash[:])
+}
+
+// logMCPQueryAudit logs an MCP query operation to the audit queue.
+// This is called at the end of mcpQueryHandler to persist the audit entry.
+func logMCPQueryAudit(entry MCPQueryAuditEntry) {
+	auditQueue := getMCPAuditQueue()
+	if auditQueue == nil {
+		log.Printf("[MCP Audit] Skipping audit - queue not initialized")
+		return
+	}
+
+	if err := auditQueue.LogMCPQueryAudit(entry); err != nil {
+		log.Printf("[MCP Audit] Failed to log audit entry: %v", err)
+	} else {
+		log.Printf("[MCP Audit] Logged: connector=%s, blocked=%v, redacted=%v, exfil=%v",
+			entry.ConnectorName, entry.RequestBlocked, entry.ResponseRedacted, entry.ExfilExceeded)
+	}
+}
+
+// extractMatchedPolicyIDs extracts policy IDs from PolicyMatch structs for audit logging.
+func extractMatchedPolicyIDs(matches []sharedpolicy.PolicyMatch) []string {
+	if len(matches) == 0 {
+		return nil
+	}
+	ids := make([]string, len(matches))
+	for i, m := range matches {
+		ids[i] = m.PolicyID
+	}
+	return ids
 }
 
 // InitializeMCPRegistry sets up the MCP connector registry and registers default connectors
@@ -545,6 +596,8 @@ type MCPQueryRequest struct {
 // mcpQueryHandler executes a query via a connector (MCP Resource pattern)
 // POST /mcp/resources/query
 func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if mcpRegistry == nil {
 		sendErrorResponse(w, "MCP registry not initialized", http.StatusServiceUnavailable, nil)
 		return
@@ -559,6 +612,14 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract client secret from OAuth2 Basic auth header if not in request body
 	if req.LicenseKey == "" {
 		req.LicenseKey = extractClientSecret(r)
+	}
+
+	// Initialize audit entry (will be populated throughout the handler)
+	auditEntry := MCPQueryAuditEntry{
+		AuditID:       uuid.New().String(),
+		ConnectorName: req.Connector,
+		Operation:     "query",
+		Success:       false, // Will be set to true only on successful completion
 	}
 
 	ctx := r.Context()
@@ -640,6 +701,11 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Update audit entry with authenticated user/client info
+	auditEntry.TenantID = user.TenantID
+	auditEntry.ClientID = client.ID
+	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
+
 	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	servicePermissionGranted := false
 	if req.LicenseKey != "" {
@@ -715,6 +781,9 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		statement = req.Operation
 	}
 
+	// Update audit entry with statement hash
+	auditEntry.StatementHash = computeStatementHash(statement)
+
 	query := &base.Query{
 		Statement:  statement,
 		Parameters: req.Parameters,
@@ -780,9 +849,21 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIEU,
 			},
 		})
+
+		// Update audit entry with request policy evaluation results
+		auditEntry.RequestPoliciesEvaluated = requestPolicyResult.PoliciesEvaluated
+		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(requestPolicyResult.MatchedPolicies)
+
 		if requestPolicyResult.Blocked {
 			log.Printf("[MCP] Request blocked by policy '%s': %s",
 				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
+
+			// Log audit entry for blocked request
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = requestPolicyResult.BlockReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
 			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
@@ -792,6 +873,12 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := connector.Query(ctx, query)
 	if err != nil {
 		log.Printf("[MCP] Query failed: %v", err)
+
+		// Log audit entry for query error
+		auditEntry.ErrorMessage = err.Error()
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+
 		sendErrorResponse(w, "Query execution failed", http.StatusInternalServerError, nil)
 		return
 	}
@@ -804,6 +891,14 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	} else if scanResult.Blocked {
 		log.Printf("[MCP] SQLi detected in response from connector '%s': pattern=%s category=%s",
 			req.Connector, scanResult.Pattern, scanResult.Category)
+
+		// Log audit entry for SQLi block (treat as request block since it's a security issue)
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", scanResult.Pattern)
+		auditEntry.RowCount = result.RowCount
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+
 		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
 		return
 	}
@@ -824,9 +919,25 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			},
 			MaxRedactions: 100, // Limit redactions per response
 		})
+
+		// Update audit entry with response policy evaluation results
+		if responsePolicyResult.Redacted {
+			auditEntry.ResponseRedacted = true
+			auditEntry.ResponseRedactionsCount = len(responsePolicyResult.RedactedFields)
+			auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+		}
+
 		if responsePolicyResult.Blocked {
 			log.Printf("[MCP] Response blocked by policy '%s': %s",
 				responsePolicyResult.BlockedBy.PolicyID, responsePolicyResult.BlockReason)
+
+			// Log audit entry for response block
+			auditEntry.RequestBlocked = true // Mark as blocked (response phase block)
+			auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason)
+			auditEntry.RowCount = result.RowCount
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
 			sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
@@ -846,9 +957,20 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		exfilResult, exfilInfo := exfiltrationChecker.CheckWithInfo(ctx, result.RowCount, responseData)
 		exfiltrationCheckInfo = exfilInfo
 
+		// Update audit entry with exfiltration check info
+		auditEntry.ExfilRowsReturned = result.RowCount
+
 		if exfilResult.Exceeded {
 			log.Printf("[MCP] Exfiltration limit exceeded for connector '%s': %s (actual=%d, limit=%d)",
 				req.Connector, exfilResult.LimitType, exfilResult.ActualValue, exfilResult.LimitValue)
+
+			// Log audit entry for exfiltration violation
+			auditEntry.ExfilExceeded = true
+			auditEntry.ExfilLimitType = exfilResult.LimitType
+			auditEntry.RowCount = result.RowCount
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
 			// Return 403 with detailed error message including limit info
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
@@ -908,6 +1030,12 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error encoding MCP query response: %v", err)
 	}
 
+	// Log successful audit entry
+	auditEntry.Success = true
+	auditEntry.RowCount = result.RowCount
+	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+	logMCPQueryAudit(auditEntry)
+
 	log.Printf("[MCP] Query executed: connector=%s, rows=%d, duration=%v",
 		req.Connector, result.RowCount, result.Duration)
 }
@@ -928,6 +1056,8 @@ type MCPExecuteRequest struct {
 // mcpExecuteHandler executes a command via a connector (MCP Tool pattern)
 // POST /mcp/tools/execute
 func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
 	if mcpRegistry == nil {
 		sendErrorResponse(w, "MCP registry not initialized", http.StatusServiceUnavailable, nil)
 		return
@@ -942,6 +1072,23 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract client secret from OAuth2 Basic auth header if not in request body
 	if req.LicenseKey == "" {
 		req.LicenseKey = extractClientSecret(r)
+	}
+
+	// Determine operation name for audit
+	operation := req.Operation
+	if operation == "" {
+		operation = strings.ToLower(req.Action) // "INSERT" -> "insert"
+		if operation == "" {
+			operation = "execute"
+		}
+	}
+
+	// Initialize audit entry (will be populated throughout the handler)
+	auditEntry := MCPQueryAuditEntry{
+		AuditID:       uuid.New().String(),
+		ConnectorName: req.Connector,
+		Operation:     operation,
+		Success:       false, // Will be set to true only on successful completion
 	}
 
 	ctx := r.Context()
@@ -1011,6 +1158,11 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Update audit entry with authenticated user/client info
+	auditEntry.TenantID = user.TenantID
+	auditEntry.ClientID = client.ID
+	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
 	servicePermissionGranted := false
@@ -1087,6 +1239,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		Timeout:    timeout,
 	}
 
+	// Update audit entry with statement hash
+	auditEntry.StatementHash = computeStatementHash(req.Statement)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -1106,9 +1261,21 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIEU,
 			},
 		})
+
+		// Update audit entry with request policy evaluation results
+		auditEntry.RequestPoliciesEvaluated = requestPolicyResult.PoliciesEvaluated
+		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(requestPolicyResult.MatchedPolicies)
+
 		if requestPolicyResult.Blocked {
 			log.Printf("[MCP] Execute blocked by policy '%s': %s",
 				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
+
+			// Log audit entry for blocked request
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = requestPolicyResult.BlockReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
 			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
@@ -1118,6 +1285,12 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := connector.Execute(ctx, cmd)
 	if err != nil {
 		log.Printf("[MCP] Execute failed: %v", err)
+
+		// Log audit entry for execution error
+		auditEntry.ErrorMessage = err.Error()
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+
 		sendErrorResponse(w, "Command execution failed", http.StatusInternalServerError, nil)
 		return
 	}
@@ -1130,6 +1303,14 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	} else if scanResult.Blocked {
 		log.Printf("[MCP] SQLi detected in command response from connector '%s': pattern=%s category=%s",
 			req.Connector, scanResult.Pattern, scanResult.Category)
+
+		// Log audit entry for SQLi block
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", scanResult.Pattern)
+		auditEntry.RowCount = int(result.RowsAffected)
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+
 		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
 		return
 	}
@@ -1145,6 +1326,12 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("Error encoding MCP execute response: %v", err)
 	}
+
+	// Log successful audit entry
+	auditEntry.Success = true
+	auditEntry.RowCount = int(result.RowsAffected)
+	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+	logMCPQueryAudit(auditEntry)
 
 	log.Printf("[MCP] Command executed: connector=%s, action=%s, rows_affected=%d, duration=%v",
 		req.Connector, req.Action, result.RowsAffected, result.Duration)

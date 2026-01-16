@@ -624,6 +624,17 @@ paths:
 
         This follows the MCP Resource pattern for data retrieval.
         For write operations, use `/mcp/tools/execute`.
+
+        ## Audit Logging
+
+        All MCP queries are automatically logged to the `mcp_query_audits` table with:
+        - **Request phase**: SQLi detection results, PII blocking decisions
+        - **Response phase**: PII redaction details, redacted field paths
+        - **Exfiltration checks**: Row counts, volume limit violations
+        - **Result**: Success/failure, error messages, duration
+
+        Each audit entry includes `audit_id` for correlation with SDK `PolicyInfo`.
+        Statement content is stored as SHA256 hash for privacy.
       operationId: mcpQuery
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
@@ -699,6 +710,15 @@ paths:
 
         This follows the MCP Tool pattern for data modification.
         For read operations, use `/mcp/resources/query`.
+
+        ## Audit Logging
+
+        All MCP execute operations are automatically logged to the `mcp_query_audits` table with:
+        - **Request phase**: SQLi detection results, dangerous operation blocking
+        - **Result**: Rows affected, success/failure, error messages, duration
+
+        Each audit entry includes `audit_id` for correlation. Operation type (INSERT, UPDATE, DELETE)
+        is stored in the `operation` field.
       operationId: mcpExecute
       parameters:
         - $ref: '#/components/parameters/LicenseKey'

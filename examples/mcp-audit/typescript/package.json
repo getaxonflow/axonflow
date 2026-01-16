@@ -1,0 +1,16 @@
+{
+  "name": "mcp-audit-example",
+  "version": "1.0.0",
+  "description": "MCP Audit Logging Example - TypeScript SDK",
+  "main": "index.ts",
+  "scripts": {
+    "start": "npx tsx index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^2.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}
