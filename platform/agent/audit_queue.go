@@ -64,7 +64,43 @@ const (
 	AuditTypeAudit           = "audit"
 	AuditTypeGatewayContext  = "gateway_context"
 	AuditTypeLLMCallAudit    = "llm_call_audit"
+	AuditTypeMCPQueryAudit   = "mcp_query_audit"
 )
+
+// MCPQueryAuditEntry represents an audit entry for MCP connector queries.
+// This captures policy evaluation results at all three phases:
+// REQUEST (pre-execution), RESPONSE (post-execution), and EXFILTRATION checks.
+type MCPQueryAuditEntry struct {
+	AuditID       string   `json:"audit_id"`
+	TenantID      string   `json:"tenant_id"`
+	ClientID      string   `json:"client_id"`
+	UserID        string   `json:"user_id,omitempty"`
+	ConnectorName string   `json:"connector_name"`
+	Operation     string   `json:"operation"` // query, execute, list_resources, etc.
+	StatementHash string   `json:"statement_hash,omitempty"`
+
+	// Request phase (pre-execution policy evaluation)
+	RequestBlocked          bool     `json:"request_blocked"`
+	RequestBlockReason      string   `json:"request_block_reason,omitempty"`
+	RequestPoliciesEvaluated int     `json:"request_policies_evaluated"`
+	RequestMatchedPolicies  []string `json:"request_matched_policies,omitempty"`
+
+	// Response phase (post-execution policy evaluation)
+	ResponseRedacted       bool     `json:"response_redacted"`
+	ResponseRedactionsCount int     `json:"response_redactions_count"`
+	ResponseRedactedFields []string `json:"response_redacted_fields,omitempty"`
+
+	// Exfiltration detection
+	ExfilRowsReturned int    `json:"exfil_rows_returned,omitempty"`
+	ExfilExceeded     bool   `json:"exfil_exceeded"`
+	ExfilLimitType    string `json:"exfil_limit_type,omitempty"` // row_count, data_volume, etc.
+
+	// Result
+	RowCount     int    `json:"row_count,omitempty"`
+	DurationMs   int64  `json:"duration_ms"`
+	Success      bool   `json:"success"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
 
 // AuditQueue manages asynchronous audit logging with persistence guarantees.
 // It provides reliable logging for policy violations, metrics, and Gateway
@@ -213,6 +249,64 @@ func (aq *AuditQueue) LogLLMCallAudit(entry AuditEntry) error {
 	}
 
 	// In performance mode, queue it
+	return aq.queueEntry(entry)
+}
+
+// LogMCPQueryAudit logs an MCP connector query audit record.
+// This captures policy evaluation results for MCP connector operations including:
+// - REQUEST phase: SQLi detection, PII blocking
+// - RESPONSE phase: PII redaction
+// - EXFILTRATION checks: Row/volume limits
+//
+// In compliance mode, blocked requests and exfiltration violations are written
+// synchronously to ensure audit durability. Successful queries are queued for
+// async processing in performance mode.
+func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
+	// Convert MCPQueryAuditEntry to generic AuditEntry for queue processing
+	entry := AuditEntry{
+		Type:      AuditTypeMCPQueryAudit,
+		Timestamp: time.Now(),
+		ClientID:  mcpEntry.ClientID,
+		UserID:    mcpEntry.UserID,
+		Details: map[string]interface{}{
+			"audit_id":                   mcpEntry.AuditID,
+			"tenant_id":                  mcpEntry.TenantID,
+			"connector_name":             mcpEntry.ConnectorName,
+			"operation":                  mcpEntry.Operation,
+			"statement_hash":             mcpEntry.StatementHash,
+			"request_blocked":            mcpEntry.RequestBlocked,
+			"request_block_reason":       mcpEntry.RequestBlockReason,
+			"request_policies_evaluated": mcpEntry.RequestPoliciesEvaluated,
+			"request_matched_policies":   mcpEntry.RequestMatchedPolicies,
+			"response_redacted":          mcpEntry.ResponseRedacted,
+			"response_redactions_count":  mcpEntry.ResponseRedactionsCount,
+			"response_redacted_fields":   mcpEntry.ResponseRedactedFields,
+			"exfil_rows_returned":        mcpEntry.ExfilRowsReturned,
+			"exfil_exceeded":             mcpEntry.ExfilExceeded,
+			"exfil_limit_type":           mcpEntry.ExfilLimitType,
+			"row_count":                  mcpEntry.RowCount,
+			"duration_ms":                mcpEntry.DurationMs,
+			"success":                    mcpEntry.Success,
+			"error_message":              mcpEntry.ErrorMessage,
+		},
+	}
+
+	// Set severity based on what happened
+	switch {
+	case mcpEntry.RequestBlocked || mcpEntry.ExfilExceeded:
+		entry.Severity = "high"
+	case mcpEntry.ResponseRedacted:
+		entry.Severity = "medium"
+	default:
+		entry.Severity = "low"
+	}
+
+	// In compliance mode, blocked requests and exfiltration violations are synchronous
+	if aq.mode == AuditModeCompliance && (mcpEntry.RequestBlocked || mcpEntry.ExfilExceeded) {
+		return aq.writeToDBSync(entry)
+	}
+
+	// In performance mode, or for successful queries in compliance mode, queue it
 	return aq.queueEntry(entry)
 }
 
@@ -419,6 +513,44 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 			entry.Details["latency_ms"],
 			entry.Details["estimated_cost_usd"],
 			metadataJSON)
+
+	case AuditTypeMCPQueryAudit:
+		// MCP connector query audit storage
+		insertQuery := `
+			INSERT INTO mcp_query_audits (
+				audit_id, tenant_id, client_id, user_id, connector_name, operation, statement_hash,
+				request_blocked, request_block_reason, request_policies_evaluated, request_matched_policies,
+				response_redacted, response_redactions_count, response_redacted_fields,
+				exfil_rows_returned, exfil_exceeded, exfil_limit_type,
+				row_count, duration_ms, success, error_message
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		`
+		// Convert slices to pq.Array for PostgreSQL compatibility
+		requestMatchedPolicies := toStringSlice(entry.Details["request_matched_policies"])
+		responseRedactedFields := toStringSlice(entry.Details["response_redacted_fields"])
+
+		return execWithRetry(aq.db, insertQuery,
+			entry.Details["audit_id"],
+			entry.Details["tenant_id"],
+			entry.ClientID,
+			entry.UserID,
+			entry.Details["connector_name"],
+			entry.Details["operation"],
+			entry.Details["statement_hash"],
+			entry.Details["request_blocked"],
+			entry.Details["request_block_reason"],
+			entry.Details["request_policies_evaluated"],
+			pq.Array(requestMatchedPolicies),
+			entry.Details["response_redacted"],
+			entry.Details["response_redactions_count"],
+			pq.Array(responseRedactedFields),
+			entry.Details["exfil_rows_returned"],
+			entry.Details["exfil_exceeded"],
+			entry.Details["exfil_limit_type"],
+			entry.Details["row_count"],
+			entry.Details["duration_ms"],
+			entry.Details["success"],
+			entry.Details["error_message"])
 
 	default:
 		return fmt.Errorf("unknown entry type: %s", entry.Type)
