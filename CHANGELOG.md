@@ -7,15 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [3.4.0] - 2026-01-17
 
 ### Added
 
-- **Grafana Dashboard**: Add Security & Compliance section with PII detection, provider distribution, and policy metrics panels (#836)
+- **Workflow Control Plane V1**: Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
+  - "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+  - Register workflows from external orchestrators with `POST /api/v1/workflows`
+  - Step gate checks with allow/block/require_approval decisions
+  - Policy evaluation at step transitions with new `workflow` scope
+  - Workflow lifecycle tracking (in_progress/completed/aborted/failed)
+  - New database tables: `workflows`, `workflow_steps`
+  - SDK support: Go, TypeScript (Python and Java in standalone repos)
+  - Examples: HTTP, Go, Python, TypeScript, Java + LangGraph adapter
+
+- **Grafana Dashboard**: Security & Compliance section with PII detection, provider distribution, and policy metrics panels
 
 ### Fixed
 
-- Improved enterprise license validation consistency (#1010)
+- Improved enterprise license validation consistency
+
+### Documentation
+
+- New guide: `docs/guides/workflow-control-plane.md` - Workflow Control Plane user guide
+- Updated API spec: `docs/api/orchestrator-api.yaml` - Workflow endpoints
 
 ---
 

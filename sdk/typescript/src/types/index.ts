@@ -5,3 +5,4 @@ export * from './policy';
 export * from './connector';
 export * from './planning';
 export * from './gateway';
+export * from './workflow';

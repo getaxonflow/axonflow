@@ -42,7 +42,8 @@ import (
 	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
 	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
-	"axonflow/platform/orchestrator/sebi"     // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -99,6 +100,10 @@ var (
 
 	// MAP Two-Step Execution (#925)
 	planService *planning.Service // Plan storage and retrieval for GeneratePlan/ExecutePlan
+
+	// Workflow Control Plane V1 (#834)
+	workflowControlService *workflow_control.Service // Workflow governance service
+	workflowControlHandler *workflow_control.Handler // Workflow Control HTTP handlers
 )
 
 // Per-stage metrics (similar to Agent)
@@ -480,6 +485,13 @@ func Run() {
 	if costHandler != nil {
 		costHandler.RegisterRoutes(r)
 		log.Println("Cost Controls API routes registered (/api/v1/budgets/..., /api/v1/usage/...)")
+	}
+
+	// Workflow Control Plane V1 (#834)
+	// Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
+	if workflowControlHandler != nil {
+		workflowControlHandler.RegisterRoutes(r)
+		log.Println("Workflow Control Plane API routes registered (/api/v1/workflows/...)")
 	}
 
 	// Start server
@@ -903,6 +915,17 @@ func initializeComponents() {
 		// Start background cleanup worker for expired plans
 		planService.StartCleanupWorker(context.Background(), 15*time.Minute)
 		log.Println("Planning Service initialized ✅")
+
+		// Initialize Workflow Control Plane V1 (#834)
+		// Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
+		log.Println("Initializing Workflow Control Plane Service...")
+		workflowControlRepo := workflow_control.NewPostgresRepository(usageDB)
+		workflowControlConfig := &workflow_control.ServiceConfig{
+			BaseURL: os.Getenv("PORTAL_BASE_URL"), // For generating approval URLs
+		}
+		workflowControlService = workflow_control.NewService(workflowControlRepo, nil, workflowControlConfig)
+		workflowControlHandler = workflow_control.NewHandler(workflowControlService)
+		log.Println("Workflow Control Plane Service initialized ✅")
 
 		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
 		log.Println("Initializing SEBI Compliance Module...")
