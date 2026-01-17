@@ -56,6 +56,16 @@ tags:
     description: Runtime policy management
   - name: Workflows
     description: Workflow execution engine
+  - name: Workflow Control Plane
+    description: |
+      Governance gates for external orchestrators (LangChain, LangGraph, CrewAI).
+      "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+
+      Features:
+      - Register workflows from external orchestrators
+      - Check step gates before each workflow step
+      - Apply policies at step transitions (allow/block/require_approval)
+      - Track workflow lifecycle (in_progress/completed/aborted/failed)
   - name: Connectors
     description: Connector marketplace
   - name: Audit
@@ -2879,6 +2889,289 @@ paths:
                     items:
                       $ref: '#/components/schemas/WorkflowExecution'
 
+  # ============================================
+  # Workflow Control Plane Endpoints
+  # ============================================
+
+  /api/v1/workflows:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Create a workflow
+      description: |
+        Register a new workflow from an external orchestrator (LangChain, LangGraph, CrewAI).
+        Returns a workflow_id to use for subsequent step gate checks.
+      operationId: createControlPlaneWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkflowRequest'
+            example:
+              workflow_name: "code-review-pipeline"
+              source: "langgraph"
+              total_steps: 3
+              metadata:
+                environment: "production"
+                team: "engineering"
+      responses:
+        '201':
+          description: Workflow created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWorkflowResponse'
+              example:
+                workflow_id: "wf_abc123"
+                workflow_name: "code-review-pipeline"
+                status: "in_progress"
+                started_at: "2026-01-17T10:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    get:
+      tags:
+        - Workflow Control Plane
+      summary: List workflows
+      description: List workflows with optional filters
+      operationId: listControlPlaneWorkflows
+      parameters:
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [in_progress, completed, aborted, failed]
+        - name: source
+          in: query
+          description: Filter by source
+          schema:
+            type: string
+            enum: [langgraph, langchain, crewai, external]
+        - name: limit
+          in: query
+          description: Maximum number of workflows to return
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: Number of workflows to skip
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of workflows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWorkflowsResponse'
+
+  /api/v1/workflows/{workflow_id}:
+    get:
+      tags:
+        - Workflow Control Plane
+      summary: Get workflow status
+      description: Get the current status of a workflow including all step decisions
+      operationId: getControlPlaneWorkflow
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+          example: "wf_abc123"
+      responses:
+        '200':
+          description: Workflow status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowStatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/steps/{step_id}/gate:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Check step gate
+      description: |
+        Check if a workflow step is allowed to proceed.
+        Returns a decision (allow/block/require_approval) based on policy evaluation.
+
+        Call this BEFORE executing each step in your external orchestrator.
+      operationId: checkStepGate
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+          example: "wf_abc123"
+        - name: step_id
+          in: path
+          required: true
+          description: Step ID (unique within workflow)
+          schema:
+            type: string
+          example: "step-1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StepGateRequest'
+            example:
+              step_name: "Generate Code"
+              step_type: "llm_call"
+              model: "gpt-4"
+              provider: "openai"
+              step_input:
+                prompt: "Write a function to sort a list"
+      responses:
+        '200':
+          description: Gate decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepGateResponse'
+              examples:
+                allowed:
+                  summary: Step allowed
+                  value:
+                    decision: "allow"
+                    step_id: "step-1"
+                    decision_id: "dec_xyz789"
+                blocked:
+                  summary: Step blocked
+                  value:
+                    decision: "block"
+                    step_id: "step-1"
+                    reason: "GPT-4 not allowed in production workflows"
+                    policy_ids: ["policy_gpt4_block"]
+                approval_required:
+                  summary: Approval required
+                  value:
+                    decision: "require_approval"
+                    step_id: "step-1"
+                    reason: "Human approval required for deployment steps"
+                    approval_url: "https://portal.axonflow.com/approvals/abc123"
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/steps/{step_id}/complete:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Mark step completed
+      description: Mark a workflow step as completed after successful execution
+      operationId: markStepCompleted
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+        - name: step_id
+          in: path
+          required: true
+          description: Step ID
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkStepCompletedRequest'
+            example:
+              output:
+                code: "def sort_list(items): return sorted(items)"
+              metadata:
+                execution_time_ms: 1234
+      responses:
+        '200':
+          description: Step marked completed
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/complete:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Complete workflow
+      description: Mark the workflow as completed
+      operationId: completeControlPlaneWorkflow
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workflow completed
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/abort:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Abort workflow
+      description: Abort the workflow with an optional reason
+      operationId: abortControlPlaneWorkflow
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for aborting
+            example:
+              reason: "Step blocked by policy"
+      responses:
+        '200':
+          description: Workflow aborted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/resume:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Resume workflow
+      description: Resume a workflow after approval (Enterprise feature)
+      operationId: resumeControlPlaneWorkflow
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workflow resumed
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/connectors:
     get:
       tags:
@@ -4598,6 +4891,192 @@ components:
         output:
           type: object
           additionalProperties: true
+
+    # ============================================================================
+    # Workflow Control Plane Schemas
+    # ============================================================================
+
+    CreateWorkflowRequest:
+      type: object
+      required:
+        - workflow_name
+      properties:
+        workflow_name:
+          type: string
+          description: Human-readable name for the workflow
+          example: "code-review-pipeline"
+        source:
+          type: string
+          description: Source orchestrator
+          enum: [langgraph, langchain, crewai, external]
+          default: external
+        total_steps:
+          type: integer
+          description: Total number of steps (if known)
+          example: 3
+        metadata:
+          type: object
+          description: Additional workflow metadata
+          additionalProperties: true
+
+    CreateWorkflowResponse:
+      type: object
+      properties:
+        workflow_id:
+          type: string
+          description: Unique workflow identifier
+          example: "wf_abc123"
+        workflow_name:
+          type: string
+        status:
+          type: string
+          enum: [in_progress, completed, aborted, failed]
+        started_at:
+          type: string
+          format: date-time
+
+    WorkflowStatusResponse:
+      type: object
+      properties:
+        workflow_id:
+          type: string
+        workflow_name:
+          type: string
+        source:
+          type: string
+          enum: [langgraph, langchain, crewai, external]
+        status:
+          type: string
+          enum: [in_progress, completed, aborted, failed]
+        current_step_index:
+          type: integer
+        total_steps:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStepInfo'
+
+    WorkflowStepInfo:
+      type: object
+      properties:
+        step_id:
+          type: string
+        step_index:
+          type: integer
+        step_name:
+          type: string
+        step_type:
+          type: string
+          enum: [llm_call, tool_call, connector_call, human_task]
+        decision:
+          type: string
+          enum: [allow, block, require_approval]
+        reason:
+          type: string
+        policy_ids:
+          type: array
+          items:
+            type: string
+        approval_status:
+          type: string
+          enum: [pending, approved, rejected]
+        gate_checked_at:
+          type: string
+          format: date-time
+        step_completed_at:
+          type: string
+          format: date-time
+
+    StepGateRequest:
+      type: object
+      required:
+        - step_name
+        - step_type
+      properties:
+        step_name:
+          type: string
+          description: Human-readable step name
+          example: "Generate Code"
+        step_type:
+          type: string
+          description: Type of step
+          enum: [llm_call, tool_call, connector_call, human_task]
+          example: "llm_call"
+        step_input:
+          type: object
+          description: Input data for the step (for policy evaluation)
+          additionalProperties: true
+        model:
+          type: string
+          description: LLM model being used
+          example: "gpt-4"
+        provider:
+          type: string
+          description: LLM provider being used
+          example: "openai"
+
+    StepGateResponse:
+      type: object
+      properties:
+        decision:
+          type: string
+          description: Gate decision
+          enum: [allow, block, require_approval]
+        step_id:
+          type: string
+          description: Step identifier
+        decision_id:
+          type: string
+          description: Unique decision identifier for auditing
+        reason:
+          type: string
+          description: Reason for block or approval requirement
+        policy_ids:
+          type: array
+          description: IDs of policies that matched
+          items:
+            type: string
+        approval_url:
+          type: string
+          description: URL for human approval (Enterprise)
+          format: uri
+
+    MarkStepCompletedRequest:
+      type: object
+      properties:
+        output:
+          type: object
+          description: Output data from the step
+          additionalProperties: true
+        metadata:
+          type: object
+          description: Additional metadata
+          additionalProperties: true
+
+    ListWorkflowsResponse:
+      type: object
+      properties:
+        workflows:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStatusResponse'
+        total:
+          type: integer
+          description: Total number of workflows matching filters
+        limit:
+          type: integer
+        offset:
+          type: integer
 
     ConnectorInfo:
       type: object

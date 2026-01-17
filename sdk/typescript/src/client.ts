@@ -11,7 +11,22 @@ import {
   PreCheckRequest,
   PolicyApprovalResult,
   TokenUsage,
-  AuditResult
+  AuditResult,
+  CreateWorkflowRequest,
+  CreateWorkflowResponse,
+  StepGateRequest,
+  StepGateResponse,
+  WorkflowStatusResponse,
+  ListWorkflowsOptions,
+  ListWorkflowsResponse,
+  MarkStepCompletedRequest,
+  AbortWorkflowRequest,
+  WorkflowStatus,
+  WorkflowSource,
+  GateDecision,
+  ApprovalStatus,
+  StepType,
+  WorkflowStepInfo
 } from './types';
 import { OpenAIInterceptor } from './interceptors/openai';
 import { AnthropicInterceptor } from './interceptors/anthropic';
@@ -643,6 +658,451 @@ export class AxonFlow {
     return {
       success: data.success,
       auditId: data.audit_id
+    };
+  }
+
+  // ===========================================================================
+  // Workflow Control Plane SDK Methods
+  // ===========================================================================
+  // The Workflow Control Plane provides governance gates for external
+  // orchestrators like LangChain, LangGraph, and CrewAI.
+  //
+  // "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+  //
+  // Usage:
+  //   1. Call createWorkflow() to register a new workflow
+  //   2. Before each step, call stepGate() to check if the step is allowed
+  //   3. If decision is 'block', stop the workflow
+  //   4. If decision is 'require_approval', wait for approval via approvalUrl
+  //   5. After each step, optionally call markStepCompleted()
+  //   6. Call completeWorkflow() or abortWorkflow() when done
+  //
+  // Example:
+  //   const workflow = await axonflow.createWorkflow({
+  //     workflowName: 'code-review-pipeline',
+  //     source: 'langgraph'
+  //   });
+  //
+  //   const gate = await axonflow.stepGate(workflow.workflowId, 'step-1', {
+  //     stepName: 'generate_code',
+  //     stepType: 'llm_call',
+  //     model: 'gpt-4'
+  //   });
+  //
+  //   if (gate.decision === 'block') {
+  //     console.log(`Blocked: ${gate.reason}`);
+  //   } else if (gate.decision === 'require_approval') {
+  //     console.log(`Approval needed: ${gate.approvalUrl}`);
+  //   } else {
+  //     // Execute the step
+  //     await executeStep();
+  //   }
+  //
+  //   await axonflow.completeWorkflow(workflow.workflowId);
+
+  /**
+   * Create a new workflow for governance tracking
+   *
+   * Registers a new workflow with AxonFlow. Call this at the start of your
+   * external orchestrator workflow (LangChain, LangGraph, CrewAI, etc.).
+   *
+   * @param request Workflow creation request
+   * @returns Created workflow with ID
+   *
+   * @example
+   * const workflow = await axonflow.createWorkflow({
+   *   workflowName: 'customer-support-agent',
+   *   source: 'langgraph',
+   *   totalSteps: 5,
+   *   metadata: { customerId: 'cust-123' }
+   * });
+   * console.log(`Workflow created: ${workflow.workflowId}`);
+   */
+  async createWorkflow(request: CreateWorkflowRequest): Promise<CreateWorkflowResponse> {
+    const url = `${this.config.endpoint}/api/v1/workflows`;
+
+    const body = {
+      workflow_name: request.workflowName,
+      source: request.source || 'external',
+      total_steps: request.totalSteps,
+      metadata: request.metadata
+    };
+
+    if (this.config.debug) {
+      debugLog('Creating workflow', { workflowName: request.workflowName, source: body.source });
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to create workflow: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    if (this.config.debug) {
+      debugLog('Workflow created', { workflowId: data.workflow_id });
+    }
+
+    return {
+      workflowId: data.workflow_id,
+      workflowName: data.workflow_name,
+      source: data.source as WorkflowSource,
+      status: data.status as WorkflowStatus,
+      createdAt: new Date(data.created_at)
+    };
+  }
+
+  /**
+   * Get the status of a workflow
+   *
+   * @param workflowId Workflow ID
+   * @returns Workflow status including steps
+   *
+   * @example
+   * const status = await axonflow.getWorkflow('wf_123');
+   * console.log(`Status: ${status.status}, Step: ${status.currentStepIndex}/${status.totalSteps}`);
+   */
+  async getWorkflow(workflowId: string): Promise<WorkflowStatusResponse> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to get workflow: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    return this.mapWorkflowResponse(data);
+  }
+
+  /**
+   * Check if a workflow step is allowed to proceed (step gate)
+   *
+   * This is the core governance method. Call this before executing each step
+   * in your workflow to check if the step is allowed based on policies.
+   *
+   * @param workflowId Workflow ID
+   * @param stepId Unique step identifier (you provide this)
+   * @param request Step gate request with step details
+   * @returns Gate decision: allow, block, or require_approval
+   *
+   * @example
+   * const gate = await axonflow.stepGate('wf_123', 'step-generate-code', {
+   *   stepName: 'Generate Code',
+   *   stepType: 'llm_call',
+   *   stepInput: { prompt: 'Write a function...' },
+   *   model: 'gpt-4',
+   *   provider: 'openai'
+   * });
+   *
+   * switch (gate.decision) {
+   *   case 'allow':
+   *     await executeStep();
+   *     break;
+   *   case 'block':
+   *     throw new Error(`Step blocked: ${gate.reason}`);
+   *   case 'require_approval':
+   *     console.log(`Waiting for approval: ${gate.approvalUrl}`);
+   *     // Poll or webhook to wait for approval
+   *     break;
+   * }
+   */
+  async stepGate(workflowId: string, stepId: string, request: StepGateRequest): Promise<StepGateResponse> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}/steps/${stepId}/gate`;
+
+    const body = {
+      step_name: request.stepName,
+      step_type: request.stepType,
+      step_input: request.stepInput,
+      model: request.model,
+      provider: request.provider
+    };
+
+    if (this.config.debug) {
+      debugLog('Checking step gate', {
+        workflowId,
+        stepId,
+        stepType: request.stepType
+      });
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Step gate check failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    if (this.config.debug) {
+      debugLog('Step gate decision', {
+        workflowId,
+        stepId,
+        decision: data.decision
+      });
+    }
+
+    return {
+      decision: data.decision as GateDecision,
+      stepId: data.step_id,
+      reason: data.reason,
+      policyIds: data.policy_ids,
+      approvalUrl: data.approval_url
+    };
+  }
+
+  /**
+   * Mark a step as completed
+   *
+   * Call this after successfully executing a step to record its completion.
+   *
+   * @param workflowId Workflow ID
+   * @param stepId Step ID
+   * @param request Optional completion request with output data
+   *
+   * @example
+   * await axonflow.markStepCompleted('wf_123', 'step-1', {
+   *   output: { result: 'Generated code successfully' }
+   * });
+   */
+  async markStepCompleted(workflowId: string, stepId: string, request?: MarkStepCompletedRequest): Promise<void> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}/steps/${stepId}/complete`;
+
+    const body = request ? {
+      output: request.output,
+      metadata: request.metadata
+    } : {};
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to mark step completed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    if (this.config.debug) {
+      debugLog('Step marked completed', { workflowId, stepId });
+    }
+  }
+
+  /**
+   * Complete a workflow successfully
+   *
+   * Call this when your workflow has completed all steps successfully.
+   *
+   * @param workflowId Workflow ID
+   *
+   * @example
+   * await axonflow.completeWorkflow('wf_123');
+   */
+  async completeWorkflow(workflowId: string): Promise<void> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}/complete`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to complete workflow: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    if (this.config.debug) {
+      debugLog('Workflow completed', { workflowId });
+    }
+  }
+
+  /**
+   * Abort a workflow
+   *
+   * Call this when you need to stop a workflow due to an error or user request.
+   *
+   * @param workflowId Workflow ID
+   * @param reason Optional reason for aborting
+   *
+   * @example
+   * await axonflow.abortWorkflow('wf_123', 'User cancelled the operation');
+   */
+  async abortWorkflow(workflowId: string, reason?: string): Promise<void> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}/abort`;
+
+    const body = reason ? { reason } : {};
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to abort workflow: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    if (this.config.debug) {
+      debugLog('Workflow aborted', { workflowId, reason });
+    }
+  }
+
+  /**
+   * Resume a workflow after approval
+   *
+   * Call this after a step has been approved to continue the workflow.
+   *
+   * @param workflowId Workflow ID
+   *
+   * @example
+   * // After approval received via webhook or polling
+   * await axonflow.resumeWorkflow('wf_123');
+   */
+  async resumeWorkflow(workflowId: string): Promise<void> {
+    const url = `${this.config.endpoint}/api/v1/workflows/${workflowId}/resume`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to resume workflow: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    if (this.config.debug) {
+      debugLog('Workflow resumed', { workflowId });
+    }
+  }
+
+  /**
+   * List workflows with optional filters
+   *
+   * @param options Filter and pagination options
+   * @returns List of workflows
+   *
+   * @example
+   * const result = await axonflow.listWorkflows({
+   *   status: 'in_progress',
+   *   source: 'langgraph',
+   *   limit: 10
+   * });
+   * console.log(`Found ${result.total} workflows`);
+   */
+  async listWorkflows(options?: ListWorkflowsOptions): Promise<ListWorkflowsResponse> {
+    const params = new URLSearchParams();
+    if (options?.status) params.append('status', options.status);
+    if (options?.source) params.append('source', options.source);
+    if (options?.limit) params.append('limit', options.limit.toString());
+    if (options?.offset) params.append('offset', options.offset.toString());
+
+    const queryString = params.toString();
+    const url = `${this.config.endpoint}/api/v1/workflows${queryString ? `?${queryString}` : ''}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'X-Client-Secret': this.config.apiKey,
+        'X-License-Key': this.config.apiKey
+      },
+      signal: AbortSignal.timeout(this.config.timeout)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to list workflows: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    if (this.config.debug) {
+      debugLog('Workflows listed', { count: data.workflows?.length || 0 });
+    }
+
+    return {
+      workflows: (data.workflows || []).map((w: any) => this.mapWorkflowResponse(w)),
+      total: data.total || data.workflows?.length || 0
+    };
+  }
+
+  /**
+   * Helper to map API response to WorkflowStatusResponse
+   */
+  private mapWorkflowResponse(data: any): WorkflowStatusResponse {
+    return {
+      workflowId: data.workflow_id,
+      workflowName: data.workflow_name,
+      source: data.source as WorkflowSource,
+      status: data.status as WorkflowStatus,
+      currentStepIndex: data.current_step_index || 0,
+      totalSteps: data.total_steps,
+      startedAt: new Date(data.started_at),
+      completedAt: data.completed_at ? new Date(data.completed_at) : undefined,
+      steps: data.steps?.map((s: any): WorkflowStepInfo => ({
+        stepId: s.step_id,
+        stepIndex: s.step_index,
+        stepName: s.step_name,
+        stepType: s.step_type as StepType,
+        decision: s.decision as GateDecision,
+        decisionReason: s.decision_reason,
+        approvalStatus: s.approval_status as ApprovalStatus | undefined,
+        approvedBy: s.approved_by,
+        gateCheckedAt: new Date(s.gate_checked_at),
+        completedAt: s.completed_at ? new Date(s.completed_at) : undefined
+      }))
     };
   }
 }
