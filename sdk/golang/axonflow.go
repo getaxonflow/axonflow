@@ -987,3 +987,503 @@ func (c *AxonFlowClient) AuditLLMCall(
 
 	return &result, nil
 }
+
+// =============================================================================
+// Workflow Control Plane SDK Methods (#834)
+// =============================================================================
+// The Workflow Control Plane provides governance gates for external orchestrators
+// (LangChain, LangGraph, CrewAI). External orchestrators execute the actual
+// workflow steps, while AxonFlow provides policy-based gates that approve,
+// block, or require human approval before each step proceeds.
+//
+// The 30-second pitch:
+// "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+//
+// Usage:
+//   1. Call CreateWorkflow() at the start of your workflow
+//   2. Before each step, call StepGate() to check if the step is allowed
+//   3. If decision is "allow", execute the step, then call MarkStepCompleted()
+//   4. If decision is "block", stop the workflow
+//   5. If decision is "require_approval", wait for approval via polling or webhook
+//   6. Call CompleteWorkflow() when all steps are done
+//
+// Example:
+//   workflow, err := client.CreateWorkflow("code-review-pipeline", "langgraph", nil)
+//   if err != nil { return err }
+//
+//   gate, err := client.StepGate(workflow.WorkflowID, "step-1", "generate_code", "llm_call", nil)
+//   if err != nil { return err }
+//
+//   switch gate.Decision {
+//   case "allow":
+//       // Execute step
+//       err = client.MarkStepCompleted(workflow.WorkflowID, "step-1")
+//   case "block":
+//       return fmt.Errorf("blocked: %s", gate.Reason)
+//   case "require_approval":
+//       fmt.Printf("Approval needed: %s\n", gate.ApprovalURL)
+//   }
+//
+//   err = client.CompleteWorkflow(workflow.WorkflowID)
+
+// WorkflowStatus represents the state of a workflow
+type WorkflowStatus string
+
+const (
+	WorkflowStatusInProgress WorkflowStatus = "in_progress"
+	WorkflowStatusCompleted  WorkflowStatus = "completed"
+	WorkflowStatusAborted    WorkflowStatus = "aborted"
+	WorkflowStatusFailed     WorkflowStatus = "failed"
+)
+
+// WorkflowSource represents the external orchestrator type
+type WorkflowSource string
+
+const (
+	WorkflowSourceLangGraph WorkflowSource = "langgraph"
+	WorkflowSourceLangChain WorkflowSource = "langchain"
+	WorkflowSourceCrewAI    WorkflowSource = "crewai"
+	WorkflowSourceExternal  WorkflowSource = "external"
+)
+
+// GateDecision represents the decision for a step gate
+type GateDecision string
+
+const (
+	GateDecisionAllow           GateDecision = "allow"
+	GateDecisionBlock           GateDecision = "block"
+	GateDecisionRequireApproval GateDecision = "require_approval"
+)
+
+// StepType represents the type of workflow step
+type StepType string
+
+const (
+	StepTypeLLMCall       StepType = "llm_call"
+	StepTypeToolCall      StepType = "tool_call"
+	StepTypeConnectorCall StepType = "connector_call"
+	StepTypeHumanTask     StepType = "human_task"
+)
+
+// CreateWorkflowRequest is the request to register a new workflow
+type CreateWorkflowRequest struct {
+	WorkflowName string                 `json:"workflow_name"`
+	Source       WorkflowSource         `json:"source,omitempty"`
+	TotalSteps   *int                   `json:"total_steps,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// CreateWorkflowResponse is the response when a workflow is created
+type CreateWorkflowResponse struct {
+	WorkflowID   string         `json:"workflow_id"`
+	WorkflowName string         `json:"workflow_name"`
+	Source       WorkflowSource `json:"source"`
+	Status       WorkflowStatus `json:"status"`
+	CreatedAt    time.Time      `json:"created_at"`
+}
+
+// StepGateRequest is the request to check if a step is allowed to proceed
+type StepGateRequest struct {
+	StepName  string                 `json:"step_name,omitempty"`
+	StepType  StepType               `json:"step_type"`
+	StepInput map[string]interface{} `json:"step_input,omitempty"`
+	Model     string                 `json:"model,omitempty"`
+	Provider  string                 `json:"provider,omitempty"`
+}
+
+// StepGateResponse is the response for a step gate check
+type StepGateResponse struct {
+	Decision    GateDecision `json:"decision"`
+	DecisionID  string       `json:"decision_id,omitempty"`
+	PolicyIDs   []string     `json:"policy_ids,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
+	ApprovalURL string       `json:"approval_url,omitempty"`
+}
+
+// WorkflowStatusResponse is the response for workflow status
+type WorkflowStatusResponse struct {
+	WorkflowID       string         `json:"workflow_id"`
+	WorkflowName     string         `json:"workflow_name"`
+	Source           WorkflowSource `json:"source"`
+	Status           WorkflowStatus `json:"status"`
+	CurrentStepIndex int            `json:"current_step_index"`
+	TotalSteps       *int           `json:"total_steps,omitempty"`
+	StartedAt        time.Time      `json:"started_at"`
+	CompletedAt      *time.Time     `json:"completed_at,omitempty"`
+	Steps            []StepInfo     `json:"steps,omitempty"`
+}
+
+// StepInfo provides summary info about a step
+type StepInfo struct {
+	StepID         string       `json:"step_id"`
+	StepIndex      int          `json:"step_index"`
+	StepName       string       `json:"step_name,omitempty"`
+	StepType       StepType     `json:"step_type,omitempty"`
+	Decision       GateDecision `json:"decision"`
+	ApprovalStatus *string      `json:"approval_status,omitempty"`
+	GateCheckedAt  time.Time    `json:"gate_checked_at"`
+}
+
+// ListWorkflowsOptions contains filters for listing workflows
+type ListWorkflowsOptions struct {
+	Status *WorkflowStatus `json:"status,omitempty"`
+	Source *WorkflowSource `json:"source,omitempty"`
+	Limit  int             `json:"limit,omitempty"`
+	Offset int             `json:"offset,omitempty"`
+}
+
+// ListWorkflowsResponse is the response for listing workflows
+type ListWorkflowsResponse struct {
+	Workflows []WorkflowStatusResponse `json:"workflows"`
+	Total     int                      `json:"total"`
+	Limit     int                      `json:"limit"`
+	Offset    int                      `json:"offset"`
+	HasMore   bool                     `json:"has_more"`
+}
+
+// CreateWorkflow registers a new workflow from an external orchestrator
+// This should be called at the start of your workflow execution.
+//
+// Parameters:
+//   - workflowName: A descriptive name for the workflow
+//   - source: The orchestrator type ("langgraph", "langchain", "crewai", "external")
+//   - metadata: Optional additional metadata
+//
+// Returns:
+//   - CreateWorkflowResponse with workflow_id
+//   - error if the request fails
+func (c *AxonFlowClient) CreateWorkflow(workflowName string, source WorkflowSource, metadata map[string]interface{}) (*CreateWorkflowResponse, error) {
+	reqBody := CreateWorkflowRequest{
+		WorkflowName: workflowName,
+		Source:       source,
+		Metadata:     metadata,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal workflow request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", c.config.AgentURL+"/api/v1/workflows", bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workflow request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Creating workflow: %s (source: %s)", workflowName, source)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("workflow request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read workflow response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return nil, &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	var result CreateWorkflowResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal workflow response: %w", err)
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Created: %s (ID: %s)", result.WorkflowName, result.WorkflowID)
+	}
+
+	return &result, nil
+}
+
+// GetWorkflow retrieves the current status of a workflow
+func (c *AxonFlowClient) GetWorkflow(workflowID string) (*WorkflowStatusResponse, error) {
+	httpReq, err := http.NewRequest("GET", c.config.AgentURL+"/api/v1/workflows/"+workflowID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create get workflow request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("get workflow request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read workflow response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	var result WorkflowStatusResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal workflow response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// StepGate checks if a workflow step is allowed to proceed
+// This is the core governance function - call this before each step in your workflow.
+//
+// Parameters:
+//   - workflowID: The workflow ID from CreateWorkflow()
+//   - stepID: A unique identifier for this step (e.g., "step-1", "generate-code")
+//   - stepName: A human-readable name for the step
+//   - stepType: The type of step ("llm_call", "tool_call", "connector_call", "human_task")
+//   - opts: Optional step configuration (model, provider, input)
+//
+// Returns:
+//   - StepGateResponse with decision ("allow", "block", "require_approval")
+//   - error if the request fails
+//
+// Example:
+//   gate, err := client.StepGate(workflowID, "step-1", "Generate Code", "llm_call", &StepGateRequest{
+//       Model: "gpt-4",
+//       Provider: "openai",
+//       StepInput: map[string]interface{}{"prompt": "..."},
+//   })
+func (c *AxonFlowClient) StepGate(workflowID, stepID, stepName string, stepType StepType, opts *StepGateRequest) (*StepGateResponse, error) {
+	var reqBody StepGateRequest
+	if opts != nil {
+		reqBody = *opts
+	}
+	reqBody.StepName = stepName
+	reqBody.StepType = stepType
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal step gate request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/workflows/%s/steps/%s/gate", c.config.AgentURL, workflowID, stepID)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create step gate request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Step gate check: workflow=%s step=%s type=%s", workflowID, stepID, stepType)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("step gate request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read step gate response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	var result StepGateResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal step gate response: %w", err)
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Step gate result: decision=%s reason=%s", result.Decision, result.Reason)
+	}
+
+	return &result, nil
+}
+
+// MarkStepCompleted marks a step as completed after successful execution
+// Call this after your step executes successfully (when gate decision was "allow")
+func (c *AxonFlowClient) MarkStepCompleted(workflowID, stepID string) error {
+	url := fmt.Sprintf("%s/api/v1/workflows/%s/steps/%s/complete", c.config.AgentURL, workflowID, stepID)
+	httpReq, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create mark completed request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("mark completed request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Step completed: workflow=%s step=%s", workflowID, stepID)
+	}
+
+	return nil
+}
+
+// CompleteWorkflow marks a workflow as completed
+// Call this when all steps have been executed successfully
+func (c *AxonFlowClient) CompleteWorkflow(workflowID string) error {
+	url := fmt.Sprintf("%s/api/v1/workflows/%s/complete", c.config.AgentURL, workflowID)
+	httpReq, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create complete workflow request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("complete workflow request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Workflow completed: %s", workflowID)
+	}
+
+	return nil
+}
+
+// AbortWorkflow aborts a workflow with an optional reason
+// Call this when you need to stop a workflow before completion
+func (c *AxonFlowClient) AbortWorkflow(workflowID, reason string) error {
+	reqBody := map[string]string{"reason": reason}
+	jsonBody, _ := json.Marshal(reqBody)
+
+	url := fmt.Sprintf("%s/api/v1/workflows/%s/abort", c.config.AgentURL, workflowID)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create abort workflow request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("abort workflow request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Workflow aborted: %s reason=%s", workflowID, reason)
+	}
+
+	return nil
+}
+
+// ResumeWorkflow attempts to resume a workflow that was waiting for approval
+func (c *AxonFlowClient) ResumeWorkflow(workflowID string) error {
+	url := fmt.Sprintf("%s/api/v1/workflows/%s/resume", c.config.AgentURL, workflowID)
+	httpReq, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create resume workflow request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("resume workflow request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	if c.config.Debug {
+		log.Printf("[AxonFlow Workflow] Workflow resumed: %s", workflowID)
+	}
+
+	return nil
+}
+
+// ListWorkflows returns workflows with optional filters
+func (c *AxonFlowClient) ListWorkflows(opts *ListWorkflowsOptions) (*ListWorkflowsResponse, error) {
+	url := c.config.AgentURL + "/api/v1/workflows"
+	if opts != nil {
+		params := "?"
+		if opts.Status != nil {
+			params += fmt.Sprintf("status=%s&", *opts.Status)
+		}
+		if opts.Source != nil {
+			params += fmt.Sprintf("source=%s&", *opts.Source)
+		}
+		if opts.Limit > 0 {
+			params += fmt.Sprintf("limit=%d&", opts.Limit)
+		}
+		if opts.Offset > 0 {
+			params += fmt.Sprintf("offset=%d&", opts.Offset)
+		}
+		if len(params) > 1 {
+			url += params[:len(params)-1] // Remove trailing &
+		}
+	}
+
+	httpReq, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create list workflows request: %w", err)
+	}
+
+	c.setAuthHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("list workflows request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read list workflows response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &httpError{statusCode: resp.StatusCode, message: string(body)}
+	}
+
+	var result ListWorkflowsResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal list workflows response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// setAuthHeaders sets authentication headers on a request
+func (c *AxonFlowClient) setAuthHeaders(req *http.Request) {
+	req.Header.Set("X-Client-ID", c.config.ClientID)
+	req.Header.Set("X-Client-Secret", c.config.ClientSecret)
+	if c.config.LicenseKey != "" {
+		req.Header.Set("X-License-Key", c.config.LicenseKey)
+	}
+}
