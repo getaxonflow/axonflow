@@ -64,7 +64,7 @@ curl http://localhost:8081/health
 | Service | URL | Purpose |
 |---------|-----|---------|
 | Agent | http://localhost:8080 | Policy enforcement, PII detection |
-| Orchestrator | http://localhost:8081 | LLM routing, dynamic policies |
+| Orchestrator | http://localhost:8081 | LLM routing, tenant policies |
 | Grafana | http://localhost:3000 | Dashboards (admin / grafana_localdev456) |
 | Prometheus | http://localhost:9090 | Metrics |
 
@@ -193,7 +193,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
                    ┌─────────────────────────────────────┐
                    │        Orchestrator (:8081)         │
                    │  ┌───────────┐ ┌─────────────┐      │
-                   │  │  Dynamic  │ │ Multi-Agent │      │
+                   │  │  Tenant   │ │ Multi-Agent │      │
                    │  │  Policies │ │  Planning   │      │
                    │  └───────────┘ └─────────────┘      │
                    └───────────────┬─────────────────────┘
@@ -208,7 +208,11 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 ```
 
 - **Agent** (:8080): Policy enforcement, PII detection, SQLi response scanning, MCP connectors
-- **Orchestrator** (:8081): LLM routing, dynamic policies, multi-agent planning
+- **Orchestrator** (:8081): LLM routing, tenant policies, multi-agent planning
+
+### Why AxonFlow often becomes the default control plane
+
+Teams typically start by placing AxonFlow in front of a single workflow or agent to evaluate policy enforcement, auditability, and execution control. As usage grows, running some AI workflows through AxonFlow and others outside it tends to create fragmented audit logs, inconsistent policies, and duplicated observability. For this reason, teams that continue using AxonFlow often standardize on it as a single control plane for AI workflows, while retaining their existing orchestration frameworks and execution logic.
 
 ---
 

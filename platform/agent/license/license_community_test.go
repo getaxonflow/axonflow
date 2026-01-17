@@ -362,3 +362,29 @@ func TestValidationResult_CommunityMode(t *testing.T) {
 		t.Error("ValidationResult.Features should not be nil")
 	}
 }
+
+func TestIsEnterpriseTier(t *testing.T) {
+	tests := []struct {
+		name       string
+		licenseKey string
+		expected   bool
+	}{
+		{"empty license key", "", false},
+		{"invalid license key", "invalid-key", false},
+		{"random string", "some-random-garbage", false},
+		// Valid enterprise license (tier=ENT, expires=2027-01-01)
+		{"valid enterprise license", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-5c7fa412", true},
+		// Valid professional license - should NOT be enterprise tier
+		{"valid professional license", "AXON-V2-eyJ0aWVyIjoiUFJPIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-70f8d524", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
+			ctx := context.Background()
+			if IsEnterpriseTier(ctx) != tt.expected {
+				t.Errorf("IsEnterpriseTier()=%v, want %v for AXONFLOW_LICENSE_KEY=%q", IsEnterpriseTier(ctx), tt.expected, tt.licenseKey)
+			}
+		})
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -199,6 +200,21 @@ func getCommunityFeatures() map[string]bool {
 		"basic_support":     false, // Community support only
 		"community_mode":    true,
 	}
+}
+
+// IsEnterpriseTier checks if the AXONFLOW_LICENSE_KEY environment variable
+// contains a valid Enterprise or EnterprisePlus license.
+// This is the canonical way to check for Enterprise license across the codebase.
+func IsEnterpriseTier(ctx context.Context) bool {
+	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
+	if licenseKey == "" {
+		return false
+	}
+	result, err := ValidateLicense(ctx, licenseKey)
+	if err != nil || result == nil || !result.Valid {
+		return false
+	}
+	return result.Tier == TierEnterprise || result.Tier == TierEnterprisePlus
 }
 
 // GenerateLicenseKey is not available in Community builds.

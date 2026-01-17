@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Grafana Dashboard**: Add Security & Compliance section with PII detection, provider distribution, and policy metrics panels (#836)
+
+### Fixed
+
+- Improved enterprise license validation consistency (#1010)
+
+---
+
 ## [3.3.0] - 2026-01-16
 
 ### Added

@@ -12,9 +12,10 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"strings"
+
+	"axonflow/platform/agent/license"
 )
 
 // CommunityPolicyLimit is the maximum number of tenant policies allowed in Community edition.
@@ -34,27 +35,17 @@ func (d *DefaultLicenseChecker) IsEnterprise() bool {
 	return false
 }
 
-// EnvLicenseChecker checks the DEPLOYMENT_MODE environment variable to determine
-// if the current deployment is Enterprise edition.
-type EnvLicenseChecker struct {
-	mode string
-}
+// EnvLicenseChecker validates the license via AXONFLOW_LICENSE_KEY environment variable.
+type EnvLicenseChecker struct{}
 
-// NewEnvLicenseChecker creates a license checker that reads DEPLOYMENT_MODE from environment.
+// NewEnvLicenseChecker creates a license checker that validates via AXONFLOW_LICENSE_KEY.
 func NewEnvLicenseChecker() *EnvLicenseChecker {
-	return &EnvLicenseChecker{
-		mode: strings.ToLower(os.Getenv("DEPLOYMENT_MODE")),
-	}
+	return &EnvLicenseChecker{}
 }
 
-// IsEnterprise returns true if DEPLOYMENT_MODE is not "community" (or empty).
-// Enterprise modes include: saas, enterprise, banking, travel, healthcare, etc.
+// IsEnterprise returns true if AXONFLOW_LICENSE_KEY contains a valid Enterprise license.
 func (e *EnvLicenseChecker) IsEnterprise() bool {
-	// Empty or "community" means Community edition
-	if e.mode == "" || e.mode == "community" {
-		return false
-	}
-	return true
+	return license.IsEnterpriseTier(context.Background())
 }
 
 // TierValidationError represents a tier-related validation failure.

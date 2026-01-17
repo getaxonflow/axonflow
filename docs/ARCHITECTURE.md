@@ -153,16 +153,16 @@ Every step in a workflow passes through policy evaluation:
 sequenceDiagram
     participant App
     participant Agent as Agent (:8080)
-    participant Static as Static Policies
+    participant System as System Policies
     participant Orch as Orchestrator (:8081)
     participant Framework as Your Framework
     participant LLM as LLM Provider
 
     App->>Agent: Request
 
-    Note over Agent,Static: BEFORE: Policy Evaluation
-    Agent->>Static: PII, SQLi, Rate Limits
-    Static-->>Agent: Allow/Deny
+    Note over Agent,System: BEFORE: Policy Evaluation
+    Agent->>System: PII, SQLi, Rate Limits
+    System-->>Agent: Allow/Deny
 
     alt Blocked
         Agent-->>App: 403 + Reason
@@ -186,19 +186,19 @@ sequenceDiagram
     end
 ```
 
-### Two-Phase Policy Model (Proxy Mode)
+### Two-Phase Policy Model
 
-In Proxy Mode, static and dynamic policies are evaluated in sequence:
+AxonFlow uses a two-phase policy model for both LLM calls and MCP connector access:
 
 ```mermaid
 flowchart LR
-    subgraph Phase1["Phase 1: Agent (Static) - <10ms"]
+    subgraph Phase1["Phase 1: Agent (System) - <10ms"]
         PII[PII Detection]
         SQLi[SQLi Scanning]
         Rate[Rate Limits]
     end
 
-    subgraph Phase2["Phase 2: Orchestrator (Dynamic)"]
+    subgraph Phase2["Phase 2: Orchestrator (Tenant)"]
         Tenant[Tenant Policies]
         Risk[Risk Scoring]
         Cost[Cost Budgets]
@@ -211,11 +211,17 @@ flowchart LR
     Phase2 -->|Block| Deny
 ```
 
-**Phase 1 (Static):** Compiled patterns, in-memory, no DB lookups. Code: `platform/agent/static_policies.go`
+**Phase 1 (System Policies):** Compiled patterns, in-memory, no DB lookups. Code: `platform/agent/static_policies.go`
 
-**Phase 2 (Dynamic):** Tenant-aware, cached 5 minutes. Code: `platform/orchestrator/dynamic_policy_engine.go`
+**Phase 2 (Tenant Policies):** Tenant-aware, cached 5 minutes. Code: `platform/orchestrator/dynamic_policy_engine.go`
 
-> **Note:** In Gateway Mode, only Phase 1 (static policies) runs. The Orchestrator is not involved — your framework handles the LLM call directly.
+| Access Type | Phase 1 (System) | Phase 2 (Tenant) |
+|-------------|------------------|------------------|
+| **LLM - Proxy Mode** | ✅ | ✅ |
+| **LLM - Gateway Mode** | ✅ | ❌ (you handle LLM directly) |
+| **MCP Connectors** | ✅ | ✅ (when `MCP_DYNAMIC_POLICIES_ENABLED=true`) |
+
+> **Note:** MCP connectors are evaluated independently from LLM mode selection. You can use Gateway Mode for LLM calls (lowest latency) while still having full two-phase policy evaluation on MCP connector access. See `platform/agent/mcp_handler.go` for MCP policy flow.
 
 ### Human-in-the-Loop Approvals (Enterprise)
 
@@ -313,7 +319,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 │   ┌─────────┐      ┌──────────────────┐      ┌──────────────────┐          │
 │   │         │      │  Agent (:8080)   │      │Orchestrator(:8081)│          │
 │   │   App   │─────▶│                  │─────▶│                  │──────────┤
-│   │         │      │  • Static Policy │      │  • Dynamic Policy │          │
+│   │         │      │  • System Policy │      │  • Tenant Policy  │          │
 │   └─────────┘      │  • PII Detection │      │  • LLM Routing    │          │
 │                    │  • SQLi Scanning │      │  • Cost Controls  │          │
 │                    │  • Rate Limits   │      │  • MAP Planning   │          │
@@ -340,7 +346,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 **Data Flow:**
 1. **App → Agent**: All requests enter through the Agent on port 8080
 2. **Agent → Orchestrator**: In Proxy Mode, approved requests route to Orchestrator for LLM execution
-3. **Agent ↔ Postgres**: Static policies loaded at startup, audit logs written per-request
+3. **Agent ↔ Postgres**: System policies loaded at startup, audit logs written per-request
 4. **Agent ↔ Redis**: Rate limit counters, policy cache (5-min TTL)
 5. **Orchestrator → LLM**: Routes to configured providers based on cost, latency, or policy rules
 
@@ -351,7 +357,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 | Component | File | Purpose |
 |-----------|------|---------|
 | Entry point | `run.go` | HTTP server, middleware |
-| Static policies | `static_policies.go` | PII, SQLi, rate limits |
+| System policies | `static_policies.go` | PII, SQLi, rate limits |
 | Gateway handlers | `gateway_handlers.go` | Pre-check / Audit APIs |
 | MCP handler | `mcp_handler.go` | Connector orchestration |
 | Decision chain | `decision_chain.go` | Audit trail |
@@ -363,7 +369,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 | Component | File | Purpose |
 |-----------|------|---------|
 | Entry point | `run.go` | Service initialization |
-| Dynamic policies | `dynamic_policy_engine.go` | Tenant policies, risk |
+| Tenant policies | `dynamic_policy_engine.go` | Configurable rules, risk |
 | LLM routing | `llm/router.go` | Provider selection |
 | Planning engine | `planning_engine.go` | MAP |
 | Cost controls | `cost/` | Budget management |
@@ -404,9 +410,9 @@ Once you have audit trails, cost controls, and approval workflows, they become i
 
 | Operation | P95 Latency | Notes |
 |-----------|-------------|-------|
-| Static Policy Evaluation | <10ms | In-memory |
-| Dynamic Policy Evaluation | <30ms | Cached |
-| Gateway Pre-check | <15ms | Static + context |
+| System Policy Evaluation | <10ms | In-memory |
+| Tenant Policy Evaluation | <30ms | Cached |
+| Gateway Pre-check | <15ms | System + context |
 | MCP Connector Query | <50ms | Pooled connections |
 
 ---
