@@ -68,11 +68,16 @@ flowchart TB
 | **Performance** | | |
 | Latency overhead | ~50-100ms (public) / ~10-20ms (VPC) | ~10-20ms |
 | Request flow | App → AxonFlow → LLM | App → LLM (direct) |
-| **Features** | | |
-| Policy enforcement | Automatic | Automatic (pre-check) |
+| **LLM Features** | | |
+| Static policies (PII, SQLi) | Automatic | Automatic (pre-check) |
+| Dynamic policies (custom rules) | Automatic | ❌ Not evaluated |
 | Audit logging | 100% automatic | Manual (call audit API) |
 | Response filtering | Yes (PII redaction) | No |
 | Rate limiting | Automatic | Automatic (pre-check) |
+| **MCP Connectors** | | |
+| MCP static policies | ✅ Full | ✅ Full |
+| MCP dynamic policies | ✅ Full | ✅ Full |
+| MCP audit logging | ✅ Automatic | ✅ Automatic |
 | **Control** | | |
 | LLM provider | AxonFlow routes | You choose |
 | Model selection | Limited | Full control |
@@ -350,7 +355,7 @@ if (result.policyInfo?.exfiltrationCheck?.withinLimits) {
   console.log('Query within limits');
 }
 
-// Check dynamic policies (if enabled)
+// Check tenant policies (if enabled)
 if (result.policyInfo?.dynamicPolicyInfo?.orchestratorReachable) {
   console.log(`Policies evaluated: ${result.policyInfo.dynamicPolicyInfo.policiesEvaluated}`);
 }
@@ -374,9 +379,9 @@ MCP_MAX_ROWS_PER_QUERY=10000      # Default: 10,000 rows
 MCP_MAX_BYTES_PER_QUERY=10485760  # Default: 10MB
 ```
 
-### Dynamic Policies (v3.2.0+, Optional)
+### Tenant Policies (v3.2.0+, Optional)
 
-Enable runtime policy evaluation for rate limiting, budgets, time-based access:
+Enable runtime tenant policy evaluation for rate limiting, budgets, time-based access:
 
 ```bash
 MCP_DYNAMIC_POLICIES_ENABLED=true   # Enable (default: false)
@@ -395,7 +400,7 @@ MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
 | **OUTPUT Policy** | ❌ | ✅ | ✅ |
 | **PII Redaction** | ❌ | ✅ | ✅ |
 | **Exfiltration Limits** | ❌ | ✅ | ✅ |
-| **Dynamic Policies** | ❌ | ✅ | ✅ (v3.2.0+) |
+| **Tenant Policies** | ❌ | ✅ | ✅ (v3.2.0+) |
 | **Control** | Full LLM | AxonFlow | Full query |
 
 ---

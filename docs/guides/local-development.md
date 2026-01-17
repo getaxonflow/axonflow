@@ -504,9 +504,11 @@ curl http://localhost:8082/health   # Customer Portal (internal - for debugging 
 # 3. Check Prometheus targets
 open http://localhost:9090/targets
 
-# 4. View Grafana dashboards
+# 4. View Grafana dashboards (auto-provisioned)
 open http://localhost:3000
 # Login: admin / grafana_localdev456
+# Navigate to: Dashboards → AxonFlow → AxonFlow Community
+# See docs/guides/grafana-dashboard.md for panel details
 
 # 5. Query database
 docker compose exec postgres psql -U axonflow -d axonflow -c "SELECT * FROM schema_migrations;"

@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -569,10 +568,8 @@ func (r *PolicyOverrideRepository) overrideExists(ctx context.Context, policyID 
 
 // isEnterpriseLicense checks if the tenant has an Enterprise license.
 func (r *PolicyOverrideRepository) isEnterpriseLicense(ctx context.Context, tenantID string) (bool, error) {
-	// First, check DEPLOYMENT_MODE environment variable
-	// Enterprise modes include: saas, enterprise, banking, travel, healthcare, etc.
-	deploymentMode := strings.ToLower(os.Getenv("DEPLOYMENT_MODE"))
-	if deploymentMode != "" && deploymentMode != "community" {
+	// Check license via AXONFLOW_LICENSE_KEY environment variable
+	if license.IsEnterpriseTier(ctx) {
 		return true, nil
 	}
 

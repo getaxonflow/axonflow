@@ -50,26 +50,25 @@ func TestDefaultLicenseChecker_IsEnterprise(t *testing.T) {
 
 func TestEnvLicenseChecker_IsEnterprise(t *testing.T) {
 	tests := []struct {
-		name     string
-		envValue string
-		expected bool
+		name       string
+		licenseKey string
+		expected   bool
 	}{
-		{"empty value", "", false},
-		{"community mode", "community", false},
-		{"COMMUNITY uppercase", "COMMUNITY", false},
-		{"saas mode", "saas", true},
-		{"enterprise mode", "enterprise", true},
-		{"banking mode", "banking", true},
-		{"travel mode", "travel", true},
-		{"healthcare mode", "healthcare", true},
+		{"empty license key", "", false},
+		{"invalid license key", "invalid-key", false},
+		{"random string", "some-random-garbage", false},
+		// Valid enterprise license (tier=ENT, expires=2027-01-01)
+		{"valid enterprise license", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-5c7fa412", true},
+		// Valid professional license - should NOT be enterprise tier
+		{"valid professional license", "AXON-V2-eyJ0aWVyIjoiUFJPIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-70f8d524", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("DEPLOYMENT_MODE", tt.envValue)
+			t.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
 			checker := NewEnvLicenseChecker()
 			if checker.IsEnterprise() != tt.expected {
-				t.Errorf("Expected IsEnterprise()=%v for DEPLOYMENT_MODE=%q", tt.expected, tt.envValue)
+				t.Errorf("Expected IsEnterprise()=%v for AXONFLOW_LICENSE_KEY=%q", tt.expected, tt.licenseKey)
 			}
 		})
 	}
