@@ -134,12 +134,31 @@ type PlanStep struct {
 
 // PlanExecutionResponse represents the result of plan execution
 type PlanExecutionResponse struct {
-	PlanID       string                 `json:"plan_id"`
-	Status       string                 `json:"status"` // "running", "completed", "failed"
-	Result       string                 `json:"result,omitempty"`
-	StepResults  map[string]interface{} `json:"step_results,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	Duration     string                 `json:"duration,omitempty"`
+	PlanID       string                    `json:"plan_id"`
+	Status       string                    `json:"status"` // "running", "completed", "failed"
+	Result       string                    `json:"result,omitempty"`
+	StepResults  map[string]interface{}    `json:"step_results,omitempty"`
+	Error        string                    `json:"error,omitempty"`
+	Duration     string                    `json:"duration,omitempty"`
+	PolicyInfo   *PolicyEvaluationResult   `json:"policy_info,omitempty"` // Policy evaluation result (Issue #1020)
+}
+
+// PolicyEvaluationResult contains detailed policy evaluation result (Issue #1020)
+type PolicyEvaluationResult struct {
+	Allowed          bool     `json:"allowed"`
+	AppliedPolicies  []string `json:"applied_policies"`
+	RiskScore        float64  `json:"risk_score"`
+	RequiredActions  []string `json:"required_actions,omitempty"`
+	ProcessingTimeMs int64    `json:"processing_time_ms"`
+	DatabaseAccessed bool     `json:"database_accessed,omitempty"`
+}
+
+// PolicyMatch represents details of a policy match during evaluation (Issue #1021)
+type PolicyMatch struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // Cache entry
@@ -1093,11 +1112,13 @@ type StepGateRequest struct {
 
 // StepGateResponse is the response for a step gate check
 type StepGateResponse struct {
-	Decision    GateDecision `json:"decision"`
-	DecisionID  string       `json:"decision_id,omitempty"`
-	PolicyIDs   []string     `json:"policy_ids,omitempty"`
-	Reason      string       `json:"reason,omitempty"`
-	ApprovalURL string       `json:"approval_url,omitempty"`
+	Decision          GateDecision  `json:"decision"`
+	DecisionID        string        `json:"decision_id,omitempty"`
+	PolicyIDs         []string      `json:"policy_ids,omitempty"`
+	Reason            string        `json:"reason,omitempty"`
+	ApprovalURL       string        `json:"approval_url,omitempty"`
+	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
+	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched (Issue #1021)
 }
 
 // WorkflowStatusResponse is the response for workflow status

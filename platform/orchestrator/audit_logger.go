@@ -196,6 +196,141 @@ func (l *AuditLogger) LogFailedRequest(ctx context.Context, req OrchestratorRequ
 	l.enqueueEntry(entry)
 }
 
+// WorkflowAuditEntry represents an audit entry for workflow operations
+type WorkflowAuditEntry struct {
+	WorkflowID   string
+	WorkflowName string
+	StepID       string
+	StepName     string
+	Operation    string // workflow_created, step_gate, step_completed, workflow_completed, workflow_aborted
+	Decision     string // allow, block, require_approval (for step_gate)
+	Reason       string
+	TenantID     string
+	ClientID     string
+	UserID       string
+	Metadata     map[string]interface{}
+}
+
+// LogWorkflowOperation logs a workflow control plane operation
+func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowAuditEntry) {
+	if l == nil {
+		return
+	}
+
+	// Build policy details from entry metadata
+	policyDetails := map[string]interface{}{
+		"workflow_id":   entry.WorkflowID,
+		"workflow_name": entry.WorkflowName,
+		"operation":     entry.Operation,
+	}
+	if entry.StepID != "" {
+		policyDetails["step_id"] = entry.StepID
+	}
+	if entry.StepName != "" {
+		policyDetails["step_name"] = entry.StepName
+	}
+	if entry.Decision != "" {
+		policyDetails["decision"] = entry.Decision
+	}
+	if entry.Reason != "" {
+		policyDetails["reason"] = entry.Reason
+	}
+	if entry.Metadata != nil {
+		for k, v := range entry.Metadata {
+			policyDetails[k] = v
+		}
+	}
+
+	// Map workflow decision to policy decision format
+	var policyDecision string
+	switch entry.Decision {
+	case "block":
+		policyDecision = "blocked"
+	case "require_approval":
+		policyDecision = "pending_approval"
+	default:
+		policyDecision = "allowed"
+	}
+
+	auditEntry := &AuditEntry{
+		ID:             generateAuditID(),
+		RequestID:      entry.WorkflowID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         0, // Workflow operations may not have user context
+		ClientID:       entry.ClientID,
+		TenantID:       entry.TenantID,
+		RequestType:    "workflow_" + entry.Operation,
+		Query:          fmt.Sprintf("Workflow: %s, Operation: %s", entry.WorkflowName, entry.Operation),
+		QueryHash:      hashQuery(entry.WorkflowID + entry.Operation),
+		PolicyDecision: policyDecision,
+		PolicyDetails:  policyDetails,
+	}
+
+	l.enqueueEntry(auditEntry)
+}
+
+// PlanAuditEntry represents an audit entry for plan (MAP) operations
+type PlanAuditEntry struct {
+	PlanID    string
+	Query     string
+	Domain    string
+	Operation string // created, execution_started, completed, failed, expired
+	Status    string
+	StepCount int
+	ErrorMsg  string
+	TenantID  string
+	OrgID     string
+	ClientID  string
+	UserID    string
+	Metadata  map[string]interface{}
+}
+
+// LogPlanOperation logs a Multi-Agent Planning (MAP) operation
+func (l *AuditLogger) LogPlanOperation(ctx context.Context, entry *PlanAuditEntry) {
+	if l == nil {
+		return
+	}
+
+	// Build policy details from entry metadata
+	policyDetails := map[string]interface{}{
+		"plan_id":    entry.PlanID,
+		"domain":     entry.Domain,
+		"operation":  entry.Operation,
+		"status":     entry.Status,
+		"step_count": entry.StepCount,
+	}
+	if entry.ErrorMsg != "" {
+		policyDetails["error"] = entry.ErrorMsg
+	}
+	if entry.Metadata != nil {
+		for k, v := range entry.Metadata {
+			policyDetails[k] = v
+		}
+	}
+
+	// Map plan status to policy decision format
+	policyDecision := "allowed"
+	if entry.Operation == "failed" {
+		policyDecision = "error"
+	}
+
+	auditEntry := &AuditEntry{
+		ID:             generateAuditID(),
+		RequestID:      entry.PlanID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         0, // Plan operations may not have user context
+		ClientID:       entry.ClientID,
+		TenantID:       entry.TenantID,
+		RequestType:    "plan_" + entry.Operation,
+		Query:          entry.Query,
+		QueryHash:      hashQuery(entry.PlanID + entry.Operation),
+		PolicyDecision: policyDecision,
+		PolicyDetails:  policyDetails,
+	}
+
+	l.enqueueEntry(auditEntry)
+}
+
 // SearchAuditLogs searches audit logs based on criteria
 func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, error) {
 	if l.db == nil {

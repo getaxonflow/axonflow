@@ -1,0 +1,209 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
+package orchestrator
+
+import (
+	"context"
+	"time"
+
+	"axonflow/platform/orchestrator/planning"
+	"axonflow/platform/orchestrator/workflow_control"
+)
+
+// WCPPolicyAdapter adapts the dynamic policy engine to the workflow_control.PolicyEvaluator interface
+// This bridges the gap between the main orchestrator's policy engine and the WCP service (Issue #1021)
+type WCPPolicyAdapter struct {
+	engine interface {
+		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
+		ListActivePolicies() []DynamicPolicy
+		IsHealthy() bool
+	}
+}
+
+// NewWCPPolicyAdapter creates a new adapter wrapping the dynamic policy engine
+func NewWCPPolicyAdapter(engine interface {
+	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
+	ListActivePolicies() []DynamicPolicy
+	IsHealthy() bool
+}) *WCPPolicyAdapter {
+	return &WCPPolicyAdapter{engine: engine}
+}
+
+// EvaluateStepGate implements workflow_control.PolicyEvaluator
+// Converts WCP step gate context to orchestrator request, evaluates policies, and converts result back
+func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_control.StepGateContext) *workflow_control.StepGateEvaluation {
+	if a.engine == nil {
+		// No policy engine configured - allow all steps
+		return &workflow_control.StepGateEvaluation{
+			Decision: workflow_control.GateDecisionAllow,
+			Reason:   "No policy engine configured",
+		}
+	}
+
+	// Convert StepGateContext to OrchestratorRequest
+	req := a.convertToOrchestratorRequest(step)
+
+	// Evaluate policies
+	startTime := time.Now()
+	result := a.engine.EvaluateDynamicPolicies(ctx, req)
+	durationMs := time.Since(startTime).Milliseconds()
+
+	// Convert PolicyEvaluationResult to StepGateEvaluation
+	return a.convertToStepGateEvaluation(result, durationMs)
+}
+
+// convertToOrchestratorRequest converts WCP step context to orchestrator request format
+func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.StepGateContext) OrchestratorRequest {
+	// Build context map with step information for policy matching
+	contextData := make(map[string]interface{})
+	contextData["workflow_id"] = step.WorkflowID
+	contextData["workflow_name"] = step.WorkflowName
+	contextData["source"] = string(step.Source)
+	contextData["step_id"] = step.StepID
+	contextData["step_name"] = step.StepName
+	contextData["step_type"] = string(step.StepType)
+	contextData["step_index"] = step.StepIndex
+	contextData["model"] = step.Model
+	contextData["provider"] = step.Provider
+
+	// Merge step input into context
+	for k, v := range step.StepInput {
+		contextData["step_input."+k] = v
+	}
+
+	return OrchestratorRequest{
+		RequestID:   step.WorkflowID + "_" + step.StepID,
+		RequestType: "workflow_step_gate",
+		User: UserContext{
+			TenantID: step.TenantID,
+		},
+		Client: ClientContext{
+			ID:       step.ClientID,
+			TenantID: step.TenantID,
+			OrgID:    step.OrgID,
+		},
+		Context: contextData,
+	}
+}
+
+// convertToStepGateEvaluation converts policy evaluation result to WCP step gate evaluation
+func (a *WCPPolicyAdapter) convertToStepGateEvaluation(result *PolicyEvaluationResult, durationMs int64) *workflow_control.StepGateEvaluation {
+	evaluation := &workflow_control.StepGateEvaluation{
+		Decision:          workflow_control.GateDecisionAllow,
+		Reason:            "No matching policies",
+		PolicyIDs:         result.AppliedPolicies,
+		PoliciesEvaluated: []workflow_control.PolicyMatch{},
+		PoliciesMatched:   []workflow_control.PolicyMatch{},
+	}
+
+	// If not allowed, determine the appropriate decision
+	if !result.Allowed {
+		// Check if any policy requires approval (has "require_approval" action)
+		requiresApproval := false
+		for _, action := range result.RequiredActions {
+			if action == "require_approval" || action == "human_review" {
+				requiresApproval = true
+				break
+			}
+		}
+
+		if requiresApproval {
+			evaluation.Decision = workflow_control.GateDecisionRequireApproval
+			evaluation.Reason = "Step requires human approval"
+		} else {
+			evaluation.Decision = workflow_control.GateDecisionBlock
+			evaluation.Reason = "Step blocked by policy"
+		}
+	}
+
+	// Build policy match details
+	for _, policyName := range result.AppliedPolicies {
+		match := workflow_control.PolicyMatch{
+			PolicyID:   policyName, // Use name as ID if no separate ID
+			PolicyName: policyName,
+			Action:     string(evaluation.Decision),
+		}
+		evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
+
+		// If policy contributed to blocking, add to matched list
+		if !result.Allowed {
+			evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
+		}
+	}
+
+	return evaluation
+}
+
+// WCPAuditAdapter adapts the orchestrator's AuditLogger to the workflow_control.WorkflowAuditLogger interface
+// This bridges the gap between the main orchestrator's audit logger and the WCP service (Issue #1019)
+type WCPAuditAdapter struct {
+	auditLogger *AuditLogger
+}
+
+// NewWCPAuditAdapter creates a new adapter wrapping the audit logger
+func NewWCPAuditAdapter(auditLogger *AuditLogger) *WCPAuditAdapter {
+	return &WCPAuditAdapter{auditLogger: auditLogger}
+}
+
+// LogWorkflowOperation implements workflow_control.WorkflowAuditLogger
+// Converts WCP audit entry to orchestrator format and logs it
+func (a *WCPAuditAdapter) LogWorkflowOperation(ctx context.Context, entry *workflow_control.WorkflowAuditEntry) {
+	if a.auditLogger == nil || entry == nil {
+		return
+	}
+
+	// Convert workflow_control.WorkflowAuditEntry to orchestrator.WorkflowAuditEntry
+	orchestratorEntry := &WorkflowAuditEntry{
+		WorkflowID:   entry.WorkflowID,
+		WorkflowName: entry.WorkflowName,
+		StepID:       entry.StepID,
+		StepName:     entry.StepName,
+		Operation:    entry.Operation,
+		Decision:     entry.Decision,
+		Reason:       entry.Reason,
+		TenantID:     entry.TenantID,
+		ClientID:     entry.ClientID,
+		UserID:       entry.UserID,
+		Metadata:     entry.Metadata,
+	}
+
+	a.auditLogger.LogWorkflowOperation(ctx, orchestratorEntry)
+}
+
+// MAPAuditAdapter adapts the orchestrator's AuditLogger to the planning.PlanAuditLogger interface
+// This bridges the gap between the main orchestrator's audit logger and the MAP service (Issue #1019, #1020)
+type MAPAuditAdapter struct {
+	auditLogger *AuditLogger
+}
+
+// NewMAPAuditAdapter creates a new adapter wrapping the audit logger
+func NewMAPAuditAdapter(auditLogger *AuditLogger) *MAPAuditAdapter {
+	return &MAPAuditAdapter{auditLogger: auditLogger}
+}
+
+// LogPlanOperation implements planning.PlanAuditLogger
+// Converts planning audit entry to orchestrator format and logs it
+func (a *MAPAuditAdapter) LogPlanOperation(ctx context.Context, entry *planning.PlanAuditEntry) {
+	if a.auditLogger == nil || entry == nil {
+		return
+	}
+
+	// Convert planning.PlanAuditEntry to orchestrator.PlanAuditEntry
+	orchestratorEntry := &PlanAuditEntry{
+		PlanID:    entry.PlanID,
+		Query:     entry.Query,
+		Domain:    entry.Domain,
+		Operation: entry.Operation,
+		Status:    entry.Status,
+		StepCount: entry.StepCount,
+		ErrorMsg:  entry.ErrorMsg,
+		TenantID:  entry.TenantID,
+		OrgID:     entry.OrgID,
+		ClientID:  entry.ClientID,
+		UserID:    entry.UserID,
+		Metadata:  entry.Metadata,
+	}
+
+	a.auditLogger.LogPlanOperation(ctx, orchestratorEntry)
+}

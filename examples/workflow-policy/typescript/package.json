@@ -1,0 +1,16 @@
+{
+  "name": "workflow-policy-typescript",
+  "version": "1.0.0",
+  "description": "Workflow Policy Enforcement - TypeScript Example",
+  "main": "main.ts",
+  "scripts": {
+    "start": "npx tsx main.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^2.4.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

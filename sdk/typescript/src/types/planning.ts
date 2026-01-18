@@ -21,6 +21,18 @@ export interface PlanResponse {
   metadata: Record<string, any>;
 }
 
+/**
+ * Policy evaluation result (Issue #1020)
+ */
+export interface PolicyEvaluationResult {
+  allowed: boolean;
+  appliedPolicies: string[];
+  riskScore: number;
+  requiredActions?: string[];
+  processingTimeMs: number;
+  databaseAccessed?: boolean;
+}
+
 export interface PlanExecutionResponse {
   planId: string;
   status: 'running' | 'completed' | 'failed';
@@ -28,4 +40,8 @@ export interface PlanExecutionResponse {
   stepResults?: Record<string, any>;
   error?: string;
   duration?: string;
+  /**
+   * Policy evaluation result (Issue #1020)
+   */
+  policyInfo?: PolicyEvaluationResult;
 }

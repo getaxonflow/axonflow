@@ -145,6 +145,16 @@ export interface StepGateResponse {
    * URL to the approval portal (if decision is require_approval)
    */
   approvalUrl?: string;
+
+  /**
+   * All policies that were checked during evaluation (Issue #1021)
+   */
+  policiesEvaluated?: PolicyMatch[];
+
+  /**
+   * Policies that matched and contributed to the decision (Issue #1021)
+   */
+  policiesMatched?: PolicyMatch[];
 }
 
 /**

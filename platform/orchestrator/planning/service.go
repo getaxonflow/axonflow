@@ -11,14 +11,49 @@ import (
 	"time"
 )
 
+// PlanAuditLogger interface for audit logging plan operations
+// This avoids a circular dependency with the orchestrator package
+type PlanAuditLogger interface {
+	LogPlanOperation(ctx context.Context, entry *PlanAuditEntry)
+}
+
+// PlanAuditEntry represents an audit entry for plan operations
+type PlanAuditEntry struct {
+	PlanID     string
+	Query      string
+	Domain     string
+	Operation  string // created, execution_started, completed, failed, expired
+	Status     string // pending, executing, completed, failed, expired
+	StepCount  int
+	ErrorMsg   string
+	TenantID   string
+	OrgID      string
+	ClientID   string
+	UserID     string
+	Metadata   map[string]interface{}
+}
+
 // Service handles plan storage and retrieval for two-step MAP execution
 type Service struct {
-	repo Repository
+	repo        Repository
+	auditLogger PlanAuditLogger
 }
 
 // NewService creates a new planning service
 func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetAuditLogger sets the audit logger for the service
+func (s *Service) SetAuditLogger(auditLogger PlanAuditLogger) {
+	s.auditLogger = auditLogger
+}
+
+// logAudit logs a plan audit entry if an audit logger is configured
+func (s *Service) logAudit(ctx context.Context, entry *PlanAuditEntry) {
+	if s.auditLogger != nil {
+		s.auditLogger.LogPlanOperation(ctx, entry)
+	}
 }
 
 // StorePlan saves a generated plan for later execution
@@ -61,6 +96,27 @@ func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan,
 
 	log.Printf("[PlanService] Stored plan %s (domain: %s, steps: %d, expires: %v)",
 		plan.PlanID, plan.Domain, plan.StepCount, plan.ExpiresAt)
+
+	// Audit log: plan created
+	s.logAudit(ctx, &PlanAuditEntry{
+		PlanID:    plan.PlanID,
+		Query:     plan.Query,
+		Domain:    plan.Domain,
+		Operation: "created",
+		Status:    string(plan.Status),
+		StepCount: plan.StepCount,
+		TenantID:  plan.TenantID,
+		OrgID:     plan.OrgID,
+		ClientID:  plan.ClientID,
+		UserID:    plan.UserID,
+		Metadata: map[string]interface{}{
+			"complexity":         plan.Complexity,
+			"parallel":           plan.Parallel,
+			"estimated_duration": plan.EstimatedDuration,
+			"execution_mode":     plan.ExecutionMode,
+			"expires_at":         plan.ExpiresAt,
+		},
+	})
 
 	return plan, nil
 }
@@ -110,11 +166,31 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 		// Continue anyway - the plan was retrieved successfully
 	}
 
+	// Audit log: execution started
+	s.logAudit(ctx, &PlanAuditEntry{
+		PlanID:    plan.PlanID,
+		Query:     plan.Query,
+		Domain:    plan.Domain,
+		Operation: "execution_started",
+		Status:    string(PlanStatusExecuting),
+		StepCount: plan.StepCount,
+		TenantID:  plan.TenantID,
+		OrgID:     plan.OrgID,
+		ClientID:  plan.ClientID,
+		UserID:    plan.UserID,
+		Metadata: map[string]interface{}{
+			"requested_by_org": orgID,
+		},
+	})
+
 	return plan, nil
 }
 
 // MarkPlanCompleted marks a plan as completed with the execution result
 func (s *Service) MarkPlanCompleted(ctx context.Context, planID string, result interface{}) error {
+	// Get plan details for audit logging
+	plan, _ := s.repo.GetPlan(ctx, planID)
+
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)
@@ -125,16 +201,54 @@ func (s *Service) MarkPlanCompleted(ctx context.Context, planID string, result i
 	}
 
 	log.Printf("[PlanService] Plan %s completed", planID)
+
+	// Audit log: plan completed
+	if plan != nil {
+		s.logAudit(ctx, &PlanAuditEntry{
+			PlanID:    planID,
+			Query:     plan.Query,
+			Domain:    plan.Domain,
+			Operation: "completed",
+			Status:    string(PlanStatusCompleted),
+			StepCount: plan.StepCount,
+			TenantID:  plan.TenantID,
+			OrgID:     plan.OrgID,
+			ClientID:  plan.ClientID,
+			UserID:    plan.UserID,
+		})
+	}
+
 	return nil
 }
 
 // MarkPlanFailed marks a plan as failed with an error message
 func (s *Service) MarkPlanFailed(ctx context.Context, planID string, errMsg string) error {
+	// Get plan details for audit logging
+	plan, _ := s.repo.GetPlan(ctx, planID)
+
 	if err := s.repo.UpdatePlanStatus(ctx, planID, PlanStatusFailed, nil, errMsg); err != nil {
 		return fmt.Errorf("failed to mark plan failed: %w", err)
 	}
 
 	log.Printf("[PlanService] Plan %s failed: %s", planID, errMsg)
+
+	// Audit log: plan failed
+	if plan != nil {
+		s.logAudit(ctx, &PlanAuditEntry{
+			PlanID:    planID,
+			Query:     plan.Query,
+			Domain:    plan.Domain,
+			Operation: "failed",
+			Status:    string(PlanStatusFailed),
+			StepCount: plan.StepCount,
+			ErrorMsg:  errMsg,
+			TenantID:  plan.TenantID,
+			OrgID:     plan.OrgID,
+			ClientID:  plan.ClientID,
+			UserID:    plan.UserID,
+		})
+	}
+
 	return nil
 }
 

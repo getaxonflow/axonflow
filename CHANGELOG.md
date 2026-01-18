@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.5.0] - 2026-01-18
+
+### Added
+
+- **Workflow Policy Enforcement** (#1019, #1020, #1021): Policy evaluation at workflow transitions
+  - **MAP Policy Enforcement** (#1020): Dynamic policy evaluation before plan execution
+    - Policy check in `executePlanHandler` with allow/block decisions
+    - `PolicyInfo` field in `PlanResponse` with evaluated policies and risk score
+    - Policy results recorded in step execution snapshots for replay/audit
+  - **WCP Policy Enforcement** (#1021): Connect WCP to dynamic policy engine
+    - New `WCPPolicyAdapter` bridges workflow_control to orchestrator policy engine
+    - `policies_evaluated` and `policies_matched` fields in `StepGateResponse`
+    - Detailed policy match information (policy_id, policy_name, action, reason)
+    - Support for allow/block/require_approval decisions based on policy evaluation
+
+### Tests
+
+- Added unit tests for MAP policy enforcement (blocked/allowed scenarios)
+- Added unit tests for WCP policy adapter (allow/block/require_approval/nil engine)
+- Added unit tests for WCP policy info in response (4 new test cases)
+
+### Documentation
+
+- Updated `docs/api/orchestrator-api.yaml` with policy info fields in PlanResponse and StepGateResponse
+- Added `PolicyMatch` schema for detailed policy evaluation results
+
+---
+
 ## [3.4.0] - 2026-01-17
 
 ### Added
