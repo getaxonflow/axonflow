@@ -1,5 +1,5 @@
 # Core SDK
-axonflow>=1.4.0
+axonflow>=1.6.0
 
 # HTTP client
 httpx>=0.24.0
