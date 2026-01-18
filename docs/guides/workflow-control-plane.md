@@ -4,6 +4,39 @@
 
 The Workflow Control Plane provides governance gates for external orchestrators like LangChain, LangGraph, and CrewAI. Instead of modifying your orchestrator's code, you simply add checkpoint calls to AxonFlow before each step executes.
 
+## Real-World Use Cases
+
+### 1. Code Review Pipeline with GPT-4 Restrictions
+
+**Scenario:** Your engineering team runs a multi-step code review pipeline using LangGraph. However, compliance requires that GPT-4 cannot be used for reviewing code that touches financial modules.
+
+```
+Step 1: Parse PR → Step 2: Identify affected modules → Step 3: Generate review
+                                                              ↓
+                                                    [AxonFlow Gate Check]
+                                                    Policy: Block GPT-4 for financial code
+```
+
+**Solution:** Add a step gate before the "Generate review" step. AxonFlow evaluates policies and blocks if the affected modules include financial code and the model is GPT-4.
+
+### 2. Data Pipeline with PII Detection
+
+**Scenario:** An analytics team runs customer data transformations using CrewAI agents. Before any LLM processes customer data, you need to ensure no PII (credit cards, SSNs) is passed to external APIs.
+
+**Solution:** Each step gate call includes the `step_input`. AxonFlow's PII detection policy evaluates the input and blocks the step if critical PII is detected, with the specific policy match returned in `policiesMatched`.
+
+### 3. Deployment Workflow with Human Approval
+
+**Scenario:** Your CI/CD pipeline uses LangChain to generate deployment configurations. Production deployments require manager approval before execution.
+
+**Solution:** Configure a policy with `require_approval` action for steps where `step_type == "connector_call"` and `step_name contains "production"`. AxonFlow returns an approval URL, and the workflow pauses until a manager approves via the Enterprise Portal.
+
+### 4. Multi-Model Routing with Cost Controls
+
+**Scenario:** Your customer service bot uses different models for different query types. You want to enforce that expensive models (GPT-4, Claude Opus) are only used for complex queries, not simple FAQs.
+
+**Solution:** Step gates include `model` and `provider` fields. Policies can enforce routing rules based on query classification, blocking expensive models for queries tagged as simple.
+
 ## Overview
 
 External orchestrators (LangChain, LangGraph, CrewAI) are great at workflow execution, but enterprises need governance controls. The Workflow Control Plane solves this by providing:

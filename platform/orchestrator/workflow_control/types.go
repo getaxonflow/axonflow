@@ -134,12 +134,14 @@ type StepGateRequest struct {
 
 // StepGateResponse is the response for a step gate check
 type StepGateResponse struct {
-	Decision    GateDecision `json:"decision"`
-	StepID      string       `json:"step_id"`
-	DecisionID  string       `json:"decision_id,omitempty"`
-	PolicyIDs   []string     `json:"policy_ids,omitempty"`
-	Reason      string       `json:"reason,omitempty"`
-	ApprovalURL string       `json:"approval_url,omitempty"`
+	Decision          GateDecision  `json:"decision"`
+	StepID            string        `json:"step_id"`
+	DecisionID        string        `json:"decision_id,omitempty"`
+	PolicyIDs         []string      `json:"policy_ids,omitempty"`
+	Reason            string        `json:"reason,omitempty"`
+	ApprovalURL       string        `json:"approval_url,omitempty"`
+	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
+	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)
 }
 
 // WorkflowStatusResponse is the response for workflow status

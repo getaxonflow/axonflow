@@ -58,6 +58,18 @@ type ReplaySnapshotInput struct {
 	TokensOut   int
 	CostUSD     float64
 	Error       string
+	// Policy fields for audit trail (Issue #1020)
+	PoliciesChecked   []string
+	PoliciesTriggered []PolicyEventInput
+}
+
+// PolicyEventInput represents a policy event for snapshot input (Issue #1020)
+type PolicyEventInput struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Action     string `json:"action"`
+	Matched    string `json:"matched"`
+	Resolution string `json:"resolution"`
 }
 
 // WorkflowEngine handles basic 2-3 step workflow execution
@@ -602,7 +614,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			_ = e.storage.UpdateExecution(execution)
 
 			// Record failed step snapshot (#763)
-			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, nil, nil, nil, err.Error())
+			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, nil, nil, nil, err.Error(), input)
 
 			// Mark execution as failed
 			if e.replayRecorder != nil {
@@ -629,7 +641,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 			_ = e.storage.UpdateExecution(execution)
 
 			// Record failed step snapshot (#763)
-			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, &now, &durationMs, stepOutput, err.Error())
+			e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "failed", stepExecution.StartTime, &now, &durationMs, stepOutput, err.Error(), input)
 
 			// Mark execution as failed
 			if e.replayRecorder != nil {
@@ -645,7 +657,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 		execution.Steps[len(execution.Steps)-1] = stepExecution
 
 		// Record completed step snapshot (#763)
-		e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "completed", stepExecution.StartTime, &now, &durationMs, stepOutput, "")
+		e.recordStepSnapshot(ctx, execution.ID, stepIndex, step.Name, "completed", stepExecution.StartTime, &now, &durationMs, stepOutput, "", input)
 
 		// Update input for next step (pass output of current step)
 		// Merge step output into available context for template replacement
@@ -683,7 +695,8 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 }
 
 // recordStepSnapshot records a step execution snapshot for replay (#763)
-func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID string, stepIndex int, stepName, status string, startedAt time.Time, completedAt *time.Time, durationMs *int, output map[string]interface{}, errMsg string) {
+// Added input parameter for policy extraction (Issue #1020)
+func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID string, stepIndex int, stepName, status string, startedAt time.Time, completedAt *time.Time, durationMs *int, output map[string]interface{}, errMsg string, input map[string]interface{}) {
 	if e.replayRecorder == nil {
 		return
 	}
@@ -710,20 +723,44 @@ func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID strin
 		}
 	}
 
+	// Extract policy info from input context (Issue #1020)
+	var policiesChecked []string
+	var policiesTriggered []PolicyEventInput
+	if input != nil {
+		if policyResultRaw, ok := input["_policy_result"]; ok {
+			// Type assertion to extract policy result fields
+			// The policy result is stored as *PolicyEvaluationResult
+			if policyResult, ok := policyResultRaw.(*PolicyEvaluationResult); ok && policyResult != nil {
+				policiesChecked = policyResult.AppliedPolicies
+				// Note: PolicyEvaluationResult doesn't have detailed PolicyEvents,
+				// so we create minimal events from applied policies
+				for _, policyName := range policyResult.AppliedPolicies {
+					policiesTriggered = append(policiesTriggered, PolicyEventInput{
+						PolicyName: policyName,
+						Action:     "evaluated",
+						Resolution: "allowed",
+					})
+				}
+			}
+		}
+	}
+
 	snapshot := &ReplaySnapshotInput{
-		RequestID:   requestID,
-		StepIndex:   stepIndex,
-		StepName:    stepName,
-		Status:      status,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		DurationMs:  durationMs,
-		Output:      outputJSON,
-		Provider:    provider,
-		Model:       model,
-		TokensIn:    tokensIn,
-		TokensOut:   tokensOut,
-		Error:       errMsg,
+		RequestID:         requestID,
+		StepIndex:         stepIndex,
+		StepName:          stepName,
+		Status:            status,
+		StartedAt:         startedAt,
+		CompletedAt:       completedAt,
+		DurationMs:        durationMs,
+		Output:            outputJSON,
+		Provider:          provider,
+		Model:             model,
+		TokensIn:          tokensIn,
+		TokensOut:         tokensOut,
+		Error:             errMsg,
+		PoliciesChecked:   policiesChecked,
+		PoliciesTriggered: policiesTriggered,
 	}
 
 	if err := e.replayRecorder.RecordStep(ctx, snapshot); err != nil {

@@ -32,6 +32,18 @@ func (a *ReplayServiceAdapter) RecordStep(ctx context.Context, snapshot *ReplayS
 	}
 
 	// Convert to replay package's ExecutionSnapshot type
+	// Convert policy events to replay package type (Issue #1020)
+	policyEvents := make([]replay.PolicyEvent, len(snapshot.PoliciesTriggered))
+	for i, pe := range snapshot.PoliciesTriggered {
+		policyEvents[i] = replay.PolicyEvent{
+			PolicyID:   pe.PolicyID,
+			PolicyName: pe.PolicyName,
+			Action:     pe.Action,
+			Matched:    pe.Matched,
+			Resolution: pe.Resolution,
+		}
+	}
+
 	execSnapshot := &replay.ExecutionSnapshot{
 		RequestID:         snapshot.RequestID,
 		StepIndex:         snapshot.StepIndex,
@@ -48,8 +60,8 @@ func (a *ReplayServiceAdapter) RecordStep(ctx context.Context, snapshot *ReplayS
 		TokensOut:         snapshot.TokensOut,
 		CostUSD:           snapshot.CostUSD,
 		ErrorMessage:      snapshot.Error,
-		PoliciesChecked:   []string{},
-		PoliciesTriggered: []replay.PolicyEvent{},
+		PoliciesChecked:   snapshot.PoliciesChecked,   // Pass through policy info (Issue #1020)
+		PoliciesTriggered: policyEvents,               // Pass through policy events (Issue #1020)
 	}
 
 	return a.service.RecordStep(ctx, execSnapshot)

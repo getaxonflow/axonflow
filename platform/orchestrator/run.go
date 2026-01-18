@@ -912,6 +912,10 @@ func initializeComponents() {
 		log.Println("Initializing Planning Service for MAP two-step execution...")
 		planRepo := planning.NewPostgresRepository(usageDB)
 		planService = planning.NewService(planRepo)
+		// Wire audit logging for MAP (Issue #1019, #1020)
+		if auditLogger != nil {
+			planService.SetAuditLogger(NewMAPAuditAdapter(auditLogger))
+		}
 		// Start background cleanup worker for expired plans
 		planService.StartCleanupWorker(context.Background(), 15*time.Minute)
 		log.Println("Planning Service initialized ✅")
@@ -923,7 +927,15 @@ func initializeComponents() {
 		workflowControlConfig := &workflow_control.ServiceConfig{
 			BaseURL: os.Getenv("PORTAL_BASE_URL"), // For generating approval URLs
 		}
-		workflowControlService = workflow_control.NewService(workflowControlRepo, nil, workflowControlConfig)
+		// Create policy adapter to connect WCP to dynamic policy engine (Issue #1021)
+		wcpPolicyAdapter := NewWCPPolicyAdapter(dynamicPolicyEngine)
+		workflowControlService = workflow_control.NewService(workflowControlRepo, wcpPolicyAdapter, workflowControlConfig)
+
+		// Wire audit logging for WCP (Issue #1019)
+		if auditLogger != nil {
+			workflowControlService.SetAuditLogger(NewWCPAuditAdapter(auditLogger))
+		}
+
 		workflowControlHandler = workflow_control.NewHandler(workflowControlService)
 		log.Println("Workflow Control Plane Service initialized ✅")
 
@@ -1682,8 +1694,21 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return response in SDK-expected format
+	response := struct {
+		Entries []*AuditEntry `json:"entries"`
+		Total   int           `json:"total"`
+		Limit   int           `json:"limit"`
+		Offset  int           `json:"offset"`
+	}{
+		Entries: results,
+		Total:   len(results),
+		Limit:   searchReq.Limit,
+		Offset:  0,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(results); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
 }
@@ -1712,8 +1737,21 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return response in SDK-expected format
+	response := struct {
+		Entries []*AuditEntry `json:"entries"`
+		Total   int           `json:"total"`
+		Limit   int           `json:"limit"`
+		Offset  int           `json:"offset"`
+	}{
+		Entries: results,
+		Total:   len(results),
+		Limit:   searchReq.Limit,
+		Offset:  0,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(results); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
 }
@@ -1957,13 +1995,14 @@ type ResponsePlanStep struct {
 
 // PlanResponse represents the response from a planning request
 type PlanResponse struct {
-	Success             bool               `json:"success"`
-	PlanID              string             `json:"plan_id"`
-	Steps               []ResponsePlanStep `json:"steps"`
-	WorkflowExecutionID string             `json:"workflow_execution_id"`
-	Result              interface{}        `json:"result"`
-	Metadata            PlanMetadata       `json:"metadata"`
-	Error               string             `json:"error,omitempty"`
+	Success             bool                    `json:"success"`
+	PlanID              string                  `json:"plan_id"`
+	Steps               []ResponsePlanStep      `json:"steps"`
+	WorkflowExecutionID string                  `json:"workflow_execution_id"`
+	Result              interface{}             `json:"result"`
+	Metadata            PlanMetadata            `json:"metadata"`
+	Error               string                  `json:"error,omitempty"`
+	PolicyInfo          *PolicyEvaluationResult `json:"policy_info,omitempty"` // Policy evaluation result (Issue #1020)
 }
 
 // PlanMetadata holds metadata about plan execution
@@ -2222,6 +2261,79 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ExecutePlan] Retrieved plan %s (domain: %s, steps: %d)", planID, plan.Domain, plan.StepCount)
 
+	// === GOVERNANCE: Policy Evaluation Before Execution (Issue #1020) ===
+	// Build OrchestratorRequest from plan for policy evaluation
+	// Convert map-based client to ClientContext for policy engine
+	policyClient := ClientContext{}
+	if req.Client != nil {
+		if id, ok := req.Client["id"].(string); ok {
+			policyClient.ID = id
+		}
+		if name, ok := req.Client["name"].(string); ok {
+			policyClient.Name = name
+		}
+		if orgID, ok := req.Client["org_id"].(string); ok {
+			policyClient.OrgID = orgID
+		}
+		if tid, ok := req.Client["tenant_id"].(string); ok {
+			policyClient.TenantID = tid
+		}
+	}
+
+	policyReq := OrchestratorRequest{
+		RequestID:   planID,
+		Query:       plan.Query,
+		RequestType: "map_execution",
+		User:        req.User,
+		Client:      policyClient,
+		Context: map[string]interface{}{
+			"plan_id":    plan.PlanID,
+			"domain":     plan.Domain,
+			"step_count": plan.StepCount,
+		},
+	}
+
+	policyStartTime := time.Now()
+	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(r.Context(), policyReq)
+	policyEvalTime := time.Since(policyStartTime)
+
+	log.Printf("[ExecutePlan] Policy evaluation completed in %v: allowed=%t, policies=%v",
+		policyEvalTime, policyResult.Allowed, policyResult.AppliedPolicies)
+
+	// Record policy evaluation metric
+	promPolicyEvaluations.Inc()
+	promRequestDuration.WithLabelValues("map_policy").Observe(float64(policyEvalTime.Milliseconds()))
+
+	if !policyResult.Allowed {
+		// Log blocked request
+		log.Printf("[ExecutePlan] BLOCKED: Plan %s blocked by policy: %v", planID, policyResult.AppliedPolicies)
+		auditLogger.LogBlockedRequest(r.Context(), policyReq, policyResult)
+
+		// Mark plan as failed due to policy block
+		_ = planService.MarkPlanFailed(r.Context(), planID, "Blocked by policy: "+strings.Join(policyResult.AppliedPolicies, ", "))
+
+		// Record blocked request metrics
+		promRequestsTotal.WithLabelValues("blocked").Inc()
+		promBlockedRequests.Inc()
+		latencyMs := time.Since(startTime).Milliseconds()
+		promRequestDuration.WithLabelValues("map_blocked").Observe(float64(latencyMs))
+
+		// Return 403 Forbidden with policy details
+		response := PlanResponse{
+			Success:    false,
+			PlanID:     planID,
+			Error:      "Policy blocked MAP execution",
+			PolicyInfo: policyResult,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Error encoding blocked response: %v", err)
+		}
+		return
+	}
+
 	// Step 2: Unmarshal workflow definition
 	var workflow Workflow
 	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
@@ -2241,6 +2353,9 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if execContext == nil {
 		execContext = make(map[string]interface{})
 	}
+
+	// Add policy result to execution context for step snapshots (Issue #1020)
+	execContext["_policy_result"] = policyResult
 
 	enableParallel := plan.Parallel
 	execution, err := workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, enableParallel)
@@ -2305,6 +2420,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			ExecutionTimeMs: executionTimeMs,
 			Tasks:           tasks,
 		},
+		PolicyInfo: policyResult, // Include policy evaluation result (Issue #1020)
 	}
 
 	log.Printf("[ExecutePlan] Success in %dms: PlanID=%s, TasksExecuted=%d", executionTimeMs, planID, len(execution.Steps))

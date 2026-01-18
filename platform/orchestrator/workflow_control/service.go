@@ -62,10 +62,32 @@ func (d *DefaultPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *Ste
 	}
 }
 
+// WorkflowAuditLogger interface for audit logging workflow operations
+// This avoids a circular dependency with the orchestrator package
+type WorkflowAuditLogger interface {
+	LogWorkflowOperation(ctx context.Context, entry *WorkflowAuditEntry)
+}
+
+// WorkflowAuditEntry represents an audit entry for workflow operations
+type WorkflowAuditEntry struct {
+	WorkflowID   string
+	WorkflowName string
+	StepID       string
+	StepName     string
+	Operation    string // created, step_gate, step_completed, completed, aborted
+	Decision     string // allow, block, require_approval (for step_gate)
+	Reason       string
+	TenantID     string
+	ClientID     string
+	UserID       string
+	Metadata     map[string]interface{}
+}
+
 // Service handles workflow control plane business logic
 type Service struct {
 	repo            Repository
 	policyEvaluator PolicyEvaluator
+	auditLogger     WorkflowAuditLogger
 	logger          *log.Logger
 	baseURL         string // Base URL for approval URLs
 }
@@ -99,6 +121,18 @@ func NewServiceWithLogger(repo Repository, policyEvaluator PolicyEvaluator, conf
 		svc.logger = logger
 	}
 	return svc
+}
+
+// SetAuditLogger sets the audit logger for the service
+func (s *Service) SetAuditLogger(auditLogger WorkflowAuditLogger) {
+	s.auditLogger = auditLogger
+}
+
+// logAudit logs a workflow audit entry if an audit logger is configured
+func (s *Service) logAudit(ctx context.Context, entry *WorkflowAuditEntry) {
+	if s.auditLogger != nil {
+		s.auditLogger.LogWorkflowOperation(ctx, entry)
+	}
 }
 
 // CreateWorkflow registers a new workflow from an external orchestrator
@@ -145,6 +179,20 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 
 	s.logger.Printf("[WorkflowControl] Created workflow %s (%s) source=%s",
 		workflow.WorkflowID, workflow.WorkflowName, workflow.Source)
+
+	// Audit log: workflow created
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflow.WorkflowID,
+		WorkflowName: workflow.WorkflowName,
+		Operation:    "created",
+		TenantID:     tenantID,
+		ClientID:     clientID,
+		UserID:       userID,
+		Metadata: map[string]interface{}{
+			"source":      workflow.Source,
+			"total_steps": req.TotalSteps,
+		},
+	})
 
 	return workflow, nil
 }
@@ -241,13 +289,15 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		return nil, fmt.Errorf("failed to record step decision: %w", err)
 	}
 
-	// Build response
+	// Build response (Issue #1021: Include policy info in response)
 	response := &StepGateResponse{
-		Decision:   evaluation.Decision,
-		StepID:     stepID,
-		DecisionID: fmt.Sprintf("dec_%s_%s", workflowID, stepID),
-		PolicyIDs:  evaluation.PolicyIDs,
-		Reason:     evaluation.Reason,
+		Decision:          evaluation.Decision,
+		StepID:            stepID,
+		DecisionID:        fmt.Sprintf("dec_%s_%s", workflowID, stepID),
+		PolicyIDs:         evaluation.PolicyIDs,
+		Reason:            evaluation.Reason,
+		PoliciesEvaluated: evaluation.PoliciesEvaluated,
+		PoliciesMatched:   evaluation.PoliciesMatched,
 	}
 
 	// Add approval URL for require_approval decisions
@@ -258,6 +308,27 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 
 	s.logger.Printf("[WorkflowControl] Step gate: workflow=%s step=%s decision=%s reason=%s",
 		workflowID, stepID, evaluation.Decision, evaluation.Reason)
+
+	// Audit log: step gate decision
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		StepID:       stepID,
+		StepName:     req.StepName,
+		Operation:    "step_gate",
+		Decision:     string(evaluation.Decision),
+		Reason:       evaluation.Reason,
+		TenantID:     tenantID,
+		ClientID:     clientID,
+		UserID:       userID,
+		Metadata: map[string]interface{}{
+			"step_type":          req.StepType,
+			"model":              req.Model,
+			"provider":           req.Provider,
+			"policies_evaluated": len(evaluation.PoliciesEvaluated),
+			"policies_matched":   len(evaluation.PoliciesMatched),
+		},
+	})
 
 	return response, nil
 }
@@ -361,6 +432,18 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 	}
 
 	s.logger.Printf("[WorkflowControl] Workflow aborted: %s reason=%s", workflowID, reason)
+
+	// Audit log: workflow aborted
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		Operation:    "aborted",
+		Reason:       reason,
+		TenantID:     workflow.TenantID,
+		ClientID:     workflow.ClientID,
+		UserID:       workflow.UserID,
+	})
+
 	return nil
 }
 
@@ -389,6 +472,20 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 	}
 
 	s.logger.Printf("[WorkflowControl] Workflow completed: %s", workflowID)
+
+	// Audit log: workflow completed
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		Operation:    "completed",
+		TenantID:     workflow.TenantID,
+		ClientID:     workflow.ClientID,
+		UserID:       workflow.UserID,
+		Metadata: map[string]interface{}{
+			"steps_executed": len(workflow.Steps),
+		},
+	})
+
 	return nil
 }
 
@@ -447,9 +544,37 @@ func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limi
 
 // MarkStepCompleted marks a step as completed after the external orchestrator executes it
 func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string) error {
+	// Get workflow for audit logging
+	workflow, err := s.repo.GetByID(ctx, workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to get workflow: %w", err)
+	}
+
 	if err := s.repo.MarkStepCompleted(ctx, workflowID, stepID); err != nil {
 		return fmt.Errorf("failed to mark step completed: %w", err)
 	}
+
+	// Find step name for audit log
+	stepName := ""
+	for _, step := range workflow.Steps {
+		if step.StepID == stepID {
+			stepName = step.StepName
+			break
+		}
+	}
+
+	// Audit log: step completed
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		StepID:       stepID,
+		StepName:     stepName,
+		Operation:    "step_completed",
+		TenantID:     workflow.TenantID,
+		ClientID:     workflow.ClientID,
+		UserID:       workflow.UserID,
+	})
+
 	return nil
 }
 

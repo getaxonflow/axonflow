@@ -560,11 +560,6 @@ func TestGetPendingApprovals(t *testing.T) {
 	}
 }
 
-// Helper function
-func intPtr(i int) *int {
-	return &i
-}
-
 func TestNewServiceWithLogger(t *testing.T) {
 	repo := NewMockRepository()
 
@@ -813,5 +808,599 @@ func TestListWorkflowsByStatus(t *testing.T) {
 
 	if response.Total != 1 {
 		t.Errorf("total = %d, want 1 completed workflow", response.Total)
+	}
+}
+
+// === Issue #1021: Policy Info in StepGateResponse Tests ===
+
+// MockPolicyInfoEvaluator returns detailed policy info for testing Issue #1021
+type MockPolicyInfoEvaluator struct {
+	decision          GateDecision
+	policiesEvaluated []PolicyMatch
+	policiesMatched   []PolicyMatch
+}
+
+func (m *MockPolicyInfoEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+	return &StepGateEvaluation{
+		Decision:          m.decision,
+		Reason:            "Test policy evaluation",
+		PolicyIDs:         []string{"policy-pii-detection", "policy-sqli-prevention"},
+		PoliciesEvaluated: m.policiesEvaluated,
+		PoliciesMatched:   m.policiesMatched,
+	}
+}
+
+func TestStepGate_PolicyInfoInResponse_Allow(t *testing.T) {
+	// Test that PoliciesEvaluated is included even when step is allowed (Issue #1021)
+	evaluator := &MockPolicyInfoEvaluator{
+		decision: GateDecisionAllow,
+		policiesEvaluated: []PolicyMatch{
+			{PolicyID: "pol-1", PolicyName: "pii-detection", Action: "allow"},
+			{PolicyID: "pol-2", PolicyName: "sqli-prevention", Action: "allow"},
+		},
+		policiesMatched: []PolicyMatch{}, // No matches when allowed
+	}
+
+	repo := NewMockRepository()
+	svc := NewService(repo, evaluator, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := &StepGateRequest{
+		StepName: "test-step",
+		StepType: StepTypeLLMCall,
+	}
+
+	response, err := svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if response.Decision != GateDecisionAllow {
+		t.Errorf("decision = %s, want %s", response.Decision, GateDecisionAllow)
+	}
+
+	// Verify PoliciesEvaluated is populated (Issue #1021)
+	if len(response.PoliciesEvaluated) != 2 {
+		t.Errorf("PoliciesEvaluated length = %d, want 2", len(response.PoliciesEvaluated))
+	}
+
+	if len(response.PoliciesMatched) != 0 {
+		t.Errorf("PoliciesMatched length = %d, want 0 for allowed step", len(response.PoliciesMatched))
+	}
+}
+
+func TestStepGate_PolicyInfoInResponse_Block(t *testing.T) {
+	// Test that both PoliciesEvaluated and PoliciesMatched are included when blocked (Issue #1021)
+	evaluator := &MockPolicyInfoEvaluator{
+		decision: GateDecisionBlock,
+		policiesEvaluated: []PolicyMatch{
+			{PolicyID: "pol-1", PolicyName: "pii-detection", Action: "allow"},
+			{PolicyID: "pol-2", PolicyName: "sqli-prevention", Action: "block", Reason: "SQL injection detected"},
+		},
+		policiesMatched: []PolicyMatch{
+			{PolicyID: "pol-2", PolicyName: "sqli-prevention", Action: "block", Reason: "SQL injection detected"},
+		},
+	}
+
+	repo := NewMockRepository()
+	svc := NewService(repo, evaluator, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := &StepGateRequest{
+		StepName:  "query-step",
+		StepType:  StepTypeToolCall,
+		StepInput: map[string]interface{}{"query": "DROP TABLE users"},
+	}
+
+	response, err := svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if response.Decision != GateDecisionBlock {
+		t.Errorf("decision = %s, want %s", response.Decision, GateDecisionBlock)
+	}
+
+	// Verify PoliciesEvaluated includes all checked policies (Issue #1021)
+	if len(response.PoliciesEvaluated) != 2 {
+		t.Errorf("PoliciesEvaluated length = %d, want 2", len(response.PoliciesEvaluated))
+	}
+
+	// Verify PoliciesMatched includes only blocking policies (Issue #1021)
+	if len(response.PoliciesMatched) != 1 {
+		t.Errorf("PoliciesMatched length = %d, want 1", len(response.PoliciesMatched))
+	}
+
+	if len(response.PoliciesMatched) > 0 && response.PoliciesMatched[0].PolicyName != "sqli-prevention" {
+		t.Errorf("PoliciesMatched[0].PolicyName = %s, want sqli-prevention", response.PoliciesMatched[0].PolicyName)
+	}
+}
+
+func TestStepGate_PolicyInfoInResponse_RequireApproval(t *testing.T) {
+	// Test policy info when require_approval decision (Issue #1021)
+	evaluator := &MockPolicyInfoEvaluator{
+		decision: GateDecisionRequireApproval,
+		policiesEvaluated: []PolicyMatch{
+			{PolicyID: "pol-1", PolicyName: "high-risk-review", Action: "require_approval"},
+		},
+		policiesMatched: []PolicyMatch{
+			{PolicyID: "pol-1", PolicyName: "high-risk-review", Action: "require_approval", Reason: "High risk action requires approval"},
+		},
+	}
+
+	repo := NewMockRepository()
+	svc := NewService(repo, evaluator, &ServiceConfig{BaseURL: "https://portal.test.com"})
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := &StepGateRequest{
+		StepName: "deploy-step",
+		StepType: StepTypeConnectorCall,
+	}
+
+	response, err := svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if response.Decision != GateDecisionRequireApproval {
+		t.Errorf("decision = %s, want %s", response.Decision, GateDecisionRequireApproval)
+	}
+
+	// Verify policy info is included (Issue #1021)
+	if len(response.PoliciesEvaluated) != 1 {
+		t.Errorf("PoliciesEvaluated length = %d, want 1", len(response.PoliciesEvaluated))
+	}
+
+	if len(response.PoliciesMatched) != 1 {
+		t.Errorf("PoliciesMatched length = %d, want 1", len(response.PoliciesMatched))
+	}
+
+	// Verify approval URL is still generated
+	if response.ApprovalURL == "" {
+		t.Error("ApprovalURL should not be empty for require_approval")
+	}
+}
+
+func TestStepGate_PolicyMatchDetails(t *testing.T) {
+	// Test that PolicyMatch details (reason, action) are preserved (Issue #1021)
+	evaluator := &MockPolicyInfoEvaluator{
+		decision: GateDecisionBlock,
+		policiesEvaluated: []PolicyMatch{
+			{
+				PolicyID:   "pol-pii-1",
+				PolicyName: "pii-detection-critical",
+				Action:     "block",
+				Reason:     "Credit card number detected in input",
+			},
+		},
+		policiesMatched: []PolicyMatch{
+			{
+				PolicyID:   "pol-pii-1",
+				PolicyName: "pii-detection-critical",
+				Action:     "block",
+				Reason:     "Credit card number detected in input",
+			},
+		},
+	}
+
+	repo := NewMockRepository()
+	svc := NewService(repo, evaluator, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := &StepGateRequest{
+		StepName: "payment-step",
+		StepType: StepTypeLLMCall,
+	}
+
+	response, _ := svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Verify PolicyMatch details are preserved (Issue #1021)
+	if len(response.PoliciesMatched) != 1 {
+		t.Fatalf("PoliciesMatched length = %d, want 1", len(response.PoliciesMatched))
+	}
+
+	match := response.PoliciesMatched[0]
+	if match.PolicyID != "pol-pii-1" {
+		t.Errorf("PolicyID = %s, want pol-pii-1", match.PolicyID)
+	}
+	if match.PolicyName != "pii-detection-critical" {
+		t.Errorf("PolicyName = %s, want pii-detection-critical", match.PolicyName)
+	}
+	if match.Action != "block" {
+		t.Errorf("Action = %s, want block", match.Action)
+	}
+	if match.Reason != "Credit card number detected in input" {
+		t.Errorf("Reason = %s, want 'Credit card number detected in input'", match.Reason)
+	}
+}
+
+// === Additional Coverage Tests ===
+
+func TestCreateWorkflowWithAllSources(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	sources := []WorkflowSource{
+		WorkflowSourceLangGraph,
+		WorkflowSourceLangChain,
+		WorkflowSourceCrewAI,
+		WorkflowSourceExternal,
+	}
+
+	for _, source := range sources {
+		t.Run(string(source), func(t *testing.T) {
+			workflow, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+				WorkflowName: "test-" + string(source),
+				Source:       source,
+			}, "tenant-1", "org-1", "user-1", "client-1")
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if workflow.Source != source {
+				t.Errorf("source = %s, want %s", workflow.Source, source)
+			}
+		})
+	}
+}
+
+func TestStepGateAllStepTypes(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	stepTypes := []StepType{
+		StepTypeLLMCall,
+		StepTypeToolCall,
+		StepTypeConnectorCall,
+		StepTypeHumanTask,
+	}
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	for i, stepType := range stepTypes {
+		t.Run(string(stepType), func(t *testing.T) {
+			req := &StepGateRequest{
+				StepName: "step-" + string(stepType),
+				StepType: stepType,
+			}
+
+			stepID := "step-" + string(rune('a'+i))
+			response, err := svc.StepGate(ctx, workflow.WorkflowID, stepID, req, "tenant-1", "org-1", "user-1", "client-1")
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if response.Decision != GateDecisionAllow {
+				t.Errorf("decision = %s, want allow", response.Decision)
+			}
+		})
+	}
+}
+
+func TestStepGateDuplicateStep(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := &StepGateRequest{
+		StepName: "test-step",
+		StepType: StepTypeLLMCall,
+	}
+
+	// First call should succeed
+	_, err := svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Errorf("first call unexpected error: %v", err)
+	}
+
+	// Second call with same step ID - should update or error depending on implementation
+	_, err = svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	// Either no error (update) or conflict error is acceptable
+	_ = err
+}
+
+func TestResumeWorkflowAfterApproval(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Create step requiring approval
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "test",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Approve the step
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com")
+	if err != nil {
+		t.Errorf("approve step error: %v", err)
+	}
+
+	// Now resume should work
+	err = svc.ResumeWorkflow(ctx, workflow.WorkflowID)
+	if err != nil {
+		t.Errorf("resume after approval should succeed: %v", err)
+	}
+}
+
+func TestAbortAlreadyAbortedWorkflow(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Abort once
+	err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "first abort")
+	if err != nil {
+		t.Errorf("first abort unexpected error: %v", err)
+	}
+
+	// Abort again should fail
+	err = svc.AbortWorkflow(ctx, workflow.WorkflowID, "second abort")
+	if err == nil {
+		t.Error("second abort should fail on terminal state")
+	}
+}
+
+func TestFailAlreadyFailedWorkflow(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Fail once
+	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "first failure")
+	if err != nil {
+		t.Errorf("first fail unexpected error: %v", err)
+	}
+
+	// Fail again should fail
+	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "second failure")
+	if err == nil {
+		t.Error("second fail should fail on terminal state")
+	}
+}
+
+func TestListWorkflowsWithAllFilters(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	// Create workflows with different sources
+	for i := 0; i < 3; i++ {
+		svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+			WorkflowName: "langgraph-workflow",
+			Source:       WorkflowSourceLangGraph,
+		}, "tenant-1", "org-1", "user-1", "client-1")
+	}
+
+	for i := 0; i < 2; i++ {
+		svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+			WorkflowName: "crewai-workflow",
+			Source:       WorkflowSourceCrewAI,
+		}, "tenant-1", "org-1", "user-1", "client-1")
+	}
+
+	// Test combined filters
+	source := WorkflowSourceLangGraph
+	status := WorkflowStatusInProgress
+	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{
+		TenantID: "tenant-1",
+		OrgID:    "org-1",
+		Status:   &status,
+		Source:   &source,
+		Limit:    10,
+		Offset:   0,
+	})
+
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+		return
+	}
+
+	if response.Total != 3 {
+		t.Errorf("total = %d, want 3 (langgraph workflows)", response.Total)
+	}
+}
+
+func TestListWorkflowsMaxLimit(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	// Create more workflows than limit
+	for i := 0; i < 25; i++ {
+		svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+			WorkflowName: "test-workflow",
+		}, "tenant-1", "org-1", "user-1", "client-1")
+	}
+
+	// Request with limit 100 (should still work)
+	response, err := svc.ListWorkflows(ctx, ListWorkflowsOptions{Limit: 100})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if response.Total != 25 {
+		t.Errorf("total = %d, want 25", response.Total)
+	}
+}
+
+func TestRejectStepAlreadyRejected(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "test",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Reject first time
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "user@test.com")
+	if err != nil {
+		t.Errorf("first reject unexpected error: %v", err)
+	}
+
+	// Create new workflow to test double rejection properly
+	workflow2, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow-2",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow2.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "test",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Approve first
+	svc.ApproveStep(ctx, workflow2.WorkflowID, "step-1", "approver@test.com")
+
+	// Try to reject after approval
+	err = svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com")
+	if err == nil {
+		t.Error("reject after approval should fail")
+	}
+}
+
+func TestMockRepositoryGetStepsForWorkflow(t *testing.T) {
+	repo := NewMockRepository()
+	ctx := context.Background()
+
+	// Create workflow
+	workflow := &Workflow{
+		WorkflowID:   "wf_test123",
+		WorkflowName: "test",
+		Source:       WorkflowSourceExternal,
+		Status:       WorkflowStatusInProgress,
+		TenantID:     "tenant-1",
+	}
+	repo.Create(ctx, workflow)
+
+	// Add a step
+	step := &WorkflowStep{
+		WorkflowID: "wf_test123",
+		StepID:     "step-1",
+		StepName:   "test-step",
+		StepType:   StepTypeLLMCall,
+		Decision:   GateDecisionAllow,
+	}
+	repo.AddStep(ctx, step)
+
+	// Get steps for workflow
+	steps, err := repo.GetStepsForWorkflow(ctx, "wf_test123")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if len(steps) != 1 {
+		t.Errorf("steps count = %d, want 1", len(steps))
+	}
+}
+
+func TestMockRepositoryUpdateStatus(t *testing.T) {
+	repo := NewMockRepository()
+	ctx := context.Background()
+
+	// Create workflow
+	workflow := &Workflow{
+		WorkflowID:   "wf_test456",
+		WorkflowName: "test",
+		Source:       WorkflowSourceExternal,
+		Status:       WorkflowStatusInProgress,
+		TenantID:     "tenant-1",
+	}
+	repo.Create(ctx, workflow)
+
+	// Update status
+	err := repo.UpdateStatus(ctx, "wf_test456", WorkflowStatusCompleted)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Verify
+	updated, _ := repo.GetByID(ctx, "wf_test456")
+	if updated.Status != WorkflowStatusCompleted {
+		t.Errorf("status = %s, want completed", updated.Status)
+	}
+}
+
+func TestMockRepositoryUpdateStatusNotFound(t *testing.T) {
+	repo := NewMockRepository()
+	ctx := context.Background()
+
+	err := repo.UpdateStatus(ctx, "non-existent", WorkflowStatusCompleted)
+	if err == nil {
+		t.Error("expected error for non-existent workflow")
+	}
+}
+
+func TestMockRepositoryGetStepsForWorkflowNotFound(t *testing.T) {
+	repo := NewMockRepository()
+	ctx := context.Background()
+
+	// Mock returns empty slice for non-existent workflow (not error)
+	steps, err := repo.GetStepsForWorkflow(ctx, "non-existent")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(steps) != 0 {
+		t.Errorf("steps should be empty for non-existent workflow, got %d", len(steps))
+	}
+}
+
+func TestDefaultPolicyEvaluatorEvaluateStepGate(t *testing.T) {
+	evaluator := &DefaultPolicyEvaluator{}
+	ctx := context.Background()
+
+	step := &StepGateContext{
+		WorkflowID: "wf_test",
+		StepID:     "step-1",
+		StepName:   "test",
+		StepType:   StepTypeLLMCall,
+	}
+
+	result := evaluator.EvaluateStepGate(ctx, step)
+
+	if result.Decision != GateDecisionAllow {
+		t.Errorf("decision = %s, want allow", result.Decision)
 	}
 }

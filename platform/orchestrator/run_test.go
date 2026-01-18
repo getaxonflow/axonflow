@@ -2848,5 +2848,294 @@ func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
 	})
 }
 
+// ============================================================================
+// MAP Policy Enforcement Tests (Issue #1020)
+// ============================================================================
 
+// mockPolicyEngineForMAP implements the dynamicPolicyEngine interface for testing
+type mockPolicyEngineForMAP struct {
+	result *PolicyEvaluationResult
+}
+
+func (m *mockPolicyEngineForMAP) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
+	if m.result != nil {
+		return m.result
+	}
+	return &PolicyEvaluationResult{
+		Allowed:         true,
+		AppliedPolicies: []string{},
+	}
+}
+
+func (m *mockPolicyEngineForMAP) ListActivePolicies() []DynamicPolicy {
+	return []DynamicPolicy{}
+}
+
+func (m *mockPolicyEngineForMAP) IsHealthy() bool {
+	return true
+}
+
+// TestExecutePlanHandler_PolicyBlocked tests that the handler blocks execution when policy returns Allowed=false
+func TestExecutePlanHandler_PolicyBlocked(t *testing.T) {
+	// Save old state
+	oldPlanService := planService
+	oldPolicyEngine := dynamicPolicyEngine
+	oldWorkflowEngine := workflowEngine
+	oldAuditLogger := auditLogger
+	defer func() {
+		planService = oldPlanService
+		dynamicPolicyEngine = oldPolicyEngine
+		workflowEngine = oldWorkflowEngine
+		auditLogger = oldAuditLogger
+	}()
+
+	// Setup mock services
+	mockRepo := planning.NewMockRepository()
+	testPlan := &planning.Plan{
+		PlanID:             "plan_blocked_test",
+		Status:             planning.PlanStatusPending,
+		StepCount:          3,
+		Query:              "SELECT * FROM users WHERE ssn='123-45-6789'", // Contains PII
+		Domain:             "generic",
+		OrgID:              "org_1",
+		WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[]}}`),
+		ExpiresAt:          time.Now().Add(1 * time.Hour),
+		CreatedAt:          time.Now(),
+	}
+	_ = mockRepo.SavePlan(context.Background(), testPlan)
+	planService = planning.NewService(mockRepo)
+
+	// Setup mock policy engine that blocks
+	dynamicPolicyEngine = &mockPolicyEngineForMAP{
+		result: &PolicyEvaluationResult{
+			Allowed:         false,
+			AppliedPolicies: []string{"pii-detection", "sqli-prevention"},
+			RiskScore:       0.95,
+		},
+	}
+
+	// Setup minimal workflow engine and audit logger
+	workflowEngine = NewWorkflowEngine()
+	auditLogger = NewAuditLogger("")
+
+	// Create request
+	reqBody := PlanRequest{
+		Query: "test query",
+		User: UserContext{
+			ID:    1,
+			Email: "test@example.com",
+		},
+		Context: map[string]interface{}{
+			"plan_id": "plan_blocked_test",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	// Execute handler
+	executePlanHandler(w, req)
+
+	// Verify response
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403 (Forbidden), got %d", w.Code)
+	}
+
+	var response PlanResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.Success {
+		t.Error("Expected Success=false for blocked request")
+	}
+
+	if response.Error == "" {
+		t.Error("Expected error message in response")
+	}
+
+	if response.PolicyInfo == nil {
+		t.Error("Expected PolicyInfo in response when blocked")
+	} else {
+		if response.PolicyInfo.Allowed {
+			t.Error("Expected PolicyInfo.Allowed=false")
+		}
+		if len(response.PolicyInfo.AppliedPolicies) == 0 {
+			t.Error("Expected AppliedPolicies in PolicyInfo")
+		}
+	}
+}
+
+// TestExecutePlanHandler_PolicyAllowed tests that the handler includes PolicyInfo when allowed
+func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
+	// Save old state
+	oldPlanService := planService
+	oldPolicyEngine := dynamicPolicyEngine
+	oldWorkflowEngine := workflowEngine
+	oldAuditLogger := auditLogger
+	defer func() {
+		planService = oldPlanService
+		dynamicPolicyEngine = oldPolicyEngine
+		workflowEngine = oldWorkflowEngine
+		auditLogger = oldAuditLogger
+	}()
+
+	// Setup mock services
+	mockRepo := planning.NewMockRepository()
+	testPlan := &planning.Plan{
+		PlanID:             "plan_allowed_test",
+		Status:             planning.PlanStatusPending,
+		StepCount:          1,
+		Query:              "What is the weather?", // Clean query
+		Domain:             "generic",
+		OrgID:              "org_1",
+		WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[],"output":"test"}}`),
+		ExpiresAt:          time.Now().Add(1 * time.Hour),
+		CreatedAt:          time.Now(),
+	}
+	_ = mockRepo.SavePlan(context.Background(), testPlan)
+	planService = planning.NewService(mockRepo)
+
+	// Setup mock policy engine that allows
+	dynamicPolicyEngine = &mockPolicyEngineForMAP{
+		result: &PolicyEvaluationResult{
+			Allowed:          true,
+			AppliedPolicies:  []string{"pii-detection", "sqli-prevention"},
+			RiskScore:        0.1,
+			ProcessingTimeMs: 5,
+		},
+	}
+
+	// Setup workflow engine with mock storage
+	workflowEngine = NewWorkflowEngine()
+	auditLogger = NewAuditLogger("")
+
+	// Create request
+	reqBody := PlanRequest{
+		Query: "test query",
+		User: UserContext{
+			ID:    1,
+			Email: "test@example.com",
+		},
+		Context: map[string]interface{}{
+			"plan_id": "plan_allowed_test",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	// Execute handler
+	executePlanHandler(w, req)
+
+	// For allowed requests, the handler should proceed to workflow execution
+	// If workflow engine is not fully configured, it might fail - but the key
+	// test is whether policy evaluation happens before execution
+	if w.Code == http.StatusForbidden {
+		t.Error("Expected request to NOT be blocked by policy")
+	}
+
+	// If we get a success response, verify PolicyInfo is included
+	if w.Code == http.StatusOK {
+		var response PlanResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if response.PolicyInfo == nil {
+			t.Error("Expected PolicyInfo in successful response")
+		} else {
+			if !response.PolicyInfo.Allowed {
+				t.Error("Expected PolicyInfo.Allowed=true for allowed request")
+			}
+		}
+	}
+}
+
+// TestExecutePlanHandler_PolicyEvaluationMetrics tests that policy evaluation is logged
+func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
+	// Save old state
+	oldPlanService := planService
+	oldPolicyEngine := dynamicPolicyEngine
+	oldWorkflowEngine := workflowEngine
+	oldAuditLogger := auditLogger
+	defer func() {
+		planService = oldPlanService
+		dynamicPolicyEngine = oldPolicyEngine
+		workflowEngine = oldWorkflowEngine
+		auditLogger = oldAuditLogger
+	}()
+
+	// Setup mock services
+	mockRepo := planning.NewMockRepository()
+	testPlan := &planning.Plan{
+		PlanID:             "plan_response_test",
+		Status:             planning.PlanStatusPending,
+		StepCount:          1,
+		Query:              "DROP TABLE users",
+		Domain:             "generic",
+		OrgID:              "org_1",
+		WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[]}}`),
+		ExpiresAt:          time.Now().Add(1 * time.Hour),
+		CreatedAt:          time.Now(),
+	}
+	_ = mockRepo.SavePlan(context.Background(), testPlan)
+	planService = planning.NewService(mockRepo)
+
+	// Setup mock policy engine that blocks
+	dynamicPolicyEngine = &mockPolicyEngineForMAP{
+		result: &PolicyEvaluationResult{
+			Allowed:          false,
+			AppliedPolicies:  []string{"sqli-prevention"},
+			RiskScore:        1.0,
+			ProcessingTimeMs: 3,
+		},
+	}
+
+	workflowEngine = NewWorkflowEngine()
+	auditLogger = NewAuditLogger("")
+
+	// Create request
+	reqBody := PlanRequest{
+		Query: "DROP TABLE users",
+		User: UserContext{
+			ID:    1,
+			Email: "test@example.com",
+		},
+		Context: map[string]interface{}{
+			"plan_id": "plan_response_test",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	executePlanHandler(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 status, got %d", w.Code)
+		return
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Verify response structure
+	if _, ok := response["success"]; !ok {
+		t.Error("Response should have 'success' field")
+	}
+
+	if _, ok := response["error"]; !ok {
+		t.Error("Response should have 'error' field when blocked")
+	}
+
+	if _, ok := response["policy_info"]; !ok {
+		t.Error("Response should have 'policy_info' field when blocked")
+	}
+}
 

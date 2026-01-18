@@ -4459,6 +4459,24 @@ components:
         database_accessed:
           type: boolean
 
+    PolicyMatch:
+      type: object
+      description: Details of a policy match during evaluation (Issue #1021)
+      properties:
+        policy_id:
+          type: string
+          description: Unique identifier for the policy
+        policy_name:
+          type: string
+          description: Human-readable name of the policy
+        action:
+          type: string
+          description: Action taken by this policy
+          enum: [allow, block, require_approval, redact]
+        reason:
+          type: string
+          description: Reason for the policy match
+
     ProviderInfo:
       type: object
       properties:
@@ -4535,6 +4553,9 @@ components:
                     type: integer
         error:
           type: string
+        policy_info:
+          description: Policy evaluation result for the plan execution (Issue #1020)
+          $ref: '#/components/schemas/PolicyEvaluationResult'
 
     ProviderStatusResponse:
       type: object
@@ -5050,6 +5071,16 @@ components:
           type: string
           description: URL for human approval (Enterprise)
           format: uri
+        policies_evaluated:
+          type: array
+          description: All policies that were checked during evaluation (Issue #1021)
+          items:
+            $ref: '#/components/schemas/PolicyMatch'
+        policies_matched:
+          type: array
+          description: Policies that matched and contributed to the decision (Issue #1021)
+          items:
+            $ref: '#/components/schemas/PolicyMatch'
 
     MarkStepCompletedRequest:
       type: object
@@ -5077,6 +5108,28 @@ components:
           type: integer
         offset:
           type: integer
+
+    PolicyMatch:
+      type: object
+      description: Details of a policy that was evaluated or matched (Issue #1021)
+      properties:
+        policy_id:
+          type: string
+          description: Unique identifier of the policy
+          example: pol-pii-detection-001
+        policy_name:
+          type: string
+          description: Human-readable name of the policy
+          example: PII Detection - Critical
+        action:
+          type: string
+          description: The action configured for this policy
+          enum: [allow, block, require_approval]
+          example: block
+        reason:
+          type: string
+          description: Explanation of why the policy matched or its effect
+          example: Credit card number detected in step input
 
     ConnectorInfo:
       type: object
