@@ -1,13 +1,13 @@
 # SDK Feature Coverage
 
 **Last Updated:** 2026-01-14
-**Reference:** ADR-024 SDK Method Inclusion Criteria
+**Reference:** ADR-022 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.
 
 ---
 
-## Coverage Tiers (per ADR-024)
+## Coverage Tiers (per ADR-022)
 
 | Tier | Description | SDK Coverage | Rationale |
 |------|-------------|--------------|-----------|
@@ -160,7 +160,7 @@ If you need an excluded API in the SDK:
 
 1. Open an issue describing your use case
 2. Explain why HTTP is insufficient
-3. Reference this document and ADR-024
+3. Reference this document and ADR-022
 4. We'll evaluate and potentially upgrade to Tier 2
 
 ---

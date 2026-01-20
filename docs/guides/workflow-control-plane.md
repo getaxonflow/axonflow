@@ -455,6 +455,6 @@ See the complete examples in `examples/workflow-control/`:
 
 ## Related
 
-- [Architecture Decision Record (ADR-019)](../../technical-docs/architecture-decisions/ADR-019-workflow-control-plane.md)
+- [Architecture Decision Record (ADR-028)](../../technical-docs/architecture-decisions/ADR-028-workflow-control-plane.md)
 - [API Specification](../api/orchestrator-api.yaml)
 - [Policy Configuration](./policies.md)

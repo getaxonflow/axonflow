@@ -134,7 +134,7 @@ environment:
   SQLI_BLOCK_MODE: "warn"     # Use SQLI_ACTION=warn instead
 ```
 
-## Service Ports and Single Entry Point (ADR-026)
+## Service Ports and Single Entry Point (ADR-024)
 
 AxonFlow implements a **single entry point architecture** where all SDK requests go through the Agent on port 8080. The Agent automatically proxies requests to the appropriate backend service.
 

@@ -112,4 +112,4 @@ AxonFlow provides these built-in implementations:
 ## See Also
 
 - [LLM Provider Routing](../../../examples/llm-routing/) - SDK-based routing examples
-- [ADR-007](../../../technical-docs/architecture-decisions/adr-007-llm-router-interface.md) - Architecture decision
+- [ADR-006](../../../technical-docs/architecture-decisions/ADR-006-runtime-connector-configuration.md) - Architecture decision

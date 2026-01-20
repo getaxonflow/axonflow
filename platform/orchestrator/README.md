@@ -75,7 +75,7 @@ GET /api/v1/providers/status
 - Performance metrics
 ```
 
-### Dynamic Policies (ADR-026)
+### Dynamic Policies (ADR-024)
 ```
 GET    /api/v1/dynamic-policies           - List all dynamic policies
 POST   /api/v1/dynamic-policies           - Create a dynamic policy
