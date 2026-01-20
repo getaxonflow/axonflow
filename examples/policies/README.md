@@ -108,6 +108,6 @@ See [`/ee/examples/industry/`](../../ee/examples/industry/) for:
 
 ## Related Documentation
 
-- [Policy Architecture ADR](../../technical-docs/architecture-decisions/ADR-018-policy-system-architecture.md)
+- [Policy Architecture ADR](../../technical-docs/architecture-decisions/ADR-017-policy-system-architecture.md)
 - [Static Policies API](../../docs/api/agent-api.yaml)
 - [Dynamic Policies API](../../docs/api/orchestrator-api.yaml)

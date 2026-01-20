@@ -98,5 +98,5 @@ cd http
 ## Related Documentation
 
 - [MCP Policy Enforcement Guide](../../docs/mcp/policy-enforcement.md)
-- [ADR-022: MCP Policy Enforcement](../../technical-docs/architecture-decisions/ADR-022-mcp-policy-enforcement.md)
+- [ADR-026: MCP Policy Enforcement](../../technical-docs/architecture-decisions/ADR-026-mcp-policy-enforcement.md)
 - [Issues #963, #975](https://github.com/getaxonflow/axonflow-enterprise/issues/963)

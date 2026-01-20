@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Agent proxy routes**: Fixed missing proxy routes for `/api/v1/pricing`, `/api/v1/plan`, and `/api/v1/audit` endpoints. SDK methods like `getPricing()`, `generatePlan()`, `executePlan()`, and `searchAuditLogs()` now work correctly through the Agent single entry point (ADR-026). Previously these returned 404 errors.
+- **Agent proxy routes**: Fixed missing proxy routes for `/api/v1/pricing`, `/api/v1/plan`, and `/api/v1/audit` endpoints. SDK methods like `getPricing()`, `generatePlan()`, `executePlan()`, and `searchAuditLogs()` now work correctly through the Agent single entry point (ADR-024). Previously these returned 404 errors.
 
 ### Changed
 
@@ -175,7 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Enterprise
 
-- **OAuth2 Basic auth support**: Agent now accepts `Authorization: Basic base64(clientId:clientSecret)` for authentication (ADR-028), in addition to existing `X-License-Key` header.
+- **OAuth2 Basic auth support**: Agent now accepts `Authorization: Basic base64(clientId:clientSecret)` for authentication (ADR-027), in addition to existing `X-License-Key` header.
 - **Code governance: ClosePR endpoint**: Added endpoint for closing PRs without merging, useful for cleaning up test/demo PRs.
 
 ---
@@ -219,14 +219,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Single Entry Point Architecture (ADR-026)**: All API routes now go through the Agent (port 8080)
+- **Single Entry Point Architecture (ADR-024)**: All API routes now go through the Agent (port 8080)
   - Agent proxies `/api/v1/dynamic-policies/*`, `/api/v1/budgets/*`, `/api/v1/usage/*`, `/api/v1/executions/*` to Orchestrator
   - Agent proxies `/portal/*` routes to Customer Portal
   - SDKs now use single `endpoint` parameter (default: `http://localhost:8080`)
   - **Deprecated**: `agent_url` and `orchestrator_url` SDK parameters (use `endpoint` instead)
   - **Deprecated**: Direct Orchestrator access on port 8081 (still works but not recommended)
 
-- **Detection Defaults Changed (ADR-027)**: More nuanced default actions based on detection confidence
+- **Detection Defaults Changed (ADR-025)**: More nuanced default actions based on detection confidence
   - PII detection: `block` → `redact` (non-blocking, better UX)
   - High risk score (>0.8): `block` → `warn` (composite score needs tuning)
   - SQL injection: remains `block` (high confidence attacks)
@@ -338,7 +338,7 @@ HIGH_RISK_ACTION: "warn"
 
 ### Documentation
 
-- **ADR-024**: SDK method inclusion criteria for feature parity decisions
+- **ADR-022**: SDK method inclusion criteria for feature parity decisions
 - **SDK Feature Coverage**: Cross-SDK method availability matrix
 
 ---

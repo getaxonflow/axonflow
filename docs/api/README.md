@@ -12,7 +12,7 @@ This directory contains OpenAPI 3.0 specifications for all AxonFlow APIs.
 
 ## Architecture Overview
 
-AxonFlow uses a **Single Entry Point Architecture** (ADR-026). All client requests go through the Agent service, which proxies to internal services automatically.
+AxonFlow uses a **Single Entry Point Architecture** (ADR-024). All client requests go through the Agent service, which proxies to internal services automatically.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

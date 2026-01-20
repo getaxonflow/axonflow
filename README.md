@@ -15,7 +15,9 @@
 
 *AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, **Go**, and **Java**.*
 
-🎥 **2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/WwQXHKuZhxc)
+🎥 **2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/FNgnESo9RtI)
+
+🎥 **Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning — [Watch on YouTube](https://youtu.be/hvJMs3oJOEc)
 
 ---
 
@@ -36,7 +38,7 @@ AxonFlow treats agents as long-running, stateful systems that require governance
 
 ## Quick Start
 
-If you want to see how this looks before setting it up, here's a short demo: [2-minute walkthrough](https://youtu.be/WwQXHKuZhxc)
+If you want to see how this looks before setting it up, here's a short demo: [2-minute walkthrough](https://youtu.be/FNgnESo9RtI)
 
 **Prerequisites:** [Docker Desktop](https://docs.docker.com/get-docker/) installed and running.
 
