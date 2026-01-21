@@ -404,15 +404,15 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Public Issues (Technical Questions Welcome)
 
-If you're evaluating AxonFlow and encounter unclear behavior, edge cases, or questions around guarantees (e.g. policy enforcement, audit semantics, failure modes), opening a GitHub issue is welcome.
+If you're evaluating AxonFlow and encounter unclear behavior, edge cases, or questions around guarantees (e.g. policy enforcement, audit semantics, failure modes), opening a GitHub issue is welcome. For private questions, reach us at hello@getaxonflow.com.
 
-We're especially interested in questions that surface ambiguous semantics or runtime edge cases rather than general feedback.
+### Tried It and Gave Up?
 
-### Private Evaluation Questions
+If you evaluated AxonFlow and hit a blocker — setup didn't work, docs were unclear, it didn't fit your use case — we'd like to understand why.
 
-If you're evaluating AxonFlow internally and prefer not to open a public issue, you can reach us at hello@getaxonflow.com.
+**[→ Anonymous feedback form (30 seconds)](https://getaxonflow.com/feedback)**
 
-This channel is intended for technical questions about semantics, guarantees, or runtime behavior. We treat these as engineering discussions, not sales conversations.
+No attribution, no follow-up unless you want it.
 
 ---
 

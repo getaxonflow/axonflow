@@ -33,6 +33,36 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Outreach log rate limiting - logs once per hour max per category
+var (
+	outreachLogMu               sync.Mutex
+	lastEnforcementLogTime      time.Time
+	lastBypassLogTime           time.Time
+	outreachLogInterval         = time.Hour
+)
+
+// shouldLogEnforcementOutreach returns true if enough time has passed since last enforcement log
+func shouldLogEnforcementOutreach() bool {
+	outreachLogMu.Lock()
+	defer outreachLogMu.Unlock()
+	if time.Since(lastEnforcementLogTime) >= outreachLogInterval {
+		lastEnforcementLogTime = time.Now()
+		return true
+	}
+	return false
+}
+
+// shouldLogBypassOutreach returns true if enough time has passed since last bypass log
+func shouldLogBypassOutreach() bool {
+	outreachLogMu.Lock()
+	defer outreachLogMu.Unlock()
+	if time.Since(lastBypassLogTime) >= outreachLogInterval {
+		lastBypassLogTime = time.Now()
+		return true
+	}
+	return false
+}
+
 // Gateway Mode Prometheus metrics
 var (
 	gatewayPreCheckRequests = prometheus.NewCounterVec(
@@ -469,6 +499,10 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			TriggeredPolicies: []string{},
 			ChecksPerformed:   []string{"no_policy_engine"},
 		}
+		// Log bypass warning - helps teams understand governance gaps
+		if shouldLogBypassOutreach() {
+			log.Printf("AxonFlow: governance bypassed - no policy engine configured. If intentional, share context privately: founders@getaxonflow.com (no marketing, no follow-ups)")
+		}
 	}
 
 	// Generate context ID
@@ -527,6 +561,12 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	gatewayPreCheckRequests.WithLabelValues("success", approvedStr).Inc()
 	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v",
 		latencyMs, contextID, response.Approved)
+
+	// Rate-limited outreach log on successful policy enforcement
+	// Appears once per hour to real operators, not on every request
+	if response.Approved && len(policyResult.TriggeredPolicies) > 0 && shouldLogEnforcementOutreach() {
+		log.Printf("AxonFlow: policy enforced in %dms. Evaluating for internal use? Share context privately: founders@getaxonflow.com (no marketing, no follow-ups)", latencyMs)
+	}
 
 	// Send response
 	w.Header().Set("Content-Type", "application/json")
