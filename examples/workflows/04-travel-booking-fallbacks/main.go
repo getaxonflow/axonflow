@@ -39,7 +39,7 @@ func main() {
 	// STEP 1: Try direct flights first
 	fmt.Println("🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...")
 	flightQuery1 := "Find direct flights from San Francisco to Tokyo next month"
-	flightResp1, err := client.ExecuteQuery("user-123", flightQuery1, "chat", map[string]interface{}{"provider": "openai"})
+	flightResp1, err := client.ProxyLLMCall("user-123", flightQuery1, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Flight search failed: %v", err)
 	}
@@ -52,7 +52,7 @@ func main() {
 
 		// Fallback to connecting flights
 		flightQuery2 := "Find connecting flights from San Francisco to Tokyo with 1 stop"
-		flightResp2, err := client.ExecuteQuery("user-123", flightQuery2, "chat", map[string]interface{}{"provider": "openai"})
+		flightResp2, err := client.ProxyLLMCall("user-123", flightQuery2, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Fallback flight search failed: %v", err)
 		}
@@ -75,7 +75,7 @@ func main() {
 	// STEP 2: Try 5-star hotels first
 	fmt.Println("🔍 Step 3: Searching for 5-star hotels in Tokyo city center...")
 	hotelQuery1 := "Find 5-star hotels in Tokyo Shibuya district"
-	hotelResp1, err := client.ExecuteQuery("user-123", hotelQuery1, "chat", map[string]interface{}{"provider": "openai"})
+	hotelResp1, err := client.ProxyLLMCall("user-123", hotelQuery1, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Hotel search failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func main() {
 
 		// Fallback to 4-star hotels
 		hotelQuery2 := "Find 4-star hotels in Tokyo with good reviews"
-		hotelResp2, err := client.ExecuteQuery("user-123", hotelQuery2, "chat", map[string]interface{}{"provider": "openai"})
+		hotelResp2, err := client.ProxyLLMCall("user-123", hotelQuery2, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Fallback hotel search failed: %v", err)
 		}
@@ -114,7 +114,7 @@ func main() {
 		"Include top attractions, restaurants, and transportation tips.",
 		flightOption, hotelOption)
 
-	itineraryResp, err := client.ExecuteQuery("user-123", itineraryQuery, "chat", map[string]interface{}{"provider": "openai"})
+	itineraryResp, err := client.ProxyLLMCall("user-123", itineraryQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Itinerary generation failed: %v", err)
 	}

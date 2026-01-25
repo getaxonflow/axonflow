@@ -35,7 +35,7 @@ async function main() {
   // Example 1: Send a request (server decides which provider to use)
   console.log("1. Send request (server routes based on configured strategy):");
   try {
-    const response = await client.executeQuery({
+    const response = await client.proxyLLMCall({
       userToken,
       query: "What is 2 + 2?",
       requestType: "chat",
@@ -54,7 +54,7 @@ async function main() {
   console.log("2. Multiple requests (observe provider distribution):");
   for (let i = 1; i <= 3; i++) {
     try {
-      const response = await client.executeQuery({
+      const response = await client.proxyLLMCall({
         userToken,
         query: `Question ${i}: What is the capital of France?`,
         requestType: "chat",

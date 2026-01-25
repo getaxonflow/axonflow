@@ -67,8 +67,8 @@ async function main() {
     const startTime = Date.now();
 
     try {
-      // Use executeQuery for Proxy Mode - AxonFlow handles everything
-      const response = await axonflow.executeQuery({
+      // Use proxyLLMCall for Proxy Mode - AxonFlow handles everything
+      const response = await axonflow.proxyLLMCall({
         userToken: "demo-user-123",
         query,
         requestType,

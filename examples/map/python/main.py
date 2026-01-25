@@ -48,8 +48,11 @@ async def main() -> int:
     print()
 
     endpoint = get_env("AXONFLOW_ENDPOINT", "http://localhost:8080")
-    client_id = get_env("AXONFLOW_CLIENT_ID", "demo")
+    client_id = get_env("AXONFLOW_CLIENT_ID", "demo-org")
     client_secret = get_env("AXONFLOW_CLIENT_SECRET", "demo")
+
+    # User token for MAP operations (JWT for local testing with docker-compose)
+    user_token = get_env("AXONFLOW_USER_TOKEN", "")
 
     async with AxonFlow(
         endpoint=endpoint,
@@ -62,6 +65,8 @@ async def main() -> int:
 
         print(f"Query: {query}")
         print(f"Domain: {domain}")
+        if user_token:
+            print(f"User Token: {user_token[:20]}...{user_token[-10:]}")
         print("-" * 50)
         print()
 
@@ -70,7 +75,9 @@ async def main() -> int:
         # ========================================
         print("1. generate_plan - Creating a multi-agent plan...")
         try:
-            plan = await client.generate_plan(query=query, domain=domain)
+            plan = await client.generate_plan(
+                query=query, domain=domain, user_token=user_token if user_token else None
+            )
         except Exception as e:
             print(f"   ❌ FATAL: generate_plan failed: {e}")
             return 1
@@ -135,7 +142,9 @@ async def main() -> int:
         # ========================================
         print("3. execute_plan - Executing the plan...")
         try:
-            execution = await client.execute_plan(plan.plan_id)
+            execution = await client.execute_plan(
+                plan.plan_id, user_token=user_token if user_token else None
+            )
         except Exception as e:
             print(f"   ❌ FATAL: execute_plan failed: {e}")
             return 1
@@ -248,7 +257,9 @@ async def main() -> int:
         # ========================================
         print("7. Re-execution Test - Attempting to re-execute completed plan...")
         try:
-            reexec = await client.execute_plan(plan.plan_id)
+            reexec = await client.execute_plan(
+                plan.plan_id, user_token=user_token if user_token else None
+            )
             # Some systems allow re-execution, others don't
             reexec_status = getattr(reexec, "status", "unknown")
             if reexec_status in ("completed", "success", "already_completed"):
@@ -266,7 +277,9 @@ async def main() -> int:
         print("8. Second Plan - Testing with different query...")
         query2 = "Analyze sales data and create a summary report"
         try:
-            plan2 = await client.generate_plan(query=query2, domain=domain)
+            plan2 = await client.generate_plan(
+                query=query2, domain=domain, user_token=user_token if user_token else None
+            )
             assert_check(plan2.plan_id != "", "Second plan has valid ID")
             assert_check(plan2.plan_id != plan.plan_id, "Second plan has different ID")
             assert_check(len(plan2.steps) > 0, "Second plan has steps")
@@ -274,7 +287,9 @@ async def main() -> int:
             print(f"   Plan 2 Steps: {len(plan2.steps)}")
 
             # Execute second plan
-            exec2 = await client.execute_plan(plan2.plan_id)
+            exec2 = await client.execute_plan(
+                plan2.plan_id, user_token=user_token if user_token else None
+            )
             assert_check(
                 exec2.status in ("completed", "success"),
                 "Second plan executed successfully",

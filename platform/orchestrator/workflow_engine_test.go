@@ -94,7 +94,8 @@ func TestInMemoryStorage(t *testing.T) {
 
 // TestConditionalProcessor tests conditional step execution
 func TestConditionalProcessor(t *testing.T) {
-	processor := NewConditionalProcessor()
+	engine := NewWorkflowEngine()
+	processor := NewConditionalProcessor(engine)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -166,6 +167,156 @@ func TestConditionalProcessor(t *testing.T) {
 				t.Error("Expected branch_taken in output")
 			} else if branch != tt.expectedBranch {
 				t.Errorf("Expected branch %s, got %s", tt.expectedBranch, branch)
+			}
+		})
+	}
+}
+
+// TestConditionalBranchExecution tests that branches are actually executed (Issue #1082)
+func TestConditionalBranchExecution(t *testing.T) {
+	engine := NewWorkflowEngine()
+	processor := NewConditionalProcessor(engine)
+	ctx := context.Background()
+
+	tests := []struct {
+		name                   string
+		step                   WorkflowStep
+		execution              *WorkflowExecution
+		expectedBranch         string
+		expectedStepsExecuted  int
+		expectedStepNames      []string
+	}{
+		{
+			name: "Execute if_true branch with function-call steps",
+			step: WorkflowStep{
+				Name:      "conditional-with-branches",
+				Type:      "conditional",
+				Condition: "{{steps.prev.output.status}} == approved",
+				IfTrue: []WorkflowStep{
+					{
+						Name:     "validate-data",
+						Type:     "function-call",
+						Function: "data-validator",
+					},
+					{
+						Name:     "calculate-risk",
+						Type:     "function-call",
+						Function: "risk-calculator",
+					},
+				},
+				IfFalse: []WorkflowStep{
+					{
+						Name:     "reject-action",
+						Type:     "function-call",
+						Function: "auto-moderate",
+					},
+				},
+			},
+			execution: &WorkflowExecution{
+				Steps: []StepExecution{
+					{
+						Name:   "prev",
+						Status: "completed",
+						Output: map[string]interface{}{
+							"status": "approved",
+						},
+					},
+				},
+			},
+			expectedBranch:        "if_true",
+			expectedStepsExecuted: 2,
+			expectedStepNames:     []string{"validate-data", "calculate-risk"},
+		},
+		{
+			name: "Execute if_false branch when condition is false",
+			step: WorkflowStep{
+				Name:      "conditional-with-branches",
+				Type:      "conditional",
+				Condition: "{{steps.prev.output.status}} == approved",
+				IfTrue: []WorkflowStep{
+					{
+						Name:     "validate-data",
+						Type:     "function-call",
+						Function: "data-validator",
+					},
+				},
+				IfFalse: []WorkflowStep{
+					{
+						Name:     "reject-action",
+						Type:     "function-call",
+						Function: "auto-moderate",
+					},
+				},
+			},
+			execution: &WorkflowExecution{
+				Steps: []StepExecution{
+					{
+						Name:   "prev",
+						Status: "completed",
+						Output: map[string]interface{}{
+							"status": "rejected",
+						},
+					},
+				},
+			},
+			expectedBranch:        "if_false",
+			expectedStepsExecuted: 1,
+			expectedStepNames:     []string{"reject-action"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a copy of execution to avoid mutation across tests
+			execCopy := &WorkflowExecution{
+				Steps: make([]StepExecution, len(tt.execution.Steps)),
+			}
+			copy(execCopy.Steps, tt.execution.Steps)
+			initialStepCount := len(execCopy.Steps)
+
+			output, err := processor.ExecuteStep(ctx, tt.step, map[string]interface{}{}, execCopy)
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			// Verify branch taken
+			if branch := output["branch_taken"].(string); branch != tt.expectedBranch {
+				t.Errorf("Expected branch %s, got %s", tt.expectedBranch, branch)
+			}
+
+			// Verify steps were executed (Issue #1082 fix)
+			stepsExecuted := output["steps_executed"].(int)
+			if stepsExecuted != tt.expectedStepsExecuted {
+				t.Errorf("Expected %d steps executed, got %d", tt.expectedStepsExecuted, stepsExecuted)
+			}
+
+			// Verify branch steps were added to execution
+			newStepsAdded := len(execCopy.Steps) - initialStepCount
+			if newStepsAdded != tt.expectedStepsExecuted {
+				t.Errorf("Expected %d new steps in execution, got %d", tt.expectedStepsExecuted, newStepsAdded)
+			}
+
+			// Verify step names
+			for i, expectedName := range tt.expectedStepNames {
+				actualStep := execCopy.Steps[initialStepCount+i]
+				if actualStep.Name != expectedName {
+					t.Errorf("Expected step name %s at index %d, got %s", expectedName, i, actualStep.Name)
+				}
+				if actualStep.Status != "completed" {
+					t.Errorf("Expected step %s to be completed, got %s", expectedName, actualStep.Status)
+				}
+				if actualStep.Output == nil {
+					t.Errorf("Expected step %s to have output", expectedName)
+				}
+			}
+
+			// Verify branch_steps output contains step outputs
+			branchSteps, ok := output["branch_steps"].([]map[string]interface{})
+			if !ok {
+				t.Fatal("Expected branch_steps in output")
+			}
+			if len(branchSteps) != tt.expectedStepsExecuted {
+				t.Errorf("Expected %d branch_steps, got %d", tt.expectedStepsExecuted, len(branchSteps))
 			}
 		})
 	}
@@ -559,6 +710,111 @@ func TestParallelExecution(t *testing.T) {
 
 	if len(execution.Steps) != 3 {
 		t.Errorf("Expected 3 steps, got %d", len(execution.Steps))
+	}
+}
+
+// TestSoftFailureTolerance tests the configurable soft failure tolerance (Issue #1082)
+func TestSoftFailureTolerance(t *testing.T) {
+	engine := NewWorkflowEngine()
+
+	// Test the evaluateFailureTolerance function directly
+	tests := []struct {
+		name           string
+		tolerance      string
+		steps          []WorkflowStep
+		failedSteps    []string
+		succeededSteps []string
+		expectFail     bool
+	}{
+		{
+			name:           "none tolerance - any failure should fail",
+			tolerance:      "none",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step1"},
+			succeededSteps: []string{"step2", "step3"},
+			expectFail:     true,
+		},
+		{
+			name:           "empty tolerance (default strict) - any failure should fail",
+			tolerance:      "",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}},
+			failedSteps:    []string{"step1"},
+			succeededSteps: []string{"step2"},
+			expectFail:     true,
+		},
+		{
+			name:           "any tolerance - succeed if any step succeeds",
+			tolerance:      "any",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step1", "step2"},
+			succeededSteps: []string{"step3"},
+			expectFail:     false,
+		},
+		{
+			name:           "any tolerance - fail if all steps fail",
+			tolerance:      "any",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}},
+			failedSteps:    []string{"step1", "step2"},
+			succeededSteps: []string{},
+			expectFail:     true,
+		},
+		{
+			name:           "count:1 tolerance - allow 1 failure",
+			tolerance:      "count:1",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step1"},
+			succeededSteps: []string{"step2", "step3"},
+			expectFail:     false,
+		},
+		{
+			name:           "count:1 tolerance - fail with 2 failures",
+			tolerance:      "count:1",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step1", "step2"},
+			succeededSteps: []string{"step3"},
+			expectFail:     true,
+		},
+		{
+			name:           "percentage:50 tolerance - succeed with 50% success",
+			tolerance:      "percentage:50",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}, {Name: "step4"}},
+			failedSteps:    []string{"step1", "step2"},
+			succeededSteps: []string{"step3", "step4"},
+			expectFail:     false,
+		},
+		{
+			name:           "percentage:50 tolerance - fail with less than 50% success",
+			tolerance:      "percentage:50",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}, {Name: "step4"}},
+			failedSteps:    []string{"step1", "step2", "step3"},
+			succeededSteps: []string{"step4"},
+			expectFail:     true,
+		},
+		{
+			name:           "required:step1,step2 - succeed if required steps succeed",
+			tolerance:      "required:step1,step2",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step3"},
+			succeededSteps: []string{"step1", "step2"},
+			expectFail:     false,
+		},
+		{
+			name:           "required:step1,step2 - fail if required step fails",
+			tolerance:      "required:step1,step2",
+			steps:          []WorkflowStep{{Name: "step1"}, {Name: "step2"}, {Name: "step3"}},
+			failedSteps:    []string{"step1"},
+			succeededSteps: []string{"step2", "step3"},
+			expectFail:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := engine.evaluateFailureTolerance(tt.tolerance, tt.steps, tt.failedSteps, tt.succeededSteps)
+			if result != tt.expectFail {
+				t.Errorf("Expected shouldFail=%v, got %v for tolerance '%s'", tt.expectFail, result, tt.tolerance)
+			}
+		})
 	}
 }
 
@@ -1037,7 +1293,8 @@ func TestWorkflowMetadata(t *testing.T) {
 
 // TestConditionalExtractValue tests value extraction from execution state
 func TestConditionalExtractValue(t *testing.T) {
-	processor := NewConditionalProcessor()
+	engine := NewWorkflowEngine()
+	processor := NewConditionalProcessor(engine)
 
 	execution := &WorkflowExecution{
 		Steps: []StepExecution{

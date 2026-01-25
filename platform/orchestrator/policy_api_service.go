@@ -14,16 +14,26 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
 )
 
+// PolicyEngineRefresher is an interface for policy engines that can refresh their cache.
+// This allows the PolicyService to trigger an immediate refresh after policy changes
+// without waiting for the background refresh cycle (default 30 seconds).
+// Issue #1082: Used by WCP HITL integration for immediate policy availability.
+type PolicyEngineRefresher interface {
+	RefreshPolicies() error
+}
+
 // PolicyService handles business logic for policy operations
 type PolicyService struct {
-	repo           *PolicyRepository
-	policyEngine   *DynamicPolicyEngine
-	licenseChecker LicenseChecker
+	repo            *PolicyRepository
+	policyEngine    *DynamicPolicyEngine
+	policyRefresher PolicyEngineRefresher // Interface for triggering policy refresh
+	licenseChecker  LicenseChecker
 }
 
 // NewPolicyService creates a new policy service with environment-based license checker.
@@ -35,12 +45,35 @@ func NewPolicyService(repo *PolicyRepository, engine *DynamicPolicyEngine) *Poli
 	}
 }
 
+// NewPolicyServiceWithRefresher creates a new policy service with a policy refresher.
+// The refresher allows triggering immediate policy cache refresh after changes.
+// Issue #1082: Used for WCP HITL integration.
+func NewPolicyServiceWithRefresher(repo *PolicyRepository, refresher PolicyEngineRefresher) *PolicyService {
+	return &PolicyService{
+		repo:            repo,
+		policyRefresher: refresher,
+		licenseChecker:  NewEnvLicenseChecker(),
+	}
+}
+
 // NewPolicyServiceWithLicense creates a policy service with a custom license checker.
 func NewPolicyServiceWithLicense(repo *PolicyRepository, engine *DynamicPolicyEngine, lc LicenseChecker) *PolicyService {
 	return &PolicyService{
 		repo:           repo,
 		policyEngine:   engine,
 		licenseChecker: lc,
+	}
+}
+
+// refreshPolicyCache triggers an immediate policy cache refresh if a refresher is configured.
+// This ensures newly created/updated/deleted policies are available immediately.
+func (s *PolicyService) refreshPolicyCache() {
+	if s.policyRefresher != nil {
+		if err := s.policyRefresher.RefreshPolicies(); err != nil {
+			log.Printf("[PolicyService] Failed to refresh policy cache: %v", err)
+		} else {
+			log.Println("[PolicyService] Policy cache refreshed successfully")
+		}
 	}
 }
 
@@ -81,6 +114,10 @@ func (s *PolicyService) CreatePolicy(ctx context.Context, tenantID string, req *
 	if err := s.repo.Create(ctx, policy); err != nil {
 		return nil, fmt.Errorf("failed to create policy: %w", err)
 	}
+
+	// Trigger immediate policy cache refresh so the new policy is available
+	// Issue #1082: Required for WCP HITL integration
+	s.refreshPolicyCache()
 
 	return policy, nil
 }
@@ -129,7 +166,16 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 		return nil, err
 	}
 
-	return s.repo.Update(ctx, tenantID, policyID, req, updatedBy)
+	policy, err := s.repo.Update(ctx, tenantID, policyID, req, updatedBy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger immediate policy cache refresh so the updated policy is available
+	// Issue #1082: Required for WCP HITL integration
+	s.refreshPolicyCache()
+
+	return policy, nil
 }
 
 // DeletePolicy removes a policy
@@ -139,7 +185,15 @@ func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID str
 		return err
 	}
 
-	return s.repo.Delete(ctx, tenantID, policyID, deletedBy)
+	if err := s.repo.Delete(ctx, tenantID, policyID, deletedBy); err != nil {
+		return err
+	}
+
+	// Trigger immediate policy cache refresh so the deleted policy is removed
+	// Issue #1082: Required for WCP HITL integration
+	s.refreshPolicyCache()
+
+	return nil
 }
 
 // TestPolicy evaluates a policy against test input
@@ -229,7 +283,16 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 		mode = "skip"
 	}
 
-	return s.repo.ImportBulk(ctx, tenantID, req.Policies, mode, importedBy)
+	result, err := s.repo.ImportBulk(ctx, tenantID, req.Policies, mode, importedBy)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger immediate policy cache refresh so imported policies are available
+	// Issue #1082: Required for WCP HITL integration
+	s.refreshPolicyCache()
+
+	return result, nil
 }
 
 // validateCreateRequest validates a create policy request
@@ -258,7 +321,7 @@ func (s *PolicyService) validateCreateRequest(req *CreatePolicyRequest) error {
 	} else if !s.isValidPolicyType(string(req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost",
+			Message: "Type must be one of: content, user, risk, cost, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 
@@ -329,7 +392,7 @@ func (s *PolicyService) validateUpdateRequest(req *UpdatePolicyRequest) error {
 	if req.Type != nil && !s.isValidPolicyType(string(*req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost",
+			Message: "Type must be one of: content, user, risk, cost, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 

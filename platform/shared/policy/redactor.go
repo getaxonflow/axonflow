@@ -380,7 +380,7 @@ func GetRedactionStrategy(category PolicyCategory, severity Severity) RedactionS
 
 	// Default strategies by category
 	switch category {
-	case CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU:
+	case CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore:
 		return StrategyMask
 	case CategoryPIIGlobal:
 		if severity == SeverityHigh {

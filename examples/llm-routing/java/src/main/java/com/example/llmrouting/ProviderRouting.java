@@ -52,7 +52,7 @@ public class ProviderRouting {
         // Example 1: Send a request (server decides which provider to use)
         System.out.println("1. Send request (server routes based on configured strategy):");
         try {
-            ClientResponse response = client.executeQuery(ClientRequest.builder()
+            ClientResponse response = client.proxyLLMCall(ClientRequest.builder()
                     .userToken(userToken)
                     .query("What is 2 + 2?")
                     .requestType(RequestType.CHAT)
@@ -67,7 +67,7 @@ public class ProviderRouting {
         System.out.println("2. Multiple requests (observe provider distribution):");
         for (int i = 1; i <= 3; i++) {
             try {
-                ClientResponse response = client.executeQuery(ClientRequest.builder()
+                ClientResponse response = client.proxyLLMCall(ClientRequest.builder()
                         .userToken(userToken)
                         .query("Question " + i + ": What is the capital of France?")
                         .requestType(RequestType.CHAT)

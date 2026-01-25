@@ -1,0 +1,321 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
+// Package execution provides unified execution tracking for MAP and WCP.
+//
+// This package implements the shared infrastructure described in ADR-030,
+// enabling consistent status tracking, step-level progress, and cost tracking
+// across both Multi-Agent Planning (MAP) and Workflow Control Plane (WCP).
+package execution
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// ExecutionType distinguishes between MAP plans and WCP workflows.
+type ExecutionType string
+
+const (
+	// ExecutionTypeMAP represents a Multi-Agent Planning execution.
+	ExecutionTypeMAP ExecutionType = "map_plan"
+	// ExecutionTypeWCP represents a Workflow Control Plane execution.
+	ExecutionTypeWCP ExecutionType = "wcp_workflow"
+)
+
+// ExecutionStatusValue represents the status of an execution.
+type ExecutionStatusValue string
+
+const (
+	StatusPending    ExecutionStatusValue = "pending"
+	StatusRunning    ExecutionStatusValue = "running"
+	StatusCompleted  ExecutionStatusValue = "completed"
+	StatusFailed     ExecutionStatusValue = "failed"
+	StatusCancelled  ExecutionStatusValue = "cancelled"
+	StatusAborted    ExecutionStatusValue = "aborted" // WCP-specific: workflow aborted
+	StatusExpired    ExecutionStatusValue = "expired" // MAP-specific: plan expired before execution
+)
+
+// StepStatusValue represents the status of an individual step.
+type StepStatusValue string
+
+const (
+	StepStatusPending   StepStatusValue = "pending"
+	StepStatusRunning   StepStatusValue = "running"
+	StepStatusCompleted StepStatusValue = "completed"
+	StepStatusFailed    StepStatusValue = "failed"
+	StepStatusSkipped   StepStatusValue = "skipped"
+	StepStatusBlocked   StepStatusValue = "blocked" // WCP: blocked by policy
+	StepStatusApproval  StepStatusValue = "approval" // WCP: waiting for approval
+)
+
+// StepType represents the type of workflow step.
+type StepType string
+
+const (
+	StepTypeLLMCall       StepType = "llm_call"
+	StepTypeToolCall      StepType = "tool_call"
+	StepTypeConnectorCall StepType = "connector_call"
+	StepTypeHumanTask     StepType = "human_task"
+	StepTypeSynthesis     StepType = "synthesis" // MAP: result synthesis step
+	StepTypeAction        StepType = "action"    // Generic action step
+	StepTypeGate          StepType = "gate"      // WCP: policy gate evaluation
+)
+
+// GateDecision represents the policy decision for a step (WCP).
+type GateDecision string
+
+const (
+	GateDecisionAllow           GateDecision = "allow"
+	GateDecisionBlock           GateDecision = "block"
+	GateDecisionRequireApproval GateDecision = "require_approval"
+)
+
+// ApprovalStatus represents the approval state for require_approval decisions.
+type ApprovalStatus string
+
+const (
+	ApprovalStatusPending  ApprovalStatus = "pending"
+	ApprovalStatusApproved ApprovalStatus = "approved"
+	ApprovalStatusRejected ApprovalStatus = "rejected"
+)
+
+// ExecutionStatus is the unified status response for both MAP and WCP.
+// This type is used in API responses and SDK methods.
+type ExecutionStatus struct {
+	// Identity
+	ExecutionID   string        `json:"execution_id"`
+	ExecutionType ExecutionType `json:"execution_type"`
+	Name          string        `json:"name"`
+
+	// Source (WCP-specific: langchain, crewai, etc.)
+	Source string `json:"source,omitempty"`
+
+	// Progress
+	Status           ExecutionStatusValue `json:"status"`
+	CurrentStepIndex int                  `json:"current_step_index"`
+	TotalSteps       int                  `json:"total_steps"`
+	ProgressPercent  float64              `json:"progress_percent"`
+
+	// Timing
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Duration    string     `json:"duration,omitempty"`
+
+	// Cost tracking
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
+	ActualCostUSD    *float64 `json:"actual_cost_usd,omitempty"`
+
+	// Steps with full details
+	Steps []StepStatus `json:"steps,omitempty"`
+
+	// Error information
+	Error string `json:"error,omitempty"`
+
+	// Multi-tenancy context
+	TenantID string `json:"tenant_id,omitempty"`
+	OrgID    string `json:"org_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
+
+	// Additional metadata
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+
+	// Timestamps
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// StepStatus provides detailed information about an individual step.
+type StepStatus struct {
+	// Identity
+	StepID    string   `json:"step_id"`
+	StepIndex int      `json:"step_index"`
+	StepName  string   `json:"step_name"`
+	StepType  StepType `json:"step_type"`
+
+	// Status
+	Status    StepStatusValue `json:"status"`
+	StartedAt *time.Time      `json:"started_at,omitempty"`
+	EndedAt   *time.Time      `json:"ended_at,omitempty"`
+	Duration  string          `json:"duration,omitempty"`
+
+	// Policy evaluation (applicable to both MAP and WCP)
+	Decision        GateDecision `json:"decision,omitempty"`
+	DecisionReason  string       `json:"decision_reason,omitempty"`
+	PoliciesMatched []string     `json:"policies_matched,omitempty"`
+
+	// Approval (WCP-specific, but included for unified schema)
+	ApprovalStatus *ApprovalStatus `json:"approval_status,omitempty"`
+	ApprovedBy     string          `json:"approved_by,omitempty"`
+	ApprovedAt     *time.Time      `json:"approved_at,omitempty"`
+
+	// LLM/Provider info
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+
+	// Cost tracking per step
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+
+	// Input/Output (optional, can be large)
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
+
+	// Result summary (human-readable)
+	ResultSummary string `json:"result_summary,omitempty"`
+
+	// Error information
+	Error string `json:"error,omitempty"`
+}
+
+// PolicyMatch represents a policy that was evaluated/matched during execution.
+type PolicyMatch struct {
+	PolicyID   string `json:"policy_id"`
+	PolicyName string `json:"policy_name"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// --- Helper Methods ---
+
+// IsTerminal returns true if the execution is in a terminal state.
+func (e *ExecutionStatus) IsTerminal() bool {
+	return e.Status == StatusCompleted ||
+		e.Status == StatusFailed ||
+		e.Status == StatusCancelled ||
+		e.Status == StatusAborted ||
+		e.Status == StatusExpired
+}
+
+// CalculateProgress computes the progress percentage based on completed steps.
+func (e *ExecutionStatus) CalculateProgress() float64 {
+	if e.TotalSteps == 0 {
+		return 0
+	}
+
+	completedSteps := 0
+	for _, step := range e.Steps {
+		if step.Status == StepStatusCompleted {
+			completedSteps++
+		}
+	}
+
+	return float64(completedSteps) / float64(e.TotalSteps) * 100
+}
+
+// CalculateDuration computes the duration string from start to end/now.
+func (e *ExecutionStatus) CalculateDuration() string {
+	if e.StartedAt.IsZero() {
+		return ""
+	}
+
+	endTime := time.Now()
+	if e.CompletedAt != nil {
+		endTime = *e.CompletedAt
+	}
+
+	duration := endTime.Sub(e.StartedAt)
+	return formatDuration(duration)
+}
+
+// TotalCost returns the sum of all step costs.
+func (e *ExecutionStatus) TotalCost() float64 {
+	var total float64
+	for _, step := range e.Steps {
+		if step.CostUSD != nil {
+			total += *step.CostUSD
+		}
+	}
+	return total
+}
+
+// GetCurrentStep returns the currently executing step, if any.
+func (e *ExecutionStatus) GetCurrentStep() *StepStatus {
+	for i := range e.Steps {
+		if e.Steps[i].Status == StepStatusRunning {
+			return &e.Steps[i]
+		}
+	}
+	return nil
+}
+
+// --- Step Helper Methods ---
+
+// IsTerminal returns true if the step is in a terminal state.
+func (s *StepStatus) IsTerminal() bool {
+	return s.Status == StepStatusCompleted ||
+		s.Status == StepStatusFailed ||
+		s.Status == StepStatusSkipped
+}
+
+// IsBlocking returns true if the step is blocked (policy or approval).
+func (s *StepStatus) IsBlocking() bool {
+	return s.Status == StepStatusBlocked || s.Status == StepStatusApproval
+}
+
+// CalculateDuration computes the step duration.
+func (s *StepStatus) CalculateDuration() string {
+	if s.StartedAt == nil {
+		return ""
+	}
+
+	endTime := time.Now()
+	if s.EndedAt != nil {
+		endTime = *s.EndedAt
+	}
+
+	duration := endTime.Sub(*s.StartedAt)
+	return formatDuration(duration)
+}
+
+// --- Utility Functions ---
+
+// formatDuration formats a duration as a human-readable string.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	if d < time.Minute {
+		return d.Round(time.Second).String()
+	}
+	if d < time.Hour {
+		return d.Round(time.Second).String()
+	}
+	return d.Round(time.Minute).String()
+}
+
+// --- Request/Response Types for API ---
+
+// CreateExecutionRequest is the request to start tracking a new execution.
+type CreateExecutionRequest struct {
+	ExecutionType ExecutionType          `json:"execution_type" validate:"required"`
+	Name          string                 `json:"name" validate:"required"`
+	Source        string                 `json:"source,omitempty"`
+	TotalSteps    int                    `json:"total_steps,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+
+	// Tenancy
+	TenantID string `json:"tenant_id,omitempty"`
+	OrgID    string `json:"org_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
+}
+
+// ListExecutionsRequest contains filters for listing executions.
+type ListExecutionsRequest struct {
+	ExecutionType *ExecutionType        `json:"execution_type,omitempty"`
+	Status        *ExecutionStatusValue `json:"status,omitempty"`
+	TenantID      string                `json:"tenant_id,omitempty"`
+	OrgID         string                `json:"org_id,omitempty"`
+	Limit         int                   `json:"limit,omitempty"`
+	Offset        int                   `json:"offset,omitempty"`
+}
+
+// ListExecutionsResponse is the paginated response for listing executions.
+type ListExecutionsResponse struct {
+	Executions []ExecutionStatus `json:"executions"`
+	Total      int               `json:"total"`
+	Limit      int               `json:"limit"`
+	Offset     int               `json:"offset"`
+	HasMore    bool              `json:"has_more"`
+}

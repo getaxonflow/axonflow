@@ -41,7 +41,7 @@ public class Main {
         System.out.println("📤 Searching for flights to Paris...");
 
         try {
-            ExecuteResponse searchResponse = client.executeQuery(
+            ExecuteResponse searchResponse = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query(searchQuery)
@@ -61,7 +61,7 @@ public class Main {
                 System.out.println("💡 Trying alternative dates...");
 
                 String altQuery = "Find flights from New York to Paris for the following week instead";
-                ExecuteResponse altResponse = client.executeQuery(
+                ExecuteResponse altResponse = client.proxyLLMCall(
                         ExecuteQueryRequest.builder()
                                 .userToken("user-123")
                                 .query(altQuery)
@@ -84,7 +84,7 @@ public class Main {
             String bookQuery = "Based on the search results above, what would be the recommended booking?";
             System.out.println("\n📤 Getting booking recommendation...");
 
-            ExecuteResponse bookResponse = client.executeQuery(
+            ExecuteResponse bookResponse = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query(bookQuery)

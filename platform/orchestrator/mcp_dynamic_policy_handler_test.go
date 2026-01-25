@@ -1387,6 +1387,394 @@ func BenchmarkMCPDynamicPolicyHandler_WithPolicies(b *testing.B) {
 }
 
 // =============================================================================
+// Rate Limit and Budget Tracking Tests (Issue #1071 - Tech Debt)
+// These tests verify that rate limiting and budget tracking actually enforce
+// limits rather than returning stub "true" values.
+// =============================================================================
+
+func TestEvaluateRateLimit_WithinLimit(t *testing.T) {
+	// Clear the rate limit store for clean test
+	rateLimitMutex.Lock()
+	rateLimitStore = make(map[string]*rateLimitEntry)
+	rateLimitMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	policy := DynamicPolicy{
+		ID:   "rate-limit-test",
+		Name: "Test Rate Limit",
+		Type: "rate-limit",
+		Conditions: []PolicyCondition{
+			{Field: "max_requests", Operator: "equals", Value: float64(10)},
+			{Field: "window_seconds", Operator: "equals", Value: float64(60)},
+		},
+	}
+	req := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		UserID:        "user-1",
+	}
+
+	// First request should be allowed
+	matched, allowed, reason := handler.evaluateRateLimit(policy, req)
+	if !matched {
+		t.Error("expected rate limit policy to match")
+	}
+	if !allowed {
+		t.Errorf("expected allowed=true for first request, got reason: %s", reason)
+	}
+
+	// Make 9 more requests (total 10)
+	for i := 0; i < 9; i++ {
+		_, allowed, _ = handler.evaluateRateLimit(policy, req)
+		if !allowed {
+			t.Errorf("request %d should be allowed", i+2)
+		}
+	}
+
+	// 11th request should be denied
+	_, allowed, reason = handler.evaluateRateLimit(policy, req)
+	if allowed {
+		t.Error("expected 11th request to be denied")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for denial")
+	}
+}
+
+func TestEvaluateRateLimit_DifferentUsers(t *testing.T) {
+	rateLimitMutex.Lock()
+	rateLimitStore = make(map[string]*rateLimitEntry)
+	rateLimitMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	policy := DynamicPolicy{
+		ID:   "rate-limit-user",
+		Name: "Per-User Rate Limit",
+		Type: "rate-limit",
+		Conditions: []PolicyCondition{
+			{Field: "max_requests", Operator: "equals", Value: float64(5)},
+			{Field: "window_seconds", Operator: "equals", Value: float64(60)},
+		},
+	}
+
+	req1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-A"}
+	req2 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-B"}
+
+	// User A makes 5 requests
+	for i := 0; i < 5; i++ {
+		_, allowed, _ := handler.evaluateRateLimit(policy, req1)
+		if !allowed {
+			t.Errorf("user-A request %d should be allowed", i+1)
+		}
+	}
+
+	// User A's 6th request should be denied
+	_, allowed, _ := handler.evaluateRateLimit(policy, req1)
+	if allowed {
+		t.Error("user-A's 6th request should be denied")
+	}
+
+	// User B's request should be allowed (separate counter)
+	_, allowed, _ = handler.evaluateRateLimit(policy, req2)
+	if !allowed {
+		t.Error("user-B's first request should be allowed")
+	}
+}
+
+func TestEvaluateRateLimit_DefaultLimits(t *testing.T) {
+	rateLimitMutex.Lock()
+	rateLimitStore = make(map[string]*rateLimitEntry)
+	rateLimitMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	// Policy without explicit limits - should allow (no rate limit configured)
+	policy := DynamicPolicy{
+		ID:         "rate-limit-default",
+		Name:       "Default Rate Limit",
+		Type:       "rate-limit",
+		Conditions: []PolicyCondition{},
+	}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+
+	// Should be allowed with default limits (no limit configured)
+	_, allowed, _ := handler.evaluateRateLimit(policy, req)
+	if !allowed {
+		t.Error("first request should be allowed with default limits")
+	}
+}
+
+func TestEvaluateBudget_WithinBudget(t *testing.T) {
+	budgetStoreMutex.Lock()
+	budgetStore = make(map[string]*budgetEntry)
+	budgetStoreMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	// Budget policy with $0.10 max budget and $0.01 cost per request = 10 requests max
+	policy := DynamicPolicy{
+		ID:   "budget-test",
+		Name: "Test Budget",
+		Type: "budget",
+		Conditions: []PolicyCondition{
+			{Field: "max_budget", Operator: "equals", Value: float64(0.10)},
+			{Field: "cost_per_request", Operator: "equals", Value: float64(0.01)},
+			{Field: "period_days", Operator: "equals", Value: float64(30)},
+		},
+	}
+	req := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		UserID:        "user-1",
+	}
+
+	// First request should be allowed
+	matched, allowed, reason := handler.evaluateBudget(policy, req)
+	if !matched {
+		t.Error("expected budget policy to match")
+	}
+	if !allowed {
+		t.Errorf("expected allowed=true, got reason: %s", reason)
+	}
+
+	// Make more requests up to budget (9 more = 10 total at $0.01 each = $0.10)
+	for i := 0; i < 9; i++ {
+		_, allowed, _ = handler.evaluateBudget(policy, req)
+		if !allowed {
+			t.Errorf("request %d should be allowed", i+2)
+		}
+	}
+
+	// 11th request should be denied (exceeds $0.10 budget)
+	_, allowed, reason = handler.evaluateBudget(policy, req)
+	if allowed {
+		t.Error("request exceeding budget should be denied")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for budget exceeded")
+	}
+}
+
+func TestEvaluateBudget_DifferentTenants(t *testing.T) {
+	budgetStoreMutex.Lock()
+	budgetStore = make(map[string]*budgetEntry)
+	budgetStoreMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	// $0.05 budget with $0.03 per request = 1 request allowed
+	policy := DynamicPolicy{
+		ID:   "budget-tenant",
+		Name: "Per-Tenant Budget",
+		Type: "budget",
+		Conditions: []PolicyCondition{
+			{Field: "max_budget", Operator: "equals", Value: float64(0.05)},
+			{Field: "cost_per_request", Operator: "equals", Value: float64(0.03)},
+		},
+	}
+
+	reqT1 := MCPPolicyEvaluationRequest{TenantID: "tenant-1", ConnectorName: "pg", UserID: "user-1"}
+	reqT2 := MCPPolicyEvaluationRequest{TenantID: "tenant-2", ConnectorName: "pg", UserID: "user-2"}
+
+	// Tenant 1 uses $0.03
+	_, allowed, _ := handler.evaluateBudget(policy, reqT1)
+	if !allowed {
+		t.Error("tenant-1 first request should be allowed")
+	}
+
+	// Tenant 1 tries to use another $0.03 (total $0.06, exceeds $0.05)
+	_, allowed, _ = handler.evaluateBudget(policy, reqT1)
+	if allowed {
+		t.Error("tenant-1 second request should be denied (exceeds budget)")
+	}
+
+	// Tenant 2 should be allowed (separate budget)
+	_, allowed, _ = handler.evaluateBudget(policy, reqT2)
+	if !allowed {
+		t.Error("tenant-2 first request should be allowed")
+	}
+}
+
+func TestEvaluateBudget_DefaultBudget(t *testing.T) {
+	budgetStoreMutex.Lock()
+	budgetStore = make(map[string]*budgetEntry)
+	budgetStoreMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	// Policy without explicit budget - should allow (no budget configured means unlimited)
+	policy := DynamicPolicy{
+		ID:         "budget-default",
+		Name:       "Default Budget",
+		Type:       "budget",
+		Conditions: []PolicyCondition{},
+	}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+
+	// Should be allowed with default limits
+	_, allowed, _ := handler.evaluateBudget(policy, req)
+	if !allowed {
+		t.Error("first request should be allowed with default budget")
+	}
+}
+
+func TestEvaluateBudget_SmallBudgetLimit(t *testing.T) {
+	budgetStoreMutex.Lock()
+	budgetStore = make(map[string]*budgetEntry)
+	budgetStoreMutex.Unlock()
+
+	handler := NewMCPDynamicPolicyHandler(nil)
+	// Budget of $5 with $1 per request = 5 requests max
+	// Using integer-friendly values to avoid floating point issues
+	policy := DynamicPolicy{
+		ID:   "budget-small",
+		Name: "Small Budget Test",
+		Type: "budget",
+		Conditions: []PolicyCondition{
+			{Field: "max_budget", Operator: "equals", Value: float64(5)},
+			{Field: "cost_per_request", Operator: "equals", Value: float64(1)},
+		},
+	}
+	req := MCPPolicyEvaluationRequest{TenantID: "t1", ConnectorName: "pg", UserID: "u1"}
+
+	// With $5 budget and $1 per request, 5 requests should be allowed
+	for i := 0; i < 5; i++ {
+		_, allowed, _ := handler.evaluateBudget(policy, req)
+		if !allowed {
+			t.Errorf("request %d should be allowed (under $5 budget)", i+1)
+			break
+		}
+	}
+
+	// 6th request should exceed budget
+	_, allowed, _ := handler.evaluateBudget(policy, req)
+	if allowed {
+		t.Error("6th request should exceed budget")
+	}
+}
+
+func TestMCPDynamicPolicyHandler_RateLimitPolicyIntegration(t *testing.T) {
+	// Clear stores for clean test
+	rateLimitMutex.Lock()
+	rateLimitStore = make(map[string]*rateLimitEntry)
+	rateLimitMutex.Unlock()
+
+	policies := []DynamicPolicy{
+		{
+			ID:       "rate-int-1",
+			Name:     "Integration Rate Limit",
+			Type:     "rate-limit",
+			Enabled:  true,
+			TenantID: "tenant-1",
+			Conditions: []PolicyCondition{
+				{Field: "max_requests", Operator: "equals", Value: float64(3)},
+				{Field: "window_seconds", Operator: "equals", Value: float64(60)},
+			},
+		},
+	}
+	engine := newTestEngine(policies)
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	body := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		UserID:        "test-user",
+	}
+
+	// Make 3 requests - all should be allowed
+	for i := 0; i < 3; i++ {
+		jsonBody, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		var resp MCPPolicyEvaluationResponse
+		json.NewDecoder(rr.Body).Decode(&resp)
+
+		if !resp.Allowed {
+			t.Errorf("request %d should be allowed, got blocked: %s", i+1, resp.BlockReason)
+		}
+	}
+
+	// 4th request should be blocked
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	var resp MCPPolicyEvaluationResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	if resp.Allowed {
+		t.Error("4th request should be blocked due to rate limit")
+	}
+}
+
+func TestMCPDynamicPolicyHandler_BudgetPolicyIntegration(t *testing.T) {
+	// Clear stores for clean test
+	budgetStoreMutex.Lock()
+	budgetStore = make(map[string]*budgetEntry)
+	budgetStoreMutex.Unlock()
+
+	policies := []DynamicPolicy{
+		{
+			ID:       "budget-int-1",
+			Name:     "Integration Budget",
+			Type:     "budget",
+			Enabled:  true,
+			TenantID: "tenant-1",
+			Conditions: []PolicyCondition{
+				// $0.002 budget with $0.001 per request = 2 requests max
+				{Field: "max_budget", Operator: "equals", Value: float64(0.002)},
+				{Field: "cost_per_request", Operator: "equals", Value: float64(0.001)},
+			},
+		},
+	}
+	engine := newTestEngine(policies)
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+
+	body := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		UserID:        "test-user",
+	}
+
+	// First 2 requests should be allowed
+	for i := 0; i < 2; i++ {
+		jsonBody, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		var resp MCPPolicyEvaluationResponse
+		json.NewDecoder(rr.Body).Decode(&resp)
+
+		if !resp.Allowed {
+			t.Errorf("request %d should be allowed, got blocked: %s", i+1, resp.BlockReason)
+		}
+	}
+
+	// 3rd request should exceed budget
+	jsonBody, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/v1/mcp/evaluate-policies", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	var resp MCPPolicyEvaluationResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+
+	if resp.Allowed {
+		t.Error("3rd request should be blocked due to budget exceeded")
+	}
+}
+
+// =============================================================================
 // Time Access Policy Tests - Additional Coverage (Issue #966/#968)
 // =============================================================================
 

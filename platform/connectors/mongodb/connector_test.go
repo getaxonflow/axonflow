@@ -14,6 +14,7 @@ package mongodb
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -411,6 +412,194 @@ func TestMongoDBConnector_HealthCheckWithoutConnect(t *testing.T) {
 		t.Error("expected unhealthy status when not connected")
 	}
 }
+
+func TestMongoDBConnector_NameWithConfig(t *testing.T) {
+	c := NewMongoDBConnector()
+
+	// Without config, returns default
+	if c.Name() != "mongodb" {
+		t.Errorf("Name() = %s, want mongodb", c.Name())
+	}
+
+	// With config
+	c.config = &base.ConnectorConfig{Name: "my-mongo"}
+	if c.Name() != "my-mongo" {
+		t.Errorf("Name() = %s, want my-mongo", c.Name())
+	}
+
+	// With empty config name, returns empty
+	c.config = &base.ConnectorConfig{}
+	if c.Name() != "" {
+		t.Errorf("Name() = %s, want empty string", c.Name())
+	}
+}
+
+func TestMongoDBConnector_ToBSON_EdgeCases(t *testing.T) {
+	c := NewMongoDBConnector()
+
+	tests := []struct {
+		name    string
+		input   interface{}
+		wantErr bool
+	}{
+		{"nil input", nil, true},              // nil can't be converted to bson.M
+		{"empty string", "", true},            // empty string is invalid JSON
+		{"integer", 42, true},                 // int can't be converted to bson.M
+		{"float", 3.14, true},                 // float can't be converted to bson.M
+		{"bool", true, true},                  // bool can't be converted to bson.M
+		{"slice", []interface{}{"a"}, true},   // slice can't be converted to bson.M
+		{"bson.M input", bson.M{"key": "value"}, false},
+		{"map[string]interface{}", map[string]interface{}{"key": "value"}, false},
+		{"valid JSON string", `{"key": "value"}`, false},
+		{"invalid JSON string", `{invalid}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := c.toBSON(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("toBSON() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && result == nil {
+				t.Error("toBSON() returned nil for valid input")
+			}
+		})
+	}
+}
+
+func TestMongoDBConnector_ConvertFromBSON_MoreTypes(t *testing.T) {
+	c := NewMongoDBConnector()
+
+	binary := primitive.Binary{Subtype: 0, Data: []byte("hello")}
+
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil input", nil},
+		{"binary", binary},
+		{"nested bson.M", bson.M{"outer": bson.M{"inner": "value"}}},
+		{"bson.A with mixed types", bson.A{1, "two", 3.0}},
+		{"empty bson.M", bson.M{}},
+		{"empty bson.A", bson.A{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := c.convertFromBSON(tt.input)
+			// Should not panic
+			_ = result
+		})
+	}
+}
+
+func TestMongoDBConnector_BuildURI_EdgeCases(t *testing.T) {
+	c := NewMongoDBConnector()
+
+	tests := []struct {
+		name    string
+		config  *base.ConnectorConfig
+		wantErr bool
+	}{
+		{
+			name: "with authSource option",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":       "localhost",
+					"port":       float64(27017),
+					"database":   "testdb",
+					"authSource": "admin",
+				},
+				Credentials: map[string]string{
+					"username": "user",
+					"password": "pass",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "port as string",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":     "localhost",
+					"port":     "27017", // string instead of float64
+					"database": "testdb",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "default port when not specified",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":     "localhost",
+					"database": "testdb",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "SRV connection",
+			config: &base.ConnectorConfig{
+				Name:          "test",
+				ConnectionURL: "mongodb+srv://cluster0.example.mongodb.net/testdb",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			uri, err := c.buildURI(tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("buildURI() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && uri == "" {
+				t.Error("buildURI() returned empty URI")
+			}
+		})
+	}
+}
+
+func TestMongoDBConnector_QueryWithConfig(t *testing.T) {
+	c := NewMongoDBConnector()
+	c.config = &base.ConnectorConfig{Name: "test-mongo"}
+
+	// Query should fail due to no connection but config should be used for error message
+	_, err := c.Query(context.Background(), &base.Query{
+		Statement: "find:users",
+	})
+
+	if err == nil {
+		t.Error("expected error when querying without connection")
+	}
+	// Error should contain the config name
+	if !strings.Contains(err.Error(), "test-mongo") {
+		t.Errorf("error should contain config name, got: %v", err)
+	}
+}
+
+func TestMongoDBConnector_ExecuteWithConfig(t *testing.T) {
+	c := NewMongoDBConnector()
+	c.config = &base.ConnectorConfig{Name: "test-mongo"}
+
+	// Execute should fail due to no connection but config should be used for error message
+	_, err := c.Execute(context.Background(), &base.Command{
+		Action:    "insert",
+		Statement: "users",
+		Parameters: map[string]interface{}{
+			"document": map[string]interface{}{"name": "test"},
+		},
+	})
+
+	if err == nil {
+		t.Error("expected error when executing without connection")
+	}
+}
+
 
 // Integration tests - run with actual MongoDB
 func TestMongoDBConnector_Integration_Connect(t *testing.T) {

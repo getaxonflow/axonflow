@@ -32,7 +32,7 @@ async function main() {
 
   try {
     // Send query to AxonFlow
-    const response = await client.executeQuery({
+    const response = await client.proxyLLMCall({
       userToken: 'user-123',
       query: query,
       requestType: 'chat',

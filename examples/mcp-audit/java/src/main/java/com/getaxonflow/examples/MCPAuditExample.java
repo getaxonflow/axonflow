@@ -21,10 +21,8 @@ package com.getaxonflow.examples;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
-import com.getaxonflow.sdk.MCPQueryRequest;
-import com.getaxonflow.sdk.MCPQueryResponse;
-import com.getaxonflow.sdk.MCPExecuteRequest;
-import com.getaxonflow.sdk.MCPExecuteResponse;
+import com.getaxonflow.sdk.types.ConnectorResponse;
+import com.getaxonflow.sdk.types.ConnectorPolicyInfo;
 
 public class MCPAuditExample {
     public static void main(String[] args) {
@@ -53,7 +51,7 @@ public class MCPAuditExample {
 
         // Create AxonFlow client
         AxonFlowConfig config = AxonFlowConfig.builder()
-            .agentUrl(agentUrl)
+            .endpoint(agentUrl)
             .clientId(clientId)
             .clientSecret(clientSecret)
             .build();
@@ -64,19 +62,15 @@ public class MCPAuditExample {
             System.out.println("----------------------------------------------");
 
             try {
-                MCPQueryRequest queryRequest = MCPQueryRequest.builder()
-                    .connector("postgres")
-                    .statement("SELECT 1 as test_value, 'hello' as test_message")
-                    .build();
-
-                MCPQueryResponse result = client.mcpQuery(queryRequest);
+                ConnectorResponse result = client.mcpQuery("postgres", "SELECT 1 as test_value, 'hello' as test_message");
                 System.out.println("SUCCESS: Query executed");
-                System.out.println("  Row count: " + result.getRowCount());
-                System.out.println("  Duration: " + result.getDurationMs() + "ms");
-                if (result.getPolicyInfo() != null) {
-                    System.out.println("  Policies evaluated: " + result.getPolicyInfo().getPoliciesEvaluated());
-                    System.out.println("  Blocked: " + result.getPolicyInfo().isBlocked());
-                    System.out.println("  Redacted fields: " + result.getPolicyInfo().getRedactedFields());
+                System.out.println("  Success: " + result.isSuccess());
+                System.out.println("  Processing time: " + result.getProcessingTime());
+                ConnectorPolicyInfo policyInfo = result.getPolicyInfo();
+                if (policyInfo != null) {
+                    System.out.println("  Policies evaluated: " + policyInfo.getPoliciesEvaluated());
+                    System.out.println("  Blocked: " + policyInfo.isBlocked());
+                    System.out.println("  Redactions applied: " + policyInfo.getRedactionsApplied());
                 }
             } catch (Exception e) {
                 System.out.println("Query error (expected if postgres not configured): " + e.getMessage());
@@ -88,19 +82,18 @@ public class MCPAuditExample {
             System.out.println("----------------------------------------------");
 
             try {
-                MCPQueryRequest queryRequest = MCPQueryRequest.builder()
-                    .connector("postgres")
-                    .statement("SELECT email, phone, name FROM users LIMIT 5")
-                    .build();
-
-                MCPQueryResponse result = client.mcpQuery(queryRequest);
+                ConnectorResponse result = client.mcpQuery("postgres", "SELECT email, phone, name FROM users LIMIT 5");
                 System.out.println("SUCCESS: Query executed");
-                System.out.println("  Row count: " + result.getRowCount());
-                if (result.getPolicyInfo() != null) {
-                    System.out.println("  Policies evaluated: " + result.getPolicyInfo().getPoliciesEvaluated());
-                    if (result.getPolicyInfo().getRedactedFields() != null &&
-                        !result.getPolicyInfo().getRedactedFields().isEmpty()) {
-                        System.out.println("  PII REDACTED! Fields: " + result.getPolicyInfo().getRedactedFields());
+                System.out.println("  Success: " + result.isSuccess());
+                System.out.println("  Redacted: " + result.isRedacted());
+                if (!result.getRedactedFields().isEmpty()) {
+                    System.out.println("  PII REDACTED! Fields: " + result.getRedactedFields());
+                }
+                ConnectorPolicyInfo policyInfo = result.getPolicyInfo();
+                if (policyInfo != null) {
+                    System.out.println("  Policies evaluated: " + policyInfo.getPoliciesEvaluated());
+                    if (policyInfo.getRedactionsApplied() > 0) {
+                        System.out.println("  Redactions applied: " + policyInfo.getRedactionsApplied());
                     }
                 }
             } catch (Exception e) {
@@ -113,12 +106,7 @@ public class MCPAuditExample {
             System.out.println("----------------------------------------------");
 
             try {
-                MCPQueryRequest queryRequest = MCPQueryRequest.builder()
-                    .connector("postgres")
-                    .statement("SELECT * FROM users; DROP TABLE users;--")
-                    .build();
-
-                client.mcpQuery(queryRequest);
+                client.mcpQuery("postgres", "SELECT * FROM users; DROP TABLE users;--");
                 System.out.println("Note: SQLi detection may not be enabled");
             } catch (Exception e) {
                 System.out.println("Query blocked as expected: " + e.getMessage());
@@ -131,16 +119,10 @@ public class MCPAuditExample {
             System.out.println("----------------------------------------------");
 
             try {
-                MCPExecuteRequest execRequest = MCPExecuteRequest.builder()
-                    .connector("postgres")
-                    .action("INSERT")
-                    .statement("INSERT INTO audit_test (name) VALUES ('test')")
-                    .build();
-
-                MCPExecuteResponse result = client.mcpExecute(execRequest);
+                ConnectorResponse result = client.mcpExecute("postgres", "INSERT INTO audit_test (name) VALUES ('test')");
                 System.out.println("SUCCESS: Execute completed");
-                System.out.println("  Rows affected: " + result.getRowsAffected());
-                System.out.println("  Duration: " + result.getDurationMs() + "ms");
+                System.out.println("  Success: " + result.isSuccess());
+                System.out.println("  Processing time: " + result.getProcessingTime());
             } catch (Exception e) {
                 System.out.println("Execute error (expected if table doesn't exist): " + e.getMessage());
             }

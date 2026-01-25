@@ -8,11 +8,23 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// ErrExecutionNotFound is returned when an execution ID is not found in storage.
+var ErrExecutionNotFound = errors.New("execution not found")
+
+// executionStore provides thread-safe in-memory storage for HITL executions.
+// For production, replace with database-backed storage.
+var (
+	executionStore      = make(map[string]*HITLWorkflowExecution)
+	executionStoreMutex sync.RWMutex
 )
 
 // HITL execution status constants
@@ -355,19 +367,36 @@ func (e *HITLWorkflowEngine) executeStep(ctx context.Context, step WorkflowStep,
 	return &stepExec, nil
 }
 
+// SaveExecution stores an execution in the execution store.
+// For production, replace with database-backed storage.
+func (e *HITLWorkflowEngine) SaveExecution(exec *HITLWorkflowExecution) {
+	if exec == nil || exec.WorkflowExecution == nil {
+		return
+	}
+	executionStoreMutex.Lock()
+	defer executionStoreMutex.Unlock()
+	executionStore[exec.ID] = exec
+}
+
 // GetExecutionStatus returns the current status of an execution including HITL state.
-// TODO(hitl): Implement execution status lookup from storage.
-// This requires an ExecutionStorage interface to persist and retrieve HITL executions.
-// Current implementation returns "unknown" as a placeholder.
-// Implementation should:
-// 1. Look up execution by ID from storage
-// 2. Return current status, approval ID, and paused step info
-// 3. Return ErrExecutionNotFound if execution doesn't exist
+// Looks up execution by ID from in-memory storage.
+// For production, replace with database-backed storage.
 func (e *HITLWorkflowEngine) GetExecutionStatus(ctx context.Context, executionID string) (*HITLExecutionStatus, error) {
-	// Placeholder implementation - requires ExecutionStorage integration
+	executionStoreMutex.RLock()
+	defer executionStoreMutex.RUnlock()
+
+	exec, exists := executionStore[executionID]
+	if !exists {
+		return nil, ErrExecutionNotFound
+	}
+
 	return &HITLExecutionStatus{
-		ExecutionID: executionID,
-		Status:      "unknown",
+		ExecutionID:    executionID,
+		Status:         exec.Status,
+		ApprovalID:     exec.ApprovalID,
+		ApprovalStatus: exec.ApprovalStatus,
+		PausedAtStep:   exec.PausedAtStep,
+		PausedReason:   exec.PausedReason,
 	}, nil
 }
 

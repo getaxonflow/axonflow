@@ -1,9 +1,11 @@
+//go:build loadtest
+
 // Concurrent Requests Load Test using Go
 // Tests parallel request handling and routing distribution under load
 //
 // Usage:
-//   go run load_test.go
-//   CONCURRENT=20 TOTAL=100 go run load_test.go
+//   go run -tags loadtest loadtest.go
+//   CONCURRENT=20 TOTAL=100 go run -tags loadtest loadtest.go
 package main
 
 import (

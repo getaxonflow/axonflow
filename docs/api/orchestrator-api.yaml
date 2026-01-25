@@ -431,6 +431,146 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/v1/plan/{id}:
+    get:
+      tags:
+        - Multi-Agent Planning
+      summary: Get plan execution status
+      description: |
+        Retrieve the status of a plan by ID.
+
+        Returns detailed execution status including:
+        - Overall plan status (pending, executing, completed, failed, expired)
+        - Step-level progress with completion percentage
+        - Duration and cost tracking
+        - Error details if execution failed
+
+        **New in #1075:** Response now includes unified execution tracking with:
+        - `steps` array with individual step status
+        - `progress_percent` for real-time progress
+        - `duration` for elapsed time
+        - `estimated_cost_usd` and `actual_cost_usd` for cost tracking
+      operationId: getPlanStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID (e.g., plan_1705312200_abc123)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Plan status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanStatusResponse'
+              examples:
+                pending:
+                  summary: Pending plan
+                  value:
+                    plan_id: "plan_1705312200_abc123"
+                    execution_id: "plan_xyz789"
+                    status: "pending"
+                    query: "Find flights from NYC to LAX"
+                    domain: "travel"
+                    total_steps: 3
+                    completed_steps: 0
+                    progress_percent: 0
+                    created_at: "2025-01-15T10:00:00Z"
+                    expires_at: "2025-01-15T12:00:00Z"
+                executing:
+                  summary: Executing plan with step progress
+                  value:
+                    plan_id: "plan_1705312200_abc123"
+                    execution_id: "plan_xyz789"
+                    status: "executing"
+                    query: "Research competitor pricing"
+                    domain: "generic"
+                    total_steps: 3
+                    completed_steps: 1
+                    progress_percent: 33.33
+                    duration: "15s"
+                    started_at: "2025-01-15T10:00:00Z"
+                    steps:
+                      - step_id: "step_0_analyze"
+                        step_index: 0
+                        step_name: "analyze"
+                        step_type: "llm_call"
+                        status: "completed"
+                        duration: "8s"
+                        model: "gpt-4"
+                        provider: "openai"
+                      - step_id: "step_1_research"
+                        step_index: 1
+                        step_name: "research"
+                        step_type: "llm_call"
+                        status: "running"
+                        started_at: "2025-01-15T10:00:08Z"
+                      - step_id: "step_2_synthesize"
+                        step_index: 2
+                        step_name: "synthesize"
+                        step_type: "llm_call"
+                        status: "pending"
+                completed:
+                  summary: Completed plan with costs
+                  value:
+                    plan_id: "plan_1705312200_abc123"
+                    execution_id: "plan_xyz789"
+                    status: "completed"
+                    query: "Analyze sales data"
+                    domain: "finance"
+                    total_steps: 2
+                    completed_steps: 2
+                    progress_percent: 100
+                    duration: "25s"
+                    estimated_cost_usd: 0.05
+                    actual_cost_usd: 0.042
+                    created_at: "2025-01-15T10:00:00Z"
+                    started_at: "2025-01-15T10:00:00Z"
+                    completed_at: "2025-01-15T10:00:25Z"
+                    steps:
+                      - step_id: "step_0_query"
+                        step_index: 0
+                        step_name: "query_data"
+                        step_type: "connector_call"
+                        status: "completed"
+                        duration: "5s"
+                        cost_usd: 0.002
+                      - step_id: "step_1_analyze"
+                        step_index: 1
+                        step_name: "analyze"
+                        step_type: "llm_call"
+                        status: "completed"
+                        duration: "20s"
+                        cost_usd: 0.04
+                        model: "claude-3-sonnet"
+                        provider: "anthropic"
+        '404':
+          description: Plan not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Plan not found: plan_nonexistent"
+        '410':
+          description: Plan expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Plan has expired: plan_1705312200_abc123"
+        '503':
+          description: Plan service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ============================================================================
   # Agent Management API (MAP 0.8)
   # ============================================================================
@@ -4287,6 +4427,161 @@ components:
           properties:
             multi_agent_planning:
               type: boolean
+
+    PlanStatusResponse:
+      type: object
+      description: |
+        Unified execution status for MAP plans. Provides step-level progress tracking,
+        duration, and cost information. Compatible with the unified ExecutionStatus schema.
+      required:
+        - plan_id
+        - status
+        - query
+        - domain
+        - total_steps
+      properties:
+        plan_id:
+          type: string
+          description: Original plan identifier
+          example: "plan_1705312200_abc123"
+        execution_id:
+          type: string
+          description: Unified execution ID for cross-system tracking
+          example: "plan_xyz789"
+        status:
+          type: string
+          enum: [pending, executing, completed, failed, expired, cancelled, aborted]
+          description: Current execution status
+          example: "executing"
+        query:
+          type: string
+          description: Original user query that created the plan
+          example: "Research competitor pricing strategies"
+        domain:
+          type: string
+          description: Domain classification of the plan
+          example: "finance"
+        total_steps:
+          type: integer
+          description: Total number of steps in the plan
+          example: 3
+        completed_steps:
+          type: integer
+          description: Number of completed steps
+          example: 1
+        progress_percent:
+          type: number
+          format: float
+          description: Completion percentage (0-100)
+          example: 33.33
+        duration:
+          type: string
+          description: Human-readable elapsed duration
+          example: "15s"
+        estimated_cost_usd:
+          type: number
+          format: float
+          description: Estimated total cost in USD
+          example: 0.05
+        actual_cost_usd:
+          type: number
+          format: float
+          description: Actual cost incurred so far in USD
+          example: 0.042
+        created_at:
+          type: string
+          format: date-time
+          description: When the plan was created
+        started_at:
+          type: string
+          format: date-time
+          description: When execution started
+        completed_at:
+          type: string
+          format: date-time
+          description: When execution completed (if terminal)
+        expires_at:
+          type: string
+          format: date-time
+          description: When the plan expires
+        error:
+          type: string
+          description: Error message if status is failed
+        steps:
+          type: array
+          description: Detailed status of each step
+          items:
+            $ref: '#/components/schemas/StepStatus'
+        metadata:
+          type: object
+          description: Additional plan metadata
+          additionalProperties: true
+
+    StepStatus:
+      type: object
+      description: Status of an individual execution step
+      required:
+        - step_id
+        - step_index
+        - step_name
+        - status
+      properties:
+        step_id:
+          type: string
+          description: Unique step identifier
+          example: "step_0_analyze"
+        step_index:
+          type: integer
+          description: Position in the execution sequence (0-based)
+          example: 0
+        step_name:
+          type: string
+          description: Human-readable step name
+          example: "analyze"
+        step_type:
+          type: string
+          enum: [llm_call, tool_call, connector_call, human_task, synthesis, action, gate]
+          description: Type of step operation
+          example: "llm_call"
+        status:
+          type: string
+          enum: [pending, running, completed, failed, skipped, blocked, approval]
+          description: Current step status
+          example: "completed"
+        duration:
+          type: string
+          description: Human-readable step duration
+          example: "8s"
+        started_at:
+          type: string
+          format: date-time
+          description: When the step started
+        ended_at:
+          type: string
+          format: date-time
+          description: When the step ended
+        model:
+          type: string
+          description: LLM model used (for llm_call steps)
+          example: "gpt-4"
+        provider:
+          type: string
+          description: LLM provider (for llm_call steps)
+          example: "openai"
+        cost_usd:
+          type: number
+          format: float
+          description: Cost of this step in USD
+          example: 0.04
+        input_tokens:
+          type: integer
+          description: Number of input tokens (for LLM steps)
+        output_tokens:
+          type: integer
+          description: Number of output tokens (for LLM steps)
+        error:
+          type: string
+          description: Error message if step failed
 
     MetricsResponse:
       type: object

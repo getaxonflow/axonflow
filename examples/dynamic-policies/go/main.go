@@ -1,10 +1,12 @@
 // Dynamic Policy Management Example - Go
 //
-// Demonstrates CRUD operations for dynamic policies (LLM-powered policies).
+// Demonstrates and VALIDATES CRUD operations for dynamic policies.
 // Dynamic policies use conditions and actions to evaluate complex, context-aware
 // rules that can't be expressed with simple regex patterns.
 //
-// SDK Methods demonstrated:
+// Issue #1082: Examples should test actual behavior, not just API availability
+//
+// SDK Methods tested:
 //   - ListDynamicPolicies()
 //   - CreateDynamicPolicy()
 //   - GetDynamicPolicy()
@@ -25,17 +27,34 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
+
 func main() {
 	// Initialize client
+	// Note: Dynamic policies are managed by the orchestrator (port 8081)
+	// In production, the agent proxies these requests, but for community mode
+	// we connect to the orchestrator directly.
 	endpoint := os.Getenv("AXONFLOW_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:8080"
+		endpoint = "http://localhost:8081" // Orchestrator port for dynamic policies
 	}
 
 	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
@@ -46,7 +65,7 @@ func main() {
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     endpoint,
 		ClientID:     clientID,
-		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
+		ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"), // Empty for community mode
 	})
 
 	fmt.Println("=== Dynamic Policy Management Example ===\n")
@@ -55,18 +74,24 @@ func main() {
 	fmt.Println("1. Listing existing dynamic policies...")
 	policies, err := client.ListDynamicPolicies(nil)
 	if err != nil {
-		log.Printf("   Failed to list policies: %v", err)
+		fmt.Printf("   ERROR: Failed to list policies: %v\n", err)
+		failCount++
 	} else {
+		assert(true, "ListDynamicPolicies succeeded")
 		fmt.Printf("   Found %d dynamic policies\n", len(policies))
-		for _, p := range policies {
-			fmt.Printf("   - %s: %s (type: %s, enabled: %v)\n", p.ID, p.Name, p.Type, p.Enabled)
+		for i, p := range policies {
+			if i >= 3 {
+				fmt.Printf("   ... and %d more\n", len(policies)-3)
+				break
+			}
+			fmt.Printf("   - %s: %s (type: %s)\n", p.ID, p.Name, p.Type)
 		}
 	}
 
 	// 2. Create a new dynamic policy
 	fmt.Println("\n2. Creating a new dynamic policy...")
 	newPolicy := &axonflow.CreateDynamicPolicyRequest{
-		Name:        "high-risk-block",
+		Name:        fmt.Sprintf("test-high-risk-block-%d", os.Getpid()),
 		Description: "Block requests with high risk scores",
 		Type:        "risk",
 		Category:    "dynamic-risk",
@@ -89,8 +114,12 @@ func main() {
 
 	created, err := client.CreateDynamicPolicy(newPolicy)
 	if err != nil {
-		log.Printf("   Failed to create policy: %v", err)
+		fmt.Printf("   ERROR: Failed to create policy: %v\n", err)
+		failCount++
 	} else {
+		assert(created.ID != "", "Created policy has ID")
+		assert(created.Name == newPolicy.Name, "Created policy name matches")
+		assert(created.Enabled, "Created policy is enabled")
 		fmt.Printf("   Created policy: %s (ID: %s)\n", created.Name, created.ID)
 	}
 
@@ -99,14 +128,14 @@ func main() {
 		fmt.Println("\n3. Getting policy by ID...")
 		policy, err := client.GetDynamicPolicy(created.ID)
 		if err != nil {
-			log.Printf("   Failed to get policy: %v", err)
+			fmt.Printf("   ERROR: Failed to get policy: %v\n", err)
+			failCount++
 		} else {
-			fmt.Printf("   Policy: %s\n", policy.Name)
-			fmt.Printf("   Description: %s\n", policy.Description)
-			fmt.Printf("   Type: %s\n", policy.Type)
-			fmt.Printf("   Priority: %d\n", policy.Priority)
-			fmt.Printf("   Conditions: %d\n", len(policy.Conditions))
-			fmt.Printf("   Actions: %d\n", len(policy.Actions))
+			assert(policy.ID == created.ID, "Retrieved policy ID matches")
+			assert(policy.Name == created.Name, "Retrieved policy name matches")
+			assert(len(policy.Conditions) == 1, "Policy has 1 condition")
+			assert(len(policy.Actions) == 1, "Policy has 1 action")
+			fmt.Printf("   Retrieved: %s (conditions: %d, actions: %d)\n", policy.Name, len(policy.Conditions), len(policy.Actions))
 		}
 	}
 
@@ -119,9 +148,11 @@ func main() {
 		}
 		updated, err := client.UpdateDynamicPolicy(created.ID, update)
 		if err != nil {
-			log.Printf("   Failed to update policy: %v", err)
+			fmt.Printf("   ERROR: Failed to update policy: %v\n", err)
+			failCount++
 		} else {
-			fmt.Printf("   Updated description: %s\n", updated.Description)
+			assert(updated.Description == newDesc, "Description was updated")
+			fmt.Printf("   Updated: %s\n", updated.Description)
 		}
 	}
 
@@ -130,8 +161,10 @@ func main() {
 		fmt.Println("\n5. Toggling policy (disabling)...")
 		toggled, err := client.ToggleDynamicPolicy(created.ID, false)
 		if err != nil {
-			log.Printf("   Failed to toggle policy: %v", err)
+			fmt.Printf("   ERROR: Failed to toggle policy: %v\n", err)
+			failCount++
 		} else {
+			assert(!toggled.Enabled, "Policy was disabled")
 			fmt.Printf("   Policy enabled: %v\n", toggled.Enabled)
 		}
 	}
@@ -140,8 +173,10 @@ func main() {
 	fmt.Println("\n6. Getting effective dynamic policies...")
 	effective, err := client.GetEffectiveDynamicPolicies(nil)
 	if err != nil {
-		log.Printf("   Failed to get effective policies: %v", err)
+		fmt.Printf("   ERROR: Failed to get effective policies: %v\n", err)
+		failCount++
 	} else {
+		assert(true, "GetEffectiveDynamicPolicies succeeded")
 		fmt.Printf("   Found %d effective dynamic policies\n", len(effective))
 	}
 
@@ -150,11 +185,21 @@ func main() {
 		fmt.Println("\n7. Cleaning up - deleting test policy...")
 		err := client.DeleteDynamicPolicy(created.ID)
 		if err != nil {
-			log.Printf("   Failed to delete policy: %v", err)
+			fmt.Printf("   ERROR: Failed to delete policy: %v\n", err)
+			failCount++
 		} else {
-			fmt.Println("   Policy deleted successfully")
+			assert(true, "Policy deleted successfully")
+			fmt.Println("   Policy deleted")
 		}
 	}
 
-	fmt.Println("\n=== Dynamic Policy Example Complete ===")
+	// Summary
+	fmt.Println("\n===========================================")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - Dynamic Policy CRUD verified!")
+	}
 }

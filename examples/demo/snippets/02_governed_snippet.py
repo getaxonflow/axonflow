@@ -1,5 +1,5 @@
 # With AxonFlow - Policies, audit, rate limits automatic
-response = await ax.execute_query(
+response = await ax.proxy_llm_call(
     user_token="demo-user",
     query="Explain AI governance in one sentence",
     request_type="chat",

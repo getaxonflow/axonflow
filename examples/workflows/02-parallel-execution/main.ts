@@ -36,7 +36,7 @@ async function main() {
 
   try {
     // Send query to AxonFlow (uses MAP for parallelization)
-    const response = await client.executeQuery({
+    const response = await client.proxyLLMCall({
       userToken: 'user-123',
       query: query,
       requestType: 'multi-agent-plan', // Use MAP for parallel execution

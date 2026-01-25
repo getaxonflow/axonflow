@@ -52,7 +52,7 @@ async def test_provider(client: AxonFlow, provider_config: dict, query: str):
         return False
 
     try:
-        response = await client.execute_query(
+        response = await client.proxy_llm_call(
             user_token="demo-user",
             query=query,
             request_type="chat",
@@ -133,7 +133,7 @@ async def multi_model_demo():
         for provider_config in PROVIDERS[:1]:  # Test with first available
             if os.getenv(provider_config["env_key"]):
                 try:
-                    response = await client.execute_query(
+                    response = await client.proxy_llm_call(
                         user_token="demo-user",
                         query=malicious,
                         request_type="chat",

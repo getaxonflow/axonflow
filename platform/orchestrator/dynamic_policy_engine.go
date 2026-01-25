@@ -629,6 +629,18 @@ func (e *DynamicPolicyEngine) reloadPoliciesRoutine() {
 	}
 }
 
+// RefreshPolicies triggers an immediate policy refresh from the database.
+// This is useful when policies are created/updated/deleted via the API and
+// you need the changes to be available immediately without waiting for
+// the background refresh cycle (default 30 seconds).
+// Issue #1082: Used by WCP HITL integration for immediate policy availability.
+func (e *DynamicPolicyEngine) RefreshPolicies() error {
+	if !e.dbAvailable {
+		return fmt.Errorf("database not available")
+	}
+	return e.loadPoliciesFromDB()
+}
+
 // RiskCalculator implementation
 func NewRiskCalculator() *RiskCalculator {
 	// Load unified detection configuration from environment (Issue #891)

@@ -30,8 +30,8 @@ func main() {
 	// The Agent proxies orchestrator routes internally.
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", ""),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-client"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
 	})
 
 	var passed, failed int

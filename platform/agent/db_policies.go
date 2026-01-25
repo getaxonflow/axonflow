@@ -298,7 +298,7 @@ func (dpe *DatabasePolicyEngine) LoadPoliciesFromDB() error {
 		case "admin_access", "security-admin":
 			adminAccess = append(adminAccess, policy)
 		// PII detection patterns (legacy: pii_detection, new: pii-*)
-		case "pii_detection", "pii-global", "pii-us", "pii-eu", "pii-india":
+		case "pii_detection", "pii-global", "pii-us", "pii-eu", "pii-india", "pii-singapore":
 			piiDetection = append(piiDetection, policy)
 		}
 
@@ -697,7 +697,7 @@ func (dpe *DatabasePolicyEngine) loadDefaultPolicies() {
 			sqlInjection = append(sqlInjection, policy)
 		case CategorySecurityAdmin:
 			adminAccess = append(adminAccess, policy)
-		case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIEU, CategoryPIIIndia:
+		case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIEU, CategoryPIIIndia, CategoryPIISingapore:
 			piiDetection = append(piiDetection, policy)
 		}
 

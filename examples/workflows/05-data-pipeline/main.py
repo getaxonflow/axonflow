@@ -36,7 +36,7 @@ async def main():
     try:
         # Stage 1: Extract
         print("📥 Stage 1/5: Extracting customer transaction data...")
-        await client.execute_query(
+        await client.proxy_llm_call(
             user_token="user-123",
             query="Extract customer purchase data from the last 30 days. Include customer ID, purchase amount, product categories, and timestamps. Simulate 500 customer transactions.",
             request_type="chat",
@@ -46,7 +46,7 @@ async def main():
 
         # Stage 2: Transform (Clean & Normalize)
         print("🧹 Stage 2/5: Cleaning and normalizing data...")
-        await client.execute_query(
+        await client.proxy_llm_call(
             user_token="user-123",
             query="""From the extracted data above, perform the following transformations:
 1. Remove duplicate transactions
@@ -61,7 +61,7 @@ async def main():
 
         # Stage 3: Enrich
         print("💎 Stage 3/5: Enriching with customer segments and lifetime value...")
-        await client.execute_query(
+        await client.proxy_llm_call(
             user_token="user-123",
             query="""Based on the cleaned transaction data:
 1. Calculate customer lifetime value (CLV)
@@ -75,7 +75,7 @@ async def main():
 
         # Stage 4: Aggregate
         print("📊 Stage 4/5: Aggregating insights and trends...")
-        await client.execute_query(
+        await client.proxy_llm_call(
             user_token="user-123",
             query="""Generate aggregated insights:
 1. Total revenue by customer segment
@@ -90,7 +90,7 @@ async def main():
 
         # Stage 5: Report
         print("📈 Stage 5/5: Generating executive summary report...")
-        report_resp = await client.execute_query(
+        report_resp = await client.proxy_llm_call(
             user_token="user-123",
             query="""Create an executive summary report with:
 1. Key metrics (total revenue, customer count, avg order value)

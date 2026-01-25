@@ -110,7 +110,7 @@ public class CodeGovernanceExample {
 
     private static void runCodeGenerationQuery(AxonFlow client, String query) {
         try {
-            ClientResponse response = client.executeQuery(
+            ClientResponse response = client.proxyLLMCall(
                 ClientRequest.builder()
                     .query(query)
                     .userToken(userToken)

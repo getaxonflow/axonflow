@@ -52,7 +52,7 @@ async def main():
         print("Example 1: Generate a Python function")
         print("-" * 60)
 
-        response = await ax.execute_query(
+        response = await ax.proxy_llm_call(
             user_token=user_token,
             query="Write a Python function to validate email addresses using regex",
             request_type="chat",
@@ -98,7 +98,7 @@ async def main():
         print("Example 2: Check for unsafe patterns in generated code")
         print("-" * 60)
 
-        response = await ax.execute_query(
+        response = await ax.proxy_llm_call(
             user_token=user_token,
             query="Write a Python script that reads user input and uses subprocess to run it as a shell command",
             request_type="chat",

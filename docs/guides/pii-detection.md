@@ -28,6 +28,11 @@ AxonFlow's PII (Personally Identifiable Information) detection system provides c
 | Driver's License | High | Context-dependent | `D12345678` |
 | **PAN (India)** | Critical | Entity type, format | `ABCPD1234E` |
 | **Aadhaar (India)** | Critical | Starting digit, format | `1234 5678 9012` |
+| **NRIC (Singapore)** | Critical | Prefix + 7 digits + checksum letter | `S1234567D` |
+| **FIN (Singapore)** | Critical | F/G prefix + 7 digits + letter | `F1234567N` |
+| **UEN (Singapore)** | High | 8-10 alphanumeric | `200312345A` |
+| **Phone (Singapore)** | Medium | +65 prefix + 8 digits | `+65 9123 4567` |
+| **Postal (Singapore)** | Low | 6-digit postal code | `238877` |
 
 ## Architecture
 
@@ -319,6 +324,53 @@ func validateCustom(match string, context string) (bool, float64) {
 }
 ```
 
+## Singapore PII Detection (MAS FEAT Community)
+
+AxonFlow includes built-in detection patterns for Singapore-specific PII to support MAS FEAT (Fairness, Ethics, Accountability, Transparency) compliance.
+
+### Supported Singapore PII Types
+
+| Type | Pattern | Severity | Action | Example |
+|------|---------|----------|--------|---------|
+| **NRIC** | `[STFGM]\d{7}[A-Z]` | Critical | Redact | `S1234567D` |
+| **FIN** | `[FG]\d{7}[A-Z]` | Critical | Redact | `F1234567N` |
+| **UEN** | `[0-9A-Z]{8,10}[A-Z]` | High | Redact | `200312345A` |
+| **Phone** | `+65[89]\d{7}` | Medium | Redact | `+65 9123 4567` |
+| **Postal** | `\d{6}` | Low | Warn | `238877` |
+
+### NRIC and FIN Formats
+
+**NRIC (National Registration Identity Card):**
+- S prefix: Citizens born before 2000
+- T prefix: Citizens born 2000 or later
+- M prefix: Foreigners issued from 2022
+
+**FIN (Foreign Identification Number):**
+- F prefix: Foreigners issued before 2000
+- G prefix: Foreigners issued 2000 or later
+
+### UEN (Unique Entity Number) Formats
+
+Singapore business identifiers come in several formats:
+- 8-digit legacy: `12345678A`
+- 9-digit company: `200312345A`
+- T-prefix: `T08GA0001A` (professional bodies)
+- S-prefix: `S78PF0001G` (societies)
+
+### Singapore PII Examples
+
+```bash
+# Run the Singapore PII example
+cd examples/singapore-pii
+npm install
+npm start
+
+# Or run the E2E test script against Docker Compose
+./scripts/test-singapore-pii.sh
+```
+
+See the [Singapore PII examples](../../examples/singapore-pii/README.md) for complete SDK examples in Go, Python, TypeScript, and HTTP.
+
 ## Compliance Considerations
 
 | Regulation | PII Types | Redaction Required |
@@ -327,6 +379,7 @@ func validateCustom(match string, context string) (bool, float64) {
 | HIPAA | SSN, DOB, medical records | Yes - unless authorized |
 | GDPR | Email, phone, address, IP | Yes - consent required |
 | CCPA | SSN, driver's license | Yes - consumer rights |
+| **MAS FEAT** | NRIC, FIN, UEN, phone, postal | Yes - automatic redaction |
 
 ## Troubleshooting
 

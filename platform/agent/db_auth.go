@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -203,11 +204,16 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, clientSecret 
 		return nil, fmt.Errorf("license invalid or expired: %s", validationResult.Error)
 	}
 
-	// Parse permissions from JSONB
-	// For simplicity, assuming permissions is a JSON array like ["query", "llm"]
-	// In production, use proper JSON parsing
+	// Parse permissions from JSONB array
 	permissions := []string{"query", "llm"} // Default permissions
-	// TODO: Parse permissionsJSON properly
+	if len(permissionsJSON) > 0 {
+		var parsedPermissions []string
+		if err := json.Unmarshal(permissionsJSON, &parsedPermissions); err != nil {
+			log.Printf("[AUTH] Warning: Failed to parse permissions JSON, using defaults: %v", err)
+		} else if len(parsedPermissions) > 0 {
+			permissions = parsedPermissions
+		}
+	}
 
 	// Determine rate limit (custom override or tier default)
 	rateLimit := tierRateLimit

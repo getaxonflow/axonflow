@@ -80,7 +80,7 @@ class GovernedModule:
         from axonflow.exceptions import PolicyViolationError
 
         try:
-            result = self.axonflow.execute_query(
+            result = self.axonflow.proxy_llm_call(
                 user_token=self.user_token,
                 query=query,
                 request_type="chat",

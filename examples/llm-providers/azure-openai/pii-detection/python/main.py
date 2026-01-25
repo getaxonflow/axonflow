@@ -69,7 +69,7 @@ def main():
         print(f"Query: {tc['query'][:50]}...")
 
         try:
-            response = client.execute_query(
+            response = client.proxy_llm_call(
                 user_token="pii-test-user",
                 query=tc["query"],
                 request_type="chat",

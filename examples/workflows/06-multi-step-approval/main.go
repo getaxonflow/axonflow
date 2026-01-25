@@ -40,7 +40,7 @@ func main() {
 		"Consider budget, necessity, and timing. Respond with APPROVED or REJECTED and brief reasoning.",
 		amount, item)
 
-	managerResp, err := client.ExecuteQuery("user-123", managerQuery, "chat", map[string]interface{}{"provider": "openai"})
+	managerResp, err := client.ProxyLLMCall("user-123", managerQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Manager approval failed: %v", err)
 	}
@@ -64,7 +64,7 @@ func main() {
 			"Consider strategic alignment and ROI. Respond with APPROVED or REJECTED and reasoning.",
 			amount, item, managerResp.Data)
 
-		directorResp, err := client.ExecuteQuery("user-123", directorQuery, "chat", map[string]interface{}{"provider": "openai"})
+		directorResp, err := client.ProxyLLMCall("user-123", directorQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Director approval failed: %v", err)
 		}
@@ -92,7 +92,7 @@ func main() {
 			"Respond with APPROVED or REJECTED and reasoning.",
 			amount, item)
 
-		financeResp, err := client.ExecuteQuery("user-123", financeQuery, "chat", map[string]interface{}{"provider": "openai"})
+		financeResp, err := client.ProxyLLMCall("user-123", financeQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Finance approval failed: %v", err)
 		}

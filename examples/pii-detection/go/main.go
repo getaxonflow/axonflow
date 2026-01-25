@@ -86,7 +86,7 @@ func main() {
 		},
 		{
 			name:         "India PAN (Critical PII)",
-			query:        "Verify PAN number ABCDE1234F for tax filing",
+			query:        "Verify PAN number ABCPD1234E for tax filing",
 			expectRedact: true,
 		},
 		{

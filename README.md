@@ -142,7 +142,16 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 ## What AxonFlow Does
 
-**Policy Enforcement** — Block SQL injection, detect PII (SSN, credit cards, PAN/Aadhaar), enforce rate limits. Policies apply before requests reach LLMs.
+**Policy Enforcement** — 60+ built-in policies across multiple categories:
+- **Security**: SQL injection detection (37 patterns), unsafe admin access, schema exposure
+- **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
+- **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, DORA frameworks with retention and exports (Enterprise)
+- **Runtime Controls**: Tenant isolation, environment restrictions, approval gates
+- **Cost & Abuse**: Per-user/team limits, anomalous usage detection, token budgets
+
+All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
+
+→ **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
 
 **SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
 
@@ -163,6 +172,19 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 **Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
 
 → **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
+
+### Integration Options
+
+For Go, Java, Python, and TypeScript applications, we recommend using the **[AxonFlow SDKs](https://docs.getaxonflow.com/docs/sdk/overview)**. All SDKs are thin wrappers over the same REST APIs, which remain fully supported for custom integrations.
+
+| Integration | Recommended For |
+|-------------|-----------------|
+| **SDKs** | Application code, services, strongly typed environments |
+| **HTTP APIs** | Agents, automation, CLI tools, CI pipelines, languages without SDKs |
+
+All features—policy enforcement, audit logging, MCP connectors—are available via both SDKs and HTTP.
+
+→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
 
 ### vs LangChain / LangSmith
 
@@ -266,9 +288,11 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>2.2.0</version>
+    <version>2.7.0</version>
 </dependency>
 ```
+
+> **TypeScript SDK Note:** npm publishing is currently blocked (E403). The latest npm version is v2.3.0. For access to the latest features (v2.7.0), build from source: [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript).
 
 ### Python
 

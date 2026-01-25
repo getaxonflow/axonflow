@@ -429,6 +429,7 @@ func (s *Service) GetBudgetStatus(ctx context.Context, budgetID string) (*Budget
 // CheckBudget checks if a request should be allowed based on budgets
 func (s *Service) CheckBudget(ctx context.Context, orgID, teamID, agentID, userID, tenantID string) (*BudgetDecision, error) {
 	decision := &BudgetDecision{Allowed: true}
+	s.logger.Printf("💰 [CheckBudget] Called: orgID=%s, teamID=%s, agentID=%s, userID=%s, tenantID=%s", orgID, teamID, agentID, userID, tenantID)
 
 	// Check budgets in order: agent → team → org → user
 	scopes := []struct {
@@ -446,10 +447,13 @@ func (s *Service) CheckBudget(ctx context.Context, orgID, teamID, agentID, userI
 			continue
 		}
 
+		s.logger.Printf("💰 [CheckBudget] Checking scope=%s, scopeID=%s", s2.scope, s2.scopeID)
 		budgets, err := s.repo.GetBudgetsForScope(ctx, s2.scope, s2.scopeID, orgID, tenantID)
 		if err != nil {
+			s.logger.Printf("💰 [CheckBudget] Error getting budgets for scope %s: %v", s2.scope, err)
 			continue
 		}
+		s.logger.Printf("💰 [CheckBudget] Found %d budgets for scope %s", len(budgets), s2.scope)
 
 		for _, budget := range budgets {
 			status, err := s.GetBudgetStatus(ctx, budget.ID)

@@ -164,9 +164,14 @@ func (c *CassandraConnector) Query(ctx context.Context, query *base.Query) (*bas
 		cqlQuery = cqlQuery.Bind(args...)
 	}
 
-	// Apply timeout (currently unused, context handles timeout)
-	_ = query.Timeout // TODO: Apply timeout to query if needed
-	cqlQuery = cqlQuery.WithContext(ctx)
+	// Apply timeout from query config or use context deadline
+	queryCtx := ctx
+	if query.Timeout > 0 {
+		var cancel context.CancelFunc
+		queryCtx, cancel = context.WithTimeout(ctx, query.Timeout)
+		defer cancel()
+	}
+	cqlQuery = cqlQuery.WithContext(queryCtx)
 
 	// Set consistency level if specified
 	if consistency, ok := query.Parameters["_consistency"].(string); ok {
@@ -232,9 +237,14 @@ func (c *CassandraConnector) Execute(ctx context.Context, cmd *base.Command) (*b
 		cqlCmd = cqlCmd.Bind(args...)
 	}
 
-	// Apply timeout (currently unused, context handles timeout)
-	_ = cmd.Timeout // TODO: Apply timeout to command if needed
-	cqlCmd = cqlCmd.WithContext(ctx)
+	// Apply timeout from command config or use context deadline
+	cmdCtx := ctx
+	if cmd.Timeout > 0 {
+		var cancel context.CancelFunc
+		cmdCtx, cancel = context.WithTimeout(ctx, cmd.Timeout)
+		defer cancel()
+	}
+	cqlCmd = cqlCmd.WithContext(cmdCtx)
 
 	// Execute command
 	start := time.Now()

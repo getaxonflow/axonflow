@@ -295,6 +295,379 @@ func TestMySQLConnector_HealthCheckWithoutConnect(t *testing.T) {
 	}
 }
 
+func TestMySQLConnector_BeginTxWithoutConnect(t *testing.T) {
+	c := NewMySQLConnector()
+
+	_, err := c.BeginTx(context.Background(), nil)
+	if err == nil {
+		t.Error("expected error when calling BeginTx without connection")
+	}
+}
+
+func TestMySQLConnector_PrepareWithoutConnect(t *testing.T) {
+	c := NewMySQLConnector()
+
+	_, err := c.Prepare(context.Background(), "SELECT 1")
+	if err == nil {
+		t.Error("expected error when calling Prepare without connection")
+	}
+}
+
+func TestMySQLConnector_NameWithConfig(t *testing.T) {
+	c := NewMySQLConnector()
+
+	// Without config, should return default
+	if c.Name() != "mysql" {
+		t.Errorf("Name() = %s, want mysql", c.Name())
+	}
+
+	// With config, should return config name
+	c.config = &base.ConnectorConfig{Name: "my-mysql-db"}
+	if c.Name() != "my-mysql-db" {
+		t.Errorf("Name() = %s, want my-mysql-db", c.Name())
+	}
+
+	// With empty config name, should return empty
+	c.config = &base.ConnectorConfig{Name: ""}
+	if c.Name() != "" {
+		t.Errorf("Name() = %s, want empty", c.Name())
+	}
+}
+
+func TestMySQLConnector_BuildDSN_MoreCases(t *testing.T) {
+	c := NewMySQLConnector()
+
+	tests := []struct {
+		name    string
+		config  *base.ConnectorConfig
+		wantErr bool
+	}{
+		{
+			name: "with socket option",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"socket":   "/var/run/mysqld/mysqld.sock",
+					"database": "testdb",
+				},
+				Credentials: map[string]string{
+					"username": "user",
+					"password": "pass",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "with charset option",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":     "localhost",
+					"port":     float64(3306),
+					"database": "testdb",
+					"charset":  "utf8mb4",
+				},
+				Credentials: map[string]string{
+					"username": "user",
+					"password": "pass",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "with tls option",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":     "localhost",
+					"port":     float64(3306),
+					"database": "testdb",
+					"tls":      "skip-verify",
+				},
+				Credentials: map[string]string{
+					"username": "user",
+					"password": "pass",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "with collation option",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":      "localhost",
+					"port":      float64(3306),
+					"database":  "testdb",
+					"collation": "utf8mb4_unicode_ci",
+				},
+				Credentials: map[string]string{
+					"username": "user",
+					"password": "pass",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing username allowed",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Options: map[string]interface{}{
+					"host":     "localhost",
+					"database": "testdb",
+				},
+				Credentials: map[string]string{
+					"password": "pass",
+				},
+			},
+			wantErr: false, // MySQL allows connections without username
+		},
+		{
+			name: "empty config",
+			config: &base.ConnectorConfig{
+				Name: "test",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn, err := c.buildDSN(tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("buildDSN() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && dsn == "" {
+				t.Error("buildDSN() returned empty DSN")
+			}
+		})
+	}
+}
+
+func TestMySQLConnector_BuildArgs_MoreCases(t *testing.T) {
+	c := NewMySQLConnector()
+
+	tests := []struct {
+		name      string
+		statement string
+		params    map[string]interface{}
+		wantLen   int
+		wantErr   bool
+	}{
+		{
+			name:      "multiple same named parameters",
+			statement: "SELECT * FROM users WHERE id = :id OR parent_id = :id",
+			params: map[string]interface{}{
+				"id": 42,
+			},
+			wantLen: 2, // :id appears twice
+			wantErr: false,
+		},
+		{
+			name:      "special characters in values",
+			statement: "INSERT INTO logs (message) VALUES (:msg)",
+			params: map[string]interface{}{
+				"msg": "Error: 'connection failed' at \"localhost\"",
+			},
+			wantLen: 1,
+			wantErr: false,
+		},
+		{
+			name:      "nil value",
+			statement: "UPDATE users SET deleted_at = :deleted WHERE id = :id",
+			params: map[string]interface{}{
+				"deleted": nil,
+				"id":      1,
+			},
+			wantLen: 2,
+			wantErr: false,
+		},
+		{
+			name:      "time value",
+			statement: "SELECT * FROM events WHERE created_at > :since",
+			params: map[string]interface{}{
+				"since": time.Now(),
+			},
+			wantLen: 1,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, args, err := c.buildArgs(tt.statement, tt.params)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("buildArgs() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && len(args) != tt.wantLen {
+				t.Errorf("buildArgs() returned %d args, want %d", len(args), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestMySQLConnector_Connect_BuildDSNError(t *testing.T) {
+	c := NewMySQLConnector()
+
+	// Config that will fail buildDSN
+	err := c.Connect(context.Background(), &base.ConnectorConfig{
+		Name: "test",
+		// No connection URL and no options to build DSN from
+	})
+
+	if err == nil {
+		t.Error("expected error when buildDSN fails")
+	}
+}
+
+func TestMySQLConnector_ValidateAndEnhanceDSN(t *testing.T) {
+	c := NewMySQLConnector()
+
+	tests := []struct {
+		name       string
+		dsn        string
+		config     *base.ConnectorConfig
+		wantResult string
+		wantErr    bool
+	}{
+		{
+			name: "adds parseTime when not present",
+			dsn:  "user:pass@tcp(localhost:3306)/testdb",
+			config: &base.ConnectorConfig{
+				Name: "test",
+			},
+			wantResult: "user:pass@tcp(localhost:3306)/testdb?parseTime=true",
+			wantErr:    false,
+		},
+		{
+			name: "appends parseTime with & when params exist",
+			dsn:  "user:pass@tcp(localhost:3306)/testdb?charset=utf8mb4",
+			config: &base.ConnectorConfig{
+				Name: "test",
+			},
+			wantResult: "user:pass@tcp(localhost:3306)/testdb?charset=utf8mb4&parseTime=true",
+			wantErr:    false,
+		},
+		{
+			name: "does not duplicate parseTime",
+			dsn:  "user:pass@tcp(localhost:3306)/testdb?parseTime=true",
+			config: &base.ConnectorConfig{
+				Name: "test",
+			},
+			wantResult: "user:pass@tcp(localhost:3306)/testdb?parseTime=true",
+			wantErr:    false,
+		},
+		{
+			name: "adds credentials when not in DSN",
+			dsn:  "tcp(localhost:3306)/testdb",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Credentials: map[string]string{
+					"username": "admin",
+					"password": "secret",
+				},
+			},
+			wantResult: "admin:secret@tcp(localhost:3306)/testdb?parseTime=true",
+			wantErr:    false,
+		},
+		{
+			name: "does not add credentials when already present",
+			dsn:  "existinguser:existingpass@tcp(localhost:3306)/testdb",
+			config: &base.ConnectorConfig{
+				Name: "test",
+				Credentials: map[string]string{
+					"username": "admin",
+					"password": "secret",
+				},
+			},
+			wantResult: "existinguser:existingpass@tcp(localhost:3306)/testdb?parseTime=true",
+			wantErr:    false,
+		},
+		{
+			name: "empty credentials does not add @",
+			dsn:  "tcp(localhost:3306)/testdb",
+			config: &base.ConnectorConfig{
+				Name:        "test",
+				Credentials: map[string]string{},
+			},
+			wantResult: "tcp(localhost:3306)/testdb?parseTime=true",
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := c.validateAndEnhanceDSN(tt.dsn, tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateAndEnhanceDSN() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if result != tt.wantResult {
+				t.Errorf("validateAndEnhanceDSN() = %q, want %q", result, tt.wantResult)
+			}
+		})
+	}
+}
+
+func TestMySQLConnector_Disconnect_NilDB(t *testing.T) {
+	c := NewMySQLConnector()
+	// db is nil by default
+
+	err := c.Disconnect(context.Background())
+	if err != nil {
+		t.Errorf("Disconnect() with nil db should not error: %v", err)
+	}
+}
+
+func TestMySQLConnector_HealthCheck_NilDB(t *testing.T) {
+	c := NewMySQLConnector()
+	c.config = &base.ConnectorConfig{Name: "test"}
+	// db is nil by default
+
+	status, err := c.HealthCheck(context.Background())
+	if err != nil {
+		t.Fatalf("HealthCheck() unexpected error: %v", err)
+	}
+	if status.Healthy {
+		t.Error("expected unhealthy status with nil db")
+	}
+	if status.Error != "database not connected" {
+		t.Errorf("expected error 'database not connected', got %q", status.Error)
+	}
+}
+
+func TestMySQLConnector_Query_NilDB(t *testing.T) {
+	c := NewMySQLConnector()
+	c.config = &base.ConnectorConfig{Name: "test"}
+
+	query := &base.Query{
+		Statement: "SELECT * FROM users",
+	}
+
+	_, err := c.Query(context.Background(), query)
+	if err == nil {
+		t.Error("expected error when querying with nil db")
+	}
+}
+
+func TestMySQLConnector_Execute_NilDB(t *testing.T) {
+	c := NewMySQLConnector()
+	c.config = &base.ConnectorConfig{Name: "test"}
+
+	cmd := &base.Command{
+		Action:    "INSERT",
+		Statement: "INSERT INTO users (name) VALUES (:name)",
+		Parameters: map[string]interface{}{
+			"name": "test",
+		},
+	}
+
+	_, err := c.Execute(context.Background(), cmd)
+	if err == nil {
+		t.Error("expected error when executing with nil db")
+	}
+}
+
 // Integration tests - run with actual MySQL
 func TestMySQLConnector_Integration_Connect(t *testing.T) {
 	c := skipIfNoMySQL(t)

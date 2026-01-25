@@ -35,7 +35,7 @@ func main() {
 	searchQuery := "Find round-trip flights from New York to Paris for next week"
 	fmt.Println("📤 Searching for flights to Paris...")
 
-	searchResponse, err := client.ExecuteQuery("user-123", searchQuery, "chat", map[string]interface{}{"provider": "openai"})
+	searchResponse, err := client.ProxyLLMCall("user-123", searchQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Search failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func main() {
 		fmt.Println("💡 Trying alternative dates...")
 
 		altQuery := "Find flights from New York to Paris for the following week instead"
-		altResponse, err := client.ExecuteQuery("user-123", altQuery, "chat", map[string]interface{}{"provider": "openai"})
+		altResponse, err := client.ProxyLLMCall("user-123", altQuery, "chat", map[string]interface{}{"provider": "openai"})
 		if err != nil {
 			log.Fatalf("❌ Alternative search failed: %v", err)
 		}
@@ -80,7 +80,7 @@ func main() {
 	bookQuery := "Based on the search results above, what would be the recommended booking?"
 	fmt.Println("\n📤 Getting booking recommendation...")
 
-	bookResponse, err := client.ExecuteQuery("user-123", bookQuery, "chat", map[string]interface{}{"provider": "openai"})
+	bookResponse, err := client.ProxyLLMCall("user-123", bookQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Booking recommendation failed: %v", err)
 	}

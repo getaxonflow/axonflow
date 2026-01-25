@@ -106,7 +106,6 @@ jobs:
             ["orchestrator"]="platform/orchestrator"
             ["connectors"]="platform/connectors"
             ["shared"]="platform/shared"
-            ["sdk"]="sdk/golang"
           )
 
           # Run all lint jobs in parallel, capturing output

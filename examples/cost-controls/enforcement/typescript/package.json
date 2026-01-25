@@ -1,0 +1,19 @@
+{
+  "name": "cost-controls-enforcement",
+  "version": "1.0.0",
+  "description": "AxonFlow Budget Enforcement Test (Issue #1082)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "test": "npm run start"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

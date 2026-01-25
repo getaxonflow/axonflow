@@ -1,4 +1,4 @@
-// Package main demonstrates AxonFlow Proxy Mode in Go.
+// Package main demonstrates and VALIDATES AxonFlow Proxy Mode in Go.
 //
 // Proxy Mode is the simplest integration pattern:
 //   - Send your query to AxonFlow
@@ -6,6 +6,8 @@
 //   - Get the response back
 //
 // No need to manage LLM API keys or audit calls - AxonFlow handles everything.
+//
+// Issue #1082: Examples should test actual behavior, not just API availability
 package main
 
 import (
@@ -16,6 +18,21 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Proxy Mode - Go Example")
@@ -70,6 +87,7 @@ func main() {
 		if err != nil {
 			fmt.Printf("\n  Status: ERROR\n")
 			fmt.Printf("  Error: %v\n", err)
+			failCount++
 			continue
 		}
 
@@ -80,6 +98,8 @@ func main() {
 				fmt.Printf("  Policies: %v\n", response.PolicyInfo.PoliciesEvaluated)
 			}
 		} else {
+			// Response received (may be LLM success or provider error)
+			assert(response.Data != nil, fmt.Sprintf("Query %d: Response data returned", i+1))
 			fmt.Printf("\n  Status: SUCCESS\n")
 			fmt.Printf("  Latency: %v\n", latency)
 
@@ -111,18 +131,37 @@ func main() {
 	)
 
 	if err != nil {
-		fmt.Printf("\n  Status: ERROR\n")
-		fmt.Printf("  Error: %v\n", err)
+		// SQLi blocking returns error with HTTP 403
+		errStr := err.Error()
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "blocked") {
+			assert(true, "SQL injection query blocked with HTTP 403")
+			fmt.Printf("\n  Status: BLOCKED (expected)\n")
+			fmt.Printf("  Error: %v\n", err)
+		} else {
+			fmt.Printf("\n  Status: ERROR (unexpected)\n")
+			fmt.Printf("  Error: %v\n", err)
+			failCount++
+		}
 	} else if sqlResponse.Blocked {
+		assert(true, "SQL injection query blocked")
 		fmt.Printf("\n  Status: BLOCKED (expected)\n")
 		fmt.Printf("  Reason: %s\n", sqlResponse.BlockReason)
 	} else {
-		fmt.Printf("\n  Status: ALLOWED (unexpected)\n")
+		assert(false, "SQL injection query should be blocked")
+		fmt.Printf("\n  Status: ALLOWED (unexpected - security issue!)\n")
 	}
 
+	// Summary
 	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
-	fmt.Println("Proxy Mode Demo Complete")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 	fmt.Printf("%s\n", strings.Repeat("=", 60))
+
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - Proxy Mode verified!")
+	}
 }
 
 func getEnv(key, defaultValue string) string {

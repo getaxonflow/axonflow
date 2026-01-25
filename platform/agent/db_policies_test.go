@@ -262,7 +262,7 @@ func TestLoadDefaultPolicies(t *testing.T) {
 	// Verify total count matches seed data for DatabasePolicyEngine categories
 	// Note: code-secrets and code-unsafe policies are handled by code_detector.go, not DatabasePolicyEngine
 	totalLoaded := len(dpe.sqlInjectionPatterns) + len(dpe.adminAccessPatterns) + len(dpe.piiDetectionPatterns)
-	expectedTotal := 53 // 37 SQLi + 4 admin + 12 PII (original categories loaded by DatabasePolicyEngine)
+	expectedTotal := 58 // 37 SQLi + 4 admin + 17 PII (12 original + 5 Singapore PII from migration 042)
 	if totalLoaded != expectedTotal {
 		t.Errorf("Expected %d total policies from seed data, got %d", expectedTotal, totalLoaded)
 	}

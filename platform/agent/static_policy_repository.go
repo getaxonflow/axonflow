@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -159,6 +160,20 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		tagsJSON = string(tagsBytes)
 	}
 
+	// Issue #1081: Derive phase and action_request from action for policy evaluation
+	// This ensures policies created via SDK are properly evaluated by the PolicyLoader
+	// which expects phase and action_request columns to be populated.
+	phase := "both" // Default phase - evaluated in both request and response phases
+	actionRequest := policy.Action
+	actionResponse := policy.Action
+
+	// For require_approval (HITL), we only need request phase evaluation
+	// This triggers human approval before the LLM call proceeds
+	if policy.Action == "require_approval" {
+		phase = "request"
+		actionResponse = "" // No response phase action needed for HITL
+	}
+
 	// Insert into database
 	query := `
 		INSERT INTO static_policies (
@@ -166,13 +181,15 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 			description, action, tier, priority, enabled,
 			organization_id, tenant_id, org_id,
 			tags, metadata, version,
+			phase, action_request, action_response,
 			created_at, updated_at, created_by, updated_by
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
 			$12, $13, $14,
 			$15::jsonb, $16::jsonb, $17,
-			$18, $19, $20, $21
+			$18, $19, $20,
+			$21, $22, $23, $24
 		)
 	`
 
@@ -186,17 +203,17 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		policy.Description, policy.Action, string(policy.Tier), policy.Priority, policy.Enabled,
 		policy.OrganizationID, policy.TenantID, policy.OrgID,
 		tagsJSON, metadataJSON, policy.Version,
+		phase, actionRequest, toNullString(actionResponse),
 		policy.CreatedAt, policy.UpdatedAt, policy.CreatedBy, policy.UpdatedBy,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert policy: %w", err)
 	}
 
-	// Record version history
+	// Record version history (best effort - log but don't fail the create)
+	// Version history is for audit purposes, not critical path
 	if err := r.recordVersion(ctx, policy, "create", "Policy created", createdBy); err != nil {
-		// Log but don't fail the create operation
-		// Version history is for audit purposes, not critical path
-		return nil
+		log.Printf("[StaticPolicyRepository] Warning: failed to record version history for policy %s: %v", policy.PolicyID, err)
 	}
 
 	return nil
@@ -923,3 +940,12 @@ func (r *StaticPolicyRepository) isEnterpriseLicense(ctx context.Context, tenant
 }
 
 // Note: validateRE2Pattern is defined in pattern_validator.go
+
+// toNullString converts a string to sql.NullString.
+// Empty strings are converted to NULL.
+func toNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
