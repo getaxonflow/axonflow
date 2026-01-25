@@ -41,7 +41,7 @@ func main() {
 		"Include customer ID, purchase amount, product categories, and timestamps. " +
 		"Simulate 500 customer transactions."
 
-	_, err := client.ExecuteQuery("user-123", extractQuery, "chat", map[string]interface{}{"provider": "openai"})
+	_, err := client.ProxyLLMCall("user-123", extractQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 1 failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func main() {
 		"4. Validate all amounts are positive numbers\n" +
 		"5. Flag any anomalies (unusually high amounts)"
 
-	_, err = client.ExecuteQuery("user-123", transformQuery, "chat", map[string]interface{}{"provider": "openai"})
+	_, err = client.ProxyLLMCall("user-123", transformQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 2 failed: %v", err)
 	}
@@ -72,7 +72,7 @@ func main() {
 		"3. Identify top-spending product categories per segment\n" +
 		"4. Calculate average order value per segment"
 
-	_, err = client.ExecuteQuery("user-123", enrichQuery, "chat", map[string]interface{}{"provider": "openai"})
+	_, err = client.ProxyLLMCall("user-123", enrichQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 3 failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func main() {
 		"4. Customer churn risk indicators\n" +
 		"5. Recommended actions for each segment"
 
-	_, err = client.ExecuteQuery("user-123", aggregateQuery, "chat", map[string]interface{}{"provider": "openai"})
+	_, err = client.ProxyLLMCall("user-123", aggregateQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 4 failed: %v", err)
 	}
@@ -104,7 +104,7 @@ func main() {
 		"4. Risk alerts (if any)\n" +
 		"Format as a concise business report."
 
-	reportResp, err := client.ExecuteQuery("user-123", reportQuery, "chat", map[string]interface{}{"provider": "openai"})
+	reportResp, err := client.ProxyLLMCall("user-123", reportQuery, "chat", map[string]interface{}{"provider": "openai"})
 	if err != nil {
 		log.Fatalf("❌ Stage 5 failed: %v", err)
 	}

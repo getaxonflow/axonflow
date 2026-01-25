@@ -20,10 +20,8 @@ async function main(): Promise<void> {
 
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-    tenant: process.env.AXONFLOW_CLIENT_ID || "azure-sqli-demo",
-    apiKey: process.env.AXONFLOW_CLIENT_SECRET,
-    clientId: process.env.AXONFLOW_CLIENT_ID,
-  clientSecret: process.env.AXONFLOW_CLIENT_SECRET,
+    clientId: process.env.AXONFLOW_CLIENT_ID || "azure-sqli-demo",
+    clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
   });
 
   const testCases: TestCase[] = [
@@ -72,7 +70,7 @@ async function main(): Promise<void> {
     console.log(`Query: ${tc.query.substring(0, 50)}...`);
 
     try {
-      const response = await client.executeQuery({
+      const response = await client.proxyLLMCall({
         userToken: "sqli-test-user",
         query: tc.query,
         requestType: "chat",

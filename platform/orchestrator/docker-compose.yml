@@ -20,6 +20,19 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis for distributed rate limiting and budget tracking
+  redis:
+    image: redis:7-alpine
+    container_name: axonflow-orchestrator-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # AxonFlow Orchestrator
   axonflow-orchestrator:
     build:
@@ -43,10 +56,14 @@ services:
       # Audit Configuration
       - AUDIT_RETENTION_DAYS=90
       - AUDIT_BATCH_SIZE=100
+      # Redis for distributed rate limiting and budget tracking
+      - REDIS_URL=redis://redis:6379
     ports:
       - "8081:8081"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]

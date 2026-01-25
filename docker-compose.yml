@@ -210,6 +210,7 @@ services:
 
       # Internal services
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
+      REDIS_URL: redis://redis:6379
 
       # Model overrides (optional - providers use sensible defaults)
       OPENAI_MODEL: ${OPENAI_MODEL:-}
@@ -234,6 +235,8 @@ services:
       - "8081:8081"
     depends_on:
       axonflow-agent:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8081/health || exit 1"]

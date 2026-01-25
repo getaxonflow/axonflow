@@ -45,7 +45,7 @@ public class Main {
         try {
             // STEP 1: Try direct flights first
             System.out.println("🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...");
-            ExecuteResponse flightResp1 = client.executeQuery(
+            ExecuteResponse flightResp1 = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Find direct flights from San Francisco to Tokyo next month")
@@ -60,7 +60,7 @@ public class Main {
                 System.out.println("⚠️  No direct flights available");
                 System.out.println("📤 Step 2 (Fallback): Trying connecting flights...");
 
-                ExecuteResponse flightResp2 = client.executeQuery(
+                ExecuteResponse flightResp2 = client.proxyLLMCall(
                         ExecuteQueryRequest.builder()
                                 .userToken("user-123")
                                 .query("Find connecting flights from San Francisco to Tokyo with 1 stop")
@@ -87,7 +87,7 @@ public class Main {
 
             // STEP 2: Try 5-star hotels first
             System.out.println("🔍 Step 3: Searching for 5-star hotels in Tokyo city center...");
-            ExecuteResponse hotelResp1 = client.executeQuery(
+            ExecuteResponse hotelResp1 = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Find 5-star hotels in Tokyo Shibuya district")
@@ -102,7 +102,7 @@ public class Main {
                 System.out.println("⚠️  5-star hotels fully booked");
                 System.out.println("📤 Step 4 (Fallback): Trying 4-star hotels...");
 
-                ExecuteResponse hotelResp2 = client.executeQuery(
+                ExecuteResponse hotelResp2 = client.proxyLLMCall(
                         ExecuteQueryRequest.builder()
                                 .userToken("user-123")
                                 .query("Find 4-star hotels in Tokyo with good reviews")
@@ -134,7 +134,7 @@ public class Main {
                     flightOption, hotelOption
             );
 
-            ExecuteResponse itineraryResp = client.executeQuery(
+            ExecuteResponse itineraryResp = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query(itineraryQuery)

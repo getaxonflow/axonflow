@@ -66,8 +66,8 @@ async def demo_postgres_connector():
             print()
 
             try:
-                # Use execute_query with connector context
-                response = await client.execute_query(
+                # Use proxy_llm_call with connector context
+                response = await client.proxy_llm_call(
                     user_token="support-agent-demo",
                     query=q["query"],
                     request_type="mcp-query",
@@ -124,7 +124,7 @@ async def demo_injection_blocking():
         print()
 
         try:
-            response = await client.execute_query(
+            response = await client.proxy_llm_call(
                 user_token="support-agent-demo",
                 query=malicious_query,
                 request_type="mcp-query",

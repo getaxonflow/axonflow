@@ -61,6 +61,11 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/orchestrator/euaiact/* ./orchestrator/euaiact/ && \
         echo "EU AI Act compliance module copied"; \
       fi && \
+      if [ -d "/src/ee/platform/orchestrator/masfeat" ]; then \
+        mkdir -p ./orchestrator/masfeat/ && \
+        cp -r /src/ee/platform/orchestrator/masfeat/* ./orchestrator/masfeat/ && \
+        echo "MAS FEAT compliance module copied"; \
+      fi && \
       if [ -d "/src/ee/platform/orchestrator/llmadapters" ]; then \
         mkdir -p ./orchestrator/llmadapters/ && \
         cp -r /src/ee/platform/orchestrator/llmadapters/* ./orchestrator/llmadapters/ && \

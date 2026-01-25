@@ -481,3 +481,147 @@ func TestDefaultURLValidationOptions(t *testing.T) {
 		t.Error("Default should not restrict hosts")
 	}
 }
+
+// TestValidateHostNotPrivate tests the private IP blocking via ValidateURL
+func TestValidateHostNotPrivate(t *testing.T) {
+	// These tests verify that validateHostNotPrivate is called when AllowPrivateIPs=false
+	// and correctly blocks internal/private IP addresses
+
+	t.Run("localhost should be blocked when AllowPrivateIPs=false", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false, // Enable private IP checking
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		// localhost resolves to 127.0.0.1 which is a private IP
+		err := ValidateURL("http://localhost/api", opts)
+		if err == nil {
+			t.Error("Expected localhost to be blocked when AllowPrivateIPs=false")
+		} else if !strings.Contains(err.Error(), "private") && !strings.Contains(err.Error(), "internal") {
+			// Accept either "private" or "internal" in the error message
+			t.Logf("localhost blocked with error: %v", err)
+		}
+	})
+
+	t.Run("127.0.0.1 should be blocked when AllowPrivateIPs=false", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		err := ValidateURL("http://127.0.0.1/api", opts)
+		if err == nil {
+			t.Error("Expected 127.0.0.1 to be blocked when AllowPrivateIPs=false")
+		}
+	})
+
+	t.Run("internal IP 10.x should be blocked", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		err := ValidateURL("http://10.0.0.1/api", opts)
+		if err == nil {
+			t.Error("Expected 10.0.0.1 to be blocked when AllowPrivateIPs=false")
+		}
+	})
+
+	t.Run("internal IP 192.168.x should be blocked", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		err := ValidateURL("http://192.168.1.1/api", opts)
+		if err == nil {
+			t.Error("Expected 192.168.1.1 to be blocked when AllowPrivateIPs=false")
+		}
+	})
+
+	t.Run("internal IP 172.16.x should be blocked", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		err := ValidateURL("http://172.16.0.1/api", opts)
+		if err == nil {
+			t.Error("Expected 172.16.0.1 to be blocked when AllowPrivateIPs=false")
+		}
+	})
+
+	t.Run("link-local IP 169.254.x should be blocked", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https", "http"},
+		}
+
+		err := ValidateURL("http://169.254.169.254/metadata", opts)
+		if err == nil {
+			t.Error("Expected link-local 169.254.169.254 (AWS metadata) to be blocked")
+		}
+	})
+
+	t.Run("unresolvable hostname should error", func(t *testing.T) {
+		opts := URLValidationOptions{
+			AllowPrivateIPs: false,
+			AllowedSchemes:  []string{"https"},
+		}
+
+		err := ValidateURL("https://this-hostname-should-not-exist-xyz123.invalid/api", opts)
+		if err == nil {
+			t.Error("Expected unresolvable hostname to cause an error")
+		}
+	})
+}
+
+// TestValidateScheme tests scheme validation
+func TestValidateScheme(t *testing.T) {
+	tests := []struct {
+		name           string
+		url            string
+		allowedSchemes []string
+		wantErr        bool
+	}{
+		{
+			name:           "https allowed",
+			url:            "https://example.com",
+			allowedSchemes: []string{"https"},
+			wantErr:        false,
+		},
+		{
+			name:           "http not in allowed list",
+			url:            "http://example.com",
+			allowedSchemes: []string{"https"},
+			wantErr:        true,
+		},
+		{
+			name:           "empty scheme list allows any",
+			url:            "https://example.com",
+			allowedSchemes: []string{},
+			wantErr:        false, // Empty list means no restriction
+		},
+		{
+			name:           "case insensitive scheme",
+			url:            "HTTPS://example.com",
+			allowedSchemes: []string{"https"},
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := URLValidationOptions{
+				AllowPrivateIPs: true, // Skip DNS for these tests
+				AllowedSchemes:  tt.allowedSchemes,
+			}
+			err := ValidateURL(tt.url, opts)
+			if tt.wantErr && err == nil {
+				t.Errorf("Expected error for %s", tt.name)
+			} else if !tt.wantErr && err != nil {
+				t.Errorf("Unexpected error for %s: %v", tt.name, err)
+			}
+		})
+	}
+}

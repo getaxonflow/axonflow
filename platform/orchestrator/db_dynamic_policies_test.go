@@ -58,9 +58,9 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
 				// Expect policy load (refreshPolicies)
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id"}).
-					AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1")
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type"}).
+					AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1", "content")
+				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 					WillReturnRows(rows)
 			},
 			mockDBErr: false,
@@ -233,12 +233,12 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - load multiple policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id"}).
-					AddRow("policy1", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", 10, "pol1").
-					AddRow("policy2", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", 5, "pol2").
-					AddRow("policy3", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, 1, "pol3")
+				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type"}).
+					AddRow("policy1", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", 10, "pol1", "content").
+					AddRow("policy2", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", 5, "pol2", "rate-limit").
+					AddRow("policy3", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, 1, "pol3", "content")
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -247,9 +247,9 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - empty result",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id"})
+				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type"})
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -258,7 +258,7 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Error - query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 					WillReturnError(errors.New("database connection lost"))
 			},
 			expectError: true,
@@ -267,10 +267,10 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - handles NULL tenant_id",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id"}).
-					AddRow("global_policy", `{}`, `{}`, sql.NullString{Valid: false}, 0, "global1")
+				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type"}).
+					AddRow("global_policy", `{}`, `{}`, sql.NullString{Valid: false}, 0, "global1", "content")
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -811,10 +811,10 @@ func TestBackgroundRefresh(t *testing.T) {
 	}
 
 	// Expect policy refresh query to be called
-	rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id"}).
-		AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1")
+	rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type"}).
+		AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1", "content")
 
-	mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id FROM dynamic_policies").
+	mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type FROM dynamic_policies").
 		WillReturnRows(rows)
 
 	// Start background refresh in a goroutine

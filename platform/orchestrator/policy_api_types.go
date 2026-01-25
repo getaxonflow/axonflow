@@ -201,7 +201,13 @@ type PolicyFieldError struct {
 }
 
 // Valid policy types
-var ValidPolicyTypes = []string{"content", "user", "risk", "cost"}
+// Note: MCP-specific types (rate-limit, budget, time-access, role-access, mcp, connector)
+// are used by the MCP Dynamic Policy Handler for connector-level policy enforcement.
+var ValidPolicyTypes = []string{
+	"content", "user", "risk", "cost",        // Standard policy types
+	"rate-limit", "budget", "time-access",    // MCP rate/budget controls
+	"role-access", "mcp", "connector",        // MCP access controls
+}
 
 // ValidPolicyOperators for condition validation
 var ValidPolicyOperators = []string{
@@ -232,7 +238,8 @@ var ValidPolicyFields = []string{
 }
 
 // Valid action types
-var ValidActionTypes = []string{"block", "redact", "alert", "log", "route", "modify_risk"}
+// Issue #1082: Added require_approval for WCP HITL integration
+var ValidActionTypes = []string{"block", "redact", "alert", "log", "route", "modify_risk", "require_approval"}
 
 // PolicyServicer defines the interface for policy service operations
 // This interface enables dependency injection and testability

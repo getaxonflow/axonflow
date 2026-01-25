@@ -51,7 +51,8 @@ type StaticPolicyResult struct {
 	ChecksPerformed    []string
 	ProcessingTimeMs   int64
 	Severity           string
-	RequiresRedaction  bool   // True if PII detected and should be redacted (Issue #891)
+	RequiresRedaction  bool // True if PII detected and should be redacted (Issue #891)
+	RequiresApproval   bool // True if HITL approval is required (Issue #1081 - EU AI Act Article 14)
 }
 
 // NewStaticPolicyEngine creates a new static policy engine with default rules

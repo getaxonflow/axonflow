@@ -39,7 +39,7 @@ async def main():
 
     # Create AxonFlow client
     client = AxonFlow(
-        agent_url=agent_url,
+        endpoint=agent_url,
         client_id=client_id,
         client_secret=client_secret,
     )
@@ -54,12 +54,11 @@ async def main():
             statement="SELECT 1 as test_value, 'hello' as test_message",
         )
         print("SUCCESS: Query executed")
-        print(f"  Row count: {result.row_count}")
-        print(f"  Duration: {result.duration_ms}ms")
+        print(f"  Success: {result.success}")
         if result.policy_info:
             print(f"  Policies evaluated: {result.policy_info.policies_evaluated}")
             print(f"  Blocked: {result.policy_info.blocked}")
-            print(f"  Redacted fields: {result.policy_info.redacted_fields}")
+            print(f"  Processing time: {result.policy_info.processing_time_ms}ms")
     except Exception as e:
         print(f"Query error (expected if postgres not configured): {e}")
     print()
@@ -74,11 +73,12 @@ async def main():
             statement="SELECT email, phone, name FROM users LIMIT 5",
         )
         print("SUCCESS: Query executed")
-        print(f"  Row count: {result.row_count}")
+        print(f"  Success: {result.success}")
+        print(f"  Redacted: {result.redacted}")
         if result.policy_info:
             print(f"  Policies evaluated: {result.policy_info.policies_evaluated}")
-            if result.policy_info.redacted_fields:
-                print(f"  PII REDACTED! Fields: {result.policy_info.redacted_fields}")
+        if result.redacted_fields:
+            print(f"  PII REDACTED! Fields: {result.redacted_fields}")
     except Exception as e:
         print(f"Query error: {e}")
     print()
@@ -105,12 +105,10 @@ async def main():
     try:
         result = await client.mcp_execute(
             connector="postgres",
-            action="INSERT",
             statement="INSERT INTO audit_test (name) VALUES ('test')",
         )
         print("SUCCESS: Execute completed")
-        print(f"  Rows affected: {result.rows_affected}")
-        print(f"  Duration: {result.duration_ms}ms")
+        print(f"  Success: {result.success}")
     except Exception as e:
         print(f"Execute error (expected if table doesn't exist): {e}")
     print()

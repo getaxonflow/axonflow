@@ -33,7 +33,7 @@ async def main():
 
     try:
         # Send query to AxonFlow (async method)
-        response = await client.execute_query(
+        response = await client.proxy_llm_call(
             user_token="user-123",
             query=query,
             request_type="chat",

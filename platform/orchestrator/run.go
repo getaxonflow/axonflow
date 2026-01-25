@@ -39,11 +39,13 @@ import (
 	"axonflow/platform/orchestrator/cost"   // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
+	"axonflow/platform/orchestrator/masfeat" // MAS FEAT module - Community stub or EE impl
 	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
 	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
 	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
+	"axonflow/platform/shared/execution"             // Unified execution tracking (#1075)
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -71,6 +73,8 @@ var (
 	auditLogger        *AuditLogger
 	metricsCollector   *MetricsCollector
 	workflowEngine     *WorkflowEngine
+	hitlWorkflowEngine *HITLWorkflowEngine                // HITL-aware workflow engine (Issue #1082)
+	hitlEnabled        bool                               // HITL mode flag (Issue #1082)
 	planningEngine     *PlanningEngine                    // Multi-Agent Planning v0.1
 	resultAggregator   *ResultAggregator                  // Multi-Agent Planning v0.1
 	mcpQueryRouter     *MCPQueryRouter                    // MCP query routing to agent
@@ -86,9 +90,10 @@ var (
 	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
-	sebiModule    *sebi.SEBIModule // SEBI AI/ML Guidelines compliance (India)
-	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
-	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
+	sebiModule    *sebi.SEBIModule   // SEBI AI/ML Guidelines compliance (India)
+	rbiModule     *rbi.RBIModule     // RBI FREE-AI Framework compliance (India Banking)
+	euaiactModule *euaiact.Module    // EU AI Act compliance (Europe)
+	masfeatModule *masfeat.Module    // MAS FEAT compliance (Singapore)
 
 	// Execution Replay/Debug Mode (#763)
 	replayService *replay.Service // Execution replay service
@@ -99,11 +104,16 @@ var (
 	costHandler *cost.Handler // Cost control HTTP handlers
 
 	// MAP Two-Step Execution (#925)
-	planService *planning.Service // Plan storage and retrieval for GeneratePlan/ExecutePlan
+	planService         *planning.Service      // Plan storage and retrieval for GeneratePlan/ExecutePlan
+	mapExecutionTracker *MAPExecutionTracker   // Unified execution tracking for MAP (#1075)
+	executionRepo       execution.ExecutionRepository // Execution history repository
 
 	// Workflow Control Plane V1 (#834)
 	workflowControlService *workflow_control.Service // Workflow governance service
 	workflowControlHandler *workflow_control.Handler // Workflow Control HTTP handlers
+
+	// Unified Execution Tracking (#1075)
+	unifiedExecutionHandler *UnifiedExecutionHandler // Unified execution status API
 )
 
 // Per-stage metrics (similar to Agent)
@@ -366,6 +376,12 @@ func Run() {
 	if nodeMonitor != nil {
 		defer nodeMonitor.Stop()
 	}
+	// Cleanup Redis for policy enforcement on shutdown
+	defer func() {
+		if err := ClosePolicyRedis(); err != nil {
+			log.Printf("Error closing Redis: %v", err)
+		}
+	}()
 
 	// Setup router
 	r := mux.NewRouter()
@@ -406,6 +422,8 @@ func Run() {
 	r.HandleFunc("/api/v1/workflows/execute", executeWorkflowHandler).Methods("POST")
 	r.HandleFunc("/api/v1/workflows/executions/{id}", getWorkflowExecutionHandler).Methods("GET")
 	r.HandleFunc("/api/v1/workflows/executions", listWorkflowExecutionsHandler).Methods("GET")
+	// HITL endpoints (Issue #1082)
+	r.HandleFunc("/api/v1/workflows/executions/{id}/hitl-status", getHITLExecutionStatusHandler).Methods("GET")
 
 	// Multi-Agent Planning endpoints (v0.1)
 	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")           // GeneratePlan (stores plan)
@@ -444,7 +462,8 @@ func Run() {
 
 	// MCP Dynamic Policy Evaluation Endpoint (Issue #968)
 	// Called by Agent for dynamic policy evaluation before MCP queries
-	if engine, ok := dynamicPolicyEngine.(*DynamicPolicyEngine); ok {
+	// Works with both in-memory and database-backed policy engines
+	if engine, ok := dynamicPolicyEngine.(MCPPolicyEngine); ok {
 		mcpDynamicPolicyHandler := NewMCPDynamicPolicyHandler(engine)
 		mcpDynamicPolicyHandler.RegisterRoutes(r)
 		log.Println("MCP Dynamic Policy API routes registered (/api/v1/mcp/evaluate-policies)")
@@ -475,6 +494,12 @@ func Run() {
 		log.Println("EU AI Act Compliance API routes registered (/api/v1/euaiact/...)")
 	}
 
+	// MAS FEAT Compliance Module (Enterprise - Singapore MAS)
+	if masfeatModule != nil {
+		masfeatModule.RegisterRoutesWithMux(r)
+		log.Println("MAS FEAT Compliance API routes registered (/api/v1/masfeat/...)")
+	}
+
 	// Execution Replay/Debug Mode (#763)
 	if replayHandler != nil {
 		replayHandler.RegisterRoutes(r)
@@ -492,6 +517,13 @@ func Run() {
 	if workflowControlHandler != nil {
 		workflowControlHandler.RegisterRoutes(r)
 		log.Println("Workflow Control Plane API routes registered (/api/v1/workflows/...)")
+	}
+
+	// Unified Execution Tracking (#1075)
+	// Common API for tracking both MAP plans and WCP workflows
+	if unifiedExecutionHandler != nil {
+		unifiedExecutionHandler.RegisterRoutes(r)
+		log.Println("Unified Execution API routes registered (/api/v1/unified/executions/...)")
 	}
 
 	// Start server
@@ -532,6 +564,11 @@ func initializeComponents() {
 		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 			url.QueryEscape(dbUser), url.QueryEscape(dbPassword), dbHost, dbPort, dbName, dbSSLMode)
 		log.Println("✅ Built database connection string from separate env vars (12-Factor App)")
+		// Set DATABASE_URL for components that read it from environment
+		// This ensures NewDatabaseDynamicPolicyEngine() and other components can access the constructed URL
+		if err := os.Setenv("DATABASE_URL", dbURL); err != nil {
+			log.Printf("Warning: failed to set DATABASE_URL: %v", err)
+		}
 	}
 
 	if dbURL != "" {
@@ -639,6 +676,15 @@ func initializeComponents() {
 	} else {
 		log.Println("WARNING: DATABASE_URL environment variable is NOT set!")
 		log.Println("⚠️  Usage metering disabled - DATABASE_URL required")
+	}
+
+	// Initialize Redis for distributed policy enforcement (rate limiting, budget tracking)
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL != "" {
+		if err := InitPolicyRedis(redisURL); err != nil {
+			log.Printf("⚠️  Failed to initialize Redis for policy enforcement: %v", err)
+			log.Println("Falling back to in-memory policy storage")
+		}
 	}
 
 	// Initialize node enforcement (heartbeat + monitoring)
@@ -822,6 +868,19 @@ func initializeComponents() {
 	} else {
 		workflowEngine.InitializeWithDependencies(llmRouterWrapper, amadeusClient)
 		log.Println("Workflow Engine initialized successfully with API call support")
+
+		// Initialize HITL Workflow Engine (Issue #1082)
+		// Check if HITL is enabled via environment variable
+		hitlEnabled = os.Getenv("AXONFLOW_HITL_ENABLED") == "true"
+		if hitlEnabled {
+			log.Println("Initializing HITL Workflow Engine (require_approval support)...")
+			// Create HITL engine with workflow engine and no-op services for now
+			// Enterprise mode will inject real HITLPolicyChecker and HITLApprovalService
+			hitlWorkflowEngine = NewHITLWorkflowEngine(workflowEngine, nil, nil)
+			log.Println("HITL Workflow Engine initialized ✅")
+		} else {
+			log.Println("HITL mode disabled (set AXONFLOW_HITL_ENABLED=true to enable)")
+		}
 	}
 
 	// Initialize Planning Engine (Multi-Agent Planning v0.1)
@@ -863,15 +922,16 @@ func initializeComponents() {
 	log.Println("Initializing Policy CRUD API...")
 	if usageDB != nil {
 		policyRepo := NewPolicyRepository(usageDB)
-		// Cast dynamicPolicyEngine to *DynamicPolicyEngine if it's the database-backed version
-		var engine *DynamicPolicyEngine
+		// Issue #1082: Pass the policy engine as a PolicyEngineRefresher so the
+		// PolicyService can trigger immediate cache refresh after policy changes.
+		// Both DynamicPolicyEngine and DatabaseDynamicPolicyEngine implement RefreshPolicies().
+		var policyRefresher PolicyEngineRefresher
 		if dbEngine, ok := dynamicPolicyEngine.(*DatabaseDynamicPolicyEngine); ok {
-			// Use a wrapper or create a new in-memory engine for the API
-			// For now, pass nil since the service doesn't heavily depend on it for CRUD
-			_ = dbEngine // Acknowledge the variable
-			engine = nil
+			policyRefresher = dbEngine
+		} else if memEngine, ok := dynamicPolicyEngine.(*DynamicPolicyEngine); ok {
+			policyRefresher = memEngine
 		}
-		policyService := NewPolicyService(policyRepo, engine)
+		policyService := NewPolicyServiceWithRefresher(policyRepo, policyRefresher)
 		policyAPIHandler = NewPolicyAPIHandler(policyService)
 		log.Println("Policy CRUD API initialized ✅")
 
@@ -920,6 +980,12 @@ func initializeComponents() {
 		planService.StartCleanupWorker(context.Background(), 15*time.Minute)
 		log.Println("Planning Service initialized ✅")
 
+		// Initialize unified execution tracking (#1075)
+		log.Println("Initializing Unified Execution Tracker for MAP...")
+		executionRepo = execution.NewPostgresRepository(usageDB)
+		mapExecutionTracker = NewMAPExecutionTracker(executionRepo, planService)
+		log.Println("Unified Execution Tracker initialized ✅")
+
 		// Initialize Workflow Control Plane V1 (#834)
 		// Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
 		log.Println("Initializing Workflow Control Plane Service...")
@@ -929,12 +995,26 @@ func initializeComponents() {
 		}
 		// Create policy adapter to connect WCP to dynamic policy engine (Issue #1021)
 		wcpPolicyAdapter := NewWCPPolicyAdapter(dynamicPolicyEngine)
+
+		// Issue #1082: Wire WCP require_approval action to HITL queue (Enterprise only)
+		if err := InitializeWCPHITL(usageDB, wcpPolicyAdapter); err != nil {
+			log.Printf("⚠️  WCP HITL wiring failed: %v", err)
+		}
+
 		workflowControlService = workflow_control.NewService(workflowControlRepo, wcpPolicyAdapter, workflowControlConfig)
 
 		// Wire audit logging for WCP (Issue #1019)
 		if auditLogger != nil {
 			workflowControlService.SetAuditLogger(NewWCPAuditAdapter(auditLogger))
 		}
+
+		// Wire unified execution tracking for WCP (#1075)
+		wcpExecutionTracker := NewWCPExecutionTracker(executionRepo, workflowControlService)
+		workflowControlService.SetExecutionTracker(wcpExecutionTracker)
+
+		// Create unified execution handler for both MAP and WCP (#1075)
+		unifiedExecutionHandler = NewUnifiedExecutionHandler(executionRepo, mapExecutionTracker, wcpExecutionTracker)
+		log.Println("Unified Execution Handler initialized ✅")
 
 		workflowControlHandler = workflow_control.NewHandler(workflowControlService)
 		log.Println("Workflow Control Plane Service initialized ✅")
@@ -985,12 +1065,30 @@ func initializeComponents() {
 		} else {
 			log.Println("⚠️  EU AI Act Module initialized but not healthy - database may be required")
 		}
+
+		// Initialize MAS FEAT Compliance Module (Enterprise - Singapore MAS)
+		log.Println("Initializing MAS FEAT Compliance Module...")
+		masfeatConfig := masfeat.ModuleConfig{
+			DB:                              usageDB,
+			DefaultBiasThreshold:            0.10, // 10% maximum bias score
+			DefaultAssessmentValidityMonths: 12,   // 12 months validity
+		}
+		var masfeatErr error
+		masfeatModule, masfeatErr = masfeat.NewModule(masfeatConfig)
+		if masfeatErr != nil {
+			log.Printf("⚠️  MAS FEAT Module initialization error: %v", masfeatErr)
+		} else if masfeatModule.IsHealthy() {
+			log.Println("MAS FEAT Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  MAS FEAT Module initialized but not healthy - database may be required")
+		}
 	} else {
 		log.Println("⚠️  Policy CRUD API not initialized - database connection required")
 		log.Println("⚠️  Policy Templates API not initialized - database connection required")
 		log.Println("⚠️  SEBI Compliance Module not initialized - database connection required")
 		log.Println("⚠️  RBI FREE-AI Compliance Module not initialized - database connection required")
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
+		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
 	}
 }
 
@@ -1020,6 +1118,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if euaiactModule != nil {
 		components["euaiact_compliance"] = euaiactModule.IsHealthy()
+	}
+	if masfeatModule != nil {
+		components["masfeat_compliance"] = masfeatModule.IsHealthy()
 	}
 
 	health := map[string]interface{}{
@@ -1911,15 +2012,72 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Execute workflow
-	execution, err := workflowEngine.ExecuteWorkflow(r.Context(), req.Workflow, req.Input, req.User)
-	if err != nil {
-		sendErrorResponse(w, "Workflow execution failed: "+err.Error(), http.StatusInternalServerError)
-		return
+	// Execute workflow - use HITL engine if enabled (Issue #1082)
+	var execution interface{}
+	var err error
+
+	if hitlEnabled && hitlWorkflowEngine != nil {
+		// HITL-aware execution with pause/resume support
+		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(r.Context(), req.Workflow, req.Input, req.User)
+		if hitlErr != nil {
+			// Check if this is a pause for approval (not an error)
+			if hitlExec != nil && hitlExec.Status == StatusPaused {
+				// Store execution for later resume
+				hitlWorkflowEngine.SaveExecution(hitlExec)
+				// Return paused status with approval ID
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted) // 202 Accepted - pending human approval
+				if err := json.NewEncoder(w).Encode(hitlExec); err != nil {
+					log.Printf("Error encoding response: %v", err)
+				}
+				return
+			}
+			sendErrorResponse(w, "Workflow execution failed: "+hitlErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		execution = hitlExec
+	} else {
+		// Standard execution without HITL
+		execution, err = workflowEngine.ExecuteWorkflow(r.Context(), req.Workflow, req.Input, req.User)
+		if err != nil {
+			sendErrorResponse(w, "Workflow execution failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(execution); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
+}
+
+// getHITLExecutionStatusHandler returns the HITL status of an execution (Issue #1082)
+func getHITLExecutionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !hitlEnabled || hitlWorkflowEngine == nil {
+		sendErrorResponse(w, "HITL not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	executionID := vars["id"]
+
+	if executionID == "" {
+		sendErrorResponse(w, "Execution ID is required", http.StatusBadRequest)
+		return
+	}
+
+	status, err := hitlWorkflowEngine.GetExecutionStatus(r.Context(), executionID)
+	if err != nil {
+		if err == ErrExecutionNotFound {
+			sendErrorResponse(w, "Execution not found", http.StatusNotFound)
+		} else {
+			sendErrorResponse(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
 }
@@ -2261,6 +2419,18 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[ExecutePlan] Retrieved plan %s (domain: %s, steps: %d)", planID, plan.Domain, plan.StepCount)
 
+	// Start unified execution tracking (#1075)
+	var unifiedExecID string
+	if mapExecutionTracker != nil {
+		execStatus, err := mapExecutionTracker.StartPlanExecution(r.Context(), plan)
+		if err != nil {
+			log.Printf("[ExecutePlan] Warning: failed to start unified tracking for %s: %v", planID, err)
+		} else {
+			unifiedExecID = execStatus.ExecutionID
+			log.Printf("[ExecutePlan] Started unified execution tracking: %s", unifiedExecID)
+		}
+	}
+
 	// === GOVERNANCE: Policy Evaluation Before Execution (Issue #1020) ===
 	// Build OrchestratorRequest from plan for policy evaluation
 	// Convert map-based client to ClientContext for policy engine
@@ -2311,6 +2481,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Mark plan as failed due to policy block
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Blocked by policy: "+strings.Join(policyResult.AppliedPolicies, ", "))
+		// Sync unified tracking on policy block (#1075)
+		if mapExecutionTracker != nil && unifiedExecID != "" {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Blocked by policy")
+		}
 
 		// Record blocked request metrics
 		promRequestsTotal.WithLabelValues("blocked").Inc()
@@ -2339,6 +2513,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
 		log.Printf("[ExecutePlan] Failed to unmarshal workflow: %v", err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Invalid workflow definition")
+		// Sync unified tracking on workflow error (#1075)
+		if mapExecutionTracker != nil && unifiedExecID != "" {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, "Invalid workflow definition")
+		}
 		sendErrorResponse(w, "Invalid workflow definition", http.StatusInternalServerError)
 		return
 	}
@@ -2362,6 +2540,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", planID, err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		// Sync unified tracking on failure (#1075)
+		if mapExecutionTracker != nil && unifiedExecID != "" {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, err.Error())
+		}
 		sendErrorResponse(w, "Execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2386,6 +2568,13 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 5: Mark plan as completed
 	if err := planService.MarkPlanCompleted(r.Context(), planID, finalResult); err != nil {
 		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", planID, err)
+	}
+
+	// Sync unified tracking on success (#1075)
+	if mapExecutionTracker != nil && unifiedExecID != "" {
+		if err := mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, ""); err != nil {
+			log.Printf("[ExecutePlan] Warning: failed to sync unified tracking: %v", err)
+		}
 	}
 
 	// Step 6: Build response
@@ -2433,6 +2622,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 // getPlanStatusHandler retrieves a stored plan by ID for status checking
 // SDK calls: GET /api/v1/plan/{id}
+// Updated in #1075 to use unified execution tracking with step-level details
 func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("[GetPlanStatus] Received get plan status request")
 
@@ -2450,7 +2640,26 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get plan from storage
+	// Use unified execution tracker if available (#1075)
+	if mapExecutionTracker != nil {
+		execStatus, err := mapExecutionTracker.GetPlanStatus(r.Context(), planID)
+		if err == nil {
+			// Return unified execution status with step-level details
+			response := buildUnifiedStatusResponse(execStatus)
+			log.Printf("[GetPlanStatus] Returning unified status for plan %s: %s (%.1f%% complete)",
+				planID, execStatus.Status, execStatus.ProgressPercent)
+
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				log.Printf("Error encoding response: %v", err)
+			}
+			return
+		}
+		// Fall through to legacy handler if unified tracking fails
+		log.Printf("[GetPlanStatus] Unified tracking not available for %s, using legacy: %v", planID, err)
+	}
+
+	// Legacy: Get plan from storage
 	plan, err := planService.GetPlan(r.Context(), planID)
 	if err != nil {
 		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", planID, err)
@@ -2500,6 +2709,104 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+// buildUnifiedStatusResponse converts ExecutionStatus to API response format
+// This provides step-level details that the legacy handler doesn't have
+func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]interface{} {
+	// Calculate completed steps
+	completedSteps := 0
+	for _, step := range exec.Steps {
+		if step.Status == execution.StepStatusCompleted {
+			completedSteps++
+		}
+	}
+
+	response := map[string]interface{}{
+		"plan_id":          exec.ExecutionID,
+		"execution_id":     exec.ExecutionID,
+		"status":           string(exec.Status),
+		"org_id":           exec.OrgID,
+		"tenant_id":        exec.TenantID,
+		"query":            exec.Name,
+		"domain":           exec.Source,
+		"total_steps":      exec.TotalSteps,
+		"completed_steps":  completedSteps,
+		"progress_percent": exec.ProgressPercent,
+		"duration":         exec.Duration,
+		"created_at":       exec.CreatedAt,
+		"started_at":       exec.StartedAt,
+	}
+
+	// Include metadata fields if available
+	if exec.Metadata != nil {
+		if complexity, ok := exec.Metadata["complexity"]; ok {
+			response["complexity"] = complexity
+		}
+		if expiresAt, ok := exec.Metadata["expires_at"]; ok {
+			response["expires_at"] = expiresAt
+		}
+		if executionMode, ok := exec.Metadata["execution_mode"]; ok {
+			response["execution_mode"] = executionMode
+		}
+	}
+
+	// Include completed_at if execution is finished
+	if exec.CompletedAt != nil {
+		response["completed_at"] = exec.CompletedAt
+	}
+
+	// Include error if present
+	if exec.Error != "" {
+		response["error"] = exec.Error
+	}
+
+	// Include cost tracking if available
+	if exec.EstimatedCostUSD != nil {
+		response["estimated_cost_usd"] = *exec.EstimatedCostUSD
+	}
+	if exec.ActualCostUSD != nil {
+		response["actual_cost_usd"] = *exec.ActualCostUSD
+	}
+
+	// Include step details for granular progress tracking
+	if len(exec.Steps) > 0 {
+		steps := make([]map[string]interface{}, len(exec.Steps))
+		for i, step := range exec.Steps {
+			stepData := map[string]interface{}{
+				"step_id":    step.StepID,
+				"step_index": step.StepIndex,
+				"step_name":  step.StepName,
+				"step_type":  string(step.StepType),
+				"status":     string(step.Status),
+			}
+			if step.StartedAt != nil {
+				stepData["started_at"] = step.StartedAt
+			}
+			if step.EndedAt != nil {
+				stepData["ended_at"] = step.EndedAt
+			}
+			if step.Duration != "" {
+				stepData["duration"] = step.Duration
+			}
+			if step.Error != "" {
+				stepData["error"] = step.Error
+			}
+			if step.CostUSD != nil {
+				stepData["cost_usd"] = *step.CostUSD
+			}
+			if step.Model != "" {
+				stepData["model"] = step.Model
+			}
+			if step.Provider != "" {
+				stepData["provider"] = step.Provider
+			}
+			steps[i] = stepData
+		}
+		response["steps"] = steps
+	}
+
+	return response
 }
 
 // convertWorkflowStepsToResponse converts workflow steps to SDK-compatible response format

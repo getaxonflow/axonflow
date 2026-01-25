@@ -17,7 +17,7 @@
     "@axonflow/sdk": "^2.3.0",
     "dotenv": "^16.3.0",
     "openai": "^4.20.0",
-    "@anthropic-ai/sdk": "^0.10.0"
+    "@anthropic-ai/sdk": "^0.32.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -5,11 +5,19 @@ package orchestrator
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
+
+	"github.com/google/uuid"
 )
+
+// HITLApprovalCreator is the interface for creating HITL approval requests (Issue #1082)
+type HITLApprovalCreator interface {
+	CreateApproval(ctx context.Context, req *HITLApprovalRequest) (*HITLApprovalResponse, error)
+}
 
 // WCPPolicyAdapter adapts the dynamic policy engine to the workflow_control.PolicyEvaluator interface
 // This bridges the gap between the main orchestrator's policy engine and the WCP service (Issue #1021)
@@ -19,6 +27,7 @@ type WCPPolicyAdapter struct {
 		ListActivePolicies() []DynamicPolicy
 		IsHealthy() bool
 	}
+	hitlApproval HITLApprovalCreator // HITL approval service for require_approval action (Issue #1082)
 }
 
 // NewWCPPolicyAdapter creates a new adapter wrapping the dynamic policy engine
@@ -28,6 +37,11 @@ func NewWCPPolicyAdapter(engine interface {
 	IsHealthy() bool
 }) *WCPPolicyAdapter {
 	return &WCPPolicyAdapter{engine: engine}
+}
+
+// SetHITLApproval sets the HITL approval service for require_approval action (Issue #1082)
+func (a *WCPPolicyAdapter) SetHITLApproval(approval HITLApprovalCreator) {
+	a.hitlApproval = approval
 }
 
 // EvaluateStepGate implements workflow_control.PolicyEvaluator
@@ -50,7 +64,61 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 	durationMs := time.Since(startTime).Milliseconds()
 
 	// Convert PolicyEvaluationResult to StepGateEvaluation
-	return a.convertToStepGateEvaluation(result, durationMs)
+	evaluation := a.convertToStepGateEvaluation(result, durationMs)
+
+	// Issue #1082: If require_approval, create HITL approval request
+	if evaluation.Decision == workflow_control.GateDecisionRequireApproval && a.hitlApproval != nil {
+		approvalID := a.createHITLApproval(ctx, step, result)
+		if approvalID != uuid.Nil {
+			evaluation.ApprovalID = approvalID.String()
+			log.Printf("[WCP] HITL approval created for step %s: %s", step.StepName, approvalID)
+		}
+	}
+
+	return evaluation
+}
+
+// createHITLApproval creates an HITL approval request for require_approval actions (Issue #1082)
+func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflow_control.StepGateContext, result *PolicyEvaluationResult) uuid.UUID {
+	if a.hitlApproval == nil {
+		return uuid.Nil
+	}
+
+	// Get first matching policy for context
+	policyID := ""
+	policyName := "unknown"
+	if len(result.AppliedPolicies) > 0 {
+		policyName = result.AppliedPolicies[0]
+		policyID = policyName // Use name as ID if no separate ID
+	}
+
+	req := &HITLApprovalRequest{
+		OrgID:         step.OrgID,
+		TenantID:      step.TenantID,
+		ClientID:      step.ClientID,
+		UserID:        step.UserID,
+		ExecutionID:   step.WorkflowID,
+		StepName:      step.StepName,
+		StepType:      string(step.StepType),
+		PolicyID:      policyID,
+		PolicyName:    policyName,
+		TriggerReason: "Step requires human approval per policy",
+		Severity:      "high", // Default to high for require_approval
+		RequestContext: map[string]interface{}{
+			"workflow_name": step.WorkflowName,
+			"step_index":    step.StepIndex,
+			"model":         step.Model,
+			"provider":      step.Provider,
+		},
+	}
+
+	resp, err := a.hitlApproval.CreateApproval(ctx, req)
+	if err != nil {
+		log.Printf("[WCP] Failed to create HITL approval: %v", err)
+		return uuid.Nil
+	}
+
+	return resp.ApprovalID
 }
 
 // convertToOrchestratorRequest converts WCP step context to orchestrator request format

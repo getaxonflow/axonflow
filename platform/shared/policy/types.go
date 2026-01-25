@@ -29,6 +29,11 @@ const (
 	// ActionBlock denies the request/response entirely.
 	ActionBlock Action = "block"
 
+	// ActionRequireApproval pauses execution and requires human approval before proceeding.
+	// This is used for EU AI Act Article 14 compliance and other HITL requirements.
+	// Issue #1081: Added to enable compliance framework HITL enforcement.
+	ActionRequireApproval Action = "require_approval"
+
 	// ActionAllow explicitly permits the request/response.
 	ActionAllow Action = "allow"
 
@@ -52,13 +57,15 @@ const (
 	CategoryAdminAccess       PolicyCategory = "admin-access"
 
 	// PII categories by jurisdiction
-	CategoryPIIGlobal PolicyCategory = "pii-global"
-	CategoryPIIUS     PolicyCategory = "pii-us"
-	CategoryPIIIndia  PolicyCategory = "pii-india"
-	CategoryPIIEU     PolicyCategory = "pii-eu"
+	CategoryPIIGlobal    PolicyCategory = "pii-global"
+	CategoryPIIUS        PolicyCategory = "pii-us"
+	CategoryPIIIndia     PolicyCategory = "pii-india"
+	CategoryPIIEU        PolicyCategory = "pii-eu"
+	CategoryPIISingapore PolicyCategory = "pii-singapore" // Issue #1076 - MAS FEAT Community
 
 	// Data governance categories
 	CategoryDataExfiltration PolicyCategory = "data-exfiltration"
+	CategorySensitiveData    PolicyCategory = "sensitive-data" // Issue #1081 - HITL policies
 
 	// Dynamic policy categories (Issue #968)
 	CategoryDynamicRateLimit  PolicyCategory = "dynamic-rate-limit"
@@ -67,10 +74,12 @@ const (
 	CategoryDynamicRoleAccess PolicyCategory = "dynamic-role-access"
 
 	// Compliance categories
-	CategoryComplianceGDPR  PolicyCategory = "compliance-gdpr"
-	CategoryComplianceHIPAA PolicyCategory = "compliance-hipaa"
-	CategoryComplianceRBI   PolicyCategory = "compliance-rbi"
-	CategoryComplianceSEBI  PolicyCategory = "compliance-sebi"
+	CategoryComplianceGDPR    PolicyCategory = "compliance-gdpr"
+	CategoryComplianceHIPAA   PolicyCategory = "compliance-hipaa"
+	CategoryComplianceRBI     PolicyCategory = "compliance-rbi"
+	CategoryComplianceSEBI    PolicyCategory = "compliance-sebi"
+	CategoryComplianceEUAIAct PolicyCategory = "compliance-euaiact" // Issue #1081 - EU AI Act
+	CategoryComplianceMASFEAT PolicyCategory = "compliance-masfeat" // Issue #1081 - MAS FEAT Singapore
 )
 
 // Severity levels for policies.
@@ -158,7 +167,7 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 // isPIIPolicyCategory returns true if the category is a PII-related category.
 func isPIIPolicyCategory(cat PolicyCategory) bool {
 	switch cat {
-	case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU:
+	case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore:
 		return true
 	}
 	return false
@@ -171,6 +180,30 @@ func isSecurityPolicyCategory(cat PolicyCategory) bool {
 		return true
 	}
 	return false
+}
+
+// IsComplianceCategory returns true if the category is a compliance-related category.
+// Issue #1081: Added to support compliance framework runtime enforcement.
+func IsComplianceCategory(cat PolicyCategory) bool {
+	switch cat {
+	case CategoryComplianceGDPR, CategoryComplianceHIPAA, CategoryComplianceRBI,
+		CategoryComplianceSEBI, CategoryComplianceEUAIAct, CategoryComplianceMASFEAT:
+		return true
+	}
+	return false
+}
+
+// AllComplianceCategories returns all compliance-related policy categories.
+// Issue #1081: Added for use in gateway evaluation.
+func AllComplianceCategories() []PolicyCategory {
+	return []PolicyCategory{
+		CategoryComplianceGDPR,
+		CategoryComplianceHIPAA,
+		CategoryComplianceRBI,
+		CategoryComplianceSEBI,
+		CategoryComplianceEUAIAct,
+		CategoryComplianceMASFEAT,
+	}
 }
 
 // EvalOptions configures policy evaluation behavior.

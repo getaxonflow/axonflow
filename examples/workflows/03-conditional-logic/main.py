@@ -34,7 +34,7 @@ async def main():
     print("📤 Searching for flights to Paris...")
 
     try:
-        search_response = await client.execute_query(
+        search_response = await client.proxy_llm_call(
             user_token="user-123",
             query=search_query,
             request_type="chat",
@@ -52,7 +52,7 @@ async def main():
             print("💡 Trying alternative dates...")
 
             alt_query = "Find flights from New York to Paris for the following week instead"
-            alt_response = await client.execute_query(
+            alt_response = await client.proxy_llm_call(
                 user_token="user-123",
                 query=alt_query,
                 request_type="chat",
@@ -72,7 +72,7 @@ async def main():
         book_query = "Based on the search results above, what would be the recommended booking?"
         print("\n📤 Getting booking recommendation...")
 
-        book_response = await client.execute_query(
+        book_response = await client.proxy_llm_call(
             user_token="user-123",
             query=book_query,
             request_type="chat",

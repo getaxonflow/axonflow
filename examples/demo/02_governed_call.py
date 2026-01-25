@@ -16,7 +16,7 @@ async def main():
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo-client"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as ax:
-        response = await ax.execute_query(
+        response = await ax.proxy_llm_call(
             user_token="demo-user",
             query="Explain AI governance in one sentence",
             request_type="chat",

@@ -42,6 +42,7 @@ import (
 	"axonflow/platform/agent/marketplace"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/common/usage"
+	"axonflow/platform/orchestrator/cost"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -85,6 +86,7 @@ var (
 	dbPolicyEngine         *DatabasePolicyEngine
 	tierAwarePolicyEngine  *TierAwarePolicyEngine // New tier-aware policy engine for tenant-specific policies
 	meteringService        *marketplace.MeteringService // AWS Marketplace metering
+	costService            *cost.Service // Cost tracking and budget enforcement (Issue #1082)
 )
 
 // Prometheus metrics
@@ -212,6 +214,7 @@ type ClientResponse struct {
 	Blocked     bool                   `json:"blocked"`
 	BlockReason string                 `json:"block_reason,omitempty"`
 	PolicyInfo  *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
+	BudgetInfo  *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget enforcement status
 }
 
 type PolicyEvaluationInfo struct {
@@ -660,6 +663,12 @@ func Run() {
 				config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
 		}
 
+		// Initialize cost service for budget enforcement (Issue #1082)
+		// This enables pre-request budget checks in Gateway Mode
+		costRepo := cost.NewPostgresRepository(authDB)
+		costService = cost.NewService(costRepo, nil)
+		log.Println("✅ Cost service initialized (budget enforcement enabled)")
+
 		// Initialize AWS Marketplace metering (if enabled)
 		if os.Getenv("ENABLE_MARKETPLACE_METERING") == "true" {
 			productCode := os.Getenv("MARKETPLACE_PRODUCT_CODE")
@@ -923,10 +932,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if isCommunityMode() {
 		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", req.ClientID)
 		// Create a dummy client for community deployments
+		// Issue #1082: Use "demo-org" for OrgID to enable budget enforcement testing
 		client = &Client{
 			ID:          req.ClientID,
 			Name:        "Community",
-			OrgID:       "community",
+			OrgID:       "demo-org",
 			TenantID:    req.ClientID,
 			Enabled:     true,
 			LicenseTier: "Community",
@@ -1019,9 +1029,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			policyResult.Severity = tierResult.Severity
 			log.Printf("🛡️ Tenant policy blocked request: %s (tier: %s)", tierResult.PolicyName, tierResult.Tier)
 		} else if tierResult.Matched {
-			// Policy matched but action is not block (warn, log, redact)
+			// Policy matched but action is not block (allow, warn, log, redact, require_approval)
 			policyResult.TriggeredPolicies = append(policyResult.TriggeredPolicies, tierResult.PolicyID)
 			log.Printf("📝 Tenant policy matched (action=%s): %s", tierResult.Action, tierResult.PolicyName)
+
+			// Issue #1081: Set RequiresApproval for HITL enforcement (Enterprise only)
+			if tierResult.Action == "require_approval" {
+				policyResult.RequiresApproval = true
+				log.Printf("⏸️ HITL required by tenant policy: %s", tierResult.PolicyName)
+			}
 		}
 	}
 
@@ -1065,8 +1081,103 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issue #1081: HITL (Human-in-the-Loop) enforcement for compliance frameworks
+	// HITL is an ENTERPRISE-ONLY feature. It is ONLY triggered by policy evaluation
+	// returning require_approval action. We do NOT trust client-provided context metadata.
+	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
+	if requiresHITL {
+		log.Printf("⏸️ [Proxy Mode] HITL required - blocking request for human approval")
+
+		// Track HITL blocked request metrics
+		if agentMetrics != nil {
+			atomic.AddInt64(&agentMetrics.blockedRequests, 1)
+			latencyMs := int64(time.Since(startTime).Milliseconds())
+			agentMetrics.recordLatency(latencyMs, "hitl")
+		}
+
+		// Record Prometheus metrics
+		promRequestsTotal.WithLabelValues("hitl_blocked").Inc()
+		promBlockedRequests.Inc()
+		promPolicyEvaluations.Inc()
+		promRequestDuration.WithLabelValues("hitl").Observe(float64(time.Since(startTime).Milliseconds()))
+
+		response := ClientResponse{
+			Success:     false,
+			Blocked:     true,
+			BlockReason: "require_approval",
+			PolicyInfo: &PolicyEvaluationInfo{
+				PoliciesEvaluated: append(policyResult.TriggeredPolicies, "hitl_compliance"),
+				StaticChecks:      policyResult.ChecksPerformed,
+				ProcessingTime:    time.Since(startTime).String(),
+				TenantID:          user.TenantID,
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden) // 403 for HITL block
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Error encoding HITL blocked response: %v", err)
+		}
+		return
+	}
+
 	// Rate limiting is now handled inside validateClientCredentials() during authentication
 	rateLimitTime := time.Duration(0)
+
+	// Issue #1082: Budget enforcement - check before allowing request
+	budgetCheckStart := time.Now()
+	var budgetInfo *BudgetInfo
+	if costService != nil {
+		ctx := r.Context()
+		log.Printf("💰 [clientRequestHandler] Checking budget: OrgID=%s, TenantID=%s, UserID=%d", client.OrgID, client.TenantID, user.ID)
+		budgetDecision, err := costService.CheckBudget(ctx, client.OrgID, "", "", fmt.Sprintf("%d", user.ID), client.TenantID)
+		if err != nil {
+			log.Printf("⚠️ [clientRequestHandler] Budget check failed: %v (allowing request)", err)
+		} else {
+			log.Printf("💰 [clientRequestHandler] Budget decision: Allowed=%v, BudgetID=%s, UsedUSD=%.4f, LimitUSD=%.4f, Percentage=%.2f",
+				budgetDecision.Allowed, budgetDecision.BudgetID, budgetDecision.UsedUSD, budgetDecision.LimitUSD, budgetDecision.Percentage)
+		}
+		if budgetDecision != nil {
+			budgetInfo = &BudgetInfo{
+				BudgetID:   budgetDecision.BudgetID,
+				BudgetName: budgetDecision.BudgetName,
+				UsedUSD:    budgetDecision.UsedUSD,
+				LimitUSD:   budgetDecision.LimitUSD,
+				Percentage: budgetDecision.Percentage,
+				Exceeded:   !budgetDecision.Allowed || budgetDecision.Percentage >= 100,
+				Action:     string(budgetDecision.Action),
+			}
+
+			// Block if budget exceeded and action is block
+			if !budgetDecision.Allowed {
+				log.Printf("💰 [clientRequestHandler] Request blocked by budget: %s", budgetDecision.Message)
+				response := ClientResponse{
+					Success:     false,
+					Blocked:     true,
+					BlockReason: budgetDecision.Message,
+					BudgetInfo:  budgetInfo,
+					PolicyInfo: &PolicyEvaluationInfo{
+						PoliciesEvaluated: []string{"budget_exceeded"},
+						StaticChecks:      policyResult.ChecksPerformed,
+						ProcessingTime:    time.Since(startTime).String(),
+						TenantID:          user.TenantID,
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
+				_ = json.NewEncoder(w).Encode(response)
+				return
+			}
+
+			// Warn if exceeded but action is warn
+			if budgetDecision.Percentage >= 100 && budgetDecision.Action == cost.OnExceedWarn {
+				log.Printf("⚠️ [clientRequestHandler] Budget exceeded with warn action: %s", budgetDecision.Message)
+				w.Header().Set("X-Budget-Warning", budgetDecision.Message)
+			}
+		}
+	}
+	budgetCheckTime := time.Since(budgetCheckStart)
+	log.Printf("[TIMING] Budget check: %v", budgetCheckTime)
 
 	// Calculate auth time (client + user + tenant validation)
 	authTime := validateClientTime + validateUserTime + tenantCheckTime
@@ -1138,6 +1249,63 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	promPolicyEvaluations.Inc()
 	promRequestDuration.WithLabelValues("dynamic").Observe(float64(time.Since(startTime).Milliseconds()))
 
+	// Issue #1082: Record cost tracking after successful LLM call
+	// This updates budget usage so enforcement works on subsequent requests
+	if costService != nil {
+		if orchMap, ok := orchestratorResp.(map[string]interface{}); ok {
+			if providerInfoRaw, exists := orchMap["provider_info"]; exists {
+				if providerInfoMap, ok := providerInfoRaw.(map[string]interface{}); ok {
+					// Extract provider info
+					provider := ""
+					model := ""
+					tokensUsed := 0
+					costUSD := 0.0
+
+					if p, ok := providerInfoMap["provider"].(string); ok {
+						provider = p
+					}
+					if m, ok := providerInfoMap["model"].(string); ok {
+						model = m
+					}
+					if t, ok := providerInfoMap["tokens_used"].(float64); ok {
+						tokensUsed = int(t)
+					}
+					if c, ok := providerInfoMap["cost"].(float64); ok {
+						costUSD = c
+					}
+
+					// Record usage if we have token info
+					if tokensUsed > 0 || costUSD > 0 {
+						// Generate request ID (ClientRequest doesn't have one, generate based on timestamp)
+						requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+						usageRecord := &cost.UsageRecord{
+							RequestID: requestID,
+							Timestamp: time.Now().UTC(),
+							OrgID:     client.OrgID,
+							TenantID:  user.TenantID,
+							UserID:    fmt.Sprintf("%d", user.ID),
+							Provider:  provider,
+							Model:     model,
+							TokensIn:  tokensUsed / 2, // Approximate split (tokens_used is total)
+							TokensOut: tokensUsed / 2,
+							CostUSD:   costUSD,
+						}
+
+						// Issue #1082: Record synchronously so budget enforcement works on subsequent requests
+						// This ensures budget check sees updated usage before allowing next request
+						ctx := context.Background()
+						if err := costService.RecordUsage(ctx, usageRecord); err != nil {
+							log.Printf("💰 [clientRequestHandler] Failed to record usage: %v", err)
+						} else {
+							log.Printf("💰 [clientRequestHandler] Recorded cost: provider=%s model=%s tokens=%d cost=$%.6f",
+								usageRecord.Provider, usageRecord.Model, usageRecord.TokensIn+usageRecord.TokensOut, usageRecord.CostUSD)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// 7. Detect code artifacts in response (Issue #761: Governed Code Generation)
 	var codeArtifact *CodeArtifactMetadata
 	if responseContent := extractResponseContent(orchestratorResp); responseContent != "" {
@@ -1155,9 +1323,16 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Return response with policy information
+	// Issue #1082: Extract "data" field from orchestratorResp (which now contains full response)
+	responseData := orchestratorResp
+	if orchMap, ok := orchestratorResp.(map[string]interface{}); ok {
+		if data, exists := orchMap["data"]; exists {
+			responseData = data
+		}
+	}
 	response := ClientResponse{
 		Success: true,
-		Data:    orchestratorResp,
+		Data:    responseData,
 		PolicyInfo: &PolicyEvaluationInfo{
 			PoliciesEvaluated: policyResult.TriggeredPolicies,
 			StaticChecks:      policyResult.ChecksPerformed,
@@ -1165,6 +1340,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			TenantID:          user.TenantID,
 			CodeArtifact:      codeArtifact,
 		},
+		BudgetInfo: budgetInfo, // Issue #1082: Include budget status in response
 	}
 
 	// For multi-agent planning requests (GeneratePlan and ExecutePlan), flatten orchestrator response fields to top level
@@ -1277,10 +1453,13 @@ func validateClient(clientID string) (*Client, error) {
 		return nil, fmt.Errorf("client ID required")
 	}
 
+	// Issue #1082: TenantID must match what SDK uses when creating budgets
+	// The SDK sends X-Tenant-ID header based on client_id, so we use clientID here
 	return &Client{
 		ID:          clientID,
 		Name:        "Demo Client",
-		TenantID:    "tenant_1",
+		OrgID:       "demo-org", // Issue #1082: Set OrgID for budget enforcement
+		TenantID:    clientID,   // Issue #1082: Match SDK's tenant_id pattern
 		Permissions: []string{"query", "llm"},
 		RateLimit:   100,
 		Enabled:     true,
@@ -1409,11 +1588,8 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		return nil, fmt.Errorf("failed to decode orchestrator response: %v", err)
 	}
 
-	// Extract the data field from orchestrator response
-	if data, ok := result["data"]; ok {
-		return data, nil
-	}
-
+	// Issue #1082: Return full response to preserve provider_info for cost tracking
+	// The caller will extract "data" as needed, but provider_info is accessible
 	return result, nil
 }
 

@@ -41,7 +41,7 @@ func main() {
 	startTime := time.Now()
 
 	// Send query to AxonFlow (uses MAP for parallelization)
-	response, err := client.ExecuteQuery(
+	response, err := client.ProxyLLMCall(
 		"user-123",
 		query,
 		"multi-agent-plan", // Use MAP for parallel execution

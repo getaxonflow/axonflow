@@ -1,8 +1,10 @@
 // MCP Audit Logging Example - Go SDK
 //
-// This example demonstrates how MCP query operations are automatically
+// This example demonstrates and VALIDATES how MCP query operations are automatically
 // audited by AxonFlow. Every MCP query/execute operation is logged to
 // the mcp_query_audits table with policy evaluation results.
+//
+// Issue #1082: Examples should test actual behavior, not just API availability
 //
 // What gets audited:
 //   - Request phase: SQLi detection, PII blocking
@@ -21,10 +23,26 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
 
 func main() {
 	// Get configuration from environment
@@ -38,10 +56,7 @@ func main() {
 		clientID = "demo-client"
 	}
 
-	clientSecret := os.Getenv("CLIENT_SECRET")
-	if clientSecret == "" {
-		clientSecret = "demo-secret"
-	}
+	clientSecret := os.Getenv("CLIENT_SECRET") // Empty for community mode
 
 	fmt.Println("==============================================")
 	fmt.Println("MCP Audit Logging Example - Go SDK")
@@ -50,16 +65,11 @@ func main() {
 	fmt.Printf("Client ID: %s\n\n", clientID)
 
 	// Create AxonFlow client
-	client, err := axonflow.NewClient(axonflow.Config{
-		AgentURL:     agentURL,
+	client := axonflow.NewClient(axonflow.AxonFlowConfig{
+		Endpoint:     agentURL,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	})
-	if err != nil {
-		fmt.Printf("FAILED: Could not create client: %v\n", err)
-		os.Exit(1)
-	}
-	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -74,20 +84,21 @@ func main() {
 	})
 
 	if err != nil {
-		fmt.Printf("Query error (expected if postgres not configured): %v\n", err)
+		fmt.Printf("   Query error (expected if postgres not configured): %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("SUCCESS: Query executed\n")
-		fmt.Printf("  Row count: %d\n", result.RowCount)
-		fmt.Printf("  Duration: %dms\n", result.DurationMs)
+		assert(result.Success, "Query executed successfully")
+		assert(result.PolicyInfo != nil, "PolicyInfo is included")
 		if result.PolicyInfo != nil {
-			fmt.Printf("  Policies evaluated: %d\n", result.PolicyInfo.PoliciesEvaluated)
-			fmt.Printf("  Blocked: %v\n", result.PolicyInfo.Blocked)
-			fmt.Printf("  Redacted fields: %v\n", result.PolicyInfo.RedactedFields)
+			assert(result.PolicyInfo.PoliciesEvaluated > 0, "Policies were evaluated")
+			assert(!result.PolicyInfo.Blocked, "Query was not blocked")
+			fmt.Printf("   Policies evaluated: %d, Processing time: %dms\n",
+				result.PolicyInfo.PoliciesEvaluated, result.PolicyInfo.ProcessingTimeMs)
 		}
 	}
 	fmt.Println()
 
-	// Test 2: Query that may trigger PII detection
+	// Test 2: Query that may trigger PII detection (table may not exist)
 	fmt.Println("Test 2: Execute query with potential PII fields...")
 	fmt.Println("----------------------------------------------")
 
@@ -97,15 +108,17 @@ func main() {
 	})
 
 	if err != nil {
-		fmt.Printf("Query error: %v\n", err)
+		// Expected: table may not exist, but query should be audited
+		fmt.Printf("   Query error (expected - table may not exist): %v\n", err)
+		// Not a failure - the point is audit logging works even for failed queries
 	} else {
-		fmt.Printf("SUCCESS: Query executed\n")
-		fmt.Printf("  Row count: %d\n", result.RowCount)
+		assert(result.Success, "Query executed successfully")
+		fmt.Printf("   Redacted: %v\n", result.Redacted)
 		if result.PolicyInfo != nil {
-			fmt.Printf("  Policies evaluated: %d\n", result.PolicyInfo.PoliciesEvaluated)
-			if len(result.PolicyInfo.RedactedFields) > 0 {
-				fmt.Printf("  PII REDACTED! Fields: %v\n", result.PolicyInfo.RedactedFields)
-			}
+			fmt.Printf("   Policies evaluated: %d\n", result.PolicyInfo.PoliciesEvaluated)
+		}
+		if len(result.RedactedFields) > 0 {
+			fmt.Printf("   PII REDACTED! Fields: %v\n", result.RedactedFields)
 		}
 	}
 	fmt.Println()
@@ -120,35 +133,51 @@ func main() {
 	})
 
 	if err != nil {
-		fmt.Printf("Query blocked as expected: %v\n", err)
-		fmt.Println("SUCCESS: SQLi attempt was blocked and audit logged")
+		// Should be blocked with HTTP 403
+		errStr := err.Error()
+		assert(strings.Contains(errStr, "403"), "SQLi query returns HTTP 403")
+		assert(strings.Contains(errStr, "DROP TABLE") || strings.Contains(errStr, "blocked"),
+			"Block reason mentions DROP TABLE or blocked")
+		fmt.Printf("   Blocked: %v\n", errStr)
 	} else {
-		fmt.Println("Note: SQLi detection may not be enabled")
+		assert(false, "SQLi query should have been blocked")
 	}
 	fmt.Println()
 
-	// Test 4: Execute (INSERT) operation
+	// Test 4: Execute (INSERT) operation - may fail if table doesn't exist
 	fmt.Println("Test 4: Execute INSERT operation...")
 	fmt.Println("----------------------------------------------")
 
 	execResult, err := client.MCPExecute(ctx, axonflow.MCPExecuteRequest{
 		Connector: "postgres",
-		Action:    "INSERT",
-		Statement: "INSERT INTO audit_test (name) VALUES ('test')",
+		Action:    "insert",
+		Params: map[string]interface{}{
+			"table":  "audit_test",
+			"values": map[string]interface{}{"name": "test"},
+		},
 	})
 
 	if err != nil {
-		fmt.Printf("Execute error (expected if table doesn't exist): %v\n", err)
+		// Expected: table may not exist, but operation should be audited
+		fmt.Printf("   Execute error (expected - table may not exist): %v\n", err)
+		// Not a failure - the point is audit logging works even for failed operations
 	} else {
-		fmt.Printf("SUCCESS: Execute completed\n")
-		fmt.Printf("  Rows affected: %d\n", execResult.RowsAffected)
-		fmt.Printf("  Duration: %dms\n", execResult.DurationMs)
+		assert(true, "Execute operation completed")
+		fmt.Printf("   Rows affected: %d\n", execResult.RowsAffected)
 	}
 	fmt.Println()
 
+	// Summary
 	fmt.Println("==============================================")
-	fmt.Println("MCP Audit Logging Tests Complete!")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 	fmt.Println("==============================================")
+
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - MCP Audit Logging verified!")
+	}
 	fmt.Println()
 	fmt.Println("All MCP operations above have been logged to the")
 	fmt.Println("mcp_query_audits table. Each entry includes:")

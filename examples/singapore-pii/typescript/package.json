@@ -1,0 +1,18 @@
+{
+  "name": "singapore-pii-example",
+  "version": "1.0.0",
+  "description": "Singapore PII detection example for MAS FEAT compliance",
+  "main": "demo.ts",
+  "scripts": {
+    "start": "npx ts-node demo.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -56,7 +56,7 @@ async def main():
 
             try:
                 # Single call to AxonFlow - it handles policy check AND LLM call
-                response = await client.execute_query(
+                response = await client.proxy_llm_call(
                     user_token=q["user_token"],
                     query=q["query"],
                     request_type=q["request_type"],
@@ -94,7 +94,7 @@ async def main():
         print("-" * 60)
 
         try:
-            sql_response = await client.execute_query(
+            sql_response = await client.proxy_llm_call(
                 user_token="user-proxy-python",
                 query="SELECT * FROM users; DROP TABLE secrets;",
                 request_type="chat",

@@ -63,16 +63,22 @@ public class MapExample {
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
-            .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
+            .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo-org"))
             .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
             .debug("true".equals(getEnv("AXONFLOW_DEBUG", "")))
             .build());
+
+        // User token for MAP operations (JWT for local testing with docker-compose)
+        String userToken = getEnv("AXONFLOW_USER_TOKEN", "map-example-user");
 
         String objective = "Create a brief plan to greet a new user and ask how to help them";
         String domain = "generic";
 
         System.out.println("Objective: " + objective);
         System.out.println("Domain: " + domain);
+        if (userToken.length() > 30) {
+            System.out.println("User Token: " + userToken.substring(0, 20) + "..." + userToken.substring(userToken.length() - 10));
+        }
         System.out.println("----------------------------------------------");
         System.out.println();
 
@@ -85,7 +91,7 @@ public class MapExample {
             plan = client.generatePlan(PlanRequest.builder()
                 .objective(objective)
                 .domain(domain)
-                .userToken("map-example-user")
+                .userToken(userToken)
                 .build());
         } catch (Exception e) {
             System.out.println("   \u274C FATAL: generatePlan failed: " + e.getMessage());

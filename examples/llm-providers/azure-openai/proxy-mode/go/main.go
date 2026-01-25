@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
 func main() {
@@ -65,7 +65,7 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 
 	startTime := time.Now()
 
-	response, err := client.ExecuteQuery(
+	response, err := client.ProxyLLMCall(
 		"user-azure-proxy",
 		query,
 		"chat",

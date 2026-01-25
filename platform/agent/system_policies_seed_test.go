@@ -9,13 +9,13 @@ import (
 	"testing"
 )
 
-// TestGetStaticSystemPolicies verifies all 68 static system policies are correctly defined
-// (53 original + 15 code governance policies from Issue #761)
+// TestGetStaticSystemPolicies verifies all 73 static system policies are correctly defined
+// (53 original + 15 code governance from #761 + 5 Singapore PII from #1076)
 func TestGetStaticSystemPolicies(t *testing.T) {
 	policies := GetStaticSystemPolicies()
 
-	// Verify total count (53 original + 8 code-secrets + 7 code-unsafe = 68)
-	expectedCount := 68
+	// Verify total count (53 original + 8 code-secrets + 7 code-unsafe + 5 pii-singapore = 73)
+	expectedCount := 73
 	if len(policies) != expectedCount {
 		t.Errorf("Expected %d static policies, got %d", expectedCount, len(policies))
 	}
@@ -73,6 +73,7 @@ func TestStaticPolicyCategoryDistribution(t *testing.T) {
 		CategoryPIIUS:         2,  // US-specific PII patterns
 		CategoryPIIEU:         1,  // EU-specific PII patterns
 		CategoryPIIIndia:      2,  // India-specific PII patterns
+		CategoryPIISingapore:  5,  // Singapore-specific PII patterns (Issue #1076)
 		CategoryCodeSecrets:   8,  // Code secrets detection (Issue #761)
 		CategoryCodeUnsafe:    7,  // Unsafe code patterns (Issue #761)
 	}
@@ -181,6 +182,9 @@ func TestGetSystemPolicyCounts(t *testing.T) {
 		CategoryPIIUS:         2,
 		CategoryPIIEU:         1,
 		CategoryPIIIndia:      2,
+		CategoryPIISingapore:  5, // Issue #1076
+		CategoryCodeSecrets:   8, // Issue #761
+		CategoryCodeUnsafe:    7, // Issue #761
 	}
 
 	for category, expected := range expectedStaticCounts {
@@ -210,7 +214,7 @@ func TestGetSystemPolicyCounts(t *testing.T) {
 // TestGetTotalSystemPolicyCount verifies the total count
 func TestGetTotalSystemPolicyCount(t *testing.T) {
 	total := GetTotalSystemPolicyCount()
-	expected := 78 // 68 static + 10 dynamic (includes Issue #761 code governance policies)
+	expected := 83 // 73 static + 10 dynamic (includes #761 code governance + #1076 Singapore PII)
 
 	if total != expected {
 		t.Errorf("Expected total %d, got %d", expected, total)

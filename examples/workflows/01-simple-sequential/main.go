@@ -35,7 +35,7 @@ func main() {
 	fmt.Printf("📤 Sending query: %s\n", query)
 
 	// Send query to AxonFlow
-	response, err := client.ExecuteQuery(
+	response, err := client.ProxyLLMCall(
 		"user-123", // User token
 		query,
 		"chat", // Request type

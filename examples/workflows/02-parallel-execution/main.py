@@ -39,7 +39,7 @@ async def main():
 
     try:
         # Send query to AxonFlow (uses MAP for parallelization)
-        response = await client.execute_query(
+        response = await client.proxy_llm_call(
             user_token="user-123",
             query=query,
             request_type="multi-agent-plan",  # Use MAP for parallel execution

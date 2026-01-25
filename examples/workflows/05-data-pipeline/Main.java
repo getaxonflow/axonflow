@@ -43,7 +43,7 @@ public class Main {
         try {
             // Stage 1: Extract
             System.out.println("📥 Stage 1/5: Extracting customer transaction data...");
-            client.executeQuery(
+            client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Extract customer purchase data from the last 30 days. Include customer ID, purchase amount, product categories, and timestamps. Simulate 500 customer transactions.")
@@ -56,7 +56,7 @@ public class Main {
 
             // Stage 2: Transform (Clean & Normalize)
             System.out.println("🧹 Stage 2/5: Cleaning and normalizing data...");
-            client.executeQuery(
+            client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("From the extracted data above, perform the following transformations:\n" +
@@ -74,7 +74,7 @@ public class Main {
 
             // Stage 3: Enrich
             System.out.println("💎 Stage 3/5: Enriching with customer segments and lifetime value...");
-            client.executeQuery(
+            client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Based on the cleaned transaction data:\n" +
@@ -91,7 +91,7 @@ public class Main {
 
             // Stage 4: Aggregate
             System.out.println("📊 Stage 4/5: Aggregating insights and trends...");
-            client.executeQuery(
+            client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Generate aggregated insights:\n" +
@@ -109,7 +109,7 @@ public class Main {
 
             // Stage 5: Report
             System.out.println("📈 Stage 5/5: Generating executive summary report...");
-            ExecuteResponse reportResp = client.executeQuery(
+            ExecuteResponse reportResp = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query("Create an executive summary report with:\n" +

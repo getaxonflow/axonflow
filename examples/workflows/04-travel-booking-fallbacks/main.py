@@ -37,7 +37,7 @@ async def main():
     try:
         # STEP 1: Try direct flights first
         print("🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...")
-        flight_resp1 = await client.execute_query(
+        flight_resp1 = await client.proxy_llm_call(
             user_token="user-123",
             query="Find direct flights from San Francisco to Tokyo next month",
             request_type="chat",
@@ -50,7 +50,7 @@ async def main():
             print("⚠️  No direct flights available")
             print("📤 Step 2 (Fallback): Trying connecting flights...")
 
-            flight_resp2 = await client.execute_query(
+            flight_resp2 = await client.proxy_llm_call(
                 user_token="user-123",
                 query="Find connecting flights from San Francisco to Tokyo with 1 stop",
                 request_type="chat",
@@ -73,7 +73,7 @@ async def main():
 
         # STEP 2: Try 5-star hotels first
         print("🔍 Step 3: Searching for 5-star hotels in Tokyo city center...")
-        hotel_resp1 = await client.execute_query(
+        hotel_resp1 = await client.proxy_llm_call(
             user_token="user-123",
             query="Find 5-star hotels in Tokyo Shibuya district",
             request_type="chat",
@@ -86,7 +86,7 @@ async def main():
             print("⚠️  5-star hotels fully booked")
             print("📤 Step 4 (Fallback): Trying 4-star hotels...")
 
-            hotel_resp2 = await client.execute_query(
+            hotel_resp2 = await client.proxy_llm_call(
                 user_token="user-123",
                 query="Find 4-star hotels in Tokyo with good reviews",
                 request_type="chat",
@@ -114,7 +114,7 @@ async def main():
             "Include top attractions, restaurants, and transportation tips."
         )
 
-        itinerary_resp = await client.execute_query(
+        itinerary_resp = await client.proxy_llm_call(
             user_token="user-123",
             query=itinerary_query,
             request_type="chat",

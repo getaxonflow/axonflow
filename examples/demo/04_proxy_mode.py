@@ -48,7 +48,7 @@ async def main():
         print()
 
         start = time.time()
-        response = await client.execute_query(
+        response = await client.proxy_llm_call(
             user_token="support-agent-demo",
             query=query,
             request_type="chat",
@@ -88,7 +88,7 @@ async def main():
         print()
 
         try:
-            response = await client.execute_query(
+            response = await client.proxy_llm_call(
                 user_token="support-agent-demo",
                 query=malicious_query,
                 request_type="chat",

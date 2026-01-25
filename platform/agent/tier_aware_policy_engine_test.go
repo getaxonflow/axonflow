@@ -493,3 +493,224 @@ func TestBuildCacheKey(t *testing.T) {
 
 // strPtr helper is defined in static_policy_repository_test.go
 
+// TestTierAwarePolicyEngine_EvaluatePolicy_RequireApproval tests that the require_approval
+// action is correctly returned by the policy engine for HITL enforcement (#1081)
+func TestTierAwarePolicyEngine_EvaluatePolicy_RequireApproval(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock db: %v", err)
+	}
+	defer db.Close()
+
+	tenantID := "test-tenant"
+	testTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Setup mock with a require_approval policy (HITL)
+	rows := sqlmock.NewRows([]string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+		"override_id", "action_override", "enabled_override",
+		"expires_at", "override_reason",
+	}).
+		AddRow(
+			"uuid-hitl", "hitl_credit_scoring", "Credit Scoring HITL", "sensitive-data", `(?i)credit\s*scor`, "critical",
+			"Requires human approval for credit scoring decisions", "require_approval", "tenant", 100, true,
+			nil, tenantID, "",
+			"[]", "{}", 1,
+			testTime, testTime, "admin", "admin",
+			nil, nil, nil, nil, nil,
+		)
+
+	mock.ExpectQuery(`SELECT.*FROM static_policies`).
+		WillReturnRows(rows)
+
+	engine := NewTierAwarePolicyEngine(db, nil)
+
+	tests := []struct {
+		name           string
+		input          string
+		expectMatch    bool
+		expectPolicyID string
+		expectAction   string
+	}{
+		{
+			name:           "Credit scoring triggers HITL",
+			input:          "Calculate credit score for loan applicant",
+			expectMatch:    true,
+			expectPolicyID: "hitl_credit_scoring",
+			expectAction:   "require_approval",
+		},
+		{
+			name:           "Credit scoring with different case triggers HITL",
+			input:          "Please calculate CREDIT SCORING for this customer",
+			expectMatch:    true,
+			expectPolicyID: "hitl_credit_scoring",
+			expectAction:   "require_approval",
+		},
+		{
+			name:        "Non-matching query passes through",
+			input:       "What is the weather today?",
+			expectMatch: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := engine.EvaluatePolicy(context.Background(), tenantID, nil, tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Matched != tt.expectMatch {
+				t.Errorf("Matched = %v, want %v", result.Matched, tt.expectMatch)
+			}
+
+			if tt.expectMatch {
+				if result.PolicyID != tt.expectPolicyID {
+					t.Errorf("PolicyID = %s, want %s", result.PolicyID, tt.expectPolicyID)
+				}
+				if result.Action != tt.expectAction {
+					t.Errorf("Action = %s, want %s", result.Action, tt.expectAction)
+				}
+			}
+		})
+	}
+}
+
+
+// TestTierAwarePolicyEngine_GetEffectivePoliciesByCategory tests filtering by category
+func TestTierAwarePolicyEngine_GetEffectivePoliciesByCategory(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock db: %v", err)
+	}
+	defer db.Close()
+
+	tenantID := "test-tenant"
+	testTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Setup mock with multiple categories
+	rows := sqlmock.NewRows([]string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+		"override_id", "action_override", "enabled_override",
+		"expires_at", "override_reason",
+	}).
+		AddRow(
+			"uuid-1", "sqli_policy", "SQL Injection", "security-sqli", `union\s+select`, "critical",
+			"Blocks UNION-based SQL injection", "block", "system", 100, true,
+			nil, "global", "",
+			"[]", "{}", 1,
+			testTime, testTime, "system", "system",
+			nil, nil, nil, nil, nil,
+		).
+		AddRow(
+			"uuid-2", "pii_policy", "PII SSN", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
+			"Detects SSN", "redact", "tenant", 50, true,
+			nil, tenantID, "",
+			"[]", "{}", 1,
+			testTime, testTime, "user", "user",
+			nil, nil, nil, nil, nil,
+		)
+
+	mock.ExpectQuery(`SELECT.*FROM static_policies`).
+		WillReturnRows(rows)
+
+	engine := NewTierAwarePolicyEngine(db, nil)
+
+	// Get policies by security-sqli category
+	policies, err := engine.GetEffectivePoliciesByCategory(context.Background(), tenantID, nil, "security-sqli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(policies) != 1 {
+		t.Errorf("expected 1 policy for security-sqli category, got %d", len(policies))
+	}
+	if len(policies) > 0 && policies[0].PolicyID != "sqli_policy" {
+		t.Errorf("expected sqli_policy, got %s", policies[0].PolicyID)
+	}
+
+	// Get policies by pii-us category (should use cache)
+	piiPolicies, err := engine.GetEffectivePoliciesByCategory(context.Background(), tenantID, nil, "pii-us")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(piiPolicies) != 1 {
+		t.Errorf("expected 1 policy for pii-us category, got %d", len(piiPolicies))
+	}
+}
+
+// TestTierAwarePolicyEngine_GetEffectivePoliciesByTier tests filtering by tier
+func TestTierAwarePolicyEngine_GetEffectivePoliciesByTier(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock db: %v", err)
+	}
+	defer db.Close()
+
+	tenantID := "test-tenant"
+	testTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Setup mock with multiple tiers
+	rows := sqlmock.NewRows([]string{
+		"id", "policy_id", "name", "category", "pattern", "severity",
+		"description", "action", "tier", "priority", "enabled",
+		"organization_id", "tenant_id", "org_id",
+		"tags", "metadata", "version",
+		"created_at", "updated_at", "created_by", "updated_by",
+		"override_id", "action_override", "enabled_override",
+		"expires_at", "override_reason",
+	}).
+		AddRow(
+			"uuid-1", "system_policy", "System Policy", "security-sqli", `union\s+select`, "critical",
+			"System-level policy", "block", "system", 100, true,
+			nil, "global", "",
+			"[]", "{}", 1,
+			testTime, testTime, "system", "system",
+			nil, nil, nil, nil, nil,
+		).
+		AddRow(
+			"uuid-2", "tenant_policy", "Tenant Policy", "pii-us", `\d{3}-\d{2}-\d{4}`, "high",
+			"Tenant-level policy", "redact", "tenant", 50, true,
+			nil, tenantID, "",
+			"[]", "{}", 1,
+			testTime, testTime, "user", "user",
+			nil, nil, nil, nil, nil,
+		)
+
+	mock.ExpectQuery(`SELECT.*FROM static_policies`).
+		WillReturnRows(rows)
+
+	engine := NewTierAwarePolicyEngine(db, nil)
+
+	// Get policies by system tier
+	systemPolicies, err := engine.GetEffectivePoliciesByTier(context.Background(), tenantID, nil, TierSystem)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(systemPolicies) != 1 {
+		t.Errorf("expected 1 system tier policy, got %d", len(systemPolicies))
+	}
+	if len(systemPolicies) > 0 && systemPolicies[0].PolicyID != "system_policy" {
+		t.Errorf("expected system_policy, got %s", systemPolicies[0].PolicyID)
+	}
+
+	// Get policies by tenant tier (should use cache)
+	tenantPolicies, err := engine.GetEffectivePoliciesByTier(context.Background(), tenantID, nil, TierTenant)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(tenantPolicies) != 1 {
+		t.Errorf("expected 1 tenant tier policy, got %d", len(tenantPolicies))
+	}
+}

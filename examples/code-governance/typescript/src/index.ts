@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   console.log("-".repeat(60));
 
   try {
-    const response = await axonflow.executeQuery({
+    const response = await axonflow.proxyLLMCall({
       userToken,
       query: "Write a TypeScript function to validate email addresses using regex",
       requestType: "chat",
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
   console.log("-".repeat(60));
 
   try {
-    const response = await axonflow.executeQuery({
+    const response = await axonflow.proxyLLMCall({
       userToken,
       query: "Write a TypeScript function that uses child_process.exec to run shell commands from user input",
       requestType: "chat",

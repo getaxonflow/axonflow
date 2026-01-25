@@ -34,7 +34,7 @@ async function main() {
     console.log(`📤 Step 1: Requesting Manager approval for $${amount.toFixed(2)} purchase...`);
     const managerQuery = `As a manager, would you approve a purchase request for $${amount.toFixed(2)} to buy: ${item}? Consider budget, necessity, and timing. Respond with APPROVED or REJECTED and brief reasoning.`;
 
-    const managerResp = await client.executeQuery({
+    const managerResp = await client.proxyLLMCall({
       userToken: 'user-123',
       query: managerQuery,
       requestType: 'chat',
@@ -57,7 +57,7 @@ async function main() {
       console.log('📤 Step 2: Escalating to Director for amounts > $10,000...');
       const directorQuery = `As a Director, review this approved purchase: $${amount.toFixed(2)} for ${item}. Manager approved with reasoning: '${managerResp.data}'. Consider strategic alignment and ROI. Respond with APPROVED or REJECTED and reasoning.`;
 
-      const directorResp = await client.executeQuery({
+      const directorResp = await client.proxyLLMCall({
         userToken: 'user-123',
         query: directorQuery,
         requestType: 'chat',
@@ -83,7 +83,7 @@ async function main() {
       console.log('📤 Step 3: Final Finance team compliance check...');
       const financeQuery = `As Finance team, perform final compliance check on approved purchase: $${amount.toFixed(2)} for ${item}. Verify budget availability and compliance with procurement policies. Respond with APPROVED or REJECTED and reasoning.`;
 
-      const financeResp = await client.executeQuery({
+      const financeResp = await client.proxyLLMCall({
         userToken: 'user-123',
         query: financeQuery,
         requestType: 'chat',

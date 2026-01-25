@@ -38,10 +38,11 @@ type DynamicPolicySeed struct {
 // - pii-us: US-specific PII patterns (2 patterns)
 // - pii-eu: EU-specific PII patterns (1 pattern)
 // - pii-india: India-specific PII patterns (2 patterns)
+// - pii-singapore: Singapore-specific PII patterns (5 patterns) - Issue #1076
 // - code-secrets: Secret detection in generated code (8 patterns) - Issue #761
 // - code-unsafe: Unsafe code pattern detection (7 patterns) - Issue #761
 //
-// Total: 68 static system policies
+// Total: 73 static system policies
 func GetStaticSystemPolicies() []SystemPolicySeed {
 	policies := []SystemPolicySeed{}
 
@@ -505,8 +506,9 @@ func getAdminAccessPatterns() []SystemPolicySeed {
 }
 
 // getPIIPatterns returns PII detection patterns organized by region.
+// Includes global, US, EU, India, and Singapore patterns.
 func getPIIPatterns() []SystemPolicySeed {
-	return []SystemPolicySeed{
+	patterns := []SystemPolicySeed{
 		// ====================================================================
 		// pii-global (7 patterns)
 		// ====================================================================
@@ -651,6 +653,98 @@ func getPIIPatterns() []SystemPolicySeed {
 			Severity:    SeverityCritical,
 			Action:      "block",
 			Priority:    100,
+		},
+	}
+
+	// Append Singapore PII patterns
+	singaporePatterns := getSingaporePIIPatterns()
+	patterns = append(patterns, singaporePatterns...)
+
+	return patterns
+}
+
+// getSingaporePIIPatterns returns Singapore-specific PII detection patterns.
+// These patterns support MAS FEAT compliance in Community Edition (Issue #1076).
+//
+// Patterns include:
+// - NRIC: National Registration Identity Card (S, T, F, G, M prefixes)
+// - FIN: Foreign Identification Number (F, G prefixes)
+// - UEN: Unique Entity Number (8-9 digits + letter suffix)
+// - Phone: Singapore phone numbers (+65 format)
+// - Postal: Singapore postal codes (6 digits)
+//
+// Note: These are pattern-based only. Checksum validation is Enterprise-only.
+func getSingaporePIIPatterns() []SystemPolicySeed {
+	return []SystemPolicySeed{
+		// ====================================================================
+		// pii-singapore (5 patterns) - Issue #1076
+		// ====================================================================
+		{
+			ID:          "sys_pii_singapore_nric",
+			Name:        "Singapore NRIC Detection",
+			Description: "Singapore National Registration Identity Card detected - automatic redaction for MAS FEAT compliance",
+			Category:    CategoryPIISingapore,
+			// NRIC format: [STFGM]XXXXXXX[A-Z]
+			// S = Singapore Citizen born before 2000
+			// T = Singapore Citizen born 2000 onwards
+			// F = Foreigner issued before 2000
+			// G = Foreigner issued 2000 onwards
+			// M = Foreigner issued 2022 onwards
+			Pattern:  `\b[STFGM]\d{7}[A-Z]\b`,
+			Severity: SeverityCritical,
+			Action:   "redact",
+			Priority: 100,
+		},
+		{
+			ID:          "sys_pii_singapore_fin",
+			Name:        "Singapore FIN Detection",
+			Description: "Singapore Foreign Identification Number detected - automatic redaction for MAS FEAT compliance",
+			Category:    CategoryPIISingapore,
+			// FIN format: [FG]XXXXXXX[A-Z]
+			// Note: FIN is subset of NRIC pattern but kept separate for explicit audit logging
+			Pattern:  `\b[FG]\d{7}[A-Z]\b`,
+			Severity: SeverityCritical,
+			Action:   "redact",
+			Priority: 100,
+		},
+		{
+			ID:          "sys_pii_singapore_uen",
+			Name:        "Singapore UEN Detection",
+			Description: "Singapore Unique Entity Number detected - automatic redaction for MAS FEAT compliance",
+			Category:    CategoryPIISingapore,
+			// UEN formats:
+			// - Business (ROB): 8 digits + 1 letter (e.g., 53276128A)
+			// - Local Company (ROC): 9 digits + 1 letter (e.g., 200312345A)
+			// - Others: 10 alphanumeric characters (e.g., T08GA0001A)
+			Pattern:  `\b\d{8,9}[A-Z]\b|\b[TS]\d{2}[A-Z]{2}\d{4}[A-Z]\b`,
+			Severity: SeverityHigh,
+			Action:   "redact",
+			Priority: 90,
+		},
+		{
+			ID:          "sys_pii_singapore_phone",
+			Name:        "Singapore Phone Detection",
+			Description: "Singapore phone number detected - redaction recommended for privacy",
+			Category:    CategoryPIISingapore,
+			// Singapore phone: +65 followed by 8 digits starting with 6, 8, or 9
+			// 6XXX XXXX = landline
+			// 8XXX XXXX, 9XXX XXXX = mobile
+			Pattern:  `\+65\s?[689]\d{3}\s?\d{4}\b`,
+			Severity: SeverityMedium,
+			Action:   "redact",
+			Priority: 70,
+		},
+		{
+			ID:          "sys_pii_singapore_postal",
+			Name:        "Singapore Postal Code Detection",
+			Description: "Singapore postal code detected - may reveal location, logged for audit",
+			Category:    CategoryPIISingapore,
+			// Singapore postal code: 6 digits (ranges 01-82)
+			// Using word boundary to avoid false positives with other numbers
+			Pattern:  `\b(?:0[1-9]|[1-7]\d|8[0-2])\d{4}\b`,
+			Severity: SeverityLow,
+			Action:   "warn",
+			Priority: 30,
 		},
 	}
 }

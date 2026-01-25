@@ -17,6 +17,7 @@ func TestStaticPolicyCategories(t *testing.T) {
 		CategoryPIIUS,
 		CategoryPIIEU,
 		CategoryPIIIndia,
+		CategoryPIISingapore, // Added for Issue #1076 - MAS FEAT Community
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,
@@ -79,6 +80,7 @@ func TestIsValidStaticCategory(t *testing.T) {
 		{"pii-us is valid", CategoryPIIUS, true},
 		{"pii-eu is valid", CategoryPIIEU, true},
 		{"pii-india is valid", CategoryPIIIndia, true},
+		{"pii-singapore is valid", CategoryPIISingapore, true},
 		{"code-secrets is valid", CategoryCodeSecrets, true},
 		{"code-unsafe is valid", CategoryCodeUnsafe, true},
 		{"code-compliance is valid", CategoryCodeCompliance, true},
@@ -316,6 +318,7 @@ func TestCategoryConstants(t *testing.T) {
 		{CategoryPIIUS, "pii-us"},
 		{CategoryPIIEU, "pii-eu"},
 		{CategoryPIIIndia, "pii-india"},
+		{CategoryPIISingapore, "pii-singapore"},
 		{CategoryCodeSecrets, "code-secrets"},
 		{CategoryCodeUnsafe, "code-unsafe"},
 		{CategoryCodeCompliance, "code-compliance"},

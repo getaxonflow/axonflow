@@ -1,6 +1,6 @@
 // AxonFlow Static Policy Management - Go SDK (Comprehensive)
 //
-// This example demonstrates ALL static policy SDK methods:
+// This example demonstrates and VALIDATES static policy SDK methods:
 // - ListStaticPolicies
 // - GetStaticPolicy
 // - CreateStaticPolicy
@@ -11,6 +11,8 @@
 // - GetStaticPolicyVersions
 // - GetEffectiveStaticPolicies
 //
+// Issue #1082: Examples should test actual behavior, not just API availability
+//
 // Run with: go run main.go
 // Prerequisites: docker compose up -d
 
@@ -19,10 +21,26 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
 
 func getEnv(key, defaultVal string) string {
 	if val := os.Getenv(key); val != "" {
@@ -42,7 +60,7 @@ func main() {
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-client"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Empty for community mode
 	})
 
 	// Unique name for our test policy
@@ -66,7 +84,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
+		assert(len(policies) > 0, "Policies list is not empty")
 		fmt.Printf("   Found %d policies\n", len(policies))
 		for i, p := range policies {
 			if i >= 3 {
@@ -121,13 +141,15 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 		return
 	}
 	policyID = created.ID
-	fmt.Printf("   Created: %s\n", created.Name)
-	fmt.Printf("   ID: %s\n", created.ID)
-	fmt.Printf("   Category: %s\n", created.Category)
-	fmt.Printf("   Action: %s\n", created.Action)
+	assert(created.ID != "", "Created policy has ID")
+	assert(created.Name == policyName, "Created policy name matches")
+	assert(string(created.Category) == string(axonflow.CategoryCodeSecrets), "Created policy category matches")
+	assert(created.Enabled, "Created policy is enabled")
+	fmt.Printf("   Created: %s (ID: %s)\n", created.Name, created.ID)
 	fmt.Println()
 
 	// ========================================
@@ -137,15 +159,12 @@ func main() {
 	retrieved, err := client.GetStaticPolicy(policyID)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Retrieved: %s\n", retrieved.Name)
-		fmt.Printf("   Pattern: %s\n", retrieved.Pattern)
-		fmt.Printf("   Enabled: %v\n", retrieved.Enabled)
-		version := 1
-		if retrieved.Version > 0 {
-			version = retrieved.Version
-		}
-		fmt.Printf("   Version: %d\n", version)
+		assert(retrieved.ID == policyID, "Retrieved policy ID matches")
+		assert(retrieved.Name == policyName, "Retrieved policy name matches")
+		assert(strings.Contains(retrieved.Pattern, "test_secret"), "Retrieved policy pattern matches")
+		fmt.Printf("   Retrieved: %s (ID: %s)\n", retrieved.Name, retrieved.ID)
 	}
 	fmt.Println()
 
@@ -163,16 +182,18 @@ func main() {
 	result, err := client.TestPattern(`(?i)test_secret_\d+`, testInputs)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Pattern valid: %v\n", result.Valid)
-		fmt.Println("   Match results:")
+		assert(result.Valid, "Pattern is valid")
+		// Verify expected matches
+		matchCount := 0
 		for _, match := range result.Matches {
-			status := "NO MATCH"
 			if match.Matched {
-				status = "MATCH"
+				matchCount++
 			}
-			fmt.Printf("     [%s] %s\n", status, match.Input)
 		}
+		assert(matchCount == 3, fmt.Sprintf("Expected 3 matches, got %d", matchCount))
+		fmt.Printf("   Pattern valid: %v, Matches: %d/5\n", result.Valid, matchCount)
 	}
 	fmt.Println()
 
@@ -190,15 +211,12 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Updated: %s\n", updated.Name)
-		fmt.Printf("   New severity: %s\n", updated.Severity)
-		fmt.Printf("   New action: %s\n", updated.Action)
-		version := 2
-		if updated.Version > 0 {
-			version = updated.Version
-		}
-		fmt.Printf("   New version: %d\n", version)
+		assert(updated.Description == newDesc, "Description was updated")
+		assert(string(updated.Severity) == string(newSeverity), "Severity was updated to high")
+		assert(string(updated.Action) == string(newAction), "Action was updated to block")
+		fmt.Printf("   Updated: %s (severity: %s, action: %s)\n", updated.Name, updated.Severity, updated.Action)
 	}
 	fmt.Println()
 
@@ -224,18 +242,20 @@ func main() {
 	toggled, err := client.ToggleStaticPolicy(policyID, false)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Policy: %s\n", toggled.Name)
-		fmt.Printf("   Enabled: %v\n", toggled.Enabled)
+		assert(!toggled.Enabled, "Policy was disabled")
+		fmt.Printf("   Policy: %s, Enabled: %v\n", toggled.Name, toggled.Enabled)
 	}
-	fmt.Println()
 
 	fmt.Println("   Enabling policy again...")
 	toggled, err = client.ToggleStaticPolicy(policyID, true)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Enabled: %v\n", toggled.Enabled)
+		assert(toggled.Enabled, "Policy was re-enabled")
+		fmt.Printf("   Policy: %s, Enabled: %v\n", toggled.Name, toggled.Enabled)
 	}
 	fmt.Println()
 
@@ -272,24 +292,24 @@ func main() {
 	err = client.DeleteStaticPolicy(policyID)
 	if err != nil {
 		fmt.Printf("   WARNING: Failed to delete policy: %v\n", err)
+		failCount++
 	} else {
+		assert(true, "Policy deleted successfully")
 		fmt.Printf("   Deleted policy: %s\n", policyName)
 		policyID = "" // Mark as deleted
 	}
 	fmt.Println()
 
+	// ========================================
+	// SUMMARY
+	// ========================================
 	fmt.Println("===========================================")
-	fmt.Println("All 10 Static Policy SDK methods tested!")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 	fmt.Println()
-	fmt.Println("Methods demonstrated:")
-	fmt.Println("  1. ListStaticPolicies()           - List with filtering")
-	fmt.Println("  2. ListStaticPolicies(category)   - Filter by category")
-	fmt.Println("  3. CreateStaticPolicy()           - Create new policy")
-	fmt.Println("  4. GetStaticPolicy()              - Get by ID")
-	fmt.Println("  5. TestPattern()                  - Test regex pattern")
-	fmt.Println("  6. UpdateStaticPolicy()           - Update policy")
-	fmt.Println("  7. GetStaticPolicyVersions()      - Version history")
-	fmt.Println("  8. ToggleStaticPolicy()           - Enable/disable")
-	fmt.Println("  9. GetEffectiveStaticPolicies()   - Effective policies")
-	fmt.Println(" 10. DeleteStaticPolicy()           - Delete policy")
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - Static Policy CRUD verified!")
+	}
 }
