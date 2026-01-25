@@ -404,7 +404,7 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Route SQL through AxonFlow for policy enforcement
-	axonResp, err := axonflowClient.ExecuteQuery(
+	axonResp, err := axonflowClient.ProxyLLMCall(
 		userToken,
 		req.Query,
 		"sql",
@@ -450,7 +450,7 @@ User query: %s
 
 Return only the SQL query, no explanation.`, query)
 
-	resp, err := axonflowClient.ExecuteQuery(
+	resp, err := axonflowClient.ProxyLLMCall(
 		userToken,
 		prompt,
 		"chat",
@@ -534,7 +534,7 @@ func llmChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	userToken := extractBearerToken(r)
 
-	resp, err := axonflowClient.ExecuteQuery(
+	resp, err := axonflowClient.ProxyLLMCall(
 		userToken,
 		req.Message,
 		"chat",
@@ -769,7 +769,7 @@ func extractSQL(response string) string {
 }
 
 func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) {
-	// Audit logging is handled by AxonFlow via ExecuteQuery
+	// Audit logging is handled by AxonFlow via ProxyLLMCall
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
@@ -788,7 +788,7 @@ func respondWithBlocked(w http.ResponseWriter, user User, query, reason string) 
 }
 
 func respondWithResults(w http.ResponseWriter, user User, query string, results []map[string]interface{}, provider string) {
-	// Audit logging is handled by AxonFlow via ExecuteQuery
+	// Audit logging is handled by AxonFlow via ProxyLLMCall
 
 	// Create LLMProviderInfo if provider is specified
 	var llmProvider *LLMProviderInfo

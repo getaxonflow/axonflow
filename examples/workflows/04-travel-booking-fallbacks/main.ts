@@ -32,7 +32,7 @@ async function main() {
   try {
     // STEP 1: Try direct flights first
     console.log('🔍 Step 1: Searching for direct flights from San Francisco to Tokyo...');
-    const flightResp1 = await client.executeQuery({
+    const flightResp1 = await client.proxyLLMCall({
       userToken: 'user-123',
       query: 'Find direct flights from San Francisco to Tokyo next month',
       requestType: 'chat',
@@ -45,7 +45,7 @@ async function main() {
       console.log('⚠️  No direct flights available');
       console.log('📤 Step 2 (Fallback): Trying connecting flights...');
 
-      const flightResp2 = await client.executeQuery({
+      const flightResp2 = await client.proxyLLMCall({
         userToken: 'user-123',
         query: 'Find connecting flights from San Francisco to Tokyo with 1 stop',
         requestType: 'chat',
@@ -70,7 +70,7 @@ async function main() {
 
     // STEP 2: Try 5-star hotels first
     console.log('🔍 Step 3: Searching for 5-star hotels in Tokyo city center...');
-    const hotelResp1 = await client.executeQuery({
+    const hotelResp1 = await client.proxyLLMCall({
       userToken: 'user-123',
       query: 'Find 5-star hotels in Tokyo Shibuya district',
       requestType: 'chat',
@@ -83,7 +83,7 @@ async function main() {
       console.log('⚠️  5-star hotels fully booked');
       console.log('📤 Step 4 (Fallback): Trying 4-star hotels...');
 
-      const hotelResp2 = await client.executeQuery({
+      const hotelResp2 = await client.proxyLLMCall({
         userToken: 'user-123',
         query: 'Find 4-star hotels in Tokyo with good reviews',
         requestType: 'chat',
@@ -110,7 +110,7 @@ async function main() {
     console.log('📋 Generating complete itinerary with selected options...');
     const itineraryQuery = `Create a 7-day Tokyo itinerary with ${flightOption} and ${hotelOption} accommodation. Include top attractions, restaurants, and transportation tips.`;
 
-    const itineraryResp = await client.executeQuery({
+    const itineraryResp = await client.proxyLLMCall({
       userToken: 'user-123',
       query: itineraryQuery,
       requestType: 'chat',

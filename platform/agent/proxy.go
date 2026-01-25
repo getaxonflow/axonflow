@@ -151,11 +151,20 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Execution Replay
 	r.PathPrefix("/api/v1/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
 
+	// Unified Execution Tracking (#1075)
+	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+
 	// Audit Logs
 	r.PathPrefix("/api/v1/audit").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
 
 	// LLM Providers
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// MAS FEAT Compliance (Singapore) - Enterprise feature
+	r.PathPrefix("/api/v1/masfeat").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// Workflow Control Plane (#834)
+	r.PathPrefix("/api/v1/workflows").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Routes proxied to Portal (port 8082)
 	// Portal Authentication (login, logout, session)
@@ -220,7 +229,8 @@ func IsProxiedPath(path string) bool {
 		strings.HasPrefix(path, "/api/v1/plan") ||
 		strings.HasPrefix(path, "/api/v1/executions") ||
 		strings.HasPrefix(path, "/api/v1/audit") ||
-		strings.HasPrefix(path, "/api/v1/llm-providers") {
+		strings.HasPrefix(path, "/api/v1/llm-providers") ||
+		strings.HasPrefix(path, "/api/v1/masfeat") {
 		return true
 	}
 

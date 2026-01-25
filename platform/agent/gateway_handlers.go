@@ -25,6 +25,7 @@ import (
 
 	"axonflow/platform/agent/rbi"
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/orchestrator/cost"
 	sharedpolicy "axonflow/platform/shared/policy"
 
 	"github.com/google/uuid"
@@ -179,6 +180,7 @@ type PreCheckResponse struct {
 	ApprovedData      map[string]interface{} `json:"approved_data,omitempty"`
 	Policies          []string               `json:"policies"`
 	RateLimit         *RateLimitInfo         `json:"rate_limit,omitempty"`
+	BudgetInfo        *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget status
 	ExpiresAt         time.Time              `json:"expires_at"`
 	BlockReason       string                 `json:"block_reason,omitempty"`
 }
@@ -188,6 +190,17 @@ type RateLimitInfo struct {
 	Limit     int       `json:"limit"`
 	Remaining int       `json:"remaining"`
 	ResetAt   time.Time `json:"reset_at"`
+}
+
+// BudgetInfo provides budget status to SDK (Issue #1082)
+type BudgetInfo struct {
+	BudgetID   string  `json:"budget_id,omitempty"`
+	BudgetName string  `json:"budget_name,omitempty"`
+	UsedUSD    float64 `json:"used_usd"`
+	LimitUSD   float64 `json:"limit_usd"`
+	Percentage float64 `json:"percentage"`
+	Exceeded   bool    `json:"exceeded"`
+	Action     string  `json:"action,omitempty"` // "warn", "block", "downgrade"
 }
 
 // TokenUsage tracks LLM token consumption
@@ -474,12 +487,21 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			ConnectorName: "gateway",
 			UserID:        fmt.Sprintf("%d", user.ID),
 			Categories: []sharedpolicy.PolicyCategory{
+				// Security categories
 				sharedpolicy.CategorySecuritySQLi,
 				sharedpolicy.CategorySecurityDangerous,
+				// PII categories by jurisdiction
 				sharedpolicy.CategoryPIIGlobal,
 				sharedpolicy.CategoryPIIUS,
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
+				// HITL/Compliance categories (Issue #1081)
+				sharedpolicy.CategorySensitiveData, // For dynamically created HITL policies
+				sharedpolicy.CategoryComplianceRBI,
+				sharedpolicy.CategoryComplianceSEBI,
+				sharedpolicy.CategoryComplianceEUAIAct,
+				sharedpolicy.CategoryComplianceMASFEAT,
 			},
 		})
 		// Convert to StaticPolicyResult for backward compatibility
@@ -505,18 +527,76 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Issue #1082: Check budget limits before allowing request
+	// This enforces pre-request budget checks in Gateway Mode
+	var budgetInfo *BudgetInfo
+	if costService != nil && !policyResult.Blocked {
+		budgetDecision, err := costService.CheckBudget(ctx, client.OrgID, "", "", fmt.Sprintf("%d", user.ID), client.TenantID)
+		if err != nil {
+			log.Printf("⚠️ [Pre-check] Budget check failed: %v (allowing request)", err)
+		} else if budgetDecision != nil {
+			// Build budget info for response
+			budgetInfo = &BudgetInfo{
+				BudgetID:   budgetDecision.BudgetID,
+				BudgetName: budgetDecision.BudgetName,
+				UsedUSD:    budgetDecision.UsedUSD,
+				LimitUSD:   budgetDecision.LimitUSD,
+				Percentage: budgetDecision.Percentage,
+				Exceeded:   !budgetDecision.Allowed || budgetDecision.Percentage >= 100,
+				Action:     string(budgetDecision.Action),
+			}
+
+			// Check if budget is exceeded and should block
+			if !budgetDecision.Allowed {
+				log.Printf("💰 [Pre-check] Request blocked by budget: %s", budgetDecision.Message)
+				gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
+				response := PreCheckResponse{
+					ContextID:   uuid.New().String(),
+					Approved:    false,
+					Policies:    []string{"budget_exceeded"},
+					BlockReason: budgetDecision.Message,
+					BudgetInfo:  budgetInfo,
+					ExpiresAt:   time.Now(),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
+				_ = json.NewEncoder(w).Encode(response)
+				return
+			}
+
+			// If exceeded but action is warn, add header
+			if budgetDecision.Percentage >= 100 && budgetDecision.Action == cost.OnExceedWarn {
+				log.Printf("⚠️ [Pre-check] Budget exceeded with warn action: %s", budgetDecision.Message)
+				w.Header().Set("X-Budget-Warning", budgetDecision.Message)
+			}
+		}
+	}
+
 	// Generate context ID
 	contextID := uuid.New().String()
 	expiresAt := time.Now().Add(defaultContextExpiry)
 
+	// Issue #1081: Check if HITL (Human-in-the-Loop) is required
+	// HITL is ONLY triggered by policy evaluation returning require_approval action.
+	// This is an ENTERPRISE-ONLY feature - in Community mode, require_approval policies auto-approve.
+	// Security: We do NOT trust client-provided context (requires_hitl, eu_ai_act_article_14, etc.)
+	// as that would allow any client to bypass policy or trigger DoS.
+	requiresHITL := policyResult.RequiresApproval && !isCommunityMode()
+
 	// Build response
 	// Issue #891: Combine redaction flags from static policies and RBI PII detection
 	requiresRedaction := policyResult.RequiresRedaction || rbiPIIRequiresRedaction
+
+	// Determine if request should be blocked
+	// Block if: policy blocked OR HITL required (Enterprise only - pending human approval)
+	isBlocked := policyResult.Blocked || requiresHITL
+
 	response := PreCheckResponse{
 		ContextID:         contextID,
-		Approved:          !policyResult.Blocked,
+		Approved:          !isBlocked,
 		RequiresRedaction: requiresRedaction,
 		Policies:          policyResult.TriggeredPolicies,
+		BudgetInfo:        budgetInfo, // Issue #1082: Include budget status
 		ExpiresAt:         expiresAt,
 	}
 
@@ -525,9 +605,19 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		response.Policies = append(response.Policies, "rbi_pii_protection")
 	}
 
+	// Issue #1081: Add HITL policy to triggered policies if HITL required (Enterprise only)
+	if requiresHITL {
+		response.Policies = append(response.Policies, "hitl_enterprise")
+	}
+
 	if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
+	} else if requiresHITL {
+		// Issue #1081: HITL required (Enterprise only) - block with require_approval reason
+		// This enables EU AI Act Article 14, RBI, SEBI, and other compliance frameworks
+		response.BlockReason = "require_approval"
+		log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - awaiting human approval (contextID=%s)", contextID)
 	} else if requiresRedaction {
 		log.Printf("⚠️ [Pre-check] Request approved with redaction required: %s", policyResult.Reason)
 	} else {
@@ -972,6 +1062,15 @@ func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPoli
 		}
 	}
 
+	// Issue #1081: Check for require_approval action in matched policies
+	// This enables HITL enforcement for EU AI Act Article 14 and other compliance frameworks
+	for _, match := range result.MatchedPolicies {
+		if match.Action == sharedpolicy.ActionRequireApproval {
+			staticResult.RequiresApproval = true
+			break
+		}
+	}
+
 	return staticResult
 }
 
@@ -981,9 +1080,19 @@ func isPIICategory(category sharedpolicy.PolicyCategory) bool {
 	case sharedpolicy.CategoryPIIGlobal,
 		sharedpolicy.CategoryPIIUS,
 		sharedpolicy.CategoryPIIIndia,
-		sharedpolicy.CategoryPIIEU:
+		sharedpolicy.CategoryPIIEU,
+		sharedpolicy.CategoryPIISingapore:
 		return true
 	default:
 		return false
 	}
 }
+
+// NOTE: checkHITLRequiredFromContext was REMOVED in Issue #1081 code review.
+// HITL enforcement is an ENTERPRISE-ONLY feature.
+// HITL is ONLY triggered by policy evaluation returning require_approval action.
+// We do NOT trust client-provided context metadata (requires_hitl, eu_ai_act_article_14, etc.)
+// as that would allow:
+// 1. Any client to bypass licensing (HITL is Enterprise-only)
+// 2. DoS attacks by clients setting HITL flags on all requests
+// 3. Security bypass by untrusted input controlling enforcement behavior

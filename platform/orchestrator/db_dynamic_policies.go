@@ -241,7 +241,7 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 
 func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	query := `
-		SELECT name, conditions, actions, tenant_id, priority, policy_id
+		SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE(policy_type, 'content') as policy_type
 		FROM dynamic_policies
 		WHERE enabled = true
 		ORDER BY priority DESC, created_at DESC
@@ -256,11 +256,11 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	newPolicies := make(map[string]interface{})
 
 	for rows.Next() {
-		var name, conditionsJSON, actionsJSON, policyID string
+		var name, conditionsJSON, actionsJSON, policyID, policyType string
 		var tenantID sql.NullString
 		var priority int
 
-		err := rows.Scan(&name, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID)
+		err := rows.Scan(&name, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType)
 		if err != nil {
 			log.Printf("Error scanning policy row: %v", err)
 			continue
@@ -276,6 +276,7 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 		policyData := map[string]interface{}{
 			"policy_id":  policyID,
 			"name":       name,
+			"type":       policyType,
 			"conditions": json.RawMessage(conditionsJSON),
 			"actions":    json.RawMessage(actionsJSON),
 			"tenant_id":  tenantIDStr,
@@ -305,6 +306,15 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 
 	log.Printf("Loaded %d policies from database", len(newPolicies))
 	return nil
+}
+
+// RefreshPolicies triggers an immediate policy refresh from the database.
+// This is useful when policies are created/updated/deleted via the API and
+// you need the changes to be available immediately without waiting for
+// the background refresh cycle (default 30 seconds).
+// Issue #1082: Used by WCP HITL integration for immediate policy availability.
+func (e *DatabaseDynamicPolicyEngine) RefreshPolicies() error {
+	return e.refreshPolicies()
 }
 
 func (e *DatabaseDynamicPolicyEngine) backgroundRefresh() {
@@ -610,6 +620,15 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if add, ok := actionConfig["add"].(float64); ok {
 					result.RiskScore += add
 				}
+
+			case "require_approval":
+				// Issue #1082: Trigger HITL workflow - requires human approval before continuing
+				result.Allowed = false
+				result.RequiredActions = append(result.RequiredActions, "require_approval")
+				if reason, ok := actionConfig["reason"].(string); ok {
+					result.RequiredActions = append(result.RequiredActions, "approval_reason: "+reason)
+				}
+				log.Printf("[POLICY] Require approval action applied - step will need human approval")
 			}
 		}
 
@@ -829,10 +848,14 @@ func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req Orchestrat
 	default:
 		// Try to get from context map for custom fields
 		if req.Context != nil {
-			// Handle dotted notation like "user.access_pattern"
+			// Handle dotted notation like "context.step_input.query"
+			// Issue #1082: Support nested context paths for WCP step input
 			parts := strings.Split(field, ".")
-			if len(parts) == 2 && parts[0] == "context" {
-				if val, ok := req.Context[parts[1]]; ok {
+			if len(parts) >= 2 && parts[0] == "context" {
+				// Join all parts after "context" to form the context key
+				// e.g., "context.step_input.query" -> "step_input.query"
+				contextKey := strings.Join(parts[1:], ".")
+				if val, ok := req.Context[contextKey]; ok {
 					return val
 				}
 			}
@@ -898,15 +921,19 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 			}
 		}
 
-		// Extract conditions and actions from rules
-		if rules, ok := policyMap["rules"].(map[string]interface{}); ok {
-			// Convert rules to conditions for compatibility
-			for k, v := range rules {
-				dp.Conditions = append(dp.Conditions, PolicyCondition{
-					Field:    k,
-					Operator: "equals",
-					Value:    v,
-				})
+		// Extract conditions from stored JSON
+		if conditionsRaw, ok := policyMap["conditions"].(json.RawMessage); ok {
+			var conditions []PolicyCondition
+			if err := json.Unmarshal(conditionsRaw, &conditions); err == nil {
+				dp.Conditions = conditions
+			}
+		}
+
+		// Extract actions from stored JSON
+		if actionsRaw, ok := policyMap["actions"].(json.RawMessage); ok {
+			var actions []PolicyAction
+			if err := json.Unmarshal(actionsRaw, &actions); err == nil {
+				dp.Actions = actions
 			}
 		}
 

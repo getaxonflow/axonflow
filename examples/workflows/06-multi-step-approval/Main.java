@@ -51,7 +51,7 @@ public class Main {
                     amount, item
             );
 
-            ExecuteResponse managerResp = client.executeQuery(
+            ExecuteResponse managerResp = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query(managerQuery)
@@ -82,7 +82,7 @@ public class Main {
                         amount, item, managerResp.getData()
                 );
 
-                ExecuteResponse directorResp = client.executeQuery(
+                ExecuteResponse directorResp = client.proxyLLMCall(
                         ExecuteQueryRequest.builder()
                                 .userToken("user-123")
                                 .query(directorQuery)
@@ -116,7 +116,7 @@ public class Main {
                         amount, item
                 );
 
-                ExecuteResponse financeResp = client.executeQuery(
+                ExecuteResponse financeResp = client.proxyLLMCall(
                         ExecuteQueryRequest.builder()
                                 .userToken("user-123")
                                 .query(financeQuery)

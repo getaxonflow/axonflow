@@ -18,7 +18,7 @@ async def main():
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as ax:
         try:
-            response = await ax.execute_query(
+            response = await ax.proxy_llm_call(
                 user_token="demo-user",
                 query="My SSN is 123-45-6789. Can you check my taxes?",
                 request_type="chat",

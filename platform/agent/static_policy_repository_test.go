@@ -253,6 +253,37 @@ func TestCreate(t *testing.T) {
 			},
 			errContains: "organization_id is required",
 		},
+		{
+			// Issue #1081: Test that require_approval action (HITL) properly sets phase and action columns
+			name: "require_approval action sets correct phase columns",
+			policy: &StaticPolicy{
+				Name:        "HITL Credit Scoring",
+				Category:    "sensitive-data",
+				Tier:        TierTenant,
+				Pattern:     `(?i)credit\s*scor`,
+				Action:      "require_approval",
+				Severity:    "critical",
+				TenantID:    "tenant-1",
+				Description: "Requires human approval for credit scoring decisions",
+				Enabled:     true,
+			},
+			setupMock: func(mock sqlmock.Sqlmock) {
+				// Check license tier (Enterprise for HITL)
+				mock.ExpectQuery(`SELECT license_tier FROM clients`).
+					WithArgs("tenant-1").
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+
+				// Insert policy - verify the INSERT includes phase and action columns
+				// For require_approval: phase="request", action_request="require_approval", action_response=NULL
+				mock.ExpectExec(`INSERT INTO static_policies`).
+					WillReturnResult(sqlmock.NewResult(1, 1))
+
+				// Record version
+				mock.ExpectExec(`INSERT INTO static_policy_versions`).
+					WillReturnResult(sqlmock.NewResult(1, 1))
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tt := range tests {

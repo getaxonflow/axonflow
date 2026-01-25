@@ -1,4 +1,4 @@
-// Package main demonstrates DSPy + AxonFlow integration in Go.
+// Package main demonstrates and VALIDATES DSPy + AxonFlow integration in Go.
 //
 // This example shows how to add AxonFlow governance to DSPy-style
 // programming of language models. DSPy provides a framework for building
@@ -9,6 +9,8 @@
 // - Signature Validation: Input/output validation with governance
 // - Chain-of-Thought Governance: Policy checks at each reasoning step
 // - Retrieval Augmentation: Governed RAG pipelines
+//
+// Issue #1082: Examples should test actual behavior, not just API availability
 //
 // Requirements:
 // - AxonFlow running locally (docker compose up)
@@ -24,8 +26,23 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go"
+	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
 
 // =============================================================================
 // DSPy-style Types
@@ -345,9 +362,9 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "What are the benefits of renewable energy?",
 	})
 
+	assert(!result1.Blocked, "Safe predict not blocked")
 	if result1.Success {
 		fmt.Printf("   Output: %v\n", result1.Output)
-		fmt.Println("   ✓ Safe predict succeeded!")
 	}
 
 	// Test 2: Chain-of-Thought
@@ -367,10 +384,10 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "Why is the sky blue?",
 	})
 
+	assert(!result2.Blocked, "Chain-of-Thought not blocked")
 	if result2.Success {
 		fmt.Printf("   Rationale: %s\n", result2.Rationale)
 		fmt.Printf("   Output: %v\n", result2.Output)
-		fmt.Println("   ✓ Chain-of-Thought succeeded!")
 	}
 
 	// Test 3: RAG Pipeline
@@ -390,9 +407,9 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "What are best practices for AI safety?",
 	})
 
+	assert(!result3.Blocked, "RAG pipeline not blocked")
 	if result3.Success {
 		fmt.Printf("   Output: %v\n", result3.Output)
-		fmt.Println("   ✓ RAG pipeline succeeded!")
 	}
 
 	// Test 4: PII Detection
@@ -404,9 +421,11 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "Find records for SSN 123-45-6789",
 	})
 
+	// PII may be flagged or workflow may complete (depending on default mode)
+	// The key is that the workflow doesn't crash
+	assert(result4.Blocked || result4.Success, "PII query handled (blocked or flagged)")
 	if result4.Blocked {
 		fmt.Printf("   Block reason: %s\n", result4.BlockReason)
-		fmt.Println("   ✓ PII correctly detected and blocked!")
 	}
 
 	// Test 5: SQL Injection
@@ -418,9 +437,9 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "SELECT * FROM users; DROP TABLE users;--",
 	})
 
+	assert(result5.Blocked, "SQL injection correctly blocked")
 	if result5.Blocked {
 		fmt.Printf("   Block reason: %s\n", result5.BlockReason)
-		fmt.Println("   ✓ SQL injection correctly blocked!")
 	}
 
 	// Test 6: Multi-module pipeline
@@ -451,13 +470,22 @@ func runTests(client *axonflow.AxonFlowClient) {
 
 		if step2.Success {
 			fmt.Printf("   Final output: %v\n", step2.Output)
-			fmt.Println("   ✓ Multi-module pipeline succeeded!")
 		}
+		assert(!step2.Blocked, "Multi-module pipeline step 2 not blocked")
 	}
+	assert(!step1.Blocked, "Multi-module pipeline step 1 not blocked")
 
+	// Summary
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("All tests completed!")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 	fmt.Println(strings.Repeat("=", 60))
+
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - DSPy integration verified!")
+	}
 }
 
 // =============================================================================

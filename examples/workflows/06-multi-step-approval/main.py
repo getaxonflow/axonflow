@@ -42,7 +42,7 @@ async def main():
             "Consider budget, necessity, and timing. Respond with APPROVED or REJECTED and brief reasoning."
         )
 
-        manager_resp = await client.execute_query(
+        manager_resp = await client.proxy_llm_call(
             user_token="user-123",
             query=manager_query,
             request_type="chat",
@@ -68,7 +68,7 @@ async def main():
                 "Consider strategic alignment and ROI. Respond with APPROVED or REJECTED and reasoning."
             )
 
-            director_resp = await client.execute_query(
+            director_resp = await client.proxy_llm_call(
                 user_token="user-123",
                 query=director_query,
                 request_type="chat",
@@ -95,7 +95,7 @@ async def main():
                 "Verify budget availability and compliance with procurement policies. Respond with APPROVED or REJECTED and reasoning."
             )
 
-            finance_resp = await client.execute_query(
+            finance_resp = await client.proxy_llm_call(
                 user_token="user-123",
                 query=finance_query,
                 request_type="chat",

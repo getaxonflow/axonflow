@@ -1,0 +1,1251 @@
+openapi: 3.0.3
+info:
+  title: AxonFlow MAS FEAT Compliance API
+  description: |
+    REST API for MAS FEAT (Monetary Authority of Singapore) compliance module.
+
+    This module implements the MAS AI Risk Management Guidelines 2025 and supports
+    the FEAT (Fairness, Ethics, Accountability, Transparency) assessment framework
+    for AI systems in Singapore's financial services industry.
+
+    ## Key Features
+
+    - **AI System Registry**: Register and manage AI systems with 3-dimensional risk ratings
+    - **Materiality Classification**: Automatic calculation based on Impact × Complexity × Reliance
+    - **FEAT Assessments**: Structured assessments covering 4 pillars (Fairness, Ethics, Accountability, Transparency)
+    - **Kill Switch**: Emergency disable mechanism with auto-trigger thresholds
+    - **Singapore PII Detection**: NRIC, FIN, UEN pattern detection with Enterprise checksum validation
+
+    ## Risk Rating System
+
+    The 3-dimensional risk rating system evaluates:
+    - **Customer Impact** (1-5): Potential impact on customers
+    - **Model Complexity** (1-5): Technical complexity of the AI system
+    - **Human Reliance** (1-5): Degree of human oversight vs automation
+
+    ### Materiality Classification
+
+    | Sum of Ratings | Classification |
+    |----------------|----------------|
+    | >= 12          | High           |
+    | >= 8           | Medium         |
+    | < 8            | Low            |
+
+    ## Assessment Lifecycle
+
+    ```
+    pending → in_progress → completed → approved
+                                     → rejected
+    ```
+
+    ## Enterprise Features
+
+    - Singapore PII checksum validation (NRIC, FIN)
+    - Advanced audit logging with 7-year retention
+    - Integration with Customer Portal UI
+
+  version: 1.0.0
+  contact:
+    name: AxonFlow Support
+    url: https://getaxonflow.com/support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://orchestrator.getaxonflow.com
+    description: Production (SaaS)
+  - url: http://localhost:8081
+    description: Local Development
+
+tags:
+  - name: Registry
+    description: AI System Registry management
+  - name: Assessments
+    description: FEAT Assessment lifecycle
+  - name: Kill Switch
+    description: Emergency system disable mechanism
+
+paths:
+  /api/v1/masfeat/registry:
+    post:
+      summary: Register AI System
+      description: |
+        Register a new AI system in the MAS FEAT registry.
+
+        The system will be created with `draft` status and materiality
+        will be automatically calculated based on risk ratings.
+      operationId: registerSystem
+      tags:
+        - Registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSystemRequest'
+            example:
+              system_id: "credit-scoring-ai-v1"
+              system_name: "Credit Scoring AI"
+              description: "AI system for automated credit scoring decisions"
+              use_case: "credit_scoring"
+              owner_team: "Risk Management"
+              technical_owner: "tech-lead@example.com"
+              business_owner: "business-owner@example.com"
+              customer_impact: 4
+              model_complexity: 3
+              human_reliance: 5
+      responses:
+        '201':
+          description: System registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AISystemRegistry'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: System already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List AI Systems
+      description: List all AI systems in the registry for the organization.
+      operationId: listSystems
+      tags:
+        - Registry
+      parameters:
+        - name: status
+          in: query
+          description: Filter by system status
+          schema:
+            type: string
+            enum: [draft, active, suspended, retired]
+        - name: use_case
+          in: query
+          description: Filter by use case
+          schema:
+            type: string
+        - name: materiality
+          in: query
+          description: Filter by materiality classification
+          schema:
+            type: string
+            enum: [high, medium, low]
+        - name: limit
+          in: query
+          description: Maximum number of results
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of AI systems
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AISystemRegistry'
+
+  /api/v1/masfeat/registry/{system_id}:
+    get:
+      summary: Get AI System
+      description: Get details of a specific AI system.
+      operationId: getSystem
+      tags:
+        - Registry
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: AI system details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AISystemRegistry'
+        '404':
+          description: System not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      summary: Update AI System
+      description: |
+        Update an AI system's details. Materiality will be recalculated
+        if risk ratings are changed.
+      operationId: updateSystem
+      tags:
+        - Registry
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSystemRequest'
+      responses:
+        '200':
+          description: System updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AISystemRegistry'
+        '404':
+          description: System not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: Retire AI System
+      description: |
+        Retire an AI system. This sets the status to `retired` and
+        preserves the record for audit purposes.
+      operationId: retireSystem
+      tags:
+        - Registry
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: System retired successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AISystemRegistry'
+        '404':
+          description: System not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/registry/{system_id}/activate:
+    post:
+      summary: Activate AI System
+      description: Transition an AI system from `draft` to `active` status.
+      operationId: activateSystem
+      tags:
+        - Registry
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: System activated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AISystemRegistry'
+        '400':
+          description: Cannot activate system (invalid state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: System not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/registry/summary:
+    get:
+      summary: Get Registry Summary
+      description: Get summary statistics for the AI system registry.
+      operationId: getRegistrySummary
+      tags:
+        - Registry
+      responses:
+        '200':
+          description: Registry summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrySummary'
+
+  /api/v1/masfeat/assessments:
+    post:
+      summary: Create FEAT Assessment
+      description: |
+        Create a new FEAT assessment for an AI system.
+        The system must be registered and active.
+      operationId: createAssessment
+      tags:
+        - Assessments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAssessmentRequest'
+            example:
+              system_id: "credit-scoring-ai-v1"
+              assessment_type: "initial"
+              assessors:
+                - "assessor1@example.com"
+                - "assessor2@example.com"
+      responses:
+        '201':
+          description: Assessment created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: System not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List FEAT Assessments
+      description: List FEAT assessments for the organization.
+      operationId: listAssessments
+      tags:
+        - Assessments
+      parameters:
+        - name: system_id
+          in: query
+          description: Filter by system ID
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by assessment status
+          schema:
+            type: string
+            enum: [pending, in_progress, completed, approved, rejected]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of assessments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FEATAssessment'
+
+  /api/v1/masfeat/assessments/{assessment_id}:
+    get:
+      summary: Get FEAT Assessment
+      description: Get details of a specific FEAT assessment.
+      operationId: getAssessment
+      tags:
+        - Assessments
+      parameters:
+        - name: assessment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '404':
+          description: Assessment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      summary: Update FEAT Assessment
+      description: |
+        Update a FEAT assessment with pillar scores and findings.
+
+        When scores are first recorded, the assessment auto-transitions
+        from `pending` to `in_progress`. The overall score is automatically
+        calculated when all four pillar scores are provided.
+      operationId: updateAssessment
+      tags:
+        - Assessments
+      parameters:
+        - name: assessment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAssessmentRequest'
+            example:
+              fairness_score: 85
+              ethics_score: 90
+              accountability_score: 80
+              transparency_score: 75
+              fairness_details:
+                bias_testing: "Completed with 0.05% disparity"
+                protected_attributes: ["age", "gender", "ethnicity"]
+              findings:
+                - "Minor bias detected in age group 65+"
+              recommendations:
+                - "Implement additional bias mitigation"
+      responses:
+        '200':
+          description: Assessment updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '400':
+          description: Invalid request or assessment not editable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assessment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/assessments/{assessment_id}/submit:
+    post:
+      summary: Submit Assessment for Review
+      description: |
+        Submit a FEAT assessment for review. The assessment must be
+        in `in_progress` status with all pillar scores recorded.
+      operationId: submitAssessment
+      tags:
+        - Assessments
+      parameters:
+        - name: assessment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assessment submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '400':
+          description: Cannot submit assessment (invalid state or missing scores)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assessment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/assessments/{assessment_id}/approve:
+    post:
+      summary: Approve Assessment
+      description: Approve a completed FEAT assessment.
+      operationId: approveAssessment
+      tags:
+        - Assessments
+      parameters:
+        - name: assessment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved_by:
+                  type: string
+                  description: Email of the approver
+                comments:
+                  type: string
+                  description: Approval comments
+              required:
+                - approved_by
+      responses:
+        '200':
+          description: Assessment approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '400':
+          description: Cannot approve assessment (invalid state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assessment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/assessments/{assessment_id}/reject:
+    post:
+      summary: Reject Assessment
+      description: Reject a completed FEAT assessment.
+      operationId: rejectAssessment
+      tags:
+        - Assessments
+      parameters:
+        - name: assessment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rejected_by:
+                  type: string
+                  description: Email of the reviewer
+                reason:
+                  type: string
+                  description: Rejection reason
+              required:
+                - rejected_by
+                - reason
+      responses:
+        '200':
+          description: Assessment rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FEATAssessment'
+        '400':
+          description: Cannot reject assessment (invalid state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Assessment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/killswitch/{system_id}:
+    get:
+      summary: Get Kill Switch Status
+      description: |
+        Get the kill switch status for an AI system.
+        Creates a new kill switch with default settings if one doesn't exist.
+      operationId: getKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Kill switch status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+
+  /api/v1/masfeat/killswitch/{system_id}/configure:
+    put:
+      summary: Configure Kill Switch Thresholds
+      description: |
+        Configure auto-trigger thresholds for the kill switch.
+
+        When enabled, the kill switch will automatically trigger if:
+        - Accuracy falls below `accuracy_threshold`
+        - Bias score exceeds `bias_threshold`
+        - Error rate exceeds `error_rate_threshold`
+      operationId: configureKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigureKillSwitchRequest'
+            example:
+              accuracy_threshold: 0.85
+              bias_threshold: 0.15
+              error_rate_threshold: 0.05
+              auto_trigger_enabled: true
+      responses:
+        '200':
+          description: Kill switch configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+        '400':
+          description: Invalid threshold values
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/killswitch/{system_id}/check:
+    post:
+      summary: Check Metrics Against Thresholds
+      description: |
+        Submit current metrics to check against kill switch thresholds.
+        If auto-trigger is enabled and thresholds are breached, the
+        kill switch will be automatically triggered.
+      operationId: checkKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accuracy:
+                  type: number
+                  format: float
+                  description: Current model accuracy (0-1)
+                bias_score:
+                  type: number
+                  format: float
+                  description: Current bias score (0-1)
+                error_rate:
+                  type: number
+                  format: float
+                  description: Current error rate (0-1)
+              required:
+                - accuracy
+            example:
+              accuracy: 0.70
+              bias_score: 0.25
+              error_rate: 0.10
+      responses:
+        '200':
+          description: Check result (may include triggered status)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+
+  /api/v1/masfeat/killswitch/{system_id}/trigger:
+    post:
+      summary: Manually Trigger Kill Switch
+      description: Manually trigger the kill switch for an AI system.
+      operationId: triggerKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for triggering
+                triggered_by:
+                  type: string
+                  description: Email of the person triggering
+              required:
+                - reason
+      responses:
+        '200':
+          description: Kill switch triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+
+  /api/v1/masfeat/killswitch/{system_id}/restore:
+    post:
+      summary: Restore Kill Switch
+      description: Restore a triggered kill switch back to enabled status.
+      operationId: restoreKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for restoration
+                restored_by:
+                  type: string
+                  description: Email of the person restoring
+              required:
+                - reason
+      responses:
+        '200':
+          description: Kill switch restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+        '400':
+          description: Kill switch not in triggered state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/masfeat/killswitch/{system_id}/enable:
+    post:
+      summary: Enable Kill Switch
+      description: Enable a disabled kill switch.
+      operationId: enableKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Kill switch enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+
+  /api/v1/masfeat/killswitch/{system_id}/disable:
+    post:
+      summary: Disable Kill Switch
+      description: Disable the kill switch (for decommissioned systems).
+      operationId: disableKillSwitch
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for disabling
+      responses:
+        '200':
+          description: Kill switch disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillSwitch'
+
+  /api/v1/masfeat/killswitch/{system_id}/history:
+    get:
+      summary: Get Kill Switch History
+      description: Get the event history for a kill switch.
+      operationId: getKillSwitchHistory
+      tags:
+        - Kill Switch
+      parameters:
+        - name: system_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Kill switch event history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KillSwitchEvent'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+
+    RegisterSystemRequest:
+      type: object
+      required:
+        - system_id
+        - system_name
+        - use_case
+        - owner_team
+        - customer_impact
+        - model_complexity
+        - human_reliance
+      properties:
+        system_id:
+          type: string
+          description: Unique identifier for the AI system
+        system_name:
+          type: string
+          description: Human-readable name
+        description:
+          type: string
+          description: Description of the AI system
+        use_case:
+          type: string
+          enum: [credit_scoring, robo_advisory, insurance_underwriting, trading_algorithm, aml_cft, customer_service, fraud_detection, other]
+          description: Primary use case category
+        owner_team:
+          type: string
+          description: Team responsible for the system
+        technical_owner:
+          type: string
+          description: Email of technical owner
+        business_owner:
+          type: string
+          description: Email of business owner
+        customer_impact:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Customer impact rating (1-5)
+        model_complexity:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Model complexity rating (1-5)
+        human_reliance:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Human reliance rating (1-5)
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata
+
+    UpdateSystemRequest:
+      type: object
+      properties:
+        system_name:
+          type: string
+        description:
+          type: string
+        owner_team:
+          type: string
+        technical_owner:
+          type: string
+        business_owner:
+          type: string
+        customer_impact:
+          type: integer
+          minimum: 1
+          maximum: 5
+        model_complexity:
+          type: integer
+          minimum: 1
+          maximum: 5
+        human_reliance:
+          type: integer
+          minimum: 1
+          maximum: 5
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AISystemRegistry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        system_id:
+          type: string
+        system_name:
+          type: string
+        description:
+          type: string
+        use_case:
+          type: string
+        owner_team:
+          type: string
+        technical_owner:
+          type: string
+        business_owner:
+          type: string
+        customer_impact:
+          type: integer
+        model_complexity:
+          type: integer
+        human_reliance:
+          type: integer
+        materiality:
+          type: string
+          enum: [high, medium, low]
+        status:
+          type: string
+          enum: [draft, active, suspended, retired]
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+
+    RegistrySummary:
+      type: object
+      properties:
+        total_systems:
+          type: integer
+        active_systems:
+          type: integer
+        high_materiality_count:
+          type: integer
+        medium_materiality_count:
+          type: integer
+        low_materiality_count:
+          type: integer
+        by_use_case:
+          type: object
+          additionalProperties:
+            type: integer
+        by_status:
+          type: object
+          additionalProperties:
+            type: integer
+
+    CreateAssessmentRequest:
+      type: object
+      required:
+        - system_id
+      properties:
+        system_id:
+          type: string
+          description: ID of the AI system to assess
+        assessment_type:
+          type: string
+          enum: [initial, periodic, ad_hoc]
+          default: periodic
+          description: Type of assessment
+        assessors:
+          type: array
+          items:
+            type: string
+          description: List of assessor emails
+
+    UpdateAssessmentRequest:
+      type: object
+      properties:
+        fairness_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Fairness pillar score (0-100)
+        ethics_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Ethics pillar score (0-100)
+        accountability_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Accountability pillar score (0-100)
+        transparency_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Transparency pillar score (0-100)
+        fairness_details:
+          type: object
+          additionalProperties: true
+        ethics_details:
+          type: object
+          additionalProperties: true
+        accountability_details:
+          type: object
+          additionalProperties: true
+        transparency_details:
+          type: object
+          additionalProperties: true
+        findings:
+          type: array
+          items:
+            type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        assessors:
+          type: array
+          items:
+            type: string
+
+    FEATAssessment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        system_id:
+          type: string
+        assessment_type:
+          type: string
+        status:
+          type: string
+          enum: [pending, in_progress, completed, approved, rejected]
+        assessment_date:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+        fairness_score:
+          type: integer
+        ethics_score:
+          type: integer
+        accountability_score:
+          type: integer
+        transparency_score:
+          type: integer
+        overall_score:
+          type: integer
+        fairness_details:
+          type: object
+        ethics_details:
+          type: object
+        accountability_details:
+          type: object
+        transparency_details:
+          type: object
+        findings:
+          type: array
+          items:
+            type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        assessors:
+          type: array
+          items:
+            type: string
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+
+    ConfigureKillSwitchRequest:
+      type: object
+      properties:
+        accuracy_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Minimum accuracy threshold (0-1)
+        bias_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Maximum bias threshold (0-1)
+        error_rate_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Maximum error rate threshold (0-1)
+        auto_trigger_enabled:
+          type: boolean
+          description: Enable automatic triggering on threshold breach
+
+    KillSwitch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+        system_id:
+          type: string
+        status:
+          type: string
+          enum: [enabled, disabled, triggered]
+        accuracy_threshold:
+          type: number
+        bias_threshold:
+          type: number
+        error_rate_threshold:
+          type: number
+        auto_trigger_enabled:
+          type: boolean
+        triggered_at:
+          type: string
+          format: date-time
+        triggered_by:
+          type: string
+        triggered_reason:
+          type: string
+        restored_at:
+          type: string
+          format: date-time
+        restored_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    KillSwitchEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kill_switch_id:
+          type: string
+        event_type:
+          type: string
+          enum: [created, enabled, disabled, triggered, restored, configured]
+        event_data:
+          type: object
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+  securitySchemes:
+    OrgHeader:
+      type: apiKey
+      in: header
+      name: X-Org-ID
+      description: Organization ID
+    UserHeader:
+      type: apiKey
+      in: header
+      name: X-User-ID
+      description: User ID or email
+
+security:
+  - OrgHeader: []
+    UserHeader: []

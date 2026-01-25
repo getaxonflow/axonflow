@@ -550,6 +550,10 @@ func GetValidatorForCategory(category PolicyCategory) ValidatorFunc {
 		return ValidateAadhaar // Can also be PAN, selected by pattern ID
 	case CategoryPIIEU:
 		return ValidateIBAN
+	case CategoryPIISingapore:
+		// NRIC checksum validation is Enterprise-only (Issue #1076)
+		// Pattern-based detection works without validator
+		return nil
 	default:
 		return nil
 	}

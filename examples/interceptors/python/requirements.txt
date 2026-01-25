@@ -1,2 +1,2 @@
-axonflow>=1.6.0
+axonflow>=1.7.0
 openai>=1.0.0

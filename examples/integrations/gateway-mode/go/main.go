@@ -1,4 +1,4 @@
-// Package main demonstrates AxonFlow Gateway Mode in Go.
+// Package main demonstrates and VALIDATES AxonFlow Gateway Mode in Go.
 //
 // Gateway Mode provides the lowest latency AI governance by separating
 // policy enforcement from LLM calls. The workflow is:
@@ -9,18 +9,34 @@
 //
 // This gives you full control over LLM parameters while maintaining
 // complete audit trails with ~3-5ms governance overhead.
+//
+// Issue #1082: Examples should test actual behavior, not just API availability
 package main
 
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 	openai "github.com/sashabaranov/go-openai"
 )
+
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Gateway Mode - Go Example")
@@ -68,18 +84,23 @@ func main() {
 		requestContext,
 	)
 	if err != nil {
-		log.Fatalf("Pre-check failed: %v", err)
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		failCount++
+		printSummary()
+		os.Exit(1)
 	}
 
 	preCheckLatency := time.Since(preCheckStart)
 	fmt.Printf("   Completed in %v\n", preCheckLatency)
+	assert(preCheckResult.ContextID != "", "Pre-check returns context ID")
+	assert(preCheckResult.Approved, "Request is approved (no policy violations)")
 	fmt.Printf("   Context ID: %s\n", preCheckResult.ContextID)
 	fmt.Printf("   Approved: %v\n", preCheckResult.Approved)
 
 	if !preCheckResult.Approved {
 		fmt.Printf("   BLOCKED: %s\n", preCheckResult.BlockReason)
 		fmt.Printf("   Policies: %v\n", preCheckResult.Policies)
-		return
+		// Continue to show assertions status even if blocked
 	}
 	fmt.Println()
 
@@ -110,10 +131,15 @@ func main() {
 
 		completion, err := openaiClient.CreateChatCompletion(ctx, chatReq)
 		if err != nil {
-			log.Fatalf("OpenAI call failed: %v", err)
+			fmt.Printf("   ERROR: OpenAI call failed: %v\n", err)
+			failCount++
+			// Continue with mock response
+			response = "Mock response due to LLM error"
+			usage = openai.Usage{PromptTokens: 25, CompletionTokens: 20, TotalTokens: 45}
+		} else {
+			response = completion.Choices[0].Message.Content
+			usage = completion.Usage
 		}
-		response = completion.Choices[0].Message.Content
-		usage = completion.Usage
 	} else {
 		// Mock response for testing without API key
 		time.Sleep(100 * time.Millisecond) // Simulate latency
@@ -129,6 +155,7 @@ func main() {
 	fmt.Printf("   Response received in %v\n", llmLatency)
 	fmt.Printf("   Tokens: %d prompt, %d completion\n",
 		usage.PromptTokens, usage.CompletionTokens)
+	assert(response != "", "LLM returns a response")
 	fmt.Println()
 
 	// =========================================================================
@@ -156,15 +183,18 @@ func main() {
 		llmLatency.Milliseconds(),
 		nil, // metadata (optional)
 	)
-	if err != nil {
-		log.Printf("Warning: Audit failed (non-fatal): %v", err)
-	}
-
 	auditLatency := time.Since(auditStart)
-	fmt.Printf("   Audit logged in %v\n", auditLatency)
-	if auditResult != nil {
-		fmt.Printf("   Audit ID: %s\n", auditResult.AuditID)
+	if err != nil {
+		fmt.Printf("   Warning: Audit failed (non-fatal): %v\n", err)
+		// Audit is non-fatal - continue
+	} else {
+		assert(auditResult != nil, "Audit returns result")
+		if auditResult != nil {
+			assert(auditResult.AuditID != "", "Audit returns audit ID")
+			fmt.Printf("   Audit ID: %s\n", auditResult.AuditID)
+		}
 	}
+	fmt.Printf("   Audit logged in %v\n", auditLatency)
 	fmt.Println()
 
 	// =========================================================================
@@ -184,6 +214,22 @@ func main() {
 	fmt.Println("   -----------------")
 	fmt.Printf("   Governance: %v (overhead)\n", governanceOverhead)
 	fmt.Printf("   Total:      %v\n", totalLatency)
+	fmt.Println()
+
+	printSummary()
+}
+
+func printSummary() {
+	fmt.Println("============================================================")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
+	fmt.Println("============================================================")
+
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
+	} else {
+		fmt.Println("ALL TESTS PASSED - Gateway Mode verified!")
+	}
 }
 
 func getEnv(key, defaultValue string) string {

@@ -61,7 +61,7 @@ def test_proxy_mode():
         user_token = "autogen-user-123"
 
         try:
-            result = client.execute_query(
+            result = client.proxy_llm_call(
                 user_token=user_token,
                 query=query,
                 request_type="chat",
@@ -91,7 +91,7 @@ def test_proxy_mode():
         print(f"Query: {pii_query}")
 
         try:
-            result = client.execute_query(
+            result = client.proxy_llm_call(
                 user_token=user_token,
                 query=pii_query,
                 request_type="chat",
@@ -126,7 +126,7 @@ def test_proxy_mode():
         print(f"Query: {sqli_query}")
 
         try:
-            result = client.execute_query(
+            result = client.proxy_llm_call(
                 user_token=user_token,
                 query=sqli_query,
                 request_type="chat",
@@ -162,7 +162,7 @@ def test_proxy_mode():
             query = f"Analyze the data from {agent}'s perspective"
 
             try:
-                result = client.execute_query(
+                result = client.proxy_llm_call(
                     user_token=user_token,
                     query=query,
                     request_type="chat",
@@ -272,7 +272,7 @@ def autogen_with_governance():
                 last_message = str(messages[-1]) if messages else ""
 
             # Route through AxonFlow (includes policy check + LLM call + audit)
-            result = self.axonflow.execute_query(
+            result = self.axonflow.proxy_llm_call(
                 user_token=self.user_token,
                 query=last_message,
                 request_type="chat",

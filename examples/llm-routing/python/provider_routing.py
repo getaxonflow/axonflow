@@ -39,7 +39,7 @@ async def main():
     # Example 1: Send a request (server decides which provider to use)
     print("1. Send request (server routes based on configured strategy):")
     try:
-        response = await client.execute_query(
+        response = await client.proxy_llm_call(
             user_token=user_token,
             query="What is 2 + 2?",
             request_type="chat",
@@ -55,7 +55,7 @@ async def main():
     print("2. Multiple requests (observe provider distribution):")
     for i in range(1, 4):
         try:
-            response = await client.execute_query(
+            response = await client.proxy_llm_call(
                 user_token=user_token,
                 query=f"Question {i}: What is the capital of France?",
                 request_type="chat",

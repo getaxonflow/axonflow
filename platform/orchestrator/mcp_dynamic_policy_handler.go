@@ -4,26 +4,55 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 )
+
+// rateLimitEntry tracks request counts for rate limiting.
+type rateLimitEntry struct {
+	count     int
+	windowEnd time.Time
+}
+
+// budgetEntry tracks cost usage for budget enforcement.
+type budgetEntry struct {
+	used      float64
+	periodEnd time.Time
+}
+
+// rateLimitStore provides thread-safe in-memory rate limit tracking.
+// For distributed deployments, set REDIS_URL to enable Redis-backed storage.
+var (
+	rateLimitStore   = make(map[string]*rateLimitEntry)
+	rateLimitMutex   sync.RWMutex
+	budgetStore      = make(map[string]*budgetEntry)
+	budgetStoreMutex sync.RWMutex
+)
+
+// MCPPolicyEngine is an interface for policy engines that can be used with MCPDynamicPolicyHandler.
+// Both DynamicPolicyEngine and DatabaseDynamicPolicyEngine implement this interface.
+type MCPPolicyEngine interface {
+	ListActivePolicies() []DynamicPolicy
+}
 
 // MCPDynamicPolicyHandler handles dynamic policy evaluation requests from MCP Agent.
 // This is the Orchestrator endpoint that the Agent calls for Issue #968.
 //
 // Endpoint: POST /api/v1/mcp/evaluate-policies
 type MCPDynamicPolicyHandler struct {
-	policyEngine *DynamicPolicyEngine
+	policyEngine MCPPolicyEngine
 }
 
 // NewMCPDynamicPolicyHandler creates a new MCP dynamic policy handler.
-func NewMCPDynamicPolicyHandler(engine *DynamicPolicyEngine) *MCPDynamicPolicyHandler {
+func NewMCPDynamicPolicyHandler(engine MCPPolicyEngine) *MCPDynamicPolicyHandler {
 	return &MCPDynamicPolicyHandler{
 		policyEngine: engine,
 	}
@@ -247,19 +276,151 @@ func (h *MCPDynamicPolicyHandler) evaluateCondition(cond PolicyCondition, req MC
 	}
 }
 
-// evaluateRateLimit checks rate limiting policies.
+// evaluateRateLimit checks rate limiting policies using sliding window counters.
+// Uses Redis for distributed deployments when REDIS_URL is set, falls back to in-memory.
 func (h *MCPDynamicPolicyHandler) evaluateRateLimit(policy DynamicPolicy, req MCPPolicyEvaluationRequest) (bool, bool, string) {
-	// Rate limiting would check against a counter in Redis/DB
-	// For MVP, we'll implement basic support
-	// TODO: Implement actual rate limiting with counters
+	// Extract rate limit config from policy conditions
+	var maxRequests int
+	windowSeconds := 60 // Default 1-minute window
+
+	for _, cond := range policy.Conditions {
+		switch cond.Field {
+		case "requests_per_minute":
+			if limit, ok := cond.Value.(float64); ok {
+				maxRequests = int(limit)
+				windowSeconds = 60
+			}
+		case "requests_per_hour":
+			if limit, ok := cond.Value.(float64); ok {
+				maxRequests = int(limit)
+				windowSeconds = 3600
+			}
+		case "max_requests":
+			if limit, ok := cond.Value.(float64); ok {
+				maxRequests = int(limit)
+			}
+		case "window_seconds":
+			if window, ok := cond.Value.(float64); ok {
+				windowSeconds = int(window)
+			}
+		}
+	}
+
+	if maxRequests <= 0 {
+		// No rate limit configured, allow
+		return true, true, ""
+	}
+
+	// Build rate limit key: tenant + user + connector
+	key := fmt.Sprintf("ratelimit:%s:%s:%s", req.TenantID, req.UserID, req.ConnectorName)
+
+	// Try Redis first for distributed rate limiting
+	if IsPolicyRedisAvailable() {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		matched, allowed, reason := checkRateLimitRedis(ctx, key, maxRequests, windowSeconds)
+		if matched {
+			return matched, allowed, reason
+		}
+		// Redis failed, fall through to in-memory
+	}
+
+	// In-memory fallback (single-instance deployments or Redis unavailable)
+	rateLimitMutex.Lock()
+	defer rateLimitMutex.Unlock()
+
+	now := time.Now()
+	entry, exists := rateLimitStore[key]
+
+	if !exists || now.After(entry.windowEnd) {
+		// New window
+		rateLimitStore[key] = &rateLimitEntry{
+			count:     1,
+			windowEnd: now.Add(time.Duration(windowSeconds) * time.Second),
+		}
+		return true, true, ""
+	}
+
+	// Check if under limit
+	if entry.count >= maxRequests {
+		return true, false, fmt.Sprintf("Rate limit exceeded: %d requests per %d seconds", maxRequests, windowSeconds)
+	}
+
+	// Increment counter
+	entry.count++
 	return true, true, ""
 }
 
-// evaluateBudget checks budget/cost control policies.
+// evaluateBudget checks budget/cost control policies using usage tracking.
+// Uses Redis for distributed deployments when REDIS_URL is set, falls back to in-memory.
 func (h *MCPDynamicPolicyHandler) evaluateBudget(policy DynamicPolicy, req MCPPolicyEvaluationRequest) (bool, bool, string) {
-	// Budget checks would verify against cost tracking
-	// For MVP, we'll implement basic support
-	// TODO: Implement actual budget tracking
+	// Extract budget config from policy conditions
+	var maxBudget float64
+	periodDays := 30          // Default monthly period
+	costPerRequest := 0.001   // Default cost estimate per MCP query
+
+	for _, cond := range policy.Conditions {
+		switch cond.Field {
+		case "max_budget", "budget_limit":
+			if limit, ok := cond.Value.(float64); ok {
+				maxBudget = limit
+			}
+		case "period_days":
+			if days, ok := cond.Value.(float64); ok {
+				periodDays = int(days)
+			}
+		case "cost_per_request":
+			if cost, ok := cond.Value.(float64); ok {
+				costPerRequest = cost
+			}
+		}
+	}
+
+	if maxBudget <= 0 {
+		// No budget configured, allow
+		return true, true, ""
+	}
+
+	// Build budget key: tenant + user (or org-level)
+	key := fmt.Sprintf("budget:%s:%s", req.TenantID, req.UserID)
+	if req.UserID == "" {
+		key = fmt.Sprintf("budget:%s:org", req.TenantID)
+	}
+
+	// Try Redis first for distributed budget tracking
+	if IsPolicyRedisAvailable() {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		matched, allowed, reason := checkBudgetRedis(ctx, key, maxBudget, costPerRequest, periodDays)
+		if matched {
+			return matched, allowed, reason
+		}
+		// Redis failed, fall through to in-memory
+	}
+
+	// In-memory fallback (single-instance deployments or Redis unavailable)
+	budgetStoreMutex.Lock()
+	defer budgetStoreMutex.Unlock()
+
+	now := time.Now()
+	entry, exists := budgetStore[key]
+
+	if !exists || now.After(entry.periodEnd) {
+		// New budget period
+		budgetStore[key] = &budgetEntry{
+			used:      costPerRequest,
+			periodEnd: now.AddDate(0, 0, periodDays),
+		}
+		return true, true, ""
+	}
+
+	// Check if under budget
+	if entry.used+costPerRequest > maxBudget {
+		return true, false, fmt.Sprintf("Budget exceeded: $%.2f used of $%.2f limit", entry.used, maxBudget)
+	}
+
+	// Increment usage
+	entry.used += costPerRequest
 	return true, true, ""
 }
 

@@ -30,6 +30,10 @@ const (
 	// CategoryPIIIndia covers India-specific PII patterns.
 	// Includes: PAN, Aadhaar.
 	CategoryPIIIndia PolicyCategory = "pii-india"
+	// CategoryPIISingapore covers Singapore-specific PII patterns.
+	// Includes: NRIC, FIN, UEN, phone, postal code.
+	// Added for MAS FEAT Community compliance (Issue #1076).
+	CategoryPIISingapore PolicyCategory = "pii-singapore"
 
 	// Static policy categories - Code Governance (Issue #761)
 	// These categories enable governed code generation by detecting secrets,
@@ -81,6 +85,7 @@ func StaticPolicyCategories() []PolicyCategory {
 		CategoryPIIUS,
 		CategoryPIIEU,
 		CategoryPIIIndia,
+		CategoryPIISingapore, // Issue #1076 - MAS FEAT Community
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,

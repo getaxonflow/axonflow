@@ -29,6 +29,7 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/orchestrator/cost"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -2985,3 +2986,479 @@ func TestIsPIICategory(t *testing.T) {
 		})
 	}
 }
+
+// TestPreCheckHandler_BudgetEnforcement tests budget blocking in pre-check (Issue #1082)
+func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
+	// Enable community mode
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	// Initialize policy engine
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Save original costService and restore after test
+	originalCostService := costService
+	defer func() { costService = originalCostService }()
+
+	// Create a mock cost service that returns a blocked budget decision
+	mockRepo := &mockCostRepository{
+		budgets: map[string]*cost.Budget{
+			"test-budget-1": {
+				ID:        "test-budget-1",
+				Name:      "Test Budget",
+				Scope:     cost.ScopeOrganization,
+				ScopeID:   "community",
+				LimitUSD:  100.0,
+				Period:    cost.PeriodMonthly,
+				OnExceed:  cost.OnExceedBlock,
+				OrgID:     "community",
+				TenantID:  "test-client",
+				Enabled:   true,
+			},
+		},
+		usageSum: map[string]float64{
+			"organization:community": 150.0, // Exceeded budget
+		},
+	}
+	costService = cost.NewService(mockRepo, nil)
+
+	t.Run("budget exceeded with block action returns 402", func(t *testing.T) {
+		reqBody := PreCheckRequest{
+			UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+			ClientID:  "test-client",
+			Query:     "Hello world",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		req, err := http.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		handler := http.HandlerFunc(handlePolicyPreCheck)
+		handler.ServeHTTP(rr, req)
+
+		// Should return 402 Payment Required
+		if rr.Code != http.StatusPaymentRequired {
+			t.Errorf("Expected status 402, got %d. Body: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if resp.Approved {
+			t.Error("Expected Approved=false for exceeded budget")
+		}
+
+		if resp.BudgetInfo == nil {
+			t.Error("Expected BudgetInfo to be present")
+		} else {
+			if !resp.BudgetInfo.Exceeded {
+				t.Error("Expected BudgetInfo.Exceeded=true")
+			}
+			if resp.BudgetInfo.Percentage < 100 {
+				t.Errorf("Expected Percentage >= 100, got %.1f", resp.BudgetInfo.Percentage)
+			}
+		}
+
+		// Verify budget_exceeded policy is in the list
+		found := false
+		for _, p := range resp.Policies {
+			if p == "budget_exceeded" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected 'budget_exceeded' in policies, got %v", resp.Policies)
+		}
+	})
+
+	t.Run("budget under limit allows request", func(t *testing.T) {
+		// Update mock to return non-exceeded budget
+		mockRepo.usageSum["organization:community"] = 50.0 // Under budget
+
+		reqBody := PreCheckRequest{
+			UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+			ClientID:  "test-client",
+			Query:     "Hello world",
+		}
+		body, _ := json.Marshal(reqBody)
+
+		req, err := http.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		rr := httptest.NewRecorder()
+		handler := http.HandlerFunc(handlePolicyPreCheck)
+		handler.ServeHTTP(rr, req)
+
+		// Should return 200 OK
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d. Body: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+
+		if !resp.Approved {
+			t.Errorf("Expected Approved=true, got false. BlockReason: %s", resp.BlockReason)
+		}
+
+		if resp.BudgetInfo != nil {
+			if resp.BudgetInfo.Exceeded {
+				t.Error("Expected BudgetInfo.Exceeded=false")
+			}
+		}
+	})
+}
+
+// mockCostRepository is a minimal mock for cost.Repository
+type mockCostRepository struct {
+	budgets  map[string]*cost.Budget
+	usageSum map[string]float64
+}
+
+func (m *mockCostRepository) CreateBudget(ctx context.Context, budget *cost.Budget) error {
+	return nil
+}
+
+func (m *mockCostRepository) GetBudget(ctx context.Context, id string) (*cost.Budget, error) {
+	if b, ok := m.budgets[id]; ok {
+		return b, nil
+	}
+	return nil, errors.New("budget not found")
+}
+
+func (m *mockCostRepository) UpdateBudget(ctx context.Context, budget *cost.Budget) error {
+	return nil
+}
+
+func (m *mockCostRepository) DeleteBudget(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *mockCostRepository) ListBudgets(ctx context.Context, opts cost.ListBudgetsOptions) ([]cost.Budget, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockCostRepository) GetBudgetsForScope(ctx context.Context, scope cost.BudgetScope, scopeID string, orgID, tenantID string) ([]cost.Budget, error) {
+	var result []cost.Budget
+	for _, b := range m.budgets {
+		if b.Scope == scope && (scopeID == "" || b.ScopeID == scopeID) {
+			result = append(result, *b)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockCostRepository) SaveUsage(ctx context.Context, record *cost.UsageRecord) error {
+	return nil
+}
+
+func (m *mockCostRepository) GetUsageForPeriod(ctx context.Context, scope cost.BudgetScope, scopeID string, periodStart time.Time, orgID, tenantID string) (float64, error) {
+	key := string(scope) + ":" + scopeID
+	if sum, ok := m.usageSum[key]; ok {
+		return sum, nil
+	}
+	return 0, nil
+}
+
+func (m *mockCostRepository) GetUsageSummary(ctx context.Context, opts cost.UsageQueryOptions) (*cost.UsageSummary, error) {
+	return &cost.UsageSummary{}, nil
+}
+
+func (m *mockCostRepository) GetUsageBreakdown(ctx context.Context, groupBy string, opts cost.UsageQueryOptions) (*cost.UsageBreakdown, error) {
+	return &cost.UsageBreakdown{}, nil
+}
+
+func (m *mockCostRepository) ListUsageRecords(ctx context.Context, opts cost.UsageQueryOptions) ([]cost.UsageRecord, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockCostRepository) UpdateAggregate(ctx context.Context, agg *cost.UsageAggregate) error {
+	return nil
+}
+
+func (m *mockCostRepository) GetAggregate(ctx context.Context, scope, scopeID string, period cost.AggregatePeriod, periodStart time.Time, orgID, tenantID string) (*cost.UsageAggregate, error) {
+	return nil, nil
+}
+
+func (m *mockCostRepository) ListAggregates(ctx context.Context, scope, scopeID string, period cost.AggregatePeriod, startTime, endTime time.Time, orgID, tenantID string) ([]cost.UsageAggregate, error) {
+	return nil, nil
+}
+
+func (m *mockCostRepository) SaveAlert(ctx context.Context, alert *cost.BudgetAlert) error {
+	return nil
+}
+
+func (m *mockCostRepository) GetRecentAlerts(ctx context.Context, budgetID string, limit int) ([]cost.BudgetAlert, error) {
+	return nil, nil
+}
+
+func (m *mockCostRepository) GetUnacknowledgedAlerts(ctx context.Context, budgetID string) ([]cost.BudgetAlert, error) {
+	return nil, nil
+}
+
+func (m *mockCostRepository) AcknowledgeAlert(ctx context.Context, alertID int64, acknowledgedBy string) error {
+	return nil
+}
+
+func (m *mockCostRepository) Ping(ctx context.Context) error {
+	return nil
+}
+
+// =============================================================================
+// HITL (Human-in-the-Loop) Tests - Issue #1081
+// =============================================================================
+//
+// NOTE: Tests for checkHITLRequiredFromContext, isComplianceFramework, and isRegulator
+// were REMOVED as part of the Issue #1081 security fix. These functions trusted
+// client-provided context which was a security vulnerability and licensing bypass.
+//
+// HITL is now ENTERPRISE-ONLY and triggered ONLY by policies with require_approval action.
+// See the PreCheckHandler tests below for policy-based HITL testing.
+
+// TestPreCheckHandler_HITLNotTriggeredInCommunityMode tests that HITL does NOT
+// trigger in Community mode, even if client sends HITL context flags.
+// HITL is an ENTERPRISE-ONLY feature that requires policy-based triggering.
+func TestPreCheckHandler_HITLNotTriggeredInCommunityMode(t *testing.T) {
+	// Enable community mode
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	// Initialize policy engine for testing
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Create request with HITL context flags (which should be IGNORED in Community mode)
+	// This tests that clients cannot bypass licensing by sending HITL flags
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "Evaluate loan application for €50,000 - high risk decision",
+		Context: map[string]interface{}{
+			"requires_hitl":        true,
+			"compliance_framework": "EU_AI_ACT",
+			"risk_level":           "high",
+			"eu_ai_act_article_14": true, // Should be ignored - HITL is Enterprise-only
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handlePolicyPreCheck(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	var preCheckResp PreCheckResponse
+	if err := json.NewDecoder(resp.Body).Decode(&preCheckResp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// In Community mode, HITL should NOT trigger - request should be approved
+	// (unless blocked by other policies like PII detection)
+	if preCheckResp.BlockReason == "require_approval" {
+		t.Error("HITL should NOT trigger in Community mode - this is an Enterprise-only feature")
+	}
+}
+
+// TestPreCheckHandler_HITLNotRequired tests that normal requests are not blocked
+func TestPreCheckHandler_HITLNotRequired(t *testing.T) {
+	// Enable community mode with required safeguards
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	// Initialize policy engine for testing
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Create request without HITL context
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "What are the office hours for customer support?",
+		Context: map[string]interface{}{
+			"risk_level": "low",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handlePolicyPreCheck(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	var preCheckResp PreCheckResponse
+	if err := json.NewDecoder(resp.Body).Decode(&preCheckResp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// Normal request should be approved
+	if !preCheckResp.Approved {
+		t.Error("Expected Approved=true for normal request")
+	}
+
+	if preCheckResp.BlockReason != "" {
+		t.Errorf("Expected empty BlockReason, got %q", preCheckResp.BlockReason)
+	}
+}
+
+// TestPreCheckHandler_RBI_SEBI_HITLNotTriggeredInCommunity tests that RBI-SEBI
+// HITL context flags are IGNORED in Community mode (Enterprise-only feature).
+func TestPreCheckHandler_RBI_SEBI_HITLNotTriggeredInCommunity(t *testing.T) {
+	// Enable community mode
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	// Initialize policy engine for testing
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Create request with RBI-SEBI HITL context (should be IGNORED in Community mode)
+	reqBody := PreCheckRequest{
+		UserToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:  "test-client",
+		Query:     "Evaluate loan application for ₹10,00,000",
+		Context: map[string]interface{}{
+			"requires_hitl":        true,
+			"regulator":            "RBI",
+			"compliance_framework": "RBI_SEBI_INDIA",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handlePolicyPreCheck(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	var preCheckResp PreCheckResponse
+	if err := json.NewDecoder(resp.Body).Decode(&preCheckResp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// In Community mode, HITL should NOT trigger - context flags should be ignored
+	if preCheckResp.BlockReason == "require_approval" {
+		t.Error("HITL should NOT trigger in Community mode for RBI-SEBI - this is an Enterprise-only feature")
+	}
+}
+
+// TestShouldLogBypassOutreach tests the rate-limited bypass logging function
+func TestShouldLogBypassOutreach(t *testing.T) {
+	// Reset the last log time to ensure predictable behavior
+	outreachLogMu.Lock()
+	lastBypassLogTime = time.Time{} // Reset to zero time
+	outreachLogMu.Unlock()
+
+	// First call should return true (rate limit not hit)
+	if !shouldLogBypassOutreach() {
+		t.Error("First call should return true - rate limit not yet hit")
+	}
+
+	// Immediate second call should return false (rate limited)
+	if shouldLogBypassOutreach() {
+		t.Error("Immediate second call should return false - rate limited")
+	}
+
+	// Multiple rapid calls should all return false
+	for i := 0; i < 5; i++ {
+		if shouldLogBypassOutreach() {
+			t.Errorf("Rapid call %d should return false - rate limited", i)
+		}
+	}
+}
+
+// TestShouldLogEnforcementOutreach tests the rate-limited enforcement logging function
+func TestShouldLogEnforcementOutreach(t *testing.T) {
+	// Reset the last log time to ensure predictable behavior
+	outreachLogMu.Lock()
+	lastEnforcementLogTime = time.Time{} // Reset to zero time
+	outreachLogMu.Unlock()
+
+	// First call should return true (rate limit not hit)
+	if !shouldLogEnforcementOutreach() {
+		t.Error("First call should return true - rate limit not yet hit")
+	}
+
+	// Immediate second call should return false (rate limited)
+	if shouldLogEnforcementOutreach() {
+		t.Error("Immediate second call should return false - rate limited")
+	}
+}
+
+// TestConvertSharedResultToStatic_NilInput tests nil handling
+func TestConvertSharedResultToStatic_NilInput(t *testing.T) {
+	result := convertSharedResultToStatic(nil)
+	if result == nil {
+		t.Fatal("Expected non-nil result for nil input")
+	}
+	if result.Blocked {
+		t.Error("Expected Blocked=false for nil input")
+	}
+	if len(result.TriggeredPolicies) != 0 {
+		t.Error("Expected empty TriggeredPolicies for nil input")
+	}
+}
+
+// TestConvertSharedResultToStatic_RequireApproval tests HITL action conversion
+func TestConvertSharedResultToStatic_RequireApproval(t *testing.T) {
+	sharedResult := &sharedpolicy.RequestResult{
+		Blocked:          false,
+		BlockReason:      "",
+		PoliciesEvaluated: 1,
+		MatchedPolicies: []sharedpolicy.PolicyMatch{
+			{
+				PolicyID: "hitl_credit_scoring",
+				Action:   sharedpolicy.ActionRequireApproval,
+				Category: sharedpolicy.CategorySensitiveData,
+				Severity: sharedpolicy.SeverityCritical,
+			},
+		},
+	}
+
+	result := convertSharedResultToStatic(sharedResult)
+
+	if !result.RequiresApproval {
+		t.Error("Expected RequiresApproval=true for ActionRequireApproval")
+	}
+	if len(result.TriggeredPolicies) != 1 {
+		t.Errorf("Expected 1 triggered policy, got %d", len(result.TriggeredPolicies))
+	}
+	if result.TriggeredPolicies[0] != "hitl_credit_scoring" {
+		t.Errorf("Expected policy ID 'hitl_credit_scoring', got '%s'", result.TriggeredPolicies[0])
+	}
+}
+
+// TestIsPIICategory tests the PII category detection helper

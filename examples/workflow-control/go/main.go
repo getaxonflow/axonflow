@@ -1,56 +1,103 @@
-// Package main demonstrates the Workflow Control Plane in Go.
+// Package main demonstrates and VALIDATES the Workflow Control Plane in Go.
 //
-// "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+// This example tests ACTUAL functionality by verifying:
+// 1. Workflow creation returns valid workflow ID
+// 2. Step gates return expected decisions
+// 3. Workflow status transitions correctly
+// 4. Steps are properly tracked
 //
-// This example shows how to:
-// 1. Create a workflow
-// 2. Check step gates before each step
-// 3. Mark steps as completed
-// 4. Complete the workflow
+// Issue #1082: Examples should test actual behavior, not just API availability
+//
+// Prerequisites:
+//   - AxonFlow Agent running on localhost:8080
+//   - Enterprise license for full WCP functionality
+//
+// Usage:
+//
+//	export AXONFLOW_CLIENT_ID=demo-org
+//	export AXONFLOW_CLIENT_SECRET="<license-key>"
+//	go run main.go
 package main
 
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
+var (
+	passCount int
+	failCount int
+)
+
+func assert(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+		passCount++
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failCount++
+	}
+}
+
 func main() {
-	fmt.Println("Workflow Control Plane - Go")
-	fmt.Println("========================================")
+	fmt.Println("Workflow Control Plane - Go (Issue #1082)")
+	fmt.Println("==========================================")
+	fmt.Println()
+	fmt.Println("This test verifies WCP APIs work correctly and return expected results.")
 	fmt.Println()
 
 	// Initialize AxonFlow client
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "workflow-control-go"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-org"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""),
 	})
 
-	// Step 1: Create a workflow
-	fmt.Println("Step 1: Create Workflow")
-	fmt.Println("   Creating 'code-review-pipeline' workflow...")
+	// ========================================
+	// Test 1: Create Workflow
+	// ========================================
+	fmt.Println("Test 1: Create Workflow")
+	fmt.Println("-----------------------")
 
 	workflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
-		WorkflowName: "code-review-pipeline",
+		WorkflowName: "wcp-validation-test",
 		Source:       axonflow.WorkflowSourceExternal,
 		TotalSteps:   3,
 		Metadata: map[string]interface{}{
-			"example": "workflow-control-go",
+			"test": "issue-1082",
 		},
 	})
+
 	if err != nil {
-		fmt.Printf("   ERROR: Failed to create workflow: %v\n", err)
+		fmt.Printf("   FATAL: Failed to create workflow: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("   Workflow created!")
-	fmt.Printf("   Workflow ID: %s\n\n", workflow.WorkflowID)
+	assert(workflow.WorkflowID != "", "Workflow ID is not empty")
+	assert(strings.HasPrefix(workflow.WorkflowID, "wf_"), "Workflow ID has correct prefix 'wf_'")
+	assert(workflow.Status == "in_progress", "Workflow status is in_progress after creation")
+	fmt.Printf("   Workflow ID: %s\n", workflow.WorkflowID)
+	fmt.Println()
 
-	// Step 2: Check gate for first step (Generate Code - LLM call)
-	fmt.Println("Step 2: Check Gate - Generate Code")
-	fmt.Println("   Checking if 'generate_code' step is allowed...")
+	// Cleanup on exit
+	defer func() {
+		fmt.Println("\nCleanup")
+		fmt.Println("-------")
+		if err := client.AbortWorkflow(workflow.WorkflowID, "test cleanup"); err != nil {
+			fmt.Printf("   Warning: Failed to abort workflow: %v\n", err)
+		} else {
+			fmt.Printf("   Cleaned up workflow: %s\n", workflow.WorkflowID)
+		}
+	}()
+
+	// ========================================
+	// Test 2: Step Gate - LLM Call
+	// ========================================
+	fmt.Println("Test 2: Step Gate - LLM Call")
+	fmt.Println("----------------------------")
 
 	gate1, err := client.StepGate(workflow.WorkflowID, "step-1", axonflow.StepGateRequest{
 		StepName: "Generate Code",
@@ -61,47 +108,38 @@ func main() {
 			"prompt": "Write a Python function to sort a list",
 		},
 	})
+
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n", err)
-		abortWorkflow(client, workflow.WorkflowID, "Step gate check failed")
+		fmt.Printf("   FATAL: StepGate failed: %v\n", err)
 		os.Exit(1)
 	}
 
+	assert(gate1.Decision != "", "StepGate returns a decision")
+	validDecisions := map[string]bool{"allow": true, "block": true, "require_approval": true}
+	assert(validDecisions[string(gate1.Decision)], fmt.Sprintf("Decision '%s' is valid", gate1.Decision))
+	assert(gate1.StepID != "", "StepID is returned")
 	fmt.Printf("   Decision: %s\n", gate1.Decision)
+	fmt.Printf("   StepID: %s\n", gate1.StepID)
 	if gate1.Reason != "" {
 		fmt.Printf("   Reason: %s\n", gate1.Reason)
 	}
+	fmt.Println()
 
-	if gate1.IsBlocked() {
-		fmt.Println("   Workflow blocked by policy. Aborting...")
-		abortWorkflow(client, workflow.WorkflowID, gate1.Reason)
-		return
-	}
-
-	if gate1.RequiresApproval() {
-		fmt.Printf("   Approval URL: %s\n", gate1.ApprovalURL)
-		fmt.Println("   (Enterprise feature - approval workflow would be triggered)")
-		// In production, you would wait for approval here
-	}
-
-	// Mark step 1 completed
+	// Mark step 1 completed if allowed
 	if gate1.IsAllowed() {
 		err = client.MarkStepCompleted(workflow.WorkflowID, "step-1", &axonflow.MarkStepCompletedRequest{
 			Output: map[string]interface{}{
 				"code": "def sort_list(items): return sorted(items)",
 			},
 		})
-		if err != nil {
-			fmt.Printf("   ERROR marking step completed: %v\n", err)
-		} else {
-			fmt.Println("   Step completed!")
-		}
+		assert(err == nil, "MarkStepCompleted succeeds for step-1")
 	}
-	fmt.Println()
 
-	// Step 3: Check gate for second step (Review Code - Tool call)
-	fmt.Println("Step 3: Check Gate - Review Code")
-	fmt.Println("   Checking if 'review_code' step is allowed...")
+	// ========================================
+	// Test 3: Step Gate - Tool Call
+	// ========================================
+	fmt.Println("Test 3: Step Gate - Tool Call")
+	fmt.Println("-----------------------------")
 
 	gate2, err := client.StepGate(workflow.WorkflowID, "step-2", axonflow.StepGateRequest{
 		StepName: "Review Code",
@@ -111,22 +149,30 @@ func main() {
 			"code": "def sort_list(items): return sorted(items)",
 		},
 	})
+
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n", err)
-	} else {
-		fmt.Printf("   Decision: %s\n", gate2.Decision)
-		if gate2.IsAllowed() {
-			client.MarkStepCompleted(workflow.WorkflowID, "step-2", &axonflow.MarkStepCompletedRequest{
-				Output: map[string]interface{}{"review": "LGTM"},
-			})
-			fmt.Println("   Step completed!")
-		}
+		fmt.Printf("   FATAL: StepGate failed: %v\n", err)
+		os.Exit(1)
 	}
+
+	assert(gate2.Decision != "", "StepGate returns a decision for tool call")
+	assert(validDecisions[string(gate2.Decision)], fmt.Sprintf("Decision '%s' is valid", gate2.Decision))
+	fmt.Printf("   Decision: %s\n", gate2.Decision)
 	fmt.Println()
 
-	// Step 4: Check gate for third step (Deploy - Connector call)
-	fmt.Println("Step 4: Check Gate - Deploy")
-	fmt.Println("   Checking if 'deploy' step is allowed...")
+	// Mark step 2 completed if allowed
+	if gate2.IsAllowed() {
+		err = client.MarkStepCompleted(workflow.WorkflowID, "step-2", &axonflow.MarkStepCompletedRequest{
+			Output: map[string]interface{}{"review": "LGTM"},
+		})
+		assert(err == nil, "MarkStepCompleted succeeds for step-2")
+	}
+
+	// ========================================
+	// Test 4: Step Gate - Connector Call
+	// ========================================
+	fmt.Println("Test 4: Step Gate - Connector Call")
+	fmt.Println("-----------------------------------")
 
 	gate3, err := client.StepGate(workflow.WorkflowID, "step-3", axonflow.StepGateRequest{
 		StepName: "Deploy to Production",
@@ -136,57 +182,67 @@ func main() {
 			"action":    "create_pr",
 		},
 	})
+
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n", err)
-	} else {
-		fmt.Printf("   Decision: %s\n", gate3.Decision)
-		if gate3.IsAllowed() {
-			client.MarkStepCompleted(workflow.WorkflowID, "step-3", &axonflow.MarkStepCompletedRequest{
-				Output: map[string]interface{}{"pr_url": "https://github.com/example/pr/123"},
-			})
-			fmt.Println("   Step completed!")
-		}
+		fmt.Printf("   FATAL: StepGate failed: %v\n", err)
+		os.Exit(1)
 	}
+
+	assert(gate3.Decision != "", "StepGate returns a decision for connector call")
+	assert(validDecisions[string(gate3.Decision)], fmt.Sprintf("Decision '%s' is valid", gate3.Decision))
+	fmt.Printf("   Decision: %s\n", gate3.Decision)
 	fmt.Println()
 
-	// Step 5: Complete the workflow
-	fmt.Println("Step 5: Complete Workflow")
+	// Mark step 3 completed if allowed
+	if gate3.IsAllowed() {
+		err = client.MarkStepCompleted(workflow.WorkflowID, "step-3", &axonflow.MarkStepCompletedRequest{
+			Output: map[string]interface{}{"pr_url": "https://github.com/example/pr/123"},
+		})
+		assert(err == nil, "MarkStepCompleted succeeds for step-3")
+	}
+
+	// ========================================
+	// Test 5: Complete Workflow
+	// ========================================
+	fmt.Println("Test 5: Complete Workflow")
+	fmt.Println("-------------------------")
+
 	err = client.CompleteWorkflow(workflow.WorkflowID)
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n", err)
-	} else {
-		fmt.Println("   Workflow completed!")
-	}
+	assert(err == nil, "CompleteWorkflow succeeds")
 	fmt.Println()
 
-	// Step 6: Get final workflow status
-	fmt.Println("Step 6: Workflow Status")
+	// ========================================
+	// Test 6: Verify Final Status
+	// ========================================
+	fmt.Println("Test 6: Verify Final Status")
+	fmt.Println("---------------------------")
+
 	status, err := client.GetWorkflow(workflow.WorkflowID)
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n", err)
+		fmt.Printf("   ERROR: GetWorkflow failed: %v\n", err)
+		failCount++
 	} else {
-		fmt.Printf("   Workflow: %s\n", status.WorkflowName)
-		fmt.Printf("   Status: %s\n", status.Status)
+		assert(status.WorkflowID == workflow.WorkflowID, "Workflow ID matches")
+		assert(status.WorkflowName == "wcp-validation-test", "Workflow name matches")
+		// Status should be completed since we completed the workflow
+		isTerminal := status.Status == "completed" || status.Status == "aborted"
+		assert(isTerminal, fmt.Sprintf("Workflow status is terminal: %s", status.Status))
+		fmt.Printf("   Final Status: %s\n", status.Status)
 		fmt.Printf("   Steps: %d\n", len(status.Steps))
 	}
 	fmt.Println()
 
-	fmt.Println("========================================")
-	fmt.Println("Workflow Control Plane Example Complete!")
-	fmt.Println()
-	fmt.Println("Key concepts demonstrated:")
-	fmt.Println("  1. Create workflow (register with AxonFlow)")
-	fmt.Println("  2. Check step gates (policy evaluation)")
-	fmt.Println("  3. Mark steps completed (progress tracking)")
-	fmt.Println("  4. Complete workflow (lifecycle management)")
-}
+	// ========================================
+	// Summary
+	// ========================================
+	fmt.Println("==========================================")
+	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 
-func abortWorkflow(client *axonflow.Client, workflowID, reason string) {
-	err := client.AbortWorkflow(workflowID, reason)
-	if err != nil {
-		fmt.Printf("   ERROR aborting workflow: %v\n", err)
+	if failCount > 0 {
+		fmt.Println("SOME TESTS FAILED")
+		os.Exit(1)
 	} else {
-		fmt.Println("   Workflow aborted.")
+		fmt.Println("ALL TESTS PASSED - WCP is working correctly")
 	}
 }
 

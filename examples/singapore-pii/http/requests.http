@@ -1,0 +1,170 @@
+# Singapore PII Detection - HTTP Examples
+# These requests demonstrate Singapore-specific PII detection via REST API.
+# Use with REST Client extension in VS Code or any HTTP client.
+#
+# API: POST /api/policy/pre-check (Gateway Mode policy pre-check)
+# Response includes: context_id, approved, policies[], requires_redaction
+
+@baseUrl = http://localhost:8080
+@tenantId = local-dev-org
+@clientId = singapore-pii-example
+@userToken = singapore-user
+
+### NRIC Detection (S prefix - Citizen pre-2000)
+# Expected: policies = ["sys_pii_singapore_nric"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Customer NRIC is S1234567D",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### NRIC Detection (T prefix - Citizen 2000+)
+# Expected: policies = ["sys_pii_singapore_nric"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "New customer T9876543J registered",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### FIN Detection (F prefix - Foreigner pre-2000)
+# Expected: policies = ["sys_pii_singapore_fin", "sys_pii_singapore_nric"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Employee FIN: F1234567N",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### FIN Detection (G prefix - Foreigner 2000+)
+# Expected: policies = ["sys_pii_singapore_fin", "sys_pii_singapore_nric"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Applicant G9876543X submitted documents",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### NRIC Detection (M prefix - Foreigner 2022+)
+# Expected: policies = ["sys_pii_singapore_nric"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "New hire M1234567K onboarded",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### UEN Detection (Business registration - 8 digits)
+# Expected: policies = ["sys_pii_singapore_uen"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Invoice from company UEN 53276128A",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### UEN Detection (Company registration - 9 digits)
+# Expected: policies = ["sys_pii_singapore_uen"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Vendor UEN: 200312345A verified",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Singapore Phone Detection (Mobile)
+# Expected: policies = ["sys_pii_singapore_phone"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Contact customer at +65 9123 4567",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Singapore Phone Detection (Landline)
+# Expected: policies = ["sys_pii_singapore_phone"], requires_redaction = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Office number: +65 6234 5678",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Singapore Postal Code Detection
+# Expected: policies = ["sys_pii_singapore_postal"], requires_redaction = false (warn only)
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Delivery address: Singapore 238877",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Safe Query (No PII)
+# Expected: policies = [], approved = true
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "What is the weather in Singapore?",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Multiple PII in Single Query
+# Expected: policies = ["sys_pii_singapore_nric", "sys_pii_singapore_phone", "sys_pii_singapore_postal"]
+POST {{baseUrl}}/api/policy/pre-check
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+
+{
+  "query": "Customer S1234567D phone +65 8123 4567 at 238877",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}
+
+### Gateway Mode - Proxy LLM Call (requires LLM API key)
+# Expected: PII redacted before LLM, response processed
+POST {{baseUrl}}/api/v1/proxy-llm
+Content-Type: application/json
+X-Tenant-ID: {{tenantId}}
+Authorization: Bearer {{$dotenv AXONFLOW_LICENSE_KEY}}
+
+{
+  "prompt": "Summarize customer S1234567D account status",
+  "provider": "openai",
+  "model": "gpt-4",
+  "user_token": "{{userToken}}",
+  "client_id": "{{clientId}}"
+}

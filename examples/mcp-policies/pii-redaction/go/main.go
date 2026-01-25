@@ -51,7 +51,7 @@ func main() {
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
-		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo"),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Empty for community mode
 		Debug:        getEnv("AXONFLOW_DEBUG", "") == "true",
 	})
 

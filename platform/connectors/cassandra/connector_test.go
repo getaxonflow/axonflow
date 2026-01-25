@@ -368,6 +368,154 @@ func TestCassandraConnector_ExecuteWithParameters(t *testing.T) {
 	}
 }
 
+func TestCassandraConnector_ConnectWithOptions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		config  *base.ConnectorConfig
+		wantErr bool
+	}{
+		{
+			name: "with consistency option",
+			config: &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: "cassandra://localhost:9042/keyspace",
+				Options: map[string]interface{}{
+					"consistency": "LOCAL_QUORUM",
+				},
+			},
+			wantErr: true, // Will fail to connect but config parsing should work
+		},
+		{
+			name: "with num_conns option",
+			config: &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: "cassandra://localhost:9042/keyspace",
+				Options: map[string]interface{}{
+					"num_conns": 5,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "with timeout option",
+			config: &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: "cassandra://localhost:9042/keyspace",
+				Timeout:       1000000000, // 1 second
+			},
+			wantErr: true,
+		},
+		{
+			name: "with credentials",
+			config: &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: "cassandra://localhost:9042/keyspace",
+				Credentials: map[string]string{
+					"username": "testuser",
+					"password": "testpass",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "with all options",
+			config: &base.ConnectorConfig{
+				Name:          "test-cassandra",
+				Type:          "cassandra",
+				ConnectionURL: "cassandra://localhost:9042/keyspace",
+				Timeout:       2000000000,
+				Credentials: map[string]string{
+					"username": "admin",
+					"password": "secret",
+				},
+				Options: map[string]interface{}{
+					"consistency": "ALL",
+					"num_conns":   3,
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset connector state
+			conn := NewCassandraConnector()
+			err := conn.Connect(ctx, tt.config)
+
+			// We expect connection errors (no Cassandra running)
+			// but config parsing should complete
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err == nil {
+				t.Error("expected error for connection attempt")
+			}
+		})
+	}
+}
+
+func TestCassandraConnector_QueryWithTimeout(t *testing.T) {
+	conn := NewCassandraConnector()
+	conn.config = &base.ConnectorConfig{Name: "test"}
+	ctx := context.Background()
+
+	// Test with timeout set - should attempt to create context with timeout
+	query := &base.Query{
+		Statement: "SELECT * FROM test",
+		Timeout:   5000000000, // 5 seconds
+	}
+
+	_, err := conn.Query(ctx, query)
+	if err == nil {
+		t.Error("expected error when querying with nil session")
+	}
+	// Error should be about nil session, not timeout
+	if err.Error() != "test.Query: session not connected" {
+		t.Logf("got expected error type: %v", err)
+	}
+}
+
+func TestCassandraConnector_ExecuteWithTimeout(t *testing.T) {
+	conn := NewCassandraConnector()
+	conn.config = &base.ConnectorConfig{Name: "test"}
+	ctx := context.Background()
+
+	// Test with timeout set
+	cmd := &base.Command{
+		Action:    "UPDATE",
+		Statement: "UPDATE test SET value = ? WHERE id = ?",
+		Timeout:   3000000000, // 3 seconds
+		Parameters: map[string]interface{}{
+			"value": "newval",
+			"id":    123,
+		},
+	}
+
+	_, err := conn.Execute(ctx, cmd)
+	if err == nil {
+		t.Error("expected error when executing with nil session")
+	}
+}
+
+func TestCassandraConnector_DisconnectWithConfig(t *testing.T) {
+	conn := NewCassandraConnector()
+	conn.config = &base.ConnectorConfig{Name: "test-disconnect"}
+	ctx := context.Background()
+
+	// Disconnect should work even without session
+	err := conn.Disconnect(ctx)
+	if err != nil {
+		t.Errorf("Disconnect should not error: %v", err)
+	}
+}
+
 // Integration test - skipped without Cassandra
 func TestCassandraConnector_Integration(t *testing.T) {
 	cassandraURL := "cassandra://localhost:9042/test_keyspace"

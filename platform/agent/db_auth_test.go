@@ -397,10 +397,15 @@ func TestValidateViaAPIKeys_Success(t *testing.T) {
 		t.Errorf("expected rate_limit=1000, got %d", client.RateLimit)
 	}
 
-	// Note: validateViaAPIKeys currently returns default permissions ["query", "llm"]
-	// TODO: Parse permissions from JSON in db_auth.go
-	if len(client.Permissions) != 2 {
-		t.Errorf("expected 2 permissions (default), got %d", len(client.Permissions))
+	// Verify permissions are correctly parsed from JSON
+	expectedPerms := []string{"query", "llm", "connector"}
+	if len(client.Permissions) != len(expectedPerms) {
+		t.Errorf("expected %d permissions, got %d", len(expectedPerms), len(client.Permissions))
+	}
+	for i, perm := range expectedPerms {
+		if i < len(client.Permissions) && client.Permissions[i] != perm {
+			t.Errorf("expected permission[%d]=%s, got %s", i, perm, client.Permissions[i])
+		}
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

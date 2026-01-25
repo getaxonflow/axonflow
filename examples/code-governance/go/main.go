@@ -53,7 +53,7 @@ func main() {
 	fmt.Println("Example 1: Generate a Go function")
 	fmt.Println("------------------------------------------------------------")
 
-	response, err := client.ExecuteQuery(
+	response, err := client.ProxyLLMCall(
 		userToken,
 		"Write a Go function to validate email addresses using regex",
 		"chat",
@@ -103,7 +103,7 @@ func main() {
 	fmt.Println("Example 2: Check for unsafe patterns in generated code")
 	fmt.Println("------------------------------------------------------------")
 
-	response, err = client.ExecuteQuery(
+	response, err = client.ProxyLLMCall(
 		userToken,
 		"Write a Go function that uses os/exec to run shell commands from user input",
 		"chat",

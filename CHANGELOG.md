@@ -7,6 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.6.0] - 2026-01-25
+
+### Community
+
+#### Added
+
+- **Unified Execution Tracking** (#1075): Consistent status tracking for MAP plans and WCP workflows
+  - New unified execution history table (`execution_history`) for both MAP and WCP executions
+  - `GET /api/v1/executions/{id}` - Get unified execution status by ID
+  - `GET /api/v1/executions` - List executions with type/status filters
+  - `ExecutionType`: `map_plan`, `wcp_workflow`
+  - `ExecutionStatusValue`: `pending`, `running`, `completed`, `failed`, `cancelled`, `aborted`, `expired`
+  - `StepStatusValue`: `pending`, `running`, `completed`, `failed`, `skipped`, `blocked`, `approval`
+  - `UnifiedStepType`: `llm_call`, `tool_call`, `connector_call`, `human_task`, `synthesis`, `action`, `gate`
+  - Unified step tracking with duration, cost, and policy decision fields
+  - SDK support in Go v2.7.0, Python v1.7.0, TypeScript v2.7.0, Java v2.7.0
+
+- **Singapore PII Detection** (#1078): MAS FEAT compliance patterns for PII detection
+  - NRIC pattern detection (S/T/M/F/G prefixes) with critical severity
+  - FIN pattern detection (F/G prefixes) for foreign identification
+  - UEN pattern detection for business entities
+  - Singapore phone numbers (+65 format)
+  - Singapore postal codes (6-digit)
+  - Examples: Go, Python, TypeScript, HTTP
+
+- **Compliance Policy Categories** (#1081): New policy category constants for compliance evaluation
+  - Added `CategoryComplianceEUAIAct` and `CategoryComplianceMASFEAT` constants
+  - Added `IsComplianceCategory()` and `AllComplianceCategories()` helper functions
+  - RBI, SEBI, EU AI Act, and MAS FEAT categories evaluated at gateway and MCP handlers
+
+- **Redis Policy Store** (#1071): Distributed rate limiting and budget tracking for MCP policies with automatic fallback
+
+- **Budget Enforcement Wiring** (#1082): Budget limits now block requests when exceeded
+  - Gateway calls `CheckBudget()` before processing requests
+  - HTTP 402 returned when budget exceeded with `on_exceed=block`
+  - `X-Budget-Warning` header for `on_exceed=warn`
+  - `BudgetInfo` in response
+
+- **HITL Workflow Engine Wiring** (#1082): Human-in-the-Loop integrated with workflow execution
+  - `ExecuteWithHITL()` wired to production execution path
+  - Enterprise: Database persistence; Community: In-memory with auto-approve
+
+- **WCP to HITL Connection** (#1082): `require_approval` decisions create HITL queue entries
+
+- **MAP Conditional Branch Execution** (#1082): Branches now execute steps, not just record intent
+
+- **MAP Parallel Execution Tolerance** (#1082): Configurable `SoftFailureTolerance` replaces hardcoded logic
+
+- **Policy Cache Refresh API** (#1082): Immediate policy availability after CRUD operations
+  - New `PolicyEngineRefresher` interface for policy engines
+  - `RefreshPolicies()` method on both `DynamicPolicyEngine` and `DatabaseDynamicPolicyEngine`
+  - `PolicyService` triggers refresh after create, update, delete, and import operations
+  - Eliminates 30-second cache delay for WCP HITL integration
+
+- **Dynamic Policy `require_approval` Action** (#1082): HITL trigger from dynamic policies
+  - New `require_approval` action type in dynamic policy evaluation
+  - Sets `Allowed=false` and adds `require_approval` to `RequiredActions`
+  - Supports `reason` field in action config for approval context
+
+- **Nested Context Path Support** (#1082): Enhanced dynamic policy field matching
+  - `context.step_input.query` now correctly resolves to `req.Context["step_input.query"]`
+  - Supports arbitrary depth in dotted notation (e.g., `context.a.b.c`)
+
+#### Fixed
+
+- **HMAC Secret Panic** (#1082): Enterprise Docker images no longer panic when HMAC secret not initialized
+  - Added `isHMACSecretInitialized()` thread-safe check using RLock
+  - `IsEnterpriseTier()` returns false gracefully instead of panicking
+  - Allows enterprise images to run in community mode without configuration changes
+
+- **MCP Dynamic Policy Evaluation** (#1071): Fixed multiple pre-existing bugs preventing MCP dynamic policies from working
+  - Added MCP policy types to validation, fixed DATABASE_URL propagation, created interface for both in-memory and database engines
+- **Agent DB Auth** (#1071): Fixed JSON parsing for permissions from JSONB array
+- **Cassandra Connector** (#1071): Apply timeout from query config to CQL operations
+
+- **SDK Examples with Assertions** (#1082): All Go examples now have proper pass/fail testing
+  - 94 assertions across 12 example categories
+  - Examples exit with code 1 on test failure for CI/CD integration
+  - Fixed PAN test case format in pii-detection (`ABCDE1234F` → `ABCPD1234E`)
+  - Fixed `ProxyLLMCall` → `ExecuteQuery` for SDK v2.6.0 compatibility (4 files)
+  - Test coverage: static-policies (16), dynamic-policies (12), mcp-audit (7), execution-tracking (12), pii-detection (14), llm-routing (3), gateway-mode (5), proxy-mode (3), langgraph (4), dspy (7), sqli-detection (10), execution-replay (1)
+
+- **HITL Enforcement for Compliance Frameworks** (#1089): Fixed HITL not triggering in Proxy Mode
+  - Root cause: Database constraint missing `require_approval` action + runtime wiring gap
+  - Migration 044: Added `require_approval` to `action_request`/`action_response` constraints
+  - Added `ActionRequireApproval` action type to shared policy types
+  - Multi-strategy HITL detection: `eu_ai_act_article_14`, `requires_hitl` + compliance context, high-risk + compliance framework
+  - EU AI Act and RBI-SEBI examples now achieve 100% HITL compliance rate
+
+#### Deprecated
+
+- **SDK: ExecuteQuery → ProxyLLMCall** (#1052): Renamed for clearer Proxy Mode semantics
+  - **Action Required:** Migrate from `executeQuery()` to `proxyLLMCall()` before the next major release
+  - Old methods emit deprecation warnings and **will be removed in v4.0.0**
+  - New names clarify the two integration modes:
+    - **Proxy Mode:** `proxyLLMCall()` - AxonFlow proxies your LLM request
+    - **Gateway Mode:** `getPolicyApprovedContext()` + `auditLLMCall()` - You call LLM directly
+  - All SDK examples and demos updated to use new method names
+  - Applies to: Go SDK, TypeScript SDK, Python SDK, Java SDK
+
+### Enterprise
+
+#### Added
+
+- **MAS FEAT Compliance Module**: Singapore financial services AI governance framework
+  - Implements Monetary Authority of Singapore FEAT (Fairness, Ethics, Accountability, Transparency) guidelines
+  - AI System Registry with 3-Dimensional Risk Rating (Customer Impact × Model Complexity × Human Reliance)
+  - Materiality Classification: High (sum≥12), Medium (sum≥8), Low (sum<8)
+  - FEAT Assessment lifecycle: pending → in_progress → completed → approved/rejected
+  - Four pillar scoring: Fairness, Ethics, Accountability, Transparency (with detailed sub-metrics)
+  - Kill Switch with automatic triggering based on accuracy, bias, and error rate thresholds
+  - 7-year audit retention for regulatory compliance
+  - Singapore-specific PII detection with Verhoeff checksum validation (NRIC, FIN, UEN)
+
+- **MAS FEAT Database Schema**: New tables for compliance data
+  - `ai_system_registry` - AI system registration with materiality tracking
+  - `feat_assessments` - FEAT assessment records with pillar scores
+  - `kill_switch` - Kill switch configuration and status
+  - `kill_switch_events` - Kill switch event audit log
+
+- **MAS FEAT API Endpoints**: Full REST API for compliance operations
+  - AI System Registry CRUD (`/api/v1/masfeat/registry/*`)
+  - FEAT Assessment lifecycle (`/api/v1/masfeat/assessments/*`)
+  - Kill Switch management (`/api/v1/masfeat/killswitch/*`)
+
+- **Compliance Runtime Wiring** (#1081): Enterprise compliance module initialization
+  - RBI, SEBI, EU AI Act, and MAS FEAT module initialization with health checks
+  - Compliance route registration (`/api/v1/rbi/*`, `/api/v1/sebi/*`, `/api/v1/euaiact/*`, `/api/v1/masfeat/*`)
+  - Compliance examples with strict HITL assertion validation
+
+- **HITL Execution Store** (#1071): In-memory store with SaveExecution/GetExecutionStatus for pause/resume workflow
+
+- **SCIM Provisioning Examples** (#1082): User, group, token management examples
+
+- **WCP HITL Queue Integration** (#1092): `require_approval` policy actions now create HITL queue entries
+  - Enterprise: Database persistence in `hitl_approval_queue` with `wcp_step_gate` request type
+  - Community: No-op stub with informational logging
+  - 24-hour default expiry for approval requests
+  - New E2E example at `ee/examples/workflows/wcp-hitl/go` verifying queue entry creation
+
+#### Fixed
+
+- **WCP HITL Approval Queue Insert** (#1082): Fixed INSERT query for `hitl_approval_queue` table
+  - Removed explicit `id` column from INSERT (now auto-generated by sequence)
+  - `request_id` (UUID) is the primary identifier for approval requests
+
+#### SDK Support
+
+- TypeScript SDK v2.7.0: `client.masfeat.*` namespace, `budgetInfo`
+- Python SDK v1.7.0: `client.masfeat.*` namespace, `budget_info`
+- Go SDK v2.7.0: `client.MASFEAT*()` methods, `BudgetInfo`
+- Java SDK v2.7.0: `client.masfeat().*` namespace, `getBudgetInfo()`
+
+---
+
 ## [3.5.0] - 2026-01-18
 
 ### Added

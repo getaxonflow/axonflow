@@ -841,12 +841,20 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			ConnectorName: req.Connector,
 			UserID:        fmt.Sprintf("%d", user.ID),
 			Categories: []sharedpolicy.PolicyCategory{
+				// Security categories
 				sharedpolicy.CategorySecuritySQLi,
 				sharedpolicy.CategorySecurityDangerous,
+				// PII categories by jurisdiction
 				sharedpolicy.CategoryPIIGlobal,
 				sharedpolicy.CategoryPIIUS,
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
+				// Compliance categories (Issue #1081)
+				sharedpolicy.CategoryComplianceRBI,
+				sharedpolicy.CategoryComplianceSEBI,
+				sharedpolicy.CategoryComplianceEUAIAct,
+				sharedpolicy.CategoryComplianceMASFEAT,
 			},
 		})
 
@@ -916,6 +924,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIUS,
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
 			},
 			MaxRedactions: 100, // Limit redactions per response
 		})
@@ -1253,12 +1262,20 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			ConnectorName: req.Connector,
 			UserID:        fmt.Sprintf("%d", user.ID),
 			Categories: []sharedpolicy.PolicyCategory{
+				// Security categories
 				sharedpolicy.CategorySecuritySQLi,
 				sharedpolicy.CategorySecurityDangerous,
+				// PII categories by jurisdiction
 				sharedpolicy.CategoryPIIGlobal,
 				sharedpolicy.CategoryPIIUS,
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
+				// Compliance categories (Issue #1081)
+				sharedpolicy.CategoryComplianceRBI,
+				sharedpolicy.CategoryComplianceSEBI,
+				sharedpolicy.CategoryComplianceEUAIAct,
+				sharedpolicy.CategoryComplianceMASFEAT,
 			},
 		})
 

@@ -1,6 +1,6 @@
 # PII blocked in real-time
 try:
-    response = await ax.execute_query(query="My SSN is 123-45-6789")
+    response = await ax.proxy_llm_call(query="My SSN is 123-45-6789")
 except PolicyViolationError as e:
     print(f"Blocked: {e.policy}")  # pii_ssn_detection
     print(f"Reason: {e.block_reason}")  # Logged for compliance

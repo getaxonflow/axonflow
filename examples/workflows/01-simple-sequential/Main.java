@@ -44,7 +44,7 @@ public class Main {
 
         try {
             // Send query to AxonFlow
-            ExecuteResponse response = client.executeQuery(
+            ExecuteResponse response = client.proxyLLMCall(
                     ExecuteQueryRequest.builder()
                             .userToken("user-123")
                             .query(query)

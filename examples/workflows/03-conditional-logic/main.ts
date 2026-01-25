@@ -29,7 +29,7 @@ async function main() {
   console.log('📤 Searching for flights to Paris...');
 
   try {
-    const searchResponse = await client.executeQuery({
+    const searchResponse = await client.proxyLLMCall({
       userToken: 'user-123',
       query: searchQuery,
       requestType: 'chat',
@@ -47,7 +47,7 @@ async function main() {
       console.log('💡 Trying alternative dates...');
 
       const altQuery = 'Find flights from New York to Paris for the following week instead';
-      const altResponse = await client.executeQuery({
+      const altResponse = await client.proxyLLMCall({
         userToken: 'user-123',
         query: altQuery,
         requestType: 'chat',
@@ -68,7 +68,7 @@ async function main() {
     const bookQuery = 'Based on the search results above, what would be the recommended booking?';
     console.log('\n📤 Getting booking recommendation...');
 
-    const bookResponse = await client.executeQuery({
+    const bookResponse = await client.proxyLLMCall({
       userToken: 'user-123',
       query: bookQuery,
       requestType: 'chat',

@@ -45,6 +45,7 @@ type StepGateEvaluation struct {
 	PolicyIDs         []string
 	PoliciesEvaluated []PolicyMatch
 	PoliciesMatched   []PolicyMatch
+	ApprovalID        string // HITL approval ID when Decision is GateDecisionRequireApproval (Issue #1082)
 }
 
 // DefaultPolicyEvaluator is a no-op evaluator that allows all steps
@@ -68,6 +69,23 @@ type WorkflowAuditLogger interface {
 	LogWorkflowOperation(ctx context.Context, entry *WorkflowAuditEntry)
 }
 
+// WorkflowExecutionTracker interface for unified execution tracking
+// This allows the orchestrator package to inject unified tracking without circular dependencies
+type WorkflowExecutionTracker interface {
+	// OnWorkflowCreated is called when a new workflow is registered
+	OnWorkflowCreated(ctx context.Context, workflow *Workflow) error
+	// OnStepGate is called when a step gate check is performed
+	OnStepGate(ctx context.Context, workflowID string, step *WorkflowStep) error
+	// OnStepCompleted is called when a step execution completes
+	OnStepCompleted(ctx context.Context, workflowID string, stepID string) error
+	// OnWorkflowCompleted is called when a workflow completes successfully
+	OnWorkflowCompleted(ctx context.Context, workflowID string) error
+	// OnWorkflowFailed is called when a workflow fails
+	OnWorkflowFailed(ctx context.Context, workflowID string, reason string) error
+	// OnWorkflowAborted is called when a workflow is aborted
+	OnWorkflowAborted(ctx context.Context, workflowID string, reason string) error
+}
+
 // WorkflowAuditEntry represents an audit entry for workflow operations
 type WorkflowAuditEntry struct {
 	WorkflowID   string
@@ -85,11 +103,12 @@ type WorkflowAuditEntry struct {
 
 // Service handles workflow control plane business logic
 type Service struct {
-	repo            Repository
-	policyEvaluator PolicyEvaluator
-	auditLogger     WorkflowAuditLogger
-	logger          *log.Logger
-	baseURL         string // Base URL for approval URLs
+	repo             Repository
+	policyEvaluator  PolicyEvaluator
+	auditLogger      WorkflowAuditLogger
+	executionTracker WorkflowExecutionTracker
+	logger           *log.Logger
+	baseURL          string // Base URL for approval URLs
 }
 
 // ServiceConfig configures the workflow control service
@@ -128,10 +147,26 @@ func (s *Service) SetAuditLogger(auditLogger WorkflowAuditLogger) {
 	s.auditLogger = auditLogger
 }
 
+// SetExecutionTracker sets the unified execution tracker for the service
+func (s *Service) SetExecutionTracker(tracker WorkflowExecutionTracker) {
+	s.executionTracker = tracker
+}
+
 // logAudit logs a workflow audit entry if an audit logger is configured
 func (s *Service) logAudit(ctx context.Context, entry *WorkflowAuditEntry) {
 	if s.auditLogger != nil {
 		s.auditLogger.LogWorkflowOperation(ctx, entry)
+	}
+}
+
+// trackExecution calls the unified execution tracker if configured
+// Errors are logged but don't fail the operation (best-effort tracking)
+func (s *Service) trackExecution(ctx context.Context, op string, fn func() error) {
+	if s.executionTracker == nil {
+		return
+	}
+	if err := fn(); err != nil {
+		s.logger.Printf("[WorkflowControl] Execution tracking error (%s): %v", op, err)
 	}
 }
 
@@ -192,6 +227,11 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 			"source":      workflow.Source,
 			"total_steps": req.TotalSteps,
 		},
+	})
+
+	// Unified execution tracking
+	s.trackExecution(ctx, "workflow_created", func() error {
+		return s.executionTracker.OnWorkflowCreated(ctx, workflow)
 	})
 
 	return workflow, nil
@@ -330,6 +370,11 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		},
 	})
 
+	// Unified execution tracking
+	s.trackExecution(ctx, "step_gate", func() error {
+		return s.executionTracker.OnStepGate(ctx, workflowID, step)
+	})
+
 	return response, nil
 }
 
@@ -444,6 +489,11 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 		UserID:       workflow.UserID,
 	})
 
+	// Unified execution tracking
+	s.trackExecution(ctx, "workflow_aborted", func() error {
+		return s.executionTracker.OnWorkflowAborted(ctx, workflowID, reason)
+	})
+
 	return nil
 }
 
@@ -486,6 +536,11 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 		},
 	})
 
+	// Unified execution tracking
+	s.trackExecution(ctx, "workflow_completed", func() error {
+		return s.executionTracker.OnWorkflowCompleted(ctx, workflowID)
+	})
+
 	return nil
 }
 
@@ -505,6 +560,12 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID string, reason st
 	}
 
 	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", workflowID, reason)
+
+	// Unified execution tracking
+	s.trackExecution(ctx, "workflow_failed", func() error {
+		return s.executionTracker.OnWorkflowFailed(ctx, workflowID, reason)
+	})
+
 	return nil
 }
 
@@ -573,6 +634,11 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 		TenantID:     workflow.TenantID,
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
+	})
+
+	// Unified execution tracking
+	s.trackExecution(ctx, "step_completed", func() error {
+		return s.executionTracker.OnStepCompleted(ctx, workflowID, stepID)
 	})
 
 	return nil

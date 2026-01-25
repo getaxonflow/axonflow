@@ -100,6 +100,14 @@ type WorkflowSpec struct {
 	Input   InputSchema           `json:"input"`
 	Steps   []WorkflowStep        `json:"steps"`
 	Output  map[string]string     `json:"output"`
+	// SoftFailureTolerance configures how parallel step failures are handled (Issue #1082)
+	// Supported values:
+	//   - "none" or "" - All steps must succeed (default)
+	//   - "any" - Continue if any step succeeds
+	//   - "count:N" - At most N failures allowed
+	//   - "percentage:N" - At least N% of steps must succeed
+	//   - "required:step1,step2" - These specific steps must succeed, others can fail
+	SoftFailureTolerance string `json:"soft_failure_tolerance,omitempty"`
 }
 
 type InputSchema struct {
@@ -413,24 +421,27 @@ func (p *LLMCallProcessor) parseStructuredResponse(response interface{}) (map[st
 	return nil, fmt.Errorf("could not parse structured response")
 }
 
-// Conditional Step Processor
-type ConditionalProcessor struct{}
+// Conditional Step Processor - executes branches based on condition evaluation (Issue #1082)
+type ConditionalProcessor struct {
+	engine *WorkflowEngine
+}
 
-func NewConditionalProcessor() *ConditionalProcessor {
-	return &ConditionalProcessor{}
+func NewConditionalProcessor(engine *WorkflowEngine) *ConditionalProcessor {
+	return &ConditionalProcessor{engine: engine}
 }
 
 func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
 	// Evaluate condition
 	conditionResult := p.evaluateCondition(step.Condition, execution)
-	
+
 	output := map[string]interface{}{
 		"condition_evaluated": step.Condition,
 		"condition_result":    conditionResult,
 		"branch_taken":        "",
+		"branch_steps":        make([]map[string]interface{}, 0),
 	}
-	
-	// Execute appropriate branch
+
+	// Select appropriate branch based on condition result
 	var stepsToExecute []WorkflowStep
 	if conditionResult {
 		stepsToExecute = step.IfTrue
@@ -439,11 +450,64 @@ func (p *ConditionalProcessor) ExecuteStep(ctx context.Context, step WorkflowSte
 		stepsToExecute = step.IfFalse
 		output["branch_taken"] = "if_false"
 	}
-	
-	// Note: In a full implementation, we would execute the branch steps
-	// For this basic demo, we just record which branch would be taken
-	output["steps_to_execute"] = len(stepsToExecute)
-	
+
+	// Issue #1082: Actually execute branch steps instead of just recording
+	branchOutputs := make([]map[string]interface{}, 0, len(stepsToExecute))
+	currentInput := input
+
+	for _, branchStep := range stepsToExecute {
+		// Get processor for the step type
+		processor, exists := p.engine.stepProcessors[branchStep.Type]
+		if !exists {
+			return nil, fmt.Errorf("unknown step type in conditional branch: %s", branchStep.Type)
+		}
+
+		// Record branch step in execution
+		branchStepExec := StepExecution{
+			Name:      branchStep.Name,
+			Status:    "running",
+			StartTime: time.Now(),
+			Input:     currentInput,
+		}
+		execution.Steps = append(execution.Steps, branchStepExec)
+		stepIdx := len(execution.Steps) - 1
+
+		// Execute the branch step
+		stepOutput, err := processor.ExecuteStep(ctx, branchStep, currentInput, execution)
+		now := time.Now()
+
+		if err != nil {
+			execution.Steps[stepIdx].Status = "failed"
+			execution.Steps[stepIdx].Error = err.Error()
+			execution.Steps[stepIdx].EndTime = &now
+			return nil, fmt.Errorf("branch step %s failed: %v", branchStep.Name, err)
+		}
+
+		// Update step execution record
+		execution.Steps[stepIdx].Status = "completed"
+		execution.Steps[stepIdx].Output = stepOutput
+		execution.Steps[stepIdx].EndTime = &now
+		execution.Steps[stepIdx].ProcessTime = now.Sub(branchStepExec.StartTime).String()
+
+		// Collect output and merge into input for next step
+		branchOutputs = append(branchOutputs, map[string]interface{}{
+			"step_name": branchStep.Name,
+			"output":    stepOutput,
+		})
+
+		// Merge step output into context for subsequent steps in branch
+		if stepOutput != nil {
+			for key, value := range stepOutput {
+				currentInput[fmt.Sprintf("step_%s_%s", branchStep.Name, key)] = value
+			}
+		}
+
+		log.Printf("Completed conditional branch step: %s", branchStep.Name)
+	}
+
+	output["branch_steps"] = branchOutputs
+	output["steps_executed"] = len(branchOutputs)
+
 	return output, nil
 }
 
@@ -536,12 +600,13 @@ func NewWorkflowEngine() *WorkflowEngine {
 		stepProcessors: make(map[string]StepProcessor),
 		storage:        NewInMemoryWorkflowStorage(),
 	}
-	
+
 	// Note: Step processors that need llmRouter will be registered after initialization
 	// For now, register only the processors that don't need external dependencies
-	engine.stepProcessors["conditional"] = NewConditionalProcessor()
+	// Issue #1082: ConditionalProcessor now requires engine reference to execute branch steps
+	engine.stepProcessors["conditional"] = NewConditionalProcessor(engine)
 	engine.stepProcessors["function-call"] = NewFunctionCallProcessor()
-	
+
 	return engine
 }
 
@@ -916,8 +981,8 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 			groupIdx+1, len(stepGroups), len(group.Steps), group.IsParallel)
 
 		if group.IsParallel && len(group.Steps) > 1 {
-			// Execute steps in parallel
-			groupResults, err := e.executeStepsParallel(ctx, group.Steps, input, execution)
+			// Execute steps in parallel with configurable failure tolerance (Issue #1082)
+			groupResults, err := e.executeStepsParallel(ctx, group.Steps, input, execution, workflow.Spec.SoftFailureTolerance)
 			if err != nil {
 				log.Printf("[Workflow] Step group %d FAILED: %v", groupIdx+1, err)
 				execution.Status = "failed"
@@ -1030,7 +1095,13 @@ func (e *WorkflowEngine) groupStepsForExecution(steps []WorkflowStep, enablePara
 }
 
 // Execute steps in parallel using goroutines
-func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) ([]StepExecution, error) {
+// softFailureTolerance configures how failures are handled (Issue #1082):
+//   - "none" or "" - All steps must succeed (strict mode)
+//   - "any" - Continue if any step succeeds
+//   - "count:N" - At most N failures allowed
+//   - "percentage:N" - At least N% of steps must succeed
+//   - "required:step1,step2" - These specific steps must succeed, others can fail
+func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []WorkflowStep, input map[string]interface{}, execution *WorkflowExecution, softFailureTolerance string) ([]StepExecution, error) {
 	numSteps := len(steps)
 	results := make([]StepExecution, numSteps)
 	errors := make([]error, numSteps)
@@ -1059,43 +1130,99 @@ func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []Workf
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Check for errors - Allow workflow to continue with partial results for trip planning
-	// Only fail if ALL critical steps failed (flights/hotels)
+	// Collect failed and succeeded steps
 	failedSteps := []string{}
-	criticalStepsFailed := 0
-	totalSteps := 0
+	succeededSteps := []string{}
 
 	for i, err := range errors {
 		if err != nil {
 			failedSteps = append(failedSteps, steps[i].Name)
-			log.Printf("[Parallel] Step %s failed: %v", steps[i].Name, err)
-
-			// Check if this is a critical step (flights or hotels for trip planning)
-			if steps[i].Name == "flight-search" || steps[i].Name == "hotel-search" {
-				criticalStepsFailed++
-			}
+		} else {
+			succeededSteps = append(succeededSteps, steps[i].Name)
 		}
-		totalSteps++
 	}
 
-	// If some steps succeeded, continue with partial results (synthesis can use fallback)
-	if len(failedSteps) > 0 && len(failedSteps) < totalSteps {
-		log.Printf("[Parallel] %d/%d steps failed (%v), but continuing with partial results for synthesis fallback",
-			len(failedSteps), totalSteps, failedSteps)
-		// Return results without error - synthesis step will handle partial data
+	// If all steps succeeded, return success
+	if len(failedSteps) == 0 {
 		return results, nil
 	}
 
-	// Only fail if ALL steps failed or all critical steps failed
-	if len(failedSteps) == totalSteps {
-		return results, fmt.Errorf("all parallel steps failed: %v", failedSteps)
+	// Apply soft failure tolerance policy (Issue #1082)
+	shouldFail := e.evaluateFailureTolerance(softFailureTolerance, steps, failedSteps, succeededSteps)
+
+	if shouldFail {
+		if len(failedSteps) == len(steps) {
+			return results, fmt.Errorf("all parallel steps failed: %v", failedSteps)
+		}
+		return results, fmt.Errorf("parallel execution failed per tolerance policy '%s': failed steps: %v", softFailureTolerance, failedSteps)
 	}
 
-	if criticalStepsFailed > 0 && criticalStepsFailed == 2 {
-		return results, fmt.Errorf("critical steps (flights and hotels) failed")
-	}
-
+	// Continue with partial results
+	log.Printf("[Parallel] %d/%d steps failed (%v), continuing per tolerance policy '%s'",
+		len(failedSteps), len(steps), failedSteps, softFailureTolerance)
 	return results, nil
+}
+
+// evaluateFailureTolerance determines if workflow should fail based on tolerance policy
+func (e *WorkflowEngine) evaluateFailureTolerance(tolerance string, steps []WorkflowStep, failedSteps, succeededSteps []string) bool {
+	totalSteps := len(steps)
+	failedCount := len(failedSteps)
+	succeededCount := len(succeededSteps)
+
+	// Default: strict mode - all steps must succeed
+	if tolerance == "" || tolerance == "none" {
+		return failedCount > 0
+	}
+
+	// "any" - continue if any step succeeds
+	if tolerance == "any" {
+		return succeededCount == 0
+	}
+
+	// "count:N" - at most N failures allowed
+	if strings.HasPrefix(tolerance, "count:") {
+		maxFailures := 0
+		if _, err := fmt.Sscanf(tolerance, "count:%d", &maxFailures); err == nil {
+			return failedCount > maxFailures
+		}
+		// Parse failed - fall through to default "none" behavior
+	}
+
+	// "percentage:N" - at least N% must succeed
+	if strings.HasPrefix(tolerance, "percentage:") {
+		minPercent := 0
+		if _, err := fmt.Sscanf(tolerance, "percentage:%d", &minPercent); err == nil {
+			actualPercent := (succeededCount * 100) / totalSteps
+			return actualPercent < minPercent
+		}
+		// Parse failed - fall through to default "none" behavior
+	}
+
+	// "required:step1,step2" - these specific steps must succeed
+	if strings.HasPrefix(tolerance, "required:") {
+		requiredStepsStr := strings.TrimPrefix(tolerance, "required:")
+		requiredSteps := strings.Split(requiredStepsStr, ",")
+
+		// Check if any required step failed
+		failedSet := make(map[string]bool)
+		for _, s := range failedSteps {
+			failedSet[s] = true
+		}
+
+		for _, required := range requiredSteps {
+			required = strings.TrimSpace(required)
+			if failedSet[required] {
+				log.Printf("[Parallel] Required step '%s' failed", required)
+				return true
+			}
+		}
+		// All required steps succeeded, allow partial failure
+		return false
+	}
+
+	// Unknown tolerance - default to strict
+	log.Printf("[Parallel] Unknown soft_failure_tolerance '%s', using strict mode", tolerance)
+	return failedCount > 0
 }
 
 // Execute a single step (helper for both sequential and parallel execution)

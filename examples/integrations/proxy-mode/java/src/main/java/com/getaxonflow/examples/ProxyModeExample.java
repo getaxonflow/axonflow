@@ -85,7 +85,7 @@ public class ProxyModeExample {
         long startTime = System.currentTimeMillis();
 
         try {
-            ClientResponse response = client.executeQuery(
+            ClientResponse response = client.proxyLLMCall(
                 ClientRequest.builder()
                     .query(query)
                     .userToken(userToken)
