@@ -11,6 +11,8 @@
  *   AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
  *   AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
  *   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 package com.example;
@@ -19,7 +21,21 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.HealthStatus;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class HealthCheckExample {
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
+
     public static void main(String[] args) {
         // Initialize client (credentials optional for community mode)
         String agentUrl = System.getenv("AXONFLOW_AGENT_URL");
@@ -48,8 +64,11 @@ public class HealthCheckExample {
                 if (agentHealth.getVersion() != null) {
                     System.out.println("   Version: " + agentHealth.getVersion());
                 }
+                assertCheck(agentHealth != null, "Agent health check returned response");
+                assertCheck(agentHealth.getStatus() != null, "Agent health has status");
             } catch (Exception e) {
                 System.out.println("   Agent health check failed: " + e.getMessage());
+                assertCheck(false, "Agent health check failed: " + e.getMessage());
             }
 
             // 2. Check Orchestrator health
@@ -62,8 +81,11 @@ public class HealthCheckExample {
                 if (orchHealth.getVersion() != null) {
                     System.out.println("   Version: " + orchHealth.getVersion());
                 }
+                assertCheck(orchHealth != null, "Orchestrator health check returned response");
+                assertCheck(orchHealth.getStatus() != null, "Orchestrator health has status");
             } catch (Exception e) {
                 System.out.println("   Orchestrator health check failed: " + e.getMessage());
+                assertCheck(false, "Orchestrator health check failed: " + e.getMessage());
             }
 
             // 3. Summary
@@ -75,8 +97,21 @@ public class HealthCheckExample {
             System.out.println("   Agent: " + (agentHealthy ? "HEALTHY" : "UNHEALTHY"));
             System.out.println("   Orchestrator: " + (orchHealthy ? "HEALTHY" : "UNHEALTHY"));
 
-            // Exit with error if either service is unhealthy
-            if (!agentHealthy || !orchHealthy) {
+            assertCheck(agentHealthy, "Agent is healthy");
+            assertCheck(orchHealthy, "Orchestrator is healthy");
+
+            // Final assertion summary
+            System.out.println();
+            System.out.println("=".repeat(40));
+            System.out.println("Assertion Summary");
+            System.out.println("=".repeat(40));
+            if (failures.isEmpty()) {
+                System.out.println("All assertions passed!");
+            } else {
+                System.out.println("Failures (" + failures.size() + "):");
+                for (String f : failures) {
+                    System.out.println("  - " + f);
+                }
                 System.exit(1);
             }
         }

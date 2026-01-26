@@ -2,13 +2,18 @@
 """
 AxonFlow Unified Execution Tracking Example - Python
 
-This example demonstrates unified execution tracking for both MAP plans
+Demonstrates and VALIDATES unified execution tracking for MAP plans
 and WCP workflows using the AxonFlow Python SDK.
 
-Issue #1075 - EPIC #1074: Unified Workflow Infrastructure
+VALIDATION: This example exits with code 1 if any assertion fails.
+
+Run with: python main.py
+Prerequisites: docker compose up -d
 """
 
 import os
+import sys
+
 from axonflow import (
     AxonFlow,
     ExecutionStatus,
@@ -24,13 +29,23 @@ from axonflow import (
     ListWorkflowsOptions,
 )
 
+failures: list[str] = []
 
-def main():
-    print("AxonFlow Unified Execution Tracking Example - Python")
+
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
+    else:
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
+
+
+def main() -> int:
+    print("AxonFlow Unified Execution Tracking - Python SDK")
     print("=" * 55)
     print()
 
-    # Initialize client
     # WCP endpoints are on the orchestrator (port 8081)
     endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8081")
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo")
@@ -42,173 +57,166 @@ def main():
         client_secret=client_secret,
     )
 
-    # Step 1: Create a WCP workflow to demonstrate unified tracking
-    print("Creating WCP workflow...")
+    workflow_id = None
+
     try:
-        workflow = client.create_workflow(CreateWorkflowRequest(
-            workflow_name="unified-tracking-demo",
-            source=WorkflowSource.EXTERNAL,
-            total_steps=3,
-        ))
-        print(f"Workflow ID: {workflow.workflow_id}")
+        # Test 1: Create a WCP workflow
+        print("1. CreateWorkflow - Creating WCP workflow...")
+        try:
+            workflow = client.create_workflow(CreateWorkflowRequest(
+                workflow_name="unified-tracking-demo",
+                source=WorkflowSource.EXTERNAL,
+                total_steps=3,
+            ))
+            workflow_id = workflow.workflow_id
+            assert_check(workflow.workflow_id != "", "Workflow has ID")
+            assert_check(workflow.workflow_name == "unified-tracking-demo", "Workflow name matches")
+            print(f"   Workflow ID: {workflow.workflow_id}")
+        except Exception as e:
+            failures.append(f"create_workflow failed: {e}")
+            print(f"   Error: {e}")
+            print("   Note: WCP endpoints are on the orchestrator (port 8081)")
+            return 1
         print()
-    except Exception as e:
-        print(f"Error creating workflow: {e}")
-        print("Note: WCP endpoints are on the orchestrator (port 8081)")
-        return
 
-    # Step 2: Complete some steps
-    print("Completing workflow steps...")
+        # Test 2: Step gate checks
+        print("2. StepGate - Checking step gates...")
+        for i in range(1, 4):
+            step_id = f"step-{i}"
+            try:
+                gate = client.step_gate(
+                    workflow_id,
+                    step_id,
+                    StepGateRequest(
+                        step_name=f"Step {i}",
+                        step_type=StepType.LLM_CALL,
+                    ),
+                )
+                assert_check(gate.decision is not None, f"Step {i} gate has decision")
+                print(f"   Step {i}: {gate.decision.value}")
 
-    for i in range(1, 4):
-        step_id = f"step-{i}"
+                # Mark step completed
+                client.mark_step_completed(
+                    workflow_id,
+                    step_id,
+                    MarkStepCompletedRequest(
+                        output={"result": f"completed step {i}"},
+                    ),
+                )
+            except Exception as e:
+                failures.append(f"step_gate/mark_completed failed for step {i}: {e}")
+        print()
 
-        # Check gate
+        # Test 3: Complete workflow
+        print("3. CompleteWorkflow - Completing workflow...")
         try:
-            gate = client.step_gate(
-                workflow.workflow_id,
-                step_id,
-                StepGateRequest(
-                    step_name=f"Step {i}",
-                    step_type=StepType.LLM_CALL,
-                ),
-            )
-            print(f"  Step {i}: {gate.decision.value}")
+            client.complete_workflow(workflow_id)
+            assert_check(True, "complete_workflow succeeded")
         except Exception as e:
-            print(f"  Step {i} gate error: {e}")
-            continue
+            failures.append(f"complete_workflow failed: {e}")
+        print()
 
-        # Mark completed
+        # Test 4: Get workflow status
+        print("4. GetWorkflow - Getting workflow status...")
         try:
-            client.mark_step_completed(
-                workflow.workflow_id,
-                step_id,
-                MarkStepCompletedRequest(
-                    output={"result": f"completed step {i}"},
-                ),
-            )
+            status = client.get_workflow(workflow_id)
+            assert_check(status.workflow_name == "unified-tracking-demo", "Workflow name matches")
+            assert_check(status.status is not None, "Workflow has status")
+            assert_check(len(status.steps) == 3, f"Workflow has 3 steps (got {len(status.steps)})")
+            print(f"   Status: {status.status.value}")
         except Exception as e:
-            print(f"  Step {i} complete error: {e}")
+            failures.append(f"get_workflow failed: {e}")
+        print()
 
-    # Complete workflow
-    try:
-        client.complete_workflow(workflow.workflow_id)
-    except Exception as e:
-        print(f"Error completing workflow: {e}")
+        # Test 5: Verify execution type constants
+        print("5. ExecutionType Constants...")
+        assert_check(ExecutionType.MAP_PLAN.value == "map_plan", "MAP_PLAN value correct")
+        assert_check(ExecutionType.WCP_WORKFLOW.value == "wcp_workflow", "WCP_WORKFLOW value correct")
+        print()
 
-    print()
+        # Test 6: Verify status value helpers
+        print("6. StatusValue Helpers...")
+        assert_check(
+            ExecutionStatusValue.COMPLETED.value == "completed",
+            "COMPLETED value correct"
+        )
+        assert_check(
+            StepStatusValue.COMPLETED.is_terminal() is True,
+            "is_terminal(completed) returns True"
+        )
+        assert_check(
+            StepStatusValue.RUNNING.is_terminal() is False,
+            "is_terminal(running) returns False"
+        )
+        assert_check(
+            StepStatusValue.BLOCKED.is_blocking() is True,
+            "is_blocking(blocked) returns True"
+        )
+        print()
 
-    # Step 3: Get workflow status using existing API
-    print("Getting workflow status...")
-    try:
-        status = client.get_workflow(workflow.workflow_id)
-        print(f"  Workflow: {status.workflow_name}")
-        print(f"  Status: {status.status.value}")
-        print(f"  Steps: {len(status.steps)}")
-    except Exception as e:
-        print(f"Error getting status: {e}")
-    print()
-
-    # Step 4: Demonstrate unified execution status types
-    print("Unified Execution Status Types (SDK v1.5.0):")
-    print("  ExecutionType constants:")
-    print(f"    - MAP: {ExecutionType.MAP_PLAN.value}")
-    print(f"    - WCP: {ExecutionType.WCP_WORKFLOW.value}")
-    print()
-    print("  ExecutionStatusValue constants:")
-    print(f"    - Pending: {ExecutionStatusValue.PENDING.value}")
-    print(f"    - Running: {ExecutionStatusValue.RUNNING.value}")
-    print(f"    - Completed: {ExecutionStatusValue.COMPLETED.value}")
-    print(f"    - Failed: {ExecutionStatusValue.FAILED.value}")
-    print()
-    print("  StepStatusValue helpers:")
-    print(f"    - IsTerminal(completed): {StepStatusValue.COMPLETED.is_terminal()}")
-    print(f"    - IsTerminal(running): {StepStatusValue.RUNNING.is_terminal()}")
-    print(f"    - IsBlocking(blocked): {StepStatusValue.BLOCKED.is_blocking()}")
-    print()
-
-    # Step 5: Try unified execution API (may fail if backend not wired)
-    print("Testing unified execution API...")
-    try:
-        exec_status = client.get_execution_status(workflow.workflow_id)
-        print(f"  Execution ID: {exec_status.execution_id}")
-        print(f"  Execution Type: {exec_status.execution_type.value}")
-        print(f"  Status: {exec_status.status.value}")
-        print(f"  Progress: {exec_status.progress_percent:.1f}%")
-    except Exception as e:
-        print(f"  Note: Unified API returned error: {e}")
-        print("  (This is expected if backend unified handler not yet wired)")
-    print()
-
-    # Step 6: List executions
-    print("Listing unified executions...")
-    try:
-        list_resp = client.list_unified_executions(UnifiedListExecutionsRequest(
-            execution_type=ExecutionType.WCP_WORKFLOW,
-            limit=5,
-        ))
-        print(f"  Found {list_resp.total} WCP executions")
-        for exec in list_resp.executions:
-            print(f"    - {exec.execution_id}: {exec.name} ({exec.status.value})")
-    except Exception as e:
-        print(f"  Note: List API returned error: {e}")
-        print("  (This is expected if backend unified handler not yet wired)")
-    print()
-
-    # Step 7: List WCP workflows (native API)
-    print("Listing WCP workflows...")
-    try:
-        workflows_resp = client.list_workflows(ListWorkflowsOptions(limit=10))
-        print(f"  Found {workflows_resp.total} workflows")
-        for wf in workflows_resp.workflows:
-            print(f"    - {wf.workflow_id}: {wf.workflow_name} ({wf.status.value})")
-    except Exception as e:
-        print(f"  Note: ListWorkflows API returned error: {e}")
-    print()
-
-    # Step 8: Demonstrate ResumeWorkflow (by aborting then resuming)
-    print("Testing resume_workflow...")
-    try:
-        resume_test = client.create_workflow(CreateWorkflowRequest(
-            workflow_name="resume-test-demo",
-            source=WorkflowSource.EXTERNAL,
-            total_steps=2,
-        ))
-        # Abort the workflow first
-        client.abort_workflow(resume_test.workflow_id, "Testing abort for resume")
-        print(f"  Aborted workflow: {resume_test.workflow_id}")
-        # Try to resume it
+        # Test 7: List workflows
+        print("7. ListWorkflows - Listing WCP workflows...")
         try:
-            client.resume_workflow(resume_test.workflow_id)
-            print(f"  Resumed workflow: {resume_test.workflow_id}")
+            workflows_resp = client.list_workflows(ListWorkflowsOptions(limit=10))
+            assert_check(workflows_resp.total >= 0, "list_workflows returns total")
+            assert_check(isinstance(workflows_resp.workflows, list), "list_workflows returns list")
+            print(f"   Found {workflows_resp.total} workflows")
         except Exception as e:
-            print(f"  Note: resume_workflow returned error: {e}")
-            print("  (Resume may not be supported for all abort reasons)")
-    except Exception as e:
-        print(f"  Error creating resume test workflow: {e}")
-    print()
+            failures.append(f"list_workflows failed: {e}")
+        print()
+
+        # Test 8: Unified execution API (may not be wired yet)
+        print("8. GetExecutionStatus - Unified API...")
+        try:
+            exec_status = client.get_execution_status(workflow_id)
+            assert_check(exec_status.execution_id != "", "Has execution_id")
+            assert_check(exec_status.status is not None, "Has status")
+            print(f"   Execution Type: {exec_status.execution_type.value}")
+        except Exception as e:
+            print(f"   Note: Unified API returned error: {e}")
+            print("   (This is expected if backend unified handler not yet wired)")
+        print()
+
+        # Test 9: List unified executions
+        print("9. ListUnifiedExecutions - Unified API...")
+        try:
+            list_resp = client.list_unified_executions(UnifiedListExecutionsRequest(
+                execution_type=ExecutionType.WCP_WORKFLOW,
+                limit=5,
+            ))
+            assert_check(list_resp.total >= 0, "list_unified_executions returns total")
+            print(f"   Found {list_resp.total} WCP executions")
+        except Exception as e:
+            print(f"   Note: List API returned error: {e}")
+            print("   (This is expected if backend unified handler not yet wired)")
+        print()
+
+    finally:
+        client.close()
 
     print("=" * 55)
-    print("Unified Execution Tracking Example Complete!")
-    print()
-    print("SDK methods demonstrated:")
-    print("  WCP Workflow:")
-    print("    - create_workflow()")
-    print("    - step_gate()")
-    print("    - mark_step_completed()")
-    print("    - complete_workflow()")
-    print("    - get_workflow()")
-    print("    - list_workflows()")
-    print("    - abort_workflow()")
-    print("    - resume_workflow()")
-    print("  Unified Execution:")
-    print("    - get_execution_status()")
-    print("    - list_unified_executions()")
-    print("  Helper Types:")
-    print("    - ExecutionType (map_plan, wcp_workflow)")
-    print("    - ExecutionStatusValue with is_terminal()")
-    print("    - StepStatusValue with is_terminal(), is_blocking()")
+    if not failures:
+        print("✓ ALL TESTS PASSED")
+        print()
+        print("Unified Execution Tracking validated:")
+        print("  WCP Workflow:")
+        print("    - create_workflow()")
+        print("    - step_gate()")
+        print("    - mark_step_completed()")
+        print("    - complete_workflow()")
+        print("    - get_workflow()")
+        print("    - list_workflows()")
+        print("  Type Constants:")
+        print("    - ExecutionType (map_plan, wcp_workflow)")
+        print("    - ExecutionStatusValue with is_terminal()")
+        print("    - StepStatusValue with is_terminal(), is_blocking()")
+        return 0
+    else:
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
+        for f in failures:
+            print(f"   - {f}")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

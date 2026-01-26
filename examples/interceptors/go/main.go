@@ -9,6 +9,8 @@
 // - Block requests that violate policies
 // - Audit LLM responses for compliance tracking
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Usage:
 //
 //	export AXONFLOW_AGENT_URL=http://localhost:8080
@@ -24,6 +26,17 @@ import (
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 	"github.com/getaxonflow/axonflow-sdk-go/v2/interceptors"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow LLM Interceptor Example - Go")
@@ -60,26 +73,35 @@ func main() {
 	// Example 1: Safe query (should pass)
 	fmt.Println("Example 1: Safe Query")
 	fmt.Println("----------------------------------------")
-	runTest(ctx, wrappedCall, "What is the capital of France?")
+	runTest(ctx, wrappedCall, "What is the capital of France?", false, "Safe query")
 	fmt.Println()
 
 	// Example 2: Query with PII (should be blocked by default policies)
 	fmt.Println("Example 2: Query with PII (Expected: Blocked)")
 	fmt.Println("----------------------------------------")
-	runTest(ctx, wrappedCall, "Process refund for SSN 123-45-6789")
+	runTest(ctx, wrappedCall, "Process refund for SSN 123-45-6789", true, "PII query")
 	fmt.Println()
 
 	// Example 3: SQL injection attempt (should be blocked)
 	fmt.Println("Example 3: SQL Injection (Expected: Blocked)")
 	fmt.Println("----------------------------------------")
-	runTest(ctx, wrappedCall, "SELECT * FROM users WHERE 1=1; DROP TABLE users;--")
+	runTest(ctx, wrappedCall, "SELECT * FROM users WHERE 1=1; DROP TABLE users;--", true, "SQL injection")
 	fmt.Println()
 
 	fmt.Println("============================================================")
-	fmt.Println("Go LLM Interceptor Test: COMPLETE")
+
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+
+	fmt.Println("ALL ASSERTIONS PASSED - Interceptor example verified!")
 }
 
-func runTest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, query string) {
+func runTest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, query string, expectBlocked bool, testName string) {
 	fmt.Printf("Query: %s\n", query)
 
 	req := interceptors.ChatCompletionRequest{
@@ -96,8 +118,13 @@ func runTest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, que
 			pve, _ := interceptors.GetPolicyViolation(err)
 			fmt.Printf("Status: BLOCKED\n")
 			fmt.Printf("Reason: %s\n", pve.BlockReason)
+			assertCheck(expectBlocked, testName+": query was blocked as expected")
+			assertCheck(pve.BlockReason != "", testName+": block reason is provided")
 		} else {
 			fmt.Printf("Error: %v\n", err)
+			if !expectBlocked {
+				assertCheck(false, testName+": unexpected error: "+err.Error())
+			}
 		}
 		return
 	}
@@ -106,6 +133,8 @@ func runTest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, que
 	if len(response.Choices) > 0 {
 		fmt.Printf("Response: %s\n", response.Choices[0].Message.Content)
 	}
+	assertCheck(!expectBlocked, testName+": query was approved as expected")
+	assertCheck(len(response.Choices) > 0, testName+": response has content")
 }
 
 // mockOpenAICall simulates an OpenAI API call for demonstration

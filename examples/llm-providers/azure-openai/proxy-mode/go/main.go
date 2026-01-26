@@ -6,6 +6,8 @@
 //   - Get the response back
 //
 // No need to manage Azure OpenAI credentials in your app - AxonFlow handles everything.
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -16,6 +18,17 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Proxy Mode with Azure OpenAI - Go")
@@ -34,33 +47,40 @@ func main() {
 	fmt.Println("--- Example 1: Basic Azure OpenAI Query ---")
 	runQuery(client, "What are the key benefits of Azure OpenAI for enterprises?", map[string]interface{}{
 		"provider": "azure-openai", // Route to Azure OpenAI
-	})
+	}, false, "Basic Azure query")
 
 	// Example 2: Query with specific model
 	fmt.Println("\n--- Example 2: Query with Model Selection ---")
 	runQuery(client, "Explain Azure Private Link in 2 sentences.", map[string]interface{}{
 		"provider": "azure-openai",
 		"model":    "gpt-4o-mini",
-	})
+	}, false, "Model selection query")
 
 	// Example 3: SQL Injection - should be blocked by policy
 	fmt.Println("\n--- Example 3: SQL Injection (should be blocked) ---")
 	runQuery(client, "SELECT * FROM users; DROP TABLE secrets;", map[string]interface{}{
 		"provider": "azure-openai",
-	})
+	}, true, "SQL injection blocked")
 
 	// Example 4: PII - should be detected
 	fmt.Println("\n--- Example 4: PII Detection ---")
 	runQuery(client, "Send invoice to john.doe@company.com with SSN 123-45-6789", map[string]interface{}{
 		"provider": "azure-openai",
-	})
+	}, true, "PII detection")
 
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("Proxy Mode Demo Complete")
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("ALL ASSERTIONS PASSED - Azure OpenAI Proxy Mode verified!")
 }
 
-func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]interface{}) {
+func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]interface{}, expectBlocked bool, testName string) {
 	fmt.Printf("Query: %q\n", truncate(query, 50))
 
 	startTime := time.Now()
@@ -76,6 +96,13 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 
 	if err != nil {
 		fmt.Printf("  Status: ERROR - %v\n", err)
+		// HTTP 403 errors may indicate blocking
+		errStr := err.Error()
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "blocked") {
+			assertCheck(expectBlocked, testName+": blocked via HTTP error as expected")
+		} else {
+			assertCheck(false, testName+": unexpected error")
+		}
 		return
 	}
 
@@ -85,6 +112,8 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 		if response.PolicyInfo != nil {
 			fmt.Printf("  Policies: %v\n", response.PolicyInfo.PoliciesEvaluated)
 		}
+		assertCheck(expectBlocked, testName+": blocked as expected")
+		assertCheck(response.BlockReason != "", testName+": block reason provided")
 	} else {
 		fmt.Printf("  Status: SUCCESS (latency: %v)\n", latency)
 		resultStr := fmt.Sprintf("%v", response.Result)
@@ -92,6 +121,8 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 			resultStr = fmt.Sprintf("%v", response.Data)
 		}
 		fmt.Printf("  Response: %s\n", truncate(resultStr, 200))
+		assertCheck(!expectBlocked, testName+": not blocked as expected")
+		assertCheck(response.Data != nil || response.Result != "", testName+": response has content")
 	}
 }
 

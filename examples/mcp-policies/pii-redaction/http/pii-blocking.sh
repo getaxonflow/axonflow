@@ -78,7 +78,7 @@ HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
   -H "Authorization: Basic ${CREDENTIALS}" \
   -d '{
     "connector": "postgres",
-    "statement": "SELECT * FROM customers WHERE pan = '\''ABCDE1234F'\''"
+    "statement": "SELECT * FROM customers WHERE pan = '\''ABCPD1234E'\''"
   }')
 
 echo "HTTP Status: ${HTTP_CODE}"

@@ -22,6 +22,7 @@ import com.getaxonflow.sdk.types.PolicyApprovalResult;
 import com.getaxonflow.sdk.exceptions.AxonFlowException;
 import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -34,10 +35,22 @@ import java.util.List;
  * 3. Print the results
  *
  * This example demonstrates the core AxonFlow workflow without any LLM calls.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class HelloWorld {
 
     private static final String CLIENT_ID = "hello-world-app";
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow Hello World - Java");
@@ -84,9 +97,11 @@ public class HelloWorld {
                     System.out.printf("  Policies: %s%n", String.join(", ", result.getPolicies()));
                 }
 
-                // Check if result matches expectation
-                String status = "approved".equals(test.expected) ? "PASS" : "FAIL";
-                System.out.printf("  Test: %s (expected %s)%n", status, test.expected);
+                // Validate result
+                assertCheck(result.getContextId() != null && !result.getContextId().isEmpty(),
+                    test.name + " - contextId is not empty");
+                assertCheck("approved".equals(test.expected),
+                    test.name + " - expected " + test.expected + ", got approved");
 
             } catch (PolicyViolationException e) {
                 // Request was blocked by policy
@@ -94,24 +109,33 @@ public class HelloWorld {
                 System.out.printf("  Policy: %s%n", e.getPolicyName());
                 System.out.printf("  Reason: %s%n", e.getMessage());
 
-                // Check if result matches expectation
-                String status = "blocked".equals(test.expected) ? "PASS" : "FAIL";
-                System.out.printf("  Test: %s (expected %s)%n", status, test.expected);
+                // Validate result
+                assertCheck("blocked".equals(test.expected),
+                    test.name + " - expected " + test.expected + ", got blocked");
 
             } catch (AxonFlowException e) {
                 System.out.println("  Result: ERROR");
                 System.out.printf("  Error: %s%n", e.getMessage());
+                failures.add(test.name + " - unexpected error: " + e.getMessage());
             }
 
             System.out.println();
         }
 
         System.out.println("========================================");
-        System.out.println("Hello World Complete!");
-        System.out.println();
-        System.out.println("Next steps:");
-        System.out.println("  - Gateway Mode: examples/integrations/gateway-mode/java/");
-        System.out.println("  - Proxy Mode: examples/integrations/proxy-mode/java/");
+        if (failures.isEmpty()) {
+            System.out.println("✓ ALL TESTS PASSED");
+            System.out.println();
+            System.out.println("Next steps:");
+            System.out.println("  - Gateway Mode: examples/integrations/gateway-mode/java/");
+            System.out.println("  - Proxy Mode: examples/integrations/proxy-mode/java/");
+        } else {
+            System.out.println("❌ " + failures.size() + " TEST(S) FAILED:");
+            for (String f : failures) {
+                System.out.println("   - " + f);
+            }
+            System.exit(1);
+        }
     }
 
     private static String getEnv(String key, String defaultValue) {

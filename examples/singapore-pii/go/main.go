@@ -8,6 +8,8 @@
 // - Singapore postal codes
 //
 // These patterns support MAS FEAT compliance in Community Edition.
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -17,6 +19,17 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Singapore PII Detection - Go")
@@ -180,14 +193,25 @@ func main() {
 		fmt.Printf("  Status: %s (expected: %s)\n\n", status, tc.expectedAction)
 	}
 
+	// Additional assertions using assertCheck pattern
+	fmt.Println("\nValidating critical functionality...")
+	assertCheck(passed > 0, "At least one PII test passed")
+	assertCheck(passed >= 5, "Majority of PII tests passed (at least 5)")
+
 	fmt.Println("========================================")
 	fmt.Printf("Results: %d passed, %d failed\n", passed, failed)
 	fmt.Println()
 
-	if failed > 0 {
+	if failed > 0 || len(failures) > 0 {
 		fmt.Println("Some tests failed. Check:")
 		fmt.Println("  - AxonFlow stack is running")
 		fmt.Println("  - Singapore PII policies are loaded (migration 042)")
+		if len(failures) > 0 {
+			fmt.Printf("Additional failures: %d\n", len(failures))
+			for _, f := range failures {
+				fmt.Printf("  - %s\n", f)
+			}
+		}
 		os.Exit(1)
 	}
 

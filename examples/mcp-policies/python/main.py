@@ -2,12 +2,14 @@
 """
 MCP Policy Enforcement Example - Python SDK
 
-Demonstrates phase-aware policy enforcement:
+Demonstrates and VALIDATES phase-aware policy enforcement:
 1. REQUEST phase: SQLi patterns are blocked
 2. RESPONSE phase: PII in connector data is redacted
 3. PolicyInfo metadata in all responses
 
-Run: python main.py
+VALIDATION: This example exits with code 1 if any assertion fails.
+
+Run with: python main.py
 Prerequisites: docker compose up -d
 """
 
@@ -21,19 +23,19 @@ from axonflow.exceptions import ConnectorError
 failures: List[str] = []
 
 
-def assert_true(condition: bool, message: str) -> None:
-    """Assert a condition and track failures."""
-    if not condition:
-        failures.append(message)
-        print(f"   FAIL: {message}")
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
     else:
-        print(f"   PASS: {message}")
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
 
 
-def main() -> None:
+def main() -> int:
     """Run MCP policy enforcement tests."""
-    print("AxonFlow MCP Policy Enforcement - Python SDK")
-    print("=============================================")
+    print("MCP Policy Enforcement - Python SDK")
+    print("=" * 50)
     print()
 
     client = AxonFlow.sync(
@@ -51,11 +53,11 @@ def main() -> None:
             connector="postgres",
             statement="SELECT 1 as test_value",
         )
-        assert_true(resp.success, "Query succeeded")
-        assert_true(not resp.redacted, "No redaction applied")
+        assert_check(resp.success, "Query succeeded")
+        assert_check(not resp.redacted, "No redaction applied")
         if resp.policy_info:
-            assert_true(resp.policy_info.policies_evaluated >= 0, "Policies were evaluated")
-            assert_true(not resp.policy_info.blocked, "Request was not blocked")
+            assert_check(resp.policy_info.policies_evaluated >= 0, "Policies were evaluated")
+            assert_check(not resp.policy_info.blocked, "Request was not blocked")
             print(
                 f"   PolicyInfo: {resp.policy_info.policies_evaluated} policies "
                 f"evaluated in {resp.policy_info.processing_time_ms}ms"
@@ -72,9 +74,9 @@ def main() -> None:
             connector="postgres",
             statement="SELECT * FROM users WHERE id = 1; DROP TABLE users; --",
         )
-        assert_true(False, "SQLi pattern should have been blocked")
+        assert_check(False, "SQLi pattern should have been blocked")
     except ConnectorError as err:
-        assert_true(True, "Request blocked as expected")
+        assert_check(True, "Request blocked as expected")
         print(f"   Block reason: {err}")
     except Exception as err:
         print(f"   Unexpected error: {err}")
@@ -88,9 +90,9 @@ def main() -> None:
             connector="postgres",
             statement="SELECT name FROM employees UNION SELECT password FROM admin_users",
         )
-        assert_true(False, "UNION SQLi should have been blocked")
+        assert_check(False, "UNION SQLi should have been blocked")
     except ConnectorError as err:
-        assert_true(True, "UNION SQLi blocked as expected")
+        assert_check(True, "UNION SQLi blocked as expected")
         print(f"   Block reason: {err}")
     except Exception as err:
         print(f"   Unexpected error: {err}")
@@ -106,8 +108,8 @@ def main() -> None:
         )
         if resp.success:
             if resp.redacted:
-                assert_true(True, "Response was redacted")
-                assert_true(len(resp.redacted_fields) > 0, "Redacted fields are listed")
+                assert_check(True, "Response was redacted")
+                assert_check(len(resp.redacted_fields) > 0, "Redacted fields are listed")
                 print(f"   Redacted fields: {', '.join(resp.redacted_fields)}")
             else:
                 print("   Note: No PII found in response")
@@ -129,9 +131,9 @@ def main() -> None:
             connector="postgres",
             statement="SELECT * FROM customers WHERE ssn = '123-45-6789'",
         )
-        assert_true(False, "SSN in query should have been blocked")
+        assert_check(False, "SSN in query should have been blocked")
     except ConnectorError as err:
-        assert_true(True, "SSN in query blocked as expected")
+        assert_check(True, "SSN in query blocked as expected")
         print(f"   Block reason: {err}")
     except Exception as err:
         print(f"   Unexpected error: {err}")
@@ -141,21 +143,22 @@ def main() -> None:
     client.close()
 
     # Summary
-    print("=============================================")
+    print("=" * 50)
     if not failures:
-        print("ALL TESTS PASSED")
+        print("✓ ALL TESTS PASSED")
         print()
         print("MCP Policy Enforcement validated:")
         print("  - REQUEST phase: SQLi blocking")
         print("  - REQUEST phase: PII blocking")
         print("  - RESPONSE phase: PII redaction")
         print("  - PolicyInfo metadata in responses")
+        return 0
     else:
-        print(f"{len(failures)} TEST(S) FAILED:")
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
         for f in failures:
             print(f"   - {f}")
-        sys.exit(1)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

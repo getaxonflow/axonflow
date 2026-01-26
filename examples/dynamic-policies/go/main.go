@@ -22,6 +22,8 @@
 //   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
 //   AXONFLOW_CLIENT_ID     - Client/Tenant ID for policy scoping
 //   AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 
 package main
 
@@ -32,18 +34,14 @@ import (
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
-var (
-	passCount int
-	failCount int
-)
+var failures []string
 
-func assert(condition bool, message string) {
+func assertCheck(condition bool, message string) {
 	if condition {
-		fmt.Printf("   PASS: %s\n", message)
-		passCount++
+		fmt.Printf("   ✓ PASS: %s\n", message)
 	} else {
-		fmt.Printf("   FAIL: %s\n", message)
-		failCount++
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
 	}
 }
 
@@ -75,9 +73,9 @@ func main() {
 	policies, err := client.ListDynamicPolicies(nil)
 	if err != nil {
 		fmt.Printf("   ERROR: Failed to list policies: %v\n", err)
-		failCount++
+		assertCheck(false, "ListDynamicPolicies succeeded")
 	} else {
-		assert(true, "ListDynamicPolicies succeeded")
+		assertCheck(true, "ListDynamicPolicies succeeded")
 		fmt.Printf("   Found %d dynamic policies\n", len(policies))
 		for i, p := range policies {
 			if i >= 3 {
@@ -115,11 +113,11 @@ func main() {
 	created, err := client.CreateDynamicPolicy(newPolicy)
 	if err != nil {
 		fmt.Printf("   ERROR: Failed to create policy: %v\n", err)
-		failCount++
+		assertCheck(false, "CreateDynamicPolicy succeeded")
 	} else {
-		assert(created.ID != "", "Created policy has ID")
-		assert(created.Name == newPolicy.Name, "Created policy name matches")
-		assert(created.Enabled, "Created policy is enabled")
+		assertCheck(created.ID != "", "Created policy has ID")
+		assertCheck(created.Name == newPolicy.Name, "Created policy name matches")
+		assertCheck(created.Enabled, "Created policy is enabled")
 		fmt.Printf("   Created policy: %s (ID: %s)\n", created.Name, created.ID)
 	}
 
@@ -129,12 +127,12 @@ func main() {
 		policy, err := client.GetDynamicPolicy(created.ID)
 		if err != nil {
 			fmt.Printf("   ERROR: Failed to get policy: %v\n", err)
-			failCount++
+			assertCheck(false, "GetDynamicPolicy succeeded")
 		} else {
-			assert(policy.ID == created.ID, "Retrieved policy ID matches")
-			assert(policy.Name == created.Name, "Retrieved policy name matches")
-			assert(len(policy.Conditions) == 1, "Policy has 1 condition")
-			assert(len(policy.Actions) == 1, "Policy has 1 action")
+			assertCheck(policy.ID == created.ID, "Retrieved policy ID matches")
+			assertCheck(policy.Name == created.Name, "Retrieved policy name matches")
+			assertCheck(len(policy.Conditions) == 1, "Policy has 1 condition")
+			assertCheck(len(policy.Actions) == 1, "Policy has 1 action")
 			fmt.Printf("   Retrieved: %s (conditions: %d, actions: %d)\n", policy.Name, len(policy.Conditions), len(policy.Actions))
 		}
 	}
@@ -149,9 +147,9 @@ func main() {
 		updated, err := client.UpdateDynamicPolicy(created.ID, update)
 		if err != nil {
 			fmt.Printf("   ERROR: Failed to update policy: %v\n", err)
-			failCount++
+			assertCheck(false, "UpdateDynamicPolicy succeeded")
 		} else {
-			assert(updated.Description == newDesc, "Description was updated")
+			assertCheck(updated.Description == newDesc, "Description was updated")
 			fmt.Printf("   Updated: %s\n", updated.Description)
 		}
 	}
@@ -162,9 +160,9 @@ func main() {
 		toggled, err := client.ToggleDynamicPolicy(created.ID, false)
 		if err != nil {
 			fmt.Printf("   ERROR: Failed to toggle policy: %v\n", err)
-			failCount++
+			assertCheck(false, "ToggleDynamicPolicy succeeded")
 		} else {
-			assert(!toggled.Enabled, "Policy was disabled")
+			assertCheck(!toggled.Enabled, "Policy was disabled")
 			fmt.Printf("   Policy enabled: %v\n", toggled.Enabled)
 		}
 	}
@@ -174,9 +172,9 @@ func main() {
 	effective, err := client.GetEffectiveDynamicPolicies(nil)
 	if err != nil {
 		fmt.Printf("   ERROR: Failed to get effective policies: %v\n", err)
-		failCount++
+		assertCheck(false, "GetEffectiveDynamicPolicies succeeded")
 	} else {
-		assert(true, "GetEffectiveDynamicPolicies succeeded")
+		assertCheck(true, "GetEffectiveDynamicPolicies succeeded")
 		fmt.Printf("   Found %d effective dynamic policies\n", len(effective))
 	}
 
@@ -186,20 +184,21 @@ func main() {
 		err := client.DeleteDynamicPolicy(created.ID)
 		if err != nil {
 			fmt.Printf("   ERROR: Failed to delete policy: %v\n", err)
-			failCount++
+			assertCheck(false, "DeleteDynamicPolicy succeeded")
 		} else {
-			assert(true, "Policy deleted successfully")
+			assertCheck(true, "Policy deleted successfully")
 			fmt.Println("   Policy deleted")
 		}
 	}
 
 	// Summary
 	fmt.Println("\n===========================================")
-	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
-	if failCount > 0 {
-		fmt.Println("SOME TESTS FAILED")
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
-	} else {
-		fmt.Println("ALL TESTS PASSED - Dynamic Policy CRUD verified!")
 	}
+	fmt.Println("ALL TESTS PASSED - Dynamic Policy CRUD verified!")
 }

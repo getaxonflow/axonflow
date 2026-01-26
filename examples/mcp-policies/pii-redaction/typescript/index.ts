@@ -9,6 +9,8 @@
  * - Email addresses (non-critical, logged only)
  * - Phone numbers (non-critical, logged only)
  *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ *
  * Run with: npx tsx index.ts
  * Prerequisites: docker compose up -d
  */
@@ -16,15 +18,13 @@
 import { AxonFlow, ConnectorError } from "@axonflow/sdk";
 
 const failures: string[] = [];
-let passes = 0;
 
 function assertCheck(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   FAIL: ${message}`);
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
   } else {
-    passes++;
-    console.log(`   PASS: ${message}`);
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
   }
 }
 
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
   try {
     const resp = await client.mcpQuery({
       connector: "postgres",
-      statement: "SELECT * FROM customers WHERE pan = 'ABCDE1234F'",
+      statement: "SELECT * FROM customers WHERE pan = 'ABCPD1234E'",
     });
     if (!resp.success) {
       assertCheck(true, "India PAN in query blocked as expected");
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
   // Summary
   console.log("=======================================");
   if (failures.length === 0) {
-    console.log(`ALL TESTS PASSED (${passes} assertions)`);
+    console.log("ALL TESTS PASSED");
     console.log();
     console.log("MCP PII Handling validated:");
     console.log("  Response-phase:");
@@ -232,8 +232,8 @@ async function main(): Promise<void> {
     for (const f of failures) {
       console.log(`   - ${f}`);
     }
-    process.exit(1);
   }
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main().catch((err) => {

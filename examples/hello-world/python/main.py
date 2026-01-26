@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 AxonFlow Hello World - Python
 
@@ -6,31 +7,41 @@ The simplest possible AxonFlow integration:
 2. Check if a query passes policy evaluation
 3. Print the result
 
-This example demonstrates the core AxonFlow workflow without any LLM calls.
+VALIDATION: This example exits with code 1 if any assertion fails.
+
+Run with: python main.py
+Prerequisites: docker compose up -d
 """
 
 import asyncio
 import os
+import sys
 
-from dotenv import load_dotenv
 from axonflow import AxonFlow
 
-load_dotenv()
+failures: list[str] = []
 
 
-async def main():
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
+    else:
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
+
+
+async def main() -> int:
     print("AxonFlow Hello World - Python")
     print("=" * 40)
     print()
 
-    # Connect to AxonFlow
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
-        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", ""),
     ) as axonflow:
 
-        # Test queries
         test_cases = [
             {
                 "name": "Safe Query",
@@ -45,51 +56,47 @@ async def main():
             {
                 "name": "PII (SSN)",
                 "query": "Process payment for SSN 123-45-6789",
-                "expected": "approved",  # v3.0.0: PII defaults to redact (approved with redaction)
+                "expected": "approved",  # v3.0.0: PII defaults to redact mode
             },
         ]
 
         for test in test_cases:
             print(f"Test: {test['name']}")
             print(f"  Query: {test['query'][:50]}...")
-            print()
 
             try:
-                # Check policy approval
                 result = await axonflow.get_policy_approved_context(
                     user_token="hello-world-user",
                     query=test["query"],
                 )
 
-                if result.approved:
-                    print(f"  Result: APPROVED")
-                    print(f"  Context ID: {result.context_id}")
-                else:
-                    print(f"  Result: BLOCKED")
-                    print(f"  Reason: {result.block_reason}")
-
-                if result.policies:
-                    print(f"  Policies: {', '.join(result.policies)}")
-
-                # Check if result matches expectation
                 actual = "approved" if result.approved else "blocked"
-                status = "PASS" if actual == test["expected"] else "FAIL"
-                print(f"  Test: {status} (expected {test['expected']})")
+                if result.approved:
+                    print(f"  Result: APPROVED (context_id: {result.context_id[:8]}...)")
+                else:
+                    print(f"  Result: BLOCKED ({result.block_reason})")
+
+                assert_check(
+                    actual == test["expected"],
+                    f"{test['name']}: expected {test['expected']}, got {actual}",
+                )
 
             except Exception as e:
-                print(f"  Result: ERROR")
-                print(f"  Error: {e}")
+                print(f"  Result: ERROR - {e}")
+                failures.append(f"{test['name']}: exception - {e}")
 
             print()
 
     print("=" * 40)
-    print("Hello World Complete!")
-    print()
-    print("Next steps:")
-    print("  - Gateway Mode: examples/integrations/gateway-mode/")
-    print("  - Proxy Mode: examples/integrations/proxy-mode/")
-    print("  - LangChain: examples/integrations/langchain/")
+    if not failures:
+        print("✓ ALL TESTS PASSED")
+        return 0
+    else:
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
+        for f in failures:
+            print(f"   - {f}")
+        return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

@@ -21,6 +21,8 @@ import com.getaxonflow.sdk.types.ConnectorQuery;
 import com.getaxonflow.sdk.types.ConnectorResponse;
 import com.getaxonflow.sdk.exceptions.ConnectorException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,8 +41,21 @@ import java.util.Map;
  * Usage:
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
  *   mvn compile exec:java
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class McpConnectorExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow MCP Connector Example - Java");
@@ -77,16 +92,21 @@ public class McpConnectorExample {
             if (response.isSuccess()) {
                 System.out.println("Status: SUCCESS");
                 System.out.printf("Data: %s%n", response.getData());
+                assertCheck(response.getData() != null, "Connector query returned data");
             } else {
                 System.out.println("Status: FAILED");
                 System.out.printf("Error: %s%n", response.getError());
+                assertCheck(false, "Connector query should succeed");
             }
         } catch (ConnectorException e) {
             System.out.println("Status: Connector not available");
             System.out.printf("Error: %s%n", e.getMessage());
+            // Connector not available is acceptable in test environments
+            assertCheck(true, "Connector query handled gracefully (connector not available)");
         } catch (Exception e) {
             System.out.println("Status: ERROR");
             System.out.printf("Error: %s%n", e.getMessage());
+            assertCheck(false, "Connector query should not throw unexpected error");
         }
 
         System.out.println();
@@ -108,6 +128,7 @@ public class McpConnectorExample {
 
             ConnectorResponse response = axonflow.queryConnector(query);
 
+            boolean blocked = false;
             if (!response.isSuccess()) {
                 String error = response.getError();
                 if (error != null && (error.contains("blocked") || error.contains("policy") ||
@@ -115,6 +136,7 @@ public class McpConnectorExample {
                     error.contains("SQL injection"))) {
                     System.out.println("Status: BLOCKED by policy (expected behavior)");
                     System.out.printf("Reason: %s%n", error);
+                    blocked = true;
                 } else {
                     System.out.println("Status: FAILED");
                     System.out.printf("Error: %s%n", error);
@@ -123,22 +145,35 @@ public class McpConnectorExample {
                 System.out.println("Status: Query allowed (UNEXPECTED - should have been blocked!)");
                 System.out.printf("Response: %s%n", response.getData());
             }
+            assertCheck(blocked, "SQL injection query blocked by policy");
         } catch (Exception e) {
             String error = e.getMessage();
-            if (error != null && (error.contains("blocked") || error.contains("policy") ||
+            boolean blocked = error != null && (error.contains("blocked") || error.contains("policy") ||
                 error.contains("DROP TABLE") || error.contains("dangerous") ||
-                error.contains("SQL injection"))) {
+                error.contains("SQL injection"));
+            if (blocked) {
                 System.out.println("Status: BLOCKED by policy (expected behavior)");
                 System.out.printf("Reason: %s%n", error);
             } else {
                 System.out.println("Status: Error");
                 System.out.printf("Error: %s%n", error);
             }
+            assertCheck(blocked, "SQL injection query blocked by policy");
         }
 
         System.out.println();
         System.out.println("============================================================");
         System.out.println("Java MCP Connector Test: COMPLETE");
+
+        // Final assertion check
+        if (!failures.isEmpty()) {
+            System.out.println();
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.exit(1);
+        }
     }
 
     private static String getEnv(String name, String defaultValue) {

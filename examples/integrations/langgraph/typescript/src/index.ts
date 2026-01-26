@@ -12,6 +12,8 @@
  * - PII detection and SQL injection blocking
  * - Audit logging for compliance
  *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ *
  * Requirements:
  * - AxonFlow running locally (docker compose up)
  * - Node.js 18+
@@ -22,6 +24,21 @@
  */
 
 import { AxonFlow } from "@axonflow/sdk";
+
+// =============================================================================
+// Assertion Infrastructure
+// =============================================================================
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // =============================================================================
 // Types - LangGraph-style state and graph structures
@@ -380,22 +397,31 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
   console.log("[Test 1] Safe Search Query");
   console.log("=".repeat(60));
 
-  await graph.execute({
+  const searchResult = await graph.execute({
     messages: [{ role: "user", content: "Search for best practices in AI safety" }],
     currentNode: "input",
     metadata: { testCase: "safe-search" },
   });
+
+  assertCheck(searchResult.currentNode === "complete", "Safe search query completes successfully");
+  assertCheck(searchResult.currentNode !== "blocked", "Safe search query is not blocked");
+  assertCheck(searchResult.messages.length > 1, "Safe search query has response messages");
+  assertCheck(searchResult.metadata.contextId !== undefined, "Safe search query has contextId in metadata");
 
   // Test 2: Safe analysis query
   console.log("\n" + "=".repeat(60));
   console.log("[Test 2] Safe Analysis Query");
   console.log("=".repeat(60));
 
-  await graph.execute({
+  const analysisResult = await graph.execute({
     messages: [{ role: "user", content: "Analyze the trends in renewable energy adoption" }],
     currentNode: "input",
     metadata: { testCase: "safe-analysis" },
   });
+
+  assertCheck(analysisResult.currentNode === "complete", "Safe analysis query completes successfully");
+  assertCheck(analysisResult.currentNode !== "blocked", "Safe analysis query is not blocked");
+  assertCheck(analysisResult.metadata.route !== undefined, "Safe analysis query has route in metadata");
 
   // Test 3: Query with PII (should be blocked)
   console.log("\n" + "=".repeat(60));
@@ -408,9 +434,8 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     metadata: { testCase: "pii-detection" },
   });
 
-  if (piiResult.currentNode === "blocked") {
-    console.log("\n✓ PII correctly detected and blocked!");
-  }
+  assertCheck(piiResult.currentNode === "blocked", "PII query is blocked");
+  assertCheck(piiResult.currentNode !== "complete", "PII query does not complete");
 
   // Test 4: SQL injection attempt (should be blocked)
   console.log("\n" + "=".repeat(60));
@@ -423,12 +448,18 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     metadata: { testCase: "sql-injection" },
   });
 
-  if (sqliResult.currentNode === "blocked") {
-    console.log("\n✓ SQL injection correctly blocked!");
-  }
+  assertCheck(sqliResult.currentNode === "blocked", "SQL injection query is blocked");
+  assertCheck(sqliResult.currentNode !== "complete", "SQL injection query does not complete");
 
   console.log("\n" + "=".repeat(60));
-  console.log("All tests completed!");
+  console.log("Test Summary");
+  console.log("=".repeat(60));
+  if (failures.length === 0) {
+    console.log("ALL TESTS PASSED");
+  } else {
+    console.log(`${failures.length} TEST(S) FAILED:`);
+    failures.forEach((f) => console.log(`   - ${f}`));
+  }
   console.log("=".repeat(60) + "\n");
 }
 
@@ -464,4 +495,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(console.error);
+main()
+  .then(() => {
+    process.exit(failures.length > 0 ? 1 : 0);
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

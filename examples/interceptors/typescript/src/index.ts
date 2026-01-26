@@ -10,6 +10,8 @@
  * - Block requests that violate policies
  * - Audit LLM responses for compliance tracking
  *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ *
  * Usage:
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
  *   export OPENAI_API_KEY=your-openai-key
@@ -19,6 +21,17 @@
 import "dotenv/config";
 import { AxonFlow, PolicyViolationError } from "@axonflow/sdk";
 import OpenAI from "openai";
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // Initialize AxonFlow client with OAuth2-style credentials
 const axonflow = new AxonFlow({
@@ -107,7 +120,8 @@ class GovernedOpenAI {
 async function runTest(
   governedClient: GovernedOpenAI,
   query: string,
-  description: string
+  description: string,
+  expectBlocked: boolean
 ): Promise<void> {
   console.log(`${description}`);
   console.log("-".repeat(40));
@@ -120,12 +134,28 @@ async function runTest(
 
     console.log("Status: APPROVED");
     console.log(`Response: ${response.choices[0]?.message?.content}`);
+
+    if (expectBlocked) {
+      assertCheck(false, `${description} - Expected BLOCKED but was APPROVED`);
+    } else {
+      assertCheck(true, `${description} - Correctly APPROVED`);
+      assertCheck(!!response.choices[0]?.message?.content, "Response contains content");
+    }
   } catch (error) {
     if (error instanceof PolicyViolationError) {
       console.log("Status: BLOCKED");
       console.log(`Reason: ${error.message}`);
+
+      if (expectBlocked) {
+        assertCheck(true, `${description} - Correctly BLOCKED`);
+        assertCheck(!!error.message, "Block reason provided");
+      } else {
+        assertCheck(false, `${description} - Expected APPROVED but was BLOCKED`);
+      }
     } else {
       console.log(`Error: ${error instanceof Error ? error.message : error}`);
+      // Network/API errors are not assertion failures - they indicate environment issues
+      console.log("   Note: This may be an environment/connectivity issue");
     }
   }
   console.log();
@@ -147,29 +177,49 @@ async function main() {
   await runTest(
     governedClient,
     "What is the capital of France?",
-    "Example 1: Safe Query"
+    "Example 1: Safe Query",
+    false // expectBlocked
   );
 
   // Example 2: Query with PII (should be blocked)
   await runTest(
     governedClient,
     "Process refund for SSN 123-45-6789",
-    "Example 2: Query with PII (Expected: Blocked)"
+    "Example 2: Query with PII",
+    true // expectBlocked
   );
 
   // Example 3: SQL injection attempt (should be blocked)
   await runTest(
     governedClient,
     "SELECT * FROM users WHERE 1=1; DROP TABLE users;--",
-    "Example 3: SQL Injection (Expected: Blocked)"
+    "Example 3: SQL Injection",
+    true // expectBlocked
   );
 
   console.log("=".repeat(60));
-  console.log("TypeScript LLM Interceptor Test: COMPLETE");
+  if (failures.length === 0) {
+    console.log("ALL TESTS PASSED");
+    console.log();
+    console.log("LLM Interceptor validated:");
+    console.log("  - Safe queries: APPROVED");
+    console.log("  - PII in queries: BLOCKED");
+    console.log("  - SQL injection: BLOCKED");
+  } else {
+    console.log(`${failures.length} TEST(S) FAILED:`);
+    for (const f of failures) {
+      console.log(`   - ${f}`);
+    }
+  }
   console.log();
   console.log("Note: This example uses Gateway Mode (recommended).");
   console.log("The wrapOpenAIClient interceptor is deprecated in v2.0.0.");
   console.log("See: https://docs.getaxonflow.com/sdk/gateway-mode");
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});

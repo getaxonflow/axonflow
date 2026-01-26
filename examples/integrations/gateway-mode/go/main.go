@@ -11,6 +11,8 @@
 // complete audit trails with ~3-5ms governance overhead.
 //
 // Issue #1082: Examples should test actual behavior, not just API availability
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -23,18 +25,14 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-var (
-	passCount int
-	failCount int
-)
+var failures []string
 
-func assert(condition bool, message string) {
+func assertCheck(condition bool, message string) {
 	if condition {
-		fmt.Printf("   PASS: %s\n", message)
-		passCount++
+		fmt.Printf("   ✓ PASS: %s\n", message)
 	} else {
-		fmt.Printf("   FAIL: %s\n", message)
-		failCount++
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
 	}
 }
 
@@ -85,15 +83,15 @@ func main() {
 	)
 	if err != nil {
 		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
-		failCount++
+		assertCheck(false, "Pre-check succeeded")
 		printSummary()
 		os.Exit(1)
 	}
 
 	preCheckLatency := time.Since(preCheckStart)
 	fmt.Printf("   Completed in %v\n", preCheckLatency)
-	assert(preCheckResult.ContextID != "", "Pre-check returns context ID")
-	assert(preCheckResult.Approved, "Request is approved (no policy violations)")
+	assertCheck(preCheckResult.ContextID != "", "Pre-check returns context ID")
+	assertCheck(preCheckResult.Approved, "Request is approved (no policy violations)")
 	fmt.Printf("   Context ID: %s\n", preCheckResult.ContextID)
 	fmt.Printf("   Approved: %v\n", preCheckResult.Approved)
 
@@ -132,8 +130,7 @@ func main() {
 		completion, err := openaiClient.CreateChatCompletion(ctx, chatReq)
 		if err != nil {
 			fmt.Printf("   ERROR: OpenAI call failed: %v\n", err)
-			failCount++
-			// Continue with mock response
+			// Note: OpenAI errors are non-fatal, continue with mock response
 			response = "Mock response due to LLM error"
 			usage = openai.Usage{PromptTokens: 25, CompletionTokens: 20, TotalTokens: 45}
 		} else {
@@ -155,7 +152,7 @@ func main() {
 	fmt.Printf("   Response received in %v\n", llmLatency)
 	fmt.Printf("   Tokens: %d prompt, %d completion\n",
 		usage.PromptTokens, usage.CompletionTokens)
-	assert(response != "", "LLM returns a response")
+	assertCheck(response != "", "LLM returns a response")
 	fmt.Println()
 
 	// =========================================================================
@@ -188,9 +185,9 @@ func main() {
 		fmt.Printf("   Warning: Audit failed (non-fatal): %v\n", err)
 		// Audit is non-fatal - continue
 	} else {
-		assert(auditResult != nil, "Audit returns result")
+		assertCheck(auditResult != nil, "Audit returns result")
 		if auditResult != nil {
-			assert(auditResult.AuditID != "", "Audit returns audit ID")
+			assertCheck(auditResult.AuditID != "", "Audit returns audit ID")
 			fmt.Printf("   Audit ID: %s\n", auditResult.AuditID)
 		}
 	}
@@ -221,15 +218,14 @@ func main() {
 
 func printSummary() {
 	fmt.Println("============================================================")
-	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
-	fmt.Println("============================================================")
-
-	if failCount > 0 {
-		fmt.Println("SOME TESTS FAILED")
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
-	} else {
-		fmt.Println("ALL TESTS PASSED - Gateway Mode verified!")
 	}
+	fmt.Println("ALL TESTS PASSED - Gateway Mode verified!")
 }
 
 func getEnv(key, defaultValue string) string {

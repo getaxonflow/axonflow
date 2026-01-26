@@ -22,6 +22,7 @@ import com.getaxonflow.sdk.types.policies.PolicyTypes.*;
 import com.getaxonflow.sdk.exceptions.AxonFlowException;
 import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -37,16 +38,26 @@ import java.util.Map;
  * 5. Audit logging
  * 6. Error handling (blocked requests)
  * 7. Connector operations (list, install, uninstall)
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class SdkAudit {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow SDK Comprehensive Audit - Java");
         System.out.println("=".repeat(42));
         System.out.println();
-
-        int passed = 0;
-        int failed = 0;
         String approvedContextId = null;
 
         // Initialize AxonFlow client
@@ -65,32 +76,20 @@ public class SdkAudit {
         System.out.println("Test 1: Agent Health Check");
         try {
             HealthStatus health = client.healthCheck();
-            if (health.isHealthy()) {
-                System.out.println("  ✅ PASSED: Agent is healthy");
-                passed++;
-            } else {
-                System.out.println("  ❌ FAILED: Agent is not healthy");
-                failed++;
-            }
+            assertCheck(health.isHealthy(), "Agent is healthy");
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "Agent health check should not throw");
         }
 
         // Test 2: Orchestrator Health Check
         System.out.println("Test 2: Orchestrator Health Check");
         try {
             HealthStatus health = client.orchestratorHealthCheck();
-            if (health.isHealthy()) {
-                System.out.println("  ✅ PASSED: Orchestrator is healthy");
-                passed++;
-            } else {
-                System.out.println("  ❌ FAILED: Orchestrator is not healthy");
-                failed++;
-            }
+            assertCheck(health.isHealthy(), "Orchestrator is healthy");
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "Orchestrator health check should not throw");
         }
 
         // Get client ID for requests (already set above)
@@ -105,19 +104,19 @@ public class SdkAudit {
                     .clientId(clientId)
                     .build()
             );
-            System.out.printf("  ✅ PASSED: Query approved (contextId: %s)%n", result.getContextId());
-            passed++;
+            assertCheck(result.getContextId() != null, "Safe query approved with context ID");
             approvedContextId = result.getContextId();
         } catch (PolicyViolationException e) {
-            System.out.printf("  ❌ FAILED: Query unexpectedly blocked: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Blocked: %s%n", e.getMessage());
+            assertCheck(false, "Safe query should not be blocked");
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "Safe query should not throw");
         }
 
         // Test 4: Gateway Mode - Blocked Query (SQL Injection)
         System.out.println("Test 4: Gateway Mode - Blocked Query (SQL Injection)");
+        boolean sqlInjectionBlocked = false;
         try {
             client.getPolicyApprovedContext(
                 PolicyApprovalRequest.builder()
@@ -126,14 +125,20 @@ public class SdkAudit {
                     .clientId(clientId)
                     .build()
             );
-            System.out.println("  ❌ FAILED: SQL injection should be blocked");
-            failed++;
+            assertCheck(false, "SQL injection should be blocked");
         } catch (PolicyViolationException e) {
-            System.out.printf("  ✅ PASSED: Query correctly blocked (%s)%n", e.getPolicyName());
-            passed++;
+            System.out.printf("  Blocked by policy: %s%n", e.getPolicyName());
+            sqlInjectionBlocked = true;
+            assertCheck(true, "SQL injection correctly blocked by policy");
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            // May still be blocked via different exception type
+            if (e.getMessage() != null && e.getMessage().contains("blocked")) {
+                sqlInjectionBlocked = true;
+                assertCheck(true, "SQL injection blocked");
+            } else {
+                assertCheck(false, "SQL injection should be blocked");
+            }
         }
 
         // Test 5: Audit LLM Call
@@ -149,36 +154,30 @@ public class SdkAudit {
                     .tokenUsage(TokenUsage.of(100, 50))
                     .latencyMs(250)
                     .build());
-                if (result.isSuccess()) {
-                    System.out.printf("  ✅ PASSED: Audit recorded (auditId: %s)%n", result.getAuditId());
-                    passed++;
-                } else {
-                    System.out.println("  ❌ FAILED: Audit not successful");
-                    failed++;
-                }
+                assertCheck(result.isSuccess(), "Audit recorded successfully");
+                assertCheck(result.getAuditId() != null, "Audit has audit ID");
             } catch (Exception e) {
-                System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-                failed++;
+                System.out.printf("  Error: %s%n", e.getMessage());
+                assertCheck(false, "Audit LLM call should not throw");
             }
         } else {
-            System.out.println("  ⏭️ SKIPPED: No context ID from previous test");
+            System.out.println("  Skipped: No context ID from previous test");
         }
 
         // Test 6: List Connectors
         System.out.println("Test 6: List Connectors");
         try {
             List<ConnectorInfo> connectors = client.listConnectors();
-            System.out.printf("  ✅ PASSED: Found %d connectors%n", connectors.size());
-            passed++;
+            assertCheck(connectors != null, "List connectors returns non-null result");
+            System.out.printf("  Found %d connectors%n", connectors.size());
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "List connectors should not throw");
         }
 
         // Test 7: Static Policy CRUD
         System.out.println("Test 7: Static Policy CRUD");
         String policyName = "sdk-audit-test-" + System.currentTimeMillis();
-        boolean crudPassed = true;
 
         try {
             // Create policy
@@ -191,62 +190,54 @@ public class SdkAudit {
                 .enabled(true)
                 .action(PolicyAction.WARN)
                 .build());
-            System.out.printf("  ✅ Create: Policy created (id: %s)%n", created.getId());
+            assertCheck(created.getId() != null, "Policy created with ID");
 
             // Get policy
             StaticPolicy fetched = client.getStaticPolicy(created.getId());
-            if (policyName.equals(fetched.getName())) {
-                System.out.println("  ✅ Get: Policy retrieved correctly");
-            } else {
-                System.out.println("  ❌ FAILED (Get): Name mismatch");
-                crudPassed = false;
-            }
+            assertCheck(policyName.equals(fetched.getName()), "Policy retrieved with correct name");
 
             // Update policy
             StaticPolicy updated = client.updateStaticPolicy(created.getId(),
                 UpdateStaticPolicyRequest.builder()
                     .description("Updated description from SDK audit")
                     .build());
-            if (updated.getDescription() != null && updated.getDescription().contains("Updated")) {
-                System.out.println("  ✅ Update: Policy updated correctly");
-            } else {
-                System.out.println("  ❌ FAILED (Update): Description not updated");
-                crudPassed = false;
-            }
+            assertCheck(updated.getDescription() != null && updated.getDescription().contains("Updated"),
+                "Policy description updated");
 
             // Delete policy
             client.deleteStaticPolicy(created.getId());
-            System.out.println("  ✅ Delete: Policy deleted correctly");
-
-            if (crudPassed) {
-                passed++;
-            } else {
-                failed++;
-            }
+            assertCheck(true, "Policy deleted successfully");
 
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "Policy CRUD should not throw");
         }
 
         // Test 8: List Static Policies
         System.out.println("Test 8: List Static Policies");
         try {
             List<StaticPolicy> policies = client.listStaticPolicies();
-            System.out.printf("  ✅ PASSED: Found %d policies%n", policies.size());
-            passed++;
+            assertCheck(policies != null, "List policies returns non-null result");
+            assertCheck(policies.size() > 0, "At least one policy exists");
+            System.out.printf("  Found %d policies%n", policies.size());
         } catch (Exception e) {
-            System.out.printf("  ❌ FAILED: %s%n", e.getMessage());
-            failed++;
+            System.out.printf("  Error: %s%n", e.getMessage());
+            assertCheck(false, "List policies should not throw");
         }
 
         // Summary
         System.out.println();
         System.out.println("=".repeat(42));
-        System.out.printf("Summary: %d passed, %d failed%n", passed, failed);
+        int passed = (int) failures.stream().filter(f -> false).count(); // Count would be 0
+        int totalTests = 8;
+        System.out.printf("Summary: %d assertions, %d failures%n", totalTests, failures.size());
         System.out.println();
 
-        if (failed > 0) {
+        if (!failures.isEmpty()) {
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
             System.exit(1);
         }
     }

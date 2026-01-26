@@ -18,6 +18,8 @@
  *   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
  *   AXONFLOW_CLIENT_ID     - Client ID for authentication
  *   AXONFLOW_CLIENT_SECRET - Client secret (required for dynamic policies)
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 package com.example;
@@ -36,6 +38,17 @@ import java.util.List;
 import java.util.Map;
 
 public class CompliancePolicyExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         // Initialize client
@@ -88,8 +101,11 @@ public class CompliancePolicyExample {
             System.out.println("   Created: " + gdprPolicy.getName() + " (ID: " + gdprPolicy.getId() + ")");
             printAllowedProviders(gdprPolicy.getActions());
             createdPolicies.add(gdprPolicy.getId());
+            assertCheck(gdprPolicy != null, "GDPR policy created successfully");
+            assertCheck(gdprPolicy.getId() != null, "GDPR policy has ID");
         } catch (Exception e) {
             System.out.println("   Failed to create GDPR policy: " + e.getMessage());
+            assertCheck(false, "Failed to create GDPR policy: " + e.getMessage());
         }
 
         // 2. HIPAA - Healthcare Data Protection
@@ -121,8 +137,11 @@ public class CompliancePolicyExample {
             System.out.println("   Created: " + hipaaPolicy.getName() + " (ID: " + hipaaPolicy.getId() + ")");
             printAllowedProviders(hipaaPolicy.getActions());
             createdPolicies.add(hipaaPolicy.getId());
+            assertCheck(hipaaPolicy != null, "HIPAA policy created successfully");
+            assertCheck(hipaaPolicy.getId() != null, "HIPAA policy has ID");
         } catch (Exception e) {
             System.out.println("   Failed to create HIPAA policy: " + e.getMessage());
+            assertCheck(false, "Failed to create HIPAA policy: " + e.getMessage());
         }
 
         // 3. RBI - India Financial Data Sovereignty
@@ -154,8 +173,11 @@ public class CompliancePolicyExample {
             System.out.println("   Created: " + rbiPolicy.getName() + " (ID: " + rbiPolicy.getId() + ")");
             printAllowedProviders(rbiPolicy.getActions());
             createdPolicies.add(rbiPolicy.getId());
+            assertCheck(rbiPolicy != null, "RBI policy created successfully");
+            assertCheck(rbiPolicy.getId() != null, "RBI policy has ID");
         } catch (Exception e) {
             System.out.println("   Failed to create RBI policy: " + e.getMessage());
+            assertCheck(false, "Failed to create RBI policy: " + e.getMessage());
         }
 
         // 4. List all compliance policies
@@ -171,8 +193,10 @@ public class CompliancePolicyExample {
                 }
             }
             System.out.println("   Found " + complianceCount + " policies with provider restrictions");
+            assertCheck(complianceCount >= 3, "Found at least 3 compliance policies with provider restrictions");
         } catch (Exception e) {
             System.out.println("   Failed to list policies: " + e.getMessage());
+            assertCheck(false, "Failed to list policies: " + e.getMessage());
         }
 
         // 5. Cleanup
@@ -185,8 +209,24 @@ public class CompliancePolicyExample {
             }
         }
         System.out.println("   Deleted " + createdPolicies.size() + " test policies");
+        assertCheck(createdPolicies.size() >= 3, "Cleaned up at least 3 test policies");
 
         System.out.println("\n=== Compliance Policy Examples Complete ===");
+
+        // Final assertion summary
+        System.out.println();
+        System.out.println("=".repeat(40));
+        System.out.println("Assertion Summary");
+        System.out.println("=".repeat(40));
+        if (failures.isEmpty()) {
+            System.out.println("All assertions passed!");
+        } else {
+            System.out.println("Failures (" + failures.size() + "):");
+            for (String f : failures) {
+                System.out.println("  - " + f);
+            }
+            System.exit(1);
+        }
     }
 
     /**

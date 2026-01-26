@@ -4,6 +4,8 @@
 // audited by AxonFlow. Every MCP query/execute operation is logged to
 // the mcp_query_audits table with policy evaluation results.
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Issue #1082: Examples should test actual behavior, not just API availability
 //
 // What gets audited:

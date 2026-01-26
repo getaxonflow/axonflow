@@ -8,6 +8,8 @@
  *   docker compose up -d  # Start AxonFlow
  *   cd examples/mcp-connectors/typescript
  *   npx ts-node index.ts
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 interface OrchestratorRequest {
@@ -36,6 +38,17 @@ interface OrchestratorResponse {
   };
   error?: string;
   processing_time?: string;
+}
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
 }
 
 async function main() {
@@ -85,9 +98,14 @@ async function main() {
         console.log(`  Rows returned: ${result.data.rows?.length || 0}`);
         console.log(`  Connector: ${result.data.connector}`);
       }
+      assertCheck(result.request_id !== undefined && result.request_id !== "", "Response includes request_id");
+      assertCheck(result.success === true, "Response indicates success");
+      assertCheck(result.data !== undefined, "Response includes data object");
+      assertCheck(result.data?.rows !== undefined && Array.isArray(result.data.rows), "Response data includes rows array");
+      assertCheck(result.processing_time !== undefined, "Response includes processing_time");
     } else {
       console.log(`FAILED: ${result.error}`);
-      process.exit(1);
+      failures.push(`MCP query through orchestrator failed: ${result.error}`);
     }
 
     // Test 2: Query with database alias
@@ -106,18 +124,36 @@ async function main() {
 
     if (result2.success) {
       console.log("SUCCESS: Database alias connector worked!");
+      assertCheck(result2.success === true, "Database alias connector returns success");
+      assertCheck(result2.request_id !== undefined && result2.request_id !== "", "Database alias response includes request_id");
     } else {
       console.log(`FAILED: ${result2.error}`);
-      process.exit(1);
+      failures.push(`Database alias connector failed: ${result2.error}`);
     }
 
     console.log("\n==============================================");
-    console.log("All MCP connector tests PASSED!");
+    if (failures.length === 0) {
+      console.log("All MCP connector tests PASSED!");
+    } else {
+      console.log(`MCP connector tests completed with ${failures.length} failures`);
+    }
     console.log("==============================================");
   } catch (error) {
     console.log(`FAILED: ${error}`);
-    process.exit(1);
+    failures.push(`MCP connector test error: ${error}`);
   }
+
+  // Final assertion summary
+  if (failures.length > 0) {
+    console.log(`\n=== ASSERTION FAILURES: ${failures.length} ===`);
+    for (const f of failures) {
+      console.log(`   - ${f}`);
+    }
+  } else {
+    console.log("\n=== ALL ASSERTIONS PASSED ===");
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main();

@@ -11,6 +11,8 @@
 //
 // The demo maintains its own PostgreSQL database for demo data (customers, tickets)
 // but delegates all LLM governance to AxonFlow.
+//
+// VALIDATION: This example validates initialization and exits with code 1 if setup fails.
 
 package main
 
@@ -39,6 +41,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		log.Printf("   ✓ PASS: %s", message)
+	} else {
+		log.Printf("   ❌ FAIL: %s", message)
+		failures = append(failures, message)
+	}
+}
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -255,6 +268,23 @@ func main() {
 		Debug:    os.Getenv("AXONFLOW_DEBUG") == "true",
 	})
 	log.Printf("AxonFlow Client initialized (agent: %s, orchestrator: %s, mode: proxy)", agentURL, orchestratorURL)
+
+	// Validate initialization
+	log.Println("Validating initialization...")
+	assertCheck(axonflowClient != nil, "AxonFlow client initialized")
+	assertCheck(db != nil, "Database connection established")
+	assertCheck(len(demoUsers) > 0, "Demo users configured")
+	assertCheck(agentURL != "", "Agent URL configured")
+	assertCheck(orchestratorURL != "", "Orchestrator URL configured")
+
+	if len(failures) > 0 {
+		log.Printf("FATAL: %d initialization assertions failed", len(failures))
+		for _, f := range failures {
+			log.Printf("  - %s", f)
+		}
+		os.Exit(1)
+	}
+	log.Println("All initialization checks passed")
 
 	// Setup router
 	r := mux.NewRouter()

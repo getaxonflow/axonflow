@@ -10,6 +10,8 @@
 //   AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
 //   AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
 //   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 
 package main
 
@@ -20,6 +22,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	// Initialize client (credentials optional for community mode)
@@ -48,6 +61,7 @@ func main() {
 	} else {
 		fmt.Println("   Agent Status: HEALTHY")
 	}
+	assertCheck(agentHealthy, "Agent is healthy")
 
 	// 2. Check Orchestrator health
 	fmt.Println()
@@ -59,6 +73,7 @@ func main() {
 	} else {
 		fmt.Println("   Orchestrator Status: HEALTHY")
 	}
+	assertCheck(orchHealthy, "Orchestrator is healthy")
 
 	// 3. Summary
 	fmt.Println()
@@ -74,8 +89,11 @@ func main() {
 		fmt.Println("   Orchestrator: UNHEALTHY")
 	}
 
-	// Exit with error if either service is unhealthy
-	if !agentHealthy || !orchHealthy {
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
 	}
 }

@@ -1,7 +1,9 @@
 package com.example;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
@@ -16,8 +18,21 @@ import com.getaxonflow.sdk.types.costcontrols.CostControlTypes.*;
  * - Budget Check (pre-flight)
  * - Usage: Summary, Breakdown, Records
  * - Pricing
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class CostControlsExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow Cost Controls - Java SDK (Comprehensive)");
@@ -54,8 +69,11 @@ public class CostControlsExample {
 
                 createdBudget = client.createBudget(request);
                 System.out.printf("   Created: %s (limit: $%.2f/month)%n", createdBudget.getId(), createdBudget.getLimitUsd());
+                assertCheck(createdBudget != null, "Budget created successfully");
+                assertCheck(createdBudget.getId() != null, "Created budget has ID");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "createBudget failed: " + e.getMessage());
                 return;
             }
             System.out.println();
@@ -66,8 +84,11 @@ public class CostControlsExample {
                 Budget retrievedBudget = client.getBudget(budgetId);
                 System.out.printf("   Retrieved: %s (scope: %s, period: %s)%n",
                     retrievedBudget.getId(), retrievedBudget.getScope(), retrievedBudget.getPeriod());
+                assertCheck(retrievedBudget != null, "getBudget returned a budget");
+                assertCheck(budgetId.equals(retrievedBudget.getId()), "Retrieved budget ID matches");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "getBudget failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -76,6 +97,8 @@ public class CostControlsExample {
             try {
                 BudgetsResponse budgetList = client.listBudgets(ListBudgetsOptions.builder().limit(10).build());
                 System.out.printf("   Found %d budgets (total: %d)%n", budgetList.getBudgets().size(), budgetList.getTotal());
+                assertCheck(budgetList != null, "listBudgets returned response");
+                assertCheck(budgetList.getBudgets() != null, "listBudgets has budgets list");
                 int count = 0;
                 for (Budget b : budgetList.getBudgets()) {
                     if (count++ >= 3) {
@@ -86,6 +109,7 @@ public class CostControlsExample {
                 }
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "listBudgets failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -98,8 +122,11 @@ public class CostControlsExample {
                     .build();
                 Budget updatedBudget = client.updateBudget(budgetId, updateRequest);
                 System.out.printf("   Updated: %s (new limit: $%.2f)%n", updatedBudget.getId(), updatedBudget.getLimitUsd());
+                assertCheck(updatedBudget != null, "updateBudget returned updated budget");
+                assertCheck(updatedBudget.getLimitUsd() == 150.0, "Budget limit updated to $150");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "updateBudget failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -115,8 +142,12 @@ public class CostControlsExample {
                     status.getUsedUsd(), status.getBudget().getLimitUsd(), status.getPercentage());
                 System.out.printf("   Remaining: $%.2f%n", status.getRemainingUsd());
                 System.out.printf("   Exceeded: %s, Blocked: %s%n", status.isExceeded(), status.isBlocked());
+                assertCheck(status != null, "getBudgetStatus returned status");
+                assertCheck(status.getBudget() != null, "Budget status contains budget details");
+                assertCheck(status.getPercentage() >= 0, "Budget percentage is non-negative");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "getBudgetStatus failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -153,8 +184,10 @@ public class CostControlsExample {
                 if (decision.getMessage() != null) {
                     System.out.printf("   Message: %s%n", decision.getMessage());
                 }
+                assertCheck(decision != null, "checkBudget returned decision");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "checkBudget failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -170,8 +203,11 @@ public class CostControlsExample {
                 System.out.printf("   Total Requests: %d%n", summary.getTotalRequests());
                 System.out.printf("   Tokens: %d in, %d out%n", summary.getTotalTokensIn(), summary.getTotalTokensOut());
                 System.out.printf("   Avg Cost/Request: $%.6f%n", summary.getAverageCostPerRequest());
+                assertCheck(summary != null, "getUsageSummary returned summary");
+                assertCheck(summary.getTotalCostUsd() >= 0, "Usage cost is non-negative");
             } catch (Exception e) {
                 System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "getUsageSummary failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -250,6 +286,21 @@ public class CostControlsExample {
 
             System.out.println("=".repeat(52));
             System.out.println("All 12 Cost Control methods tested!");
+            System.out.println();
+
+            // Final assertion summary
+            System.out.println("=".repeat(52));
+            System.out.println("Assertion Summary");
+            System.out.println("=".repeat(52));
+            if (failures.isEmpty()) {
+                System.out.println("All assertions passed!");
+            } else {
+                System.out.println("Failures (" + failures.size() + "):");
+                for (String f : failures) {
+                    System.out.println("  - " + f);
+                }
+                System.exit(1);
+            }
 
         } finally {
             client.close();

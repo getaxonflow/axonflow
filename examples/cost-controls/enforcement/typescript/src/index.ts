@@ -17,10 +17,23 @@
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
  *   npm install
  *   npm start
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from '@axonflow/sdk';
 import type { ExecuteQueryResponse, BudgetStatus } from '@axonflow/sdk';
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // Extend SDK types for budget info access
 interface BudgetInfoFromResponse {
@@ -162,69 +175,63 @@ class EnforcementTest {
     console.log('-'.repeat(27));
 
     // Test 1: Request was blocked
-    if (blockedResponse !== null) {
-      console.log('   [PASS] Request was blocked when budget exceeded');
+    const wasBlocked = blockedResponse !== null;
+    assertCheck(wasBlocked, "Request was blocked when budget exceeded");
+    if (wasBlocked) {
       this.passCount++;
     } else {
-      console.log('   [FAIL] Request was NOT blocked - budget enforcement not working!');
       this.failCount++;
       return;
     }
 
     // Test 2: BudgetInfo is present in response
     const budgetInfo = blockedResponse.budgetInfo as BudgetInfoFromResponse | undefined;
-    if (budgetInfo) {
-      console.log('   [PASS] BudgetInfo is included in blocked response');
+    const hasBudgetInfo = budgetInfo !== undefined;
+    assertCheck(hasBudgetInfo, "BudgetInfo is included in blocked response");
+    if (hasBudgetInfo) {
       this.passCount++;
 
       // Test 3: BudgetInfo shows exceeded status
+      assertCheck(budgetInfo.exceeded === true, "BudgetInfo.exceeded is true");
       if (budgetInfo.exceeded) {
-        console.log('   [PASS] BudgetInfo.exceeded is true');
         this.passCount++;
       } else {
-        console.log('   [FAIL] BudgetInfo.exceeded should be true');
         this.failCount++;
       }
 
       // Test 4: Percentage >= 100
       const percentage = budgetInfo.percentage || 0;
+      assertCheck(percentage >= 100, `BudgetInfo.percentage is ${percentage.toFixed(1)}% (>= 100%)`);
       if (percentage >= 100) {
-        console.log(`   [PASS] BudgetInfo.percentage is ${percentage.toFixed(1)}% (>= 100%)`);
         this.passCount++;
       } else {
-        console.log(`   [FAIL] BudgetInfo.percentage is ${percentage.toFixed(1)}% (expected >= 100%)`);
         this.failCount++;
       }
 
       // Test 5: Action is "block"
       const action = budgetInfo.action || '';
+      assertCheck(action === 'block', `BudgetInfo.action is 'block' (got: '${action}')`);
       if (action === 'block') {
-        console.log("   [PASS] BudgetInfo.action is 'block'");
         this.passCount++;
       } else {
-        console.log(`   [FAIL] BudgetInfo.action is '${action}' (expected 'block')`);
         this.failCount++;
       }
     } else {
-      console.log('   [FAIL] BudgetInfo is missing from blocked response');
       this.failCount++;
     }
 
     // Test 6: Verify budget status via API
     try {
       const status = await this.client.getBudgetStatus(this.budgetId);
-      if (status.isBlocked) {
-        console.log('   [PASS] GetBudgetStatus confirms isBlocked=true');
-        this.passCount++;
-      } else if (status.isExceeded) {
-        console.log('   [PASS] GetBudgetStatus confirms isExceeded=true');
+      const isBlockedOrExceeded = status.isBlocked || status.isExceeded;
+      assertCheck(isBlockedOrExceeded, `GetBudgetStatus confirms budget is blocked or exceeded (isBlocked=${status.isBlocked}, isExceeded=${status.isExceeded})`);
+      if (isBlockedOrExceeded) {
         this.passCount++;
       } else {
-        console.log('   [FAIL] GetBudgetStatus shows budget is not exceeded');
         this.failCount++;
       }
     } catch (e) {
-      console.log(`   [FAIL] Could not get budget status: ${e}`);
+      assertCheck(false, `Could not get budget status: ${e}`);
       this.failCount++;
     }
   }
@@ -246,12 +253,18 @@ class EnforcementTest {
     console.log('='.repeat(60));
     console.log(`Results: ${this.passCount} PASS, ${this.failCount} FAIL`);
 
-    if (this.failCount === 0) {
+    if (failures.length > 0) {
+      console.log();
+      console.log(`FAILED: ${failures.length} assertion(s) failed:`);
+      failures.forEach((f) => console.log(`  - ${f}`));
+    }
+
+    if (this.failCount === 0 && failures.length === 0) {
       console.log('Budget enforcement is working correctly!');
     } else {
       console.log('Budget enforcement has issues - check the failures above.');
-      process.exit(1);
     }
+    process.exit(this.failCount > 0 || failures.length > 0 ? 1 : 0);
   }
 }
 

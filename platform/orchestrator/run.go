@@ -1823,13 +1823,25 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Accept both limit (preferred) and page_size (deprecated) for backward compatibility
+	limit := 50 // default
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 1000 {
+			limit = l
+		}
+	} else if pageSizeStr := r.URL.Query().Get("page_size"); pageSizeStr != "" {
+		if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 && ps <= 1000 {
+			limit = ps
+		}
+	}
+
 	// Search audit logs for specific tenant
 	searchReq := struct {
 		TenantID string `json:"tenant_id"`
 		Limit    int    `json:"limit"`
 	}{
 		TenantID: tenantID,
-		Limit:    50,
+		Limit:    limit,
 	}
 
 	results, err := auditLogger.SearchAuditLogs(searchReq)

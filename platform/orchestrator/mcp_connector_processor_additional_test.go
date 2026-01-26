@@ -391,10 +391,10 @@ func TestRouteToAgentSuccess(t *testing.T) {
 	// Create mock agent server that returns agent MCP response format
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Agent response format (see mcp_query_router.go:155-158)
+		// Agent response format uses "data" field (see platform/agent/mcp_handler.go:1024)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":     true,
-			"rows":        []interface{}{map[string]interface{}{"id": 1, "name": "result1"}, map[string]interface{}{"id": 2, "name": "result2"}},
+			"data":        []interface{}{map[string]interface{}{"id": 1, "name": "result1"}, map[string]interface{}{"id": 2, "name": "result2"}},
 			"row_count":   2,
 			"duration_ms": 10,
 		})
@@ -434,6 +434,7 @@ func TestRouteToAgentSuccess(t *testing.T) {
 	}
 
 	// Check that rows were returned
+	// Flow: agent sends "data" -> router converts to "rows" in OrchestratorResponse.Data -> processor returns it
 	if rows, ok := output["rows"].([]interface{}); !ok || len(rows) == 0 {
 		t.Error("Expected rows in output")
 	}

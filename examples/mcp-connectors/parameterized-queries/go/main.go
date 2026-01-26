@@ -7,6 +7,8 @@
 // This is critical because Go map iteration is non-deterministic, which could
 // cause parameter mismatch bugs without proper key sorting.
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Usage:
 //   docker compose up -d  # Start AxonFlow
 //   cd examples/mcp-connectors/parameterized-queries/go
@@ -23,6 +25,17 @@ import (
 	"os"
 	"time"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 // MCPQueryRequest matches the agent's expected request format
 type MCPQueryRequest struct {
@@ -54,42 +67,33 @@ func main() {
 	fmt.Println("  - Parameters are assigned to $1, $2, $3... in sorted order")
 	fmt.Println()
 
-	allPassed := true
-
 	// Test 1: Parameterized query with multiple parameters
-	if !testParameterizedQuery(agentURL) {
-		allPassed = false
-	}
+	testParameterizedQuery(agentURL)
 
 	// Test 2: Determinism test (multiple iterations)
-	if !testDeterminism(agentURL, 10) {
-		allPassed = false
-	}
+	testDeterminism(agentURL, 10)
 
 	// Test 3: Single parameter
-	if !testSingleParam(agentURL) {
-		allPassed = false
-	}
+	testSingleParam(agentURL)
 
 	// Test 4: Empty parameters
-	if !testEmptyParams(agentURL) {
-		allPassed = false
-	}
+	testEmptyParams(agentURL)
 
 	fmt.Println()
 	fmt.Println("============================================================")
-	if allPassed {
-		fmt.Println("All parameterized query tests PASSED!")
-		fmt.Println("============================================================")
-	} else {
-		fmt.Println("Some tests FAILED!")
-		fmt.Println("============================================================")
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
 		os.Exit(1)
 	}
+	fmt.Println("ALL ASSERTIONS PASSED - Parameterized query tests verified!")
+	fmt.Println("============================================================")
 }
 
 // testParameterizedQuery tests that parameters are ordered alphabetically by key
-func testParameterizedQuery(agentURL string) bool {
+func testParameterizedQuery(agentURL string) {
 	fmt.Println("Test 1: Parameterized query with multiple parameters...")
 	fmt.Println("  Keys provided: zebra, alpha, middle (non-alphabetical)")
 	fmt.Println("  Expected order after sorting: alpha, middle, zebra")
@@ -107,17 +111,18 @@ func testParameterizedQuery(agentURL string) bool {
 	result, err := sendRequest(agentURL+"/mcp/resources/query", req)
 	if err != nil {
 		fmt.Printf("  FAILED: %v\n", err)
-		return false
+		assertCheck(false, "Test 1: Request succeeded")
+		return
 	}
 
+	assertCheck(result.Success, "Test 1: Request returned success")
 	if !result.Success {
-		fmt.Println("  FAILED: Request unsuccessful")
-		return false
+		return
 	}
 
+	assertCheck(len(result.Data) > 0, "Test 1: Data returned")
 	if len(result.Data) == 0 {
-		fmt.Println("  FAILED: No data returned")
-		return false
+		return
 	}
 
 	row := result.Data[0]
@@ -127,18 +132,18 @@ func testParameterizedQuery(agentURL string) bool {
 
 	fmt.Printf("  Result: first_param=%s, second_param=%s, third_param=%s\n", first, second, third)
 
-	if first == "A" && second == "M" && third == "Z" {
+	correctOrder := first == "A" && second == "M" && third == "Z"
+	assertCheck(correctOrder, "Test 1: Parameters in correct alphabetical key order")
+	if correctOrder {
 		fmt.Println("  SUCCESS: Parameters in correct alphabetical key order!")
-		return true
+	} else {
+		fmt.Printf("  FAILED: Expected first=A, second=M, third=Z\n")
+		fmt.Printf("          Got first=%s, second=%s, third=%s\n", first, second, third)
 	}
-
-	fmt.Printf("  FAILED: Expected first=A, second=M, third=Z\n")
-	fmt.Printf("          Got first=%s, second=%s, third=%s\n", first, second, third)
-	return false
 }
 
 // testDeterminism runs multiple iterations to verify consistent ordering
-func testDeterminism(agentURL string, iterations int) bool {
+func testDeterminism(agentURL string, iterations int) {
 	fmt.Printf("\nTest 2: Determinism test (%d iterations)...\n", iterations)
 
 	// Expected order after alphabetical sort: alpha, bravo, charlie, delta, echo
@@ -150,6 +155,7 @@ func testDeterminism(agentURL string, iterations int) bool {
 		"p5": "E",
 	}
 
+	allIterationsPassed := true
 	for i := 0; i < iterations; i++ {
 		req := MCPQueryRequest{
 			Connector: "postgres",
@@ -166,35 +172,44 @@ func testDeterminism(agentURL string, iterations int) bool {
 		result, err := sendRequest(agentURL+"/mcp/resources/query", req)
 		if err != nil {
 			fmt.Printf("  Iteration %d: FAILED - %v\n", i+1, err)
-			return false
+			allIterationsPassed = false
+			continue
 		}
 
 		if !result.Success {
 			fmt.Printf("  Iteration %d: FAILED - Request unsuccessful\n", i+1)
-			return false
+			allIterationsPassed = false
+			continue
 		}
 
 		if len(result.Data) == 0 {
 			fmt.Printf("  Iteration %d: FAILED - No data returned\n", i+1)
-			return false
+			allIterationsPassed = false
+			continue
 		}
 
 		row := result.Data[0]
+		iterationOK := true
 		for key, expectedVal := range expected {
 			actualVal := fmt.Sprintf("%v", row[key])
 			if actualVal != expectedVal {
 				fmt.Printf("  Iteration %d: FAILED - %s expected %s, got %s\n", i+1, key, expectedVal, actualVal)
-				return false
+				iterationOK = false
 			}
+		}
+		if !iterationOK {
+			allIterationsPassed = false
 		}
 	}
 
-	fmt.Printf("  SUCCESS: All %d iterations produced consistent results!\n", iterations)
-	return true
+	assertCheck(allIterationsPassed, fmt.Sprintf("Test 2: All %d iterations produced consistent results", iterations))
+	if allIterationsPassed {
+		fmt.Printf("  SUCCESS: All %d iterations produced consistent results!\n", iterations)
+	}
 }
 
 // testSingleParam tests single parameter edge case
-func testSingleParam(agentURL string) bool {
+func testSingleParam(agentURL string) {
 	fmt.Println("\nTest 3: Single parameter query...")
 
 	req := MCPQueryRequest{
@@ -208,31 +223,32 @@ func testSingleParam(agentURL string) bool {
 	result, err := sendRequest(agentURL+"/mcp/resources/query", req)
 	if err != nil {
 		fmt.Printf("  FAILED: %v\n", err)
-		return false
+		assertCheck(false, "Test 3: Single parameter request succeeded")
+		return
 	}
 
+	assertCheck(result.Success, "Test 3: Single parameter request returned success")
 	if !result.Success {
-		fmt.Println("  FAILED: Request unsuccessful")
-		return false
+		return
 	}
 
+	assertCheck(len(result.Data) > 0, "Test 3: Single parameter data returned")
 	if len(result.Data) == 0 {
-		fmt.Println("  FAILED: No data returned")
-		return false
+		return
 	}
 
 	value := fmt.Sprintf("%v", result.Data[0]["value"])
-	if value == "SINGLE" {
+	correctValue := value == "SINGLE"
+	assertCheck(correctValue, "Test 3: Single parameter value is correct")
+	if correctValue {
 		fmt.Printf("  SUCCESS: Single parameter worked! value=%s\n", value)
-		return true
+	} else {
+		fmt.Printf("  FAILED: Expected 'SINGLE', got '%s'\n", value)
 	}
-
-	fmt.Printf("  FAILED: Expected 'SINGLE', got '%s'\n", value)
-	return false
 }
 
 // testEmptyParams tests query with no parameters
-func testEmptyParams(agentURL string) bool {
+func testEmptyParams(agentURL string) {
 	fmt.Println("\nTest 4: Query with no parameters...")
 
 	req := MCPQueryRequest{
@@ -244,27 +260,28 @@ func testEmptyParams(agentURL string) bool {
 	result, err := sendRequest(agentURL+"/mcp/resources/query", req)
 	if err != nil {
 		fmt.Printf("  FAILED: %v\n", err)
-		return false
+		assertCheck(false, "Test 4: Empty params request succeeded")
+		return
 	}
 
+	assertCheck(result.Success, "Test 4: Empty params request returned success")
 	if !result.Success {
-		fmt.Println("  FAILED: Request unsuccessful")
-		return false
+		return
 	}
 
+	assertCheck(len(result.Data) > 0, "Test 4: Empty params data returned")
 	if len(result.Data) == 0 {
-		fmt.Println("  FAILED: No data returned")
-		return false
+		return
 	}
 
 	value := fmt.Sprintf("%v", result.Data[0]["result"])
-	if value == "no params" {
+	correctValue := value == "no params"
+	assertCheck(correctValue, "Test 4: Empty params value is correct")
+	if correctValue {
 		fmt.Printf("  SUCCESS: Empty params query worked! result=%s\n", value)
-		return true
+	} else {
+		fmt.Printf("  FAILED: Expected 'no params', got '%s'\n", value)
 	}
-
-	fmt.Printf("  FAILED: Expected 'no params', got '%s'\n", value)
-	return false
 }
 
 func sendRequest(url string, req MCPQueryRequest) (*MCPQueryResponse, error) {

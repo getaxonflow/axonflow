@@ -121,7 +121,7 @@ def main():
     try:
         resp = client.mcp_query(
             connector="postgres",
-            statement="SELECT * FROM customers WHERE pan = 'ABCDE1234F'"
+            statement="SELECT * FROM customers WHERE pan = 'ABCPD1234E'"
         )
         if not resp.success:
             assert_check(True, "India PAN in query blocked as expected")

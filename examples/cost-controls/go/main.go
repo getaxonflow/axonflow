@@ -6,6 +6,8 @@
 // - Budget Check (pre-flight)
 // - Usage: Summary, Breakdown, Records
 // - Pricing
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -16,6 +18,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Cost Controls - Go SDK (Comprehensive)")
@@ -50,8 +63,12 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "CreateBudget succeeded")
 		return
 	}
+	assertCheck(createdBudget != nil, "Budget created successfully")
+	assertCheck(createdBudget.ID == budgetID, "Budget ID matches requested ID")
+	assertCheck(createdBudget.LimitUSD == 100.0, "Budget limit is correct")
 	fmt.Printf("   Created: %s (limit: $%.2f/month)\n\n", createdBudget.ID, createdBudget.LimitUSD)
 
 	// 2. GetBudget
@@ -59,7 +76,10 @@ func main() {
 	retrievedBudget, err := client.GetBudget(ctx, budgetID)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetBudget succeeded")
 	} else {
+		assertCheck(retrievedBudget.ID == budgetID, "Retrieved budget ID matches")
+		assertCheck(retrievedBudget.Scope == "organization", "Retrieved budget scope is correct")
 		fmt.Printf("   Retrieved: %s (scope: %s, period: %s)\n\n", retrievedBudget.ID, retrievedBudget.Scope, retrievedBudget.Period)
 	}
 
@@ -70,7 +90,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "ListBudgets succeeded")
 	} else {
+		assertCheck(budgetList.Total >= 1, "At least one budget exists")
 		fmt.Printf("   Found %d budgets (total: %d)\n", len(budgetList.Budgets), budgetList.Total)
 		for i, b := range budgetList.Budgets {
 			if i >= 3 {
@@ -89,7 +111,9 @@ func main() {
 	updatedBudget, err := client.UpdateBudget(ctx, retrievedBudget)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "UpdateBudget succeeded")
 	} else {
+		assertCheck(updatedBudget.LimitUSD == 150.0, "Budget limit updated correctly")
 		fmt.Printf("   Updated: %s (new limit: $%.2f)\n\n", updatedBudget.ID, updatedBudget.LimitUSD)
 	}
 
@@ -102,7 +126,10 @@ func main() {
 	status, err := client.GetBudgetStatus(ctx, budgetID)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetBudgetStatus succeeded")
 	} else {
+		assertCheck(status.Budget != nil, "BudgetStatus includes budget details")
+		assertCheck(status.Percentage >= 0, "BudgetStatus percentage is valid")
 		fmt.Printf("   Used: $%.2f / $%.2f (%.1f%%)\n", status.UsedUSD, status.Budget.LimitUSD, status.Percentage)
 		fmt.Printf("   Remaining: $%.2f\n", status.RemainingUSD)
 		fmt.Printf("   Exceeded: %v, Blocked: %v\n\n", status.IsExceeded, status.IsBlocked)
@@ -113,7 +140,9 @@ func main() {
 	alerts, err := client.GetBudgetAlerts(ctx, budgetID, 10)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetBudgetAlerts succeeded")
 	} else {
+		assertCheck(true, "GetBudgetAlerts returned successfully")
 		fmt.Printf("   Found %d alerts\n", alerts.Count)
 		for _, a := range alerts.Alerts {
 			fmt.Printf("   - [%s] %s (%.1f%% at $%.2f)\n", a.AlertType, a.Message, a.PercentageReached, a.AmountUSD)
@@ -131,7 +160,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "CheckBudget succeeded")
 	} else {
+		assertCheck(true, "CheckBudget returned decision")
 		fmt.Printf("   Allowed: %v\n", decision.Allowed)
 		if decision.Action != "" {
 			fmt.Printf("   Action: %s\n", decision.Action)
@@ -153,7 +184,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetUsageSummary succeeded")
 	} else {
+		assertCheck(true, "GetUsageSummary returned data")
 		fmt.Printf("   Total Cost: $%.6f\n", summary.TotalCostUSD)
 		fmt.Printf("   Total Requests: %d\n", summary.TotalRequests)
 		fmt.Printf("   Tokens: %d in, %d out\n", summary.TotalTokensIn, summary.TotalTokensOut)
@@ -167,7 +200,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetUsageBreakdown succeeded")
 	} else {
+		assertCheck(breakdown.GroupBy == "provider", "Breakdown groupBy is correct")
 		fmt.Printf("   Breakdown by: %s (total: $%.6f)\n", breakdown.GroupBy, breakdown.TotalCostUSD)
 		for _, item := range breakdown.Items {
 			fmt.Printf("   - %s: $%.6f (%.1f%%, %d requests)\n", item.GroupValue, item.CostUSD, item.Percentage, item.RequestCount)
@@ -185,7 +220,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "ListUsageRecords succeeded")
 	} else {
+		assertCheck(true, "ListUsageRecords returned data")
 		fmt.Printf("   Found %d records (showing up to 5)\n", records.Total)
 		for _, r := range records.Records {
 			fmt.Printf("   - %s/%s: %d tokens, $%.6f\n", r.Provider, r.Model, r.TokensIn+r.TokensOut, r.CostUSD)
@@ -205,7 +242,10 @@ func main() {
 	pricing, err := client.GetPricing(ctx, "anthropic", "claude-sonnet-4")
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n\n", err)
+		assertCheck(false, "GetPricing succeeded")
 	} else {
+		assertCheck(pricing.Provider == "anthropic", "Pricing provider is correct")
+		assertCheck(pricing.Model == "claude-sonnet-4", "Pricing model is correct")
 		fmt.Printf("   Provider: %s\n", pricing.Provider)
 		fmt.Printf("   Model: %s\n", pricing.Model)
 		fmt.Printf("   Input: $%.4f/1K tokens\n", pricing.Pricing.InputPer1K)
@@ -221,11 +261,20 @@ func main() {
 	err = client.DeleteBudget(ctx, budgetID)
 	if err != nil {
 		fmt.Printf("   WARNING: Failed to delete budget: %v\n\n", err)
+		assertCheck(false, "DeleteBudget succeeded")
 	} else {
+		assertCheck(true, "Budget deleted successfully")
 		fmt.Printf("   Deleted budget: %s\n\n", budgetID)
 	}
 
 	fmt.Println("================================================")
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
+		os.Exit(1)
+	}
 	fmt.Println("All 12 Cost Control methods tested!")
 }
 

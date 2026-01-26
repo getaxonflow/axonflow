@@ -2,6 +2,8 @@
 // before creating policies using the AxonFlow Go SDK.
 //
 // This helps ensure your patterns work correctly and catch the right inputs.
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -10,6 +12,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	endpoint := os.Getenv("AXONFLOW_ENDPOINT")
@@ -167,6 +180,39 @@ func main() {
 		fmt.Printf("   Error: %s\n", invalidResult.Error)
 	}
 
+	// Assertions to validate actual functionality
+	fmt.Println("\n============================================================")
+	fmt.Println("Validating results...")
+	assertCheck(ccResult.Valid, "Credit card pattern is valid regex")
+	assertCheck(ssnResult.Valid, "SSN pattern is valid regex")
+	assertCheck(emailResult.Valid, "Email pattern is valid regex")
+	assertCheck(sqliResult.Valid, "SQLi pattern is valid regex")
+
+	// Verify pattern matching accuracy
+	ccMatches := 0
+	for _, m := range ccResult.Matches {
+		if m.Matched {
+			ccMatches++
+		}
+	}
+	assertCheck(ccMatches >= 3, "Credit card pattern matches expected inputs")
+
+	ssnMatches := 0
+	for _, m := range ssnResult.Matches {
+		if m.Matched {
+			ssnMatches++
+		}
+	}
+	assertCheck(ssnMatches >= 2, "SSN pattern matches expected inputs")
+
+	sqliMatches := 0
+	for _, m := range sqliResult.Matches {
+		if m.Matched {
+			sqliMatches++
+		}
+	}
+	assertCheck(sqliMatches >= 3, "SQLi pattern detects dangerous queries")
+
 	// Summary
 	fmt.Println("\n============================================================")
 	fmt.Println("Pattern Testing Summary")
@@ -179,4 +225,12 @@ Best Practices:
   4. Consider case sensitivity (use (?i) for case-insensitive)
   5. Use word boundaries (\b) to avoid partial matches
 `)
+
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
 }

@@ -7,6 +7,7 @@ import com.getaxonflow.sdk.types.policies.PolicyTypes.PolicyCategory;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.PolicyTier;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.StaticPolicy;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,8 +19,21 @@ import java.util.Map;
  * - List all static policies
  * - Filter policies by category, tier, and status
  * - Get effective policies with tier inheritance
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class ListAndFilter {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         String endpoint = System.getenv("AXONFLOW_ENDPOINT");
@@ -43,6 +57,8 @@ public class ListAndFilter {
 
             List<StaticPolicy> allPolicies = axonflow.listStaticPolicies();
             System.out.println("   Total: " + allPolicies.size() + " policies");
+            assertCheck(allPolicies != null, "List policies returns non-null result");
+            assertCheck(allPolicies.size() > 0, "At least one policy exists");
 
             // Group by category for summary
             Map<String, Integer> byCategory = new HashMap<>();
@@ -62,6 +78,11 @@ public class ListAndFilter {
                 .build();
             List<StaticPolicy> sqliPolicies = axonflow.listStaticPolicies(sqliOptions);
             System.out.println("   Found: " + sqliPolicies.size() + " SQLi policies");
+            assertCheck(sqliPolicies != null, "Category filter returns non-null result");
+            // Verify all returned policies are SECURITY_SQLI
+            boolean allSqli = sqliPolicies.stream().allMatch(p ->
+                p.getCategory() == PolicyCategory.SECURITY_SQLI);
+            assertCheck(allSqli, "All filtered policies are SECURITY_SQLI category");
 
             // Show first 3
             int count = 0;
@@ -82,6 +103,11 @@ public class ListAndFilter {
                 .build();
             List<StaticPolicy> systemPolicies = axonflow.listStaticPolicies(systemOptions);
             System.out.println("   Found: " + systemPolicies.size() + " system policies");
+            assertCheck(systemPolicies != null, "Tier filter returns non-null result");
+            // Verify all returned policies are SYSTEM tier
+            boolean allSystem = systemPolicies.stream().allMatch(p ->
+                p.getTier() == PolicyTier.SYSTEM);
+            assertCheck(allSystem, "All filtered policies are SYSTEM tier");
 
             // 4. Filter by enabled status
             System.out.println("\n4. Filtering by enabled status...");
@@ -98,6 +124,10 @@ public class ListAndFilter {
 
             System.out.println("   Enabled: " + enabledPolicies.size());
             System.out.println("   Disabled: " + disabledPolicies.size());
+            assertCheck(enabledPolicies != null && disabledPolicies != null, "Enabled filter returns results");
+            // Verify all enabled policies are actually enabled
+            boolean allEnabled = enabledPolicies.stream().allMatch(StaticPolicy::isEnabled);
+            assertCheck(allEnabled, "All enabled-filtered policies are enabled");
 
             // 5. Combine filters
             System.out.println("\n5. Combining filters (enabled PII policies)...");
@@ -125,6 +155,8 @@ public class ListAndFilter {
 
             List<StaticPolicy> effective = axonflow.getEffectiveStaticPolicies();
             System.out.println("   Effective total: " + effective.size() + " policies");
+            assertCheck(effective != null, "Effective policies returns non-null result");
+            assertCheck(effective.size() > 0, "At least one effective policy exists");
 
             // Group by tier
             Map<String, Integer> byTier = new HashMap<>();
@@ -153,6 +185,8 @@ public class ListAndFilter {
 
             System.out.println("   Page 1: " + page1.size() + " policies");
             System.out.println("   Page 2: " + page2.size() + " policies");
+            assertCheck(page1.size() <= 5, "Page 1 respects limit of 5");
+            assertCheck(page2.size() <= 5, "Page 2 respects limit of 5");
 
             // 8. Sorting
             System.out.println("\n8. Sorting by severity (descending)...");
@@ -174,6 +208,16 @@ public class ListAndFilter {
 
         } catch (Exception e) {
             System.err.println("\nError: " + e.getMessage());
+            failures.add("Exception: " + e.getMessage());
+        }
+
+        // Final assertion check
+        if (!failures.isEmpty()) {
+            System.out.println();
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
             System.exit(1);
         }
     }

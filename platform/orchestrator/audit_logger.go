@@ -351,7 +351,23 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 	argIndex := 1
 
 	// Add search conditions based on criteria
+	// Handle tenant-specific search (from tenantAuditLogsHandler)
 	if searchReq, ok := criteria.(struct {
+		TenantID string `json:"tenant_id"`
+		Limit    int    `json:"limit"`
+	}); ok {
+		if searchReq.TenantID != "" {
+			query += fmt.Sprintf(" AND tenant_id = $%d", argIndex)
+			args = append(args, searchReq.TenantID)
+			// argIndex not incremented as no more params in this branch
+		}
+
+		query += " ORDER BY timestamp DESC"
+
+		if searchReq.Limit > 0 {
+			query += fmt.Sprintf(" LIMIT %d", searchReq.Limit)
+		}
+	} else if searchReq, ok := criteria.(struct {
 		UserEmail   string
 		ClientID    string
 		StartTime   time.Time
@@ -359,6 +375,7 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		RequestType string
 		Limit       int
 	}); ok {
+		// Handle general search (from auditSearchHandler)
 		if searchReq.UserEmail != "" {
 			query += fmt.Sprintf(" AND user_email = $%d", argIndex)
 			args = append(args, searchReq.UserEmail)

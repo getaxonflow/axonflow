@@ -8,6 +8,7 @@ import com.axonflow.sdk.CreateBudgetRequest;
 import com.axonflow.sdk.LLMResponse;
 import com.axonflow.sdk.ProxyLLMCallRequest;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -29,10 +30,11 @@ import java.util.Map;
  * Usage:
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
  *   mvn compile exec:java
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class EnforcementExample {
-    private int passCount = 0;
-    private int failCount = 0;
+    private static final List<String> failures = new ArrayList<>();
     private final String budgetId;
     private final AxonFlowClient client;
     private final String userToken;
@@ -45,6 +47,15 @@ public class EnforcementExample {
                 .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"))
                 .build());
         this.userToken = getEnv("AXONFLOW_USER_TOKEN", "");
+    }
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
     }
 
     public static void main(String[] args) {
@@ -145,70 +156,34 @@ public class EnforcementExample {
         System.out.println("-".repeat(27));
 
         // Test 1: Request was blocked
-        if (blockedResponse != null) {
-            System.out.println("   [PASS] Request was blocked when budget exceeded");
-            passCount++;
-        } else {
-            System.out.println("   [FAIL] Request was NOT blocked - budget enforcement not working!");
-            failCount++;
+        assertCheck(blockedResponse != null, "Request was blocked when budget exceeded");
+        if (blockedResponse == null) {
             return;
         }
 
         // Test 2: BudgetInfo is present in response
         BudgetInfo budgetInfo = blockedResponse.getBudgetInfo();
+        assertCheck(budgetInfo != null, "BudgetInfo is included in blocked response");
         if (budgetInfo != null) {
-            System.out.println("   [PASS] BudgetInfo is included in blocked response");
-            passCount++;
-
             // Test 3: BudgetInfo shows exceeded status
-            if (budgetInfo.isExceeded()) {
-                System.out.println("   [PASS] BudgetInfo.exceeded is true");
-                passCount++;
-            } else {
-                System.out.println("   [FAIL] BudgetInfo.exceeded should be true");
-                failCount++;
-            }
+            assertCheck(budgetInfo.isExceeded(), "BudgetInfo.exceeded is true");
 
             // Test 4: Percentage >= 100
             double percentage = budgetInfo.getPercentage();
-            if (percentage >= 100) {
-                System.out.printf("   [PASS] BudgetInfo.percentage is %.1f%% (>= 100%%)%n", percentage);
-                passCount++;
-            } else {
-                System.out.printf("   [FAIL] BudgetInfo.percentage is %.1f%% (expected >= 100%%)%n", percentage);
-                failCount++;
-            }
+            assertCheck(percentage >= 100, String.format("BudgetInfo.percentage is %.1f%% (>= 100%%)", percentage));
 
             // Test 5: Action is "block"
             String action = budgetInfo.getAction();
-            if ("block".equals(action)) {
-                System.out.println("   [PASS] BudgetInfo.action is 'block'");
-                passCount++;
-            } else {
-                System.out.printf("   [FAIL] BudgetInfo.action is '%s' (expected 'block')%n", action);
-                failCount++;
-            }
-        } else {
-            System.out.println("   [FAIL] BudgetInfo is missing from blocked response");
-            failCount++;
+            assertCheck("block".equals(action), "BudgetInfo.action is 'block' (got: " + action + ")");
         }
 
         // Test 6: Verify budget status via API
         try {
             BudgetStatus status = client.getBudgetStatus(budgetId);
-            if (status.isBlocked()) {
-                System.out.println("   [PASS] GetBudgetStatus confirms is_blocked=true");
-                passCount++;
-            } else if (status.isExceeded()) {
-                System.out.println("   [PASS] GetBudgetStatus confirms is_exceeded=true");
-                passCount++;
-            } else {
-                System.out.println("   [FAIL] GetBudgetStatus shows budget is not exceeded");
-                failCount++;
-            }
+            boolean statusConfirmed = status.isBlocked() || status.isExceeded();
+            assertCheck(statusConfirmed, "GetBudgetStatus confirms is_blocked or is_exceeded");
         } catch (Exception e) {
-            System.out.println("   [FAIL] Could not get budget status: " + e.getMessage());
-            failCount++;
+            assertCheck(false, "Could not get budget status: " + e.getMessage());
         }
     }
 
@@ -227,11 +202,16 @@ public class EnforcementExample {
     private void printSummary() {
         System.out.println();
         System.out.println("=".repeat(56));
-        System.out.printf("Results: %d PASS, %d FAIL%n", passCount, failCount);
+        System.out.println("Assertion Summary");
+        System.out.println("=".repeat(56));
 
-        if (failCount == 0) {
-            System.out.println("Budget enforcement is working correctly!");
+        if (failures.isEmpty()) {
+            System.out.println("All assertions passed! Budget enforcement is working correctly!");
         } else {
+            System.out.println("Failures (" + failures.size() + "):");
+            for (String f : failures) {
+                System.out.println("  - " + f);
+            }
             System.out.println("Budget enforcement has issues - check the failures above.");
             System.exit(1);
         }

@@ -11,6 +11,8 @@
  *   DEFAULT_LLM_PROVIDER=openai
  *
  * * cost_optimized is Enterprise only
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 package com.example.llmrouting;
@@ -22,10 +24,23 @@ import com.getaxonflow.sdk.types.ClientResponse;
 import com.getaxonflow.sdk.types.HealthStatus;
 import com.getaxonflow.sdk.types.RequestType;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 public class ProviderRouting {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         // Initialize client
@@ -51,6 +66,7 @@ public class ProviderRouting {
 
         // Example 1: Send a request (server decides which provider to use)
         System.out.println("1. Send request (server routes based on configured strategy):");
+        boolean example1Success = false;
         try {
             ClientResponse response = client.proxyLLMCall(ClientRequest.builder()
                     .userToken(userToken)
@@ -59,12 +75,15 @@ public class ProviderRouting {
                     .context(Map.of("provider", "openai"))
                     .build());
             printResponse(response);
+            example1Success = response.isSuccess();
         } catch (Exception e) {
             System.out.println("   Error: " + e.getMessage() + "\n");
         }
+        assertCheck(example1Success, "First request routed successfully");
 
         // Example 2: Multiple requests show distribution based on weights
         System.out.println("2. Multiple requests (observe provider distribution):");
+        int successfulRequests = 0;
         for (int i = 1; i <= 3; i++) {
             try {
                 ClientResponse response = client.proxyLLMCall(ClientRequest.builder()
@@ -74,26 +93,46 @@ public class ProviderRouting {
                         .context(Map.of("provider", "openai"))
                         .build());
                 System.out.println("   Request " + i + ": Success (provider selected by server)");
+                if (response.isSuccess()) {
+                    successfulRequests++;
+                }
             } catch (Exception e) {
                 System.out.println("   Request " + i + " Error: " + e.getMessage());
             }
         }
+        assertCheck(successfulRequests > 0, "Multiple requests processed (" + successfulRequests + "/3 successful)");
         System.out.println();
 
         // Example 3: Health check
         System.out.println("3. Check agent health:");
+        boolean healthPassed = false;
         try {
             HealthStatus health = client.healthCheck();
             System.out.println("   Status: " + health.getStatus());
+            healthPassed = health.isHealthy();
         } catch (Exception e) {
             System.out.println("   Error: " + e.getMessage());
         }
+        assertCheck(healthPassed, "Agent health check passed");
 
         System.out.println("\n=== Examples Complete ===");
         System.out.println("\nTo change provider routing, update server environment variables:");
         System.out.println("  - LLM_ROUTING_STRATEGY: weighted, round_robin, failover");
         System.out.println("  - PROVIDER_WEIGHTS: distribution percentages");
         System.out.println("  - DEFAULT_LLM_PROVIDER: fallback for failover strategy");
+
+        // Final assertion summary
+        System.out.println();
+        System.out.println("=".repeat(50));
+        if (!failures.isEmpty()) {
+            System.out.println("FAILED: " + failures.size() + " assertion(s) failed:");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.exit(1);
+        } else {
+            System.out.println("All assertions passed!");
+        }
     }
 
     private static void printResponse(ClientResponse response) {

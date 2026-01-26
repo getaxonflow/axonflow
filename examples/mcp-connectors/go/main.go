@@ -6,6 +6,8 @@
 // This is different from direct agent calls and exercises the
 // internal service authentication between orchestrator and agent.
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Usage:
 //   docker compose up -d  # Start AxonFlow
 //   cd examples/mcp-connectors/go
@@ -22,6 +24,17 @@ import (
 	"os"
 	"time"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 // OrchestratorRequest matches the orchestrator's expected request format
 type OrchestratorRequest struct {
@@ -89,16 +102,17 @@ func main() {
 	result, err := sendRequest(orchestratorURL+"/api/v1/process", req)
 	if err != nil {
 		fmt.Printf("FAILED: %v\n", err)
-		os.Exit(1)
-	}
-
-	if result.Success {
+		assertCheck(false, "Test 1: MCP query request succeeded")
+	} else if result.Success {
 		fmt.Println("SUCCESS: MCP query through orchestrator worked!")
 		fmt.Printf("  Request ID: %s\n", result.RequestID)
 		fmt.Printf("  Processing Time: %s\n", result.ProcessingTime)
+		assertCheck(true, "Test 1: MCP query request succeeded")
+		assertCheck(result.RequestID != "", "Test 1: Request ID returned")
 		if result.Data != nil {
 			if rows, ok := result.Data["rows"].([]interface{}); ok {
 				fmt.Printf("  Rows returned: %d\n", len(rows))
+				assertCheck(len(rows) > 0, "Test 1: Query returned rows")
 			}
 			if connector, ok := result.Data["connector"].(string); ok {
 				fmt.Printf("  Connector: %s\n", connector)
@@ -106,7 +120,7 @@ func main() {
 		}
 	} else {
 		fmt.Printf("FAILED: %s\n", result.Error)
-		os.Exit(1)
+		assertCheck(false, "Test 1: MCP query returned success")
 	}
 
 	// Test 2: Query with a different statement
@@ -118,23 +132,30 @@ func main() {
 	result, err = sendRequest(orchestratorURL+"/api/v1/process", req)
 	if err != nil {
 		fmt.Printf("FAILED: %v\n", err)
-		os.Exit(1)
-	}
-
-	if result.Success {
+		assertCheck(false, "Test 2: Timestamp query request succeeded")
+	} else if result.Success {
 		fmt.Println("SUCCESS: Timestamp query worked!")
+		assertCheck(true, "Test 2: Timestamp query request succeeded")
 		if result.Data != nil {
 			if rows, ok := result.Data["rows"].([]interface{}); ok && len(rows) > 0 {
 				fmt.Printf("  Result: %v\n", rows[0])
+				assertCheck(true, "Test 2: Timestamp query returned data")
 			}
 		}
 	} else {
 		fmt.Printf("FAILED: %s\n", result.Error)
-		os.Exit(1)
+		assertCheck(false, "Test 2: Timestamp query returned success")
 	}
 
 	fmt.Println("\n==============================================")
-	fmt.Println("All MCP connector tests PASSED!")
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("ALL ASSERTIONS PASSED - MCP connector tests verified!")
 	fmt.Println("==============================================")
 }
 

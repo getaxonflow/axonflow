@@ -6,6 +6,8 @@
  * 2. RESPONSE phase: PII in connector data is redacted
  * 3. PolicyInfo metadata in all responses
  *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ *
  * Run: npx tsx index.ts
  * Prerequisites: docker compose up -d
  */
@@ -14,12 +16,12 @@ import { AxonFlow, ConnectorError, ConnectorResponse } from "@axonflow/sdk";
 
 const failures: string[] = [];
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   FAIL: ${message}`);
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
   } else {
-    console.log(`   PASS: ${message}`);
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
   }
 }
 
@@ -43,11 +45,11 @@ async function main(): Promise<void> {
       connector: "postgres",
       statement: "SELECT 1 as test_value",
     });
-    assert(resp.success, "Query succeeded");
-    assert(!resp.redacted, "No redaction applied");
+    assertCheck(resp.success, "Query succeeded");
+    assertCheck(!resp.redacted, "No redaction applied");
     if (resp.policy_info) {
-      assert(resp.policy_info.policies_evaluated >= 0, "Policies were evaluated");
-      assert(!resp.policy_info.blocked, "Request was not blocked");
+      assertCheck(resp.policy_info.policies_evaluated >= 0, "Policies were evaluated");
+      assertCheck(!resp.policy_info.blocked, "Request was not blocked");
       console.log(
         `   PolicyInfo: ${resp.policy_info.policies_evaluated} policies evaluated in ${resp.policy_info.processing_time_ms}ms`
       );
@@ -65,10 +67,10 @@ async function main(): Promise<void> {
       connector: "postgres",
       statement: "SELECT * FROM users WHERE id = 1; DROP TABLE users; --",
     });
-    assert(false, "SQLi pattern should have been blocked");
+    assertCheck(false, "SQLi pattern should have been blocked");
   } catch (err) {
     if (err instanceof ConnectorError) {
-      assert(true, "Request blocked as expected");
+      assertCheck(true, "Request blocked as expected");
       console.log(`   Block reason: ${err.message}`);
     } else {
       console.log(`   Unexpected error: ${err}`);
@@ -84,10 +86,10 @@ async function main(): Promise<void> {
       connector: "postgres",
       statement: "SELECT name FROM employees UNION SELECT password FROM admin_users",
     });
-    assert(false, "UNION SQLi should have been blocked");
+    assertCheck(false, "UNION SQLi should have been blocked");
   } catch (err) {
     if (err instanceof ConnectorError) {
-      assert(true, "UNION SQLi blocked as expected");
+      assertCheck(true, "UNION SQLi blocked as expected");
       console.log(`   Block reason: ${err.message}`);
     } else {
       console.log(`   Unexpected error: ${err}`);
@@ -105,8 +107,8 @@ async function main(): Promise<void> {
     });
     if (resp.success) {
       if (resp.redacted) {
-        assert(true, "Response was redacted");
-        assert(
+        assertCheck(true, "Response was redacted");
+        assertCheck(
           resp.redacted_fields !== undefined && resp.redacted_fields.length > 0,
           "Redacted fields are listed"
         );
@@ -134,10 +136,10 @@ async function main(): Promise<void> {
       connector: "postgres",
       statement: "SELECT * FROM customers WHERE ssn = '123-45-6789'",
     });
-    assert(false, "SSN in query should have been blocked");
+    assertCheck(false, "SSN in query should have been blocked");
   } catch (err) {
     if (err instanceof ConnectorError) {
-      assert(true, "SSN in query blocked as expected");
+      assertCheck(true, "SSN in query blocked as expected");
       console.log(`   Block reason: ${err.message}`);
     } else {
       console.log(`   Unexpected error: ${err}`);
@@ -160,8 +162,8 @@ async function main(): Promise<void> {
     for (const f of failures) {
       console.log(`   - ${f}`);
     }
-    process.exit(1);
   }
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main().catch((err) => {

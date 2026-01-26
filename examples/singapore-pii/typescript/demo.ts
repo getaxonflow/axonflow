@@ -9,9 +9,22 @@
  * - Singapore postal codes
  *
  * These patterns are available in Community Edition.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from "@axonflow/sdk";
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 interface TestCase {
   name: string;
@@ -138,27 +151,27 @@ async function main(): Promise<void> {
 
       // Check expectation
       // For redact/warn, the request should still be approved
-      let status: string;
       if (["redact", "warn", "approved"].includes(tc.expectedAction)) {
+        assertCheck(result.approved === true, `${tc.name}: Request approved for ${tc.expectedAction} action`);
         if (result.approved) {
-          status = "PASS";
           passed++;
         } else {
-          status = "FAIL";
           failed++;
         }
       } else {
         // blocked
+        assertCheck(result.approved === false, `${tc.name}: Request blocked as expected`);
         if (!result.approved) {
-          status = "PASS";
           passed++;
         } else {
-          status = "FAIL";
           failed++;
         }
       }
 
-      console.log(`  Status: ${status} (expected: ${tc.expectedAction})`);
+      // Verify contextId is returned for approved requests
+      if (result.approved && tc.expectedAction !== "blocked") {
+        assertCheck(result.contextId !== undefined && result.contextId !== "", `${tc.name}: contextId is present`);
+      }
     } catch (error) {
       console.log(`  Result: ERROR - ${error}`);
       failed++;
@@ -171,8 +184,12 @@ async function main(): Promise<void> {
   console.log(`Results: ${passed} passed, ${failed} failed`);
   console.log();
 
-  if (failed > 0) {
-    console.log("Some tests failed. Check:");
+  // Final assertion summary
+  if (failures.length > 0) {
+    console.log(`FAILED: ${failures.length} assertion(s) failed:`);
+    failures.forEach((f) => console.log(`  - ${f}`));
+    console.log();
+    console.log("Check:");
     console.log("  - AxonFlow stack is running");
     console.log("  - Singapore PII policies are loaded (migration 042)");
     process.exit(1);
@@ -188,6 +205,10 @@ async function main(): Promise<void> {
   console.log();
   console.log("Enterprise features (checksum validation, AI registry)");
   console.log("are available with an Enterprise license.");
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error("Unexpected error:", err);
+  process.exit(1);
+});

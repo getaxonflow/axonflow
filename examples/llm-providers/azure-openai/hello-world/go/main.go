@@ -1,5 +1,7 @@
 // Azure OpenAI Integration Example - Go
 // Demonstrates Gateway Mode and Proxy Mode with AxonFlow
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 
 package main
 
@@ -14,6 +16,17 @@ import (
 	"strings"
 	"time"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 const (
 	axonflowURL = "http://localhost:8080"
@@ -46,6 +59,9 @@ func main() {
 	fmt.Println("--- Example 1: Gateway Mode ---")
 	if err := gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion); err != nil {
 		fmt.Printf("Gateway mode error: %v\n", err)
+		assertCheck(false, "Gateway mode completed without error")
+	} else {
+		assertCheck(true, "Gateway mode completed without error")
 	}
 	fmt.Println()
 
@@ -53,7 +69,21 @@ func main() {
 	fmt.Println("--- Example 2: Proxy Mode ---")
 	if err := proxyModeExample(); err != nil {
 		fmt.Printf("Proxy mode error: %v\n", err)
+		assertCheck(false, "Proxy mode completed without error")
+	} else {
+		assertCheck(true, "Proxy mode completed without error")
 	}
+
+	fmt.Println()
+	fmt.Println("=== Results ===")
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("ALL ASSERTIONS PASSED - Azure OpenAI integration verified!")
 }
 
 // detectAuthType determines authentication type from endpoint
@@ -83,8 +113,10 @@ func gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion string) err
 
 	if !preCheckResp.Approved {
 		fmt.Printf("Request blocked by policy\n")
+		assertCheck(false, "Pre-check should be approved")
 		return nil
 	}
+	assertCheck(preCheckResp.ContextID != "", "Pre-check returns context ID")
 	fmt.Printf("Pre-check passed (context: %s)\n", preCheckResp.ContextID)
 
 	// Step 2: Call Azure OpenAI directly
@@ -152,6 +184,7 @@ func gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion string) err
 
 	fmt.Printf("Response received (latency: %v)\n", latency)
 	fmt.Printf("Response: %s...\n", truncate(content, 200))
+	assertCheck(content != "", "Azure OpenAI returned non-empty response")
 
 	// Step 3: Audit the response
 	fmt.Println("Step 3: Auditing with AxonFlow...")
@@ -221,6 +254,8 @@ func proxyModeExample() error {
 	fmt.Printf("Response received (latency: %v)\n", time.Since(startTime))
 	fmt.Printf("Blocked: %v\n", proxyResp.Blocked)
 	fmt.Printf("Response: %s\n", truncate(proxyResp.Data.Data, 300))
+	assertCheck(!proxyResp.Blocked, "Proxy request was not blocked")
+	assertCheck(proxyResp.Success || proxyResp.Data.Data != "", "Proxy response has data")
 
 	return nil
 }

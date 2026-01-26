@@ -28,8 +28,10 @@ import com.theokanning.openai.completion.chat.ChatMessageRole;
 import com.theokanning.openai.service.OpenAiService;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -44,10 +46,22 @@ import java.util.Map;
  *
  * This gives you full control over LLM parameters while maintaining
  * complete audit trails with ~3-5ms governance overhead.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class GatewayModeExample {
 
     private static final String CLIENT_ID = "gateway-mode-example";
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow Gateway Mode - Java Example");
@@ -104,6 +118,9 @@ public class GatewayModeExample {
             System.out.printf("   Context ID: %s%n", preCheck.getContextId());
             System.out.printf("   Approved: %s%n", preCheck.isApproved());
 
+            assertCheck(preCheck.getContextId() != null && !preCheck.getContextId().isEmpty(), "Pre-check returned contextId");
+            assertCheck(preCheck.isApproved(), "Safe query was approved");
+
             if (preCheck.getPolicies() != null && !preCheck.getPolicies().isEmpty()) {
                 System.out.printf("   Policies: %s%n", String.join(", ", preCheck.getPolicies()));
             }
@@ -114,9 +131,13 @@ public class GatewayModeExample {
             System.out.println("   BLOCKED");
             System.out.printf("   Policy: %s%n", e.getPolicyName());
             System.out.printf("   Reason: %s%n", e.getMessage());
+            assertCheck(false, "Safe query should not be blocked");
+            printFinalResults();
             return;
         } catch (AxonFlowException e) {
             System.err.printf("Pre-check failed: %s%n", e.getMessage());
+            assertCheck(false, "Pre-check should not fail: " + e.getMessage());
+            printFinalResults();
             return;
         }
 
@@ -144,6 +165,8 @@ public class GatewayModeExample {
             completion = openai.createChatCompletion(chatRequest);
         } catch (Exception e) {
             System.err.printf("OpenAI call failed: %s%n", e.getMessage());
+            assertCheck(false, "OpenAI call should not fail: " + e.getMessage());
+            printFinalResults();
             return;
         }
 
@@ -151,6 +174,10 @@ public class GatewayModeExample {
         String response = completion.getChoices().get(0).getMessage().getContent();
         int promptTokens = (int) completion.getUsage().getPromptTokens();
         int completionTokens = (int) completion.getUsage().getCompletionTokens();
+
+        assertCheck(response != null && !response.isEmpty(), "LLM response received");
+        assertCheck(promptTokens > 0, "Prompt tokens recorded");
+        assertCheck(completionTokens > 0, "Completion tokens recorded");
 
         System.out.printf("   Response received in %dms%n", llmLatency);
         System.out.printf("   Tokens: %d prompt, %d completion%n", promptTokens, completionTokens);
@@ -183,6 +210,8 @@ public class GatewayModeExample {
             long auditLatency = System.currentTimeMillis() - auditStart;
             System.out.printf("   Audit logged in %dms%n", auditLatency);
 
+            assertCheck(true, "Audit logging completed successfully");
+
             // =========================================================================
             // Results
             // =========================================================================
@@ -202,8 +231,26 @@ public class GatewayModeExample {
             System.out.printf("   Governance: %dms (overhead)%n", governanceOverhead);
             System.out.printf("   Total:      %dms%n", totalLatency);
 
+            assertCheck(governanceOverhead < totalLatency, "Governance overhead is less than total latency");
+
         } catch (AxonFlowException e) {
             System.err.printf("Warning: Audit failed (non-fatal): %s%n", e.getMessage());
+        }
+
+        printFinalResults();
+    }
+
+    private static void printFinalResults() {
+        System.out.println();
+        System.out.println("============================================================");
+        if (!failures.isEmpty()) {
+            System.out.println("FAILED: " + failures.size() + " assertion(s) failed:");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.exit(1);
+        } else {
+            System.out.println("All assertions passed!");
         }
     }
 

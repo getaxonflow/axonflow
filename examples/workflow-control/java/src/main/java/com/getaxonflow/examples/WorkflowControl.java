@@ -19,6 +19,8 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.workflow.WorkflowTypes.*;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,8 +33,21 @@ import java.util.Map;
  * 2. Check step gates before each step
  * 3. Mark steps as completed
  * 4. Complete the workflow
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class WorkflowControl {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("Workflow Control Plane - Java");
@@ -62,6 +77,7 @@ public class WorkflowControl {
 
             System.out.println("   Workflow created!");
             System.out.println("   Workflow ID: " + workflow.getWorkflowId());
+            assertCheck(workflow.getWorkflowId() != null, "Workflow created with ID");
             System.out.println();
 
             // Step 2: Check gate for first step (Generate Code - LLM call)
@@ -81,6 +97,7 @@ public class WorkflowControl {
             );
 
             System.out.println("   Decision: " + gate1.getDecision());
+            assertCheck(gate1.getDecision() != null, "Step gate returns decision");
             if (gate1.getReason() != null) {
                 System.out.println("   Reason: " + gate1.getReason());
             }
@@ -88,12 +105,14 @@ public class WorkflowControl {
             if (gate1.isBlocked()) {
                 System.out.println("   Workflow blocked by policy. Aborting...");
                 client.abortWorkflow(workflow.getWorkflowId(), gate1.getReason());
+                assertCheck(true, "Workflow aborted correctly when blocked");
                 return;
             }
 
             if (gate1.requiresApproval()) {
                 System.out.println("   Approval URL: " + gate1.getApprovalUrl());
                 System.out.println("   (Enterprise feature - approval workflow would be triggered)");
+                assertCheck(gate1.getApprovalUrl() != null, "Approval URL provided");
                 // In production, you would wait for approval here
             }
 
@@ -107,6 +126,7 @@ public class WorkflowControl {
                         .build()
                 );
                 System.out.println("   Step completed!");
+                assertCheck(true, "Step 1 completed successfully");
             }
             System.out.println();
 
@@ -128,6 +148,7 @@ public class WorkflowControl {
             );
 
             System.out.println("   Decision: " + gate2.getDecision());
+            assertCheck(gate2.getDecision() != null, "Step 2 gate returns decision");
             if (gate2.isAllowed()) {
                 client.markStepCompleted(
                     workflow.getWorkflowId(),
@@ -137,6 +158,7 @@ public class WorkflowControl {
                         .build()
                 );
                 System.out.println("   Step completed!");
+                assertCheck(true, "Step 2 completed successfully");
             }
             System.out.println();
 
@@ -158,6 +180,7 @@ public class WorkflowControl {
             );
 
             System.out.println("   Decision: " + gate3.getDecision());
+            assertCheck(gate3.getDecision() != null, "Step 3 gate returns decision");
             if (gate3.isAllowed()) {
                 client.markStepCompleted(
                     workflow.getWorkflowId(),
@@ -167,6 +190,7 @@ public class WorkflowControl {
                         .build()
                 );
                 System.out.println("   Step completed!");
+                assertCheck(true, "Step 3 completed successfully");
             }
             System.out.println();
 
@@ -174,6 +198,7 @@ public class WorkflowControl {
             System.out.println("Step 5: Complete Workflow");
             client.completeWorkflow(workflow.getWorkflowId());
             System.out.println("   Workflow completed!");
+            assertCheck(true, "Workflow completed successfully");
             System.out.println();
 
             // Step 6: Get final workflow status
@@ -182,6 +207,8 @@ public class WorkflowControl {
             System.out.println("   Workflow: " + status.getWorkflowName());
             System.out.println("   Status: " + status.getStatus());
             System.out.println("   Steps: " + (status.getSteps() != null ? status.getSteps().size() : 0));
+            assertCheck(status.getWorkflowName() != null, "Workflow status has name");
+            assertCheck(status.getStatus() != null, "Workflow status has status");
             System.out.println();
 
             System.out.println("========================================");
@@ -196,9 +223,19 @@ public class WorkflowControl {
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
-            System.exit(1);
+            failures.add("Exception: " + e.getMessage());
         } finally {
             client.close();
+        }
+
+        // Final assertion check
+        if (!failures.isEmpty()) {
+            System.out.println();
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.exit(1);
         }
     }
 

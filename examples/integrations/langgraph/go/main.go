@@ -10,6 +10,8 @@
 // - State management across the workflow
 // - PII detection and SQL injection blocking
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Issue #1082: Examples should test actual behavior, not just API availability
 //
 // Requirements:

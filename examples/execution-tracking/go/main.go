@@ -5,6 +5,8 @@
 //
 // Issue #1075 - EPIC #1074: Unified Workflow Infrastructure
 // Issue #1082: Examples should test actual behavior, not just API availability
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -16,18 +18,14 @@ import (
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
-var (
-	passCount int
-	failCount int
-)
+var failures []string
 
-func assert(condition bool, message string) {
+func assertCheck(condition bool, message string) {
 	if condition {
-		fmt.Printf("   PASS: %s\n", message)
-		passCount++
+		fmt.Printf("   ✓ PASS: %s\n", message)
 	} else {
-		fmt.Printf("   FAIL: %s\n", message)
-		failCount++
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
 	}
 }
 
@@ -69,11 +67,11 @@ func main() {
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
 		fmt.Println("   Note: WCP endpoints are on the orchestrator (port 8081)")
-		failCount++
+		assertCheck(false, "CreateWorkflow succeeded")
 		os.Exit(1)
 	}
-	assert(workflow.WorkflowID != "", "Workflow ID is returned")
-	assert(strings.HasPrefix(workflow.WorkflowID, "wf_"), "Workflow ID has correct prefix")
+	assertCheck(workflow.WorkflowID != "", "Workflow ID is returned")
+	assertCheck(strings.HasPrefix(workflow.WorkflowID, "wf_"), "Workflow ID has correct prefix")
 	fmt.Printf("   Workflow ID: %s\n", workflow.WorkflowID)
 	fmt.Println()
 
@@ -91,10 +89,10 @@ func main() {
 		})
 		if err != nil {
 			fmt.Printf("   Step %d gate error: %v\n", i, err)
-			failCount++
+			assertCheck(false, fmt.Sprintf("Step %d gate check succeeded", i))
 			continue
 		}
-		assert(gate.Decision != "", fmt.Sprintf("Step %d returns a decision", i))
+		assertCheck(gate.Decision != "", fmt.Sprintf("Step %d returns a decision", i))
 		fmt.Printf("   Step %d: decision=%s\n", i, gate.Decision)
 
 		// Mark completed
@@ -105,11 +103,11 @@ func main() {
 			stepsCompleted++
 		}
 	}
-	assert(stepsCompleted == 3, "All 3 steps completed successfully")
+	assertCheck(stepsCompleted == 3, "All 3 steps completed successfully")
 
 	// Complete workflow
 	err = client.CompleteWorkflow(workflow.WorkflowID)
-	assert(err == nil, "CompleteWorkflow succeeds")
+	assertCheck(err == nil, "CompleteWorkflow succeeds")
 	fmt.Println()
 
 	// Step 3: Get workflow status using existing API
@@ -118,12 +116,12 @@ func main() {
 	status, err := client.GetWorkflow(workflow.WorkflowID)
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
-		failCount++
+		assertCheck(false, "GetWorkflow succeeded")
 	} else {
-		assert(status.WorkflowID == workflow.WorkflowID, "GetWorkflow returns correct ID")
-		assert(status.WorkflowName == "unified-tracking-demo", "GetWorkflow returns correct name")
-		assert(status.Status == "completed", "Workflow status is completed")
-		assert(len(status.Steps) == 3, "Workflow has 3 steps")
+		assertCheck(status.WorkflowID == workflow.WorkflowID, "GetWorkflow returns correct ID")
+		assertCheck(status.WorkflowName == "unified-tracking-demo", "GetWorkflow returns correct name")
+		assertCheck(status.Status == "completed", "Workflow status is completed")
+		assertCheck(len(status.Steps) == 3, "Workflow has 3 steps")
 		fmt.Printf("   Workflow: %s, Status: %s, Steps: %d\n",
 			status.WorkflowName, status.Status, len(status.Steps))
 	}
@@ -186,9 +184,9 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   Note: ListWorkflows API returned error: %v\n", err)
-		failCount++
+		assertCheck(false, "ListWorkflows succeeded")
 	} else {
-		assert(workflows.Total > 0, "ListWorkflows returns at least 1 workflow")
+		assertCheck(workflows.Total > 0, "ListWorkflows returns at least 1 workflow")
 		fmt.Printf("   Found %d workflows\n", workflows.Total)
 		for _, wf := range workflows.Workflows {
 			fmt.Printf("    - %s: %s (%s)\n", wf.WorkflowID, wf.WorkflowName, wf.Status)
@@ -227,15 +225,14 @@ func main() {
 
 	// Summary
 	fmt.Println(strings.Repeat("=", 55))
-	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
-	fmt.Println(strings.Repeat("=", 55))
-
-	if failCount > 0 {
-		fmt.Println("SOME TESTS FAILED")
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
-	} else {
-		fmt.Println("ALL TESTS PASSED - Unified Execution Tracking verified!")
 	}
+	fmt.Println("ALL TESTS PASSED - Unified Execution Tracking verified!")
 	fmt.Println()
 	fmt.Println("SDK methods demonstrated:")
 	fmt.Println("  WCP Workflow:")
