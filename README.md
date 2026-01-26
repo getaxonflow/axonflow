@@ -292,7 +292,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 </dependency>
 ```
 
-> **TypeScript SDK Note:** npm publishing is currently blocked (E403). The latest npm version is v2.3.0. For access to the latest features (v2.7.0), build from source: [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript).
+> **TypeScript SDK:** npm version (2.3.0) may lag behind source (2.7.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
 
 ### Python
 
