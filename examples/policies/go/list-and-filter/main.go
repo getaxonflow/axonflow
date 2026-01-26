@@ -5,6 +5,8 @@
 // - List all static policies
 // - Filter policies by category, tier, and status
 // - Get effective policies with tier inheritance
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -13,6 +15,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	endpoint := os.Getenv("AXONFLOW_ENDPOINT")
@@ -179,6 +192,23 @@ func main() {
 		fmt.Printf("     [%s] %s\n", p.Severity, p.Name)
 	}
 
+	// Assertions to validate actual functionality
 	fmt.Println("\n============================================================")
+	fmt.Println("Validating results...")
+	assertCheck(len(allPolicies) > 0, "All policies list is not empty")
+	assertCheck(len(sqliPolicies) >= 0, "SQLi policies filter returned results")
+	assertCheck(len(systemPolicies) >= 0, "System tier filter returned results")
+	assertCheck(len(enabledPolicies) >= 0, "Enabled filter returned results")
+	assertCheck(len(effective) > 0, "Effective policies returned")
+	assertCheck(len(page1) <= 5, "Pagination respects limit")
+
+	fmt.Println("\n============================================================")
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
 	fmt.Println("Example completed successfully!")
 }

@@ -11,6 +11,8 @@
  * - Planner Integration: Plans are validated before execution
  * - Memory Governance: Sensitive data is protected
  *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
+ *
  * Requirements:
  * - AxonFlow running locally (docker compose up)
  * - Node.js 18+
@@ -21,6 +23,21 @@
  */
 
 import { AxonFlow } from "@axonflow/sdk";
+
+// =============================================================================
+// Assertion Infrastructure
+// =============================================================================
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // =============================================================================
 // Types
@@ -208,9 +225,12 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     "The quick brown fox jumps over the lazy dog. This is a classic pangram used for testing."
   );
 
+  assertCheck(result1.success === true, "Safe plugin call returns success=true");
+  assertCheck(result1.result !== undefined && result1.result !== "", "Safe plugin call returns non-empty result");
+  assertCheck(result1.blockReason === undefined, "Safe plugin call has no blockReason");
+
   if (result1.success) {
     console.log(`   Result: ${result1.result}`);
-    console.log("   ✓ Safe plugin call succeeded!");
   }
 
   // Test 2: Safe prompt
@@ -222,9 +242,11 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     "What are the key principles of responsible AI development?"
   );
 
+  assertCheck(result2.success === true, "Safe prompt returns success=true");
+  assertCheck(result2.result !== undefined && result2.result !== "", "Safe prompt returns non-empty result");
+
   if (result2.success) {
     console.log(`   Result: ${result2.result}`);
-    console.log("   ✓ Safe prompt succeeded!");
   }
 
   // Test 3: PII Detection
@@ -237,9 +259,15 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     "Find customer record for SSN 123-45-6789"
   );
 
-  if (!result3.success && result3.blockReason) {
-    console.log("   ✓ PII correctly detected and blocked!");
-  }
+  assertCheck(result3.success === false, "PII query returns success=false (blocked)");
+  assertCheck(result3.blockReason !== undefined && result3.blockReason !== "", "PII query has blockReason explaining the violation");
+  assertCheck(
+    !!(result3.blockReason?.toLowerCase().includes("pii") ||
+    result3.blockReason?.toLowerCase().includes("ssn") ||
+    result3.blockReason?.toLowerCase().includes("social security") ||
+    result3.blockReason?.toLowerCase().includes("blocked")),
+    "PII blockReason indicates PII/SSN violation"
+  );
 
   // Test 4: SQL Injection
   console.log("\n" + "=".repeat(60));
@@ -251,9 +279,14 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
     "SELECT * FROM users; DROP TABLE customers;--"
   );
 
-  if (!result4.success && result4.blockReason) {
-    console.log("   ✓ SQL injection correctly blocked!");
-  }
+  assertCheck(result4.success === false, "SQL injection query returns success=false (blocked)");
+  assertCheck(result4.blockReason !== undefined && result4.blockReason !== "", "SQL injection query has blockReason");
+  assertCheck(
+    !!(result4.blockReason?.toLowerCase().includes("sql") ||
+    result4.blockReason?.toLowerCase().includes("injection") ||
+    result4.blockReason?.toLowerCase().includes("blocked")),
+    "SQL injection blockReason indicates SQL/injection violation"
+  );
 
   // Test 5: Multi-step plan
   console.log("\n" + "=".repeat(60));
@@ -267,9 +300,11 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
   ]);
 
   const allSucceeded = planResults.every((r) => r.success);
-  if (allSucceeded) {
-    console.log("\n   ✓ Multi-step plan completed successfully!");
-  }
+  assertCheck(planResults.length === 3, "Multi-step plan executes all 3 steps");
+  assertCheck(allSucceeded, "All steps in multi-step plan succeed");
+  assertCheck(planResults[0].result !== undefined, "First step (search) returns a result");
+  assertCheck(planResults[1].result !== undefined, "Second step (analyze) returns a result");
+  assertCheck(planResults[2].result !== undefined, "Third step (summarize) returns a result");
 
   // Test 6: Plan with blocked step
   console.log("\n" + "=".repeat(60));
@@ -283,12 +318,25 @@ async function runTests(axonflow: AxonFlow): Promise<void> {
   ]);
 
   const blocked = blockedPlanResults.some((r) => !r.success);
-  if (blocked) {
-    console.log("\n   ✓ Plan correctly halted when policy violation detected!");
-  }
+  assertCheck(blocked, "Plan with PII query has at least one blocked step");
+  assertCheck(blockedPlanResults.length <= 3, "Plan halts at or before completing all steps");
+
+  // Find the blocked step
+  const blockedStep = blockedPlanResults.find((r) => !r.success);
+  assertCheck(
+    blockedStep?.blockReason !== undefined,
+    "Blocked step in plan has a blockReason"
+  );
 
   console.log("\n" + "=".repeat(60));
-  console.log("All tests completed!");
+  console.log("Test Summary");
+  console.log("=".repeat(60));
+  if (failures.length === 0) {
+    console.log("ALL TESTS PASSED");
+  } else {
+    console.log(`${failures.length} TEST(S) FAILED:`);
+    failures.forEach((f) => console.log(`   - ${f}`));
+  }
   console.log("=".repeat(60) + "\n");
 }
 
@@ -332,4 +380,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(console.error);
+main()
+  .then(() => {
+    process.exit(failures.length > 0 ? 1 : 0);
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

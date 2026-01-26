@@ -4,6 +4,7 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.*;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -26,8 +27,21 @@ import java.util.stream.Collectors;
  *   <li>Admin access detection</li>
  *   <li>Sensitive data access control</li>
  * </ul>
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class RequireApprovalPolicy {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         // Initialize the client
@@ -67,6 +81,9 @@ public class RequireApprovalPolicy {
             System.out.println("   Name: " + policy.getName());
             System.out.println("   Action: " + policy.getAction());
             System.out.println("   Tier: " + policy.getTier());
+            assertCheck(policy != null, "High-value transaction policy created");
+            assertCheck(policy.getId() != null && !policy.getId().isEmpty(), "Policy has ID");
+            assertCheck(PolicyAction.REQUIRE_APPROVAL.equals(policy.getAction()), "Policy action is require_approval");
 
             // 2. Test the pattern with sample inputs
             System.out.println("\n2. Testing pattern with sample inputs...");
@@ -80,8 +97,11 @@ public class RequireApprovalPolicy {
             );
 
             TestPatternResult testResult = client.testPattern(policy.getPattern(), testInputs);
+            assertCheck(testResult != null, "testPattern returned result");
+            assertCheck(testResult.getMatches() != null, "testPattern has matches list");
 
             System.out.println("\n   Test results:");
+            int matchCount = 0;
             for (TestPatternMatch match : testResult.getMatches()) {
                 String icon = match.isMatched() ? "✓ HITL" : "✗ PASS";
                 String input = match.getInput();
@@ -89,7 +109,10 @@ public class RequireApprovalPolicy {
                     input = input.substring(0, 40) + "...";
                 }
                 System.out.println("   " + icon + ": \"" + input + "\"");
+                if (match.isMatched()) matchCount++;
             }
+            // First 3 inputs should match (high values), last 2 should not
+            assertCheck(matchCount == 3, "Pattern matched exactly 3 high-value inputs (got " + matchCount + ")");
 
             // 3. Create additional HITL policies
             System.out.println("\n3. Creating admin access oversight policy...");
@@ -106,6 +129,9 @@ public class RequireApprovalPolicy {
 
             System.out.println("   Created: " + adminPolicy.getName());
             System.out.println("   Action: " + adminPolicy.getAction());
+            assertCheck(adminPolicy != null, "Admin access policy created");
+            assertCheck(adminPolicy.getId() != null && !adminPolicy.getId().isEmpty(), "Admin policy has ID");
+            assertCheck(PolicyAction.REQUIRE_APPROVAL.equals(adminPolicy.getAction()), "Admin policy action is require_approval");
 
             // 4. List all policies with require_approval action
             // Note: Filter by tenant tier to get our custom policies (system policies are on earlier pages)
@@ -124,17 +150,34 @@ public class RequireApprovalPolicy {
                 System.out.println("   - " + p.getName() + " (" + p.getSeverity() + ")");
             }
             System.out.println("   Found " + hitlPolicies.size() + " HITL policies");
+            assertCheck(hitlPolicies.size() >= 2, "Found at least 2 HITL policies (created in this example)");
 
             // 5. Clean up test policies
             System.out.println("\n5. Cleaning up test policies...");
             client.deleteStaticPolicy(policy.getId());
             client.deleteStaticPolicy(adminPolicy.getId());
             System.out.println("   Deleted test policies");
+            assertCheck(true, "Test policies cleaned up successfully");
 
             System.out.println("\n" + "=".repeat(60));
             System.out.println("Example completed successfully!");
             System.out.println("\nNote: In Community Edition, require_approval auto-approves.");
             System.out.println("Upgrade to Enterprise for full HITL queue functionality.");
+
+            // Final assertion summary
+            System.out.println();
+            System.out.println("=".repeat(60));
+            System.out.println("Assertion Summary");
+            System.out.println("=".repeat(60));
+            if (failures.isEmpty()) {
+                System.out.println("All assertions passed!");
+            } else {
+                System.out.println("Failures (" + failures.size() + "):");
+                for (String f : failures) {
+                    System.out.println("  - " + f);
+                }
+                System.exit(1);
+            }
 
         } catch (Exception e) {
             System.err.println("\nError: " + e.getMessage());

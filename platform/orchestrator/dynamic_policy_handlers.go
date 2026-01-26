@@ -110,7 +110,12 @@ func (h *DynamicPolicyAPIHandler) listDynamicPolicies(w http.ResponseWriter, r *
 		}
 	}
 
-	if pageSizeStr := r.URL.Query().Get("page_size"); pageSizeStr != "" {
+	// Accept both limit (preferred) and page_size (deprecated) for backward compatibility
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 && limit <= 100 {
+			params.PageSize = limit
+		}
+	} else if pageSizeStr := r.URL.Query().Get("page_size"); pageSizeStr != "" {
 		if pageSize, err := strconv.Atoi(pageSizeStr); err == nil && pageSize > 0 && pageSize <= 100 {
 			params.PageSize = pageSize
 		}

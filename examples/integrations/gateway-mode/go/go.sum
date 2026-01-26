@@ -1,4 +1,2 @@
-github.com/getaxonflow/axonflow-sdk-go/v2 v2.6.0 h1:zqD5pSNBRgvBqz8Is0AgM/60g64/UQp5O1XOWHdiHbE=
-github.com/getaxonflow/axonflow-sdk-go/v2 v2.6.0/go.mod h1:yKCyqjLDqI/2IHU/8BcMifhFURCAGsinBKjKcsLumC0=
 github.com/sashabaranov/go-openai v1.17.9 h1:QEoBiGKWW68W79YIfXWEFZ7l5cEgZBV4/Ow3uy+5hNY=
 github.com/sashabaranov/go-openai v1.17.9/go.mod h1:lj5b/K+zjTSFxVLijLSTDZuP7adOgerWeFyZLUhAKRg=

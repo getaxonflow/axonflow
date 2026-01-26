@@ -5,13 +5,28 @@
  * - List all static policies
  * - Filter policies by category, tier, and status
  * - Get effective policies with tier inheritance
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from '@axonflow/sdk';
 
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
+}
+
 async function main() {
+  // Policy management APIs require clientId for X-Tenant-ID header
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_ENDPOINT || 'http://localhost:8080',
+    clientId: process.env.AXONFLOW_CLIENT_ID || 'demo-tenant',
   });
 
   console.log('AxonFlow Policy Management - List and Filter');
@@ -23,6 +38,9 @@ async function main() {
 
     const allPolicies = await client.listStaticPolicies();
     console.log(`   Total: ${allPolicies.length} policies`);
+
+    assertCheck(Array.isArray(allPolicies), 'listStaticPolicies returns an array');
+    assertCheck(allPolicies.length > 0, 'At least one policy exists in the system');
 
     // Group by category for summary
     const byCategory: Record<string, number> = {};
@@ -42,6 +60,12 @@ async function main() {
     });
     console.log(`   Found: ${sqliPolicies.length} SQLi policies`);
 
+    assertCheck(Array.isArray(sqliPolicies), 'Category filter returns an array');
+    assertCheck(
+      sqliPolicies.every(p => p.category === 'security-sqli'),
+      'All filtered policies have security-sqli category'
+    );
+
     // Show first 3
     sqliPolicies.slice(0, 3).forEach((p) => {
       console.log(`     - ${p.name} (severity: ${p.severity})`);
@@ -58,6 +82,12 @@ async function main() {
     });
     console.log(`   Found: ${systemPolicies.length} system policies`);
 
+    assertCheck(Array.isArray(systemPolicies), 'Tier filter returns an array');
+    assertCheck(
+      systemPolicies.every(p => p.tier === 'system'),
+      'All filtered policies have system tier'
+    );
+
     // 4. Filter by enabled status
     console.log('\n4. Filtering by enabled status...');
 
@@ -71,6 +101,15 @@ async function main() {
     console.log(`   Enabled: ${enabledPolicies.length}`);
     console.log(`   Disabled: ${disabledPolicies.length}`);
 
+    assertCheck(
+      enabledPolicies.every(p => p.enabled === true),
+      'All enabled-filtered policies have enabled=true'
+    );
+    assertCheck(
+      disabledPolicies.every(p => p.enabled === false),
+      'All disabled-filtered policies have enabled=false'
+    );
+
     // 5. Combine filters
     console.log('\n5. Combining filters (enabled PII policies)...');
 
@@ -79,6 +118,11 @@ async function main() {
       enabled: true,
     });
     console.log(`   Found: ${piiEnabled.length} enabled PII policies`);
+
+    assertCheck(
+      piiEnabled.every(p => p.category === 'pii-global' && p.enabled === true),
+      'Combined filter returns policies matching both criteria'
+    );
 
     piiEnabled.slice(0, 5).forEach((p) => {
       console.log(`     - ${p.name}: ${p.pattern.slice(0, 40)}...`);
@@ -89,6 +133,9 @@ async function main() {
 
     const effective = await client.getEffectiveStaticPolicies();
     console.log(`   Effective total: ${effective.length} policies`);
+
+    assertCheck(Array.isArray(effective), 'getEffectiveStaticPolicies returns an array');
+    assertCheck(effective.length > 0, 'At least one effective policy exists');
 
     // Group by tier
     const byTier: Record<string, number> = {};
@@ -115,6 +162,18 @@ async function main() {
     console.log(`   Page 1: ${page1.length} policies`);
     console.log(`   Page 2: ${page2.length} policies`);
 
+    assertCheck(page1.length <= 5, 'Page 1 respects limit of 5');
+    assertCheck(page2.length <= 5, 'Page 2 respects limit of 5');
+    // Verify pagination returns different results (if there are enough policies)
+    // Note: With default filters, pagination might have overlap due to sorting
+    if (page1.length > 0 && page2.length > 0 && allPolicies.length > 10) {
+      const page1Ids = new Set(page1.map(p => p.id));
+      const hasOverlap = page2.some(p => page1Ids.has(p.id));
+      assertCheck(!hasOverlap, 'Page 1 and Page 2 contain different policies (no overlap)');
+    } else {
+      assertCheck(true, 'Pagination returns results (overlap check skipped - insufficient policies)');
+    }
+
     // 8. Sorting
     console.log('\n8. Sorting by severity (descending)...');
 
@@ -129,6 +188,20 @@ async function main() {
       console.log(`     [${p.severity}] ${p.name}`);
     });
 
+    assertCheck(bySeverity.length <= 5, 'Sort query respects limit of 5');
+    // Verify severity ordering (critical > high > medium > low)
+    const severityOrder: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    let isOrdered = true;
+    for (let i = 1; i < bySeverity.length; i++) {
+      const prevSeverity = severityOrder[bySeverity[i - 1].severity] || 0;
+      const currSeverity = severityOrder[bySeverity[i].severity] || 0;
+      if (prevSeverity < currSeverity) {
+        isOrdered = false;
+        break;
+      }
+    }
+    assertCheck(isOrdered, 'Policies are sorted by severity in descending order');
+
     console.log('\n' + '='.repeat(60));
     console.log('Example completed successfully!');
 
@@ -136,8 +209,21 @@ async function main() {
     if (error instanceof Error) {
       console.error('\nError:', error.message);
     }
-    process.exit(1);
+    failures.push(`Unexpected error: ${error instanceof Error ? error.message : error}`);
   }
+
+  // Final assertion summary
+  console.log('\n' + '='.repeat(60));
+  console.log('Assertion Summary');
+  console.log('='.repeat(60));
+  if (failures.length === 0) {
+    console.log('All assertions passed!');
+  } else {
+    console.log(`${failures.length} assertion(s) failed:`);
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main();

@@ -10,6 +10,8 @@
  * 5. Audit logging
  * 6. Error handling (blocked requests)
  * 7. Connector operations (list, install, uninstall)
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
@@ -19,51 +21,62 @@ import { AxonFlow } from "@axonflow/sdk";
 // The Agent proxies orchestrator routes internally.
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",
-  clientId: process.env.AXONFLOW_CLIENT_ID || "",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "demo-tenant",
   clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
-  tenant: process.env.AXONFLOW_TENANT || "demo",
+  tenant: process.env.AXONFLOW_TENANT || "demo-tenant",
   debug: true,
 });
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 async function main() {
   console.log("AxonFlow SDK Comprehensive Audit - TypeScript");
   console.log("=".repeat(46));
   console.log();
 
-  let passed = 0;
-  let failed = 0;
   let approvedContextId: string | null = null;
 
   // Test 1: Agent Health Check
   console.log("Test 1: Agent Health Check");
   try {
     const health = await axonflow.healthCheck();
-    if (health.status === "healthy") {
-      console.log("  ✅ PASSED: Agent is healthy");
-      passed++;
-    } else {
-      console.log(`  ❌ FAILED: Agent status is ${health.status}`);
-      failed++;
-    }
+    assertCheck(
+      health.status === "healthy",
+      "Agent health check returns healthy status"
+    );
+    assertCheck(
+      health.status !== undefined,
+      "Agent health check returns status field"
+    );
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`Agent health check: ${error}`);
   }
 
   // Test 2: Orchestrator Health Check
   console.log("Test 2: Orchestrator Health Check");
   try {
     const health = await axonflow.orchestratorHealthCheck();
-    if (health.status === "healthy") {
-      console.log("  ✅ PASSED: Orchestrator is healthy");
-      passed++;
-    } else {
-      console.log(`  ❌ FAILED: Orchestrator status is ${health.status}`);
-      failed++;
-    }
+    assertCheck(
+      health.status === "healthy",
+      "Orchestrator health check returns healthy status"
+    );
+    assertCheck(
+      health.status !== undefined,
+      "Orchestrator health check returns status field"
+    );
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`Orchestrator health check: ${error}`);
   }
 
   // Test 3: Gateway Mode - Safe Query
@@ -73,17 +86,20 @@ async function main() {
       userToken: "audit-user",
       query: "What is the capital of France?",
     });
+    assertCheck(
+      result.approved === true,
+      "Safe query is approved"
+    );
+    assertCheck(
+      result.contextId !== undefined && result.contextId !== "",
+      "Approved query returns contextId"
+    );
     if (result.approved) {
-      console.log(`  ✅ PASSED: Query approved (contextId: ${result.contextId})`);
-      passed++;
       approvedContextId = result.contextId;
-    } else {
-      console.log(`  ❌ FAILED: Query unexpectedly blocked: ${result.blockReason}`);
-      failed++;
     }
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`Gateway safe query: ${error}`);
   }
 
   // Test 4: Gateway Mode - Blocked Query (SQL Injection)
@@ -93,16 +109,17 @@ async function main() {
       userToken: "audit-user",
       query: "SELECT * FROM users; DROP TABLE users;",
     });
-    if (!result.approved) {
-      console.log(`  ✅ PASSED: Query correctly blocked (${result.blockReason})`);
-      passed++;
-    } else {
-      console.log("  ❌ FAILED: SQL injection should be blocked");
-      failed++;
-    }
+    assertCheck(
+      result.approved === false,
+      "SQL injection query is blocked"
+    );
+    assertCheck(
+      result.blockReason !== undefined && result.blockReason !== "",
+      "Blocked query has blockReason"
+    );
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`Gateway blocked query: ${error}`);
   }
 
   // Test 5: Audit LLM Call
@@ -121,36 +138,41 @@ async function main() {
         },
         latencyMs: 250,
       });
-      if (auditResult.success) {
-        console.log(`  ✅ PASSED: Audit recorded (auditId: ${auditResult.auditId})`);
-        passed++;
-      } else {
-        console.log("  ❌ FAILED: Audit not successful");
-        failed++;
-      }
+      assertCheck(
+        auditResult.success === true,
+        "Audit LLM call returns success=true"
+      );
+      assertCheck(
+        auditResult.auditId !== undefined && auditResult.auditId !== "",
+        "Audit LLM call returns auditId"
+      );
     } catch (error) {
-      console.log(`  ❌ FAILED: ${error}`);
-      failed++;
+      console.log(`  Error: ${error}`);
+      failures.push(`Audit LLM call: ${error}`);
     }
   } else {
-    console.log("  ⏭️ SKIPPED: No context ID from previous test");
+    console.log("  SKIPPED: No context ID from previous test");
+    failures.push("Audit LLM call: skipped due to no contextId");
   }
 
   // Test 6: List Connectors
   console.log("Test 6: List Connectors");
   try {
     const connectors = await axonflow.listConnectors();
-    console.log(`  ✅ PASSED: Found ${connectors.length} connectors`);
-    passed++;
+    assertCheck(
+      Array.isArray(connectors),
+      "List connectors returns array"
+    );
+    console.log(`  Found ${connectors.length} connectors`);
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`List connectors: ${error}`);
   }
 
   // Test 7: Static Policy CRUD
   console.log("Test 7: Static Policy CRUD");
   const policyName = `sdk-audit-test-${Date.now()}`;
-  let crudPassed = true;
+  let createdPolicyId: string | null = null;
 
   try {
     // Create policy
@@ -163,62 +185,83 @@ async function main() {
       enabled: true,
       action: "warn",
     });
-    console.log(`  ✅ Create: Policy created (id: ${created.id})`);
+    assertCheck(
+      created.id !== undefined && created.id !== "",
+      "Create policy returns id"
+    );
+    assertCheck(
+      created.name === policyName,
+      "Created policy has correct name"
+    );
+    createdPolicyId = created.id;
 
     // Get policy
     const fetched = await axonflow.getStaticPolicy(created.id);
-    if (fetched.name === policyName) {
-      console.log("  ✅ Get: Policy retrieved correctly");
-    } else {
-      console.log("  ❌ FAILED (Get): Name mismatch");
-      crudPassed = false;
-    }
+    assertCheck(
+      fetched.name === policyName,
+      "Get policy returns correct name"
+    );
+    assertCheck(
+      fetched.id === created.id,
+      "Get policy returns correct id"
+    );
 
     // Update policy
     const updated = await axonflow.updateStaticPolicy(created.id, {
       description: "Updated description from SDK audit",
     });
-    if (updated.description?.includes("Updated")) {
-      console.log("  ✅ Update: Policy updated correctly");
-    } else {
-      console.log("  ❌ FAILED (Update): Description not updated");
-      crudPassed = false;
-    }
+    assertCheck(
+      updated.description?.includes("Updated") === true,
+      "Update policy changes description"
+    );
 
     // Delete policy
     await axonflow.deleteStaticPolicy(created.id);
-    console.log("  ✅ Delete: Policy deleted correctly");
-
-    if (crudPassed) {
-      passed++;
-    } else {
-      failed++;
-    }
+    assertCheck(true, "Delete policy succeeds without error");
+    createdPolicyId = null; // Mark as deleted
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`Static policy CRUD: ${error}`);
+    // Cleanup if policy was created but later operations failed
+    if (createdPolicyId) {
+      try {
+        await axonflow.deleteStaticPolicy(createdPolicyId);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
   }
 
   // Test 8: List Static Policies
   console.log("Test 8: List Static Policies");
   try {
     const policies = await axonflow.listStaticPolicies();
-    console.log(`  ✅ PASSED: Found ${policies.length} policies`);
-    passed++;
+    assertCheck(
+      Array.isArray(policies),
+      "List policies returns array"
+    );
+    console.log(`  Found ${policies.length} policies`);
   } catch (error) {
-    console.log(`  ❌ FAILED: ${error}`);
-    failed++;
+    console.log(`  Error: ${error}`);
+    failures.push(`List static policies: ${error}`);
   }
 
   // Summary
   console.log();
   console.log("=".repeat(46));
-  console.log(`Summary: ${passed} passed, ${failed} failed`);
+  const totalTests = 8;
+  const passedCount = totalTests - failures.length;
+  console.log(`Summary: ${passedCount} passed, ${failures.length} failed`);
+  if (failures.length > 0) {
+    console.log("Failures:");
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
   console.log();
 
-  if (failed > 0) {
-    process.exit(1);
-  }
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -35,12 +35,12 @@ function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
 }
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   \u274C FAIL: ${message}`);
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
   } else {
-    console.log(`   \u2713 PASS: ${message}`);
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
   }
 }
 
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     },
     {
       name: 'India PAN (Critical PII)',
-      query: 'Verify PAN number ABCDE1234F for tax filing',
+      query: 'Verify PAN number ABCPD1234E for tax filing',
       expectRedact: true,
     },
     {
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
     }
 
     // Validate context ID (UUID format)
-    assert(result.contextId !== '', 'contextId is not empty');
+    assertCheck(result.contextId !== '', 'contextId is not empty');
 
     // Check if request was approved
     if (result.approved) {
@@ -138,9 +138,9 @@ async function main(): Promise<void> {
 
     // Verify expected behavior
     if (test.expectRedact) {
-      assert(actualRequiresRedaction, 'Critical PII detected and flagged for redaction');
+      assertCheck(actualRequiresRedaction, 'Critical PII detected and flagged for redaction');
     } else {
-      assert(
+      assertCheck(
         !actualRequiresRedaction && result.approved,
         'No critical PII detected, request approved'
       );

@@ -9,6 +9,8 @@
  * - Singapore postal codes
  *
  * These patterns are available in Community Edition.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 package com.getaxonflow.examples;
 
@@ -21,6 +23,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class SingaporePIIExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     record TestCase(String name, String query, String expectedAction, String piiType) {}
 
@@ -54,9 +67,6 @@ public class SingaporePIIExample {
             new TestCase("Multiple PII", "Customer S1234567D phone +65 8123 4567", "redact", "Multiple")
         );
 
-        int passed = 0;
-        int failed = 0;
-
         for (TestCase tc : testCases) {
             System.out.printf("Test: %s (%s)%n", tc.name(), tc.piiType());
             String queryPreview = tc.query().length() > 60
@@ -85,41 +95,35 @@ public class SingaporePIIExample {
 
                 // Check expectation
                 // For redact/warn, the request should still be approved
-                String status;
+                boolean testPassed;
                 if (List.of("redact", "warn", "approved").contains(tc.expectedAction())) {
-                    if (result.isApproved()) {
-                        status = "PASS";
-                        passed++;
-                    } else {
-                        status = "FAIL";
-                        failed++;
-                    }
+                    testPassed = result.isApproved();
                 } else {
                     // blocked
-                    if (!result.isApproved()) {
-                        status = "PASS";
-                        passed++;
-                    } else {
-                        status = "FAIL";
-                        failed++;
-                    }
+                    testPassed = !result.isApproved();
                 }
 
-                System.out.printf("  Status: %s (expected: %s)%n", status, tc.expectedAction());
+                assertCheck(testPassed, tc.name() + " - expected: " + tc.expectedAction());
             } catch (Exception e) {
                 System.out.printf("  Result: ERROR - %s%n", e.getMessage());
-                failed++;
+                assertCheck(false, tc.name() + " - should not throw exception");
             }
 
             System.out.println();
         }
 
         System.out.println("=".repeat(44));
-        System.out.printf("Results: %d passed, %d failed%n", passed, failed);
+        int passed = 12 - failures.size(); // 12 test cases
+        System.out.printf("Results: %d passed, %d failed%n", passed, failures.size());
         System.out.println();
 
-        if (failed > 0) {
-            System.out.println("Some tests failed. Check:");
+        if (!failures.isEmpty()) {
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.out.println();
+            System.out.println("Check:");
             System.out.println("  - AxonFlow stack is running");
             System.out.println("  - Singapore PII policies are loaded (migration 042)");
             System.exit(1);

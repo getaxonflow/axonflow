@@ -34,7 +34,7 @@ PII_TESTS = [
     },
     {
         "name": "Indian PAN",
-        "query": "Customer PAN is ABCDE1234F for tax records",
+        "query": "Customer PAN is ABCPD1234E for tax records",
         "pattern": "PAN",
         "expected": "detected",  # Redacted by default (PII_ACTION=redact)
     },

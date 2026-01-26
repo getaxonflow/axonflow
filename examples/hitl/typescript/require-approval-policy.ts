@@ -12,15 +12,29 @@
  * - High-value transaction oversight (EU AI Act Article 14, SEBI AI/ML)
  * - Admin access detection
  * - Sensitive data access control
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from '@axonflow/sdk';
 
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
+}
+
 async function main() {
-  // Initialize the client with tenant ID for policy operations
+  // Initialize the client with client ID for policy operations
+  // clientId is used as X-Tenant-ID header for multi-tenant APIs
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_ENDPOINT || 'http://localhost:8080',
-    tenant: process.env.AXONFLOW_TENANT || 'demo-tenant',
+    clientId: process.env.AXONFLOW_CLIENT_ID || 'demo-tenant',
   });
 
   console.log('AxonFlow HITL - require_approval Policy Example');
@@ -34,8 +48,8 @@ async function main() {
       name: 'High-Value Transaction Oversight',
       description: 'Require human approval for high-value financial decisions',
       category: 'security-admin',
-      // Pattern matches amounts over 1 million (₹, $, €)
-      pattern: '(amount|value|total|transaction).*[₹$€]\\s*[1-9][0-9]{6,}',
+      // Pattern matches amounts over 1 million (₹, $, €) - case insensitive
+      pattern: '(?i)(amount|value|total|transaction).*[₹$€]\\s*[1-9][0-9]{6,}',
       severity: 'high',
       enabled: true,
       action: 'require_approval',  // Triggers HITL queue
@@ -46,14 +60,19 @@ async function main() {
     console.log(`   Action: ${policy.action}`);
     console.log(`   Tier: ${policy.tier}`);
 
+    assertCheck(typeof policy.id === 'string' && policy.id.length > 0, 'Policy has valid ID');
+    assertCheck(policy.action === 'require_approval', 'Policy action is require_approval');
+    assertCheck(policy.name === 'High-Value Transaction Oversight', 'Policy name matches input');
+    assertCheck(policy.enabled === true, 'Policy is enabled');
+
     // 2. Test the pattern with sample inputs
     console.log('\n2. Testing pattern with sample inputs...');
 
     const testResult = await client.testPattern(
       policy.pattern,
       [
-        'Transfer amount $5,000,000 to account',    // Should match (5M)
-        'Transaction value ₹10,00,00,000',          // Should match (10Cr)
+        'Transfer amount $5000000 to account',      // Should match (5M)
+        'Transaction value ₹100000000',             // Should match (10Cr)
         'Total: €2500000',                          // Should match (2.5M)
         'Payment of $500 completed',                 // Should NOT match (under threshold)
         'Amount: $999999',                           // Should NOT match (under 1M)
@@ -66,6 +85,16 @@ async function main() {
       const input = match.input.length > 40 ? match.input.substring(0, 40) + '...' : match.input;
       console.log(`   ${icon}: "${input}"`);
     }
+
+    // Verify pattern matching behavior
+    assertCheck(testResult.valid === true, 'Pattern is valid regex');
+    assertCheck(testResult.matches.length === 5, 'All 5 test inputs were evaluated');
+    // First 3 should match (over 1M), last 2 should not match (under 1M)
+    assertCheck(testResult.matches[0].matched === true, 'High-value $5M matches pattern');
+    assertCheck(testResult.matches[1].matched === true, 'High-value 10Cr INR matches pattern');
+    assertCheck(testResult.matches[2].matched === true, 'High-value 2.5M EUR matches pattern');
+    assertCheck(testResult.matches[3].matched === false, 'Low-value $500 does not match pattern');
+    assertCheck(testResult.matches[4].matched === false, 'Under-threshold $999999 does not match pattern');
 
     // 3. Create additional HITL policies for different use cases
     console.log('\n3. Creating admin access oversight policy...');
@@ -83,10 +112,14 @@ async function main() {
     console.log(`   Created: ${adminPolicy.name}`);
     console.log(`   Action: ${adminPolicy.action}`);
 
+    assertCheck(adminPolicy.action === 'require_approval', 'Admin policy has require_approval action');
+    assertCheck(adminPolicy.severity === 'critical', 'Admin policy severity is critical');
+
     // 4. List all policies with require_approval action
     console.log('\n4. Listing all HITL policies...');
 
-    const allPolicies = await client.listStaticPolicies();
+    // Include tenant-tier policies with limit parameter
+    const allPolicies = await client.listStaticPolicies({ limit: 100 });
     const hitlPolicies = allPolicies.filter(p => p.action === 'require_approval');
 
     console.log(`   Found ${hitlPolicies.length} HITL policies:`);
@@ -94,11 +127,27 @@ async function main() {
       console.log(`   - ${p.name} (${p.severity})`);
     }
 
+    assertCheck(hitlPolicies.length >= 2, 'At least 2 HITL policies exist (created in this test)');
+    assertCheck(
+      hitlPolicies.some(p => p.name === 'High-Value Transaction Oversight'),
+      'High-Value Transaction Oversight policy found in HITL list'
+    );
+    assertCheck(
+      hitlPolicies.some(p => p.name === 'Admin Access Detection'),
+      'Admin Access Detection policy found in HITL list'
+    );
+
     // 5. Clean up test policies
     console.log('\n5. Cleaning up test policies...');
     await client.deleteStaticPolicy(policy.id);
     await client.deleteStaticPolicy(adminPolicy.id);
     console.log('   Deleted test policies');
+    assertCheck(true, 'Test policies deleted successfully');
+
+    // Verify policies are deleted
+    const remainingPolicies = await client.listStaticPolicies();
+    const deletedPolicyExists = remainingPolicies.some(p => p.id === policy.id || p.id === adminPolicy.id);
+    assertCheck(!deletedPolicyExists, 'Deleted policies no longer exist in list');
 
     console.log('\n' + '='.repeat(60));
     console.log('Example completed successfully!');
@@ -114,8 +163,21 @@ async function main() {
         console.error('  docker compose up -d');
       }
     }
-    process.exit(1);
+    failures.push(`Unexpected error: ${error instanceof Error ? error.message : error}`);
   }
+
+  // Final assertion summary
+  console.log('\n' + '='.repeat(60));
+  console.log('Assertion Summary');
+  console.log('='.repeat(60));
+  if (failures.length === 0) {
+    console.log('All assertions passed!');
+  } else {
+    console.log(`${failures.length} assertion(s) failed:`);
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main();

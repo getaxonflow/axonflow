@@ -3,6 +3,8 @@
  *
  * Demonstrates AxonFlow's SQL injection scanning with Azure OpenAI as the LLM provider.
  * AxonFlow detects and blocks SQL injection attempts before they reach Azure.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow, PolicyViolationError } from "@axonflow/sdk";
@@ -11,6 +13,17 @@ interface TestCase {
   name: string;
   query: string;
   shouldBlock: boolean;
+}
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
 }
 
 async function main(): Promise<void> {
@@ -62,9 +75,6 @@ async function main(): Promise<void> {
     },
   ];
 
-  let passed = 0;
-  let failed = 0;
-
   for (const tc of testCases) {
     console.log(`--- ${tc.name} ---`);
     console.log(`Query: ${tc.query.substring(0, 50)}...`);
@@ -78,36 +88,53 @@ async function main(): Promise<void> {
       });
 
       const blocked = response.blocked;
-      const result = blocked === tc.shouldBlock ? "PASS" : "FAIL";
 
-      if (result === "PASS") {
-        passed++;
-      } else {
-        failed++;
-      }
+      // Assert blocking behavior matches expectation
+      assertCheck(
+        blocked === tc.shouldBlock,
+        `${tc.name}: blocked=${blocked}, expected=${tc.shouldBlock}`
+      );
 
-      console.log(`  Blocked: ${blocked} (expected: ${tc.shouldBlock}) - ${result}`);
+      // Assert response has required fields
+      assertCheck(
+        response.success !== undefined,
+        `${tc.name}: response has success field`
+      );
 
-      if (blocked && response.blockReason) {
+      if (blocked) {
+        // Assert blocked responses have a reason
+        assertCheck(
+          response.blockReason !== undefined && response.blockReason !== "",
+          `${tc.name}: blocked response has blockReason`
+        );
         console.log(`  Reason: ${response.blockReason}`);
+      } else {
+        // Assert allowed responses have data
+        assertCheck(
+          response.data !== undefined,
+          `${tc.name}: allowed response has data`
+        );
       }
     } catch (error) {
       // PolicyViolationError means the request was blocked
       if (error instanceof PolicyViolationError) {
         const blocked = true;
-        const result = blocked === tc.shouldBlock ? "PASS" : "FAIL";
 
-        if (result === "PASS") {
-          passed++;
-        } else {
-          failed++;
-        }
+        // Assert blocking behavior matches expectation
+        assertCheck(
+          blocked === tc.shouldBlock,
+          `${tc.name}: blocked=${blocked}, expected=${tc.shouldBlock}`
+        );
 
-        console.log(`  Blocked: ${blocked} (expected: ${tc.shouldBlock}) - ${result}`);
+        // Assert error has message
+        assertCheck(
+          error.message !== undefined && error.message !== "",
+          `${tc.name}: PolicyViolationError has message`
+        );
         console.log(`  Reason: ${error.message}`);
       } else {
         console.log(`  Error: ${error}`);
-        failed++;
+        failures.push(`${tc.name}: unexpected error - ${error}`);
       }
     }
 
@@ -115,10 +142,14 @@ async function main(): Promise<void> {
   }
 
   console.log("=".repeat(60));
-  console.log(`Results: ${passed} passed, ${failed} failed`);
+  console.log(`Results: ${testCases.length - failures.length} passed, ${failures.length} failed`);
+  if (failures.length > 0) {
+    console.log("Failures:");
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
   console.log("=".repeat(60));
 
-  process.exit(failed === 0 ? 0 : 1);
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main().catch(console.error);

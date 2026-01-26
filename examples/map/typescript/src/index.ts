@@ -21,14 +21,17 @@ function getEnv(key: string, defaultVal: string): string {
   return (typeof process !== 'undefined' ? process.env[key] : undefined) || defaultVal;
 }
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   \u274C FAIL: ${message}`);
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
   } else {
-    console.log(`   \u2713 PASS: ${message}`);
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
   }
 }
+
+// Alias for backward compatibility
+const assert = assertCheck;
 
 async function main(): Promise<void> {
   console.log('AxonFlow MAP (Multi-Agent Planning) - TypeScript SDK');
@@ -195,7 +198,7 @@ async function main(): Promise<void> {
   // ========================================
   console.log('=====================================================');
   if (failures.length === 0) {
-    console.log('\u2713 ALL TESTS PASSED');
+    console.log('ALL TESTS PASSED');
     console.log();
     console.log('Methods validated:');
     console.log('  1. generatePlan()   - Plan created with valid ID and steps');
@@ -203,12 +206,18 @@ async function main(): Promise<void> {
     console.log('  3. executePlan()    - Plan executed successfully');
     console.log('  4. getPlanStatus()  - Post-execution status checked');
   } else {
-    console.log(`\u274C ${failures.length} TEST(S) FAILED:`);
+    console.log(`${failures.length} TEST(S) FAILED:`);
     failures.forEach((f) => {
       console.log(`   - ${f}`);
     });
-    if (typeof process !== 'undefined') process.exit(1);
   }
 }
 
-main();
+main()
+  .then(() => {
+    process.exit(failures.length > 0 ? 1 : 0);
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

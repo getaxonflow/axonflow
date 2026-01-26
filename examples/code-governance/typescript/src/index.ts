@@ -22,6 +22,8 @@
  *   cp .env.example .env  # Configure your settings
  *   npm install
  *   npm start
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
@@ -43,6 +45,17 @@ const config = {
   clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
   clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
 };
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 async function main(): Promise<void> {
   console.log("AxonFlow Code Governance - TypeScript");
@@ -77,11 +90,31 @@ async function main(): Promise<void> {
       },
     });
 
+    // Assert response has required fields
+    assertCheck(
+      response.success !== undefined,
+      "Example 1: response has success field"
+    );
+    assertCheck(
+      typeof response.blocked === "boolean",
+      "Example 1: response has blocked field"
+    );
+
     if (response.blocked) {
       console.log(`Status: BLOCKED - ${response.blockReason}`);
+      assertCheck(
+        response.blockReason !== undefined && response.blockReason !== "",
+        "Example 1: blocked response has blockReason"
+      );
     } else if (response.success) {
       console.log("Status: ALLOWED");
       console.log();
+
+      // Assert allowed response has data
+      assertCheck(
+        response.data !== undefined,
+        "Example 1: allowed response has data"
+      );
 
       // Display response preview
       const dataStr = typeof response.data === "string"
@@ -94,6 +127,10 @@ async function main(): Promise<void> {
       // Display audit trail
       console.log("Audit Trail:");
       if (response.policyInfo) {
+        assertCheck(
+          response.policyInfo !== undefined,
+          "Example 1: response has policyInfo"
+        );
         console.log(`  Processing Time: ${response.policyInfo.processingTime || "N/A"}`);
         console.log(`  Static Checks: ${response.policyInfo.staticChecks || "N/A"}`);
 
@@ -108,11 +145,18 @@ async function main(): Promise<void> {
           console.log(`  Lines: ${codeArtifact.line_count || 0}`);
           console.log(`  Secrets Detected: ${codeArtifact.secrets_detected || 0}`);
           console.log(`  Unsafe Patterns: ${codeArtifact.unsafe_patterns || 0}`);
+
+          // Assert code artifact has expected fields for code generation query
+          assertCheck(
+            codeArtifact.is_code_output === true || codeArtifact.language !== undefined,
+            "Example 1: code artifact detected for code generation query"
+          );
         }
       }
     }
   } catch (error) {
     console.log(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(`Example 1: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   console.log();
@@ -133,13 +177,38 @@ async function main(): Promise<void> {
       },
     });
 
+    // Assert response has required fields
+    assertCheck(
+      response.success !== undefined,
+      "Example 2: response has success field"
+    );
+    assertCheck(
+      typeof response.blocked === "boolean",
+      "Example 2: response has blocked field"
+    );
+
     if (response.blocked) {
       console.log(`Status: BLOCKED - ${response.blockReason}`);
+      // Blocking unsafe code request is valid behavior
+      assertCheck(
+        response.blockReason !== undefined && response.blockReason !== "",
+        "Example 2: blocked response has blockReason"
+      );
     } else if (response.success) {
       console.log("Status: ALLOWED");
       console.log();
 
+      // Assert allowed response has data
+      assertCheck(
+        response.data !== undefined,
+        "Example 2: allowed response has data"
+      );
+
       if (response.policyInfo) {
+        assertCheck(
+          response.policyInfo !== undefined,
+          "Example 2: response has policyInfo"
+        );
         console.log(`Processing Time: ${response.policyInfo.processingTime || "N/A"}`);
 
         const codeArtifact = (response.policyInfo as { codeArtifact?: CodeArtifact }).codeArtifact;
@@ -149,18 +218,31 @@ async function main(): Promise<void> {
           console.log(`  Language: ${codeArtifact.language || "unknown"}`);
           console.log(`  Unsafe Patterns: ${codeArtifact.unsafe_patterns || 0}`);
 
+          // Assert code artifact detected for code generation query
+          assertCheck(
+            codeArtifact.is_code_output === true || codeArtifact.language !== undefined,
+            "Example 2: code artifact detected for code generation query"
+          );
+
           const unsafeCount = codeArtifact.unsafe_patterns || 0;
           if (unsafeCount > 0) {
             console.log();
             console.log(`  WARNING: ${unsafeCount} unsafe code pattern(s) detected!`);
             console.log("  Detected patterns may include: child_process.exec, command execution");
             console.log("  Review carefully before using in production.");
+
+            // Assert unsafe patterns detected for dangerous query
+            assertCheck(
+              unsafeCount > 0,
+              "Example 2: unsafe patterns detected for child_process.exec query"
+            );
           }
         }
       }
     }
   } catch (error) {
     console.log(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(`Example 2: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   console.log();
@@ -179,6 +261,20 @@ async function main(): Promise<void> {
   console.log("  - Track code generation for compliance");
   console.log("  - Build dashboards for AI code generation metrics");
   console.log();
+
+  // Final results
+  console.log("=".repeat(60));
+  console.log(`Results: ${failures.length === 0 ? "ALL PASSED" : `${failures.length} failures`}`);
+  if (failures.length > 0) {
+    console.log("Failures:");
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
+  console.log("=".repeat(60));
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

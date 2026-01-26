@@ -4,6 +4,7 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.TestPatternResult;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -13,8 +14,21 @@ import java.util.List;
  * This example demonstrates how to test regex patterns
  * before creating policies. This helps ensure your patterns
  * work correctly and catch the right inputs.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class TestPattern {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         String endpoint = System.getenv("AXONFLOW_ENDPOINT");
@@ -61,6 +75,10 @@ public class TestPattern {
                 }
             });
 
+            assertCheck(ccResult.isValid(), "Credit card pattern is valid regex");
+            long ccMatches = ccResult.getMatches().stream().filter(m -> m.isMatched()).count();
+            assertCheck(ccMatches >= 3, "Credit card pattern matches valid card formats");
+
             // 2. Test a US SSN pattern
             System.out.println("\n2. Testing US SSN pattern...");
 
@@ -82,6 +100,11 @@ public class TestPattern {
                 String icon = match.isMatched() ? "\u2713 MATCH" : "\u2717 no match";
                 System.out.printf("   %s  \"%s\"%n", icon, match.getInput());
             });
+
+            assertCheck(ssnResult.isValid(), "SSN pattern is valid regex");
+            // Should match 123-45-6789, 000-00-0000, and SSN: 987-65-4321
+            long ssnMatches = ssnResult.getMatches().stream().filter(m -> m.isMatched()).count();
+            assertCheck(ssnMatches == 3, "SSN pattern matches exactly 3 valid SSN formats");
 
             // 3. Test an email pattern
             System.out.println("\n3. Testing email pattern...");
@@ -105,6 +128,11 @@ public class TestPattern {
                 String icon = match.isMatched() ? "\u2713 MATCH" : "\u2717 no match";
                 System.out.printf("   %s  \"%s\"%n", icon, match.getInput());
             });
+
+            assertCheck(emailResult.isValid(), "Email pattern is valid regex");
+            // Should match valid emails, not invalid ones
+            long emailMatches = emailResult.getMatches().stream().filter(m -> m.isMatched()).count();
+            assertCheck(emailMatches == 3, "Email pattern matches exactly 3 valid emails");
 
             // 4. Test SQL injection pattern
             System.out.println("\n4. Testing SQL injection pattern...");
@@ -132,9 +160,15 @@ public class TestPattern {
                 System.out.printf("   %s  \"%s\"%n", icon, match.getInput());
             });
 
+            assertCheck(sqliResult.isValid(), "SQL injection pattern is valid regex");
+            // Should match SQL injection attempts
+            long sqliMatches = sqliResult.getMatches().stream().filter(m -> m.isMatched()).count();
+            assertCheck(sqliMatches >= 4, "SQL injection pattern detects dangerous queries");
+
             // 5. Test an invalid pattern
             System.out.println("\n5. Testing invalid pattern (error handling)...");
 
+            boolean invalidHandled = false;
             try {
                 String invalidPattern = "([unclosed";
                 TestPatternResult invalidResult = axonflow.testPattern(invalidPattern, Arrays.asList("test"));
@@ -143,10 +177,13 @@ public class TestPattern {
                     System.out.println("   Pattern: " + invalidPattern);
                     System.out.println("   Valid: false");
                     System.out.println("   Error: " + invalidResult.getError());
+                    invalidHandled = true;
                 }
             } catch (Exception e) {
                 System.out.println("   Server rejected invalid pattern (expected)");
+                invalidHandled = true;
             }
+            assertCheck(invalidHandled, "Invalid pattern handled gracefully");
 
             // Summary
             System.out.println("\n============================================================");
@@ -163,6 +200,16 @@ public class TestPattern {
 
         } catch (Exception e) {
             System.err.println("\nError: " + e.getMessage());
+            failures.add("Exception: " + e.getMessage());
+        }
+
+        // Final assertion check
+        if (!failures.isEmpty()) {
+            System.out.println();
+            System.out.println("FAILURES (" + failures.size() + "):");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
             System.exit(1);
         }
     }

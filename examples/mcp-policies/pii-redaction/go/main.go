@@ -138,7 +138,7 @@ func main() {
 	fmt.Println("----------------------------------------------")
 	resp, err = client.MCPQuery(ctx, axonflow.MCPQueryRequest{
 		Connector: "postgres",
-		Statement: "SELECT * FROM customers WHERE pan = 'ABCDE1234F'",
+		Statement: "SELECT * FROM customers WHERE pan = 'ABCPD1234E'",
 	})
 	if err != nil || (resp != nil && !resp.Success) {
 		assert(true, "India PAN in query blocked as expected")

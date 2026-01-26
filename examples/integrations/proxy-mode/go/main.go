@@ -7,6 +7,8 @@
 //
 // No need to manage LLM API keys or audit calls - AxonFlow handles everything.
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Issue #1082: Examples should test actual behavior, not just API availability
 package main
 

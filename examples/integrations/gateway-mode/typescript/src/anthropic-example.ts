@@ -3,11 +3,28 @@
  *
  * Demonstrates Gateway Mode with Anthropic's Claude models.
  * Same pattern as OpenAI: Pre-check -> LLM Call -> Audit
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 import Anthropic from "@anthropic-ai/sdk";
+
+// =============================================================================
+// Assertion Infrastructure
+// =============================================================================
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 const config = {
   axonflow: {
@@ -61,10 +78,19 @@ async function main() {
     console.log(`   Completed in ${preCheckLatency}ms`);
     console.log(`   Context ID: ${preCheckResult.contextId}`);
 
+    // Assertions for pre-check
+    assertCheck(preCheckResult.contextId !== undefined && preCheckResult.contextId !== "", "Pre-check returns a contextId");
+    assertCheck(typeof preCheckResult.approved === "boolean", "Pre-check returns approved as boolean");
+
     if (!preCheckResult.approved) {
       console.log(`   BLOCKED: ${preCheckResult.blockReason}`);
+      assertCheck(false, "Safe query should be approved (pre-check)");
+      process.exit(failures.length > 0 ? 1 : 0);
       return;
     }
+
+    assertCheck(preCheckResult.approved === true, "Safe query is approved by policy pre-check");
+    assertCheck(preCheckLatency < 10000, "Pre-check completes within 10 seconds");
     console.log("");
 
     // Step 2: Claude LLM Call
@@ -90,6 +116,14 @@ async function main() {
     console.log(
       `   Tokens: ${message.usage.input_tokens} in, ${message.usage.output_tokens} out`
     );
+
+    // Assertions for LLM call
+    assertCheck(response !== "", "Claude returns non-empty response");
+    assertCheck(message.content.length > 0, "Claude returns content");
+    assertCheck(message.usage.input_tokens > 0, "Claude reports input tokens used");
+    assertCheck(message.usage.output_tokens > 0, "Claude reports output tokens used");
+    assertCheck(message.stop_reason !== undefined, "Claude provides stop_reason");
+
     console.log("");
 
     // Step 3: Audit
@@ -111,6 +145,10 @@ async function main() {
 
     const auditLatency = Date.now() - startAudit;
     console.log(`   Audit logged in ${auditLatency}ms`);
+
+    // Assertions for audit
+    assertCheck(auditLatency < 5000, "Audit logging completes within 5 seconds");
+
     console.log("");
 
     // Results
@@ -119,10 +157,28 @@ async function main() {
     console.log(`Response:\n${response}\n`);
     console.log(`Governance overhead: ${governanceOverhead}ms`);
     console.log(`   (Pre-check: ${preCheckLatency}ms + Audit: ${auditLatency}ms)`);
+
+    // Final assertions
+    assertCheck(governanceOverhead < llmLatency * 2, "Governance overhead is less than LLM call time");
+
+    // Test Summary
+    console.log("\n" + "=".repeat(60));
+    console.log("Test Summary");
+    console.log("=".repeat(60));
+    if (failures.length === 0) {
+      console.log("ALL TESTS PASSED");
+    } else {
+      console.log(`${failures.length} TEST(S) FAILED:`);
+      failures.forEach((f) => console.log(`   - ${f}`));
+    }
+    console.log("=".repeat(60));
+
   } catch (error) {
     console.error("Error:", error);
     process.exit(1);
   }
 }
 
-main();
+main().then(() => {
+  process.exit(failures.length > 0 ? 1 : 0);
+});

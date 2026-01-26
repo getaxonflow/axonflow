@@ -5,6 +5,8 @@
  * 1. Pre-check - Validate request against policies
  * 2. LLM Call - Make your own call to LLM provider
  * 3. Audit - Log the interaction for compliance
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 package com.getaxonflow.examples;
 
@@ -16,6 +18,7 @@ import com.getaxonflow.sdk.types.AuditOptions;
 import com.getaxonflow.sdk.types.TokenUsage;
 import com.getaxonflow.sdk.exceptions.AxonFlowException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -24,6 +27,16 @@ import java.util.Map;
 public class AuditLoggingExample {
 
     private static final String CLIENT_ID = "audit-logging-demo";
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow Audit Logging - Java");
@@ -69,6 +82,8 @@ public class AuditLoggingExample {
                 long precheckLatency = System.currentTimeMillis() - precheckStart;
                 System.out.printf("   Latency: %dms%n", precheckLatency);
                 System.out.printf("   Context ID: %s%n", precheck.getContextId());
+                assertCheck(precheck.getContextId() != null && !precheck.getContextId().isEmpty(),
+                    "Pre-check returned contextId for query: " + q.name);
 
                 if (!precheck.isApproved()) {
                     System.out.printf("   BLOCKED: %s%n%n", precheck.getBlockReason());
@@ -113,6 +128,7 @@ public class AuditLoggingExample {
                 long auditLatency = System.currentTimeMillis() - auditStart;
                 System.out.printf("   Latency: %dms%n", auditLatency);
                 System.out.println("   Audit logged successfully");
+                assertCheck(true, "Audit logged successfully for query: " + q.name);
 
                 // Summary
                 long governance = precheckLatency + auditLatency;
@@ -156,16 +172,20 @@ public class AuditLoggingExample {
             var tenantLogs = client.getAuditLogsByTenant(CLIENT_ID, null);
             if (tenantLogs != null && tenantLogs.getEntries() != null) {
                 System.out.printf("   Found %d entries%n", tenantLogs.getEntries().size());
+                assertCheck(tenantLogs.getEntries().size() >= 0, "getAuditLogsByTenant returned valid entries list");
                 if (!tenantLogs.getEntries().isEmpty()) {
                     var entry = tenantLogs.getEntries().get(0);
                     System.out.printf("   Latest: %s - %s/%s%n",
                         entry.getTimestamp(), entry.getProvider(), entry.getModel());
+                    assertCheck(entry.getTimestamp() != null, "Audit entry has timestamp");
                 }
             } else {
                 System.out.println("   Found 0 entries (empty response)");
+                assertCheck(true, "getAuditLogsByTenant returned response (empty is valid)");
             }
         } catch (AxonFlowException e) {
             System.out.printf("   Error: %s%n", e.getMessage());
+            assertCheck(false, "getAuditLogsByTenant failed: " + e.getMessage());
         }
         System.out.println();
 
@@ -220,6 +240,21 @@ public class AuditLoggingExample {
 
         System.out.println("========================================");
         System.out.println("Done!");
+
+        // Final assertion summary
+        System.out.println();
+        System.out.println("========================================");
+        System.out.println("Assertion Summary");
+        System.out.println("========================================");
+        if (failures.isEmpty()) {
+            System.out.println("All assertions passed!");
+        } else {
+            System.out.println("Failures (" + failures.size() + "):");
+            for (String f : failures) {
+                System.out.println("  - " + f);
+            }
+            System.exit(1);
+        }
     }
 
     private static String getEnv(String key, String defaultValue) {

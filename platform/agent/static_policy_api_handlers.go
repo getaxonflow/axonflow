@@ -97,7 +97,8 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 // HandleListStaticPolicies handles GET /api/v1/static-policies
 // Query parameters:
 //   - page: Page number (default: 1)
-//   - page_size: Items per page (default: 20, max: 100)
+//   - limit: Items per page (default: 20, max: 100)
+//   - page_size: Deprecated - use limit instead
 //   - category: Filter by category (security-sqli, pii-global, etc.)
 //   - tier: Filter by tier (system, organization, tenant)
 //   - severity: Filter by severity (low, medium, high, critical)
@@ -117,7 +118,11 @@ func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter,
 		page = 1
 	}
 
-	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	// Accept both limit (preferred) and page_size (deprecated) for backward compatibility
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if pageSize < 1 {
+		pageSize, _ = strconv.Atoi(r.URL.Query().Get("page_size"))
+	}
 	if pageSize < 1 {
 		pageSize = DefaultPageSize
 	}

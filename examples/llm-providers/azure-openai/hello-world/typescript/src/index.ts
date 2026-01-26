@@ -1,10 +1,23 @@
 /**
  * Azure OpenAI Integration Example - TypeScript
  * Demonstrates Gateway Mode and Proxy Mode with AxonFlow
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 const AXONFLOW_URL = process.env.AXONFLOW_URL || "http://localhost:8080";
 const TIMEOUT = 30000;
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 interface PreCheckResponse {
   approved: boolean;
@@ -63,6 +76,7 @@ async function main() {
     await gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion);
   } catch (error) {
     console.error(`Gateway mode error: ${error}`);
+    failures.push(`Gateway mode: ${error}`);
   }
   console.log();
 
@@ -72,7 +86,20 @@ async function main() {
     await proxyModeExample();
   } catch (error) {
     console.error(`Proxy mode error: ${error}`);
+    failures.push(`Proxy mode: ${error}`);
   }
+
+  // Summary
+  console.log();
+  console.log("=".repeat(60));
+  console.log(`Results: ${failures.length === 0 ? "ALL PASSED" : `${failures.length} failures`}`);
+  if (failures.length > 0) {
+    console.log("Failures:");
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
+  console.log("=".repeat(60));
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 function detectAuthType(endpoint: string): string {
@@ -94,8 +121,19 @@ async function gatewayModeExample(
   console.log("Step 1: Pre-checking with AxonFlow...");
   const preCheckResp = await preCheck(userPrompt, "azure-openai", deploymentName);
 
+  // Assert pre-check response has required fields
+  assertCheck(
+    preCheckResp.context_id !== undefined && preCheckResp.context_id !== "",
+    "Gateway: pre-check returns context_id"
+  );
+  assertCheck(
+    typeof preCheckResp.approved === "boolean",
+    "Gateway: pre-check returns approved boolean"
+  );
+
   if (!preCheckResp.approved) {
     console.log("Request blocked by policy");
+    failures.push("Gateway: safe query unexpectedly blocked");
     return;
   }
   console.log(`Pre-check passed (context: ${preCheckResp.context_id})`);
@@ -139,6 +177,20 @@ async function gatewayModeExample(
   const content = data.choices?.[0]?.message?.content || "";
   const { prompt_tokens, completion_tokens } = data.usage;
 
+  // Assert Azure OpenAI response has expected structure
+  assertCheck(
+    data.choices !== undefined && data.choices.length > 0,
+    "Gateway: Azure response has choices array"
+  );
+  assertCheck(
+    content.length > 0,
+    "Gateway: Azure response has non-empty content"
+  );
+  assertCheck(
+    prompt_tokens > 0 && completion_tokens > 0,
+    "Gateway: Azure response has token usage"
+  );
+
   console.log(`Response received (latency: ${latency}ms)`);
   console.log(`Response: ${truncate(content, 200)}`);
 
@@ -155,8 +207,10 @@ async function gatewayModeExample(
       completion_tokens
     );
     console.log("Audit logged successfully");
+    assertCheck(true, "Gateway: audit call succeeded");
   } catch (error) {
     console.log(`Audit warning: ${error}`);
+    // Audit failures are warnings, not test failures
   }
 }
 
@@ -184,6 +238,27 @@ async function proxyModeExample(): Promise<void> {
 
   const data: ProxyResponse = await response.json();
   const latency = Date.now() - startTime;
+
+  // Assert proxy response has expected structure
+  assertCheck(
+    typeof data.blocked === "boolean",
+    "Proxy: response has blocked field"
+  );
+  assertCheck(
+    typeof data.success === "boolean",
+    "Proxy: response has success field"
+  );
+
+  if (!data.blocked) {
+    assertCheck(
+      data.data !== undefined,
+      "Proxy: non-blocked response has data"
+    );
+    assertCheck(
+      data.success === true,
+      "Proxy: non-blocked response has success=true"
+    );
+  }
 
   console.log(`Response received (latency: ${latency}ms)`);
   console.log(`Blocked: ${data.blocked}`);
@@ -252,4 +327,7 @@ function truncate(s: string, maxLen: number): string {
   return s.substring(0, maxLen) + "...";
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

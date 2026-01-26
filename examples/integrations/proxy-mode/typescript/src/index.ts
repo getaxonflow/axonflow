@@ -7,10 +7,27 @@
  * - Audit logging
  *
  * This is the simplest integration - no direct LLM SDK calls needed.
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
+
+// =============================================================================
+// Assertion Infrastructure
+// =============================================================================
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 const config = {
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
@@ -56,8 +73,20 @@ async function main() {
     },
   ];
 
+  // Track results for assertions
+  const results: Array<{
+    index: number;
+    description: string;
+    shouldBlock: boolean;
+    wasBlocked: boolean;
+    hasResponse: boolean;
+    latencyMs: number;
+    error?: string;
+  }> = [];
+
   for (let i = 0; i < queries.length; i++) {
     const { query, description, requestType } = queries[i];
+    const shouldBlock = description.includes("BLOCKED");
 
     console.log(`\n${"-".repeat(60)}`);
     console.log(`Query ${i + 1}: ${description}`);
@@ -86,15 +115,49 @@ async function main() {
         if (response.policyInfo?.policiesEvaluated) {
           console.log(`  Policies Evaluated: ${response.policyInfo.policiesEvaluated.join(", ")}`);
         }
+        results.push({
+          index: i + 1,
+          description,
+          shouldBlock,
+          wasBlocked: true,
+          hasResponse: false,
+          latencyMs,
+        });
       } else if (response.success) {
         console.log(`\n  Status: SUCCESS`);
         const data = typeof response.data === "string"
           ? response.data
           : JSON.stringify(response.data);
         console.log(`  Response: ${data.substring(0, 200)}${data.length > 200 ? "..." : ""}`);
+
+        // Check if the response data actually contains an error (LLM routing failed)
+        const responseError = typeof response.data === "object" && response.data?.error
+          ? response.data.error
+          : (data.includes("LLM routing failed") || data.includes("LLM router not initialized"))
+            ? data
+            : undefined;
+
+        results.push({
+          index: i + 1,
+          description,
+          shouldBlock,
+          wasBlocked: false,
+          hasResponse: data !== "" && data !== "null" && data !== "undefined" && !responseError,
+          latencyMs,
+          error: responseError,
+        });
       } else {
         console.log(`\n  Status: FAILED`);
         console.log(`  Error: ${response.error || "Unknown error"}`);
+        results.push({
+          index: i + 1,
+          description,
+          shouldBlock,
+          wasBlocked: false,
+          hasResponse: false,
+          latencyMs,
+          error: response.error || "Unknown error",
+        });
       }
 
       console.log(`  Latency: ${latencyMs}ms`);
@@ -106,11 +169,71 @@ async function main() {
       console.log(`\n  Status: ERROR`);
       console.log(`  Error: ${errorMessage}`);
       console.log(`  Latency: ${latencyMs}ms`);
+
+      // Check if error indicates blocking (some implementations throw on block)
+      const isBlockError = errorMessage.toLowerCase().includes("blocked") ||
+        errorMessage.toLowerCase().includes("sql injection") ||
+        errorMessage.toLowerCase().includes("pii") ||
+        errorMessage.toLowerCase().includes("ssn");
+
+      results.push({
+        index: i + 1,
+        description,
+        shouldBlock,
+        wasBlocked: isBlockError,
+        hasResponse: false,
+        latencyMs,
+        error: errorMessage,
+      });
+    }
+  }
+
+  // Run assertions based on results
+  console.log("\n" + "=".repeat(60));
+  console.log("Assertions");
+  console.log("=".repeat(60));
+
+  // Check if LLM router is configured
+  const llmNotConfigured = results.some(r => r.error?.includes("LLM router not initialized") || r.error?.includes("LLM routing failed"));
+  if (llmNotConfigured) {
+    console.log("   Note: LLM router not configured - testing policy enforcement only");
+    console.log();
+  }
+
+  // Safe queries (first two) should succeed OR fail gracefully without blocking
+  const safeResults = results.filter(r => !r.shouldBlock);
+  for (const result of safeResults) {
+    assertCheck(!result.wasBlocked, `Query ${result.index} (safe) is not blocked`);
+    // If LLM not configured, we only check it's not blocked (can't verify response)
+    if (!llmNotConfigured) {
+      assertCheck(result.hasResponse || result.error === undefined, `Query ${result.index} (safe) returns a response`);
+    }
+  }
+
+  // Blocked queries - SQLi should always be blocked, PII may require LLM to be configured
+  const blockedResults = results.filter(r => r.shouldBlock);
+  for (const result of blockedResults) {
+    // SQLi detection happens before LLM routing, so it should always work
+    const isSqlInjection = result.description.toLowerCase().includes("sql injection");
+    if (isSqlInjection) {
+      assertCheck(result.wasBlocked, `Query ${result.index} (${result.description}) is blocked`);
+    } else if (llmNotConfigured) {
+      // PII detection may depend on LLM configuration
+      console.log(`   SKIP: Query ${result.index} (${result.description}) - requires LLM configuration`);
+    } else {
+      assertCheck(result.wasBlocked, `Query ${result.index} (${result.description}) is blocked`);
     }
   }
 
   console.log("\n" + "=".repeat(60));
-  console.log("Proxy Mode Demo Complete");
+  console.log("Test Summary");
+  console.log("=".repeat(60));
+  if (failures.length === 0) {
+    console.log("ALL TESTS PASSED");
+  } else {
+    console.log(`${failures.length} TEST(S) FAILED:`);
+    failures.forEach((f) => console.log(`   - ${f}`));
+  }
   console.log("=".repeat(60));
   console.log();
   console.log("Key Takeaways:");
@@ -120,4 +243,11 @@ async function main() {
   console.log("  - Simplest integration for AI governance");
 }
 
-main().catch(console.error);
+main()
+  .then(() => {
+    process.exit(failures.length > 0 ? 1 : 0);
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

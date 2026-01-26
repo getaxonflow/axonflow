@@ -17,6 +17,8 @@
 //   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
 //   AXONFLOW_CLIENT_ID     - OAuth2 client ID (required for dynamic policies)
 //   AXONFLOW_CLIENT_SECRET - OAuth2 client secret (required for dynamic policies)
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 
 package main
 
@@ -27,6 +29,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	// Initialize client
@@ -76,7 +89,10 @@ func main() {
 	created, err := client.CreateDynamicPolicy(&gdprPolicy)
 	if err != nil {
 		log.Printf("   Failed to create GDPR policy: %v", err)
+		assertCheck(false, "GDPR policy created successfully")
 	} else {
+		assertCheck(created.ID != "", "GDPR policy has ID")
+		assertCheck(created.Name == "gdpr-eu-data-sovereignty", "GDPR policy name matches")
 		fmt.Printf("   Created: %s (ID: %s)\n", created.Name, created.ID)
 		printAllowedProviders(created.Actions)
 		createdPolicies = append(createdPolicies, created.ID)
@@ -107,7 +123,10 @@ func main() {
 	created, err = client.CreateDynamicPolicy(&hipaaPolicy)
 	if err != nil {
 		log.Printf("   Failed to create HIPAA policy: %v", err)
+		assertCheck(false, "HIPAA policy created successfully")
 	} else {
+		assertCheck(created.ID != "", "HIPAA policy has ID")
+		assertCheck(created.Name == "hipaa-phi-protection", "HIPAA policy name matches")
 		fmt.Printf("   Created: %s (ID: %s)\n", created.Name, created.ID)
 		printAllowedProviders(created.Actions)
 		createdPolicies = append(createdPolicies, created.ID)
@@ -138,7 +157,10 @@ func main() {
 	created, err = client.CreateDynamicPolicy(&rbiPolicy)
 	if err != nil {
 		log.Printf("   Failed to create RBI policy: %v", err)
+		assertCheck(false, "RBI policy created successfully")
 	} else {
+		assertCheck(created.ID != "", "RBI policy has ID")
+		assertCheck(created.Name == "rbi-financial-data-sovereignty", "RBI policy name matches")
 		fmt.Printf("   Created: %s (ID: %s)\n", created.Name, created.ID)
 		printAllowedProviders(created.Actions)
 		createdPolicies = append(createdPolicies, created.ID)
@@ -149,7 +171,9 @@ func main() {
 	policies, err := client.ListDynamicPolicies(nil)
 	if err != nil {
 		log.Printf("   Failed to list policies: %v", err)
+		assertCheck(false, "ListDynamicPolicies succeeded")
 	} else {
+		assertCheck(true, "ListDynamicPolicies succeeded")
 		complianceCount := 0
 		for _, p := range policies {
 			if providers := getAllowedProviders(p.Actions); len(providers) > 0 {
@@ -157,19 +181,32 @@ func main() {
 				fmt.Printf("   - %s: providers=%v\n", p.Name, providers)
 			}
 		}
+		assertCheck(complianceCount >= len(createdPolicies), "All created policies are listed")
 		fmt.Printf("   Found %d policies with provider restrictions\n", complianceCount)
 	}
 
 	// 5. Cleanup
 	fmt.Println("\n5. Cleaning up test policies...")
+	deletedCount := 0
 	for _, id := range createdPolicies {
 		if err := client.DeleteDynamicPolicy(id); err != nil {
 			log.Printf("   Failed to delete %s: %v", id, err)
+		} else {
+			deletedCount++
 		}
 	}
-	fmt.Printf("   Deleted %d test policies\n", len(createdPolicies))
+	assertCheck(deletedCount == len(createdPolicies), fmt.Sprintf("All %d test policies deleted", len(createdPolicies)))
+	fmt.Printf("   Deleted %d test policies\n", deletedCount)
 
 	fmt.Println("\n=== Compliance Policy Examples Complete ===")
+
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
+		os.Exit(1)
+	}
 }
 
 // printAllowedProviders extracts and prints allowed_providers from action config

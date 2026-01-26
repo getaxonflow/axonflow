@@ -18,10 +18,23 @@
  *   AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
  *   AXONFLOW_CLIENT_ID     - Client ID for authentication
  *   AXONFLOW_CLIENT_SECRET - Client secret (required for dynamic policies)
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from "@axonflow/sdk";
 import type { DynamicPolicyAction } from "@axonflow/sdk";
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // Helper to extract allowed_providers from action config
 function getAllowedProviders(actions?: DynamicPolicyAction[]): string[] | undefined {
@@ -54,6 +67,7 @@ async function main(): Promise<void> {
 
   // 1. GDPR - EU Data Sovereignty
   console.log("1. Creating GDPR policy for EU data sovereignty...");
+  let gdprPolicyId: string | null = null;
   try {
     const gdprPolicy = await client.createDynamicPolicy({
       name: "gdpr-eu-data-sovereignty",
@@ -76,9 +90,16 @@ async function main(): Promise<void> {
     if (providers) {
       console.log(`   Allowed providers: ${providers.join(", ")}`);
     }
+    gdprPolicyId = gdprPolicy.id;
     createdPolicies.push(gdprPolicy.id);
+    assertCheck(gdprPolicy.id !== undefined && gdprPolicy.id !== "", "GDPR policy created with valid ID");
+    assertCheck(gdprPolicy.name === "gdpr-eu-data-sovereignty", "GDPR policy name is correct");
+    assertCheck(providers !== undefined && providers.length === 2, "GDPR policy has 2 allowed providers");
+    assertCheck(providers?.includes("ollama") === true, "GDPR policy includes ollama provider");
+    assertCheck(providers?.includes("azure-eu") === true, "GDPR policy includes azure-eu provider");
   } catch (error) {
     console.log(`   Failed to create GDPR policy: ${error}`);
+    failures.push("GDPR policy creation failed");
   }
 
   // 2. HIPAA - Healthcare Data Protection
@@ -107,8 +128,14 @@ async function main(): Promise<void> {
       console.log(`   Allowed providers: ${providers.join(", ")}`);
     }
     createdPolicies.push(hipaaPolicy.id);
+    assertCheck(hipaaPolicy.id !== undefined && hipaaPolicy.id !== "", "HIPAA policy created with valid ID");
+    assertCheck(hipaaPolicy.name === "hipaa-phi-protection", "HIPAA policy name is correct");
+    assertCheck(providers !== undefined && providers.length === 1, "HIPAA policy has 1 allowed provider");
+    assertCheck(providers?.includes("ollama") === true, "HIPAA policy restricts to local ollama only");
+    assertCheck((hipaaPolicy.conditions?.length || 0) === 2, "HIPAA policy has 2 conditions");
   } catch (error) {
     console.log(`   Failed to create HIPAA policy: ${error}`);
+    failures.push("HIPAA policy creation failed");
   }
 
   // 3. RBI - India Financial Data Sovereignty
@@ -138,8 +165,14 @@ async function main(): Promise<void> {
       console.log(`   Allowed providers: ${providers.join(", ")}`);
     }
     createdPolicies.push(rbiPolicy.id);
+    assertCheck(rbiPolicy.id !== undefined && rbiPolicy.id !== "", "RBI policy created with valid ID");
+    assertCheck(rbiPolicy.name === "rbi-financial-data-sovereignty", "RBI policy name is correct");
+    assertCheck(providers !== undefined && providers.length === 2, "RBI policy has 2 allowed providers");
+    assertCheck(providers?.includes("azure-india") === true, "RBI policy includes azure-india provider");
+    assertCheck(providers?.includes("ollama") === true, "RBI policy includes ollama provider");
   } catch (error) {
     console.log(`   Failed to create RBI policy: ${error}`);
+    failures.push("RBI policy creation failed");
   }
 
   // 4. List all compliance policies
@@ -155,22 +188,43 @@ async function main(): Promise<void> {
       }
     }
     console.log(`   Found ${complianceCount} policies with provider restrictions`);
+    assertCheck(Array.isArray(policies), "listDynamicPolicies returns an array");
+    assertCheck(complianceCount >= 3, "At least 3 compliance policies with provider restrictions exist");
   } catch (error) {
     console.log(`   Failed to list policies: ${error}`);
+    failures.push("listDynamicPolicies failed");
   }
 
   // 5. Cleanup
   console.log("\n5. Cleaning up test policies...");
+  let deletedCount = 0;
   for (const policyId of createdPolicies) {
     try {
       await client.deleteDynamicPolicy(policyId);
+      deletedCount++;
     } catch (error) {
       console.log(`   Failed to delete ${policyId}: ${error}`);
     }
   }
-  console.log(`   Deleted ${createdPolicies.length} test policies`);
+  console.log(`   Deleted ${deletedCount} test policies`);
+  assertCheck(deletedCount === createdPolicies.length, `All ${createdPolicies.length} test policies deleted successfully`);
 
   console.log("\n=== Compliance Policy Examples Complete ===");
+
+  // Final assertion summary
+  if (failures.length > 0) {
+    console.log(`\n=== ASSERTION FAILURES: ${failures.length} ===`);
+    for (const f of failures) {
+      console.log(`   - ${f}`);
+    }
+  } else {
+    console.log("\n=== ALL ASSERTIONS PASSED ===");
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

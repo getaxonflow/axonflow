@@ -21,6 +21,8 @@
 //
 //	export AXONFLOW_AGENT_URL=http://localhost:8080
 //	go run main.go
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -29,6 +31,17 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Code Governance - Go")
@@ -62,10 +75,13 @@ func main() {
 
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
+		assertCheck(false, "Example 1 - ProxyLLMCall succeeded")
 	} else if response.Blocked {
 		fmt.Printf("Status: BLOCKED - %s\n", response.BlockReason)
+		assertCheck(false, "Example 1 - Request not blocked (safe code generation)")
 	} else {
 		fmt.Println("Status: ALLOWED")
+		assertCheck(true, "Example 1 - Request allowed")
 		fmt.Println()
 
 		// Display response preview
@@ -74,12 +90,14 @@ func main() {
 			dataStr = dataStr[:300] + "..."
 		}
 		fmt.Printf("Response preview:\n  %s\n\n", dataStr)
+		assertCheck(response.Data != nil, "Example 1 - Response data is not nil")
 
 		// Display audit trail
 		fmt.Println("Audit Trail:")
 		if response.PolicyInfo != nil {
 			fmt.Printf("  Processing Time: %s\n", response.PolicyInfo.ProcessingTime)
 			fmt.Printf("  Policies Evaluated: %v\n", response.PolicyInfo.PoliciesEvaluated)
+			assertCheck(response.PolicyInfo.ProcessingTime != "", "Example 1 - ProcessingTime is present")
 
 			// Code Governance: Check for code artifact metadata
 			if response.PolicyInfo.CodeArtifact != nil {
@@ -92,6 +110,7 @@ func main() {
 				fmt.Printf("  Lines: %d\n", artifact.LineCount)
 				fmt.Printf("  Secrets Detected: %d\n", artifact.SecretsDetected)
 				fmt.Printf("  Unsafe Patterns: %d\n", artifact.UnsafePatterns)
+				assertCheck(artifact.Language != "", "Example 1 - Code language detected")
 			}
 		}
 	}
@@ -112,14 +131,19 @@ func main() {
 
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
+		assertCheck(false, "Example 2 - ProxyLLMCall succeeded")
 	} else if response.Blocked {
 		fmt.Printf("Status: BLOCKED - %s\n", response.BlockReason)
+		// Being blocked for unsafe code is acceptable
+		assertCheck(true, "Example 2 - Request handled (blocked for unsafe code)")
 	} else {
 		fmt.Println("Status: ALLOWED")
+		assertCheck(true, "Example 2 - Request allowed")
 		fmt.Println()
 
 		if response.PolicyInfo != nil {
 			fmt.Printf("Processing Time: %s\n", response.PolicyInfo.ProcessingTime)
+			assertCheck(response.PolicyInfo.ProcessingTime != "", "Example 2 - ProcessingTime is present")
 
 			if response.PolicyInfo.CodeArtifact != nil {
 				artifact := response.PolicyInfo.CodeArtifact
@@ -127,10 +151,12 @@ func main() {
 				fmt.Println("Code Artifact Analysis:")
 				fmt.Printf("  Language: %s\n", artifact.Language)
 				fmt.Printf("  Unsafe Patterns: %d\n", artifact.UnsafePatterns)
+				assertCheck(artifact.Language != "", "Example 2 - Code language detected")
 				if artifact.UnsafePatterns > 0 {
 					fmt.Println()
 					fmt.Printf("  WARNING: %d unsafe code pattern(s) detected!\n", artifact.UnsafePatterns)
 					fmt.Println("  Review carefully before using in production.")
+					assertCheck(true, "Example 2 - Unsafe patterns correctly detected")
 				}
 			}
 		}
@@ -152,6 +178,14 @@ func main() {
 	fmt.Println("  - Track code generation for compliance")
 	fmt.Println("  - Build dashboards for AI code generation metrics")
 	fmt.Println()
+
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
+		os.Exit(1)
+	}
 }
 
 func getEnv(key, defaultValue string) string {

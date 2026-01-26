@@ -19,6 +19,8 @@
 // Usage:
 //
 //	go run main.go
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -29,18 +31,14 @@ import (
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
-var (
-	passCount int
-	failCount int
-)
+var failures []string
 
-func assert(condition bool, message string) {
+func assertCheck(condition bool, message string) {
 	if condition {
-		fmt.Printf("   PASS: %s\n", message)
-		passCount++
+		fmt.Printf("   ✓ PASS: %s\n", message)
 	} else {
-		fmt.Printf("   FAIL: %s\n", message)
-		failCount++
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
 	}
 }
 
@@ -362,7 +360,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "What are the benefits of renewable energy?",
 	})
 
-	assert(!result1.Blocked, "Safe predict not blocked")
+	assertCheck(!result1.Blocked, "Safe predict not blocked")
 	if result1.Success {
 		fmt.Printf("   Output: %v\n", result1.Output)
 	}
@@ -384,7 +382,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "Why is the sky blue?",
 	})
 
-	assert(!result2.Blocked, "Chain-of-Thought not blocked")
+	assertCheck(!result2.Blocked, "Chain-of-Thought not blocked")
 	if result2.Success {
 		fmt.Printf("   Rationale: %s\n", result2.Rationale)
 		fmt.Printf("   Output: %v\n", result2.Output)
@@ -407,7 +405,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "What are best practices for AI safety?",
 	})
 
-	assert(!result3.Blocked, "RAG pipeline not blocked")
+	assertCheck(!result3.Blocked, "RAG pipeline not blocked")
 	if result3.Success {
 		fmt.Printf("   Output: %v\n", result3.Output)
 	}
@@ -423,7 +421,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 
 	// PII may be flagged or workflow may complete (depending on default mode)
 	// The key is that the workflow doesn't crash
-	assert(result4.Blocked || result4.Success, "PII query handled (blocked or flagged)")
+	assertCheck(result4.Blocked || result4.Success, "PII query handled (blocked or flagged)")
 	if result4.Blocked {
 		fmt.Printf("   Block reason: %s\n", result4.BlockReason)
 	}
@@ -437,7 +435,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		"question": "SELECT * FROM users; DROP TABLE users;--",
 	})
 
-	assert(result5.Blocked, "SQL injection correctly blocked")
+	assertCheck(result5.Blocked, "SQL injection correctly blocked")
 	if result5.Blocked {
 		fmt.Printf("   Block reason: %s\n", result5.BlockReason)
 	}
@@ -471,21 +469,20 @@ func runTests(client *axonflow.AxonFlowClient) {
 		if step2.Success {
 			fmt.Printf("   Final output: %v\n", step2.Output)
 		}
-		assert(!step2.Blocked, "Multi-module pipeline step 2 not blocked")
+		assertCheck(!step2.Blocked, "Multi-module pipeline step 2 not blocked")
 	}
-	assert(!step1.Blocked, "Multi-module pipeline step 1 not blocked")
+	assertCheck(!step1.Blocked, "Multi-module pipeline step 1 not blocked")
 
 	// Summary
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
-	fmt.Println(strings.Repeat("=", 60))
-
-	if failCount > 0 {
-		fmt.Println("SOME TESTS FAILED")
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		os.Exit(1)
-	} else {
-		fmt.Println("ALL TESTS PASSED - DSPy integration verified!")
 	}
+	fmt.Println("ALL TESTS PASSED - DSPy integration verified!")
 }
 
 // =============================================================================

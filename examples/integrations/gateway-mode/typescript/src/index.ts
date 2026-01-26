@@ -11,11 +11,28 @@
  * - Full control over LLM provider and parameters
  * - Complete audit trail for compliance
  * - Works with any LLM provider
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
 import OpenAI from "openai";
+
+// =============================================================================
+// Assertion Infrastructure
+// =============================================================================
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 // Configuration from environment (OAuth2-style credentials)
 const config = {
@@ -74,11 +91,20 @@ async function main() {
     console.log(`   Context ID: ${preCheckResult.contextId}`);
     console.log(`   Approved: ${preCheckResult.approved}`);
 
+    // Assertions for pre-check
+    assertCheck(preCheckResult.contextId !== undefined && preCheckResult.contextId !== "", "Pre-check returns a contextId");
+    assertCheck(typeof preCheckResult.approved === "boolean", "Pre-check returns approved as boolean");
+
     if (!preCheckResult.approved) {
       console.log(`   BLOCKED: ${preCheckResult.blockReason}`);
       console.log(`   Policies triggered: ${preCheckResult.policies?.join(", ")}`);
+      assertCheck(false, "Safe query should be approved (pre-check)");
+      process.exit(failures.length > 0 ? 1 : 0);
       return;
     }
+
+    assertCheck(preCheckResult.approved === true, "Safe query is approved by policy pre-check");
+    assertCheck(preCheckLatency < 10000, "Pre-check completes within 10 seconds");
 
     console.log("");
 
@@ -109,6 +135,14 @@ async function main() {
 
     console.log(`   Response received in ${llmLatency}ms`);
     console.log(`   Tokens: ${tokenUsage?.prompt_tokens} prompt, ${tokenUsage?.completion_tokens} completion`);
+
+    // Assertions for LLM call
+    assertCheck(response !== "", "LLM returns non-empty response");
+    assertCheck(completion.choices.length > 0, "LLM returns at least one choice");
+    assertCheck(tokenUsage !== undefined && tokenUsage !== null, "LLM returns token usage");
+    assertCheck((tokenUsage?.prompt_tokens || 0) > 0, "LLM reports prompt tokens used");
+    assertCheck((tokenUsage?.completion_tokens || 0) > 0, "LLM reports completion tokens used");
+
     console.log("");
 
     // =========================================================================
@@ -132,6 +166,10 @@ async function main() {
 
     const auditLatency = Date.now() - startAudit;
     console.log(`   Audit logged in ${auditLatency}ms`);
+
+    // Assertions for audit
+    assertCheck(auditLatency < 5000, "Audit logging completes within 5 seconds");
+
     console.log("");
 
     // =========================================================================
@@ -150,10 +188,28 @@ async function main() {
     console.log(`   Governance: ${totalLatency}ms (overhead)`);
     console.log(`   Total:      ${preCheckLatency + llmLatency + auditLatency}ms`);
     console.log("");
+
+    // Final assertions
+    assertCheck(totalLatency < llmLatency * 2, "Governance overhead is less than LLM call time");
+
+    // Test Summary
+    console.log("=".repeat(60));
+    console.log("Test Summary");
+    console.log("=".repeat(60));
+    if (failures.length === 0) {
+      console.log("ALL TESTS PASSED");
+    } else {
+      console.log(`${failures.length} TEST(S) FAILED:`);
+      failures.forEach((f) => console.log(`   - ${f}`));
+    }
+    console.log("=".repeat(60));
+
   } catch (error) {
     console.error("Error:", error);
     process.exit(1);
   }
 }
 
-main();
+main().then(() => {
+  process.exit(failures.length > 0 ? 1 : 0);
+});

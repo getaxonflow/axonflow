@@ -5,6 +5,8 @@
 // - PII (personally identifiable information)
 // - SQL injection attempts
 // - Sensitive data patterns
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -13,6 +15,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   PASS: %s\n", message)
+	} else {
+		fmt.Printf("   FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	// Initialize the client
@@ -49,9 +62,13 @@ func main() {
 			fmt.Println("\nHint: Make sure AxonFlow is running:")
 			fmt.Println("  docker compose up -d")
 		}
-		os.Exit(1)
+		assertCheck(false, "Policy created successfully")
+		exitWithResults()
 	}
 
+	assertCheck(policy.ID != "", "Policy created with ID")
+	assertCheck(policy.Name == "Custom Email Pattern", "Policy name matches")
+	assertCheck(policy.Category == string(axonflow.CategoryPIIGlobal), "Policy category matches")
 	fmt.Printf("   Created policy: %s\n", policy.ID)
 	fmt.Printf("   Name: %s\n", policy.Name)
 	fmt.Printf("   Tier: %s\n", policy.Tier) // Will be 'tenant' for custom policies
@@ -67,21 +84,27 @@ func main() {
 	)
 	if err != nil {
 		fmt.Printf("Error testing pattern: %v\n", err)
-		os.Exit(1)
+		assertCheck(false, "Pattern test succeeded")
+		exitWithResults()
 	}
 
+	assertCheck(testResult.Valid, "Pattern is valid")
+	assertCheck(len(testResult.Matches) == 4, "All test inputs were checked")
 	fmt.Printf("   Pattern valid: %v\n", testResult.Valid)
 	fmt.Println("\n   Test results:")
 
+	companyMatches := 0
 	for _, match := range testResult.Matches {
 		icon := "\u2717"
 		suffix := ""
 		if match.Matched {
 			icon = "\u2713"
 			suffix = "-> MATCH"
+			companyMatches++
 		}
 		fmt.Printf("   %s \"%s\" %s\n", icon, match.Input, suffix)
 	}
+	assertCheck(companyMatches == 2, "Pattern correctly matched 2 company.com emails")
 
 	// Retrieve the created policy
 	fmt.Println("\n3. Retrieving created policy...")
@@ -89,9 +112,12 @@ func main() {
 	retrieved, err := client.GetStaticPolicy(policy.ID)
 	if err != nil {
 		fmt.Printf("Error retrieving policy: %v\n", err)
-		os.Exit(1)
+		assertCheck(false, "Policy retrieved successfully")
+		exitWithResults()
 	}
 
+	assertCheck(retrieved.ID == policy.ID, "Retrieved policy ID matches")
+	assertCheck(retrieved.Name == policy.Name, "Retrieved policy name matches")
 	fmt.Printf("   Retrieved: %s\n", retrieved.Name)
 	fmt.Printf("   Version: %d\n", retrieved.Version)
 
@@ -101,10 +127,23 @@ func main() {
 	err = client.DeleteStaticPolicy(policy.ID)
 	if err != nil {
 		fmt.Printf("Error deleting policy: %v\n", err)
-		os.Exit(1)
+		assertCheck(false, "Policy deleted successfully")
+		exitWithResults()
 	}
+	assertCheck(true, "Policy deleted successfully")
 	fmt.Println("   Deleted successfully")
 
 	fmt.Println("\n" + string(make([]byte, 60)))
-	fmt.Println("Example completed successfully!")
+	exitWithResults()
+}
+
+func exitWithResults() {
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
+	fmt.Println("ALL ASSERTIONS PASSED - Policy management verified!")
 }

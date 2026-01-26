@@ -31,12 +31,12 @@ function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
 }
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   \u274C FAIL: ${message}`);
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
   } else {
-    console.log(`   \u2713 PASS: ${message}`);
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
   }
 }
 
@@ -119,19 +119,19 @@ async function main(): Promise<void> {
 
     // Validate context ID for approved requests (UUID format)
     if (result.approved) {
-      assert(result.contextId !== '', 'contextId is not empty');
+      assertCheck(result.contextId !== '', 'contextId is not empty');
       console.log('   Status: APPROVED');
     } else {
       console.log('   Status: BLOCKED');
       console.log(`   Reason: ${result.blockReason}`);
-      assert(result.blockReason !== '', 'blockReason is provided for blocked requests');
+      assertCheck(result.blockReason !== '', 'blockReason is provided for blocked requests');
     }
 
     // Verify expected behavior
     if (test.shouldBlock) {
-      assert(wasBlocked, `SQLi type '${test.sqliType}' is blocked`);
+      assertCheck(wasBlocked, `SQLi type '${test.sqliType}' is blocked`);
     } else {
-      assert(!wasBlocked, 'Safe query is approved');
+      assertCheck(!wasBlocked, 'Safe query is approved');
     }
 
     console.log();

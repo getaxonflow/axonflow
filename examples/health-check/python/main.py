@@ -1,71 +1,76 @@
 #!/usr/bin/env python3
 """
-Health Check Example - Python
+AxonFlow Health Check Example - Python
 
-Demonstrates how to check the health of AxonFlow Agent and Orchestrator services.
-This is essential for monitoring and ensuring your governance infrastructure is running.
+Demonstrates and VALIDATES health check of AxonFlow services.
 
-Usage:
-    python main.py
+VALIDATION: This example exits with code 1 if any assertion fails.
 
-Environment:
-    AXONFLOW_AGENT_URL     - Agent URL (default: http://localhost:8080)
-    AXONFLOW_CLIENT_ID     - OAuth2 client ID (optional for community mode)
-    AXONFLOW_CLIENT_SECRET - OAuth2 client secret (optional for community mode)
+Run with: python main.py
+Prerequisites: docker compose up -d
 """
 
 import asyncio
 import os
+import sys
+
 from axonflow import AxonFlow
 
+failures: list[str] = []
 
-async def main():
-    # Initialize client (credentials optional for community mode)
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
-    client_id = os.getenv("AXONFLOW_CLIENT_ID", "")
-    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
+
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
+    else:
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
+
+
+async def main() -> int:
+    print("AxonFlow Health Check - Python SDK")
+    print("=" * 40)
+    print()
 
     client = AxonFlow(
-        endpoint=agent_url,
-        client_id=client_id if client_id else None,
-        client_secret=client_secret if client_secret else None,
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        client_id=os.getenv("AXONFLOW_CLIENT_ID", ""),
+        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", ""),
     )
 
-    print("=== AxonFlow Health Check Example ===\n")
-
     # 1. Check Agent health
-    print("1. Checking Agent health...")
+    print("1. Agent Health Check...")
     try:
         agent_healthy = await client.health_check()
-        if agent_healthy:
-            print("   Agent Status: HEALTHY")
-        else:
-            print("   Agent Status: UNHEALTHY")
+        assert_check(agent_healthy is True, "Agent is healthy")
     except Exception as e:
-        print(f"   Agent health check failed: {e}")
-        agent_healthy = False
+        failures.append(f"Agent health check failed: {e}")
+    print()
 
     # 2. Check Orchestrator health
-    print("\n2. Checking Orchestrator health...")
+    print("2. Orchestrator Health Check...")
     try:
         orch_healthy = await client.orchestrator_health_check()
-        if orch_healthy:
-            print("   Orchestrator Status: HEALTHY")
-        else:
-            print("   Orchestrator Status: UNHEALTHY")
+        assert_check(orch_healthy is True, "Orchestrator is healthy")
     except Exception as e:
-        print(f"   Orchestrator health check failed: {e}")
-        orch_healthy = False
+        failures.append(f"Orchestrator health check failed: {e}")
+    print()
 
-    # 3. Summary
-    print("\n=== Health Check Summary ===")
-    print(f"   Agent: {'HEALTHY' if agent_healthy else 'UNHEALTHY'}")
-    print(f"   Orchestrator: {'HEALTHY' if orch_healthy else 'UNHEALTHY'}")
-
-    # Return success if both are healthy
-    return agent_healthy and orch_healthy
+    print("=" * 40)
+    if not failures:
+        print("✓ ALL TESTS PASSED")
+        print()
+        print("Health checks validated:")
+        print("  - Agent health_check()")
+        print("  - Orchestrator orchestrator_health_check()")
+        return 0
+    else:
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
+        for f in failures:
+            print(f"   - {f}")
+        return 1
 
 
 if __name__ == "__main__":
-    success = asyncio.run(main())
-    exit(0 if success else 1)
+    sys.exit(asyncio.run(main()))

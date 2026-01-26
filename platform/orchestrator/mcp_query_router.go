@@ -154,8 +154,9 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	}
 
 	// Extract response data
+	// Agent returns "data" array (see agent mcp_handler.go)
 	success, _ := agentResp["success"].(bool)
-	rows, _ := agentResp["rows"].([]interface{})
+	rows, _ := agentResp["data"].([]interface{}) // Agent uses "data" for results
 	rowCount, _ := agentResp["row_count"].(float64) // JSON numbers are float64
 	durationMs, _ := agentResp["duration_ms"].(float64)
 

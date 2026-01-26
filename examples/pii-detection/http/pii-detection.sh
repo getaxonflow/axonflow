@@ -114,7 +114,7 @@ test_pii "Credit Card Number (Critical PII)" \
     "true"
 
 test_pii "India PAN (Critical PII)" \
-    "Verify PAN number ABCDE1234F for tax filing" \
+    "Verify PAN number ABCPD1234E for tax filing" \
     "true"
 
 test_pii "India Aadhaar (Critical PII)" \

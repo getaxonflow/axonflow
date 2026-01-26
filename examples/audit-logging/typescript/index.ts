@@ -5,6 +5,8 @@
  * 1. Pre-check - Validate request against policies
  * 2. LLM Call - Make your own call to OpenAI
  * 3. Audit - Log the interaction for compliance
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
@@ -24,6 +26,17 @@ const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
 interface QueryTest {
   name: string;
   query: string;
+}
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
+  } else {
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
+  }
 }
 
 async function main() {
@@ -66,6 +79,7 @@ async function main() {
     const precheckLatency = Date.now() - precheckStart;
     console.log(`   Latency: ${precheckLatency}ms`);
     console.log(`   Context ID: ${precheck.contextId}`);
+    assertCheck(typeof precheck.contextId === "string" && precheck.contextId.length > 0, "Pre-check returns valid contextId");
 
     if (!precheck.approved) {
       console.log(`   BLOCKED: ${precheck.blockReason}`);
@@ -73,6 +87,7 @@ async function main() {
       continue;
     }
     console.log("   Status: APPROVED");
+    assertCheck(precheck.approved === true, "Pre-check approved for valid query");
     console.log();
 
     // Step 2: LLM Call
@@ -130,6 +145,7 @@ async function main() {
       const auditLatency = Date.now() - auditStart;
       console.log(`   Latency: ${auditLatency}ms`);
       console.log("   Audit logged successfully");
+      assertCheck(true, "Audit logging completed without error");
 
       // Summary
       const governance = precheckLatency + auditLatency;
@@ -168,12 +184,16 @@ async function main() {
   try {
     const tenantLogs = await axonflow.getAuditLogsByTenant("audit-logging-demo");
     console.log(`   Found ${tenantLogs.entries.length} entries`);
+    assertCheck(Array.isArray(tenantLogs.entries), "getAuditLogsByTenant returns entries array");
     if (tenantLogs.entries.length > 0) {
       const entry = tenantLogs.entries[0];
       console.log(`   Latest: ${entry.timestamp} - ${entry.provider}/${entry.model}`);
+      assertCheck(entry.timestamp instanceof Date, "Audit entry has timestamp");
+      assertCheck(typeof entry.provider === "string", "Audit entry has provider");
     }
   } catch (error) {
     console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+    failures.push("getAuditLogsByTenant failed");
   }
   console.log();
 
@@ -186,8 +206,11 @@ async function main() {
     });
     const hasMore = paginatedLogs.total > paginatedLogs.offset + paginatedLogs.entries.length;
     console.log(`   Found ${paginatedLogs.entries.length} entries (hasMore: ${hasMore})`);
+    assertCheck(paginatedLogs.entries.length <= 5, "Pagination respects limit parameter");
+    assertCheck(typeof paginatedLogs.total === "number", "Pagination response includes total count");
   } catch (error) {
     console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+    failures.push("getAuditLogsByTenant with pagination failed");
   }
   console.log();
 
@@ -200,6 +223,7 @@ async function main() {
       limit: 10,
     });
     console.log(`   Found ${searchResult.entries.length} matching entries`);
+    assertCheck(Array.isArray(searchResult.entries), "searchAuditLogs returns entries array");
     searchResult.entries.slice(0, 3).forEach((entry) => {
       const status = entry.blocked ? "blocked" : "allowed";
       console.log(`   - ${entry.id}: ${status} (${entry.tokensUsed} tokens)`);
@@ -209,11 +233,26 @@ async function main() {
     }
   } catch (error) {
     console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+    failures.push("searchAuditLogs failed");
   }
   console.log();
 
   console.log("=".repeat(40));
   console.log("Done!");
+
+  // Final assertion summary
+  console.log();
+  console.log("=".repeat(40));
+  console.log("Assertion Summary");
+  console.log("=".repeat(40));
+  if (failures.length === 0) {
+    console.log("All assertions passed!");
+  } else {
+    console.log(`${failures.length} assertion(s) failed:`);
+    failures.forEach((f) => console.log(`  - ${f}`));
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 main();

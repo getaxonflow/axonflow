@@ -14,6 +14,8 @@
  *
  * Run with: mvn compile exec:java
  * Prerequisites: docker compose up -d
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 package com.example;
@@ -22,10 +24,22 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.policies.PolicyTypes.*;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 public class StaticPolicyExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     private static String getEnv(String key, String defaultVal) {
         String val = System.getenv(key);
@@ -70,8 +84,11 @@ public class StaticPolicyExample {
                 if (policies.size() > 3) {
                     System.out.println("   ... and " + (policies.size() - 3) + " more");
                 }
+                assertCheck(policies != null, "List policies returns non-null");
+                assertCheck(policies.size() > 0, "At least one policy exists");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "List policies should not throw");
             }
             System.out.println();
 
@@ -88,8 +105,13 @@ public class StaticPolicyExample {
                     StaticPolicy p = sqliPolicies.get(i);
                     System.out.println("   - " + p.getName() + ": severity=" + p.getSeverity());
                 }
+                assertCheck(sqliPolicies != null, "Category filter returns non-null");
+                boolean allSqli = sqliPolicies.stream().allMatch(p ->
+                    p.getCategory() == PolicyCategory.SECURITY_SQLI);
+                assertCheck(allSqli, "All filtered policies are SECURITY_SQLI");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "List by category should not throw");
             }
             System.out.println();
 
@@ -117,8 +139,11 @@ public class StaticPolicyExample {
                 System.out.println("   ID: " + created.getId());
                 System.out.println("   Category: " + created.getCategory());
                 System.out.println("   Action: " + created.getAction());
+                assertCheck(created.getId() != null, "Policy created with ID");
+                assertCheck(policyName.equals(created.getName()), "Policy name matches");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Create policy should not throw");
                 return;
             }
             System.out.println();
@@ -133,8 +158,11 @@ public class StaticPolicyExample {
                 System.out.println("   Pattern: " + retrieved.getPattern());
                 System.out.println("   Enabled: " + retrieved.isEnabled());
                 System.out.println("   Version: " + (retrieved.getVersion() != null ? retrieved.getVersion() : 1));
+                assertCheck(retrieved.getId().equals(policyId), "Retrieved policy ID matches");
+                assertCheck(retrieved.getPattern() != null, "Retrieved policy has pattern");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Get policy should not throw");
             }
             System.out.println();
 
@@ -158,8 +186,12 @@ public class StaticPolicyExample {
                     String status = match.isMatched() ? "MATCH" : "NO MATCH";
                     System.out.println("     [" + status + "] " + match.getInput());
                 }
+                assertCheck(result.isValid(), "Pattern is valid regex");
+                long matchCount = result.getMatches().stream().filter(m -> m.isMatched()).count();
+                assertCheck(matchCount == 3, "Pattern matches exactly 3 inputs");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Test pattern should not throw");
             }
             System.out.println();
 
@@ -179,8 +211,11 @@ public class StaticPolicyExample {
                 System.out.println("   New severity: " + updated.getSeverity());
                 System.out.println("   New action: " + updated.getAction());
                 System.out.println("   New version: " + (updated.getVersion() != null ? updated.getVersion() : 2));
+                assertCheck(updated.getSeverity() == PolicySeverity.HIGH, "Severity updated to HIGH");
+                assertCheck(updated.getAction() == PolicyAction.BLOCK, "Action updated to BLOCK");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Update policy should not throw");
             }
             System.out.println();
 
@@ -207,13 +242,16 @@ public class StaticPolicyExample {
                 StaticPolicy toggled = client.toggleStaticPolicy(policyId, false);
                 System.out.println("   Policy: " + toggled.getName());
                 System.out.println("   Enabled: " + toggled.isEnabled());
+                assertCheck(!toggled.isEnabled(), "Policy disabled successfully");
                 System.out.println();
 
                 System.out.println("   Enabling policy again...");
                 toggled = client.toggleStaticPolicy(policyId, true);
                 System.out.println("   Enabled: " + toggled.isEnabled());
+                assertCheck(toggled.isEnabled(), "Policy enabled successfully");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Toggle policy should not throw");
             }
             System.out.println();
 
@@ -236,8 +274,11 @@ public class StaticPolicyExample {
                 } else {
                     System.out.println("   Our policy is not in the effective list (may be disabled)");
                 }
+                assertCheck(effective != null, "Effective policies returns non-null");
+                assertCheck(effective.size() > 0, "At least one effective policy exists");
             } catch (Exception e) {
                 System.out.println("   ERROR: " + e.getMessage());
+                assertCheck(false, "Get effective policies should not throw");
             }
             System.out.println();
 
@@ -249,8 +290,10 @@ public class StaticPolicyExample {
                 client.deleteStaticPolicy(policyId);
                 System.out.println("   Deleted policy: " + policyName);
                 policyId = null; // Mark as deleted
+                assertCheck(true, "Policy deleted successfully");
             } catch (Exception e) {
                 System.out.println("   WARNING: Failed to delete policy: " + e.getMessage());
+                assertCheck(false, "Delete policy should not throw");
             }
             System.out.println();
 
@@ -268,6 +311,16 @@ public class StaticPolicyExample {
             System.out.println("  8. toggleStaticPolicy()           - Enable/disable");
             System.out.println("  9. getEffectiveStaticPolicies()   - Effective policies");
             System.out.println(" 10. deleteStaticPolicy()           - Delete policy");
+
+            // Final assertion check
+            if (!failures.isEmpty()) {
+                System.out.println();
+                System.out.println("FAILURES (" + failures.size() + "):");
+                for (String failure : failures) {
+                    System.out.println("  - " + failure);
+                }
+                System.exit(1);
+            }
 
         } finally {
             // Cleanup if policy wasn't deleted

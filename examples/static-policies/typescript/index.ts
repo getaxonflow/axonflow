@@ -14,9 +14,22 @@
  *
  * Run with: npx ts-node index.ts
  * Prerequisites: docker compose up -d
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from "@axonflow/sdk";
+
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
 
 function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
@@ -46,6 +59,7 @@ async function main(): Promise<void> {
     // 1. LIST STATIC POLICIES
     // ========================================
     console.log("1. listStaticPolicies - Listing all static policies...");
+    let listPoliciesSuccess = false;
     try {
       const policies = await client.listStaticPolicies({ limit: 10 });
       console.log(`   Found ${policies.length} policies`);
@@ -56,8 +70,12 @@ async function main(): Promise<void> {
       if (policies.length > 3) {
         console.log(`   ... and ${policies.length - 3} more`);
       }
+      listPoliciesSuccess = true;
+      assertCheck(Array.isArray(policies), "listStaticPolicies returns an array");
+      assertCheck(policies.length <= 10, "listStaticPolicies respects limit parameter");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("listStaticPolicies failed");
     }
     console.log();
 
@@ -75,8 +93,13 @@ async function main(): Promise<void> {
       sqliPolicies.slice(0, 3).forEach((p) => {
         console.log(`   - ${p.name}: severity=${p.severity}`);
       });
+      assertCheck(Array.isArray(sqliPolicies), "listStaticPolicies with category returns an array");
+      // All returned policies should be in the requested category
+      const allSqli = sqliPolicies.every((p) => p.category === "security-sqli");
+      assertCheck(allSqli, "listStaticPolicies category filter returns only matching policies");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("listStaticPolicies with category filter failed");
     }
     console.log();
 
@@ -102,8 +125,15 @@ async function main(): Promise<void> {
       console.log(`   ID: ${created.id}`);
       console.log(`   Category: ${created.category}`);
       console.log(`   Action: ${created.action}`);
+      assertCheck(created.id !== undefined && created.id !== "", "createStaticPolicy returns policy with valid ID");
+      assertCheck(created.name === policyName, "createStaticPolicy returns correct name");
+      assertCheck(created.category === "code-secrets", "createStaticPolicy returns correct category");
+      assertCheck(created.severity === "medium", "createStaticPolicy returns correct severity");
+      assertCheck(created.action === "warn", "createStaticPolicy returns correct action");
+      assertCheck(created.enabled === true, "createStaticPolicy returns policy as enabled");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("createStaticPolicy failed");
       return;
     }
     console.log();
@@ -118,8 +148,13 @@ async function main(): Promise<void> {
       console.log(`   Pattern: ${retrieved.pattern}`);
       console.log(`   Enabled: ${retrieved.enabled}`);
       console.log(`   Version: ${retrieved.version || 1}`);
+      assertCheck(retrieved.id === policyId, "getStaticPolicy returns matching policy ID");
+      assertCheck(retrieved.name === policyName, "getStaticPolicy returns correct name");
+      assertCheck(retrieved.pattern === "(?i)test_secret_\\d+", "getStaticPolicy returns correct pattern");
+      assertCheck(retrieved.enabled === true, "getStaticPolicy returns correct enabled state");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("getStaticPolicy failed");
     }
     console.log();
 
@@ -142,8 +177,18 @@ async function main(): Promise<void> {
         const status = match.matched ? "MATCH" : "NO MATCH";
         console.log(`     [${status}] ${match.input}`);
       });
+      assertCheck(result.valid === true, "testPattern reports pattern as valid");
+      assertCheck(result.matches.length === 5, "testPattern returns results for all 5 inputs");
+      // Verify specific match expectations
+      const matchMap = new Map(result.matches.map((m) => [m.input, m.matched]));
+      assertCheck(matchMap.get("test_secret_123") === true, "Pattern matches 'test_secret_123'");
+      assertCheck(matchMap.get("test_secret_abc") === false, "Pattern does not match 'test_secret_abc' (no digits)");
+      assertCheck(matchMap.get("TEST_SECRET_999") === true, "Pattern matches 'TEST_SECRET_999' (case insensitive)");
+      assertCheck(matchMap.get("normal text") === false, "Pattern does not match 'normal text'");
+      assertCheck(matchMap.get("my test_secret_42 data") === true, "Pattern matches 'my test_secret_42 data'");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("testPattern failed");
     }
     console.log();
 
@@ -161,8 +206,13 @@ async function main(): Promise<void> {
       console.log(`   New severity: ${updated.severity}`);
       console.log(`   New action: ${updated.action}`);
       console.log(`   New version: ${updated.version || 2}`);
+      assertCheck(updated.id === policyId, "updateStaticPolicy returns same policy ID");
+      assertCheck(updated.description === "Updated description - now with stricter severity", "updateStaticPolicy updates description");
+      assertCheck(updated.severity === "high", "updateStaticPolicy updates severity to high");
+      assertCheck(updated.action === "block", "updateStaticPolicy updates action to block");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("updateStaticPolicy failed");
     }
     console.log();
 
@@ -176,8 +226,11 @@ async function main(): Promise<void> {
       versions.forEach((v) => {
         console.log(`   - v${v.version}: ${v.changeType} at ${v.changedAt}`);
       });
+      assertCheck(Array.isArray(versions), "getStaticPolicyVersions returns an array");
+      assertCheck(versions.length >= 1, "getStaticPolicyVersions returns at least 1 version");
     } catch (e) {
       console.log(`   Note: Version history may require Enterprise: ${e}`);
+      // Not adding to failures as this may require Enterprise
     }
     console.log();
 
@@ -189,13 +242,17 @@ async function main(): Promise<void> {
       let toggled = await client.toggleStaticPolicy(policyId, false);
       console.log(`   Policy: ${toggled.name}`);
       console.log(`   Enabled: ${toggled.enabled}`);
+      assertCheck(toggled.enabled === false, "toggleStaticPolicy disables policy correctly");
+      assertCheck(toggled.id === policyId, "toggleStaticPolicy returns same policy ID");
       console.log();
 
       console.log("   Enabling policy again...");
       toggled = await client.toggleStaticPolicy(policyId, true);
       console.log(`   Enabled: ${toggled.enabled}`);
+      assertCheck(toggled.enabled === true, "toggleStaticPolicy enables policy correctly");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("toggleStaticPolicy failed");
     }
     console.log();
 
@@ -214,8 +271,12 @@ async function main(): Promise<void> {
       } else {
         console.log("   Our policy is not in the effective list (may be disabled)");
       }
+      assertCheck(Array.isArray(effective), "getEffectiveStaticPolicies returns an array");
+      // Policy should be in effective list since we just enabled it
+      assertCheck(ourPolicy !== undefined, "Our enabled policy is in effective policies list");
     } catch (e) {
       console.log(`   ERROR: ${e}`);
+      failures.push("getEffectiveStaticPolicies failed");
     }
     console.log();
 
@@ -226,9 +287,20 @@ async function main(): Promise<void> {
     try {
       await client.deleteStaticPolicy(policyId);
       console.log(`   Deleted policy: ${policyName}`);
+
+      // Verify deletion by trying to get the policy (should fail)
+      let getAfterDeleteFailed = false;
+      try {
+        await client.getStaticPolicy(policyId);
+      } catch {
+        getAfterDeleteFailed = true;
+      }
+      assertCheck(getAfterDeleteFailed, "deleteStaticPolicy removes policy (get fails after delete)");
+
       policyId = null; // Mark as deleted
     } catch (e) {
       console.log(`   WARNING: Failed to delete policy: ${e}`);
+      failures.push("deleteStaticPolicy failed");
     }
     console.log();
 
@@ -246,6 +318,16 @@ async function main(): Promise<void> {
     console.log("  8. toggleStaticPolicy()           - Enable/disable");
     console.log("  9. getEffectiveStaticPolicies()   - Effective policies");
     console.log(" 10. deleteStaticPolicy()           - Delete policy");
+
+    // Final assertion summary
+    if (failures.length > 0) {
+      console.log(`\n=== ASSERTION FAILURES: ${failures.length} ===`);
+      for (const f of failures) {
+        console.log(`   - ${f}`);
+      }
+    } else {
+      console.log("\n=== ALL ASSERTIONS PASSED ===");
+    }
   } finally {
     // Cleanup if policy wasn't deleted
     if (policyId) {
@@ -257,6 +339,11 @@ async function main(): Promise<void> {
       }
     }
   }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

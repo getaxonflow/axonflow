@@ -23,6 +23,9 @@ import com.getaxonflow.sdk.types.CodeArtifact;
 import com.getaxonflow.sdk.exceptions.AxonFlowException;
 import com.getaxonflow.sdk.exceptions.PolicyViolationException;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * AxonFlow Code Governance - Java
  *
@@ -46,11 +49,23 @@ import com.getaxonflow.sdk.exceptions.PolicyViolationException;
  * Usage:
  *   export AXONFLOW_AGENT_URL=http://localhost:8080
  *   mvn compile exec:java
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class CodeGovernanceExample {
 
     private static final String CLIENT_ID = "code-governance-demo";
     private static String userToken;
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         // AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
@@ -106,6 +121,20 @@ public class CodeGovernanceExample {
         System.out.println("  - Track code generation for compliance");
         System.out.println("  - Build dashboards for AI code generation metrics");
         System.out.println();
+
+        // Final assertion summary
+        System.out.println("============================================================");
+        System.out.println("Assertion Summary");
+        System.out.println("============================================================");
+        if (failures.isEmpty()) {
+            System.out.println("All assertions passed!");
+        } else {
+            System.out.println("Failures (" + failures.size() + "):");
+            for (String f : failures) {
+                System.out.println("  - " + f);
+            }
+            System.exit(1);
+        }
     }
 
     private static void runCodeGenerationQuery(AxonFlow client, String query) {
@@ -122,8 +151,10 @@ public class CodeGovernanceExample {
 
             if (response.isBlocked()) {
                 System.out.printf("Status: BLOCKED - %s%n", response.getBlockReason());
+                assertCheck(response.getBlockReason() != null, "Blocked response has block reason");
             } else if (response.isSuccess()) {
                 System.out.println("Status: ALLOWED");
+                assertCheck(true, "Request processed successfully");
                 System.out.println();
 
                 // Display response preview
@@ -141,6 +172,8 @@ public class CodeGovernanceExample {
                     var policyInfo = response.getPolicyInfo();
                     System.out.printf("  Processing Time: %s%n", policyInfo.getProcessingTime());
                     System.out.printf("  Policies Evaluated: %s%n", policyInfo.getPoliciesEvaluated());
+                    assertCheck(policyInfo.getProcessingTime() != null, "PolicyInfo has processing time");
+                    assertCheck(policyInfo.getPoliciesEvaluated() != null, "PolicyInfo has policies evaluated count");
 
                     // Code Governance: Check for code artifact metadata
                     CodeArtifact codeArtifact = policyInfo.getCodeArtifact();
@@ -153,11 +186,15 @@ public class CodeGovernanceExample {
                         System.out.printf("  Lines: %d%n", codeArtifact.getLineCount());
                         System.out.printf("  Secrets Detected: %d%n", codeArtifact.getSecretsDetected());
                         System.out.printf("  Unsafe Patterns: %d%n", codeArtifact.getUnsafePatterns());
+                        assertCheck(codeArtifact.getLanguage() != null, "Code artifact has detected language");
+                        assertCheck(codeArtifact.getSizeBytes() >= 0, "Code artifact has valid size");
+                        assertCheck(codeArtifact.getLineCount() >= 0, "Code artifact has valid line count");
 
                         if (codeArtifact.getUnsafePatterns() > 0) {
                             System.out.println();
                             System.out.printf("  WARNING: %d unsafe code pattern(s) detected!%n", codeArtifact.getUnsafePatterns());
                             System.out.println("  Review carefully before using in production.");
+                            assertCheck(true, "Unsafe patterns detected and reported");
                         }
                     }
                 }

@@ -1,27 +1,45 @@
+#!/usr/bin/env python3
 """
 AxonFlow Policy Management - Test Pattern
+
+VALIDATION: This example exits with code 1 if any assertion fails.
 
 This example demonstrates how to test regex patterns
 before creating policies. This helps ensure your patterns
 work correctly and catch the right inputs.
+
+Run with: python test_pattern.py
+Prerequisites: docker compose up -d
 """
 
 import asyncio
 import os
+import sys
 
 from axonflow import AxonFlow
 
+failures: list[str] = []
 
-async def main() -> None:
+
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
+    else:
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
+
+
+async def main() -> int:
     """Test various regex patterns."""
-    client = AxonFlow(
-        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-        client_id="test-org-001",  # Used as tenant ID
-        client_secret="test-secret",  # Not validated in Community mode
-    )
-
     print("AxonFlow Policy Management - Pattern Testing")
     print("=" * 60)
+
+    client = AxonFlow(
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+        client_id="test-org-001",
+        client_secret="test-secret",
+    )
 
     try:
         # 1. Test a credit card pattern
@@ -40,13 +58,24 @@ async def main() -> None:
 
         cc_result = await client.test_pattern(cc_pattern, cc_test_inputs)
 
+        assert_check(cc_result is not None, "Credit card pattern test returned result")
+        assert_check(cc_result.valid, "Credit card pattern is valid regex")
+        assert_check(len(cc_result.matches) == len(cc_test_inputs), "All inputs were tested")
+
         print(f"   Pattern: {cc_pattern}")
         print(f"   Valid regex: {cc_result.valid}")
         print("\n   Results:")
 
-        for match in cc_result.matches:
-            icon = "\u2713 MATCH" if match.matched else "\u2717 no match"
+        # Verify expected matches
+        expected_cc_matches = [True, True, True, False, False, False, True]
+        for i, match in enumerate(cc_result.matches):
+            icon = "✓ MATCH" if match.matched else "✗ no match"
             print(f'   {icon}  "{match.input}"')
+            if i < len(expected_cc_matches):
+                assert_check(
+                    match.matched == expected_cc_matches[i],
+                    f"CC input '{match.input[:20]}...' matched as expected"
+                )
 
         # 2. Test a US SSN pattern
         print("\n2. Testing US SSN pattern...")
@@ -62,12 +91,21 @@ async def main() -> None:
 
         ssn_result = await client.test_pattern(ssn_pattern, ssn_test_inputs)
 
+        assert_check(ssn_result is not None, "SSN pattern test returned result")
+        assert_check(ssn_result.valid, "SSN pattern is valid regex")
+
         print(f"   Pattern: {ssn_pattern}")
         print("\n   Results:")
 
-        for match in ssn_result.matches:
-            icon = "\u2713 MATCH" if match.matched else "\u2717 no match"
+        expected_ssn_matches = [True, True, True, False, False]
+        for i, match in enumerate(ssn_result.matches):
+            icon = "✓ MATCH" if match.matched else "✗ no match"
             print(f'   {icon}  "{match.input}"')
+            if i < len(expected_ssn_matches):
+                assert_check(
+                    match.matched == expected_ssn_matches[i],
+                    f"SSN input '{match.input}' matched as expected"
+                )
 
         # 3. Test an email pattern
         print("\n3. Testing email pattern...")
@@ -84,11 +122,14 @@ async def main() -> None:
 
         email_result = await client.test_pattern(email_pattern, email_test_inputs)
 
+        assert_check(email_result is not None, "Email pattern test returned result")
+        assert_check(email_result.valid, "Email pattern is valid regex")
+
         print(f"   Pattern: {email_pattern}")
         print("\n   Results:")
 
         for match in email_result.matches:
-            icon = "\u2713 MATCH" if match.matched else "\u2717 no match"
+            icon = "✓ MATCH" if match.matched else "✗ no match"
             print(f'   {icon}  "{match.input}"')
 
         # 4. Test SQL injection pattern
@@ -106,12 +147,21 @@ async def main() -> None:
 
         sqli_result = await client.test_pattern(sqli_pattern, sqli_test_inputs)
 
+        assert_check(sqli_result is not None, "SQLi pattern test returned result")
+        assert_check(sqli_result.valid, "SQLi pattern is valid regex")
+
         print(f"   Pattern: {sqli_pattern[:50]}...")
         print("\n   Results:")
 
-        for match in sqli_result.matches:
-            icon = "\u2713 BLOCKED" if match.matched else "\u2717 allowed"
+        expected_sqli_matches = [True, True, True, False, False, True]
+        for i, match in enumerate(sqli_result.matches):
+            icon = "✓ BLOCKED" if match.matched else "✗ allowed"
             print(f'   {icon}  "{match.input}"')
+            if i < len(expected_sqli_matches):
+                assert_check(
+                    match.matched == expected_sqli_matches[i],
+                    f"SQLi input '{match.input[:20]}' matched as expected"
+                )
 
         # 5. Test an invalid pattern
         print("\n5. Testing invalid pattern (error handling)...")
@@ -121,31 +171,37 @@ async def main() -> None:
             invalid_result = await client.test_pattern(invalid_pattern, ["test"])
 
             if not invalid_result.valid:
+                assert_check(True, "Invalid pattern correctly marked as invalid")
                 print(f"   Pattern: {invalid_pattern}")
                 print("   Valid: false")
                 print(f"   Error: {invalid_result.error}")
+            else:
+                assert_check(False, "Invalid pattern should be marked as invalid")
         except Exception:
+            assert_check(True, "Server rejected invalid pattern (expected)")
             print("   Server rejected invalid pattern (expected)")
-
-        # Summary
-        print("\n" + "=" * 60)
-        print("Pattern Testing Summary")
-        print("=" * 60)
-        print(
-            """
-Best Practices:
-  1. Always test patterns before creating policies
-  2. Include edge cases in your test inputs
-  3. Test with real-world examples from your domain
-  4. Consider case sensitivity (use (?i) for case-insensitive)
-  5. Use word boundaries (\\b) to avoid partial matches
-"""
-        )
 
     except Exception as e:
         print(f"\nError: {e}")
-        raise SystemExit(1)
+        failures.append(f"Pattern testing failed: {e}")
+
+    print("\n" + "=" * 60)
+    if not failures:
+        print("✓ ALL TESTS PASSED")
+        print()
+        print("Pattern Testing validated:")
+        print("  - Credit card pattern matching")
+        print("  - SSN pattern matching")
+        print("  - Email pattern matching")
+        print("  - SQL injection pattern matching")
+        print("  - Invalid pattern handling")
+        return 0
+    else:
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
+        for f in failures:
+            print(f"   - {f}")
+        return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

@@ -6,12 +6,27 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Azure OpenAI Integration Example - Java
  * Demonstrates Gateway Mode and Proxy Mode with AxonFlow
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class AzureOpenAIExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     private static final String AXONFLOW_URL = System.getenv().getOrDefault("AXONFLOW_URL", "http://localhost:8080");
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
@@ -40,21 +55,39 @@ public class AzureOpenAIExample {
         System.out.println("Auth: " + detectAuthType(endpoint));
         System.out.println();
 
+        boolean gatewaySuccess = false;
+        boolean proxySuccess = false;
+
         // Example 1: Gateway Mode (recommended)
         System.out.println("--- Example 1: Gateway Mode ---");
         try {
-            gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion);
+            gatewaySuccess = gatewayModeExample(endpoint, apiKey, deploymentName, apiVersion);
         } catch (Exception e) {
             System.err.println("Gateway mode error: " + e.getMessage());
         }
+        assertCheck(gatewaySuccess, "Gateway mode example completed successfully");
         System.out.println();
 
         // Example 2: Proxy Mode
         System.out.println("--- Example 2: Proxy Mode ---");
         try {
-            proxyModeExample();
+            proxySuccess = proxyModeExample();
         } catch (Exception e) {
             System.err.println("Proxy mode error: " + e.getMessage());
+        }
+        assertCheck(proxySuccess, "Proxy mode example completed successfully");
+
+        // Final assertion summary
+        System.out.println();
+        System.out.println("=".repeat(50));
+        if (!failures.isEmpty()) {
+            System.out.println("FAILED: " + failures.size() + " assertion(s) failed:");
+            for (String failure : failures) {
+                System.out.println("  - " + failure);
+            }
+            System.exit(1);
+        } else {
+            System.out.println("All assertions passed!");
         }
     }
 
@@ -65,7 +98,7 @@ public class AzureOpenAIExample {
         return "api-key (Classic)";
     }
 
-    private static void gatewayModeExample(String endpoint, String apiKey,
+    private static boolean gatewayModeExample(String endpoint, String apiKey,
                                            String deploymentName, String apiVersion)
             throws IOException, InterruptedException {
 
@@ -101,9 +134,12 @@ public class AzureOpenAIExample {
         String contextId = extractJsonValue(preCheckResp.body(), "context_id");
         String approved = extractJsonValue(preCheckResp.body(), "approved");
 
+        assertCheck(contextId != null && !contextId.isEmpty(), "Pre-check returned contextId");
+        assertCheck("true".equals(approved), "Pre-check approved the request");
+
         if (!"true".equals(approved)) {
             System.out.println("Request blocked by policy");
-            return;
+            return false;
         }
         System.out.println("Pre-check passed (context: " + contextId + ")");
 
@@ -145,6 +181,9 @@ public class AzureOpenAIExample {
         long latency = System.currentTimeMillis() - startTime;
         String content = extractAzureContent(azureResp.body());
 
+        assertCheck(content != null && !content.isEmpty(), "Azure OpenAI returned response content");
+        assertCheck(latency > 0, "LLM call latency recorded");
+
         System.out.println("Response received (latency: " + latency + "ms)");
         System.out.println("Response: " + truncate(content, 200));
 
@@ -178,15 +217,17 @@ public class AzureOpenAIExample {
 
             if (auditResp.statusCode() == 200 || auditResp.statusCode() == 202 || auditResp.statusCode() == 204) {
                 System.out.println("Audit logged successfully");
+                assertCheck(true, "Audit logging completed successfully");
             } else {
                 System.out.println("Audit warning: " + auditResp.body());
             }
         } catch (Exception e) {
             System.out.println("Audit warning: " + e.getMessage());
         }
+        return true;
     }
 
-    private static void proxyModeExample() throws IOException, InterruptedException {
+    private static boolean proxyModeExample() throws IOException, InterruptedException {
         System.out.println("Sending request through AxonFlow proxy...");
 
         long startTime = System.currentTimeMillis();
@@ -223,6 +264,11 @@ public class AzureOpenAIExample {
         System.out.println("Response received (latency: " + latency + "ms)");
         System.out.println("Blocked: " + blocked);
         System.out.println("Response: " + truncate(responseText, 300));
+
+        assertCheck(!"true".equals(blocked), "Proxy mode request was not blocked");
+        assertCheck(latency > 0, "Proxy mode latency recorded");
+
+        return true;
     }
 
     private static String extractNestedDataValue(String json) {

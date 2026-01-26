@@ -16,6 +16,8 @@
 //
 //	export AXONFLOW_AGENT_URL=http://localhost:8080
 //	go run main.go
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -27,10 +29,16 @@ import (
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
 
-var (
-	passCount int
-	failCount int
-)
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow Budget Enforcement Test - Go (Issue #1082)")
@@ -121,7 +129,7 @@ func main() {
 				break
 			}
 			fmt.Printf("ERROR: %v\n", err)
-			failCount++
+			assertCheck(false, fmt.Sprintf("Request %d completed without error", i))
 			continue
 		}
 
@@ -142,66 +150,33 @@ func main() {
 	fmt.Println("---------------------------")
 
 	// Test 1: Request was blocked
-	if blockedResponse != nil {
-		fmt.Println("   [PASS] Request was blocked when budget exceeded")
-		passCount++
-	} else {
-		fmt.Println("   [FAIL] Request was NOT blocked - budget enforcement not working!")
-		failCount++
-	}
+	assertCheck(blockedResponse != nil, "Request was blocked when budget exceeded")
 
 	// Test 2: BudgetInfo is present in response
 	if blockedResponse != nil && blockedResponse.BudgetInfo != nil {
-		fmt.Println("   [PASS] BudgetInfo is included in blocked response")
-		passCount++
+		assertCheck(true, "BudgetInfo is included in blocked response")
 
 		// Test 3: BudgetInfo shows exceeded status
-		if blockedResponse.BudgetInfo.Exceeded {
-			fmt.Println("   [PASS] BudgetInfo.Exceeded is true")
-			passCount++
-		} else {
-			fmt.Println("   [FAIL] BudgetInfo.Exceeded should be true")
-			failCount++
-		}
+		assertCheck(blockedResponse.BudgetInfo.Exceeded, "BudgetInfo.Exceeded is true")
 
 		// Test 4: Percentage >= 100
-		if blockedResponse.BudgetInfo.Percentage >= 100 {
-			fmt.Printf("   [PASS] BudgetInfo.Percentage is %.1f%% (>= 100%%)\n", blockedResponse.BudgetInfo.Percentage)
-			passCount++
-		} else {
-			fmt.Printf("   [FAIL] BudgetInfo.Percentage is %.1f%% (expected >= 100%%)\n", blockedResponse.BudgetInfo.Percentage)
-			failCount++
-		}
+		assertCheck(blockedResponse.BudgetInfo.Percentage >= 100,
+			fmt.Sprintf("BudgetInfo.Percentage is %.1f%% (>= 100%%)", blockedResponse.BudgetInfo.Percentage))
 
 		// Test 5: Action is "block"
-		if blockedResponse.BudgetInfo.Action == "block" {
-			fmt.Println("   [PASS] BudgetInfo.Action is 'block'")
-			passCount++
-		} else {
-			fmt.Printf("   [FAIL] BudgetInfo.Action is '%s' (expected 'block')\n", blockedResponse.BudgetInfo.Action)
-			failCount++
-		}
+		assertCheck(blockedResponse.BudgetInfo.Action == "block",
+			fmt.Sprintf("BudgetInfo.Action is '%s' (expected 'block')", blockedResponse.BudgetInfo.Action))
 	} else if blockedResponse != nil {
-		fmt.Println("   [FAIL] BudgetInfo is missing from blocked response")
-		failCount++
+		assertCheck(false, "BudgetInfo is missing from blocked response")
 	}
 
 	// Test 6: Verify budget status via API
 	status, err := client.GetBudgetStatus(ctx, budgetID)
 	if err != nil {
-		fmt.Printf("   [FAIL] Could not get budget status: %v\n", err)
-		failCount++
+		assertCheck(false, fmt.Sprintf("Could not get budget status: %v", err))
 	} else {
-		if status.IsBlocked {
-			fmt.Println("   [PASS] GetBudgetStatus confirms IsBlocked=true")
-			passCount++
-		} else if status.IsExceeded {
-			fmt.Println("   [PASS] GetBudgetStatus confirms IsExceeded=true")
-			passCount++
-		} else {
-			fmt.Println("   [FAIL] GetBudgetStatus shows budget is not exceeded")
-			failCount++
-		}
+		assertCheck(status.IsBlocked || status.IsExceeded,
+			fmt.Sprintf("GetBudgetStatus confirms budget exceeded (IsBlocked=%v, IsExceeded=%v)", status.IsBlocked, status.IsExceeded))
 	}
 
 	// ========================================
@@ -209,14 +184,15 @@ func main() {
 	// ========================================
 	fmt.Println()
 	fmt.Println("====================================================")
-	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
-
-	if failCount == 0 {
-		fmt.Println("Budget enforcement is working correctly!")
-	} else {
+	if len(failures) > 0 {
+		fmt.Printf("\n❌ %d assertion(s) failed:\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("   - %s\n", f)
+		}
 		fmt.Println("Budget enforcement has issues - check the failures above.")
 		os.Exit(1)
 	}
+	fmt.Println("Budget enforcement is working correctly!")
 }
 
 // isBudgetBlockError checks if an error is a budget block error (HTTP 402)

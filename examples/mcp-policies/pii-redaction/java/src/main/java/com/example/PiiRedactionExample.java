@@ -137,7 +137,7 @@ public class PiiRedactionExample {
             System.out.println("Test 4: Request-phase PII Blocking (India PAN)");
             System.out.println("----------------------------------------------");
             try {
-                ConnectorResponse resp = client.mcpQuery("postgres", "SELECT * FROM customers WHERE pan = 'ABCDE1234F'");
+                ConnectorResponse resp = client.mcpQuery("postgres", "SELECT * FROM customers WHERE pan = 'ABCPD1234E'");
                 if (!resp.isSuccess()) {
                     assertCheck(true, "India PAN in query blocked as expected");
                 } else {

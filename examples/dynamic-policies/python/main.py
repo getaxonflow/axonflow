@@ -2,9 +2,7 @@
 """
 Dynamic Policy Management Example - Python
 
-Demonstrates CRUD operations for dynamic policies (LLM-powered policies).
-Dynamic policies use an LLM to evaluate complex, context-aware rules that
-can't be expressed with simple regex patterns.
+Demonstrates and VALIDATES CRUD operations for dynamic policies.
 
 SDK Methods demonstrated:
   - list_dynamic_policies()
@@ -12,28 +10,43 @@ SDK Methods demonstrated:
   - get_dynamic_policy()
   - update_dynamic_policy()
   - delete_dynamic_policy()
-  - toggle_dynamic_policy()
   - get_effective_dynamic_policies()
 
-Usage:
-    python main.py
+VALIDATION: This example exits with code 1 if any assertion fails.
 
-Environment:
-    AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
-    AXONFLOW_CLIENT_ID     - OAuth2 client ID (required for dynamic policies)
-    AXONFLOW_CLIENT_SECRET - OAuth2 client secret (required for dynamic policies)
+Run with: python main.py
+Prerequisites: docker compose up -d
 """
 
 import asyncio
 import os
-from axonflow import AxonFlow, CreateDynamicPolicyRequest, UpdateDynamicPolicyRequest, DynamicPolicyCondition, DynamicPolicyAction
+import sys
+import time
+
+from axonflow import (
+    AxonFlow,
+    CreateDynamicPolicyRequest,
+    UpdateDynamicPolicyRequest,
+    DynamicPolicyCondition,
+    DynamicPolicyAction,
+)
+
+failures: list[str] = []
 
 
-async def main():
-    # Initialize client
-    endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
+def assert_check(condition: bool, message: str) -> None:
+    """Check a condition and record failure if false."""
+    if condition:
+        print(f"   ✓ PASS: {message}")
+    else:
+        print(f"   ❌ FAIL: {message}")
+        failures.append(message)
+
+
+async def main() -> int:
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080")
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "dynamic-policies-example")
-    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")  # Optional for community mode
+    client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
     client = AxonFlow(
         endpoint=endpoint,
@@ -41,83 +54,123 @@ async def main():
         client_secret=client_secret if client_secret else None,
     )
 
-    print("=== Dynamic Policy Management Example ===\n")
+    print("AxonFlow Dynamic Policy Management - Python SDK")
+    print("=" * 50)
+    print()
 
+    policy_name = f"test-policy-{int(time.time())}"
     created_policy = None
 
     try:
         # 1. List existing dynamic policies
-        print("1. Listing existing dynamic policies...")
+        print("1. ListDynamicPolicies - Listing existing policies...")
         policies = await client.list_dynamic_policies()
+        assert_check(isinstance(policies, list), "list_dynamic_policies returns list")
         print(f"   Found {len(policies)} dynamic policies")
-        for p in policies:
-            print(f"   - {p.id}: {p.name} (enabled: {p.enabled})")
+        print()
 
         # 2. Create a new dynamic policy
-        print("\n2. Creating a new dynamic policy...")
+        print("2. CreateDynamicPolicy - Creating test policy...")
         new_policy = CreateDynamicPolicyRequest(
-            name="financial-advice-guard",
-            description="Block requests that ask for specific financial advice",
-            type="risk",  # Dynamic policy type: risk, content, user, cost
+            name=policy_name,
+            description="Test policy for SDK validation",
+            type="risk",
             conditions=[
                 DynamicPolicyCondition(
                     field="query",
                     operator="contains",
-                    value="investment",
+                    value="test-blocked-keyword",
                 )
             ],
             actions=[
                 DynamicPolicyAction(
                     type="block",
-                    config={"message": "Financial advice requests are not allowed"},
+                    config={"message": "Test block message"},
                 )
             ],
             enabled=True,
         )
 
         created_policy = await client.create_dynamic_policy(new_policy)
-        print(f"   Created policy: {created_policy.name} (ID: {created_policy.id})")
+        assert_check(created_policy.id != "", "Created policy has ID")
+        assert_check(created_policy.name == policy_name, "Created policy name matches")
+        assert_check(created_policy.enabled is True, "Created policy is enabled")
+        print(f"   Created: {created_policy.name} (ID: {created_policy.id})")
+        print()
 
         # 3. Get the policy by ID
-        print("\n3. Getting policy by ID...")
+        print("3. GetDynamicPolicy - Retrieving policy by ID...")
         policy = await client.get_dynamic_policy(created_policy.id)
-        print(f"   Policy: {policy.name}")
-        print(f"   Description: {policy.description}")
-        print(f"   Type: {policy.type}")
-        print(f"   Conditions: {len(policy.conditions or [])} defined")
-        print(f"   Actions: {len(policy.actions or [])} defined")
+        assert_check(policy.id == created_policy.id, "Retrieved policy ID matches")
+        assert_check(policy.name == policy_name, "Retrieved policy name matches")
+        assert_check(len(policy.conditions or []) == 1, "Policy has 1 condition")
+        assert_check(len(policy.actions or []) == 1, "Policy has 1 action")
+        print()
 
         # 4. Update the policy
-        print("\n4. Updating policy description...")
-        update = UpdateDynamicPolicyRequest(
-            description="Block requests asking for specific financial or investment advice",
-        )
+        print("4. UpdateDynamicPolicy - Updating description...")
+        new_desc = "Updated description for SDK validation"
+        update = UpdateDynamicPolicyRequest(description=new_desc)
         updated = await client.update_dynamic_policy(created_policy.id, update)
-        print(f"   Updated description: {updated.description}")
+        assert_check(updated.description == new_desc, "Description was updated")
+        print()
 
-        # 5. Toggle policy (disable it) - using update since PATCH not supported
-        print("\n5. Toggling policy (disabling)...")
+        # 5. Toggle policy (disable it)
+        print("5. ToggleDynamicPolicy - Disabling policy...")
         toggle_update = UpdateDynamicPolicyRequest(enabled=False)
         toggled = await client.update_dynamic_policy(created_policy.id, toggle_update)
-        print(f"   Policy enabled: {toggled.enabled}")
+        assert_check(toggled.enabled is False, "Policy was disabled")
+        print()
 
-        # 6. Get effective dynamic policies
-        print("\n6. Getting effective dynamic policies...")
+        # 6. Get effective dynamic policies (should not include disabled)
+        print("6. GetEffectiveDynamicPolicies - Checking effective policies...")
         effective = await client.get_effective_dynamic_policies()
-        print(f"   Found {len(effective)} effective dynamic policies")
+        our_policy_effective = any(p.id == created_policy.id for p in effective)
+        assert_check(not our_policy_effective, "Disabled policy not in effective list")
+        print(f"   Found {len(effective)} effective policies")
+        print()
+
+        # 7. Re-enable and verify
+        print("7. ToggleDynamicPolicy - Re-enabling policy...")
+        enable_update = UpdateDynamicPolicyRequest(enabled=True)
+        reenabled = await client.update_dynamic_policy(created_policy.id, enable_update)
+        assert_check(reenabled.enabled is True, "Policy was re-enabled")
+        print()
 
     finally:
-        # 7. Delete the test policy (cleanup)
+        # 8. Delete the test policy (cleanup)
         if created_policy:
-            print("\n7. Cleaning up - deleting test policy...")
+            print("8. DeleteDynamicPolicy - Cleaning up...")
             try:
                 await client.delete_dynamic_policy(created_policy.id)
-                print("   Policy deleted successfully")
+                # Verify deletion
+                try:
+                    await client.get_dynamic_policy(created_policy.id)
+                    assert_check(False, "Policy should not exist after deletion")
+                except Exception:
+                    assert_check(True, "Policy deleted successfully")
             except Exception as e:
-                print(f"   Failed to delete policy: {e}")
+                failures.append(f"Failed to delete policy: {e}")
+            print()
 
-    print("\n=== Dynamic Policy Example Complete ===")
+    print("=" * 50)
+    if not failures:
+        print("✓ ALL TESTS PASSED")
+        print()
+        print("Dynamic Policy CRUD operations validated:")
+        print("  - list_dynamic_policies()")
+        print("  - create_dynamic_policy()")
+        print("  - get_dynamic_policy()")
+        print("  - update_dynamic_policy()")
+        print("  - delete_dynamic_policy()")
+        print("  - get_effective_dynamic_policies()")
+        return 0
+    else:
+        print(f"❌ {len(failures)} TEST(S) FAILED:")
+        for f in failures:
+            print(f"   - {f}")
+        return 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

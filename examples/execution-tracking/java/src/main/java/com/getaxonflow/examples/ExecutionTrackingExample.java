@@ -5,6 +5,8 @@
  * and WCP workflows using the AxonFlow Java SDK.
  *
  * Issue #1075 - EPIC #1074: Unified Workflow Infrastructure
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 package com.getaxonflow.examples;
@@ -14,7 +16,21 @@ import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.execution.ExecutionTypes.*;
 import com.getaxonflow.sdk.types.workflow.WorkflowTypes.*;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class ExecutionTrackingExample {
+
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         System.out.println("AxonFlow Unified Execution Tracking Example - Java");
@@ -46,6 +62,8 @@ public class ExecutionTrackingExample {
 
             CreateWorkflowResponse workflow = client.createWorkflow(createRequest);
             System.out.println("Workflow ID: " + workflow.getWorkflowId());
+            assertCheck(workflow != null, "createWorkflow returned response");
+            assertCheck(workflow.getWorkflowId() != null && !workflow.getWorkflowId().isEmpty(), "Workflow has ID");
             System.out.println();
 
             // Step 2: Complete some steps
@@ -92,8 +110,12 @@ public class ExecutionTrackingExample {
                 System.out.println("  Workflow: " + status.getWorkflowName());
                 System.out.println("  Status: " + status.getStatus().getValue());
                 System.out.println("  Steps: " + (status.getSteps() != null ? status.getSteps().size() : 0));
+                assertCheck(status != null, "getWorkflow returned status");
+                assertCheck(status.getWorkflowName() != null, "Workflow status has name");
+                assertCheck(status.getStatus() != null, "Workflow status has status value");
             } catch (Exception e) {
                 System.out.println("Error getting status: " + e.getMessage());
+                assertCheck(false, "getWorkflow failed: " + e.getMessage());
             }
             System.out.println();
 
@@ -102,6 +124,8 @@ public class ExecutionTrackingExample {
             System.out.println("  ExecutionType constants:");
             System.out.println("    - MAP: " + ExecutionType.MAP_PLAN.getValue());
             System.out.println("    - WCP: " + ExecutionType.WCP_WORKFLOW.getValue());
+            assertCheck("map_plan".equals(ExecutionType.MAP_PLAN.getValue()), "ExecutionType.MAP_PLAN has correct value");
+            assertCheck("wcp_workflow".equals(ExecutionType.WCP_WORKFLOW.getValue()), "ExecutionType.WCP_WORKFLOW has correct value");
             System.out.println();
             System.out.println("  ExecutionStatusValue constants:");
             System.out.println("    - Pending: " + ExecutionStatusValue.PENDING.getValue());
@@ -113,6 +137,9 @@ public class ExecutionTrackingExample {
             System.out.println("    - IsTerminal(completed): " + StepStatusValue.COMPLETED.isTerminal());
             System.out.println("    - IsTerminal(running): " + StepStatusValue.RUNNING.isTerminal());
             System.out.println("    - IsBlocking(blocked): " + StepStatusValue.BLOCKED.isBlocking());
+            assertCheck(StepStatusValue.COMPLETED.isTerminal(), "COMPLETED is terminal status");
+            assertCheck(!StepStatusValue.RUNNING.isTerminal(), "RUNNING is not terminal status");
+            assertCheck(StepStatusValue.BLOCKED.isBlocking(), "BLOCKED is blocking status");
             System.out.println();
 
             // Step 5: Try unified execution API (may fail if backend not wired)
@@ -219,6 +246,21 @@ public class ExecutionTrackingExample {
             System.out.println("    - ExecutionType (map_plan, wcp_workflow)");
             System.out.println("    - ExecutionStatusValue with isTerminal()");
             System.out.println("    - StepStatusValue with isTerminal(), isBlocking()");
+
+            // Final assertion summary
+            System.out.println();
+            System.out.println("=".repeat(55));
+            System.out.println("Assertion Summary");
+            System.out.println("=".repeat(55));
+            if (failures.isEmpty()) {
+                System.out.println("All assertions passed!");
+            } else {
+                System.out.println("Failures (" + failures.size() + "):");
+                for (String f : failures) {
+                    System.out.println("  - " + f);
+                }
+                System.exit(1);
+            }
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());

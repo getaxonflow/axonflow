@@ -4,6 +4,8 @@
 // 1. MAP policy enforcement with PolicyInfo in execution response
 // 2. WCP policy enforcement with PoliciesEvaluated/PoliciesMatched in step gate response
 // 3. Audit log verification to confirm operations are logged
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -14,6 +16,17 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("==========================================")
@@ -221,6 +234,13 @@ func main() {
 	// Summary
 	// ==========================================
 
+	// Assertions to validate actual functionality
+	fmt.Println("Validating workflow policy functionality...")
+	assertCheck(workflow.WorkflowID != "", "Workflow was created with valid ID")
+	assertCheck(gate.Decision != "", "Step gate returned a decision")
+	assertCheck(gate.Decision == "allow" || gate.Decision == "block" || gate.Decision == "require_approval",
+		"Step gate decision is valid (allow/block/require_approval)")
+
 	fmt.Println("==========================================")
 	fmt.Println("Summary")
 	fmt.Println("==========================================")
@@ -241,6 +261,14 @@ func main() {
 	fmt.Println("  - Includes: Allowed, AppliedPolicies, RiskScore")
 	fmt.Println("  - Returns 403 Forbidden if policies block execution")
 	fmt.Println()
+
+	if len(failures) > 0 {
+		fmt.Printf("FAILED: %d assertions failed\n", len(failures))
+		for _, f := range failures {
+			fmt.Printf("  - %s\n", f)
+		}
+		os.Exit(1)
+	}
 }
 
 func getEnv(key, defaultValue string) string {

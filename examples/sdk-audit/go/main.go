@@ -9,6 +9,8 @@
 // 5. Audit logging
 // 6. Error handling (blocked requests)
 // 7. Connector operations (list, install, uninstall)
+//
+// VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
 import (
@@ -19,6 +21,17 @@ import (
 
 	"github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 func main() {
 	fmt.Println("AxonFlow SDK Comprehensive Audit - Go")
@@ -199,13 +212,24 @@ func main() {
 		passed++
 	}
 
+	// Additional assertions using assertCheck pattern
+	fmt.Println("\nValidating critical functionality...")
+	assertCheck(passed > 0, "At least one test passed")
+	assertCheck(approvedContextID != "" || failed > 0, "Either got context ID or test recorded failure")
+
 	// Summary
 	fmt.Println()
 	fmt.Println("======================================")
 	fmt.Printf("Summary: %d passed, %d failed\n", passed, failed)
 	fmt.Println()
 
-	if failed > 0 {
+	if failed > 0 || len(failures) > 0 {
+		if len(failures) > 0 {
+			fmt.Printf("Additional failures: %d\n", len(failures))
+			for _, f := range failures {
+				fmt.Printf("  - %s\n", f)
+			}
+		}
 		os.Exit(1)
 	}
 }

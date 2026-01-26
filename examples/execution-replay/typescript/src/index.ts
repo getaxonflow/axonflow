@@ -7,7 +7,7 @@
  * 3. getExecutionTimeline()   - View execution timeline
  * 4. exportExecution()        - Export execution for compliance
  *
- * VALIDATION: This example exits with code 1 if any API call fails.
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
  * Run with: npx ts-node src/index.ts
@@ -22,12 +22,12 @@ function getEnv(key: string, defaultVal: string): string {
   return process.env[key] || defaultVal;
 }
 
-function assert(condition: boolean, message: string): void {
-  if (!condition) {
-    failures.push(message);
-    console.log(`   \u274C FAIL: ${message}`);
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   ✓ PASS: ${message}`);
   } else {
-    console.log(`   \u2713 PASS: ${message}`);
+    console.log(`   ❌ FAIL: ${message}`);
+    failures.push(message);
   }
 }
 
@@ -51,11 +51,11 @@ async function main(): Promise<void> {
   try {
     listResult = await client.listExecutions({ limit: 10 });
   } catch (error) {
-    console.log(`   \u274C FATAL: listExecutions failed: ${error}`);
+    console.log(`   ❌ FATAL: listExecutions failed: ${error}`);
     process.exit(1);
   }
 
-  assert(listResult.total >= 0, 'total is a valid count');
+  assertCheck(listResult.total >= 0, 'total is a valid count');
   console.log(`   Total executions: ${listResult.total}`);
 
   if (listResult.executions.length > 0) {
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
         `     - ${exec.requestId}: ${exec.workflowName || 'N/A'} ` +
           `(${exec.completedSteps}/${exec.totalSteps} steps, status=${exec.status})`
       );
-      assert(exec.requestId !== '', 'Execution has valid requestId');
+      assertCheck(exec.requestId !== '', 'Execution has valid requestId');
     }
   } else {
     console.log('   No executions found (run a workflow first)');
@@ -84,13 +84,13 @@ async function main(): Promise<void> {
     try {
       execDetail = await client.getExecution(executionId);
     } catch (error) {
-      console.log(`   \u274C FATAL: getExecution failed: ${error}`);
+      console.log(`   ❌ FATAL: getExecution failed: ${error}`);
       process.exit(1);
     }
 
-    assert(execDetail.summary.requestId === executionId, 'Summary requestId matches');
-    assert(execDetail.summary.status !== '', 'Summary has valid status');
-    assert(execDetail.summary.totalSteps >= 0, 'Summary has valid totalSteps');
+    assertCheck(execDetail.summary.requestId === executionId, 'Summary requestId matches');
+    assertCheck(execDetail.summary.status !== '', 'Summary has valid status');
+    assertCheck(execDetail.summary.totalSteps >= 0, 'Summary has valid totalSteps');
 
     console.log(`   Execution: ${execDetail.summary.requestId}`);
     console.log(`   Status: ${execDetail.summary.status}`);
@@ -109,11 +109,11 @@ async function main(): Promise<void> {
     try {
       timeline = await client.getExecutionTimeline(executionId);
     } catch (error) {
-      console.log(`   \u274C FATAL: getExecutionTimeline failed: ${error}`);
+      console.log(`   ❌ FATAL: getExecutionTimeline failed: ${error}`);
       process.exit(1);
     }
 
-    assert(Array.isArray(timeline), 'Timeline returns valid array');
+    assertCheck(Array.isArray(timeline), 'Timeline returns valid array');
     console.log(`   Timeline entries: ${timeline.length}`);
     for (const entry of timeline.slice(0, 3)) {
       const errorFlag = entry.hasError ? ' [ERROR]' : '';
@@ -132,11 +132,11 @@ async function main(): Promise<void> {
         includeOutput: true,
       });
     } catch (error) {
-      console.log(`   \u274C FATAL: exportExecution failed: ${error}`);
+      console.log(`   ❌ FATAL: exportExecution failed: ${error}`);
       process.exit(1);
     }
 
-    assert(exportData !== null && exportData !== undefined, 'Export returns valid data');
+    assertCheck(exportData !== null && exportData !== undefined, 'Export returns valid data');
     let prettyExport = JSON.stringify(exportData, null, 2);
     if (prettyExport.length > 300) {
       prettyExport = prettyExport.substring(0, 300) + '\n     ... (truncated)';
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
   // ========================================
   console.log('='.repeat(44));
   if (failures.length === 0) {
-    console.log('\u2713 ALL TESTS PASSED');
+    console.log('ALL TESTS PASSED');
     console.log();
     console.log('Methods validated:');
     console.log('  1. listExecutions()         - List with pagination');
@@ -158,12 +158,15 @@ async function main(): Promise<void> {
     console.log('  3. getExecutionTimeline()   - Get timeline view');
     console.log('  4. exportExecution()        - Export for compliance');
   } else {
-    console.log(`\u274C ${failures.length} TEST(S) FAILED:`);
+    console.log(`${failures.length} TEST(S) FAILED:`);
     failures.forEach((f) => {
       console.log(`   - ${f}`);
     });
-    process.exit(1);
   }
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main();
+main().catch((err) => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});

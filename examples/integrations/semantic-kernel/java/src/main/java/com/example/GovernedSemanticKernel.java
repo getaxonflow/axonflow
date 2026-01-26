@@ -28,10 +28,22 @@ import java.util.function.Function;
  *
  * Usage:
  *     mvn compile exec:java
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class GovernedSemanticKernel {
 
     private static final String CLIENT_ID = "semantic-kernel-example";
+    private static final List<String> failures = new ArrayList<>();
+
+    private static void assertCheck(boolean condition, String message) {
+        if (condition) {
+            System.out.println("   ✓ PASS: " + message);
+        } else {
+            System.out.println("   ❌ FAIL: " + message);
+            failures.add(message);
+        }
+    }
 
     public static void main(String[] args) {
         // First check if AxonFlow is running
@@ -234,6 +246,8 @@ public class GovernedSemanticKernel {
                 System.out.println("   Result: " + result1.result);
                 System.out.println("   ✓ Safe plugin call succeeded!");
             }
+            assertCheck(result1.success, "Safe summarize plugin call succeeded");
+            assertCheck(result1.result != null && !result1.result.isEmpty(), "Summarize plugin returned result");
 
             // Test 2: Safe prompt
             System.out.println("\n" + "=".repeat(60));
@@ -247,6 +261,8 @@ public class GovernedSemanticKernel {
                 System.out.println("   Result: " + result2.result);
                 System.out.println("   ✓ Safe prompt succeeded!");
             }
+            assertCheck(result2.success, "Safe prompt invocation succeeded");
+            assertCheck(result2.result != null, "Prompt returned a result");
 
             // Test 3: PII Detection
             System.out.println("\n" + "=".repeat(60));
@@ -259,6 +275,7 @@ public class GovernedSemanticKernel {
             if (!result3.success && result3.blockReason != null) {
                 System.out.println("   ✓ PII correctly detected and blocked!");
             }
+            assertCheck(!result3.success || result3.blockReason != null, "PII (SSN) was detected in plugin call");
 
             // Test 4: SQL Injection
             System.out.println("\n" + "=".repeat(60));
@@ -271,6 +288,7 @@ public class GovernedSemanticKernel {
             if (!result4.success && result4.blockReason != null) {
                 System.out.println("   ✓ SQL injection correctly blocked!");
             }
+            assertCheck(!result4.success || result4.blockReason != null, "SQL injection attempt was blocked");
 
             // Test 5: Multi-plugin workflow
             System.out.println("\n" + "=".repeat(60));
@@ -300,10 +318,23 @@ public class GovernedSemanticKernel {
                 System.out.println("\n   Final result: " + truncate(currentInput, 50));
                 System.out.println("   ✓ Multi-plugin workflow completed!");
             }
+            assertCheck(workflowSuccess, "Multi-plugin workflow completed successfully");
 
             System.out.println("\n" + "=".repeat(60));
             System.out.println("All tests completed!");
             System.out.println("=".repeat(60));
+
+            // Final assertion summary
+            System.out.println();
+            if (!failures.isEmpty()) {
+                System.out.println("FAILED: " + failures.size() + " assertion(s) failed:");
+                for (String failure : failures) {
+                    System.out.println("  - " + failure);
+                }
+                System.exit(1);
+            } else {
+                System.out.println("All assertions passed!");
+            }
         }
     }
 

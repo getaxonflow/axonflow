@@ -16,26 +16,39 @@
  *   cd examples/mcp-audit/typescript
  *   npm install
  *   npx tsx index.ts
+ *
+ * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import { AxonFlow } from "@axonflow/sdk";
 
+const failures: string[] = [];
+
+function assertCheck(condition: boolean, message: string): void {
+  if (condition) {
+    console.log(`   PASS: ${message}`);
+  } else {
+    console.log(`   FAIL: ${message}`);
+    failures.push(message);
+  }
+}
+
 async function main() {
   // Get configuration from environment
-  const agentUrl = process.env.AGENT_URL || "http://localhost:8080";
-  const clientId = process.env.CLIENT_ID || "demo-client";
-  const clientSecret = process.env.CLIENT_SECRET || "demo-secret";
+  const endpoint = process.env.AXONFLOW_ENDPOINT || "http://localhost:8080";
+  const clientId = process.env.AXONFLOW_CLIENT_ID || "demo-client";
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET || "";
 
   console.log("==============================================");
   console.log("MCP Audit Logging Example - TypeScript SDK");
   console.log("==============================================");
-  console.log(`Agent URL: ${agentUrl}`);
+  console.log(`Endpoint: ${endpoint}`);
   console.log(`Client ID: ${clientId}`);
   console.log();
 
   // Create AxonFlow client
   const client = new AxonFlow({
-    agentUrl,
+    endpoint,
     clientId,
     clientSecret,
   });
@@ -44,21 +57,28 @@ async function main() {
   console.log("Test 1: Execute simple MCP query...");
   console.log("----------------------------------------------");
 
+  let test1Success = false;
   try {
     const result = await client.mcpQuery({
       connector: "postgres",
       statement: "SELECT 1 as test_value, 'hello' as test_message",
     });
     console.log("SUCCESS: Query executed");
-    console.log(`  Row count: ${result.rowCount}`);
-    console.log(`  Duration: ${result.durationMs}ms`);
-    if (result.policyInfo) {
-      console.log(`  Policies evaluated: ${result.policyInfo.policiesEvaluated}`);
-      console.log(`  Blocked: ${result.policyInfo.blocked}`);
-      console.log(`  Redacted fields: ${result.policyInfo.redactedFields}`);
+    console.log(`  Success: ${result.success}`);
+    if (result.policy_info) {
+      console.log(`  Policies evaluated: ${result.policy_info.policies_evaluated}`);
+      console.log(`  Blocked: ${result.policy_info.blocked}`);
+      console.log(`  Redacted: ${result.redacted ?? false}`);
+      console.log(`  Redacted fields: ${result.redacted_fields?.join(", ") || "none"}`);
+      console.log(`  Processing time: ${result.policy_info.processing_time_ms}ms`);
     }
+    test1Success = true;
+    assertCheck(result.success === true, "mcpQuery returns success=true");
+    assertCheck(result.policy_info !== undefined, "mcpQuery returns policy_info for audit logging");
+    assertCheck(result.policy_info?.blocked === false, "Simple query is not blocked");
   } catch (e) {
     console.log(`Query error (expected if postgres not configured): ${e}`);
+    // Not adding to failures as postgres may not be configured
   }
   console.log();
 
@@ -66,21 +86,26 @@ async function main() {
   console.log("Test 2: Execute query with potential PII fields...");
   console.log("----------------------------------------------");
 
+  let test2Success = false;
   try {
     const result = await client.mcpQuery({
       connector: "postgres",
       statement: "SELECT email, phone, name FROM users LIMIT 5",
     });
     console.log("SUCCESS: Query executed");
-    console.log(`  Row count: ${result.rowCount}`);
-    if (result.policyInfo) {
-      console.log(`  Policies evaluated: ${result.policyInfo.policiesEvaluated}`);
-      if (result.policyInfo.redactedFields?.length) {
-        console.log(`  PII REDACTED! Fields: ${result.policyInfo.redactedFields}`);
+    console.log(`  Success: ${result.success}`);
+    if (result.policy_info) {
+      console.log(`  Policies evaluated: ${result.policy_info.policies_evaluated}`);
+      if (result.redacted_fields?.length) {
+        console.log(`  PII REDACTED! Fields: ${result.redacted_fields.join(", ")}`);
       }
     }
+    test2Success = true;
+    assertCheck(result.policy_info !== undefined, "PII query returns policy_info");
+    assertCheck(result.policy_info?.policies_evaluated !== undefined && result.policy_info?.policies_evaluated >= 0, "policy_info includes policies_evaluated count");
   } catch (e) {
     console.log(`Query error: ${e}`);
+    // Not adding to failures as this may be expected if users table doesn't exist
   }
   console.log();
 
@@ -88,15 +113,31 @@ async function main() {
   console.log("Test 3: Execute query with SQLi pattern (should be blocked)...");
   console.log("----------------------------------------------");
 
+  let sqliBlocked = false;
   try {
     await client.mcpQuery({
       connector: "postgres",
       statement: "SELECT * FROM users; DROP TABLE users;--",
     });
     console.log("Note: SQLi detection may not be enabled");
-  } catch (e) {
+    // If we get here, SQLi was NOT blocked - this may be expected in some configs
+  } catch (e: any) {
+    const errorMsg = e?.message || String(e);
     console.log(`Query blocked as expected: ${e}`);
     console.log("SUCCESS: SQLi attempt was blocked and audit logged");
+    sqliBlocked = true;
+    // Verify the error indicates blocking due to policy
+    const isBlockedByPolicy = errorMsg.includes("blocked") ||
+                               errorMsg.includes("policy") ||
+                               errorMsg.includes("SQL injection") ||
+                               errorMsg.includes("sqli");
+    assertCheck(isBlockedByPolicy, "SQLi blocked error message indicates policy violation");
+  }
+  // Note: We don't fail if SQLi wasn't blocked as policies may not be enabled
+  if (sqliBlocked) {
+    assertCheck(true, "SQLi attack pattern was blocked by policy");
+  } else {
+    console.log("   Note: SQLi blocking not verified (may require policy configuration)");
   }
   console.log();
 
@@ -104,17 +145,24 @@ async function main() {
   console.log("Test 4: Execute INSERT operation...");
   console.log("----------------------------------------------");
 
+  let test4Success = false;
   try {
     const result = await client.mcpExecute({
       connector: "postgres",
-      action: "INSERT",
       statement: "INSERT INTO audit_test (name) VALUES ('test')",
     });
     console.log("SUCCESS: Execute completed");
-    console.log(`  Rows affected: ${result.rowsAffected}`);
-    console.log(`  Duration: ${result.durationMs}ms`);
+    console.log(`  Success: ${result.success}`);
+    if (result.policy_info) {
+      console.log(`  Policies evaluated: ${result.policy_info.policies_evaluated}`);
+      console.log(`  Processing time: ${result.policy_info.processing_time_ms}ms`);
+    }
+    test4Success = true;
+    assertCheck(result.success === true, "mcpExecute returns success=true");
+    assertCheck(result.policy_info !== undefined, "mcpExecute returns policy_info for audit logging");
   } catch (e) {
     console.log(`Execute error (expected if table doesn't exist): ${e}`);
+    // Not adding to failures as table may not exist
   }
   console.log();
 
@@ -133,7 +181,20 @@ async function main() {
   console.log("  - success, error_message: Final result");
   console.log("  - duration_ms: How long it took");
 
-  await client.close();
+  // Final assertion summary
+  if (failures.length > 0) {
+    console.log(`\n=== ASSERTION FAILURES: ${failures.length} ===`);
+    for (const f of failures) {
+      console.log(`   - ${f}`);
+    }
+  } else {
+    console.log("\n=== ALL ASSERTIONS PASSED ===");
+  }
+
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

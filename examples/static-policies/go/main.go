@@ -13,6 +13,8 @@
 //
 // Issue #1082: Examples should test actual behavior, not just API availability
 //
+// VALIDATION: This example exits with code 1 if any assertion fails.
+//
 // Run with: go run main.go
 // Prerequisites: docker compose up -d
 
@@ -26,6 +28,17 @@ import (
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
 )
+
+var failures []string
+
+func assertCheck(condition bool, message string) {
+	if condition {
+		fmt.Printf("   ✓ PASS: %s\n", message)
+	} else {
+		fmt.Printf("   ❌ FAIL: %s\n", message)
+		failures = append(failures, message)
+	}
+}
 
 var (
 	passCount int
@@ -300,14 +313,25 @@ func main() {
 	}
 	fmt.Println()
 
+	// Additional assertions using assertCheck pattern
+	fmt.Println("Validating critical functionality...")
+	assertCheck(passCount > 0, "At least one assertion passed")
+	assertCheck(policyID == "", "Policy was properly cleaned up")
+
 	// ========================================
 	// SUMMARY
 	// ========================================
 	fmt.Println("===========================================")
 	fmt.Printf("Results: %d PASS, %d FAIL\n", passCount, failCount)
 	fmt.Println()
-	if failCount > 0 {
+	if failCount > 0 || len(failures) > 0 {
 		fmt.Println("SOME TESTS FAILED")
+		if len(failures) > 0 {
+			fmt.Printf("Additional failures: %d\n", len(failures))
+			for _, f := range failures {
+				fmt.Printf("  - %s\n", f)
+			}
+		}
 		os.Exit(1)
 	} else {
 		fmt.Println("ALL TESTS PASSED - Static Policy CRUD verified!")

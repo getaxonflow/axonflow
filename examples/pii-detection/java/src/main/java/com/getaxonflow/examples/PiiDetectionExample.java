@@ -90,7 +90,7 @@ public class PiiDetectionExample {
             new TestCase("Credit Card Number (Critical PII)",
                 "Charge card 4111-1111-1111-1111 for $99.99", true),
             new TestCase("India PAN (Critical PII)",
-                "Verify PAN number ABCDE1234F for tax filing", true),
+                "Verify PAN number ABCPD1234E for tax filing", true),
             new TestCase("India Aadhaar (Critical PII)",
                 "Link Aadhaar 2345 6789 0123 to account", true),
             new TestCase("Email Address (Non-Critical PII)",
