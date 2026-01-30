@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.6.1] - 2026-01-30
+
+### Community
+
+#### Fixed
+
+- **MCP Community Auth** (#1109): MCP query/execute endpoints incorrectly required license validation in community mode, returning HTTP 401
+  - Replaced raw environment variable check with canonical `isCommunityMode()` helper
+  - Extracted duplicated license validation into shared `validateServiceLicense()` helper
+- **MAP Replay Recording** (#1108): Parallel execution path was missing replay recording — MAP executions left no trace in `execution_snapshots`
+  - Added `StartExecution`, `recordStepSnapshot`, `CompleteExecution`/`FailExecution` calls to parallel path
+- **MAP Parallel Data Race** (#1108): Input map shared across parallel goroutines without protection
+- **MAP Silent Error Swallowing** (#1108): `FailExecution` errors silently discarded in 4 call sites
+- **EU AI Act Export Data Race** (#1109): `CreateExport` returned shared pointer mutated by async goroutine, causing flaky tests under `-race`
+- **Anthropic Default Model** (#1109): Updated default from `claude-3-5-sonnet-20241022` (404) to `claude-sonnet-4-20250514`
+
+#### Added
+
+- **HTTP Examples** (#1109): Added missing HTTP examples for `mcp-connectors` and `map` (completing 30/30 cross-language coverage)
+
+### Enterprise
+
+#### Fixed
+
+- **V1 License Error Messaging** (#1106): Renamed error code to `V1_LICENSE_NOT_SUPPORTED`, removed internal tool paths from user-facing errors
+- **DEPLOYMENT_MODE Case Handling** (#1109): Removed unnecessary case normalization in admin auth middleware
+
+#### Security
+
+- **Next.js** (GHSA-h25m-26qc-wcjf): Bumped in customer-portal-ui (16.0.10→16.1.6) and banking-demo (15.5.9→15.5.10)
+
+---
+
 ## [3.6.0] - 2026-01-26
 
 ### Community

@@ -110,6 +110,50 @@ func isValidInternalServiceRequest(clientID, userToken string) bool {
 	return userToken == internalServiceTokenFallback
 }
 
+// validateServiceLicense validates a service license key and checks MCP permissions.
+// In community mode, license validation is skipped entirely since MCP features are community features.
+// Returns (servicePermissionGranted, error). On error, the HTTP response has already been sent.
+func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation string) (bool, error) {
+	if licenseKey == "" || isCommunityMode() {
+		return false, nil
+	}
+
+	validationResult, err := license.ValidateLicense(ctx, licenseKey)
+	if err != nil {
+		log.Printf("[MCP] License validation failed: %v", err)
+		sendErrorResponse(w, "Invalid license key", http.StatusUnauthorized, nil)
+		return false, err
+	}
+
+	if !validationResult.Valid {
+		log.Printf("[MCP] License invalid or expired: %s", validationResult.Error)
+		sendErrorResponse(w, "License invalid or expired", http.StatusUnauthorized, nil)
+		return false, fmt.Errorf("license invalid or expired: %s", validationResult.Error)
+	}
+
+	// Check service permissions (if this is a service license)
+	if validationResult.ServiceName != "" {
+		op := operation
+		if op == "" {
+			op = fallbackOperation
+		}
+
+		pe := policy.NewPermissionEvaluator()
+		allowed, err := pe.EvaluateMCPPermission(validationResult, connector, op)
+		if !allowed {
+			log.Printf("[MCP] Permission denied: %v", err)
+			sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
+			return false, fmt.Errorf("permission denied: %v", err)
+		}
+
+		log.Printf("[MCP] Service '%s' granted permission for %s:%s",
+			validationResult.ServiceName, connector, op)
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // getMCPAuditQueue returns the audit queue for MCP handlers.
 // Returns nil if DatabasePolicyEngine is not initialized (e.g., in tests).
 func getMCPAuditQueue() *AuditQueue {
@@ -630,9 +674,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	var client *Client
 	var user *User
 
-	deploymentMode := os.Getenv("DEPLOYMENT_MODE")
-
-	if deploymentMode == "community" || deploymentMode == "" {
+	if isCommunityMode() {
 		// Community mode: Skip client/user authentication
 		// This allows Community deployments to work without client/user registration.
 		// When user upgrades to Enterprise (sets DEPLOYMENT_MODE=enterprise), full validation kicks in.
@@ -707,43 +749,10 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
 	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
-	servicePermissionGranted := false
-	if req.LicenseKey != "" {
-		// Validate license key
-		validationResult, err := license.ValidateLicense(ctx, req.LicenseKey)
-		if err != nil {
-			log.Printf("[MCP] License validation failed: %v", err)
-			sendErrorResponse(w, "Invalid license key", http.StatusUnauthorized, nil)
-			return
-		}
-
-		if !validationResult.Valid {
-			log.Printf("[MCP] License invalid or expired: %s", validationResult.Error)
-			sendErrorResponse(w, "License invalid or expired", http.StatusUnauthorized, nil)
-			return
-		}
-
-		// Check service permissions (if this is a service license)
-		if validationResult.ServiceName != "" {
-			pe := policy.NewPermissionEvaluator()
-
-			// Determine operation name (use provided operation or default to "query")
-			operation := req.Operation
-			if operation == "" {
-				operation = "query"
-			}
-
-			allowed, err := pe.EvaluateMCPPermission(validationResult, req.Connector, operation)
-			if !allowed {
-				log.Printf("[MCP] Permission denied: %v", err)
-				sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
-				return
-			}
-
-			log.Printf("[MCP] Service '%s' granted permission for %s:%s",
-				validationResult.ServiceName, req.Connector, operation)
-			servicePermissionGranted = true
-		}
+	// In community mode, skip license validation entirely - these are community features
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, "query")
+	if err != nil {
+		return // response already sent by validateServiceLicense
 	}
 
 	// 3. Validate tenant has access to connector (only for non-service licenses)
@@ -1107,9 +1116,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	var client *Client
 	var user *User
 
-	deploymentMode := os.Getenv("DEPLOYMENT_MODE")
-
-	if deploymentMode == "community" || deploymentMode == "" {
+	if isCommunityMode() {
 		// Community mode: Skip client/user authentication
 		log.Printf("[MCP Execute] Community mode - bypassing client and user token validation")
 		client = &Client{
@@ -1174,43 +1181,10 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
-	servicePermissionGranted := false
-	if req.LicenseKey != "" {
-		// Validate license key
-		validationResult, err := license.ValidateLicense(ctx, req.LicenseKey)
-		if err != nil {
-			log.Printf("[MCP] License validation failed: %v", err)
-			sendErrorResponse(w, "Invalid license key", http.StatusUnauthorized, nil)
-			return
-		}
-
-		if !validationResult.Valid {
-			log.Printf("[MCP] License invalid or expired: %s", validationResult.Error)
-			sendErrorResponse(w, "License invalid or expired", http.StatusUnauthorized, nil)
-			return
-		}
-
-		// Check service permissions (if this is a service license)
-		if validationResult.ServiceName != "" {
-			pe := policy.NewPermissionEvaluator()
-
-			// Determine operation name (use provided operation or derive from action)
-			operation := req.Operation
-			if operation == "" {
-				operation = strings.ToLower(req.Action) // "INSERT" -> "insert"
-			}
-
-			allowed, err := pe.EvaluateMCPPermission(validationResult, req.Connector, operation)
-			if !allowed {
-				log.Printf("[MCP] Permission denied: %v", err)
-				sendErrorResponse(w, fmt.Sprintf("Permission denied: %v", err), http.StatusForbidden, nil)
-				return
-			}
-
-			log.Printf("[MCP] Service '%s' granted permission for %s:%s",
-				validationResult.ServiceName, req.Connector, operation)
-			servicePermissionGranted = true
-		}
+	// In community mode, skip license validation entirely - these are community features
+	servicePermissionGranted, err := validateServiceLicense(ctx, w, req.LicenseKey, req.Connector, req.Operation, strings.ToLower(req.Action))
+	if err != nil {
+		return // response already sent by validateServiceLicense
 	}
 
 	// Validate tenant has access to connector (only for non-service licenses)

@@ -21,6 +21,11 @@ Configuration and how-to guides for common tasks.
 | [Proxy Mode](./guides/proxy-mode.md) | Configure Proxy Mode deployment |
 | [PII Detection](./guides/pii-detection.md) | Configure PII detection and redaction |
 | [Connector Development](./guides/connector-development.md) | Build custom MCP connectors |
+| [Workflow Control Plane](./guides/workflow-control-plane.md) | WCP step gates, policy enforcement, SDK integration |
+| [Audit Logging](./guides/audit-logging.md) | Audit logging configuration and compliance |
+| [MCP Audit Logging](./guides/mcp-audit-logging.md) | Three-phase MCP policy enforcement and audit |
+| [Execution Tracking](./guides/execution-tracking.md) | Unified execution history for MAP and WCP |
+| [Grafana Dashboard](./guides/grafana-dashboard.md) | Monitoring with Grafana dashboards |
 
 ## SDK Documentation
 

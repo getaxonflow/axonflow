@@ -683,7 +683,9 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 
 			// Mark execution as failed
 			if e.replayRecorder != nil {
-				_ = e.replayRecorder.FailExecution(ctx, execution.ID, err.Error())
+				if replayErr := e.replayRecorder.FailExecution(ctx, execution.ID, err.Error()); replayErr != nil {
+					log.Printf("[Replay] ERROR: Failed to mark execution as failed: %v", replayErr)
+				}
 			}
 			return execution, err
 		}
@@ -710,7 +712,9 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 
 			// Mark execution as failed
 			if e.replayRecorder != nil {
-				_ = e.replayRecorder.FailExecution(ctx, execution.ID, err.Error())
+				if replayErr := e.replayRecorder.FailExecution(ctx, execution.ID, err.Error()); replayErr != nil {
+					log.Printf("[Replay] ERROR: Failed to mark execution as failed: %v", replayErr)
+				}
 			}
 			return execution, err
 		}
@@ -972,8 +976,18 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 
 	log.Printf("Starting workflow execution: %s (%s), parallel=%v", execution.ID, workflow.Metadata.Name, enableParallel)
 
+	// Start replay tracking (#835: wire MAP execution to replay)
+	if e.replayRecorder != nil {
+		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), "", user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
+			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
+		}
+	}
+
 	// Group steps by parallelizability
 	stepGroups := e.groupStepsForExecution(workflow.Spec.Steps, enableParallel)
+
+	// Track global step index across groups for replay snapshots (#835)
+	globalStepIndex := 0
 
 	// Execute step groups
 	for groupIdx, group := range stepGroups {
@@ -988,7 +1002,45 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 				execution.Status = "failed"
 				execution.Error = err.Error()
 				_ = e.storage.UpdateExecution(execution)
+
+				// Record failed parallel step snapshots for replay (#835)
+				for i, result := range groupResults {
+					status := "completed"
+					errMsg := ""
+					if result.Error != "" {
+						status = "failed"
+						errMsg = result.Error
+					}
+					var durationMs *int
+					if result.EndTime != nil {
+						d := int(result.EndTime.Sub(result.StartTime).Milliseconds())
+						durationMs = &d
+					}
+					e.recordStepSnapshot(ctx, execution.ID, globalStepIndex+i, result.Name, status, result.StartTime, result.EndTime, durationMs, result.Output, errMsg, input)
+				}
+				// Mark replay execution as failed (#835)
+				if e.replayRecorder != nil {
+					if replayErr := e.replayRecorder.FailExecution(ctx, execution.ID, err.Error()); replayErr != nil {
+						log.Printf("[Replay] ERROR: Failed to mark execution as failed: %v", replayErr)
+					}
+				}
 				return execution, err
+			}
+
+			// Record parallel step snapshots for replay (#835)
+			for i, result := range groupResults {
+				status := "completed"
+				errMsg := ""
+				if result.Error != "" {
+					status = "failed"
+					errMsg = result.Error
+				}
+				var durationMs *int
+				if result.EndTime != nil {
+					d := int(result.EndTime.Sub(result.StartTime).Milliseconds())
+					durationMs = &d
+				}
+				e.recordStepSnapshot(ctx, execution.ID, globalStepIndex+i, result.Name, status, result.StartTime, result.EndTime, durationMs, result.Output, errMsg, input)
 			}
 
 			// Add results to execution
@@ -1006,17 +1058,40 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 				}
 			}
 			log.Printf("[Workflow] Merged %d outputs from group %d into input context", mergedCount, groupIdx+1)
+			globalStepIndex += len(groupResults)
 		} else {
 			// Execute steps sequentially
 			log.Printf("[Workflow] Executing %d steps sequentially in group %d", len(group.Steps), groupIdx+1)
 			for _, step := range group.Steps {
 				stepResult, err := e.executeSingleStep(ctx, step, input, execution)
+
+				// Record step snapshot for replay (#835)
+				stepStatus := "completed"
+				errMsg := ""
+				if err != nil {
+					stepStatus = "failed"
+					errMsg = err.Error()
+				}
+				var durationMs *int
+				if stepResult.EndTime != nil {
+					d := int(stepResult.EndTime.Sub(stepResult.StartTime).Milliseconds())
+					durationMs = &d
+				}
+				e.recordStepSnapshot(ctx, execution.ID, globalStepIndex, stepResult.Name, stepStatus, stepResult.StartTime, stepResult.EndTime, durationMs, stepResult.Output, errMsg, input)
+				globalStepIndex++
+
 				if err != nil {
 					log.Printf("[Workflow] Sequential step '%s' FAILED in group %d: %v", step.Name, groupIdx+1, err)
 					// Note: Clients handle their own fallback logic - orchestrator returns errors
 					execution.Status = "failed"
 					execution.Error = fmt.Sprintf("Step %s failed: %v", step.Name, err)
 					_ = e.storage.UpdateExecution(execution)
+					// Mark replay execution as failed (#835)
+					if e.replayRecorder != nil {
+						if replayErr := e.replayRecorder.FailExecution(ctx, execution.ID, err.Error()); replayErr != nil {
+							log.Printf("[Replay] ERROR: Failed to mark execution as failed: %v", replayErr)
+						}
+					}
 					return execution, err
 				}
 
@@ -1048,6 +1123,14 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 	}
 
 	_ = e.storage.UpdateExecution(execution)
+
+	// Complete replay tracking (#835: wire MAP execution to replay)
+	if e.replayRecorder != nil {
+		outputSummary, _ := json.Marshal(execution.Output)
+		if err := e.replayRecorder.CompleteExecution(ctx, execution.ID, outputSummary); err != nil {
+			log.Printf("[Replay] Warning: Failed to complete execution tracking: %v", err)
+		}
+	}
 
 	log.Printf("Workflow execution completed: %s in %s", execution.ID, now.Sub(execution.StartTime).String())
 	return execution, nil
@@ -1108,6 +1191,13 @@ func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []Workf
 
 	var wg sync.WaitGroup
 
+	// Create a read-only snapshot of input for parallel goroutines.
+	// This prevents potential data races if any step processor writes to the input map.
+	inputSnapshot := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		inputSnapshot[k] = v
+	}
+
 	for i, step := range steps {
 		wg.Add(1)
 		go func(idx int, s WorkflowStep) {
@@ -1115,7 +1205,7 @@ func (e *WorkflowEngine) executeStepsParallel(ctx context.Context, steps []Workf
 
 			log.Printf("[Parallel] Starting step %d/%d: %s", idx+1, numSteps, s.Name)
 
-			stepResult, err := e.executeSingleStep(ctx, s, input, execution)
+			stepResult, err := e.executeSingleStep(ctx, s, inputSnapshot, execution)
 			results[idx] = stepResult
 			errors[idx] = err
 

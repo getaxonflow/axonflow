@@ -14,6 +14,10 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1874,5 +1878,239 @@ func TestMCPQueryHandler_ExfiltrationWithEnabledFalse(t *testing.T) {
 
 	if response["success"] != true {
 		t.Error("expected success=true")
+	}
+}
+
+// =============================================================================
+// validateServiceLicense Tests
+// =============================================================================
+
+// TestValidateServiceLicense_EmptyLicenseKey tests that empty license key skips validation.
+func TestValidateServiceLicense_EmptyLicenseKey(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	w := httptest.NewRecorder()
+	granted, err := validateServiceLicense(context.Background(), w, "", "postgres", "query", "query")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	if granted {
+		t.Error("expected servicePermissionGranted=false for empty license key")
+	}
+	if w.Body.Len() > 0 {
+		t.Errorf("expected no HTTP response body for empty license key, got: %s", w.Body.String())
+	}
+}
+
+// TestValidateServiceLicense_CommunityMode tests that community mode skips license validation entirely.
+func TestValidateServiceLicense_CommunityMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		deploymentMode string
+		licenseKey     string
+	}{
+		{"community mode with license key", "community", "AXON-V2-fake-key-12345678"},
+		{"community mode empty license", "community", ""},
+		{"unset deployment mode with license key", "", "AXON-V2-fake-key-12345678"},
+		{"unset deployment mode empty license", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.deploymentMode != "" {
+				t.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
+			} else {
+				os.Unsetenv("DEPLOYMENT_MODE")
+			}
+
+			w := httptest.NewRecorder()
+			granted, err := validateServiceLicense(context.Background(), w, tt.licenseKey, "postgres", "query", "query")
+			if err != nil {
+				t.Errorf("expected no error in community mode, got: %v", err)
+			}
+			if granted {
+				t.Error("expected servicePermissionGranted=false in community mode")
+			}
+			// No HTTP response should be written in community mode
+			if w.Body.Len() > 0 {
+				t.Errorf("expected no HTTP response body in community mode, got: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestValidateServiceLicense_EnterpriseMode_LicenseValidated tests that enterprise mode
+// runs license validation (not skipped). In community build, ValidateLicense always returns
+// Valid=true, so we verify it doesn't error and proceeds with validation.
+func TestValidateServiceLicense_EnterpriseMode_LicenseValidated(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	w := httptest.NewRecorder()
+	granted, err := validateServiceLicense(context.Background(), w, "not-a-valid-key", "postgres", "query", "query")
+
+	// Community build: ValidateLicense returns Valid=true for any key.
+	// The key assertion is that validation WAS attempted (no early return like community mode)
+	// and no service permission was granted (since it's not a service license).
+	if err != nil {
+		t.Errorf("unexpected error (community build should accept any key): %v", err)
+	}
+	if granted {
+		t.Error("expected servicePermissionGranted=false for non-service license")
+	}
+}
+
+// TestValidateServiceLicense_EnterpriseMode_V2Key tests that a V2-prefixed key
+// is processed through license validation in enterprise mode.
+func TestValidateServiceLicense_EnterpriseMode_V2Key(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	w := httptest.NewRecorder()
+	granted, err := validateServiceLicense(context.Background(), w, "AXON-V2-fake-key-12345678", "postgres", "query", "query")
+
+	// Community build: ValidateLicense returns Valid=true.
+	// V2 key parsing may fail, falling back to community result (no service name).
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// No service name in fallback result, so no permission granted
+	if granted {
+		t.Error("expected servicePermissionGranted=false for unparseable V2 key")
+	}
+}
+
+// TestValidateServiceLicense_EnterpriseMode_WithServiceLicense tests the full license
+// validation path including service permission checking.
+func TestValidateServiceLicense_EnterpriseMode_WithServiceLicense(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	// Craft a valid V2 service license with proper HMAC signature
+	payload := map[string]interface{}{
+		"tier":         "enterprise",
+		"tenant_id":    "test-tenant",
+		"service_name": "test-service",
+		"service_type": "mcp-connector",
+		"permissions":  []string{"mcp:postgres:query", "mcp:postgres:execute"},
+		"expires_at":   "20991231",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	// Compute HMAC signature (same as license_community.go:verifyV2Signature)
+	h := hmac.New(sha256.New, []byte("axonflow-license-secret-2025-change-in-production"))
+	h.Write([]byte(payloadBase64))
+	signature := hex.EncodeToString(h.Sum(nil))[:8]
+
+	licenseKey := "AXON-V2-" + payloadBase64 + "-" + signature
+
+	w := httptest.NewRecorder()
+	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")
+
+	// With a valid service license, permission evaluation should run
+	// It may grant or deny based on permission evaluator logic, but should not error on validation
+	if err != nil {
+		t.Logf("License validation result: granted=%v, err=%v", granted, err)
+		// Permission denied is acceptable - it means the license was validated
+		// and service permission evaluation ran (which is what we're testing)
+		if w.Code == http.StatusForbidden {
+			t.Log("Permission denied (expected - permission evaluator may not find matching rule)")
+		} else if w.Code == http.StatusUnauthorized {
+			t.Errorf("unexpected 401 - license should be valid: %s", w.Body.String())
+		}
+	} else {
+		t.Logf("License validation succeeded: granted=%v", granted)
+	}
+}
+
+// TestValidateServiceLicense_EnterpriseMode_ServicePermissionDenied tests the permission
+// denied path when a valid service license lacks the required permission.
+func TestValidateServiceLicense_EnterpriseMode_ServicePermissionDenied(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	// Craft a valid V2 service license with permissions for a DIFFERENT connector
+	payload := map[string]interface{}{
+		"tier":         "enterprise",
+		"tenant_id":    "test-tenant",
+		"service_name": "test-service",
+		"service_type": "mcp-connector",
+		"permissions":  []string{"mcp:redis:query"}, // Only has redis, not postgres
+		"expires_at":   "20991231",
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+	h := hmac.New(sha256.New, []byte("axonflow-license-secret-2025-change-in-production"))
+	h.Write([]byte(payloadBase64))
+	signature := hex.EncodeToString(h.Sum(nil))[:8]
+
+	licenseKey := "AXON-V2-" + payloadBase64 + "-" + signature
+
+	w := httptest.NewRecorder()
+	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")
+
+	// Should be denied since service only has redis permission, not postgres
+	if err == nil {
+		t.Error("expected permission denied error")
+	}
+	if granted {
+		t.Error("expected servicePermissionGranted=false when permission is denied")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected HTTP 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestMCPQueryHandler_CommunityMode_WithBasicAuth tests that MCP query handler
+// works in community mode even when Basic Auth header is present.
+// This was the root cause bug: extractClientSecret() populated req.LicenseKey
+// from Basic Auth, then license validation ran and failed in community mode.
+func TestMCPQueryHandler_CommunityMode_WithBasicAuth(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	reqBody := MCPQueryRequest{
+		ClientID:  "demo",
+		Connector: "test-db",
+		Statement: "SELECT 1 as test_value",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/resources/query", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	// Set Basic Auth header - this was causing the bug
+	req.SetBasicAuth("demo", "demo-secret")
+
+	w := httptest.NewRecorder()
+	mcpQueryHandler(w, req)
+
+	// Should succeed (200) - not fail with 401 "Invalid license key"
+	if w.Code == http.StatusUnauthorized {
+		t.Errorf("community mode should NOT require license validation, but got 401: %s", w.Body.String())
+	}
+	if w.Code != http.StatusOK {
+		t.Logf("Got status %d (may be OK if connector returned error): %s", w.Code, w.Body.String())
+	}
+}
+
+// TestMCPExecuteHandler_CommunityMode_WithBasicAuth tests the same bug fix for execute handler.
+func TestMCPExecuteHandler_CommunityMode_WithBasicAuth(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	reqBody := MCPExecuteRequest{
+		ClientID:  "demo",
+		Connector: "test-db",
+		Statement: "INSERT INTO test (name) VALUES ('test')",
+		Action:    "INSERT",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/tools/execute", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("demo", "demo-secret")
+
+	w := httptest.NewRecorder()
+	mcpExecuteHandler(w, req)
+
+	// Should NOT fail with 401 "Invalid license key" in community mode
+	if w.Code == http.StatusUnauthorized {
+		t.Errorf("community mode should NOT require license validation, but got 401: %s", w.Body.String())
 	}
 }

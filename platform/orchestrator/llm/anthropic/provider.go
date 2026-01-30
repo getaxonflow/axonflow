@@ -61,7 +61,7 @@ const (
 	ModelClaude3Haiku  = "claude-3-haiku-20240307"
 
 	// Default model
-	DefaultModel = ModelClaude35Sonnet
+	DefaultModel = ModelClaude4Sonnet
 )
 
 // HTTPClient is an interface for HTTP client operations (enables testing)
@@ -86,7 +86,7 @@ type Config struct {
 	APIKey     string        // Required: Anthropic API key
 	BaseURL    string        // Optional: API base URL (default: https://api.anthropic.com)
 	APIVersion string        // Optional: API version (default: 2023-06-01)
-	Model      string        // Optional: Default model (default: claude-3-5-sonnet-20241022)
+	Model      string        // Optional: Default model (default: claude-sonnet-4-20250514)
 	Timeout    time.Duration // Optional: HTTP timeout (default: 120s)
 }
 
