@@ -30,9 +30,9 @@ AxonFlow treats agents as long-running, stateful systems that require governance
 
 > **Using AxonFlow in evaluation or production?**
 >
-> If you're experimenting with AxonFlow internally and would prefer to share feedback privately (no public issues, no attribution), feel free to reach out at **hello@getaxonflow.com**.
+> If you are evaluating AxonFlow internally and prefer to share questions or feedback privately, you are welcome to reach out at **hello@getaxonflow.com**. This includes early evaluations, partial integrations, or cases where you are still determining fit.
 >
-> We're especially interested in learning where agent-based systems hit real production constraints (permissions, compliance, reliability, cost), and we treat all conversations as confidential.
+> We are particularly interested in understanding where real systems encounter constraints around permissions, compliance, reliability, cost, or organizational ownership. All conversations are treated as confidential, and there is no expectation of commitment or follow-up unless you want one.
 
 ---
 
@@ -428,12 +428,9 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Public Issues (Technical Questions Welcome)
 
-If you are evaluating AxonFlow and run into unclear behavior, edge cases, or questions about guarantees
-(for example policy enforcement, audit semantics, failure modes, or integration boundaries), opening a GitHub issue is welcome.
+If you are evaluating AxonFlow and encounter unclear behavior, edge cases, or questions about guarantees such as policy enforcement, audit semantics, or failure modes, opening a GitHub issue or discussion is welcome. This includes situations where you are unsure whether something is expected behavior, a limitation, or a mismatch with your use case.
 
-Public issues help clarify behavior for everyone.
-
-For private questions, you can also reach us at hello@getaxonflow.com
+For private or sensitive questions, you can also reach us at hello@getaxonflow.com.
 
 ### Evaluating AxonFlow or Exploring Internally?
 

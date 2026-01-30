@@ -169,11 +169,10 @@ Contact us for a V2 license:
 
 ### Q: Will my V1 license stop working?
 
-**A:** V1 licenses will continue to work but are deprecated. We recommend migrating to V2 for:
-- Better security
-- Access to new features
-- Node limit enforcement
-- AWS Marketplace integration
+**A:** V1 licenses are no longer accepted. The validation layer rejects V1 format keys and requires V2. Generate a V2 key using the keygen utility:
+```bash
+./keygen -tier ENT -org YOUR_ORG -service-name platform -service-type backend-service -days 365
+```
 
 ### Q: Is there a cost to migrate?
 

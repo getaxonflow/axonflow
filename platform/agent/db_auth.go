@@ -306,8 +306,8 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 
 	// V1 license format is deprecated and no longer supported
 	// All licenses must use V2 format: AXON-V2-{BASE64_JSON}-{SIGNATURE}
-	// See ADR-009 for migration guide
-	return nil, fmt.Errorf("V1 license format is deprecated. Please migrate to V2 format. See docs/LICENSE_MIGRATION.md")
+	// See ADR-007 for migration guide
+	return nil, fmt.Errorf("V1 license format (AXON-TIER-ORG-...) is no longer supported. Use V2 format (AXON-V2-...). See docs/reference/license-migration.md for migration instructions")
 }
 
 // updateAPIKeyLastUsed updates the last_used_at timestamp for an API key

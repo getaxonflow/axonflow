@@ -73,7 +73,7 @@ func main() {
 			fmt.Printf("     - %s: %s (%d/%d steps, status=%s)\n",
 				exec.RequestID, exec.WorkflowName, exec.CompletedSteps, exec.TotalSteps, exec.Status)
 			assert(exec.RequestID != "", "Execution has valid request_id")
-			assert(strings.HasPrefix(exec.RequestID, "req_") || strings.HasPrefix(exec.RequestID, "exec_"),
+			assert(strings.HasPrefix(exec.RequestID, "req_") || strings.HasPrefix(exec.RequestID, "exec_") || strings.HasPrefix(exec.RequestID, "wf_") || strings.HasPrefix(exec.RequestID, "plan_"),
 				"Execution ID has valid prefix")
 		}
 	} else {

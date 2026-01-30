@@ -13,6 +13,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -1402,4 +1403,402 @@ func TestTruncateString(t *testing.T) {
 			}
 		})
 	}
+}
+
+// === Issue #835: MAP Replay Recording Tests ===
+
+// mockReplayRecorder captures replay events for testing
+type mockReplayRecorder struct {
+	startCalls    []mockStartCall
+	stepCalls     []mockStepCall
+	completeCalls []mockCompleteCall
+	failCalls     []mockFailCall
+}
+
+type mockStartCall struct {
+	RequestID    string
+	WorkflowName string
+	TotalSteps   int
+	TenantID     string
+	UserID       string
+}
+
+type mockStepCall struct {
+	Snapshot *ReplaySnapshotInput
+}
+
+type mockCompleteCall struct {
+	RequestID string
+	Output    json.RawMessage
+}
+
+type mockFailCall struct {
+	RequestID string
+	ErrMsg    string
+}
+
+func (m *mockReplayRecorder) StartExecution(_ context.Context, requestID, workflowName string, totalSteps int, orgID, tenantID, userID string) error {
+	m.startCalls = append(m.startCalls, mockStartCall{
+		RequestID:    requestID,
+		WorkflowName: workflowName,
+		TotalSteps:   totalSteps,
+		TenantID:     tenantID,
+		UserID:       userID,
+	})
+	return nil
+}
+
+func (m *mockReplayRecorder) RecordStep(_ context.Context, snapshot *ReplaySnapshotInput) error {
+	m.stepCalls = append(m.stepCalls, mockStepCall{Snapshot: snapshot})
+	return nil
+}
+
+func (m *mockReplayRecorder) CompleteExecution(_ context.Context, requestID string, output json.RawMessage) error {
+	m.completeCalls = append(m.completeCalls, mockCompleteCall{RequestID: requestID, Output: output})
+	return nil
+}
+
+func (m *mockReplayRecorder) FailExecution(_ context.Context, requestID, errMsg string) error {
+	m.failCalls = append(m.failCalls, mockFailCall{RequestID: requestID, ErrMsg: errMsg})
+	return nil
+}
+
+// TestMAPReplayRecording_ParallelExecution verifies that ExecuteWorkflowWithParallelSupport
+// records replay snapshots for all steps (#835).
+func TestMAPReplayRecording_ParallelExecution(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "replay-parallel-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "function-call", Function: "test1"},
+				{Name: "step2", Type: "function-call", Function: "test2"},
+				{Name: "synthesis", Type: "function-call", Function: "synthesize"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{TenantID: "test-tenant", ID: 42}, true,
+	)
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if execution.Status != "completed" {
+		t.Errorf("Expected completed status, got %s", execution.Status)
+	}
+
+	// Verify StartExecution was called
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+	start := recorder.startCalls[0]
+	if start.WorkflowName != "replay-parallel-test" {
+		t.Errorf("Expected workflow name 'replay-parallel-test', got %q", start.WorkflowName)
+	}
+	if start.TotalSteps != 3 {
+		t.Errorf("Expected 3 total steps, got %d", start.TotalSteps)
+	}
+	if start.TenantID != "test-tenant" {
+		t.Errorf("Expected tenant 'test-tenant', got %q", start.TenantID)
+	}
+
+	// Verify RecordStep was called for each step
+	if len(recorder.stepCalls) != 3 {
+		t.Fatalf("Expected 3 RecordStep calls, got %d", len(recorder.stepCalls))
+	}
+
+	// Verify step indices are sequential
+	for i, call := range recorder.stepCalls {
+		if call.Snapshot.StepIndex != i {
+			t.Errorf("Step %d: expected index %d, got %d", i, i, call.Snapshot.StepIndex)
+		}
+		if call.Snapshot.Status != "completed" {
+			t.Errorf("Step %d: expected status 'completed', got %q", i, call.Snapshot.Status)
+		}
+	}
+
+	// Verify CompleteExecution was called
+	if len(recorder.completeCalls) != 1 {
+		t.Fatalf("Expected 1 CompleteExecution call, got %d", len(recorder.completeCalls))
+	}
+
+	// Verify no FailExecution calls
+	if len(recorder.failCalls) != 0 {
+		t.Errorf("Expected 0 FailExecution calls, got %d", len(recorder.failCalls))
+	}
+}
+
+// TestMAPReplayRecording_SequentialExecution verifies replay recording in sequential mode (#835).
+func TestMAPReplayRecording_SequentialExecution(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "replay-sequential-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "function-call", Function: "test1"},
+				{Name: "step2", Type: "function-call", Function: "test2"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{TenantID: "seq-tenant", ID: 1}, false,
+	)
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if execution.Status != "completed" {
+		t.Errorf("Expected completed status, got %s", execution.Status)
+	}
+
+	// Verify full replay lifecycle
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+	if len(recorder.stepCalls) != 2 {
+		t.Fatalf("Expected 2 RecordStep calls, got %d", len(recorder.stepCalls))
+	}
+	if len(recorder.completeCalls) != 1 {
+		t.Fatalf("Expected 1 CompleteExecution call, got %d", len(recorder.completeCalls))
+	}
+
+	// Verify step names are recorded correctly
+	if recorder.stepCalls[0].Snapshot.StepName != "step1" {
+		t.Errorf("Expected step name 'step1', got %q", recorder.stepCalls[0].Snapshot.StepName)
+	}
+	if recorder.stepCalls[1].Snapshot.StepName != "step2" {
+		t.Errorf("Expected step name 'step2', got %q", recorder.stepCalls[1].Snapshot.StepName)
+	}
+}
+
+// TestMAPReplayRecording_NoRecorderNilSafe verifies that the code is nil-safe
+// when no replay recorder is set (#835).
+func TestMAPReplayRecording_NoRecorderNilSafe(t *testing.T) {
+	engine := NewWorkflowEngine()
+	// Deliberately NOT setting a replay recorder
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "nil-recorder-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "function-call", Function: "test1"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{}, true,
+	)
+
+	if err != nil {
+		t.Fatalf("Unexpected error with nil recorder: %v", err)
+	}
+
+	if execution.Status != "completed" {
+		t.Errorf("Expected completed status, got %s", execution.Status)
+	}
+}
+
+// TestMAPReplayRecording_ParallelStepFailure verifies that FailExecution is called
+// when a parallel step fails (#835).
+func TestMAPReplayRecording_ParallelStepFailure(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "replay-parallel-failure-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "good-step", Type: "function-call", Function: "test1"},
+				{Name: "bad-step", Type: "unknown-type", Function: "will-fail"},
+				{Name: "synthesis", Type: "function-call", Function: "synthesize"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{TenantID: "fail-tenant", ID: 99}, true,
+	)
+
+	// Execution should fail
+	if err == nil {
+		t.Fatal("Expected error from failed parallel step, got nil")
+	}
+	if execution.Status != "failed" {
+		t.Errorf("Expected failed status, got %s", execution.Status)
+	}
+
+	// Verify StartExecution was called
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+
+	// Verify RecordStep was called for the parallel steps (good + bad)
+	if len(recorder.stepCalls) < 2 {
+		t.Fatalf("Expected at least 2 RecordStep calls for parallel group, got %d", len(recorder.stepCalls))
+	}
+
+	// Verify at least one step has failed status
+	hasFailedStep := false
+	for _, call := range recorder.stepCalls {
+		if call.Snapshot.Status == "failed" {
+			hasFailedStep = true
+			break
+		}
+	}
+	if !hasFailedStep {
+		t.Error("Expected at least one step snapshot with 'failed' status")
+	}
+
+	// Verify FailExecution was called
+	if len(recorder.failCalls) != 1 {
+		t.Fatalf("Expected 1 FailExecution call, got %d", len(recorder.failCalls))
+	}
+	if recorder.failCalls[0].ErrMsg == "" {
+		t.Error("FailExecution error message should not be empty")
+	}
+
+	// Verify CompleteExecution was NOT called
+	if len(recorder.completeCalls) != 0 {
+		t.Errorf("Expected 0 CompleteExecution calls on failure, got %d", len(recorder.completeCalls))
+	}
+}
+
+// TestMAPReplayRecording_SequentialStepFailure verifies that FailExecution is called
+// when a sequential step fails (#835).
+func TestMAPReplayRecording_SequentialStepFailure(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "replay-sequential-failure-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "good-step", Type: "function-call", Function: "test1"},
+				{Name: "bad-step", Type: "unknown-type", Function: "will-fail"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{TenantID: "seq-fail", ID: 7}, false,
+	)
+
+	if err == nil {
+		t.Fatal("Expected error from failed sequential step, got nil")
+	}
+	if execution.Status != "failed" {
+		t.Errorf("Expected failed status, got %s", execution.Status)
+	}
+
+	// Verify StartExecution was called
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+
+	// Verify RecordStep was called for both steps (good completes, bad fails)
+	if len(recorder.stepCalls) != 2 {
+		t.Fatalf("Expected 2 RecordStep calls, got %d", len(recorder.stepCalls))
+	}
+
+	// First step should be completed
+	if recorder.stepCalls[0].Snapshot.Status != "completed" {
+		t.Errorf("Step 0: expected 'completed', got %q", recorder.stepCalls[0].Snapshot.Status)
+	}
+	if recorder.stepCalls[0].Snapshot.StepName != "good-step" {
+		t.Errorf("Step 0: expected 'good-step', got %q", recorder.stepCalls[0].Snapshot.StepName)
+	}
+
+	// Second step should be failed
+	if recorder.stepCalls[1].Snapshot.Status != "failed" {
+		t.Errorf("Step 1: expected 'failed', got %q", recorder.stepCalls[1].Snapshot.Status)
+	}
+	if recorder.stepCalls[1].Snapshot.StepName != "bad-step" {
+		t.Errorf("Step 1: expected 'bad-step', got %q", recorder.stepCalls[1].Snapshot.StepName)
+	}
+
+	// Verify step indices are sequential
+	if recorder.stepCalls[0].Snapshot.StepIndex != 0 {
+		t.Errorf("Step 0: expected index 0, got %d", recorder.stepCalls[0].Snapshot.StepIndex)
+	}
+	if recorder.stepCalls[1].Snapshot.StepIndex != 1 {
+		t.Errorf("Step 1: expected index 1, got %d", recorder.stepCalls[1].Snapshot.StepIndex)
+	}
+
+	// Verify FailExecution was called
+	if len(recorder.failCalls) != 1 {
+		t.Fatalf("Expected 1 FailExecution call, got %d", len(recorder.failCalls))
+	}
+
+	// Verify CompleteExecution was NOT called
+	if len(recorder.completeCalls) != 0 {
+		t.Errorf("Expected 0 CompleteExecution calls on failure, got %d", len(recorder.completeCalls))
+	}
+}
+
+// TestMAPReplayRecording_RecorderErrorLogged verifies that recorder errors are
+// logged rather than silently swallowed (#835).
+func TestMAPReplayRecording_RecorderErrorLogged(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &failingReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "recorder-error-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "function-call", Function: "test1"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	// Should complete successfully even if recorder fails — recorder errors don't block execution
+	execution, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{}, UserContext{TenantID: "err-tenant", ID: 1}, false,
+	)
+
+	if err != nil {
+		t.Fatalf("Execution should succeed even with failing recorder: %v", err)
+	}
+	if execution.Status != "completed" {
+		t.Errorf("Expected completed status, got %s", execution.Status)
+	}
+}
+
+// failingReplayRecorder always returns errors — tests that recorder failures don't break execution
+type failingReplayRecorder struct{}
+
+func (m *failingReplayRecorder) StartExecution(_ context.Context, _, _ string, _ int, _, _, _ string) error {
+	return fmt.Errorf("simulated recorder start error")
+}
+
+func (m *failingReplayRecorder) RecordStep(_ context.Context, _ *ReplaySnapshotInput) error {
+	return fmt.Errorf("simulated recorder step error")
+}
+
+func (m *failingReplayRecorder) CompleteExecution(_ context.Context, _ string, _ json.RawMessage) error {
+	return fmt.Errorf("simulated recorder complete error")
+}
+
+func (m *failingReplayRecorder) FailExecution(_ context.Context, _, _ string) error {
+	return fmt.Errorf("simulated recorder fail error")
 }
