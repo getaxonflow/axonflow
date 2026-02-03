@@ -169,7 +169,7 @@ Choose your language:
 
 **Go:**
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go
+go get github.com/getaxonflow/axonflow-sdk-go/v3
 ```
 
 **Python (coming Q1 2026):**
@@ -195,7 +195,7 @@ import (
     "log"
     "os"
 
-    axonflow "github.com/getaxonflow/axonflow-sdk-go"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
 
 func main() {

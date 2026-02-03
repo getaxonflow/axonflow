@@ -200,7 +200,7 @@ package main
 import (
     "context"
     "fmt"
-    axonflow "github.com/getaxonflow/axonflow-sdk-go"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
 
 func main() {

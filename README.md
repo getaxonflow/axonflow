@@ -280,7 +280,7 @@ See the full **[Community vs Enterprise feature matrix](https://docs.getaxonflow
 ```bash
 pip install axonflow          # Python
 npm install @axonflow/sdk     # TypeScript
-go get github.com/getaxonflow/axonflow-sdk-go  # Go
+go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 ```
 
 ```xml
@@ -288,11 +288,11 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>2.7.1</version>
+    <version>3.0.0</version>
 </dependency>
 ```
 
-> **TypeScript SDK:** npm version (2.3.0) may lag behind source (2.7.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
+> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.0.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
 
 ### Python
 
@@ -300,7 +300,7 @@ go get github.com/getaxonflow/axonflow-sdk-go  # Go
 from axonflow import AxonFlow
 
 async with AxonFlow(endpoint="http://localhost:8080") as ax:
-    response = await ax.execute_query(
+    response = await ax.proxy_llm_call(
         user_token="user-123",
         query="Analyze customer sentiment",
         request_type="chat"
