@@ -83,9 +83,9 @@ func checkRateLimitRedis(ctx context.Context, customerID string, limitPerMinute 
 	// Execute pipeline
 	cmds, err := pipe.Exec(ctx)
 	if err != nil {
-		// On Redis error, fail open (allow request) and log
-		fmt.Printf("Warning: Redis rate limit check failed for %s: %v (failing open)\n", customerID, err)
-		return nil
+		// On Redis error, fall back to in-memory rate limiting and log
+		fmt.Printf("Warning: Redis rate limit check failed for %s: %v (falling back to in-memory)\n", customerID, err)
+		return checkRateLimit(customerID, limitPerMinute)
 	}
 
 	// Get count from ZCARD result (index 1)

@@ -5,6 +5,13 @@
 // 2. RESPONSE phase: PII in connector data is redacted
 // 3. PolicyInfo metadata is included in all responses
 //
+// Policy Configuration (env vars):
+//
+//	MCP_STATIC_POLICIES_ENABLED - Enable/disable static MCP policies: "true" (default) or "false"
+//
+//	When enabled (default): static policies (SQLi blocking, PII redaction) are enforced
+//	When disabled: static policies are skipped; only dynamic policies apply
+//
 // Run with: go run main.go
 // Prerequisites: docker compose up -d
 package main
@@ -148,6 +155,22 @@ func main() {
 		}
 	} else {
 		assert(false, "SSN in query should have been blocked")
+	}
+	fmt.Println()
+
+	// ========================================
+	// Policy Configuration Check (MCP_STATIC_POLICIES_ENABLED)
+	// ========================================
+	staticPoliciesEnabled := getEnv("MCP_STATIC_POLICIES_ENABLED", "true")
+	fmt.Println("Test 6: Static Policies Configuration Check")
+	fmt.Println("--------------------------------------------")
+	if staticPoliciesEnabled == "true" {
+		fmt.Println("   MCP_STATIC_POLICIES_ENABLED=true (default)")
+		fmt.Println("   Static policies (SQLi blocking, PII redaction) are ACTIVE")
+	} else {
+		fmt.Println("   MCP_STATIC_POLICIES_ENABLED=false")
+		fmt.Println("   Static policies are DISABLED; only dynamic policies apply")
+		fmt.Println("   Note: SQLi blocking and PII redaction tests above may behave differently")
 	}
 	fmt.Println()
 

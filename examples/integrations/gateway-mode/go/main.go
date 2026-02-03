@@ -10,6 +10,11 @@
 // This gives you full control over LLM parameters while maintaining
 // complete audit trails with ~3-5ms governance overhead.
 //
+// Gateway-specific policy config env vars (override defaults for gateway mode only):
+//
+//	GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
+//	GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+//
 // Issue #1082: Examples should test actual behavior, not just API availability
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
@@ -99,6 +104,93 @@ func main() {
 		fmt.Printf("   BLOCKED: %s\n", preCheckResult.BlockReason)
 		fmt.Printf("   Policies: %v\n", preCheckResult.Policies)
 		// Continue to show assertions status even if blocked
+	}
+	fmt.Println()
+
+	// =========================================================================
+	// STEP 1b: PII Detection - SSN triggers redaction flag
+	// =========================================================================
+	fmt.Println("Step 1b: PII Detection (SSN)...")
+	piiResult, err := axonflowClient.GetPolicyApprovedContext(
+		userToken,
+		"Process refund for customer with SSN 123-45-6789",
+		nil, requestContext,
+	)
+	if err != nil {
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		assertCheck(false, "PII pre-check succeeded")
+	} else {
+		assertCheck(piiResult.Approved, "PII query approved (redact mode, not blocked)")
+		assertCheck(len(piiResult.Policies) > 0, "PII policies detected")
+		fmt.Printf("   Policies: %v\n", piiResult.Policies)
+	}
+	fmt.Println()
+
+	// =========================================================================
+	// STEP 1c: India PII Detection - PAN and Aadhaar
+	// =========================================================================
+	fmt.Println("Step 1c: India PII Detection (PAN)...")
+	panResult, err := axonflowClient.GetPolicyApprovedContext(
+		userToken,
+		"Verify PAN number ABCPD1234E for tax filing",
+		nil, requestContext,
+	)
+	if err != nil {
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		assertCheck(false, "PAN pre-check succeeded")
+	} else {
+		assertCheck(panResult.Approved, "India PAN approved (redact mode)")
+		assertCheck(len(panResult.Policies) > 0, "India PII policies detected for PAN")
+		fmt.Printf("   Policies: %v\n", panResult.Policies)
+	}
+
+	fmt.Println("Step 1c: India PII Detection (Aadhaar)...")
+	aadhaarResult, err := axonflowClient.GetPolicyApprovedContext(
+		userToken,
+		"Link Aadhaar 2345 6789 0123 to bank account",
+		nil, requestContext,
+	)
+	if err != nil {
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		assertCheck(false, "Aadhaar pre-check succeeded")
+	} else {
+		assertCheck(aadhaarResult.Approved, "India Aadhaar approved (redact mode)")
+		assertCheck(len(aadhaarResult.Policies) > 0, "India PII policies detected for Aadhaar")
+		fmt.Printf("   Policies: %v\n", aadhaarResult.Policies)
+	}
+	fmt.Println()
+
+	// =========================================================================
+	// STEP 1d: SQL Injection Detection - should be BLOCKED
+	// =========================================================================
+	fmt.Println("Step 1d: SQL Injection Detection (DROP TABLE)...")
+	sqliResult, err := axonflowClient.GetPolicyApprovedContext(
+		userToken,
+		"SELECT * FROM users; DROP TABLE users;--",
+		nil, requestContext,
+	)
+	if err != nil {
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		assertCheck(false, "SQLi pre-check succeeded")
+	} else {
+		assertCheck(!sqliResult.Approved, "SQLi query is BLOCKED")
+		assertCheck(sqliResult.BlockReason != "", "Block reason provided for SQLi")
+		fmt.Printf("   Block reason: %s\n", sqliResult.BlockReason)
+	}
+
+	fmt.Println("Step 1d: SQL Injection Detection (UNION SELECT)...")
+	unionResult, err := axonflowClient.GetPolicyApprovedContext(
+		userToken,
+		"Get user where id = 1 UNION SELECT password FROM admin",
+		nil, requestContext,
+	)
+	if err != nil {
+		fmt.Printf("   ERROR: Pre-check failed: %v\n", err)
+		assertCheck(false, "UNION SQLi pre-check succeeded")
+	} else {
+		assertCheck(!unionResult.Approved, "UNION SQLi query is BLOCKED")
+		assertCheck(unionResult.BlockReason != "", "Block reason provided for UNION SQLi")
+		fmt.Printf("   Block reason: %s\n", unionResult.BlockReason)
 	}
 	fmt.Println()
 

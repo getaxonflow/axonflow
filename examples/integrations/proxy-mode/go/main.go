@@ -77,7 +77,7 @@ func main() {
 		startTime := time.Now()
 
 		// Single call to AxonFlow - it handles policy check AND LLM call
-		response, err := client.ExecuteQuery(
+		response, err := client.ProxyLLMCall(
 			q.userToken,
 			q.query,
 			q.requestType,
@@ -125,7 +125,7 @@ func main() {
 	fmt.Println("Query 3 (SQL Injection - should be blocked):")
 	fmt.Printf("%s\n", strings.Repeat("─", 60))
 
-	sqlResponse, err := client.ExecuteQuery(
+	sqlResponse, err := client.ProxyLLMCall(
 		"user-proxy-go",
 		"SELECT * FROM users; DROP TABLE secrets;",
 		"chat",

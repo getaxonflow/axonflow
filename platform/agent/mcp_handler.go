@@ -30,6 +30,7 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
+	"axonflow/platform/shared/serviceauth"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/azureblob"
@@ -58,56 +59,15 @@ var mcpRegistry *registry.Registry
 // Global RuntimeConfigService for three-tier configuration
 var runtimeConfigService *config.RuntimeConfigService
 
-// Internal service authentication constants for orchestrator-to-agent routing.
-const (
-	// internalServiceClientID is the client ID used for internal orchestrator calls
-	internalServiceClientID = "orchestrator-internal"
+// internalTokenValidator is initialized at startup if AXONFLOW_INTERNAL_SERVICE_SECRET is configured.
+// It validates HMAC-signed tokens from the orchestrator, with backward compatibility for legacy tokens.
+var internalTokenValidator *serviceauth.TokenValidator
 
-	// internalServiceTokenFallback is used when AXONFLOW_INTERNAL_SERVICE_SECRET is not configured
-	internalServiceTokenFallback = "orchestrator-internal-token"
-
-	// internalServiceSecretEnvVar is the environment variable for the shared secret
-	internalServiceSecretEnvVar = "AXONFLOW_INTERNAL_SERVICE_SECRET"
-
-	// internalServiceSecretMinLength is the recommended minimum length for the shared secret.
-	internalServiceSecretMinLength = 32
-)
-
-// internalServiceAuthWarningLogged tracks if we've already logged the fallback warning.
-var internalServiceAuthWarningLogged bool
-
-// logInternalServiceAuthWarning logs a warning if fallback mode is being used.
-// This should be called during initialization to alert operators about security configuration.
-func logInternalServiceAuthWarning() {
-	if internalServiceAuthWarningLogged {
-		return
+func init() {
+	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+		internalTokenValidator = serviceauth.NewTokenValidator(secret, serviceauth.RealClock{}, serviceauth.DefaultClockSkew)
 	}
-	secret := os.Getenv(internalServiceSecretEnvVar)
-	if secret == "" {
-		log.Printf("[SECURITY WARNING] %s not configured - using fallback token for internal service auth. This is acceptable for development but NOT recommended for production. Set %s to a secure random string (minimum %d characters).",
-			internalServiceSecretEnvVar, internalServiceSecretEnvVar, internalServiceSecretMinLength)
-	} else if len(secret) < internalServiceSecretMinLength {
-		log.Printf("[SECURITY WARNING] %s is only %d characters - recommend at least %d characters for production security.",
-			internalServiceSecretEnvVar, len(secret), internalServiceSecretMinLength)
-	}
-	internalServiceAuthWarningLogged = true
-}
-
-// isValidInternalServiceRequest checks if the request is from a trusted internal service.
-// If AXONFLOW_INTERNAL_SERVICE_SECRET is configured, validates the token against it.
-// Otherwise falls back to checking the hardcoded token (for Community/dev environments).
-func isValidInternalServiceRequest(clientID, userToken string) bool {
-	if clientID != internalServiceClientID {
-		return false
-	}
-
-	// If shared secret is configured, validate against it
-	if secret := os.Getenv(internalServiceSecretEnvVar); secret != "" {
-		return userToken == secret
-	}
-
-	// Fallback for Community/dev: accept hardcoded token
-	return userToken == internalServiceTokenFallback
+	serviceauth.LogAuthWarning()
 }
 
 // validateServiceLicense validates a service license key and checks MCP permissions.
@@ -155,8 +115,11 @@ func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseK
 }
 
 // getMCPAuditQueue returns the audit queue for MCP handlers.
-// Returns nil if DatabasePolicyEngine is not initialized (e.g., in tests).
+// Uses the global AuditManager (preferred), falling back to DatabasePolicyEngine.
 func getMCPAuditQueue() *AuditQueue {
+	if auditManager != nil {
+		return auditManager.GetQueue()
+	}
 	if dbPolicyEngine != nil {
 		return dbPolicyEngine.GetAuditQueue()
 	}
@@ -211,9 +174,6 @@ func InitializeMCPRegistry() error {
 // InitializeMCPRegistryWithDB sets up the MCP connector registry with optional database support
 // This enables three-tier configuration: Database > Config File > Env Vars
 func InitializeMCPRegistryWithDB(db *sql.DB) error {
-	// Log security warning if internal service auth is using fallback token
-	logInternalServiceAuthWarning()
-
 	mcpRegistry = registry.NewRegistry()
 	log.Println("[MCP] Initializing connector registry...")
 
@@ -695,12 +655,13 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			Role:        "admin",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
-	} else if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
+	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
-		// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token.
+		// Uses HMAC-signed tokens if AXONFLOW_INTERNAL_SERVICE_SECRET is configured,
+		// with backward compatibility for legacy plain-secret tokens.
 		log.Printf("[MCP] Internal orchestrator request - bypassing client and user token validation")
 		client = &Client{
-			ID:          internalServiceClientID,
+			ID:          serviceauth.ClientID,
 			Name:        "Orchestrator Internal",
 			TenantID:    "", // Internal service has no tenant restriction
 			Permissions: []string{"query", "execute", "mcp"},
@@ -844,7 +805,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// Request-phase policy evaluation (before connector.Query)
 	var requestPolicyResult *sharedpolicy.RequestResult
 	policyEngine := sharedpolicy.GetGlobalEngine()
-	if policyEngine != nil {
+	mcpDetectionCfg := GetMCPDetectionConfig()
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
 		requestPolicyResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
 			TenantID:      user.TenantID,
 			ConnectorName: req.Connector,
@@ -865,6 +827,8 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryComplianceEUAIAct,
 				sharedpolicy.CategoryComplianceMASFEAT,
 			},
+			SkipCategories:  mcpDetectionCfg.SkipCategories,
+			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 		})
 
 		// Update audit entry with request policy evaluation results
@@ -923,7 +887,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// Response-phase policy evaluation (after connector.Query, for PII redaction)
 	var responsePolicyResult *sharedpolicy.ResponseResult
 	responseData := result.Rows
-	if policyEngine != nil {
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
 		responsePolicyResult = policyEngine.EvaluateResponse(ctx, result.Rows, sharedpolicy.EvalOptions{
 			TenantID:      user.TenantID,
 			ConnectorName: req.Connector,
@@ -935,7 +899,9 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIEU,
 				sharedpolicy.CategoryPIISingapore,
 			},
-			MaxRedactions: 100, // Limit redactions per response
+			SkipCategories:  mcpDetectionCfg.SkipCategories,
+			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+			MaxRedactions:   100, // Limit redactions per response
 		})
 
 		// Update audit entry with response policy evaluation results
@@ -1135,11 +1101,11 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			Role:        "admin",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
-	} else if isValidInternalServiceRequest(req.ClientID, req.UserToken) {
+	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
 		log.Printf("[MCP Execute] Internal orchestrator request - bypassing client and user token validation")
 		client = &Client{
-			ID:          internalServiceClientID,
+			ID:          serviceauth.ClientID,
 			Name:        "Orchestrator Internal",
 			TenantID:    "",
 			Permissions: []string{"query", "execute", "mcp"},
@@ -1228,10 +1194,54 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Dynamic policy evaluation via Orchestrator (rate limits, budgets, time/role access)
+	var dynamicPolicyInfo *sharedpolicy.DynamicPolicyInfo
+	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(req.Connector) {
+		dynamicReq := sharedpolicy.DynamicPolicyRequest{
+			TenantID:      user.TenantID,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			UserRole:      user.Role,
+			ConnectorName: req.Connector,
+			Operation:     "execute",
+			Statement:     req.Statement,
+			Parameters:    req.Parameters,
+		}
+
+		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
+		dynamicPolicyInfo = info
+
+		if err != nil {
+			log.Printf("[MCP] Dynamic policy evaluation failed for execute: %v", err)
+			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+			return
+		}
+
+		if !dynamicResp.Allowed {
+			log.Printf("[MCP] Execute blocked by dynamic policy: %s", dynamicResp.BlockReason)
+
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = dynamicResp.BlockReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":             false,
+				"error":               dynamicResp.BlockReason,
+				"dynamic_policy_info": info,
+			})
+			return
+		}
+	}
+
 	// Request-phase policy evaluation (before connector.Execute)
+	var requestPolicyResult *sharedpolicy.RequestResult
 	policyEngine := sharedpolicy.GetGlobalEngine()
-	if policyEngine != nil {
-		requestPolicyResult := policyEngine.EvaluateRequest(ctx, req.Statement, sharedpolicy.EvalOptions{
+	mcpDetectionCfg := GetMCPDetectionConfig()
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
+		requestPolicyResult = policyEngine.EvaluateRequest(ctx, req.Statement, sharedpolicy.EvalOptions{
 			TenantID:      user.TenantID,
 			ConnectorName: req.Connector,
 			UserID:        fmt.Sprintf("%d", user.ID),
@@ -1251,6 +1261,8 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryComplianceEUAIAct,
 				sharedpolicy.CategoryComplianceMASFEAT,
 			},
+			SkipCategories:  mcpDetectionCfg.SkipCategories,
+			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
 		})
 
 		// Update audit entry with request policy evaluation results
@@ -1306,15 +1318,80 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Response-phase policy evaluation (PII redaction in execute message)
+	var responsePolicyResult *sharedpolicy.ResponseResult
+	responseMessage := result.Message
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) && result.Message != "" {
+		messageData := []map[string]interface{}{{"message": result.Message}}
+		responsePolicyResult = policyEngine.EvaluateResponse(ctx, messageData, sharedpolicy.EvalOptions{
+			TenantID:      user.TenantID,
+			ConnectorName: req.Connector,
+			UserID:        fmt.Sprintf("%d", user.ID),
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
+			},
+			SkipCategories:  mcpDetectionCfg.SkipCategories,
+			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+			MaxRedactions:   100,
+		})
+
+		if responsePolicyResult.Redacted {
+			auditEntry.ResponseRedacted = true
+			auditEntry.ResponseRedactionsCount = len(responsePolicyResult.RedactedFields)
+			auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+			if redactedRows, ok := responsePolicyResult.Content.([]map[string]interface{}); ok && len(redactedRows) > 0 {
+				if msg, ok := redactedRows[0]["message"].(string); ok {
+					responseMessage = msg
+				}
+			}
+		}
+
+		if responsePolicyResult.Blocked {
+			log.Printf("[MCP] Execute response blocked by policy '%s': %s",
+				responsePolicyResult.BlockedBy.PolicyID, responsePolicyResult.BlockReason)
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason)
+			auditEntry.RowCount = int(result.RowsAffected)
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+
+			sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason),
+				http.StatusForbidden, nil)
+			return
+		}
+	}
+
+	// Build policy info for response
+	policyInfo := sharedpolicy.BuildPolicyInfo(requestPolicyResult, responsePolicyResult)
+	if policyInfo != nil && dynamicPolicyInfo != nil {
+		policyInfo.DynamicPolicyInfo = dynamicPolicyInfo
+	} else if policyInfo == nil && dynamicPolicyInfo != nil {
+		policyInfo = &sharedpolicy.PolicyInfo{
+			DynamicPolicyInfo: dynamicPolicyInfo,
+		}
+	}
+
 	// Return results
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]interface{}{
 		"success":       true,
 		"connector":     req.Connector,
 		"rows_affected": result.RowsAffected,
 		"duration_ms":   result.Duration.Milliseconds(),
-		"message":       result.Message,
-	}); err != nil {
+		"message":       responseMessage,
+	}
+	if responsePolicyResult != nil && responsePolicyResult.Redacted {
+		response["redacted"] = true
+		response["redacted_fields"] = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+	}
+	if policyInfo != nil {
+		response["policy_info"] = policyInfo
+	}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding MCP execute response: %v", err)
 	}
 

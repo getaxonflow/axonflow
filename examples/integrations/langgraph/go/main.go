@@ -102,8 +102,8 @@ func inputNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 	}
 	fmt.Printf("[Input Node] Processing: %q\n", truncated)
 
-	// Use Proxy Mode (ExecuteQuery) - works without credentials
-	result, err := client.ExecuteQuery(
+	// Use Proxy Mode (ProxyLLMCall) - works without credentials
+	result, err := client.ProxyLLMCall(
 		"langgraph-user",
 		query,
 		"chat",
@@ -206,7 +206,7 @@ func searchNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 	fmt.Println("[Search Node] Executing governed search...")
 
 	// Policy check for search operation
-	result, err := client.ExecuteQuery(
+	result, err := client.ProxyLLMCall(
 		"langgraph-user",
 		fmt.Sprintf("SEARCH: %s", query),
 		"chat",
@@ -278,7 +278,7 @@ func analyzeNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 
 	fmt.Println("[Analyze Node] Running governed analysis...")
 
-	result, err := client.ExecuteQuery(
+	result, err := client.ProxyLLMCall(
 		"langgraph-user",
 		fmt.Sprintf("ANALYZE: %s", query),
 		"chat",
@@ -358,7 +358,7 @@ func respondNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 		summary = summary[:200]
 	}
 
-	result, err := client.ExecuteQuery(
+	result, err := client.ProxyLLMCall(
 		"langgraph-user",
 		fmt.Sprintf("RESPOND: %s", summary),
 		"chat",

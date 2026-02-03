@@ -77,6 +77,17 @@ Steps: 3
 ✅ [Language] MAP Test: PASS
 ```
 
+## Policy Configuration for MAP
+
+MAP plan generation and execution respects the same policy configuration as other AxonFlow operations. Each example includes a PII-containing plan query test that checks behavior based on the configured PII action:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PII_ACTION` | `redact` | Controls PII detection behavior globally |
+| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | Override for gateway mode |
+
+When `GATEWAY_PII_ACTION=block`, plan generation with PII data (e.g., SSN) will be blocked. When set to `log`, PII is detected and logged but the plan proceeds. The default `redact` mode flags PII for downstream redaction by the Orchestrator.
+
 ## Learn More
 
 - [MAP Documentation](https://docs.getaxonflow.com/docs/orchestration/overview)

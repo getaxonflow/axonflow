@@ -21,10 +21,11 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"axonflow/platform/shared/serviceauth"
 )
 
-// Note: Internal service authentication constants and getInternalServiceToken()
-// are defined in mcp_connector_processor.go to avoid duplication.
+// Note: Internal service authentication is handled by the shared serviceauth package.
 
 // MCPQueryRouter handles routing MCP queries to agent's MCP handler
 // This bridges the gap between SDK "mcp-query" requests and agent MCP endpoints
@@ -87,10 +88,10 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	// Format matches platform/agent/mcp_handler.go:228-242 (MCPQueryRequest)
 	// Use internal service credentials for orchestrator-to-agent authentication.
 	// This allows the agent to recognize this as an internal service call and bypass
-	// normal client validation (see isValidInternalServiceRequest in mcp_handler.go).
+	// normal client validation (see serviceauth.IsValidInternalServiceRequest).
 	agentReq := map[string]interface{}{
-		"client_id":  InternalServiceClientID,
-		"user_token": getInternalServiceToken(),
+		"client_id":  serviceauth.ClientID,
+		"user_token": serviceauth.GetInternalServiceToken(internalTokenGenerator),
 		"connector":  connector,
 		"statement":  req.Query, // e.g., "search_flights", "search_hotels"
 		"parameters": params,

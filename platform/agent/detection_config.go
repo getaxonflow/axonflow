@@ -4,9 +4,22 @@
 package agent
 
 import (
+	"context"
 	"log"
 	"os"
 	"strings"
+	"sync"
+
+	"axonflow/platform/agent/license"
+	sharedpolicy "axonflow/platform/shared/policy"
+)
+
+// Cached detection configs — loaded once at startup via InitDetectionConfigs().
+// Follows the same pattern as sharedpolicy.InitGlobalDynamicPolicyEvaluator().
+var (
+	cachedMCPConfig     *ModeDetectionConfig
+	cachedGatewayConfig *ModeDetectionConfig
+	detectionConfigMu   sync.RWMutex
 )
 
 // DetectionAction represents the action to take when a detection is triggered.
@@ -216,4 +229,301 @@ func (a DetectionAction) ToOverrideAction() OverrideAction {
 	default:
 		return ActionBlock
 	}
+}
+
+// ToPolicyAction converts DetectionAction to the shared policy.Action type.
+func (a DetectionAction) ToPolicyAction() sharedpolicy.Action {
+	switch a {
+	case DetectionActionBlock:
+		return sharedpolicy.ActionBlock
+	case DetectionActionRedact:
+		return sharedpolicy.ActionRedact
+	case DetectionActionWarn:
+		return sharedpolicy.ActionWarn
+	case DetectionActionLog:
+		return sharedpolicy.ActionLog
+	default:
+		return sharedpolicy.ActionBlock
+	}
+}
+
+// =============================================================================
+// Mode-Specific Detection Configuration
+// =============================================================================
+
+// Environment variable names for mode-specific detection configuration.
+const (
+	// MCP mode master switch
+	EnvMCPStaticPoliciesEnabled = "MCP_STATIC_POLICIES_ENABLED"
+
+	// Gateway mode master switch
+	EnvGatewayStaticPoliciesEnabled = "GATEWAY_STATIC_POLICIES_ENABLED"
+
+	// MCP action overrides
+	EnvMCPPIIAction            = "MCP_PII_ACTION"
+	EnvMCPSQLIAction           = "MCP_SQLI_ACTION"
+	EnvMCPDangerousQueryAction = "MCP_DANGEROUS_QUERY_ACTION"
+
+	// Gateway action overrides
+	EnvGatewayPIIAction            = "GATEWAY_PII_ACTION"
+	EnvGatewaySQLIAction           = "GATEWAY_SQLI_ACTION"
+	EnvGatewayDangerousQueryAction = "GATEWAY_DANGEROUS_QUERY_ACTION"
+
+	// Category skip lists
+	EnvMCPStaticPoliciesSkipCategories     = "MCP_STATIC_POLICIES_SKIP_CATEGORIES"
+	EnvGatewayStaticPoliciesSkipCategories = "GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES"
+
+	// Enterprise: per-connector scoping
+	EnvMCPStaticPoliciesConnectors = "MCP_STATIC_POLICIES_CONNECTORS"
+)
+
+// ModeDetectionConfig holds mode-specific detection configuration.
+// It supports enable/disable per mode, action overrides, category filtering,
+// and per-connector scoping (Enterprise only).
+type ModeDetectionConfig struct {
+	// Enabled controls whether static policy evaluation runs for this mode.
+	// Default: true
+	Enabled bool
+
+	// PIIAction is the action for PII detection in this mode.
+	PIIAction DetectionAction
+
+	// SQLIAction is the action for SQL injection detection in this mode.
+	SQLIAction DetectionAction
+
+	// DangerousQueryAction is the action for dangerous query detection in this mode.
+	DangerousQueryAction DetectionAction
+
+	// SkipCategories lists policy categories to skip in this mode.
+	// Parsed from comma-separated env var.
+	SkipCategories []sharedpolicy.PolicyCategory
+
+	// Connectors limits static policy eval to these connectors (Enterprise only).
+	// Empty means all connectors.
+	Connectors []string
+}
+
+// MCPDetectionConfigFromEnv creates MCP-specific detection config from environment variables.
+//
+// Precedence (highest → lowest):
+//  1. MCP-specific env vars (MCP_PII_ACTION, MCP_SQLI_ACTION, etc.)
+//  2. Global env vars (PII_ACTION, SQLI_ACTION, etc.)
+//  3. Engine defaults (redact for PII, block for SQLi, etc.)
+func MCPDetectionConfigFromEnv() ModeDetectionConfig {
+	globalCfg := DetectionConfigFromEnv()
+
+	cfg := ModeDetectionConfig{
+		Enabled:              parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
+		PIIAction:            globalCfg.PIIAction,
+		SQLIAction:           globalCfg.SQLIAction,
+		DangerousQueryAction: globalCfg.DangerousQueryAction,
+	}
+
+	// MCP-specific overrides (highest precedence)
+	if action := os.Getenv(EnvMCPPIIAction); action != "" {
+		cfg.PIIAction = parseDetectionAction(action, EnvMCPPIIAction, cfg.PIIAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
+	}
+	if action := os.Getenv(EnvMCPSQLIAction); action != "" {
+		cfg.SQLIAction = parseDetectionAction(action, EnvMCPSQLIAction, cfg.SQLIAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+	if action := os.Getenv(EnvMCPDangerousQueryAction); action != "" {
+		cfg.DangerousQueryAction = parseDetectionAction(action, EnvMCPDangerousQueryAction, cfg.DangerousQueryAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+
+	// Category skip list
+	cfg.SkipCategories = parseCategoryList(os.Getenv(EnvMCPStaticPoliciesSkipCategories))
+
+	// Per-connector scoping (Enterprise only)
+	if connectors := os.Getenv(EnvMCPStaticPoliciesConnectors); connectors != "" {
+		if license.IsEnterpriseTier(context.Background()) {
+			cfg.Connectors = parseCSV(connectors)
+		} else {
+			log.Printf("[Detection] WARNING: %s requires Enterprise license, ignoring", EnvMCPStaticPoliciesConnectors)
+		}
+	}
+
+	if !cfg.Enabled {
+		log.Printf("[Detection] MCP static policies DISABLED")
+	} else {
+		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, DangerousQuery=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.SkipCategories)
+	}
+
+	return cfg
+}
+
+// GatewayDetectionConfigFromEnv creates gateway-specific detection config from environment variables.
+//
+// Precedence (highest → lowest):
+//  1. Gateway-specific env vars (GATEWAY_PII_ACTION, GATEWAY_SQLI_ACTION, etc.)
+//  2. Global env vars (PII_ACTION, SQLI_ACTION, etc.)
+//  3. Engine defaults (redact for PII, block for SQLi, etc.)
+func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
+	globalCfg := DetectionConfigFromEnv()
+
+	cfg := ModeDetectionConfig{
+		Enabled:              parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
+		PIIAction:            globalCfg.PIIAction,
+		SQLIAction:           globalCfg.SQLIAction,
+		DangerousQueryAction: globalCfg.DangerousQueryAction,
+	}
+
+	// Gateway-specific overrides (highest precedence)
+	if action := os.Getenv(EnvGatewayPIIAction); action != "" {
+		cfg.PIIAction = parseDetectionAction(action, EnvGatewayPIIAction, cfg.PIIAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
+	}
+	if action := os.Getenv(EnvGatewaySQLIAction); action != "" {
+		cfg.SQLIAction = parseDetectionAction(action, EnvGatewaySQLIAction, cfg.SQLIAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+	if action := os.Getenv(EnvGatewayDangerousQueryAction); action != "" {
+		cfg.DangerousQueryAction = parseDetectionAction(action, EnvGatewayDangerousQueryAction, cfg.DangerousQueryAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+
+	// Category skip list
+	cfg.SkipCategories = parseCategoryList(os.Getenv(EnvGatewayStaticPoliciesSkipCategories))
+
+	if !cfg.Enabled {
+		log.Printf("[Detection] Gateway static policies DISABLED")
+	} else {
+		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, DangerousQuery=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.SkipCategories)
+	}
+
+	return cfg
+}
+
+// BuildActionOverrides converts ModeDetectionConfig actions into a policy ActionOverrides map.
+func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCategory]sharedpolicy.Action {
+	overrides := make(map[sharedpolicy.PolicyCategory]sharedpolicy.Action)
+
+	piiAction := c.PIIAction.ToPolicyAction()
+	overrides[sharedpolicy.CategoryPIIGlobal] = piiAction
+	overrides[sharedpolicy.CategoryPIIUS] = piiAction
+	overrides[sharedpolicy.CategoryPIIIndia] = piiAction
+	overrides[sharedpolicy.CategoryPIIEU] = piiAction
+	overrides[sharedpolicy.CategoryPIISingapore] = piiAction
+
+	sqliAction := c.SQLIAction.ToPolicyAction()
+	overrides[sharedpolicy.CategorySecuritySQLi] = sqliAction
+
+	dangerousAction := c.DangerousQueryAction.ToPolicyAction()
+	overrides[sharedpolicy.CategorySecurityDangerous] = dangerousAction
+
+	return overrides
+}
+
+// IsConnectorEnabled returns true if the given connector should have static policies evaluated.
+// If no connectors are configured, all connectors are enabled.
+func (c *ModeDetectionConfig) IsConnectorEnabled(connector string) bool {
+	if len(c.Connectors) == 0 {
+		return true
+	}
+	for _, conn := range c.Connectors {
+		if conn == connector {
+			return true
+		}
+	}
+	return false
+}
+
+// InitDetectionConfigs reads MCP and Gateway detection configs from environment
+// variables and caches them for the lifetime of the process. Call once at startup,
+// after environment is fully loaded. Subsequent calls to GetMCPDetectionConfig()
+// and GetGatewayDetectionConfig() return the cached values without re-parsing.
+//
+// This follows the same startup-cache pattern as sharedpolicy.InitGlobalDynamicPolicyEvaluator().
+func InitDetectionConfigs() {
+	detectionConfigMu.Lock()
+	defer detectionConfigMu.Unlock()
+	mcp := MCPDetectionConfigFromEnv()
+	gw := GatewayDetectionConfigFromEnv()
+	cachedMCPConfig = &mcp
+	cachedGatewayConfig = &gw
+}
+
+// GetMCPDetectionConfig returns the cached MCP detection config.
+// Falls back to parsing from env if InitDetectionConfigs() hasn't been called
+// (e.g., in tests that don't go through full startup).
+func GetMCPDetectionConfig() ModeDetectionConfig {
+	detectionConfigMu.RLock()
+	defer detectionConfigMu.RUnlock()
+	if cachedMCPConfig != nil {
+		return *cachedMCPConfig
+	}
+	return MCPDetectionConfigFromEnv()
+}
+
+// GetGatewayDetectionConfig returns the cached Gateway detection config.
+// Falls back to parsing from env if InitDetectionConfigs() hasn't been called.
+func GetGatewayDetectionConfig() ModeDetectionConfig {
+	detectionConfigMu.RLock()
+	defer detectionConfigMu.RUnlock()
+	if cachedGatewayConfig != nil {
+		return *cachedGatewayConfig
+	}
+	return GatewayDetectionConfigFromEnv()
+}
+
+// ResetDetectionConfigCache clears the cached configs. Used in tests to allow
+// re-initialization with different env vars via t.Setenv + InitDetectionConfigs().
+func ResetDetectionConfigCache() {
+	detectionConfigMu.Lock()
+	defer detectionConfigMu.Unlock()
+	cachedMCPConfig = nil
+	cachedGatewayConfig = nil
+}
+
+// parseBoolEnv parses a boolean environment variable with a default value.
+func parseBoolEnv(envName string, defaultVal bool) bool {
+	val := os.Getenv(envName)
+	if val == "" {
+		return defaultVal
+	}
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "true", "1", "yes":
+		return true
+	case "false", "0", "no":
+		return false
+	default:
+		log.Printf("[Detection] WARNING: Invalid %s=%q, using default %v", envName, val, defaultVal)
+		return defaultVal
+	}
+}
+
+// parseCategoryList parses a comma-separated list of policy category strings.
+func parseCategoryList(val string) []sharedpolicy.PolicyCategory {
+	if val == "" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	categories := make([]sharedpolicy.PolicyCategory, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			categories = append(categories, sharedpolicy.PolicyCategory(trimmed))
+		}
+	}
+	return categories
+}
+
+// parseCSV parses a comma-separated string into a string slice.
+func parseCSV(val string) []string {
+	if val == "" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

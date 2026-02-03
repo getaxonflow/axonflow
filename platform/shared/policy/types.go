@@ -220,6 +220,12 @@ type EvalOptions struct {
 	Categories     []PolicyCategory // Only evaluate these categories (empty = all)
 	SkipCategories []PolicyCategory // Exclude these categories
 
+	// Action overrides
+	// ActionOverrides allows overriding the default action for specific categories.
+	// Key: PolicyCategory, Value: desired Action.
+	// Takes precedence over GetActionForPhase() defaults.
+	ActionOverrides map[PolicyCategory]Action
+
 	// Redaction limits
 	MaxRedactions int // Maximum redactions per response (0 = unlimited)
 }

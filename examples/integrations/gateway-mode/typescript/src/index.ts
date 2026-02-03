@@ -12,6 +12,10 @@
  * - Complete audit trail for compliance
  * - Works with any LLM provider
  *
+ * Gateway-specific policy config env vars (override defaults for gateway mode only):
+ *   GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
+ *   GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+ *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
@@ -106,6 +110,63 @@ async function main() {
     assertCheck(preCheckResult.approved === true, "Safe query is approved by policy pre-check");
     assertCheck(preCheckLatency < 10000, "Pre-check completes within 10 seconds");
 
+    console.log("");
+
+    // =========================================================================
+    // STEP 1b: PII Detection - SSN triggers redaction flag
+    // =========================================================================
+    console.log("Step 1b: PII Detection (SSN)...");
+    const piiResult = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "Process refund for customer with SSN 123-45-6789",
+    });
+    assertCheck(piiResult.approved === true, "PII query approved (redact mode)");
+    assertCheck((piiResult.policies?.length || 0) > 0, "PII policies detected");
+    console.log(`   Policies: ${piiResult.policies?.join(", ")}`);
+    console.log("");
+
+    // =========================================================================
+    // STEP 1c: India PII Detection - PAN and Aadhaar
+    // =========================================================================
+    console.log("Step 1c: India PII Detection (PAN)...");
+    const panResult = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "Verify PAN number ABCPD1234E for tax filing",
+    });
+    assertCheck(panResult.approved === true, "India PAN approved (redact mode)");
+    assertCheck((panResult.policies?.length || 0) > 0, "India PII policies detected for PAN");
+    console.log(`   Policies: ${panResult.policies?.join(", ")}`);
+
+    console.log("Step 1c: India PII Detection (Aadhaar)...");
+    const aadhaarResult = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "Link Aadhaar 2345 6789 0123 to bank account",
+    });
+    assertCheck(aadhaarResult.approved === true, "India Aadhaar approved (redact mode)");
+    assertCheck((aadhaarResult.policies?.length || 0) > 0, "India PII policies detected for Aadhaar");
+    console.log(`   Policies: ${aadhaarResult.policies?.join(", ")}`);
+    console.log("");
+
+    // =========================================================================
+    // STEP 1d: SQL Injection Detection - should be BLOCKED
+    // =========================================================================
+    console.log("Step 1d: SQL Injection Detection (DROP TABLE)...");
+    const sqliResult = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "SELECT * FROM users; DROP TABLE users;--",
+    });
+    assertCheck(sqliResult.approved === false, "SQLi query is BLOCKED");
+    assertCheck(sqliResult.blockReason !== undefined && sqliResult.blockReason !== "", "Block reason provided for SQLi");
+    console.log(`   Block reason: ${sqliResult.blockReason}`);
+
+    console.log("Step 1d: SQL Injection Detection (UNION SELECT)...");
+    const unionResult = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "Get user where id = 1 UNION SELECT password FROM admin",
+    });
+    assertCheck(unionResult.approved === false, "UNION SQLi query is BLOCKED");
+    assertCheck(unionResult.blockReason !== undefined && unionResult.blockReason !== "", "Block reason provided for UNION SQLi");
+    console.log(`   Block reason: ${unionResult.blockReason}`);
     console.log("");
 
     // =========================================================================

@@ -201,8 +201,41 @@ The SDK methods correspond to these REST API endpoints:
 | `AXONFLOW_AGENT_URL` | AxonFlow Agent URL | `http://localhost:8080` |
 | `AXONFLOW_ORCHESTRATOR_URL` | Orchestrator URL for Execution Replay | `http://localhost:8081` |
 
+## CLI (`axonctl`)
+
+The `axonctl executions` command provides a terminal-based interface for inspection and export:
+
+```bash
+# Build
+cd platform/cmd/axonctl && go build -o axonctl .
+
+# List, get, replay, export
+axonctl executions list --status completed
+axonctl executions get <id>
+axonctl executions replay <id> --show-io
+axonctl executions export <id> --output report.json
+```
+
+See [`cli/README.md`](cli/README.md) for full usage.
+
+## Embedded Execution Viewer (Web UI)
+
+A lightweight web UI is available at `/ui/executions/` through the agent:
+
+```bash
+open http://localhost:8080/ui/executions/
+```
+
+The agent proxies UI requests to the orchestrator, which serves the static files.
+
+Features:
+- List view with status/workflow filters and pagination
+- Detail view with expandable step timeline
+- JSON export download
+
 ## Related Documentation
 
 - [API Reference](/docs/api/)
 - [Workflow Engine](/docs/orchestration/)
 - [Compliance Features](/docs/governance/)
+- [Execution Viewer Guide](/docs/guides/execution-viewer.md)

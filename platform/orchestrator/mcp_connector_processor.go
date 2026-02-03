@@ -22,62 +22,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/shared/serviceauth"
 )
 
-// Internal service authentication constants for orchestrator-to-agent routing.
-// These are used when the orchestrator needs to call MCP connectors on the agent
-// without full user authentication context.
-const (
-	// InternalServiceClientID is the client ID used for internal orchestrator calls
-	InternalServiceClientID = "orchestrator-internal"
-
-	// InternalServiceTokenFallback is used when AXONFLOW_INTERNAL_SERVICE_SECRET is not configured.
-	// This provides backwards compatibility for Community/development environments.
-	// Production deployments should always set AXONFLOW_INTERNAL_SERVICE_SECRET.
-	InternalServiceTokenFallback = "orchestrator-internal-token"
-
-	// InternalServiceTenantID is the wildcard tenant ID for internal calls
-	InternalServiceTenantID = "*"
-
-	// InternalServiceSecretEnvVar is the environment variable for the shared secret
-	InternalServiceSecretEnvVar = "AXONFLOW_INTERNAL_SERVICE_SECRET"
-
-	// InternalServiceSecretMinLength is the recommended minimum length for the shared secret.
-	// Secrets shorter than this will trigger a security warning at startup.
-	InternalServiceSecretMinLength = 32
-)
-
-// internalServiceAuthWarningLogged tracks if we've already logged the fallback warning
-// to avoid spamming logs on every call.
-var internalServiceAuthWarningLogged bool
-
-// LogInternalServiceAuthWarning logs a warning if fallback mode is being used.
-// This should be called during startup to alert operators about security configuration.
-// It only logs once per process lifetime to avoid log spam.
-func LogInternalServiceAuthWarning() {
-	if internalServiceAuthWarningLogged {
-		return
-	}
-	secret := os.Getenv(InternalServiceSecretEnvVar)
-	if secret == "" {
-		log.Printf("[SECURITY WARNING] %s not configured - using fallback token for internal service auth. This is acceptable for development but NOT recommended for production. Set %s to a secure random string (minimum %d characters).",
-			InternalServiceSecretEnvVar, InternalServiceSecretEnvVar, InternalServiceSecretMinLength)
-	} else if len(secret) < InternalServiceSecretMinLength {
-		log.Printf("[SECURITY WARNING] %s is only %d characters - recommend at least %d characters for production security.",
-			InternalServiceSecretEnvVar, len(secret), InternalServiceSecretMinLength)
-	}
-	internalServiceAuthWarningLogged = true
-}
-
-// getInternalServiceToken returns the token to use for internal service auth.
-// If AXONFLOW_INTERNAL_SERVICE_SECRET is set, uses that for secure auth.
-// Otherwise falls back to the hardcoded token for Community/dev environments.
-func getInternalServiceToken() string {
-	if secret := os.Getenv(InternalServiceSecretEnvVar); secret != "" {
-		return secret
-	}
-	return InternalServiceTokenFallback
-}
+// internalTokenGenerator is initialized at startup if AXONFLOW_INTERNAL_SERVICE_SECRET is configured.
+// It generates HMAC-signed tokens for orchestrator-to-agent routing.
+var internalTokenGenerator *serviceauth.TokenGenerator
 
 // Prometheus metrics for MCP connectors
 var (
@@ -111,8 +61,11 @@ func init() {
 	prometheus.MustRegister(promConnectorDuration)
 	prometheus.MustRegister(promConnectorErrors)
 
-	// Log security warning if internal service auth is using fallback token
-	LogInternalServiceAuthWarning()
+	// Initialize HMAC token generator if secret is configured
+	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+		internalTokenGenerator = serviceauth.NewTokenGenerator(secret, serviceauth.RealClock{})
+	}
+	serviceauth.LogAuthWarning()
 }
 
 // MCPConnectorProcessor handles workflow steps that call MCP connectors
@@ -410,12 +363,12 @@ func (p *MCPConnectorProcessor) routeToAgent(ctx context.Context, step WorkflowS
 
 	// Extract client/user context from execution if available
 	// Default to internal service credentials for orchestrator-to-agent routing
-	req.Client.ID = InternalServiceClientID
-	req.Client.TenantID = InternalServiceTenantID
-	req.User.TenantID = InternalServiceTenantID
+	req.Client.ID = serviceauth.ClientID
+	req.Client.TenantID = serviceauth.TenantID
+	req.User.TenantID = serviceauth.TenantID
 	// Set internal service token for orchestrator-to-agent routing
-	// Uses AXONFLOW_INTERNAL_SERVICE_SECRET if configured, otherwise falls back to hardcoded token
-	req.Context["user_token"] = getInternalServiceToken()
+	// Uses HMAC-signed token if secret is configured, otherwise falls back to hardcoded token
+	req.Context["user_token"] = serviceauth.GetInternalServiceToken(internalTokenGenerator)
 
 	if execution.Input != nil {
 		if clientID, ok := execution.Input["client_id"].(string); ok && clientID != "" {

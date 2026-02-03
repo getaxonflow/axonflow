@@ -13,6 +13,8 @@ package orchestrator
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -85,11 +87,11 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
-	// Skip in CI - api.example.com doesn't resolve and triggers SSRF protection
-	// See Issue #283 for proper fix with mock DNS or httptest server
-	if os.Getenv("CI") == "true" {
-		t.Skip("Skipping in CI - requires DNS resolution for api.example.com")
-	}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockServer.Close()
 
 	// Save original registry and restore after test
 	originalRegistry := connectorRegistry
@@ -124,7 +126,8 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 		Type:     "http",
 		TenantID: "test-tenant-integration",
 		Options: map[string]interface{}{
-			"base_url": "https://api.example.com",
+			"base_url":          mockServer.URL,
+			"allow_private_ips": true,
 		},
 		Timeout: 30 * time.Second,
 	}
@@ -156,8 +159,10 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 	}
 
 	// Verify connector was persisted and reloaded
-	reloadedConnectors := newRegistry.ListWithTypes()
-	if _, exists := reloadedConnectors[testConnectorID]; !exists {
+	// After ReloadFromStorage, connectors are lazy-loaded (stored in configs but not
+	// instantiated). Use GetConfig to check persistence rather than ListWithTypes
+	// which only returns instantiated connectors.
+	if _, err := newRegistry.GetConfig(testConnectorID); err != nil {
 		t.Error("Connector should be persisted in database and reloaded")
 	}
 }
@@ -167,10 +172,11 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
-	// Skip in CI - api.example.com doesn't resolve and triggers SSRF protection
-	if os.Getenv("CI") == "true" {
-		t.Skip("Skipping in CI - requires DNS resolution for api.example.com")
-	}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockServer.Close()
 
 	// Save original registry and restore after test
 	originalRegistry := connectorRegistry
@@ -204,7 +210,8 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 		Type:     "http",
 		TenantID: "test-tenant-integration",
 		Options: map[string]interface{}{
-			"base_url": "https://api.example.com",
+			"base_url":          mockServer.URL,
+			"allow_private_ips": true,
 		},
 		Timeout: 30 * time.Second,
 	}
@@ -248,8 +255,8 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 	}
 
 	// Verify connector was deleted from database
-	reloadedConnectors := newRegistry.ListWithTypes()
-	if _, exists := reloadedConnectors[testConnectorID]; exists {
+	// Use GetConfig (checks configs map) for consistency with lazy-loading behavior
+	if _, err := newRegistry.GetConfig(testConnectorID); err == nil {
 		t.Error("Connector should be deleted from database")
 	}
 }
@@ -259,10 +266,11 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("Skipping integration test - DATABASE_URL not set")
 	}
-	// Skip in CI - api.example.com doesn't resolve and triggers SSRF protection
-	if os.Getenv("CI") == "true" {
-		t.Skip("Skipping in CI - requires DNS resolution for api.example.com")
-	}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer mockServer.Close()
 
 	// Save original registry and restore after test
 	originalRegistry := connectorRegistry
@@ -313,8 +321,10 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 		Type:     "http",
 		TenantID: "test-tenant-reload",
 		Options: map[string]interface{}{
-			"base_url": "https://api.example.com",
+			"base_url":          mockServer.URL,
+			"allow_private_ips": true,
 		},
+		Timeout: 30 * time.Second,
 	}
 
 	err = otherRegistry.Register(testConnectorID, connector, config)
@@ -323,11 +333,11 @@ func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
 	}
 
 	// Wait for periodic reload to pick up the new connector (max 2 seconds)
+	// Use GetConfig since ReloadFromStorage lazy-loads configs without instantiation
 	found := false
 	for i := 0; i < 4; i++ {
 		time.Sleep(600 * time.Millisecond)
-		connectors := connectorRegistry.ListWithTypes()
-		if _, exists := connectors[testConnectorID]; exists {
+		if _, err := connectorRegistry.GetConfig(testConnectorID); err == nil {
 			found = true
 			break
 		}

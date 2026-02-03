@@ -26,11 +26,13 @@ package orchestrator
 
 import (
 	"context"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"axonflow/platform/agent"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -962,9 +964,18 @@ func FilterByConfidence(results []PIIDetectionResult, minConfidence float64) []P
 // DetectWithSharedEngine uses the shared policy engine for PII detection.
 // This is the preferred method for MCP request/response processing.
 // Falls back to EnhancedPIIDetector if shared engine is unavailable.
+// Uses GATEWAY detection config since orchestrator processes LLM responses for proxy/gateway/MAP modes.
 func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID string) (*sharedpolicy.ResponseResult, bool) {
 	engine := sharedpolicy.GetGlobalEngine()
 	if engine == nil {
+		return nil, false
+	}
+
+	gwCfg := agent.GetGatewayDetectionConfig()
+
+	// Skip detection if gateway static policies are disabled
+	if !gwCfg.Enabled {
+		log.Printf("[PIIDetector] Gateway static policies disabled, skipping shared engine detection")
 		return nil, false
 	}
 
@@ -975,7 +986,10 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID s
 			sharedpolicy.CategoryPIIUS,
 			sharedpolicy.CategoryPIIIndia,
 			sharedpolicy.CategoryPIIEU,
+			sharedpolicy.CategoryPIISingapore,
 		},
+		SkipCategories:  gwCfg.SkipCategories,
+		ActionOverrides: gwCfg.BuildActionOverrides(),
 	})
 
 	return result, true

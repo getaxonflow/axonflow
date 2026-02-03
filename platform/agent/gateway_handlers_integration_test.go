@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/lib/pq"
 )
 
@@ -55,8 +56,10 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		t.Fatalf("Database ping failed: %v", err)
 	}
 
-	// Set global authDB for handlers
+	// Set global authDB for handlers (save/restore to avoid leaking state)
+	originalAuthDB := authDB
 	authDB = db
+	defer func() { authDB = originalAuthDB }()
 
 	// Run migration for gateway tables if not exists
 	_, err = db.Exec(`
@@ -245,6 +248,209 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 	t.Cleanup(func() {
 		db.Exec(`DELETE FROM llm_call_audits WHERE client_id LIKE 'test-client%'`)
 		db.Exec(`DELETE FROM gateway_contexts WHERE client_id LIKE 'test-client%'`)
+	})
+}
+
+// TestGatewayPreCheckIntegration_EnterpriseMode tests pre-check flow with JWT authentication in enterprise mode
+func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
+	// Skip if DATABASE_URL not provided
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set, skipping integration test")
+	}
+
+	// Set enterprise mode with a known JWT secret
+	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
+	originalJWTSecret := jwtSecret
+	os.Setenv("DEPLOYMENT_MODE", "enterprise")
+	jwtSecret = []byte(testJWTSecret)
+	defer func() {
+		if originalDeploymentMode != "" {
+			os.Setenv("DEPLOYMENT_MODE", originalDeploymentMode)
+		} else {
+			os.Unsetenv("DEPLOYMENT_MODE")
+		}
+		jwtSecret = originalJWTSecret
+	}()
+
+	// Connect to database
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		t.Fatalf("Database ping failed: %v", err)
+	}
+
+	// Set global authDB for handlers (save/restore to avoid leaking state)
+	originalAuthDB := authDB
+	authDB = db
+	defer func() { authDB = originalAuthDB }()
+
+	// Run migration for gateway tables if not exists
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS gateway_contexts (
+			context_id VARCHAR(36) PRIMARY KEY,
+			client_id VARCHAR(255) NOT NULL,
+			user_token_hash VARCHAR(64) NOT NULL,
+			query_hash VARCHAR(64) NOT NULL,
+			data_sources TEXT[],
+			policies_evaluated TEXT[],
+			approved BOOLEAN DEFAULT true,
+			block_reason TEXT,
+			expires_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create gateway_contexts table: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS llm_call_audits (
+			audit_id VARCHAR(36) PRIMARY KEY,
+			context_id VARCHAR(36) REFERENCES gateway_contexts(context_id),
+			client_id VARCHAR(255) NOT NULL,
+			provider VARCHAR(50) NOT NULL,
+			model VARCHAR(100) NOT NULL,
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			estimated_cost_usd DECIMAL(10, 6) DEFAULT 0,
+			metadata JSONB,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Failed to create llm_call_audits table: %v", err)
+	}
+
+	// Generate a valid V2 license key for enterprise auth
+	testLicenseKey := generateTestLicenseKey("test-client-enterprise", "ENT", "20351231")
+
+	// Helper to generate signed JWTs for testing
+	generateTestJWT := func(claims map[string]interface{}, secret string) string {
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte(secret))
+		if err != nil {
+			t.Fatalf("Failed to generate test JWT: %v", err)
+		}
+		return tokenString
+	}
+
+	t.Run("Valid JWT accepted", func(t *testing.T) {
+		validToken := generateTestJWT(map[string]interface{}{
+			"user_id":   "test-user-1",
+			"tenant_id": "test-client-enterprise",
+			"email":     "test@example.com",
+		}, testJWTSecret)
+
+		reqBody := PreCheckRequest{
+			UserToken:   validToken,
+			ClientID:    "test-client-enterprise",
+			Query:       "What is the capital of France?",
+			DataSources: []string{"postgres"},
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
+
+		rr := httptest.NewRecorder()
+		handlePolicyPreCheck(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if resp.ContextID == "" {
+			t.Error("Expected context_id to be set")
+		}
+		if !resp.Approved {
+			t.Errorf("Expected approved=true, got approved=%v, reason=%s", resp.Approved, resp.BlockReason)
+		}
+
+		t.Logf("Enterprise pre-check approved: contextID=%s", resp.ContextID)
+	})
+
+	t.Run("Invalid JWT rejected", func(t *testing.T) {
+		invalidToken := generateTestJWT(map[string]interface{}{
+			"user_id":   "test-user-1",
+			"tenant_id": "test-client-enterprise",
+			"email":     "test@example.com",
+		}, "wrong-secret")
+
+		reqBody := PreCheckRequest{
+			UserToken:   invalidToken,
+			ClientID:    "test-client-enterprise",
+			Query:       "What is the capital of France?",
+			DataSources: []string{"postgres"},
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
+
+		rr := httptest.NewRecorder()
+		handlePolicyPreCheck(rr, req)
+
+		if rr.Code == http.StatusOK {
+			t.Errorf("Expected non-200 status for invalid JWT, got %d", rr.Code)
+		}
+		if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
+			t.Errorf("Expected 401 or 403 for invalid JWT, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Invalid JWT correctly rejected with status %d", rr.Code)
+	})
+
+	t.Run("Expired JWT rejected", func(t *testing.T) {
+		expiredToken := generateTestJWT(map[string]interface{}{
+			"user_id":   "test-user-1",
+			"tenant_id": "test-client-enterprise",
+			"email":     "test@example.com",
+			"exp":       time.Now().Add(-1 * time.Hour).Unix(),
+		}, testJWTSecret)
+
+		reqBody := PreCheckRequest{
+			UserToken:   expiredToken,
+			ClientID:    "test-client-enterprise",
+			Query:       "What is the capital of France?",
+			DataSources: []string{"postgres"},
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
+
+		rr := httptest.NewRecorder()
+		handlePolicyPreCheck(rr, req)
+
+		if rr.Code == http.StatusOK {
+			t.Errorf("Expected non-200 status for expired JWT, got %d", rr.Code)
+		}
+		if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
+			t.Errorf("Expected 401 or 403 for expired JWT, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		t.Logf("Expired JWT correctly rejected with status %d", rr.Code)
+	})
+
+	// Cleanup test data
+	t.Cleanup(func() {
+		db.Exec(`DELETE FROM llm_call_audits WHERE client_id LIKE 'test-client-enterprise%'`)
+		db.Exec(`DELETE FROM gateway_contexts WHERE client_id LIKE 'test-client-enterprise%'`)
 	})
 }
 

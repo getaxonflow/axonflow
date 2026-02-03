@@ -1007,6 +1007,243 @@ func TestUnifiedPolicyEngine_GetStats_FullStructure(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// ActionOverrides Tests
+// =============================================================================
+
+func TestEvaluateRequest_ActionOverrides(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:   "pii_email",
+			Name:       "Email Detection",
+			Category:   CategoryPIIGlobal,
+			Pattern:    regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			PatternStr: `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`,
+			Severity:   SeverityMedium,
+			Phase:      PhaseBoth,
+			Enabled:    true,
+			// No ActionRequest set — defaults to redact for PII via GetActionForPhase
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Override PII to "log" — should NOT block
+	result := engine.EvaluateRequest(context.Background(), "Contact john@example.com", EvalOptions{
+		TenantID: "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{
+			CategoryPIIGlobal: ActionLog,
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected request NOT to be blocked when PII overridden to log")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].Action != ActionLog {
+		t.Errorf("Expected action=log, got %s", result.MatchedPolicies[0].Action)
+	}
+}
+
+func TestEvaluateRequest_ActionOverrides_SQLiToWarn(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Override SQLi from block to warn
+	result := engine.EvaluateRequest(context.Background(), "SELECT * FROM users UNION SELECT * FROM passwords", EvalOptions{
+		TenantID: "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{
+			CategorySecuritySQLi: ActionWarn,
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected request NOT to be blocked when SQLi overridden to warn")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].Action != ActionWarn {
+		t.Errorf("Expected action=warn, got %s", result.MatchedPolicies[0].Action)
+	}
+}
+
+func TestEvaluateResponse_ActionOverrides(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:       "pii_email",
+			Name:           "Email Detection",
+			Category:       CategoryPIIGlobal,
+			Pattern:        regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			PatternStr:     `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`,
+			Severity:       SeverityMedium,
+			Phase:          PhaseResponse,
+			ActionResponse: ActionRedact,
+			Enabled:        true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Override PII to block instead of redact
+	result := engine.EvaluateResponse(context.Background(), "Contact john@example.com", EvalOptions{
+		TenantID: "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{
+			CategoryPIIGlobal: ActionBlock,
+		},
+	})
+
+	if !result.Blocked {
+		t.Error("Expected response to be blocked when PII overridden to block")
+	}
+	if result.Redacted {
+		t.Error("Should NOT redact when action overridden to block")
+	}
+}
+
+func TestEvaluateResponse_ActionOverrides_PIIToLog(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:       "pii_email",
+			Name:           "Email Detection",
+			Category:       CategoryPIIGlobal,
+			Pattern:        regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			PatternStr:     `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`,
+			Severity:       SeverityMedium,
+			Phase:          PhaseResponse,
+			ActionResponse: ActionRedact,
+			Enabled:        true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	content := "Contact john@example.com"
+	// Override PII to log — should NOT redact
+	result := engine.EvaluateResponse(context.Background(), content, EvalOptions{
+		TenantID: "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{
+			CategoryPIIGlobal: ActionLog,
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected response NOT to be blocked")
+	}
+	if result.Redacted {
+		t.Error("Expected response NOT to be redacted when PII overridden to log")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].Action != ActionLog {
+		t.Errorf("Expected action=log, got %s", result.MatchedPolicies[0].Action)
+	}
+}
+
+func TestEvaluateRequest_ActionOverrides_EmptyMap(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Empty ActionOverrides map — should use default behavior
+	result := engine.EvaluateRequest(context.Background(), "SELECT * FROM users UNION SELECT * FROM passwords", EvalOptions{
+		TenantID:        "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{},
+	})
+
+	if !result.Blocked {
+		t.Error("Expected request to be blocked with empty overrides (default behavior)")
+	}
+}
+
+func TestEvaluateRequest_ActionOverrides_NilMap(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Nil ActionOverrides — should use default behavior
+	result := engine.EvaluateRequest(context.Background(), "SELECT * FROM users UNION SELECT * FROM passwords", EvalOptions{
+		TenantID: "test-tenant",
+	})
+
+	if !result.Blocked {
+		t.Error("Expected request to be blocked with nil overrides (default behavior)")
+	}
+}
+
+func TestEvaluateResponse_ActionOverrides_OnlyCategoryMatched(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:       "pii_email",
+			Name:           "Email Detection",
+			Category:       CategoryPIIGlobal,
+			Pattern:        regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			PatternStr:     `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`,
+			Severity:       SeverityMedium,
+			Phase:          PhaseResponse,
+			ActionResponse: ActionRedact,
+			Enabled:        true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Override a different category — PII-Global should still use default (redact)
+	result := engine.EvaluateResponse(context.Background(), "Contact john@example.com", EvalOptions{
+		TenantID: "test-tenant",
+		ActionOverrides: map[PolicyCategory]Action{
+			CategorySecuritySQLi: ActionLog, // Override SQLi, not PII
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected response NOT to be blocked")
+	}
+	if !result.Redacted {
+		t.Error("Expected PII to still be redacted (override was for different category)")
+	}
+}
+
 func TestUnifiedPolicyEngine_InvalidateCache_EmptiesCache(t *testing.T) {
 	policies := []CompiledPolicy{
 		{

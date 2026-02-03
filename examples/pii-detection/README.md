@@ -95,6 +95,34 @@ PII detection is enabled by default via system policies:
 
 To customize, create tenant-level policy overrides.
 
+### Configurable Action Modes
+
+PII detection behavior is controlled via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PII_ACTION` | `redact` | Controls PII detection action for all modes |
+| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | Override for gateway mode only |
+
+**Supported values:**
+
+| Value | Behavior |
+|-------|----------|
+| `redact` | (Default) PII is detected and flagged for downstream redaction. Requests are approved with `requires_redaction=true`. |
+| `block` | PII is detected and the request is blocked. Requests are rejected with a block reason. |
+| `log` | PII is detected and logged but passes through unmodified. No blocking or redaction. |
+
+**Example:**
+```bash
+# Block all requests containing PII
+PII_ACTION=block go run main.go
+
+# Log PII but allow requests through
+PII_ACTION=log python main.py
+```
+
+Each SDK example includes conditional tests that adapt to the configured `PII_ACTION` value.
+
 ## Next Steps
 
 - [Policies Example](../policies/) - Create custom policies

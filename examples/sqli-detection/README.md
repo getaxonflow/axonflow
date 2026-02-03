@@ -95,6 +95,33 @@ SQLi detection is enabled by default via system policies:
 - `sqli_detection` - Basic SQLi patterns
 - `sqli_advanced_detection` - ML-assisted (Enterprise)
 
+### Configurable Action Modes
+
+SQLi detection behavior is controlled via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SQLI_ACTION` | `block` | Controls SQLi detection action |
+
+**Supported values:**
+
+| Value | Behavior |
+|-------|----------|
+| `block` | (Default) SQLi patterns are detected and the request is blocked. |
+| `warn` | SQLi is detected and flagged but the request is NOT blocked. Useful for monitoring without disruption. |
+| `log` | SQLi is detected and logged only. No blocking or flagging. |
+
+**Example:**
+```bash
+# Warn on SQLi but don't block (monitoring mode)
+SQLI_ACTION=warn go run main.go
+
+# Log SQLi detections without blocking
+SQLI_ACTION=log python main.py
+```
+
+Each SDK example includes a conditional test that verifies warn mode behavior when `SQLI_ACTION=warn`.
+
 ## Next Steps
 
 - [PII Detection](../pii-detection/) - Block sensitive data

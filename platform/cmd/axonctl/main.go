@@ -20,6 +20,7 @@ func main() {
 
 	// Add subcommands
 	rootCmd.AddCommand(docsCmd())
+	rootCmd.AddCommand(executionsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

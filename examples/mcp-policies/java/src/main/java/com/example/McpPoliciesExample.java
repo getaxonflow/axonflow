@@ -6,6 +6,12 @@
  * 2. RESPONSE phase: PII in connector data is redacted
  * 3. PolicyInfo metadata in all responses
  *
+ * Policy Configuration (env vars):
+ *   MCP_STATIC_POLICIES_ENABLED - Enable/disable static MCP policies: "true" (default) or "false"
+ *
+ *   When enabled (default): static policies (SQLi blocking, PII redaction) are enforced
+ *   When disabled: static policies are skipped; only dynamic policies apply
+ *
  * Run: mvn compile exec:java
  * Prerequisites: docker compose up -d
  */
@@ -140,6 +146,22 @@ public class McpPoliciesExample {
                 System.out.println("   Block reason: " + e.getMessage());
             } catch (Exception e) {
                 System.out.println("   Unexpected error: " + e.getMessage());
+            }
+            System.out.println();
+
+            // ========================================
+            // Policy Configuration Check (MCP_STATIC_POLICIES_ENABLED)
+            // ========================================
+            String staticPoliciesEnabled = getEnv("MCP_STATIC_POLICIES_ENABLED", "true");
+            System.out.println("Test 6: Static Policies Configuration Check");
+            System.out.println("--------------------------------------------");
+            if ("true".equals(staticPoliciesEnabled)) {
+                System.out.println("   MCP_STATIC_POLICIES_ENABLED=true (default)");
+                System.out.println("   Static policies (SQLi blocking, PII redaction) are ACTIVE");
+            } else {
+                System.out.println("   MCP_STATIC_POLICIES_ENABLED=false");
+                System.out.println("   Static policies are DISABLED; only dynamic policies apply");
+                System.out.println("   Note: SQLi blocking and PII redaction tests above may behave differently");
             }
             System.out.println();
 

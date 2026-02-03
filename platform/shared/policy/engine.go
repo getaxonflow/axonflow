@@ -128,7 +128,13 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 
 		match := e.evaluator.Evaluate(input, policy)
 		if match != nil {
-			match.Action = policy.GetActionForPhase(PhaseRequest)
+			action := policy.GetActionForPhase(PhaseRequest)
+			if opts.ActionOverrides != nil {
+				if override, ok := opts.ActionOverrides[policy.Category]; ok {
+					action = override
+				}
+			}
+			match.Action = action
 			result.MatchedPolicies = append(result.MatchedPolicies, *match)
 
 			// Check if this is a blocking action
@@ -214,7 +220,13 @@ func (e *UnifiedPolicyEngine) EvaluateResponse(ctx context.Context, content inte
 
 		matches := e.evaluator.EvaluateAll(scannable, policy)
 		for _, match := range matches {
-			match.Action = policy.GetActionForPhase(PhaseResponse)
+			action := policy.GetActionForPhase(PhaseResponse)
+			if opts.ActionOverrides != nil {
+				if override, ok := opts.ActionOverrides[policy.Category]; ok {
+					action = override
+				}
+			}
+			match.Action = action
 			result.MatchedPolicies = append(result.MatchedPolicies, match)
 
 			switch match.Action {

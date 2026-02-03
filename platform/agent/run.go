@@ -89,6 +89,24 @@ var (
 	costService            *cost.Service // Cost tracking and budget enforcement (Issue #1082)
 )
 
+// proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
+// Used by both clientRequestHandler and policyTestHandler to avoid divergence.
+var proxyPolicyCategories = []sharedpolicy.PolicyCategory{
+	sharedpolicy.CategorySecuritySQLi,
+	sharedpolicy.CategorySecurityDangerous,
+	sharedpolicy.CategoryAdminAccess,
+	sharedpolicy.CategoryPIIGlobal,
+	sharedpolicy.CategoryPIIUS,
+	sharedpolicy.CategoryPIIIndia,
+	sharedpolicy.CategoryPIIEU,
+	sharedpolicy.CategoryPIISingapore,
+	sharedpolicy.CategorySensitiveData,
+	sharedpolicy.CategoryComplianceRBI,
+	sharedpolicy.CategoryComplianceSEBI,
+	sharedpolicy.CategoryComplianceEUAIAct,
+	sharedpolicy.CategoryComplianceMASFEAT,
+}
+
 // Prometheus metrics
 var (
 	promRequestsTotal = prometheus.NewCounterVec(
@@ -610,12 +628,35 @@ func Run() {
 		log.Println("AxonFlow Agent initialized with database-backed policy enforcement")
 		defer func() { _ = dbPolicyEngine.Close() }()
 
+		// Initialize standalone AuditManager (decoupled from DatabasePolicyEngine).
+		// NOTE: This creates a second audit queue separate from dbPolicyEngine's internal one.
+		// The primary path (shared engine) uses AuditManager's queue via SharedPolicyAuditAdapter.
+		// The deprecated fallback path (dbPolicyEngine.EvaluateStaticPolicies) still uses its
+		// own internal queue. Both queues will be consolidated when DatabasePolicyEngine is
+		// removed in a future phase.
+		initAuditManager(dbEngine.db)
+		if auditManager != nil {
+			defer func() {
+				if err := auditManager.Shutdown(context.Background()); err != nil {
+					log.Printf("⚠️ Audit manager shutdown error: %v", err)
+				}
+			}()
+		}
+
 		// Recover any failed audit entries from fallback file
 		// This ensures compliance audit trails are not lost even after crashes
-		if recovered, err := dbPolicyEngine.RecoverAuditEntries(); err != nil {
-			log.Printf("⚠️ Failed to recover audit entries: %v", err)
-		} else if recovered > 0 {
-			log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
+		if auditManager != nil {
+			if recovered, err := auditManager.RecoverEntries(); err != nil {
+				log.Printf("⚠️ Failed to recover audit entries: %v", err)
+			} else if recovered > 0 {
+				log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
+			}
+		} else if dbPolicyEngine != nil {
+			if recovered, err := dbPolicyEngine.RecoverAuditEntries(); err != nil {
+				log.Printf("⚠️ Failed to recover audit entries: %v", err)
+			} else if recovered > 0 {
+				log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
+			}
 		}
 	}
 
@@ -642,8 +683,13 @@ func Run() {
 		log.Println("✅ Tier-aware policy engine initialized (tenant policies enabled)")
 
 		// Initialize unified shared policy engine for MCP request/response evaluation
-		sharedpolicy.InitGlobalEngine(authDB, sharedpolicy.DefaultEngineConfig(), nil)
-		log.Println("✅ Shared policy engine initialized for MCP (phase-aware enforcement)")
+		// Pass audit adapter so shared engine logs through the same audit infrastructure
+		var sharedAuditQueue sharedpolicy.AuditQueue
+		if auditManager != nil {
+			sharedAuditQueue = &SharedPolicyAuditAdapter{queue: auditManager.GetQueue()}
+		}
+		sharedpolicy.InitGlobalEngine(authDB, sharedpolicy.DefaultEngineConfig(), sharedAuditQueue)
+		log.Println("✅ Shared policy engine initialized (phase-aware enforcement with audit)")
 
 		// Initialize exfiltration checker for MCP data extraction limits (Issue #966)
 		sharedpolicy.InitGlobalExfiltrationChecker()
@@ -662,6 +708,11 @@ func Run() {
 			log.Printf("✅ Dynamic policy evaluator initialized (enabled=%v, endpoint=%s, graceful=%v)",
 				config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
 		}
+
+		// Cache detection configs at startup — read env vars once, not per-request.
+		// Follows the same pattern as InitGlobalDynamicPolicyEvaluator().
+		InitDetectionConfigs()
+		log.Println("✅ Detection configs cached (MCP + Gateway static policy settings)")
 
 		// Initialize cost service for budget enforcement (Issue #1082)
 		// This enables pre-request budget checks in Gateway Mode
@@ -1001,18 +1052,42 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[TIMING] Tenant isolation check: %v", tenantCheckTime)
 
 	// 4. Apply static policy enforcement
-	// Two-phase evaluation:
-	// - Phase 1: System policies (SQLi scanner, PII detection) via dbPolicyEngine
-	// - Phase 2: Tenant-specific policies via tierAwarePolicyEngine
+	// Uses UnifiedPolicyEngine (shared engine) as primary path, with fallbacks.
+	// Phase 2: Tenant-specific policies via tierAwarePolicyEngine (below).
 	policyEvalStart := time.Now()
 	log.Printf("📋 Evaluating static policies for request type: %s", req.RequestType)
 	var policyResult *StaticPolicyResult
 
-	// Phase 1: System policies (SQLi scanner optimized for fast detection)
-	if dbPolicyEngine != nil {
+	// Check if gateway static policies are enabled (proxy uses gateway config)
+	gatewayDetectionCfg := GetGatewayDetectionConfig()
+	sharedEngine := sharedpolicy.GetGlobalEngine()
+	if !gatewayDetectionCfg.Enabled {
+		// Static policies disabled — create empty result
+		policyResult = &StaticPolicyResult{}
+	} else if sharedEngine != nil {
+		// Primary path: UnifiedPolicyEngine (same as Gateway handler)
+		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
+		if user.Role == "admin" {
+			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
+		}
+		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
+			TenantID:        user.TenantID,
+			ConnectorName:   "proxy",
+			UserID:          fmt.Sprintf("%d", user.ID),
+			Categories:      proxyPolicyCategories,
+			SkipCategories:  skipCats,
+			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
+		})
+		policyResult = convertSharedResultToStatic(requestResult)
+		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
+			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
+	} else if dbPolicyEngine != nil {
+		// Fallback: DB engine (when shared engine not initialized)
 		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
-	} else {
+	} else if staticPolicyEngine != nil {
 		policyResult = staticPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
+	} else {
+		policyResult = &StaticPolicyResult{}
 	}
 
 	// Phase 2: Tenant-specific policies (if not already blocked and tier engine available)
@@ -1661,12 +1736,32 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		TenantID:    tenantID,
 	}
 
-	// Two-phase evaluation (same as proxy handler)
+	// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
 	var result *StaticPolicyResult
-	if dbPolicyEngine != nil {
+	gatewayDetectionCfg := GetGatewayDetectionConfig()
+	sharedEngine := sharedpolicy.GetGlobalEngine()
+	if !gatewayDetectionCfg.Enabled {
+		result = &StaticPolicyResult{}
+	} else if sharedEngine != nil {
+		skipCats := append([]sharedpolicy.PolicyCategory(nil), gatewayDetectionCfg.SkipCategories...)
+		if testUser.Role == "admin" {
+			skipCats = append(skipCats, sharedpolicy.CategoryAdminAccess)
+		}
+		requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
+			TenantID:        testUser.TenantID,
+			ConnectorName:   "proxy",
+			UserID:          fmt.Sprintf("%d", testUser.ID),
+			Categories:      proxyPolicyCategories,
+			SkipCategories:  skipCats,
+			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
+		})
+		result = convertSharedResultToStatic(requestResult)
+	} else if dbPolicyEngine != nil {
 		result = dbPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
-	} else {
+	} else if staticPolicyEngine != nil {
 		result = staticPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
+	} else {
+		result = &StaticPolicyResult{}
 	}
 
 	// Phase 2: Tier-aware policies (if not blocked and engine available)

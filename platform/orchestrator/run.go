@@ -43,6 +43,7 @@ import (
 	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
 	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
+	"axonflow/platform/orchestrator/ui"       // Embedded execution viewer UI
 	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"             // Unified execution tracking (#1075)
@@ -505,6 +506,11 @@ func Run() {
 		replayHandler.RegisterRoutes(r)
 		log.Println("Execution Replay API routes registered (/api/v1/executions/...)")
 	}
+
+	// Embedded Execution Viewer UI
+	uiHandler := ui.NewHandler()
+	uiHandler.RegisterRoutes(r)
+	log.Println("Execution Viewer UI registered (/ui/executions/)")
 
 	// Cost Controls & Budget Management (#764)
 	if costHandler != nil {

@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.0.0] - 2026-02-03
+
+### Community
+
+#### Added
+
+- **Configurable System Policy Architecture** (#1121): Per-mode policy control for MCP and Gateway modes
+  - `MCP_STATIC_POLICIES_ENABLED` / `GATEWAY_STATIC_POLICIES_ENABLED` — enable/disable static policies per mode
+  - `MCP_PII_ACTION` / `GATEWAY_PII_ACTION` — override PII action per mode (block/redact/warn/log)
+  - `MCP_SQLI_ACTION` / `GATEWAY_SQLI_ACTION` — override SQLi action per mode
+  - `MCP_STATIC_POLICIES_SKIP_CATEGORIES` / `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES` — skip specific categories
+  - Env var precedence: mode-specific → global (`PII_ACTION`) → engine defaults
+- **Policy Engine Consolidation** (#1122): Single evaluation path across all modes
+  - Proxy, Gateway, and MCP all use `UnifiedPolicyEngine` as primary path (was three separate engines)
+  - Standalone `AuditManager` decoupled from `DatabasePolicyEngine`; shared engine now receives audit adapter
+  - Admin role handling via `SkipCategories` instead of engine-level role checks
+- **MCP Execute Policy Responses** (#969): `policy_info`, `redacted`, `redacted_fields` in MCP execute responses
+- **Execution Replay CLI + Embedded Execution Viewer UI** (#1120):
+  - `axonctl executions list/get/replay/export` — CLI commands for inspecting workflow executions from the terminal
+  - Browser-based execution viewer at `/ui/executions/` via Go `embed.FS` — filterable execution list, step timeline visualization, JSON export
+  - Supports both MAP (Multi-Agent Planning) and WCP (Workflow Control Plane) executions
+- **HMAC-Signed Internal Service Tokens** (#627, #1114): HMAC-SHA256 signed tokens replace plain shared-secret for orchestrator-to-agent auth. 5-minute replay protection. Backward-compatible with deprecation warning.
+- **Singapore PII patterns documentation** (#1076, #1118): SDK feature coverage docs updated with NRIC, FIN, UEN patterns
+
+#### Fixed
+
+- **Gateway pre-check ignoring `GATEWAY_STATIC_POLICIES_ENABLED=false`** (#1121): Fell through to `dbPolicyEngine` which didn't check the flag
+- **Orchestrator ignoring action overrides** (#1121): `processWithSharedEngine()` and `DetectWithSharedEngine()` now respect per-mode config
+- **Proxy mode ignoring per-mode policy config** (#1122): Now uses `UnifiedPolicyEngine` with `GATEWAY_*` env vars
+- **Shared policy engine had nil audit queue** (#1122): Policy evaluations in MCP/Gateway now log through audit infrastructure
+- **Dockerfile missing `/var/lib/axonflow/audit/`** (#1122): Audit queue fallback failed for non-root user
+- **Gateway enterprise integration tests** (#283, #1112): Fixed OAuth2 Basic auth with valid V2 license format
+- **Marketplace connector persistence tests** (#283, #1112): Fixed lazy-loaded connectors after `ReloadFromStorage`
+- **HITL examples only tested CRUD** (#1090, #1113): All 4 SDKs now test actual enforcement via `ProxyLLMCall`
+
+#### Changed
+
+- **SDKs v3.0.0** — All four SDKs bumped to v3.0.0 (Python skips v2.0.0 for cross-SDK version consistency):
+  - **Removed `executeQuery()`** (deprecated since v2.5): Use `proxyLLMCall()` for proxy mode or MCP connector queries
+  - **TypeScript**: Removed 5 deprecated LLM interceptors, added `wasRedacted()` helper
+  - **Python**: Skipped v2.0.0 → v3.0.0 for consistency. Added `was_redacted()`, fixed internal MCP call serialization, fixed null `policies_evaluated` validation
+  - **Go**: Updated module path to `axonflow-sdk-go/v3`, added `WasRedacted()`
+  - **Java**: Removed `executeQuery()`/`executeQueryAsync()`, verified `isRedacted()`
+- **Gateway mode examples enhanced**: PII detection (SSN, India PAN, Aadhaar) and SQLi blocking (DROP TABLE, UNION SELECT) assertions added across all 4 SDKs
+- **New examples**: `policy-configuration/` and `gateway-policy-config/` (Go, Python, TypeScript, Java)
+- **Enhanced examples**: `pii-detection/`, `sqli-detection/`, `mcp-policies/`, `map/` updated with multi-action mode and `policy_info`
+
+#### Breaking Changes
+
+- **`executeQuery()` removed from all SDKs**: Use `proxyLLMCall()` or MCP connector queries. Deprecated since v2.5.
+- **Env var behavior change**: Global detection env vars (`PII_ACTION`, `SQLI_ACTION`) now control the primary shared engine. Existing deployments may see different behavior in MCP and Gateway modes. Use mode-specific vars (`MCP_PII_ACTION`, `GATEWAY_PII_ACTION`) for precise control.
+
+---
+
 ## [3.6.1] - 2026-01-30
 
 ### Community

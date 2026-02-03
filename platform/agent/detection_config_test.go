@@ -6,6 +6,8 @@ package agent
 import (
 	"os"
 	"testing"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // TestDefaultDetectionConfig tests the default configuration values.
@@ -492,4 +494,458 @@ func TestEnvVarConstants(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// ModeDetectionConfig Tests
+// =============================================================================
+
+// clearModeEnvVars clears all mode-specific env vars for clean test state.
+func clearModeEnvVars() {
+	envVars := []string{
+		EnvSQLIAction, EnvPIIAction, EnvSensitiveDataAction,
+		EnvHighRiskAction, EnvDangerousQueryAction,
+		EnvSQLIBlockModeDeprecated, EnvPIIBlockCriticalDeprecated,
+		EnvMCPStaticPoliciesEnabled, EnvGatewayStaticPoliciesEnabled,
+		EnvMCPPIIAction, EnvMCPSQLIAction, EnvMCPDangerousQueryAction,
+		EnvGatewayPIIAction, EnvGatewaySQLIAction,
+		EnvMCPStaticPoliciesSkipCategories, EnvGatewayStaticPoliciesSkipCategories,
+		EnvMCPStaticPoliciesConnectors,
+	}
+	for _, env := range envVars {
+		os.Unsetenv(env)
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_Defaults(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if !cfg.Enabled {
+		t.Error("Expected MCP static policies enabled by default")
+	}
+	if cfg.PIIAction != DetectionActionRedact {
+		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	}
+	if cfg.SQLIAction != DetectionActionBlock {
+		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	}
+	if cfg.DangerousQueryAction != DetectionActionBlock {
+		t.Errorf("DangerousQueryAction: got %s, expected block", cfg.DangerousQueryAction)
+	}
+	if len(cfg.SkipCategories) != 0 {
+		t.Errorf("SkipCategories: got %v, expected empty", cfg.SkipCategories)
+	}
+	if len(cfg.Connectors) != 0 {
+		t.Errorf("Connectors: got %v, expected empty", cfg.Connectors)
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_Disabled(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvMCPStaticPoliciesEnabled, "false")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if cfg.Enabled {
+		t.Error("Expected MCP static policies disabled")
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_ModeSpecificOverridesGlobal(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	// Set global PII_ACTION=block
+	os.Setenv(EnvPIIAction, "block")
+	// Set MCP-specific to log (should override global)
+	os.Setenv(EnvMCPPIIAction, "log")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if cfg.PIIAction != DetectionActionLog {
+		t.Errorf("Expected MCP_PII_ACTION=log to override PII_ACTION=block, got %s", cfg.PIIAction)
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_GlobalFallback(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	// Set global PII_ACTION=block, no MCP-specific override
+	os.Setenv(EnvPIIAction, "block")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if cfg.PIIAction != DetectionActionBlock {
+		t.Errorf("Expected PII_ACTION=block to apply when no MCP override, got %s", cfg.PIIAction)
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_SkipCategories(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvMCPStaticPoliciesSkipCategories, "pii-global, pii-us")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if len(cfg.SkipCategories) != 2 {
+		t.Fatalf("Expected 2 skip categories, got %d: %v", len(cfg.SkipCategories), cfg.SkipCategories)
+	}
+	if cfg.SkipCategories[0] != "pii-global" {
+		t.Errorf("Expected first skip category 'pii-global', got %s", cfg.SkipCategories[0])
+	}
+	if cfg.SkipCategories[1] != "pii-us" {
+		t.Errorf("Expected second skip category 'pii-us', got %s", cfg.SkipCategories[1])
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_ConnectorsIgnoredWithoutEnterprise(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	// Without enterprise license, connectors should be ignored
+	os.Setenv(EnvMCPStaticPoliciesConnectors, "postgres,mysql")
+	// Ensure no enterprise license is set
+	os.Unsetenv("AXONFLOW_LICENSE_KEY")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if len(cfg.Connectors) != 0 {
+		t.Errorf("Expected connectors to be empty without enterprise license, got %v", cfg.Connectors)
+	}
+}
+
+func TestMCPDetectionConfigFromEnv_AllOverrides(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvMCPPIIAction, "warn")
+	os.Setenv(EnvMCPSQLIAction, "log")
+	os.Setenv(EnvMCPDangerousQueryAction, "warn")
+
+	cfg := MCPDetectionConfigFromEnv()
+
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn", cfg.PIIAction)
+	}
+	if cfg.SQLIAction != DetectionActionLog {
+		t.Errorf("SQLIAction: got %s, expected log", cfg.SQLIAction)
+	}
+	if cfg.DangerousQueryAction != DetectionActionWarn {
+		t.Errorf("DangerousQueryAction: got %s, expected warn", cfg.DangerousQueryAction)
+	}
+}
+
+func TestGatewayDetectionConfigFromEnv_Defaults(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	cfg := GatewayDetectionConfigFromEnv()
+
+	if !cfg.Enabled {
+		t.Error("Expected Gateway static policies enabled by default")
+	}
+	if cfg.PIIAction != DetectionActionRedact {
+		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	}
+	if cfg.SQLIAction != DetectionActionBlock {
+		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	}
+}
+
+func TestGatewayDetectionConfigFromEnv_Disabled(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvGatewayStaticPoliciesEnabled, "false")
+
+	cfg := GatewayDetectionConfigFromEnv()
+
+	if cfg.Enabled {
+		t.Error("Expected Gateway static policies disabled")
+	}
+}
+
+func TestGatewayDetectionConfigFromEnv_ModeSpecificOverridesGlobal(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvPIIAction, "block")
+	os.Setenv(EnvGatewayPIIAction, "log")
+
+	cfg := GatewayDetectionConfigFromEnv()
+
+	if cfg.PIIAction != DetectionActionLog {
+		t.Errorf("Expected GATEWAY_PII_ACTION=log to override PII_ACTION=block, got %s", cfg.PIIAction)
+	}
+}
+
+func TestGatewayDetectionConfigFromEnv_SkipCategories(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	os.Setenv(EnvGatewayStaticPoliciesSkipCategories, "security-sqli")
+
+	cfg := GatewayDetectionConfigFromEnv()
+
+	if len(cfg.SkipCategories) != 1 {
+		t.Fatalf("Expected 1 skip category, got %d", len(cfg.SkipCategories))
+	}
+	if cfg.SkipCategories[0] != "security-sqli" {
+		t.Errorf("Expected 'security-sqli', got %s", cfg.SkipCategories[0])
+	}
+}
+
+func TestBuildActionOverrides(t *testing.T) {
+	cfg := ModeDetectionConfig{
+		Enabled:              true,
+		PIIAction:            DetectionActionBlock,
+		SQLIAction:           DetectionActionWarn,
+		DangerousQueryAction: DetectionActionLog,
+	}
+
+	overrides := cfg.BuildActionOverrides()
+
+	// Verify PII categories all get block
+	for _, cat := range []sharedpolicy.PolicyCategory{
+		sharedpolicy.CategoryPIIGlobal,
+		sharedpolicy.CategoryPIIUS,
+		sharedpolicy.CategoryPIIIndia,
+		sharedpolicy.CategoryPIIEU,
+		sharedpolicy.CategoryPIISingapore,
+	} {
+		if overrides[cat] != sharedpolicy.ActionBlock {
+			t.Errorf("PII category %s: got %s, expected block", cat, overrides[cat])
+		}
+	}
+
+	// Verify SQLi gets warn
+	if overrides[sharedpolicy.CategorySecuritySQLi] != sharedpolicy.ActionWarn {
+		t.Errorf("SQLi: got %s, expected warn", overrides[sharedpolicy.CategorySecuritySQLi])
+	}
+
+	// Verify dangerous queries get log
+	if overrides[sharedpolicy.CategorySecurityDangerous] != sharedpolicy.ActionLog {
+		t.Errorf("Dangerous: got %s, expected log", overrides[sharedpolicy.CategorySecurityDangerous])
+	}
+}
+
+func TestIsConnectorEnabled(t *testing.T) {
+	tests := []struct {
+		name       string
+		connectors []string
+		connector  string
+		expected   bool
+	}{
+		{"empty list enables all", nil, "postgres", true},
+		{"empty slice enables all", []string{}, "postgres", true},
+		{"connector in list", []string{"postgres", "mysql"}, "postgres", true},
+		{"connector not in list", []string{"postgres", "mysql"}, "redis", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ModeDetectionConfig{Connectors: tt.connectors}
+			if got := cfg.IsConnectorEnabled(tt.connector); got != tt.expected {
+				t.Errorf("IsConnectorEnabled(%q) = %v, expected %v", tt.connector, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseBoolEnv(t *testing.T) {
+	tests := []struct {
+		name       string
+		value      string
+		defaultVal bool
+		expected   bool
+	}{
+		{"empty uses default true", "", true, true},
+		{"empty uses default false", "", false, false},
+		{"true", "true", false, true},
+		{"TRUE", "TRUE", false, true},
+		{"1", "1", false, true},
+		{"yes", "yes", false, true},
+		{"false", "false", true, false},
+		{"FALSE", "FALSE", true, false},
+		{"0", "0", true, false},
+		{"no", "no", true, false},
+		{"invalid uses default", "invalid", true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			envName := "TEST_PARSE_BOOL"
+			os.Unsetenv(envName)
+			if tt.value != "" {
+				os.Setenv(envName, tt.value)
+				defer os.Unsetenv(envName)
+			}
+			if got := parseBoolEnv(envName, tt.defaultVal); got != tt.expected {
+				t.Errorf("parseBoolEnv(%q, %v) = %v, expected %v", tt.value, tt.defaultVal, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseCategoryList(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{"empty string", "", 0},
+		{"single category", "pii-global", 1},
+		{"multiple categories", "pii-global,pii-us,pii-india", 3},
+		{"with spaces", " pii-global , pii-us ", 2},
+		{"trailing comma", "pii-global,", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseCategoryList(tt.input)
+			if len(result) != tt.expected {
+				t.Errorf("parseCategoryList(%q) returned %d categories, expected %d", tt.input, len(result), tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseCSV(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{"empty string", "", 0},
+		{"single value", "postgres", 1},
+		{"multiple values", "postgres,mysql,redis", 3},
+		{"with spaces", " postgres , mysql ", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseCSV(tt.input)
+			if len(result) != tt.expected {
+				t.Errorf("parseCSV(%q) returned %d values, expected %d", tt.input, len(result), tt.expected)
+			}
+		})
+	}
+}
+
+func TestToPolicyAction(t *testing.T) {
+	tests := []struct {
+		action   DetectionAction
+		expected sharedpolicy.Action
+	}{
+		{DetectionActionBlock, sharedpolicy.ActionBlock},
+		{DetectionActionRedact, sharedpolicy.ActionRedact},
+		{DetectionActionWarn, sharedpolicy.ActionWarn},
+		{DetectionActionLog, sharedpolicy.ActionLog},
+		{DetectionAction("unknown"), sharedpolicy.ActionBlock},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.action), func(t *testing.T) {
+			if got := tt.action.ToPolicyAction(); got != tt.expected {
+				t.Errorf("ToPolicyAction() = %s, expected %s", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMCPAndGatewayIndependentConfig(t *testing.T) {
+	clearModeEnvVars()
+	defer clearModeEnvVars()
+
+	// MCP: PII=warn, SQLi=log
+	os.Setenv(EnvMCPPIIAction, "warn")
+	os.Setenv(EnvMCPSQLIAction, "log")
+
+	// Gateway: PII=block, SQLi defaults (block)
+	os.Setenv(EnvGatewayPIIAction, "block")
+
+	mcpCfg := MCPDetectionConfigFromEnv()
+	gwCfg := GatewayDetectionConfigFromEnv()
+
+	// Verify independence
+	if mcpCfg.PIIAction != DetectionActionWarn {
+		t.Errorf("MCP PIIAction: got %s, expected warn", mcpCfg.PIIAction)
+	}
+	if gwCfg.PIIAction != DetectionActionBlock {
+		t.Errorf("Gateway PIIAction: got %s, expected block", gwCfg.PIIAction)
+	}
+	if mcpCfg.SQLIAction != DetectionActionLog {
+		t.Errorf("MCP SQLIAction: got %s, expected log", mcpCfg.SQLIAction)
+	}
+	if gwCfg.SQLIAction != DetectionActionBlock {
+		t.Errorf("Gateway SQLIAction: got %s, expected block (default)", gwCfg.SQLIAction)
+	}
+}
+
+func TestDetectionConfigCache_ReturnsStartupValues(t *testing.T) {
+	// Reset any existing cache
+	ResetDetectionConfigCache()
+
+	// Set initial env vars and cache
+	t.Setenv(EnvMCPPIIAction, "block")
+	t.Setenv(EnvGatewayPIIAction, "warn")
+	InitDetectionConfigs()
+
+	// Verify cached values
+	mcpCfg := GetMCPDetectionConfig()
+	if mcpCfg.PIIAction != DetectionActionBlock {
+		t.Errorf("Cached MCP PIIAction: got %s, expected block", mcpCfg.PIIAction)
+	}
+	gwCfg := GetGatewayDetectionConfig()
+	if gwCfg.PIIAction != DetectionActionWarn {
+		t.Errorf("Cached Gateway PIIAction: got %s, expected warn", gwCfg.PIIAction)
+	}
+
+	// Change env vars — cached values should NOT change
+	t.Setenv(EnvMCPPIIAction, "log")
+	t.Setenv(EnvGatewayPIIAction, "log")
+
+	mcpCfg2 := GetMCPDetectionConfig()
+	if mcpCfg2.PIIAction != DetectionActionBlock {
+		t.Errorf("Cache should be stable after env change: got %s, expected block", mcpCfg2.PIIAction)
+	}
+	gwCfg2 := GetGatewayDetectionConfig()
+	if gwCfg2.PIIAction != DetectionActionWarn {
+		t.Errorf("Cache should be stable after env change: got %s, expected warn", gwCfg2.PIIAction)
+	}
+
+	// Reset cache and re-init — now picks up new values
+	ResetDetectionConfigCache()
+	InitDetectionConfigs()
+
+	mcpCfg3 := GetMCPDetectionConfig()
+	if mcpCfg3.PIIAction != DetectionActionLog {
+		t.Errorf("After reset+reinit: got %s, expected log", mcpCfg3.PIIAction)
+	}
+
+	// Clean up for other tests
+	ResetDetectionConfigCache()
+}
+
+func TestDetectionConfigCache_FallbackWhenNotInitialized(t *testing.T) {
+	// Ensure cache is empty
+	ResetDetectionConfigCache()
+
+	t.Setenv(EnvMCPPIIAction, "warn")
+
+	// Without InitDetectionConfigs(), should fall back to parsing from env
+	cfg := GetMCPDetectionConfig()
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("Fallback should parse from env: got %s, expected warn", cfg.PIIAction)
+	}
+
+	// Clean up
+	ResetDetectionConfigCache()
 }

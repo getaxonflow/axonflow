@@ -8,11 +8,17 @@
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  *
+ * Policy Configuration (env vars):
+ *   MCP_STATIC_POLICIES_ENABLED - Enable/disable static MCP policies: "true" (default) or "false"
+ *
+ *   When enabled (default): static policies (SQLi blocking, PII redaction) are enforced
+ *   When disabled: static policies are skipped; only dynamic policies apply
+ *
  * Run: npx tsx index.ts
  * Prerequisites: docker compose up -d
  */
 
-import { AxonFlow, ConnectorError, ConnectorResponse } from "@axonflow/sdk";
+import { AxonFlow, ConnectorError } from "@axonflow/sdk";
 
 const failures: string[] = [];
 
@@ -144,6 +150,22 @@ async function main(): Promise<void> {
     } else {
       console.log(`   Unexpected error: ${err}`);
     }
+  }
+  console.log();
+
+  // ========================================
+  // Policy Configuration Check (MCP_STATIC_POLICIES_ENABLED)
+  // ========================================
+  const staticPoliciesEnabled = process.env.MCP_STATIC_POLICIES_ENABLED || "true";
+  console.log("Test 6: Static Policies Configuration Check");
+  console.log("--------------------------------------------");
+  if (staticPoliciesEnabled === "true") {
+    console.log("   MCP_STATIC_POLICIES_ENABLED=true (default)");
+    console.log("   Static policies (SQLi blocking, PII redaction) are ACTIVE");
+  } else {
+    console.log("   MCP_STATIC_POLICIES_ENABLED=false");
+    console.log("   Static policies are DISABLED; only dynamic policies apply");
+    console.log("   Note: SQLi blocking and PII redaction tests above may behave differently");
   }
   console.log();
 

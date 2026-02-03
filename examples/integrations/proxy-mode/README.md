@@ -65,7 +65,7 @@ python main.py
 
 ```typescript
 // TypeScript
-const response = await client.executeQuery({
+const response = await client.proxyLLMCall({
   query: "What is AI governance?",
   userToken: "user-123",
   requestType: "chat",
@@ -81,7 +81,7 @@ if (response.blocked) {
 
 ```go
 // Go
-response, err := client.ExecuteQuery(
+response, err := client.ProxyLLMCall(
     "user-123",
     "What is AI governance?",
     "chat",
@@ -96,7 +96,7 @@ if response.Blocked {
 
 ```python
 # Python
-response = await client.execute_query(
+response = await client.proxy_llm_call(
     user_token="user-123",
     query="What is AI governance?",
     request_type="chat",

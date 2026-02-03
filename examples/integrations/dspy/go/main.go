@@ -84,7 +84,7 @@ func (m *GovernedModule) checkPolicy(query string, context map[string]interface{
 		ctx[k] = v
 	}
 
-	result, err := m.Client.ExecuteQuery(
+	result, err := m.Client.ProxyLLMCall(
 		m.UserToken,
 		query,
 		"chat",

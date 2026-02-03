@@ -326,7 +326,8 @@ func (dpe *DatabasePolicyEngine) LoadPoliciesFromDB() error {
 	return nil
 }
 
-// EvaluateStaticPolicies evaluates using cached database policies
+// EvaluateStaticPolicies is deprecated — use UnifiedPolicyEngine via sharedpolicy.GetGlobalEngine().
+// Kept as fallback for proxy handler when shared engine is not initialized.
 func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string, requestType string) *StaticPolicyResult {
 	startTime := time.Now()
 
@@ -390,7 +391,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 		}
 	} else if dpe.sqliConfig.InputMode != sqli.ModeOff {
 		// Fallback to legacy SQL injection patterns when scanner not initialized
-		// (e.g., in tests that create the engine directly without NewDatabasePolicyEngine)
 		if blockedPattern := dpe.checkPatterns(queryLower, dpe.sqlInjectionPatterns); blockedPattern != nil {
 			result.Blocked = true
 			result.Reason = fmt.Sprintf("SQL injection attempt detected: %s", blockedPattern.Description)
@@ -399,7 +399,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 			result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
 			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 
-			// Log to audit queue (handles async/sync based on mode)
 			dpe.logPolicyViolationToQueue(user, blockedPattern, query)
 			return result
 		}
@@ -407,9 +406,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 	result.ChecksPerformed = append(result.ChecksPerformed, "sql_injection")
 
 	// 2. Dangerous Query Detection
-	// Note: When sqliScanner is enabled, it already includes CategoryDangerousQuery patterns.
-	// When SQLI_SCANNER_MODE=off, dangerous queries are also not blocked (consistent with mode).
-	// This legacy check is only used when sqliScanner is nil AND mode is not explicitly off.
 	if dpe.sqliScanner == nil && dpe.sqliConfig.InputMode != sqli.ModeOff {
 		if blockedPattern := dpe.checkPatterns(queryLower, dpe.dangerousQueryPatterns); blockedPattern != nil {
 			result.Blocked = true
@@ -419,7 +415,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 			result.ChecksPerformed = append(result.ChecksPerformed, "dangerous_queries")
 			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 
-			// Log to audit queue
 			dpe.logPolicyViolationToQueue(user, blockedPattern, query)
 			return result
 		}
@@ -436,7 +431,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 			result.ChecksPerformed = append(result.ChecksPerformed, "admin_access")
 			result.ProcessingTimeMs = time.Since(startTime).Nanoseconds() / 1000000
 
-			// Log to audit queue
 			dpe.logPolicyViolationToQueue(user, blockedPattern, query)
 			return result
 		}
@@ -444,9 +438,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 	result.ChecksPerformed = append(result.ChecksPerformed, "admin_access")
 
 	// 4. PII Detection (Issue #891 - tiered defaults)
-	// Action controlled by PII_ACTION env var (default: redact)
-	// Critical PII (SSN, credit cards, Aadhaar, PAN) - action based on config
-	// Non-critical PII (email, phone) - log and flag for redaction
 	if piiPattern := dpe.checkPatterns(queryLower, dpe.piiDetectionPatterns); piiPattern != nil {
 		result.TriggeredPolicies = append(result.TriggeredPolicies, piiPattern.ID)
 		log.Printf("PII detected in query: %s", piiPattern.Description)
@@ -460,7 +451,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 				dpe.logPolicyViolationToQueue(user, piiPattern, query)
 				return result
 			case DetectionActionRedact:
-				// Flag for redaction but don't block - handled by Orchestrator
 				log.Printf("[PII] Detected %s - flagged for redaction (action=redact)", piiPattern.ID)
 				result.RequiresRedaction = true
 			case DetectionActionWarn:
@@ -469,7 +459,6 @@ func (dpe *DatabasePolicyEngine) EvaluateStaticPolicies(user *User, query string
 				log.Printf("[PII] Detected %s (action=log)", piiPattern.ID)
 			}
 		}
-		// Non-critical PII: allow with redaction in Orchestrator
 	}
 	result.ChecksPerformed = append(result.ChecksPerformed, "pii_detection")
 

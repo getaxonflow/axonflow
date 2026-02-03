@@ -11,6 +11,14 @@
 // VALIDATION: This example exits with code 1 if any assertion fails.
 // This ensures CI/CD pipelines catch regressions.
 //
+// Policy Configuration (env vars):
+//
+//	SQLI_ACTION - Controls SQLi detection behavior: "block" (default), "warn", or "log"
+//
+//	When SQLI_ACTION=block: (default) SQLi patterns are blocked
+//	When SQLI_ACTION=warn:  SQLi is detected and flagged but NOT blocked
+//	When SQLI_ACTION=log:   SQLi is detected and logged only
+//
 // Run with: go run main.go
 // Prerequisites: docker compose up -d
 package main
@@ -142,6 +150,29 @@ func main() {
 			assert(!wasBlocked, "Safe query is approved")
 		}
 
+		fmt.Println()
+	}
+
+	// ========================================
+	// Policy Configuration Test (SQLI_ACTION)
+	// ========================================
+	sqliAction := getEnv("SQLI_ACTION", "block")
+	fmt.Printf("Policy Config: SQLI_ACTION=%s\n", sqliAction)
+	fmt.Println()
+
+	if sqliAction == "warn" {
+		fmt.Println("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked")
+		result, err := client.GetPolicyApprovedContext(
+			"sqli-config-test-user",
+			"SELECT * FROM users; DROP TABLE users;--",
+			nil,
+			nil,
+		)
+		if err != nil {
+			fmt.Printf("   FATAL: GetPolicyApprovedContext failed: %v\n", err)
+			os.Exit(1)
+		}
+		assert(result.Approved, "SQLI_ACTION=warn: SQLi query is approved (warn only, not blocked)")
 		fmt.Println()
 	}
 

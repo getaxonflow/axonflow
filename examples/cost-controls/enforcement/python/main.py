@@ -99,7 +99,7 @@ class EnforcementTest:
             print(f"   Request {i}: ", end="", flush=True)
 
             try:
-                # Use proxy_llm_call (not deprecated execute_query)
+                # Use proxy_llm_call
                 response = self.client.proxy_llm_call(
                     user_token=self.user_token,
                     query="Say hello in one word",

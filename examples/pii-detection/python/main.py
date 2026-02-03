@@ -18,6 +18,14 @@ Default Behavior (Issue #891):
   with requires_redaction=true for downstream redaction by the Orchestrator.
   Set PII_ACTION=block to restore blocking behavior.
 
+Policy Configuration (env vars):
+  PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
+  GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
+
+  When PII_ACTION=block: requests with critical PII are blocked (approved=False)
+  When PII_ACTION=log:   PII is detected and logged but passes through unmodified
+  When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+
 Run with: python main.py
 Prerequisites: docker compose up -d
 """
@@ -146,6 +154,53 @@ async def main() -> int:
                     "No critical PII detected, request approved",
                 )
 
+            print()
+
+        # ========================================
+        # Policy Configuration Tests (PII_ACTION)
+        # ========================================
+        pii_action = os.getenv("PII_ACTION", "redact")
+        print(f"Policy Config: PII_ACTION={pii_action}")
+        print()
+
+        if pii_action == "block":
+            print("Test (config): PII_ACTION=block - SSN should be BLOCKED")
+            try:
+                result = await client.get_policy_approved_context(
+                    user_token="pii-config-test-user",
+                    query="Customer SSN is 999-88-7777",
+                )
+            except Exception as e:
+                print(f"   FATAL: get_policy_approved_context failed: {e}")
+                return 1
+            assert_check(
+                not result.approved,
+                "PII_ACTION=block: SSN query is blocked (not approved)",
+            )
+            assert_check(
+                result.block_reason != "",
+                "PII_ACTION=block: block reason is provided",
+            )
+            print()
+        elif pii_action == "log":
+            print("Test (config): PII_ACTION=log - SSN should pass through unmodified")
+            try:
+                result = await client.get_policy_approved_context(
+                    user_token="pii-config-test-user",
+                    query="Customer SSN is 999-88-7777",
+                )
+            except Exception as e:
+                print(f"   FATAL: get_policy_approved_context failed: {e}")
+                return 1
+            assert_check(
+                result.approved,
+                "PII_ACTION=log: SSN query is approved (pass-through)",
+            )
+            requires_redaction = getattr(result, "requires_redaction", False)
+            assert_check(
+                not requires_redaction,
+                "PII_ACTION=log: no redaction required (log only)",
+            )
             print()
 
         print("=" * 40)

@@ -205,6 +205,22 @@ typescript/
 - [LangChain Integration](../../langchain/) - Use with LangChain framework
 - [Policy Management](../../../policies/crud/) - Create custom policies
 
+## Gateway Policy Configuration
+
+Gateway mode supports dedicated policy configuration env vars that override the global defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | PII detection action in gateway mode: `redact`, `block`, or `log` |
+| `GATEWAY_SQLI_ACTION` | (inherits `SQLI_ACTION`) | SQLi detection action in gateway mode: `block`, `warn`, or `log` |
+
+These allow you to have different policy behavior in gateway mode vs. proxy mode. For example, you might want gateway mode to only log PII (since the caller handles redaction) while proxy mode blocks it:
+
+```bash
+export PII_ACTION=block              # Default for proxy mode
+export GATEWAY_PII_ACTION=log        # Override for gateway mode
+```
+
 ## Troubleshooting
 
 ### Connection Refused

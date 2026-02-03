@@ -1,6 +1,6 @@
 # SDK Feature Coverage
 
-**Last Updated:** 2026-01-14
+**Last Updated:** 2026-02-02
 **Reference:** ADR-022 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.
@@ -63,6 +63,15 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 |-------|-------------|--------|
 | `policy_info.exfiltration_check` | Row/byte limits info | ✅ All SDKs |
 | `policy_info.dynamic_policy_info` | Tenant policy evaluation info | ✅ All SDKs |
+
+#### Singapore PII Detection (MAS FEAT, Platform v3.7.0+)
+| Pattern | Description | Status |
+|---------|-------------|--------|
+| NRIC (S/T/M prefix) | Singapore National Registration Identity Card | ✅ System policy |
+| FIN (F/G prefix) | Foreign Identification Number | ✅ System policy |
+| UEN | Unique Entity Number (business registration) | ✅ System policy |
+| Phone (+65) | Singapore phone numbers (mobile/landline) | ✅ System policy |
+| Postal code (6-digit) | Singapore postal codes | ✅ System policy |
 
 #### Replay/Debug (Planned - #763)
 | Method | Description | Status |
@@ -182,5 +191,6 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
+| 2026-02-02 | Added Singapore PII detection patterns (MAS FEAT compliance) |
 | 2026-01-14 | Added MCP policy response fields (exfiltration_check, dynamic_policy_info) |
 | 2026-01-03 | Initial document created |

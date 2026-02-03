@@ -144,6 +144,17 @@ ClientResponse audit = axonflow.auditLLMCall(
 - You require the lowest possible governance overhead
 - You need to use multiple LLM providers
 
+## Gateway Policy Configuration
+
+Gateway mode supports dedicated policy configuration env vars that override the global defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | PII detection action in gateway mode: `redact`, `block`, or `log` |
+| `GATEWAY_SQLI_ACTION` | (inherits `SQLI_ACTION`) | SQLi detection action in gateway mode: `block`, `warn`, or `log` |
+
+These allow different policy behavior in gateway mode vs. proxy mode.
+
 ## Alternatives
 
 - **Proxy Mode**: Simpler integration where AxonFlow handles LLM calls

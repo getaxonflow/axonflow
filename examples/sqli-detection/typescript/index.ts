@@ -12,6 +12,13 @@
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
+ * Policy Configuration (env vars):
+ *   SQLI_ACTION - Controls SQLi detection behavior: "block" (default), "warn", or "log"
+ *
+ *   When SQLI_ACTION=block: (default) SQLi patterns are blocked
+ *   When SQLI_ACTION=warn:  SQLi is detected and flagged but NOT blocked
+ *   When SQLI_ACTION=log:   SQLi is detected and logged only
+ *
  * Run with: npx ts-node index.ts
  * Prerequisites: docker compose up -d
  */
@@ -134,6 +141,29 @@ async function main(): Promise<void> {
       assertCheck(!wasBlocked, 'Safe query is approved');
     }
 
+    console.log();
+  }
+
+  // ========================================
+  // Policy Configuration Test (SQLI_ACTION)
+  // ========================================
+  const sqliAction = getEnv('SQLI_ACTION', 'block');
+  console.log(`Policy Config: SQLI_ACTION=${sqliAction}`);
+  console.log();
+
+  if (sqliAction === 'warn') {
+    console.log('Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked');
+    let configResult;
+    try {
+      configResult = await axonflow.getPolicyApprovedContext({
+        userToken: 'sqli-config-test-user',
+        query: 'SELECT * FROM users; DROP TABLE users;--',
+      });
+    } catch (error) {
+      console.log(`   FATAL: getPolicyApprovedContext failed: ${error}`);
+      process.exit(1);
+    }
+    assertCheck(configResult.approved, 'SQLI_ACTION=warn: SQLi query is approved (warn only, not blocked)');
     console.log();
   }
 
