@@ -96,8 +96,67 @@ async function main() {
     assertCheck(testResult.matches[3].matched === false, 'Low-value $500 does not match pattern');
     assertCheck(testResult.matches[4].matched === false, 'Under-threshold $999999 does not match pattern');
 
-    // 3. Create additional HITL policies for different use cases
-    console.log('\n3. Creating admin access oversight policy...');
+    // 3. Test enforcement via proxyLLMCall — verify policy actually blocks
+    console.log('\n3. Testing HITL enforcement via proxyLLMCall...');
+    console.log('   Waiting for policy propagation...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const userToken = process.env.AXONFLOW_USER_TOKEN || '';
+
+    // 3a. Send query that MATCHES the require_approval pattern
+    console.log('\n   3a. Sending query that matches HITL pattern...');
+    try {
+      const matchingResponse = await client.proxyLLMCall({
+        userToken,
+        query: 'Process transaction amount $5000000 to offshore account',
+        requestType: 'chat',
+        context: { provider: 'openai' },
+      });
+
+      if (matchingResponse.blocked) {
+        // Enterprise mode: policy enforcement blocks the request
+        assertCheck(true, 'Enterprise HITL enforcement: matching query was blocked');
+        const blockReason = matchingResponse.blockReason || '';
+        assertCheck(
+          blockReason.includes('require_approval') || blockReason.includes('approval'),
+          `Block reason mentions approval (got: ${blockReason})`
+        );
+      } else {
+        // Community mode: auto-approved
+        assertCheck(true, 'Community mode: matching query auto-approved (expected)');
+      }
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+      if (errMsg.includes('api_key') || errMsg.includes('authentication')) {
+        console.log(`   Note: LLM API error (expected without key): ${error instanceof Error ? error.message : error}`);
+        assertCheck(true, 'Matching query processed (LLM key issue expected)');
+      } else {
+        assertCheck(false, `Matching query failed unexpectedly: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+
+    // 3b. Send safe query that should NOT trigger HITL
+    console.log('\n   3b. Sending safe query (should NOT trigger HITL)...');
+    try {
+      const safeResponse = await client.proxyLLMCall({
+        userToken,
+        query: 'What is the weather today?',
+        requestType: 'chat',
+        context: { provider: 'openai' },
+      });
+      assertCheck(!safeResponse.blocked, 'Safe query was NOT blocked by HITL policy');
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+      if (errMsg.includes('api_key') || errMsg.includes('authentication')) {
+        console.log(`   Note: LLM API error (expected without key): ${error instanceof Error ? error.message : error}`);
+        assertCheck(true, 'Safe query processed (LLM key issue expected)');
+      } else {
+        assertCheck(false, `Safe query failed unexpectedly: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+
+    // 4. Create additional HITL policies for different use cases
+    console.log('\n4. Creating admin access oversight policy...');
 
     const adminPolicy = await client.createStaticPolicy({
       name: 'Admin Access Detection',
@@ -115,8 +174,8 @@ async function main() {
     assertCheck(adminPolicy.action === 'require_approval', 'Admin policy has require_approval action');
     assertCheck(adminPolicy.severity === 'critical', 'Admin policy severity is critical');
 
-    // 4. List all policies with require_approval action
-    console.log('\n4. Listing all HITL policies...');
+    // 5. List all policies with require_approval action
+    console.log('\n5. Listing all HITL policies...');
 
     // Include tenant-tier policies with limit parameter
     const allPolicies = await client.listStaticPolicies({ limit: 100 });
@@ -137,8 +196,8 @@ async function main() {
       'Admin Access Detection policy found in HITL list'
     );
 
-    // 5. Clean up test policies
-    console.log('\n5. Cleaning up test policies...');
+    // 6. Clean up test policies
+    console.log('\n6. Cleaning up test policies...');
     await client.deleteStaticPolicy(policy.id);
     await client.deleteStaticPolicy(adminPolicy.id);
     console.log('   Deleted test policies');

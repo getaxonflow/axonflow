@@ -496,7 +496,7 @@ function App() {
     localStorage.removeItem('user');
   };
 
-  const executeQuery = async () => {
+  const proxyLLMCall = async () => {
     if (!query.trim()) return;
     
     setLoading(true);
@@ -899,7 +899,7 @@ function App() {
                 <div style={{fontSize: '0.65rem', color: '#dc2626', fontWeight: '500', marginBottom: '3px'}}>🔴 Critical</div>
                 <button 
                   className="blocked-query-btn"
-                  onClick={() => {setQuery("DROP TABLE customers;"); executeQuery();}}
+                  onClick={() => {setQuery("DROP TABLE customers;"); proxyLLMCall();}}
                   style={{background: '#fef2f2', borderColor: '#fecaca', marginBottom: '6px', fontSize: '0.75rem'}}
                 >
                   DROP TABLE customers;
@@ -909,7 +909,7 @@ function App() {
                 <div style={{fontSize: '0.65rem', color: '#ea580c', fontWeight: '500', marginBottom: '3px'}}>🟠 High</div>
                 <button 
                   className="blocked-query-btn"
-                  onClick={() => {setQuery("DELETE FROM customers;"); executeQuery();}}
+                  onClick={() => {setQuery("DELETE FROM customers;"); proxyLLMCall();}}
                   style={{background: '#fff7ed', borderColor: '#fdba74', marginBottom: '6px', fontSize: '0.75rem'}}
                 >
                   DELETE FROM customers;
@@ -919,7 +919,7 @@ function App() {
                 <div style={{fontSize: '0.65rem', color: '#d97706', fontWeight: '500', marginBottom: '3px'}}>🟡 Medium</div>
                 <button 
                   className="blocked-query-btn"
-                  onClick={() => {setQuery("SELECT * FROM customers LIMIT 1000;"); executeQuery();}}
+                  onClick={() => {setQuery("SELECT * FROM customers LIMIT 1000;"); proxyLLMCall();}}
                   style={{background: '#fffbeb', borderColor: '#fbbf24', marginBottom: '4px', fontSize: '0.75rem'}}
                 >
                   SELECT * FROM customers LIMIT 1000;
@@ -963,7 +963,7 @@ function App() {
                 />
               </div>
               <button 
-                onClick={executeQuery} 
+                onClick={proxyLLMCall} 
                 disabled={loading || !query.trim()}
                 className="btn"
               >

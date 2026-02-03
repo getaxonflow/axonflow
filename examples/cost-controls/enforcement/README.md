@@ -16,7 +16,7 @@ They did **NOT** verify:
 ## What These Examples Test
 
 1. Create a budget with `on_exceed: "block"` and a low limit ($0.01)
-2. Make LLM requests using `ProxyLLMCall` (not deprecated `executeQuery`)
+2. Make LLM requests using `ProxyLLMCall`
 3. Verify that when budget is exceeded:
    - Request returns HTTP 402 Payment Required
    - Response includes `budget_info` with:
@@ -120,7 +120,7 @@ This indicates a wiring gap - the `CheckBudget()` function exists but is not bei
 
 ## Implementation Notes
 
-- These examples use `ProxyLLMCall` (not deprecated `executeQuery`)
+- These examples use `ProxyLLMCall`
 - Budget enforcement was wired in Issue #1082
 - The Agent calls `CheckBudget()` in `handlePolicyPreCheck` before processing requests
 - When `on_exceed: "block"` and budget is exceeded, returns HTTP 402 with `BudgetInfo`

@@ -13,6 +13,13 @@ This example demonstrates and VALIDATES AxonFlow's SQLi detection:
 VALIDATION: This example exits with code 1 if any assertion fails.
 This ensures CI/CD pipelines catch regressions.
 
+Policy Configuration (env vars):
+  SQLI_ACTION - Controls SQLi detection behavior: "block" (default), "warn", or "log"
+
+  When SQLI_ACTION=block: (default) SQLi patterns are blocked
+  When SQLI_ACTION=warn:  SQLi is detected and flagged but NOT blocked
+  When SQLI_ACTION=log:   SQLi is detected and logged only
+
 Run with: python main.py
 Prerequisites: docker compose up -d
 """
@@ -136,6 +143,29 @@ async def main() -> int:
             else:
                 assert_check(not was_blocked, "Safe query is approved")
 
+            print()
+
+        # ========================================
+        # Policy Configuration Test (SQLI_ACTION)
+        # ========================================
+        sqli_action = os.getenv("SQLI_ACTION", "block")
+        print(f"Policy Config: SQLI_ACTION={sqli_action}")
+        print()
+
+        if sqli_action == "warn":
+            print("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked")
+            try:
+                result = await client.get_policy_approved_context(
+                    user_token="sqli-config-test-user",
+                    query="SELECT * FROM users; DROP TABLE users;--",
+                )
+            except Exception as e:
+                print(f"   FATAL: get_policy_approved_context failed: {e}")
+                return 1
+            assert_check(
+                result.approved,
+                "SQLI_ACTION=warn: SQLi query is approved (warn only, not blocked)",
+            )
             print()
 
         print("=" * 48)

@@ -151,6 +151,9 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Execution Replay
 	r.PathPrefix("/api/v1/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
 
+	// Execution Viewer UI (served by orchestrator)
+	r.PathPrefix("/ui/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+
 	// Unified Execution Tracking (#1075)
 	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
 

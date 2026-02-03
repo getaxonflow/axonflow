@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/agent"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -173,7 +174,16 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 
 // processWithSharedEngine uses the unified policy engine for PII detection and redaction.
 // This provides comprehensive validators (Luhn, MOD97, Verhoeff, SSN, Aadhaar, PAN).
+// Uses GATEWAY detection config since orchestrator processes LLM responses for proxy/gateway/MAP modes.
 func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user UserContext, data interface{}) (interface{}, *RedactionInfo) {
+	gwCfg := agent.GetGatewayDetectionConfig()
+
+	// Skip shared engine processing if gateway static policies are disabled
+	if !gwCfg.Enabled {
+		log.Printf("[ResponseProcessor] Gateway static policies disabled, skipping shared engine")
+		return data, &RedactionInfo{}
+	}
+
 	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
 		TenantID: user.TenantID,
 		UserID:   fmt.Sprintf("%d", user.ID),
@@ -182,8 +192,11 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 			sharedpolicy.CategoryPIIUS,
 			sharedpolicy.CategoryPIIIndia,
 			sharedpolicy.CategoryPIIEU,
+			sharedpolicy.CategoryPIISingapore,
 		},
-		MaxRedactions: 100, // Reasonable limit for LLM responses
+		SkipCategories:  gwCfg.SkipCategories,
+		ActionOverrides: gwCfg.BuildActionOverrides(),
+		MaxRedactions:   100, // Reasonable limit for LLM responses
 	})
 
 	redactionInfo := &RedactionInfo{

@@ -39,6 +39,13 @@ import java.util.List;
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
  *
+ * Policy Configuration (env vars):
+ *   SQLI_ACTION - Controls SQLi detection behavior: "block" (default), "warn", or "log"
+ *
+ *   When SQLI_ACTION=block: (default) SQLi patterns are blocked
+ *   When SQLI_ACTION=warn:  SQLi is detected and flagged but NOT blocked
+ *   When SQLI_ACTION=log:   SQLi is detected and logged only
+ *
  * Run with: mvn compile exec:java
  * Prerequisites: docker compose up -d
  */
@@ -138,6 +145,36 @@ public class SqliDetectionExample {
                 assertCheck(!wasBlocked, "Safe query is approved");
             }
 
+            System.out.println();
+        }
+
+        // ========================================
+        // Policy Configuration Test (SQLI_ACTION)
+        // ========================================
+        String sqliAction = getEnv("SQLI_ACTION", "block");
+        System.out.printf("Policy Config: SQLI_ACTION=%s%n", sqliAction);
+        System.out.println();
+
+        if ("warn".equals(sqliAction)) {
+            System.out.println("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked");
+            PolicyApprovalResult configResult = null;
+            boolean configBlocked = false;
+            try {
+                configResult = client.getPolicyApprovedContext(
+                    PolicyApprovalRequest.builder()
+                        .query("SELECT * FROM users; DROP TABLE users;--")
+                        .userToken("sqli-config-test-user")
+                        .build()
+                );
+            } catch (PolicyViolationException e) {
+                configBlocked = true;
+            } catch (Exception e) {
+                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
+                System.exit(1);
+                return;
+            }
+            boolean wasApproved = !configBlocked && configResult != null && configResult.isApproved();
+            assertCheck(wasApproved, "SQLI_ACTION=warn: SQLi query is approved (warn only, not blocked)");
             System.out.println();
         }
 

@@ -17,6 +17,15 @@
 //	with RequiresRedaction=true for downstream redaction by the Orchestrator.
 //	Set PII_ACTION=block to restore blocking behavior.
 //
+// Policy Configuration (env vars):
+//
+//	PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
+//	GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
+//
+//	When PII_ACTION=block: requests with critical PII are blocked (Approved=false)
+//	When PII_ACTION=log:   PII is detected and logged but passes through unmodified
+//	When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+//
 // Run with: go run main.go
 // Prerequisites: docker compose up -d
 package main
@@ -153,6 +162,45 @@ func main() {
 			assert(!actualRequiresRedaction && result.Approved, "No critical PII detected, request approved")
 		}
 
+		fmt.Println()
+	}
+
+	// ========================================
+	// Policy Configuration Tests (PII_ACTION)
+	// ========================================
+	piiAction := getEnv("PII_ACTION", "redact")
+	fmt.Printf("Policy Config: PII_ACTION=%s\n", piiAction)
+	fmt.Println()
+
+	if piiAction == "block" {
+		fmt.Println("Test (config): PII_ACTION=block - SSN should be BLOCKED")
+		result, err := client.GetPolicyApprovedContext(
+			"pii-config-test-user",
+			"Customer SSN is 999-88-7777",
+			nil,
+			nil,
+		)
+		if err != nil {
+			fmt.Printf("   FATAL: GetPolicyApprovedContext failed: %v\n", err)
+			os.Exit(1)
+		}
+		assert(!result.Approved, "PII_ACTION=block: SSN query is blocked (not approved)")
+		assert(result.BlockReason != "", "PII_ACTION=block: block reason is provided")
+		fmt.Println()
+	} else if piiAction == "log" {
+		fmt.Println("Test (config): PII_ACTION=log - SSN should pass through unmodified")
+		result, err := client.GetPolicyApprovedContext(
+			"pii-config-test-user",
+			"Customer SSN is 999-88-7777",
+			nil,
+			nil,
+		)
+		if err != nil {
+			fmt.Printf("   FATAL: GetPolicyApprovedContext failed: %v\n", err)
+			os.Exit(1)
+		}
+		assert(result.Approved, "PII_ACTION=log: SSN query is approved (pass-through)")
+		assert(!result.RequiresRedaction, "PII_ACTION=log: no redaction required (log only)")
 		fmt.Println()
 	}
 

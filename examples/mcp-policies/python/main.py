@@ -9,6 +9,12 @@ Demonstrates and VALIDATES phase-aware policy enforcement:
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 
+Policy Configuration (env vars):
+  MCP_STATIC_POLICIES_ENABLED - Enable/disable static MCP policies: "true" (default) or "false"
+
+  When enabled (default): static policies (SQLi blocking, PII redaction) are enforced
+  When disabled: static policies are skipped; only dynamic policies apply
+
 Run with: python main.py
 Prerequisites: docker compose up -d
 """
@@ -137,6 +143,21 @@ def main() -> int:
         print(f"   Block reason: {err}")
     except Exception as err:
         print(f"   Unexpected error: {err}")
+    print()
+
+    # ========================================
+    # Policy Configuration Check (MCP_STATIC_POLICIES_ENABLED)
+    # ========================================
+    static_policies_enabled = os.getenv("MCP_STATIC_POLICIES_ENABLED", "true")
+    print("Test 6: Static Policies Configuration Check")
+    print("--------------------------------------------")
+    if static_policies_enabled == "true":
+        print("   MCP_STATIC_POLICIES_ENABLED=true (default)")
+        print("   Static policies (SQLi blocking, PII redaction) are ACTIVE")
+    else:
+        print("   MCP_STATIC_POLICIES_ENABLED=false")
+        print("   Static policies are DISABLED; only dynamic policies apply")
+        print("   Note: SQLi blocking and PII redaction tests above may behave differently")
     print()
 
     # Close the client

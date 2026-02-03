@@ -15,12 +15,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // Mock connector for testing
@@ -561,141 +563,101 @@ func TestMCPConnector_FormatResponse_DispatchToHotel(t *testing.T) {
 	}
 }
 
-// Tests for internal service token
+// Tests for internal service token (via shared serviceauth package)
 
 func TestGetInternalServiceToken_FallbackWhenNotConfigured(t *testing.T) {
-	// Use t.Setenv with empty value, then unset to ensure clean state
-	// t.Setenv automatically restores original value after test
-	os.Unsetenv(InternalServiceSecretEnvVar)
-
-	token := getInternalServiceToken()
-	if token != InternalServiceTokenFallback {
-		t.Errorf("getInternalServiceToken() = %q, want %q (fallback)", token, InternalServiceTokenFallback)
+	// No generator = no secret configured (community/dev mode)
+	token := serviceauth.GetInternalServiceToken(nil)
+	if token != serviceauth.TokenFallback {
+		t.Errorf("GetInternalServiceToken(nil) = %q, want %q (fallback)", token, serviceauth.TokenFallback)
 	}
 }
 
-func TestGetInternalServiceToken_UsesConfiguredSecret(t *testing.T) {
+func TestGetInternalServiceToken_HMACWhenConfigured(t *testing.T) {
 	testSecret := "my-super-secure-internal-service-secret-12345"
-	// t.Setenv automatically restores original value after test
-	t.Setenv(InternalServiceSecretEnvVar, testSecret)
+	gen := serviceauth.NewTokenGenerator(testSecret, serviceauth.RealClock{})
 
-	token := getInternalServiceToken()
-	if token != testSecret {
-		t.Errorf("getInternalServiceToken() = %q, want %q", token, testSecret)
+	token := serviceauth.GetInternalServiceToken(gen)
+	pattern := `^AXON-INTERNAL-\d+-[0-9a-f]{16}$`
+	matched, _ := regexp.MatchString(pattern, token)
+	if !matched {
+		t.Errorf("GetInternalServiceToken(gen) = %q, expected HMAC format matching %s", token, pattern)
 	}
 }
 
 func TestInternalServiceConstants(t *testing.T) {
-	// Verify constants are properly defined
-	if InternalServiceClientID == "" {
-		t.Error("InternalServiceClientID should not be empty")
+	if serviceauth.ClientID == "" {
+		t.Error("ClientID should not be empty")
 	}
-	if InternalServiceTokenFallback == "" {
-		t.Error("InternalServiceTokenFallback should not be empty")
+	if serviceauth.TokenFallback == "" {
+		t.Error("TokenFallback should not be empty")
 	}
-	if InternalServiceTenantID == "" {
-		t.Error("InternalServiceTenantID should not be empty")
+	if serviceauth.TenantID == "" {
+		t.Error("TenantID should not be empty")
 	}
-	if InternalServiceSecretEnvVar == "" {
-		t.Error("InternalServiceSecretEnvVar should not be empty")
+	if serviceauth.SecretEnvVar == "" {
+		t.Error("SecretEnvVar should not be empty")
 	}
 
-	// Verify expected values
-	if InternalServiceClientID != "orchestrator-internal" {
-		t.Errorf("InternalServiceClientID = %q, expected 'orchestrator-internal'", InternalServiceClientID)
+	if serviceauth.ClientID != "orchestrator-internal" {
+		t.Errorf("ClientID = %q, expected 'orchestrator-internal'", serviceauth.ClientID)
 	}
-	if InternalServiceTenantID != "*" {
-		t.Errorf("InternalServiceTenantID = %q, expected '*'", InternalServiceTenantID)
+	if serviceauth.TenantID != "*" {
+		t.Errorf("TenantID = %q, expected '*'", serviceauth.TenantID)
 	}
 }
 
 func TestInternalServiceSecretMinLength(t *testing.T) {
-	// Verify the minimum length constant is reasonable
-	if InternalServiceSecretMinLength < 16 {
-		t.Errorf("InternalServiceSecretMinLength = %d, should be at least 16 for security", InternalServiceSecretMinLength)
+	if serviceauth.SecretMinLength < 16 {
+		t.Errorf("SecretMinLength = %d, should be at least 16 for security", serviceauth.SecretMinLength)
 	}
-	if InternalServiceSecretMinLength != 32 {
-		t.Errorf("InternalServiceSecretMinLength = %d, expected 32", InternalServiceSecretMinLength)
+	if serviceauth.SecretMinLength != 32 {
+		t.Errorf("SecretMinLength = %d, expected 32", serviceauth.SecretMinLength)
 	}
 }
 
-func TestLogInternalServiceAuthWarning(t *testing.T) {
+func TestLogAuthWarning_Orchestrator(t *testing.T) {
 	tests := []struct {
-		name          string
-		secretValue   string
-		shouldWarn    bool
-		description   string
+		name        string
+		secretValue string
 	}{
-		{
-			name:        "no secret configured",
-			secretValue: "",
-			shouldWarn:  true,
-			description: "should warn when no secret is configured",
-		},
-		{
-			name:        "short secret configured",
-			secretValue: "short",
-			shouldWarn:  true,
-			description: "should warn when secret is too short",
-		},
-		{
-			name:        "adequate secret configured",
-			secretValue: "this-is-a-sufficiently-long-secret-for-production",
-			shouldWarn:  false,
-			description: "should not warn when secret is adequate length",
-		},
-		{
-			name:        "minimum length secret",
-			secretValue: "12345678901234567890123456789012", // exactly 32 chars
-			shouldWarn:  false,
-			description: "should not warn at exactly minimum length",
-		},
+		{name: "no secret configured", secretValue: ""},
+		{name: "short secret configured", secretValue: "short"},
+		{name: "adequate secret configured", secretValue: "this-is-a-sufficiently-long-secret-for-production"},
+		{name: "minimum length secret", secretValue: "12345678901234567890123456789012"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset warning flag before each test
-			internalServiceAuthWarningLogged = false
-
-			// Use t.Setenv for automatic cleanup
+			serviceauth.ResetWarnings()
 			if tt.secretValue == "" {
-				os.Unsetenv(InternalServiceSecretEnvVar)
+				os.Unsetenv(serviceauth.SecretEnvVar)
 			} else {
-				t.Setenv(InternalServiceSecretEnvVar, tt.secretValue)
+				t.Setenv(serviceauth.SecretEnvVar, tt.secretValue)
 			}
-
-			// Call the function - it should not panic
-			LogInternalServiceAuthWarning()
-
-			// Verify warning was logged (flag set)
-			if !internalServiceAuthWarningLogged {
-				t.Error("internalServiceAuthWarningLogged should be true after calling LogInternalServiceAuthWarning")
-			}
-
-			// Call again - should not log again (idempotent)
-			LogInternalServiceAuthWarning()
+			// Should not panic; idempotent
+			serviceauth.LogAuthWarning()
+			serviceauth.LogAuthWarning()
 		})
 	}
 }
 
-func TestLogInternalServiceAuthWarning_OnlyLogsOnce(t *testing.T) {
-	// Reset warning flag
-	internalServiceAuthWarningLogged = false
+func TestInternalTokenGenerator_InitializedFromEnv(t *testing.T) {
+	// When the env var is set at init time, internalTokenGenerator should be non-nil.
+	// We can't easily test init() re-running, but we can verify the generator produces valid tokens.
+	testSecret := "test-secret-for-generator-validation-at-least-32c"
+	gen := serviceauth.NewTokenGenerator(testSecret, serviceauth.RealClock{})
+	val := serviceauth.NewTokenValidator(testSecret, serviceauth.RealClock{}, serviceauth.DefaultClockSkew)
 
-	// Clear the secret to trigger warning path
-	os.Unsetenv(InternalServiceSecretEnvVar)
-
-	// Call multiple times
-	LogInternalServiceAuthWarning()
-	if !internalServiceAuthWarningLogged {
-		t.Fatal("Flag should be set after first call")
+	token := gen.GenerateToken()
+	valid, isLegacy, err := val.ValidateToken(token)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// Second call should be a no-op (flag prevents re-logging)
-	LogInternalServiceAuthWarning()
-
-	// Flag should still be true
-	if !internalServiceAuthWarningLogged {
-		t.Error("Flag should remain true")
+	if isLegacy {
+		t.Error("HMAC token should not be detected as legacy")
+	}
+	if !valid {
+		t.Error("generated HMAC token should validate successfully")
 	}
 }

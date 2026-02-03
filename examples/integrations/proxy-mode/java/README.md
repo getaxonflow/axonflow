@@ -96,7 +96,7 @@ AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
     .clientSecret("your-client-secret")
     .build());
 
-ClientResponse response = client.executeQuery(
+ClientResponse response = client.proxyLLMCall(
     ClientRequest.builder()
         .userPrompt("What are best practices for code review?")
         .userId("user-123")

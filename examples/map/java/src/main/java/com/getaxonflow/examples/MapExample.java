@@ -200,6 +200,54 @@ public class MapExample {
         System.out.println();
 
         // ========================================
+        // 5. PII IN PLAN QUERY - Policy enforcement on plan generation
+        // ========================================
+        System.out.println("5. PII in Plan Query - Testing policy enforcement on plan with SSN...");
+        String piiObjective = "Create a plan to process refund for customer with SSN 123-45-6789";
+        String gatewayPiiAction = getEnv("GATEWAY_PII_ACTION", getEnv("PII_ACTION", "redact"));
+        System.out.println("   GATEWAY_PII_ACTION=" + gatewayPiiAction);
+
+        PlanResponse piiPlan = null;
+        Exception piiErr = null;
+        try {
+            piiPlan = client.generatePlan(PlanRequest.builder()
+                .objective(piiObjective)
+                .domain(domain)
+                .userToken(userToken)
+                .build());
+        } catch (Exception e) {
+            piiErr = e;
+        }
+
+        if ("block".equals(gatewayPiiAction)) {
+            if (piiErr != null) {
+                assertCheck(true, "PII plan blocked as expected (GATEWAY_PII_ACTION=block)");
+                System.out.println("   Block reason: " + piiErr.getMessage());
+            } else {
+                assertCheck(false, "PII plan should have been blocked (GATEWAY_PII_ACTION=block)");
+            }
+        } else if ("log".equals(gatewayPiiAction)) {
+            if (piiErr != null) {
+                System.out.println("   Warning: PII plan failed: " + piiErr.getMessage());
+            } else {
+                assertCheck(piiPlan.getPlanId() != null && !piiPlan.getPlanId().isEmpty(),
+                    "PII plan approved with log-only mode");
+                System.out.println("   Plan ID: " + piiPlan.getPlanId() + " (PII logged but not redacted)");
+            }
+        } else {
+            // Default "redact" mode
+            if (piiErr != null) {
+                System.out.println("   Warning: PII plan failed: " + piiErr.getMessage());
+            } else {
+                assertCheck(piiPlan.getPlanId() != null && !piiPlan.getPlanId().isEmpty(),
+                    "PII plan generated (redaction may apply downstream)");
+                System.out.println("   Plan ID: " + piiPlan.getPlanId());
+                System.out.println("   Note: PII redaction is applied downstream by the Orchestrator");
+            }
+        }
+        System.out.println();
+
+        // ========================================
         // SUMMARY
         // ========================================
         System.out.println("==============================================");

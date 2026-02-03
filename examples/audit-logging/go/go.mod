@@ -7,3 +7,4 @@ require (
 	github.com/sashabaranov/go-openai v1.17.9
 )
 
+

@@ -47,6 +47,10 @@ import java.util.Map;
  * This gives you full control over LLM parameters while maintaining
  * complete audit trails with ~3-5ms governance overhead.
  *
+ * Gateway-specific policy config env vars (override defaults for gateway mode only):
+ *   GATEWAY_PII_ACTION  - PII action in gateway mode: "redact", "block", or "log"
+ *   GATEWAY_SQLI_ACTION - SQLi action in gateway mode: "block", "warn", or "log"
+ *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 public class GatewayModeExample {
@@ -142,6 +146,109 @@ public class GatewayModeExample {
         }
 
         long preCheckLatency = System.currentTimeMillis() - preCheckStart;
+        System.out.println();
+
+        // =========================================================================
+        // STEP 1b: PII Detection - SSN triggers redaction flag
+        // =========================================================================
+        System.out.println("Step 1b: PII Detection (SSN)...");
+        try {
+            PolicyApprovalResult piiResult = axonflow.getPolicyApprovedContext(
+                PolicyApprovalRequest.builder()
+                    .query("Process refund for customer with SSN 123-45-6789")
+                    .userToken(userToken)
+                    .build()
+            );
+            assertCheck(piiResult.isApproved(), "PII query approved (redact mode, not blocked)");
+            assertCheck(piiResult.getPolicies() != null && !piiResult.getPolicies().isEmpty(), "PII policies detected");
+            if (piiResult.getPolicies() != null) {
+                System.out.printf("   Policies: %s%n", String.join(", ", piiResult.getPolicies()));
+            }
+        } catch (PolicyViolationException e) {
+            assertCheck(false, "PII query should be approved in redact mode, got blocked: " + e.getMessage());
+        } catch (AxonFlowException e) {
+            assertCheck(false, "PII pre-check failed: " + e.getMessage());
+        }
+        System.out.println();
+
+        // =========================================================================
+        // STEP 1c: India PII Detection - PAN and Aadhaar
+        // =========================================================================
+        System.out.println("Step 1c: India PII Detection (PAN)...");
+        try {
+            PolicyApprovalResult panResult = axonflow.getPolicyApprovedContext(
+                PolicyApprovalRequest.builder()
+                    .query("Verify PAN number ABCPD1234E for tax filing")
+                    .userToken(userToken)
+                    .build()
+            );
+            assertCheck(panResult.isApproved(), "India PAN approved (redact mode)");
+            assertCheck(panResult.getPolicies() != null && !panResult.getPolicies().isEmpty(), "India PII policies detected for PAN");
+            if (panResult.getPolicies() != null) {
+                System.out.printf("   Policies: %s%n", String.join(", ", panResult.getPolicies()));
+            }
+        } catch (AxonFlowException e) {
+            assertCheck(false, "PAN pre-check failed: " + e.getMessage());
+        }
+
+        System.out.println("Step 1c: India PII Detection (Aadhaar)...");
+        try {
+            PolicyApprovalResult aadhaarResult = axonflow.getPolicyApprovedContext(
+                PolicyApprovalRequest.builder()
+                    .query("Link Aadhaar 2345 6789 0123 to bank account")
+                    .userToken(userToken)
+                    .build()
+            );
+            assertCheck(aadhaarResult.isApproved(), "India Aadhaar approved (redact mode)");
+            assertCheck(aadhaarResult.getPolicies() != null && !aadhaarResult.getPolicies().isEmpty(), "India PII policies detected for Aadhaar");
+            if (aadhaarResult.getPolicies() != null) {
+                System.out.printf("   Policies: %s%n", String.join(", ", aadhaarResult.getPolicies()));
+            }
+        } catch (AxonFlowException e) {
+            assertCheck(false, "Aadhaar pre-check failed: " + e.getMessage());
+        }
+        System.out.println();
+
+        // =========================================================================
+        // STEP 1d: SQL Injection Detection - should be BLOCKED
+        // =========================================================================
+        System.out.println("Step 1d: SQL Injection Detection (DROP TABLE)...");
+        try {
+            PolicyApprovalResult sqliResult = axonflow.getPolicyApprovedContext(
+                PolicyApprovalRequest.builder()
+                    .query("SELECT * FROM users; DROP TABLE users;--")
+                    .userToken(userToken)
+                    .build()
+            );
+            assertCheck(!sqliResult.isApproved(), "SQLi query is BLOCKED");
+            assertCheck(sqliResult.getBlockReason() != null && !sqliResult.getBlockReason().isEmpty(), "Block reason provided for SQLi");
+            System.out.printf("   Block reason: %s%n", sqliResult.getBlockReason());
+        } catch (PolicyViolationException e) {
+            assertCheck(true, "SQLi query is BLOCKED");
+            assertCheck(true, "Block reason provided for SQLi");
+            System.out.printf("   Block reason: %s%n", e.getMessage());
+        } catch (AxonFlowException e) {
+            assertCheck(false, "SQLi pre-check failed unexpectedly: " + e.getMessage());
+        }
+
+        System.out.println("Step 1d: SQL Injection Detection (UNION SELECT)...");
+        try {
+            PolicyApprovalResult unionResult = axonflow.getPolicyApprovedContext(
+                PolicyApprovalRequest.builder()
+                    .query("Get user where id = 1 UNION SELECT password FROM admin")
+                    .userToken(userToken)
+                    .build()
+            );
+            assertCheck(!unionResult.isApproved(), "UNION SQLi query is BLOCKED");
+            assertCheck(unionResult.getBlockReason() != null && !unionResult.getBlockReason().isEmpty(), "Block reason provided for UNION SQLi");
+            System.out.printf("   Block reason: %s%n", unionResult.getBlockReason());
+        } catch (PolicyViolationException e) {
+            assertCheck(true, "UNION SQLi query is BLOCKED");
+            assertCheck(true, "Block reason provided for UNION SQLi");
+            System.out.printf("   Block reason: %s%n", e.getMessage());
+        } catch (AxonFlowException e) {
+            assertCheck(false, "UNION SQLi pre-check failed unexpectedly: " + e.getMessage());
+        }
         System.out.println();
 
         // =========================================================================

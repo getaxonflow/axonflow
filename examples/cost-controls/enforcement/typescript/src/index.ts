@@ -22,7 +22,7 @@
  */
 
 import { AxonFlow } from '@axonflow/sdk';
-import type { ExecuteQueryResponse, BudgetStatus } from '@axonflow/sdk';
+import type { ProxyLLMCallResponse, BudgetStatus } from '@axonflow/sdk';
 
 const failures: string[] = [];
 
@@ -110,18 +110,18 @@ class EnforcementTest {
     }
   }
 
-  private async makeRequestsUntilBlocked(): Promise<ExecuteQueryResponse | null> {
+  private async makeRequestsUntilBlocked(): Promise<ProxyLLMCallResponse | null> {
     console.log('Step 2: Make LLM requests until blocked');
     console.log('-'.repeat(40));
 
-    let blockedResponse: ExecuteQueryResponse | null = null;
+    let blockedResponse: ProxyLLMCallResponse | null = null;
     const maxRequests = 10; // Safety limit
 
     for (let i = 1; i <= maxRequests; i++) {
       process.stdout.write(`   Request ${i}: `);
 
       try {
-        // Use proxyLLMCall (not deprecated executeQuery)
+        // Use proxyLLMCall
         const response = await this.client.proxyLLMCall({
           userToken: this.userToken,
           query: 'Say hello in one word',
@@ -158,7 +158,7 @@ class EnforcementTest {
             success: false,
             metadata: {},
             budgetInfo: (e as { budgetInfo?: BudgetInfoFromResponse }).budgetInfo,
-          } as unknown as ExecuteQueryResponse;
+          } as unknown as ProxyLLMCallResponse;
           break;
         }
         console.log(`ERROR: ${e}`);
@@ -170,7 +170,7 @@ class EnforcementTest {
     return blockedResponse;
   }
 
-  private async verifyEnforcement(blockedResponse: ExecuteQueryResponse | null): Promise<void> {
+  private async verifyEnforcement(blockedResponse: ProxyLLMCallResponse | null): Promise<void> {
     console.log('Step 3: Verify enforcement');
     console.log('-'.repeat(27));
 

@@ -44,6 +44,14 @@ import java.util.List;
  *   with isRequiresRedaction()=true for downstream redaction by the Orchestrator.
  *   Set PII_ACTION=block to restore blocking behavior.
  *
+ * Policy Configuration (env vars):
+ *   PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
+ *   GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
+ *
+ *   When PII_ACTION=block: requests with critical PII are blocked (isApproved()=false)
+ *   When PII_ACTION=log:   PII is detected and logged but passes through unmodified
+ *   When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+ *
  * Run with: mvn compile exec:java
  * Prerequisites: docker compose up -d
  */
@@ -170,6 +178,55 @@ public class PiiDetectionExample {
                 }
             }
 
+            System.out.println();
+        }
+
+        // ========================================
+        // Policy Configuration Tests (PII_ACTION)
+        // ========================================
+        String piiAction = getEnv("PII_ACTION", "redact");
+        System.out.printf("Policy Config: PII_ACTION=%s%n", piiAction);
+        System.out.println();
+
+        if ("block".equals(piiAction)) {
+            System.out.println("Test (config): PII_ACTION=block - SSN should be BLOCKED");
+            PolicyApprovalResult configResult = null;
+            boolean configBlocked = false;
+            try {
+                configResult = client.getPolicyApprovedContext(
+                    PolicyApprovalRequest.builder()
+                        .query("Customer SSN is 999-88-7777")
+                        .userToken("pii-config-test-user")
+                        .build()
+                );
+            } catch (PolicyViolationException e) {
+                configBlocked = true;
+            } catch (Exception e) {
+                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
+                System.exit(1);
+                return;
+            }
+            boolean wasBlocked2 = configBlocked || (configResult != null && !configResult.isApproved());
+            assertCheck(wasBlocked2, "PII_ACTION=block: SSN query is blocked (not approved)");
+            System.out.println();
+        } else if ("log".equals(piiAction)) {
+            System.out.println("Test (config): PII_ACTION=log - SSN should pass through unmodified");
+            try {
+                PolicyApprovalResult configResult = client.getPolicyApprovedContext(
+                    PolicyApprovalRequest.builder()
+                        .query("Customer SSN is 999-88-7777")
+                        .userToken("pii-config-test-user")
+                        .build()
+                );
+                assertCheck(configResult.isApproved(), "PII_ACTION=log: SSN query is approved (pass-through)");
+                assertCheck(!configResult.isRequiresRedaction(), "PII_ACTION=log: no redaction required (log only)");
+            } catch (PolicyViolationException e) {
+                assertCheck(false, "PII_ACTION=log: SSN query should NOT be blocked");
+            } catch (Exception e) {
+                System.out.println("   \u274C FATAL: getPolicyApprovedContext failed: " + e.getMessage());
+                System.exit(1);
+                return;
+            }
             System.out.println();
         }
 

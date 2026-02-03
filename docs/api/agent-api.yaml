@@ -3474,6 +3474,16 @@ components:
           type: integer
         message:
           type: string
+        redacted:
+          type: boolean
+          description: Whether any fields in the response were redacted by policy
+        redacted_fields:
+          type: array
+          items:
+            type: string
+          description: JSON paths of fields that were redacted
+        policy_info:
+          $ref: '#/components/schemas/MCPPolicyInfo'
 
     ConnectorRefreshResponse:
       type: object

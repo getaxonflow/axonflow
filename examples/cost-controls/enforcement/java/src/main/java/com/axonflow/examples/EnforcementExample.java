@@ -118,7 +118,7 @@ public class EnforcementExample {
             System.out.print("   Request " + i + ": ");
 
             try {
-                // Use ProxyLLMCall (not deprecated executeQuery)
+                // Use ProxyLLMCall
                 LLMResponse response = client.proxyLLMCall(ProxyLLMCallRequest.builder()
                         .userToken(userToken)
                         .query("Say hello in one word")

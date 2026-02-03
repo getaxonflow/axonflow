@@ -155,6 +155,21 @@ python/
 └── README.md
 ```
 
+## Gateway Policy Configuration
+
+Gateway mode supports dedicated policy configuration env vars that override the global defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_PII_ACTION` | (inherits `PII_ACTION`) | PII detection action in gateway mode: `redact`, `block`, or `log` |
+| `GATEWAY_SQLI_ACTION` | (inherits `SQLI_ACTION`) | SQLi detection action in gateway mode: `block`, `warn`, or `log` |
+
+These allow different policy behavior in gateway mode vs. proxy mode. For example:
+```bash
+export PII_ACTION=block              # Default for proxy mode
+export GATEWAY_PII_ACTION=log        # Override for gateway mode
+```
+
 ## Next Steps
 
 - [Proxy Mode](../proxy-mode/python/) - Simpler integration, AxonFlow handles LLM routing

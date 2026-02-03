@@ -161,8 +161,11 @@ COPY --from=builder /app/agent .
 # For enterprise: OSS + EE migrations merged; For OSS: only OSS migrations
 COPY --from=migrations-prep /migrations/ /app/migrations/
 
+# Create audit fallback directory (used by AuditQueue for persistent fallback)
+RUN mkdir -p /var/lib/axonflow/audit
+
 # Change ownership
-RUN chown -R axonflow:axonflow /app
+RUN chown -R axonflow:axonflow /app /var/lib/axonflow
 
 # Switch to non-root user
 USER axonflow

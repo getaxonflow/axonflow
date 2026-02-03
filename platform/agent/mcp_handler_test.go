@@ -31,6 +31,7 @@ import (
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // Mock connector for testing
@@ -802,14 +803,12 @@ func TestIsTenantConnectorRegistryEnabled(t *testing.T) {
 	}
 }
 
-// Tests for internal service authentication
+// Tests for internal service authentication (via shared serviceauth package)
 
 func TestIsValidInternalServiceRequest_FallbackToken(t *testing.T) {
-	// Ensure env var is not set (fallback mode)
-	// Note: We can't use t.Setenv("", "") to unset, so we use os.Unsetenv here
-	// This is acceptable because test isolation is maintained by the subtest structure
-	os.Unsetenv(internalServiceSecretEnvVar)
+	serviceauth.ResetWarnings()
 
+	// No validator = community/dev mode (no secret configured)
 	tests := []struct {
 		name     string
 		clientID string
@@ -818,31 +817,31 @@ func TestIsValidInternalServiceRequest_FallbackToken(t *testing.T) {
 	}{
 		{
 			name:     "valid internal request with fallback token",
-			clientID: internalServiceClientID,
-			token:    internalServiceTokenFallback,
+			clientID: serviceauth.ClientID,
+			token:    serviceauth.TokenFallback,
 			want:     true,
 		},
 		{
 			name:     "wrong client ID",
 			clientID: "some-other-client",
-			token:    internalServiceTokenFallback,
+			token:    serviceauth.TokenFallback,
 			want:     false,
 		},
 		{
 			name:     "wrong token",
-			clientID: internalServiceClientID,
+			clientID: serviceauth.ClientID,
 			token:    "wrong-token",
 			want:     false,
 		},
 		{
 			name:     "empty client ID",
 			clientID: "",
-			token:    internalServiceTokenFallback,
+			token:    serviceauth.TokenFallback,
 			want:     false,
 		},
 		{
 			name:     "empty token",
-			clientID: internalServiceClientID,
+			clientID: serviceauth.ClientID,
 			token:    "",
 			want:     false,
 		},
@@ -850,19 +849,22 @@ func TestIsValidInternalServiceRequest_FallbackToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isValidInternalServiceRequest(tt.clientID, tt.token)
+			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, nil)
 			if got != tt.want {
-				t.Errorf("isValidInternalServiceRequest(%q, %q) = %v, want %v",
+				t.Errorf("IsValidInternalServiceRequest(%q, %q, nil) = %v, want %v",
 					tt.clientID, tt.token, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestIsValidInternalServiceRequest_WithConfiguredSecret(t *testing.T) {
-	// Set up a configured secret
+func TestIsValidInternalServiceRequest_WithHMACToken(t *testing.T) {
+	serviceauth.ResetWarnings()
 	testSecret := "my-super-secure-internal-service-secret-12345"
-	t.Setenv(internalServiceSecretEnvVar, testSecret)
+	now := time.Now()
+	clock := &testClock{now: now}
+	gen := serviceauth.NewTokenGenerator(testSecret, clock)
+	val := serviceauth.NewTokenValidator(testSecret, clock, serviceauth.DefaultClockSkew)
 
 	tests := []struct {
 		name     string
@@ -871,125 +873,102 @@ func TestIsValidInternalServiceRequest_WithConfiguredSecret(t *testing.T) {
 		want     bool
 	}{
 		{
-			name:     "valid internal request with configured secret",
-			clientID: internalServiceClientID,
+			name:     "valid HMAC token accepted",
+			clientID: serviceauth.ClientID,
+			token:    gen.GenerateToken(),
+			want:     true,
+		},
+		{
+			name:     "legacy plain secret accepted (backward compat)",
+			clientID: serviceauth.ClientID,
 			token:    testSecret,
 			want:     true,
 		},
 		{
 			name:     "fallback token rejected when secret configured",
-			clientID: internalServiceClientID,
-			token:    internalServiceTokenFallback,
+			clientID: serviceauth.ClientID,
+			token:    serviceauth.TokenFallback,
 			want:     false,
 		},
 		{
-			name:     "wrong secret",
-			clientID: internalServiceClientID,
+			name:     "wrong secret rejected",
+			clientID: serviceauth.ClientID,
 			token:    "wrong-secret",
 			want:     false,
 		},
 		{
-			name:     "correct secret but wrong client ID",
+			name:     "correct HMAC token but wrong client ID",
 			clientID: "some-other-client",
-			token:    testSecret,
+			token:    gen.GenerateToken(),
 			want:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isValidInternalServiceRequest(tt.clientID, tt.token)
+			serviceauth.ResetWarnings()
+			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, val)
 			if got != tt.want {
-				t.Errorf("isValidInternalServiceRequest(%q, %q) = %v, want %v",
-					tt.clientID, tt.token, got, tt.want)
+				t.Errorf("IsValidInternalServiceRequest(%q, token, val) = %v, want %v",
+					tt.clientID, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestInternalServiceSecretMinLength_Agent(t *testing.T) {
-	// Verify the minimum length constant is reasonable
-	if internalServiceSecretMinLength < 16 {
-		t.Errorf("internalServiceSecretMinLength = %d, should be at least 16 for security", internalServiceSecretMinLength)
-	}
-	if internalServiceSecretMinLength != 32 {
-		t.Errorf("internalServiceSecretMinLength = %d, expected 32", internalServiceSecretMinLength)
+// testClock implements serviceauth.Clock for agent-level tests.
+type testClock struct {
+	now time.Time
+}
+
+func (c *testClock) Now() time.Time { return c.now }
+
+func TestIsValidInternalServiceRequest_LegacyDeprecation(t *testing.T) {
+	serviceauth.ResetWarnings()
+	testSecret := "my-super-secure-internal-service-secret-12345"
+	now := time.Now()
+	clock := &testClock{now: now}
+	val := serviceauth.NewTokenValidator(testSecret, clock, serviceauth.DefaultClockSkew)
+
+	// Sending the raw secret (legacy path) should be accepted but triggers deprecation warning
+	got := serviceauth.IsValidInternalServiceRequest(serviceauth.ClientID, testSecret, val)
+	if !got {
+		t.Error("legacy plain-secret token should be accepted for backward compatibility")
 	}
 }
 
-func TestLogInternalServiceAuthWarning_Agent(t *testing.T) {
+func TestInternalServiceConstants_Agent(t *testing.T) {
+	if serviceauth.SecretMinLength < 16 {
+		t.Errorf("SecretMinLength = %d, should be at least 16 for security", serviceauth.SecretMinLength)
+	}
+	if serviceauth.SecretMinLength != 32 {
+		t.Errorf("SecretMinLength = %d, expected 32", serviceauth.SecretMinLength)
+	}
+}
+
+func TestLogAuthWarning_Agent(t *testing.T) {
 	tests := []struct {
 		name        string
 		secretValue string
-		description string
 	}{
-		{
-			name:        "no secret configured",
-			secretValue: "",
-			description: "should warn when no secret is configured",
-		},
-		{
-			name:        "short secret configured",
-			secretValue: "short",
-			description: "should warn when secret is too short",
-		},
-		{
-			name:        "adequate secret configured",
-			secretValue: "this-is-a-sufficiently-long-secret-for-production",
-			description: "should not warn when secret is adequate length",
-		},
-		{
-			name:        "minimum length secret",
-			secretValue: "12345678901234567890123456789012", // exactly 32 chars
-			description: "should not warn at exactly minimum length",
-		},
+		{name: "no secret configured", secretValue: ""},
+		{name: "short secret configured", secretValue: "short"},
+		{name: "adequate secret configured", secretValue: "this-is-a-sufficiently-long-secret-for-production"},
+		{name: "minimum length secret", secretValue: "12345678901234567890123456789012"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset warning flag before each test
-			internalServiceAuthWarningLogged = false
-
-			// Use t.Setenv for automatic cleanup
+			serviceauth.ResetWarnings()
 			if tt.secretValue == "" {
-				os.Unsetenv(internalServiceSecretEnvVar)
+				os.Unsetenv(serviceauth.SecretEnvVar)
 			} else {
-				t.Setenv(internalServiceSecretEnvVar, tt.secretValue)
+				t.Setenv(serviceauth.SecretEnvVar, tt.secretValue)
 			}
-
-			// Call the function - it should not panic
-			logInternalServiceAuthWarning()
-
-			// Verify warning was logged (flag set)
-			if !internalServiceAuthWarningLogged {
-				t.Error("internalServiceAuthWarningLogged should be true after calling logInternalServiceAuthWarning")
-			}
-
-			// Call again - should not log again (idempotent)
-			logInternalServiceAuthWarning()
+			// Should not panic; idempotent
+			serviceauth.LogAuthWarning()
+			serviceauth.LogAuthWarning()
 		})
-	}
-}
-
-func TestLogInternalServiceAuthWarning_OnlyLogsOnce_Agent(t *testing.T) {
-	// Reset warning flag
-	internalServiceAuthWarningLogged = false
-
-	// Clear the secret to trigger warning path
-	os.Unsetenv(internalServiceSecretEnvVar)
-
-	// Call multiple times
-	logInternalServiceAuthWarning()
-	if !internalServiceAuthWarningLogged {
-		t.Fatal("Flag should be set after first call")
-	}
-
-	// Second call should be a no-op (flag prevents re-logging)
-	logInternalServiceAuthWarning()
-
-	// Flag should still be true
-	if !internalServiceAuthWarningLogged {
-		t.Error("Flag should remain true")
 	}
 }
 
@@ -2112,5 +2091,193 @@ func TestMCPExecuteHandler_CommunityMode_WithBasicAuth(t *testing.T) {
 	// Should NOT fail with 401 "Invalid license key" in community mode
 	if w.Code == http.StatusUnauthorized {
 		t.Errorf("community mode should NOT require license validation, but got 401: %s", w.Body.String())
+	}
+}
+
+// TestMCPExecuteHandler_DynamicPolicyBlocks verifies that dynamic policy evaluation
+// can block execute requests (e.g., rate limiting on write operations).
+func TestMCPExecuteHandler_DynamicPolicyBlocks(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	originalEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEvaluator)
+
+	server := mockOrchestratorServer(t, sharedpolicy.DynamicPolicyResponse{
+		Allowed:           false,
+		BlockReason:       "Write budget exceeded: max 100 executes per hour",
+		PoliciesEvaluated: 1,
+		MatchedPolicies: []sharedpolicy.DynamicPolicyMatch{
+			{
+				PolicyID:   "budget-limit-writes",
+				PolicyType: "budget",
+				Action:     "block",
+			},
+		},
+	})
+	defer server.Close()
+
+	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
+		Enabled:              true,
+		OrchestratorEndpoint: server.URL,
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false,
+		EnabledConnectors:    []string{"test-db"},
+	})
+
+	reqBody := MCPExecuteRequest{
+		ClientID:  "test-client",
+		Connector: "test-db",
+		Statement: "INSERT INTO orders (product) VALUES ('widget')",
+		Action:    "INSERT",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/tools/execute", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("demo", "demo-secret")
+	w := httptest.NewRecorder()
+
+	mcpExecuteHandler(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected status 403, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != false {
+		t.Error("expected success=false")
+	}
+	if response["error"] != "Write budget exceeded: max 100 executes per hour" {
+		t.Errorf("expected budget limit error, got %v", response["error"])
+	}
+	if _, hasDynamic := response["dynamic_policy_info"]; !hasDynamic {
+		t.Error("expected dynamic_policy_info in blocked response")
+	}
+}
+
+// TestMCPExecuteHandler_ResponseIncludesPolicyInfo verifies that the execute handler
+// returns policy_info when the policy engine evaluates the request (Issue #969).
+func TestMCPExecuteHandler_ResponseIncludesPolicyInfo(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		executeResult: &base.CommandResult{
+			RowsAffected: 3,
+			Duration:     8 * time.Millisecond,
+			Message:      "3 rows inserted",
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPExecuteRequest{
+		ClientID:  "demo",
+		Connector: "test-db",
+		Statement: "INSERT INTO test (name) VALUES ('test')",
+		Action:    "INSERT",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/tools/execute", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("demo", "demo-secret")
+
+	w := httptest.NewRecorder()
+	mcpExecuteHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Errorf("expected success=true, got %v", response["success"])
+	}
+	if response["connector"] != "test-db" {
+		t.Errorf("expected connector=test-db, got %v", response["connector"])
+	}
+	if response["message"] != "3 rows inserted" {
+		t.Errorf("expected message='3 rows inserted', got %v", response["message"])
+	}
+}
+
+// TestMCPExecuteHandler_BackwardCompatNoPolicyEngine verifies that the execute handler
+// response is backward compatible when no policy engine is configured.
+func TestMCPExecuteHandler_BackwardCompatNoPolicyEngine(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	// Register connector so execution succeeds
+	mcpRegistry = registry.NewRegistry()
+	mockConn := &mockConnector{
+		executeResult: &base.CommandResult{
+			RowsAffected: 1,
+			Duration:     2 * time.Millisecond,
+			Message:      "1 row updated",
+		},
+	}
+	if err := mcpRegistry.Register("test-db", mockConn, &base.ConnectorConfig{Name: "test-db", TenantID: "*"}); err != nil {
+		t.Fatalf("Failed to register connector: %v", err)
+	}
+
+	reqBody := MCPExecuteRequest{
+		ClientID:  "demo",
+		Connector: "test-db",
+		Statement: "UPDATE test SET name = 'updated'",
+		Action:    "UPDATE",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/mcp/tools/execute", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("demo", "demo-secret")
+
+	w := httptest.NewRecorder()
+	mcpExecuteHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["success"] != true {
+		t.Errorf("expected success=true")
+	}
+	if _, ok := response["rows_affected"]; !ok {
+		t.Error("missing rows_affected field")
+	}
+	if _, ok := response["duration_ms"]; !ok {
+		t.Error("missing duration_ms field")
+	}
+	if _, ok := response["message"]; !ok {
+		t.Error("missing message field")
+	}
+
+	// Policy fields should NOT be present when engine is nil
+	if _, ok := response["policy_info"]; ok {
+		t.Error("policy_info should not be present when policy engine is nil")
+	}
+	if _, ok := response["redacted"]; ok {
+		t.Error("redacted should not be present when policy engine is nil")
+	}
+	if _, ok := response["redacted_fields"]; ok {
+		t.Error("redacted_fields should not be present when policy engine is nil")
 	}
 }

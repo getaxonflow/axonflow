@@ -58,17 +58,17 @@ type DynamicPolicyEngine struct {
 // Policy evaluation is performed in priority order (highest first).
 // All conditions must match for a policy to trigger (AND logic).
 type DynamicPolicy struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Type        string              `json:"type"` // "content", "user", "risk", "cost"
-	Conditions  []PolicyCondition   `json:"conditions"`
-	Actions     []PolicyAction      `json:"actions"`
-	Priority    int                 `json:"priority"`
-	Enabled     bool                `json:"enabled"`
-	TenantID    string              `json:"tenant_id,omitempty"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Type        string            `json:"type"` // "content", "user", "risk", "cost"
+	Conditions  []PolicyCondition `json:"conditions"`
+	Actions     []PolicyAction    `json:"actions"`
+	Priority    int               `json:"priority"`
+	Enabled     bool              `json:"enabled"`
+	TenantID    string            `json:"tenant_id,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // PolicyCondition defines when a policy should trigger.
@@ -117,10 +117,10 @@ type PolicyAction struct {
 //   - Admin role: +0.5
 //   - SELECT * queries: +0.3
 type RiskCalculator struct {
-	sqliScanner        sqli.Scanner           // Unified SQL injection scanner from sqli package
-	sensitivePatterns  []*regexp.Regexp       // Non-SQLi sensitive data patterns (passwords, secrets)
-	riskWeights        map[string]float64
-	detectionConfig    agent.DetectionConfig  // Unified detection configuration (Issue #891)
+	sqliScanner       sqli.Scanner     // Unified SQL injection scanner from sqli package
+	sensitivePatterns []*regexp.Regexp // Non-SQLi sensitive data patterns (passwords, secrets)
+	riskWeights       map[string]float64
+	detectionConfig   agent.DetectionConfig // Unified detection configuration (Issue #891)
 }
 
 // PolicyCache caches policy evaluation results to improve performance.
@@ -314,7 +314,7 @@ func (e *DynamicPolicyEngine) evaluatePolicy(ctx context.Context, policy Dynamic
 // evaluateCondition checks if a single condition is met
 func (e *DynamicPolicyEngine) evaluateCondition(condition PolicyCondition, req OrchestratorRequest, result *PolicyEvaluationResult) bool {
 	fieldValue := e.getFieldValue(condition.Field, req, result)
-	
+
 	switch condition.Operator {
 	case "contains":
 		return strings.Contains(strings.ToLower(fmt.Sprint(fieldValue)), strings.ToLower(fmt.Sprint(condition.Value)))
@@ -339,7 +339,7 @@ func (e *DynamicPolicyEngine) evaluateCondition(condition PolicyCondition, req O
 // getFieldValue extracts a field value from the request or result
 func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorRequest, result *PolicyEvaluationResult) interface{} {
 	parts := strings.Split(field, ".")
-	
+
 	switch parts[0] {
 	case "query":
 		return req.Query
@@ -405,10 +405,14 @@ func (e *DynamicPolicyEngine) applyPolicyAction(ctx context.Context, action Poli
 		}
 	case "route":
 		// LLM routing override for compliance (GDPR, PII, cost control)
-		fmt.Printf("!!!! ROUTE ACTION TRIGGERED !!!!\n")
+		if policyDebugEnabled() {
+			log.Printf("[POLICY][DEBUG] Route action triggered")
+		}
 		if preferred, ok := action.Config["preferred_provider"].(string); ok && preferred != "" {
 			result.PreferredProvider = preferred
-			fmt.Printf("!!!! PREFERRED PROVIDER SET: %s !!!!\n", preferred)
+			if policyDebugEnabled() {
+				log.Printf("[POLICY][DEBUG] Preferred provider set: %s", preferred)
+			}
 		}
 		if reason, ok := action.Config["reason"].(string); ok {
 			result.RoutingReason = reason
@@ -476,7 +480,7 @@ func (e *DynamicPolicyEngine) getApplicablePolicies(req OrchestratorRequest) []D
 func (e *DynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 	e.policyMutex.RLock()
 	defer e.policyMutex.RUnlock()
-	
+
 	var active []DynamicPolicy
 	for _, policy := range e.policies {
 		if policy.Enabled {
@@ -527,11 +531,13 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	for rows.Next() {
 		var policy DynamicPolicy
 		var conditionsJSON, actionsJSON json.RawMessage
+		var dbID string
+		var policyID sql.NullString
 		var tenantID sql.NullString
 
 		if err := rows.Scan(
-			&policy.ID,
-			&policy.ID, // Use policy_id as ID for now
+			&dbID,
+			&policyID,
 			&policy.Name,
 			&policy.Description,
 			&policy.Type,
@@ -547,6 +553,12 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 			continue
 		}
 
+		if policyID.Valid && policyID.String != "" {
+			policy.ID = policyID.String
+		} else {
+			policy.ID = dbID
+		}
+
 		// Parse conditions and actions
 		if err := json.Unmarshal(conditionsJSON, &policy.Conditions); err != nil {
 			log.Printf("Error parsing conditions for policy %s: %v", policy.ID, err)
@@ -557,11 +569,13 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 			log.Printf("Error parsing actions for policy %s: %v", policy.ID, err)
 			continue
 		}
-		// DEBUG: Log loaded actions for route policies
-		for _, action := range policy.Actions {
-			if action.Type == "route" {
-				fmt.Printf("!!!! LOADED ROUTE POLICY: %s, action_type=%s, config=%v !!!!\n",
-					policy.Name, action.Type, action.Config)
+		if policyDebugEnabled() {
+			// DEBUG: Log loaded actions for route policies
+			for _, action := range policy.Actions {
+				if action.Type == "route" {
+					log.Printf("[POLICY][DEBUG] Loaded route policy: %s, action_type=%s, config=%v",
+						policy.Name, action.Type, action.Config)
+				}
 			}
 		}
 
@@ -587,7 +601,9 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	e.lastDBRefresh = time.Now()
 	e.policyMutex.Unlock()
 
-	fmt.Printf("!!!! XXXX DEBUG: Loaded %d policies from DB (marker to verify build) XXXX !!!!\n", policiesLoaded)
+	if policyDebugEnabled() {
+		log.Printf("[POLICY][DEBUG] Loaded %d policies from DB (marker to verify build)", policiesLoaded)
+	}
 	log.Printf("Loaded %d dynamic policies from database (+ %d defaults)", policiesLoaded, len(defaultPolicies))
 
 	// Log audit event
@@ -706,10 +722,10 @@ func NewPolicyCache(ttl time.Duration) *PolicyCache {
 	cache := &PolicyCache{
 		ttl: ttl,
 	}
-	
+
 	// Start cleanup routine
 	go cache.cleanupRoutine()
-	
+
 	return cache
 }
 
@@ -724,22 +740,29 @@ func (c *PolicyCache) Set(key string, value interface{}) {
 func (c *PolicyCache) cleanupRoutine() {
 	ticker := time.NewTicker(c.ttl)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		// Simple cleanup - in production, track expiration times
-		c.cache = sync.Map{}
+		c.cache.Range(func(key, _ interface{}) bool {
+			c.cache.Delete(key)
+			return true
+		})
 	}
+}
+
+func policyDebugEnabled() bool {
+	return strings.EqualFold(os.Getenv("AXONFLOW_DEBUG_POLICIES"), "true")
 }
 
 // Utility functions
 func compareNumeric(a, b interface{}, operator string) bool {
 	aFloat, aOk := toFloat64(a)
 	bFloat, bOk := toFloat64(b)
-	
+
 	if !aOk || !bOk {
 		return false
 	}
-	
+
 	switch operator {
 	case ">":
 		return aFloat > bFloat
@@ -794,4 +817,4 @@ func contains(slice interface{}, item interface{}) bool {
 		}
 	}
 	return false
-}// Build marker: 1767635481
+} // Build marker: 1767635481

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonFlow - Execution Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/ui/executions/styles.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b border-gray-200 px-6 py-3">
+        <div class="flex items-center justify-between max-w-7xl mx-auto">
+            <h1 class="text-lg font-semibold text-gray-900">AxonFlow Execution Viewer</h1>
+            <div class="text-sm text-gray-500">Execution Replay</div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-6 py-6">
+        <!-- Filters -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+            <div class="flex flex-wrap gap-4 items-end">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <select id="filter-status" class="border border-gray-300 rounded-md px-3 py-1.5 text-sm">
+                        <option value="">All</option>
+                        <option value="completed">Completed</option>
+                        <option value="failed">Failed</option>
+                        <option value="running">Running</option>
+                        <option value="pending">Pending</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Workflow</label>
+                    <input id="filter-workflow" type="text" placeholder="Filter by workflow..."
+                        class="border border-gray-300 rounded-md px-3 py-1.5 text-sm w-48">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Per Page</label>
+                    <select id="filter-limit" class="border border-gray-300 rounded-md px-3 py-1.5 text-sm">
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <button id="btn-filter" class="bg-blue-600 text-white px-4 py-1.5 rounded-md text-sm hover:bg-blue-700">
+                    Apply
+                </button>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Workflow</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Steps</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Duration</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cost</th>
+                        <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Started</th>
+                    </tr>
+                </thead>
+                <tbody id="executions-table" class="divide-y divide-gray-200"></tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex justify-between items-center mt-4">
+            <div id="pagination-info" class="text-sm text-gray-500"></div>
+            <div class="flex gap-2">
+                <button id="btn-prev" class="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50" disabled>Previous</button>
+                <button id="btn-next" class="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50" disabled>Next</button>
+            </div>
+        </div>
+
+        <!-- Empty state -->
+        <div id="empty-state" class="hidden text-center py-12">
+            <p class="text-gray-500 text-lg mb-2">No executions found</p>
+            <p class="text-gray-400 text-sm">Run a workflow through AxonFlow to generate executions.</p>
+        </div>
+
+        <!-- Loading -->
+        <div id="loading" class="hidden text-center py-12">
+            <p class="text-gray-500">Loading executions...</p>
+        </div>
+
+        <!-- Error -->
+        <div id="error-state" class="hidden bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
+            <p id="error-message" class="text-red-700 text-sm"></p>
+        </div>
+    </main>
+
+    <script src="/ui/executions/app.js"></script>
+    <script>App.init();</script>
+</body>
+</html>

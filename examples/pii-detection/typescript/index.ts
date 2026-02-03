@@ -17,6 +17,14 @@
  *   with requiresRedaction=true for downstream redaction by the Orchestrator.
  *   Set PII_ACTION=block to restore blocking behavior.
  *
+ * Policy Configuration (env vars):
+ *   PII_ACTION         - Controls PII detection behavior: "redact" (default), "block", or "log"
+ *   GATEWAY_PII_ACTION - Same as PII_ACTION but applies only in gateway mode
+ *
+ *   When PII_ACTION=block: requests with critical PII are blocked (approved=false)
+ *   When PII_ACTION=log:   PII is detected and logged but passes through unmodified
+ *   When PII_ACTION=redact: (default) PII is flagged for downstream redaction
+ *
  * Run with: npx ts-node index.ts
  * Prerequisites: docker compose up -d
  */
@@ -146,6 +154,45 @@ async function main(): Promise<void> {
       );
     }
 
+    console.log();
+  }
+
+  // ========================================
+  // Policy Configuration Tests (PII_ACTION)
+  // ========================================
+  const piiAction = getEnv('PII_ACTION', 'redact');
+  console.log(`Policy Config: PII_ACTION=${piiAction}`);
+  console.log();
+
+  if (piiAction === 'block') {
+    console.log('Test (config): PII_ACTION=block - SSN should be BLOCKED');
+    let configResult;
+    try {
+      configResult = await axonflow.getPolicyApprovedContext({
+        userToken: 'pii-config-test-user',
+        query: 'Customer SSN is 999-88-7777',
+      });
+    } catch (error) {
+      console.log(`   FATAL: getPolicyApprovedContext failed: ${error}`);
+      process.exit(1);
+    }
+    assertCheck(!configResult.approved, 'PII_ACTION=block: SSN query is blocked (not approved)');
+    assertCheck(configResult.blockReason !== '', 'PII_ACTION=block: block reason is provided');
+    console.log();
+  } else if (piiAction === 'log') {
+    console.log('Test (config): PII_ACTION=log - SSN should pass through unmodified');
+    let configResult;
+    try {
+      configResult = await axonflow.getPolicyApprovedContext({
+        userToken: 'pii-config-test-user',
+        query: 'Customer SSN is 999-88-7777',
+      });
+    } catch (error) {
+      console.log(`   FATAL: getPolicyApprovedContext failed: ${error}`);
+      process.exit(1);
+    }
+    assertCheck(configResult.approved, 'PII_ACTION=log: SSN query is approved (pass-through)');
+    assertCheck(!configResult.requiresRedaction, 'PII_ACTION=log: no redaction required (log only)');
     console.log();
   }
 

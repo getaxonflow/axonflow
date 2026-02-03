@@ -130,6 +130,19 @@ services:
       # Deprecated: use SQLI_ACTION instead
       # SQLI_BLOCK_MODE: ${SQLI_BLOCK_MODE:-block}
 
+      # Per-mode policy overrides (take precedence over global *_ACTION vars)
+      # MCP mode
+      MCP_STATIC_POLICIES_ENABLED: ${MCP_STATIC_POLICIES_ENABLED:-true}
+      MCP_PII_ACTION: ${MCP_PII_ACTION:-}
+      MCP_SQLI_ACTION: ${MCP_SQLI_ACTION:-}
+      MCP_DANGEROUS_QUERY_ACTION: ${MCP_DANGEROUS_QUERY_ACTION:-}
+      MCP_STATIC_POLICIES_SKIP_CATEGORIES: ${MCP_STATIC_POLICIES_SKIP_CATEGORIES:-}
+      # Gateway mode
+      GATEWAY_STATIC_POLICIES_ENABLED: ${GATEWAY_STATIC_POLICIES_ENABLED:-true}
+      GATEWAY_PII_ACTION: ${GATEWAY_PII_ACTION:-}
+      GATEWAY_SQLI_ACTION: ${GATEWAY_SQLI_ACTION:-}
+      GATEWAY_DANGEROUS_QUERY_ACTION: ${GATEWAY_DANGEROUS_QUERY_ACTION:-}
+
       # Exfiltration detection (Issue #966)
       # MCP_MAX_ROWS_PER_QUERY: Maximum rows allowed per query (default: 10000)
       MCP_MAX_ROWS_PER_QUERY: ${MCP_MAX_ROWS_PER_QUERY:-10000}
@@ -140,6 +153,11 @@ services:
       # JWT_SECRET: Secret for signing/validating user tokens
       # Generate tokens using: scripts/generate-jwt.sh
       JWT_SECRET: ${JWT_SECRET:-axonflow-local-dev-jwt-secret-do-not-use-in-production}
+
+      # Internal service auth (orchestrator-to-agent HMAC token signing)
+      # When set, agent validates HMAC-signed tokens from orchestrator.
+      # When unset, falls back to hardcoded token (acceptable for development).
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
 
       # Misc
       ORG_ID: local-dev-org
@@ -211,6 +229,10 @@ services:
       # Internal services
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
       REDIS_URL: redis://redis:6379
+
+      # Internal service auth (orchestrator-to-agent HMAC token signing)
+      # Must match the agent's AXONFLOW_INTERNAL_SERVICE_SECRET value.
+      AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
 
       # Model overrides (optional - providers use sensible defaults)
       OPENAI_MODEL: ${OPENAI_MODEL:-}

@@ -113,7 +113,7 @@ func main() {
 	for i := 1; i <= maxRequests; i++ {
 		fmt.Printf("   Request %d: ", i)
 
-		// Use ProxyLLMCall (not deprecated executeQuery)
+		// Use ProxyLLMCall
 		response, err := client.ProxyLLMCall(
 			userToken,
 			"Say hello in one word",

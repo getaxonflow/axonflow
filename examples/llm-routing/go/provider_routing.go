@@ -72,7 +72,7 @@ func main() {
 
 	// Example 1: Send a request (server decides which provider to use)
 	fmt.Println("1. Send request (server routes based on configured strategy):")
-	resp1, err := client.ExecuteQuery(
+	resp1, err := client.ProxyLLMCall(
 		userToken,
 		"What is 2 + 2?",
 		"chat",
@@ -101,7 +101,7 @@ func main() {
 	fmt.Println("2. Multiple requests (observe provider distribution):")
 	successCount := 0
 	for i := 1; i <= 3; i++ {
-		resp, err := client.ExecuteQuery(
+		resp, err := client.ProxyLLMCall(
 			userToken,
 			fmt.Sprintf("Question %d: What is the capital of France?", i),
 			"chat",
