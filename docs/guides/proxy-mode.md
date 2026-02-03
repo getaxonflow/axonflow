@@ -65,7 +65,7 @@ const response = await axonflow.protect(async () => {
 ### Go
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go"
+import "github.com/getaxonflow/axonflow-sdk-go/v3"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     os.Getenv("AXONFLOW_AGENT_URL"),

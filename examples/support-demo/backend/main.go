@@ -39,7 +39,7 @@ import (
 	"github.com/rs/cors"
 	_ "github.com/lib/pq"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v2"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
 
 var failures []string

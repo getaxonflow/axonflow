@@ -9,7 +9,7 @@
     "test": "npm run start"
   },
   "dependencies": {
-    "@axonflow/sdk": "^2.3.0"
+    "@axonflow/sdk": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

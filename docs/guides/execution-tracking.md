@@ -191,7 +191,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/getaxonflow/axonflow-sdk-go"
+    "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
 
 func main() {
