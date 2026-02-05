@@ -26,7 +26,6 @@ import java.util.Map;
 
 public class AuditLoggingExample {
 
-    private static final String CLIENT_ID = "audit-logging-demo";
     private static final List<String> failures = new ArrayList<>();
 
     private static void assertCheck(boolean condition, String message) {
@@ -43,8 +42,9 @@ public class AuditLoggingExample {
         System.out.println("========================================");
         System.out.println();
 
-        String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
+        String clientId = getEnv("AXONFLOW_CLIENT_ID", "audit-logging-demo");
         String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+        String userToken = getEnv("AXONFLOW_USER_TOKEN", "audit-user");
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
@@ -73,8 +73,8 @@ public class AuditLoggingExample {
                 PolicyApprovalResult precheck = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
                         .query(q.query)
-                        .clientId(CLIENT_ID)
-                        .userToken("audit-user")
+                        .clientId(clientId)
+                        .userToken(userToken)
                         .context(context)
                         .build()
                 );
@@ -117,7 +117,7 @@ public class AuditLoggingExample {
 
                 client.auditLLMCall(AuditOptions.builder()
                     .contextId(precheck.getContextId())
-                    .clientId(CLIENT_ID)
+                    .clientId(clientId)
                     .provider("openai")
                     .model("gpt-3.5-turbo")
                     .tokenUsage(TokenUsage.of(promptTokens, completionTokens))
@@ -169,7 +169,7 @@ public class AuditLoggingExample {
         // Get audit logs for tenant (default pagination)
         System.out.println("1. getAuditLogsByTenant (default options):");
         try {
-            var tenantLogs = client.getAuditLogsByTenant(CLIENT_ID, null);
+            var tenantLogs = client.getAuditLogsByTenant(clientId, null);
             if (tenantLogs != null && tenantLogs.getEntries() != null) {
                 System.out.printf("   Found %d entries%n", tenantLogs.getEntries().size());
                 assertCheck(tenantLogs.getEntries().size() >= 0, "getAuditLogsByTenant returned valid entries list");
@@ -192,7 +192,7 @@ public class AuditLoggingExample {
         // Get audit logs with custom pagination
         System.out.println("2. getAuditLogsByTenant (limit=5, offset=0):");
         try {
-            var paginatedLogs = client.getAuditLogsByTenant(CLIENT_ID,
+            var paginatedLogs = client.getAuditLogsByTenant(clientId,
                 com.getaxonflow.sdk.types.AuditQueryOptions.builder()
                     .limit(5)
                     .offset(0)
@@ -213,7 +213,7 @@ public class AuditLoggingExample {
         try {
             var searchResult = client.searchAuditLogs(
                 com.getaxonflow.sdk.types.AuditSearchRequest.builder()
-                    .clientId(CLIENT_ID)
+                    .clientId(clientId)
                     .requestType("chat")
                     .limit(10)
                     .build());

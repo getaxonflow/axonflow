@@ -16,10 +16,10 @@ import (
 // the legacy LLMRouter API with the new Router implementation.
 // This enables gradual migration without breaking existing code.
 type UnifiedRouter struct {
-	router         *Router
-	routingConfig  RoutingConfig
-	logger         *log.Logger
-	mu             sync.RWMutex
+	router        *Router
+	routingConfig RoutingConfig
+	logger        *log.Logger
+	mu            sync.RWMutex
 }
 
 // UnifiedRouterConfig configures the UnifiedRouter.
@@ -89,8 +89,14 @@ func (u *UnifiedRouter) RouteRequest(ctx context.Context, reqCtx RequestContext)
 		u.logger.Printf("Policy routing: preferred provider=%s reason=%s",
 			reqCtx.PolicyPreferredProvider, reqCtx.PolicyRoutingReason)
 	} else if reqCtx.Provider != "" {
-		// Fall back to explicit provider request if no policy override
+		// Fall back to explicit provider request if no policy override.
+		// By default this is a preference and failover remains enabled.
 		opts = append(opts, WithPreferredProvider(reqCtx.Provider))
+		if reqCtx.StrictProvider {
+			// Optional strict mode: hard-pin requested provider and disable fallback.
+			opts = append(opts, WithAllowedProviders([]string{reqCtx.Provider}))
+			opts = append(opts, WithDisableFailover())
+		}
 	}
 
 	// Strict provider enforcement: failover can ONLY occur within allowed providers

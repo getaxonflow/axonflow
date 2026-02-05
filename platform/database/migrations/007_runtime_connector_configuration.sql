@@ -37,6 +37,7 @@ CREATE TABLE connector_configs (
     -- Connection details (non-sensitive stored directly)
     connection_url VARCHAR(500),
     options JSONB DEFAULT '{}',  -- Non-sensitive options (e.g., {"schema": "public", "ssl_mode": "verify-full"})
+    credentials JSONB DEFAULT '{}', -- Non-sensitive credentials when Secrets Manager not used
 
     -- Credential reference (sensitive data in Secrets Manager)
     credentials_secret_arn VARCHAR(500),  -- AWS Secrets Manager ARN
@@ -61,7 +62,9 @@ CREATE TABLE connector_configs (
     -- Constraints
     UNIQUE(tenant_id, connector_name),
     CONSTRAINT check_connector_type CHECK (connector_type IN (
-        'postgres', 'cassandra', 'salesforce', 'amadeus', 'slack', 'snowflake', 'custom'
+        'postgres', 'cassandra', 'salesforce', 'amadeus', 'slack', 'snowflake',
+        'http', 'mysql', 'mongodb', 'redis', 's3', 'azureblob', 'gcs',
+        'hubspot', 'jira', 'servicenow', 'custom'
     )),
     CONSTRAINT check_health_status CHECK (health_status IN ('healthy', 'unhealthy', 'unknown'))
 );
@@ -85,7 +88,7 @@ COMMENT ON COLUMN connector_configs.options IS 'Non-sensitive configuration opti
 -- ============================================================
 -- 3. LLM Provider Configurations Table (Orchestrator)
 -- ============================================================
--- Stores configuration for LLM providers (bedrock, ollama, openai, anthropic)
+-- Stores configuration for LLM providers (bedrock, ollama, openai, anthropic, gemini, azure-openai, custom)
 -- Supports routing weights for load balancing and failover
 
 CREATE TABLE llm_provider_configs (
@@ -128,7 +131,9 @@ CREATE TABLE llm_provider_configs (
 
     -- Constraints
     UNIQUE(tenant_id, provider_name),
-    CONSTRAINT check_provider_name CHECK (provider_name IN ('bedrock', 'ollama', 'openai', 'anthropic')),
+    CONSTRAINT check_provider_name CHECK (provider_name IN (
+        'bedrock', 'ollama', 'openai', 'anthropic', 'gemini', 'azure-openai', 'custom'
+    )),
     CONSTRAINT check_llm_health_status CHECK (health_status IN ('healthy', 'unhealthy', 'unknown')),
     CONSTRAINT check_weight_range CHECK (weight >= 0.00 AND weight <= 1.00)
 );
@@ -242,6 +247,7 @@ CREATE OR REPLACE FUNCTION get_connector_config(
     connector_type VARCHAR(50),
     connection_url VARCHAR(500),
     options JSONB,
+    credentials JSONB,
     credentials_secret_arn VARCHAR(500),
     timeout_ms INTEGER,
     max_retries INTEGER,
@@ -257,6 +263,7 @@ BEGIN
         cc.connector_type,
         cc.connection_url,
         cc.options,
+        cc.credentials,
         cc.credentials_secret_arn,
         cc.timeout_ms,
         cc.max_retries,

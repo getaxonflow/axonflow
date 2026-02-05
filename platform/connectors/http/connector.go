@@ -18,16 +18,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 const (
@@ -46,12 +45,11 @@ const (
 // HTTPConnector implements the MCP Connector interface for HTTP REST APIs
 // with production-ready security hardening and reliability features.
 type HTTPConnector struct {
-	config          *base.ConnectorConfig
+	sdk.BaseConnector
 	httpClient      *http.Client
-	logger          *log.Logger
 	baseURL         string
 	authType        string
-	authConfig      map[string]string
+	authProvider    sdk.AuthProvider
 	headers         map[string]string
 	maxResponseSize int64
 	maxRetries      int
@@ -61,23 +59,76 @@ type HTTPConnector struct {
 
 // NewHTTPConnector creates a new HTTP connector instance with secure defaults
 func NewHTTPConnector() *HTTPConnector {
-	return &HTTPConnector{
-		logger:          log.New(os.Stdout, "[MCP_HTTP] ", log.LstdFlags),
+	conn := &HTTPConnector{
 		headers:         make(map[string]string),
 		maxResponseSize: DefaultMaxResponseSize,
 		maxRetries:      DefaultMaxRetries,
 		retryDelay:      DefaultRetryDelay,
 		allowPrivateIPs: false, // SSRF protection enabled by default
 	}
+	conn.BaseConnector = *sdk.NewBaseConnector("http")
+	conn.SetVersion("1.0.0")
+	conn.SetCapabilities([]string{
+		"query",
+		"execute",
+		"rest-api",
+		"retry",
+		"ssrf-protection",
+	})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{"base_url"},
+		map[string]interface{}{
+			"allow_private_ips": false,
+			"max_response_size": DefaultMaxResponseSize,
+			"max_retries":       DefaultMaxRetries,
+			"retry_delay":       DefaultRetryDelay.String(),
+			"disable_redirects": false,
+			"tls_skip_verify":   false,
+			"timeout":           float64(DefaultTimeout / time.Second),
+		},
+	))
+
+	return conn
 }
 
 // Connect initializes the HTTP connector with security validations
 func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
-	c.config = config
+	if config == nil {
+		return base.NewConnectorError("http", "Connect", "config is required", nil)
+	}
+
+	if config.Type == "" {
+		config.Type = "http"
+	}
+
+	// Preserve current precedence: config.Timeout overrides option timeout.
+	timeout := DefaultTimeout
+	if t, ok := config.Options["timeout"].(float64); ok && t > 0 {
+		timeout = time.Duration(int(t)) * time.Second
+	}
+	if config.Timeout > 0 {
+		timeout = config.Timeout
+	}
+	config.Timeout = timeout
+
+	// Configure retries early so base connector stores it.
+	maxRetries := DefaultMaxRetries
+	if retries, ok := config.Options["max_retries"].(float64); ok {
+		maxRetries = int(retries)
+	}
+	if config.MaxRetries > 0 {
+		maxRetries = config.MaxRetries
+	}
+	config.MaxRetries = maxRetries
+
+	// Call base connect for validation and hooks
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Extract and validate base URL
-	baseURLStr, ok := config.Options["base_url"].(string)
-	if !ok || baseURLStr == "" {
+	baseURLStr := c.GetStringOption("base_url", "")
+	if baseURLStr == "" {
 		return base.NewConnectorError(config.Name, "Connect", "base_url is required", nil)
 	}
 
@@ -93,9 +144,7 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 	}
 
 	// SSRF protection: validate host is not a private IP unless explicitly allowed
-	if allowPrivate, ok := config.Options["allow_private_ips"].(bool); ok {
-		c.allowPrivateIPs = allowPrivate
-	}
+	c.allowPrivateIPs = c.GetBoolOption("allow_private_ips", false)
 
 	if !c.allowPrivateIPs {
 		if err := c.validateHost(parsedURL.Hostname()); err != nil {
@@ -106,19 +155,20 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 	c.baseURL = strings.TrimSuffix(baseURLStr, "/")
 
 	// Configure authentication
-	if authType, ok := config.Options["auth_type"].(string); ok {
-		c.authType = authType
-	} else {
-		c.authType = "none"
+	c.authType = c.GetStringOption("auth_type", "none")
+	authProvider, err := c.buildAuthProvider(c.authType)
+	if err != nil {
+		return base.NewConnectorError(config.Name, "Connect", "invalid auth configuration", err)
 	}
-
-	c.authConfig = make(map[string]string)
-	for key, val := range config.Credentials {
-		c.authConfig[key] = val
+	if authProvider == nil && c.authType != "" && c.authType != "none" {
+		c.Log("Warning: auth_type %s configured but credentials are missing; requests will be unauthenticated", c.authType)
 	}
+	c.authProvider = authProvider
+	c.SetAuthProvider(authProvider)
 
 	// Configure custom headers
-	if headers, ok := config.Options["headers"].(map[string]interface{}); ok {
+	c.headers = make(map[string]string)
+	if headers, ok := c.GetOption("headers", nil).(map[string]interface{}); ok {
 		for key, val := range headers {
 			if strVal, ok := val.(string); ok {
 				c.headers[key] = strVal
@@ -126,30 +176,16 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 		}
 	}
 
-	// Configure timeout
-	timeout := DefaultTimeout
-	if t, ok := config.Options["timeout"].(float64); ok && t > 0 {
-		timeout = time.Duration(int(t)) * time.Second
-	}
-	if config.Timeout > 0 {
-		timeout = config.Timeout
-	}
-
 	// Configure max response size
-	if maxSize, ok := config.Options["max_response_size"].(float64); ok && maxSize > 0 {
+	if maxSize := c.GetIntOption("max_response_size", DefaultMaxResponseSize); maxSize > 0 {
 		c.maxResponseSize = int64(maxSize)
 	}
 
-	// Configure retries
-	if retries, ok := config.Options["max_retries"].(float64); ok {
-		c.maxRetries = int(retries)
-	}
-	if config.MaxRetries > 0 {
-		c.maxRetries = config.MaxRetries
-	}
+	c.maxRetries = config.MaxRetries
 
-	if delay, ok := config.Options["retry_delay"].(string); ok {
-		if parsed, err := time.ParseDuration(delay); err == nil {
+	retryDelay := c.GetStringOption("retry_delay", "")
+	if retryDelay != "" {
+		if parsed, err := time.ParseDuration(retryDelay); err == nil {
 			c.retryDelay = parsed
 		}
 	}
@@ -158,9 +194,9 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
-	if skipVerify, ok := config.Options["tls_skip_verify"].(bool); ok && skipVerify {
+	if c.GetBoolOption("tls_skip_verify", false) {
 		tlsConfig.InsecureSkipVerify = true
-		c.logger.Printf("WARNING: TLS verification disabled for %s", config.Name)
+		c.Log("WARNING: TLS verification disabled for %s", config.Name)
 	}
 
 	// Create HTTP transport with connection pooling
@@ -182,13 +218,14 @@ func (c *HTTPConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 	}
 
 	// Disable redirects if configured
-	if noRedirect, ok := config.Options["disable_redirects"].(bool); ok && noRedirect {
+	if c.GetBoolOption("disable_redirects", false) {
 		c.httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
 	}
 
-	c.logger.Printf("Connected to HTTP API: %s (auth=%s, timeout=%v, max_retries=%d)",
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to HTTP API: %s (auth=%s, timeout=%v, max_retries=%d)",
 		config.Name, c.authType, timeout, c.maxRetries)
 
 	return nil
@@ -255,8 +292,9 @@ func (c *HTTPConnector) Disconnect(ctx context.Context) error {
 			transport.CloseIdleConnections()
 		}
 	}
-	c.logger.Printf("Disconnected from HTTP API: %s", c.Name())
-	return nil
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from HTTP API: %s", c.Name())
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the API is accessible
@@ -269,12 +307,7 @@ func (c *HTTPConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, er
 		}, nil
 	}
 
-	healthPath := "/"
-	if c.config != nil && c.config.Options != nil {
-		if hp, ok := c.config.Options["health_path"].(string); ok {
-			healthPath = hp
-		}
-	}
+	healthPath := c.GetStringOption("health_path", "/")
 
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+healthPath, nil)
@@ -286,7 +319,14 @@ func (c *HTTPConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, er
 		}, nil
 	}
 
-	c.applyAuth(req)
+	if err := c.applyAuth(ctx, req); err != nil {
+		return &base.HealthStatus{
+			Healthy:   false,
+			Latency:   time.Since(start),
+			Timestamp: time.Now(),
+			Error:     err.Error(),
+		}, nil
+	}
 	c.applyHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
@@ -322,7 +362,12 @@ func (c *HTTPConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, er
 }
 
 // Query executes a GET request (read operation) with retry support
-func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
+func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (result *base.QueryResult, err error) {
+	start := time.Now()
+	defer func() {
+		c.GetMetrics().RecordQuery(time.Since(start), err)
+	}()
+
 	path := query.Statement
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -347,7 +392,6 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 		reqURL.RawQuery = params.Encode()
 	}
 
-	start := time.Now()
 	var lastErr error
 	var resp *http.Response
 
@@ -355,7 +399,7 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := c.calculateBackoff(attempt)
-			c.logger.Printf("Retry attempt %d/%d after %v", attempt, c.maxRetries, delay)
+			c.Log("Retry attempt %d/%d after %v", attempt, c.maxRetries, delay)
 
 			select {
 			case <-ctx.Done():
@@ -369,7 +413,9 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 			return nil, base.NewConnectorError(c.Name(), "Query", "failed to create request", err)
 		}
 
-		c.applyAuth(req)
+		if err := c.applyAuth(ctx, req); err != nil {
+			return nil, base.NewConnectorError(c.Name(), "Query", "authentication failed", err)
+		}
 		c.applyHeaders(req)
 
 		resp, lastErr = c.httpClient.Do(req)
@@ -417,8 +463,8 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 	}
 
 	// Parse JSON response
-	var result interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var parsed interface{}
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		// If not JSON, return as string
 		rows := []map[string]interface{}{
 			{"response": string(body)},
@@ -431,9 +477,9 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 		}, nil
 	}
 
-	rows := c.convertToRows(result)
+	rows := c.convertToRows(parsed)
 
-	c.logger.Printf("HTTP GET %s: %d rows, %v", path, len(rows), duration)
+	c.Log("HTTP GET %s: %d rows, %v", path, len(rows), duration)
 
 	return &base.QueryResult{
 		Rows:      rows,
@@ -444,7 +490,12 @@ func (c *HTTPConnector) Query(ctx context.Context, query *base.Query) (*base.Que
 }
 
 // Execute executes a POST/PUT/DELETE request (write operation) with retry support
-func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
+func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (result *base.CommandResult, err error) {
+	start := time.Now()
+	defer func() {
+		c.GetMetrics().RecordExecute(time.Since(start), err)
+	}()
+
 	method := strings.ToUpper(cmd.Action)
 	if method == "" {
 		method = "POST"
@@ -478,7 +529,6 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
-	start := time.Now()
 	var lastErr error
 	var resp *http.Response
 
@@ -492,7 +542,7 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := c.calculateBackoff(attempt)
-			c.logger.Printf("Retry attempt %d/%d after %v", attempt, maxRetries, delay)
+			c.Log("Retry attempt %d/%d after %v", attempt, maxRetries, delay)
 
 			select {
 			case <-ctx.Done():
@@ -511,7 +561,9 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 			return nil, base.NewConnectorError(c.Name(), "Execute", "failed to create request", err)
 		}
 
-		c.applyAuth(req)
+		if err := c.applyAuth(ctx, req); err != nil {
+			return nil, base.NewConnectorError(c.Name(), "Execute", "authentication failed", err)
+		}
 		c.applyHeaders(req)
 
 		if bodyBytes != nil {
@@ -544,7 +596,7 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 	// Read response with size limit
 	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseSize))
 	if err != nil {
-		c.logger.Printf("Warning: failed to read response body: %v", err)
+		c.Log("Warning: failed to read response body: %v", err)
 	}
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 300
@@ -562,7 +614,7 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 		rowsAffected = 1
 	}
 
-	c.logger.Printf("HTTP %s %s: status=%d, %v", method, path, resp.StatusCode, duration)
+	c.Log("HTTP %s %s: status=%d, %v", method, path, resp.StatusCode, duration)
 
 	return &base.CommandResult{
 		Success:      success,
@@ -575,8 +627,8 @@ func (c *HTTPConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 
 // Name returns the connector instance name
 func (c *HTTPConnector) Name() string {
-	if c.config != nil {
-		return c.config.Name
+	if cfg := c.GetConfig(); cfg != nil && cfg.Name != "" {
+		return cfg.Name
 	}
 	return "http-connector"
 }
@@ -602,33 +654,92 @@ func (c *HTTPConnector) Capabilities() []string {
 	}
 }
 
-// applyAuth applies authentication to the request
-func (c *HTTPConnector) applyAuth(req *http.Request) {
-	switch c.authType {
+func (c *HTTPConnector) buildAuthProvider(authType string) (sdk.AuthProvider, error) {
+	switch strings.ToLower(authType) {
 	case "bearer":
-		if token, ok := c.authConfig["token"]; ok && token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+		token := c.GetCredential("token")
+		if token == "" {
+			return nil, nil
 		}
+		return sdk.NewBearerTokenAuth(token, time.Time{}), nil
 	case "basic":
-		if username, ok := c.authConfig["username"]; ok {
-			password := c.authConfig["password"]
-			req.SetBasicAuth(username, password)
+		username := c.GetCredential("username")
+		if username == "" {
+			return nil, nil
 		}
+		password := c.GetCredential("password")
+		return sdk.NewBasicAuth(username, password), nil
 	case "api-key":
-		if key, ok := c.authConfig["api_key"]; ok && key != "" {
-			headerName := c.authConfig["header_name"]
-			if headerName == "" {
-				headerName = "X-API-Key"
-			}
-			req.Header.Set(headerName, key)
+		key := c.GetCredential("api_key")
+		if key == "" {
+			return nil, nil
 		}
+		headerName := c.GetCredential("header_name")
+		if headerName == "" {
+			headerName = "X-API-Key"
+		}
+		return sdk.NewAPIKeyAuth(key, sdk.APIKeyInHeader, headerName), nil
 	case "oauth2":
-		if token, ok := c.authConfig["access_token"]; ok && token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+		accessToken := c.GetCredential("access_token")
+		if accessToken != "" {
+			return sdk.NewBearerTokenAuth(accessToken, time.Time{}), nil
 		}
+		tokenURL := c.GetStringOption("token_url", "")
+		clientID := c.GetCredential("client_id")
+		clientSecret := c.GetCredential("client_secret")
+		if tokenURL == "" || clientID == "" || clientSecret == "" {
+			return nil, nil
+		}
+		scopes := c.getScopeList()
+		return sdk.NewOAuthAuth(&sdk.OAuthConfig{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			TokenURL:     tokenURL,
+			Scopes:       scopes,
+		}), nil
 	case "none", "":
-		// No authentication
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported auth_type %q", authType)
 	}
+}
+
+func (c *HTTPConnector) getScopeList() []string {
+	rawScopes := c.GetOption("scopes", nil)
+	switch scopes := rawScopes.(type) {
+	case []string:
+		return scopes
+	case []interface{}:
+		list := make([]string, 0, len(scopes))
+		for _, scope := range scopes {
+			if s, ok := scope.(string); ok && s != "" {
+				list = append(list, s)
+			}
+		}
+		return list
+	case string:
+		if scopes == "" {
+			return nil
+		}
+		return []string{scopes}
+	default:
+		return nil
+	}
+}
+
+// applyAuth applies authentication to the request
+func (c *HTTPConnector) applyAuth(ctx context.Context, req *http.Request) error {
+	if c.authProvider == nil {
+		return nil
+	}
+
+	if c.authProvider.IsExpired() {
+		if err := c.authProvider.Refresh(ctx); err != nil {
+			return err
+		}
+	}
+
+	return c.authProvider.Authenticate(ctx, req)
 }
 
 // applyHeaders applies custom headers to the request

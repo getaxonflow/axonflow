@@ -20,35 +20,42 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/lib/pq"
 )
 
-// setupTestDB creates a test database connection
-// This connects to the staging RDS for integration testing
+// setupRLSTestDB creates a test database connection.
+// Uses TEST_DATABASE_URL if set, otherwise testcontainers.
+// Note: RLS tests require the RLS migration to be applied.
 func setupRLSTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	// Get database URL from environment (staging RDS)
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set - skipping RLS integration tests")
-	}
+	var db *sql.DB
+	var err error
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	// Test connection
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping test database: %v", err)
+	// Try TEST_DATABASE_URL first (for staging RDS with RLS enabled)
+	if dbURL := os.Getenv("TEST_DATABASE_URL"); dbURL != "" {
+		db, err = sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to connect to test database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Failed to ping test database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+	} else {
+		// Fall back to testcontainers (RLS won't be available, test will skip at health check)
+		testutil.SkipIfNoDocker(t)
+		pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+		db = pg.DB
 	}
 
 	// Ensure RLS migration is applied
 	ctx := context.Background()
 	if err := RLSHealthCheck(ctx, db); err != nil {
-		t.Fatalf("RLS health check failed - migration 022 may not be applied: %v", err)
+		t.Skipf("Skipping RLS test - migration 022 not applied: %v", err)
 	}
 
 	// CRITICAL: Clean up any leftover data from previous test runs FIRST

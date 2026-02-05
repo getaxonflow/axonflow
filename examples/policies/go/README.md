@@ -11,8 +11,8 @@ Examples demonstrating policy CRUD operations using the AxonFlow Go SDK.
 ## Setup
 
 ```bash
-# Install SDK from feature branch
-go get github.com/getaxonflow/axonflow-sdk-go@feat/policy-crud
+# Install SDK
+go get github.com/getaxonflow/axonflow-sdk-go/v3@v3.2.0
 ```
 
 ## Environment Variables

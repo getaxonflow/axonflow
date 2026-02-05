@@ -19,30 +19,117 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/testutil"
 
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for RuntimeConfigService with real PostgreSQL
-// These tests require DATABASE_URL to be set and migration 007 to be applied
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	t.Helper()
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to connect to database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Failed to ping database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
 	}
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to database: %v", err)
-	}
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, runtimeConfigTestSchema())
+	return pg.DB
+}
 
-	// Verify connection
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
+// runtimeConfigTestSchema returns the schema needed for runtime config tests.
+func runtimeConfigTestSchema() string {
+	return `
+		CREATE TABLE IF NOT EXISTS customers (
+			organization_id VARCHAR(255) PRIMARY KEY,
+			tenant_id VARCHAR(255) NOT NULL UNIQUE,
+			name VARCHAR(255) NOT NULL,
+			status VARCHAR(20) DEFAULT 'active',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
 
-	return db
+		CREATE TABLE IF NOT EXISTS connector_configs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id VARCHAR(100) NOT NULL REFERENCES customers(tenant_id) ON DELETE CASCADE,
+			connector_name VARCHAR(100) NOT NULL,
+			connector_type VARCHAR(50) NOT NULL,
+			display_name VARCHAR(255),
+			description TEXT,
+			connection_url VARCHAR(500),
+			options JSONB DEFAULT '{}',
+			credentials_secret_arn VARCHAR(500),
+			credentials_secret_version VARCHAR(100),
+			timeout_ms INTEGER DEFAULT 30000,
+			max_retries INTEGER DEFAULT 3,
+			enabled BOOLEAN DEFAULT true,
+			health_status VARCHAR(20) DEFAULT 'unknown',
+			last_health_check TIMESTAMPTZ,
+			last_error TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by VARCHAR(100),
+			updated_by VARCHAR(100),
+			UNIQUE(tenant_id, connector_name)
+		);
+
+		CREATE TABLE IF NOT EXISTS llm_provider_configs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id VARCHAR(100) NOT NULL REFERENCES customers(tenant_id) ON DELETE CASCADE,
+			provider_name VARCHAR(50) NOT NULL,
+			display_name VARCHAR(255),
+			config JSONB NOT NULL DEFAULT '{}',
+			credentials_secret_arn VARCHAR(500),
+			priority INTEGER DEFAULT 0,
+			weight NUMERIC(3,2) DEFAULT 1.00,
+			enabled BOOLEAN DEFAULT true,
+			health_status VARCHAR(20) DEFAULT 'unknown',
+			last_health_check TIMESTAMPTZ,
+			last_error TEXT,
+			cost_per_1k_input_tokens NUMERIC(10,6),
+			cost_per_1k_output_tokens NUMERIC(10,6),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by VARCHAR(100),
+			updated_by VARCHAR(100),
+			UNIQUE(tenant_id, provider_name)
+		);
+
+		CREATE TABLE IF NOT EXISTS connector_dangerous_operations (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id VARCHAR(100) REFERENCES customers(tenant_id) ON DELETE CASCADE,
+			connector_type VARCHAR(50) NOT NULL,
+			blocked_operations TEXT[] NOT NULL,
+			allow_override BOOLEAN DEFAULT false,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(tenant_id, connector_type)
+		);
+
+		CREATE TABLE IF NOT EXISTS config_audit_log (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id VARCHAR(100) NOT NULL,
+			config_type VARCHAR(50) NOT NULL,
+			config_id UUID NOT NULL,
+			action VARCHAR(20) NOT NULL,
+			old_value JSONB,
+			new_value JSONB,
+			changed_by VARCHAR(100),
+			changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			ip_address VARCHAR(45),
+			user_agent TEXT
+		);
+	` + testutil.RuntimeConfigSchema()
 }
 
 func setupTestTenant(t *testing.T, db *sql.DB, tenantID string) func() {
@@ -78,10 +165,10 @@ func TestRuntimeConfigService_GetConnectorConfigs_FromDatabase(t *testing.T) {
 
 	// Insert test connector config
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, options, timeout_ms, max_retries, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, tenantID, "test_postgres", "postgres", "postgres://localhost:5432/testdb",
-		`{"schema": "public", "ssl_mode": "require"}`, 30000, 3, true)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, options, timeout_ms, max_retries, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, tenantID, "test_postgres", "postgres", "Test Postgres", "Test connector",
+		"postgres://localhost:5432/testdb", `{"schema": "public", "ssl_mode": "require"}`, 30000, 3, true)
 	if err != nil {
 		t.Fatalf("Failed to insert test connector: %v", err)
 	}
@@ -212,8 +299,8 @@ func TestRuntimeConfigService_ThreeTierPriority(t *testing.T) {
 
 	// Test 2: Add DB config → should use DB config (higher priority)
 	_, err = db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
-		VALUES ($1, 'db_postgres', 'postgres', 'postgres://db:5432/dbconfig', true)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
+		VALUES ($1, 'db_postgres', 'postgres', 'DB Postgres', 'Test', 'postgres://db:5432/dbconfig', true)
 	`, tenantID)
 	if err != nil {
 		t.Fatalf("Failed to insert DB config: %v", err)
@@ -257,8 +344,8 @@ func TestRuntimeConfigService_CacheWithDatabase(t *testing.T) {
 
 	// Insert initial config
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
-		VALUES ($1, 'cache_test', 'postgres', 'postgres://original:5432/db', true)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
+		VALUES ($1, 'cache_test', 'postgres', 'Cache Test', 'Test', 'postgres://original:5432/db', true)
 	`, tenantID)
 	if err != nil {
 		t.Fatalf("Failed to insert initial config: %v", err)
@@ -329,8 +416,8 @@ func TestRuntimeConfigService_RefreshCache(t *testing.T) {
 
 	// Insert initial config
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
-		VALUES ($1, 'refresh_test', 'postgres', 'postgres://before:5432/db', true)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
+		VALUES ($1, 'refresh_test', 'postgres', 'Refresh Test', 'Test', 'postgres://before:5432/db', true)
 	`, tenantID)
 	if err != nil {
 		t.Fatalf("Failed to insert initial config: %v", err)
@@ -387,10 +474,10 @@ func TestRuntimeConfigService_MultiTenantIsolation(t *testing.T) {
 
 	// Insert different configs for each tenant
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
 		VALUES
-			($1, 'tenant1_db', 'postgres', 'postgres://tenant1:5432/db', true),
-			($2, 'tenant2_db', 'postgres', 'postgres://tenant2:5432/db', true)
+			($1, 'tenant1_db', 'postgres', 'Tenant 1 DB', 'Test', 'postgres://tenant1:5432/db', true),
+			($2, 'tenant2_db', 'postgres', 'Tenant 2 DB', 'Test', 'postgres://tenant2:5432/db', true)
 	`, tenant1, tenant2)
 	if err != nil {
 		t.Fatalf("Failed to insert tenant configs: %v", err)
@@ -442,10 +529,20 @@ func TestRuntimeConfigService_BlockedOperations(t *testing.T) {
 	cleanup := setupTestTenant(t, db, tenantID)
 	defer cleanup()
 
-	// Insert connector config
+	// Insert global blocked operations for postgres (simulating production seed data)
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
-		VALUES ($1, 'blocked_ops_test', 'postgres', 'postgres://localhost:5432/db', true)
+		INSERT INTO connector_dangerous_operations (tenant_id, connector_type, blocked_operations, allow_override)
+		VALUES (NULL, 'postgres', ARRAY['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'GRANT', 'REVOKE'], false)
+		ON CONFLICT DO NOTHING
+	`)
+	if err != nil {
+		t.Fatalf("Failed to insert global blocked operations: %v", err)
+	}
+
+	// Insert connector config
+	_, err = db.Exec(`
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
+		VALUES ($1, 'blocked_ops_test', 'postgres', 'Blocked Ops Test', 'Test', 'postgres://localhost:5432/db', true)
 	`, tenantID)
 	if err != nil {
 		t.Fatalf("Failed to insert connector: %v", err)
@@ -510,11 +607,11 @@ func TestRuntimeConfigService_GetSpecificConnector(t *testing.T) {
 
 	// Insert multiple connectors
 	_, err := db.Exec(`
-		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, connection_url, enabled)
+		INSERT INTO connector_configs (tenant_id, connector_name, connector_type, display_name, description, connection_url, enabled)
 		VALUES
-			($1, 'postgres_main', 'postgres', 'postgres://main:5432/db', true),
-			($1, 'postgres_readonly', 'postgres', 'postgres://readonly:5432/db', true),
-			($1, 'salesforce_prod', 'salesforce', 'https://salesforce.com/api', true)
+			($1, 'postgres_main', 'postgres', 'Main Postgres', 'Test', 'postgres://main:5432/db', true),
+			($1, 'postgres_readonly', 'postgres', 'Readonly Postgres', 'Test', 'postgres://readonly:5432/db', true),
+			($1, 'salesforce_prod', 'salesforce', 'Salesforce Prod', 'Test', 'https://salesforce.com/api', true)
 	`, tenantID)
 	if err != nil {
 		t.Fatalf("Failed to insert connectors: %v", err)

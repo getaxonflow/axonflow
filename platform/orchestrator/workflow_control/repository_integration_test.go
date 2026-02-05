@@ -12,29 +12,78 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for PostgresRepository
-// These tests require DATABASE_URL to be set
-// Run with: DATABASE_URL=postgres://... go test -v ./platform/orchestrator/workflow_control/... -run Integration
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	t.Helper()
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to open database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Failed to ping database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
 	}
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, workflowControlSchema())
+	return pg.DB
+}
 
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
+// workflowControlSchema returns the schema needed for workflow control tests.
+func workflowControlSchema() string {
+	return `
+		CREATE TABLE IF NOT EXISTS workflows (
+			workflow_id VARCHAR(255) PRIMARY KEY,
+			workflow_name VARCHAR(255) NOT NULL,
+			source VARCHAR(100) NOT NULL DEFAULT 'external',
+			status VARCHAR(50) NOT NULL DEFAULT 'in_progress',
+			current_step_index INTEGER DEFAULT 0,
+			total_steps INTEGER,
+			org_id VARCHAR(255),
+			tenant_id VARCHAR(255),
+			user_id VARCHAR(255),
+			client_id VARCHAR(255),
+			metadata JSONB DEFAULT '{}',
+			started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			completed_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
 
-	return db
+		CREATE TABLE IF NOT EXISTS workflow_steps (
+			id SERIAL PRIMARY KEY,
+			workflow_id VARCHAR(255) NOT NULL REFERENCES workflows(workflow_id) ON DELETE CASCADE,
+			step_id VARCHAR(255) NOT NULL,
+			step_index INTEGER NOT NULL,
+			step_name VARCHAR(255),
+			step_type VARCHAR(100),
+			decision VARCHAR(50) NOT NULL,
+			decision_reason TEXT,
+			policies_evaluated JSONB DEFAULT '[]',
+			policies_matched JSONB DEFAULT '[]',
+			approval_status VARCHAR(50),
+			approved_by VARCHAR(255),
+			approved_at TIMESTAMP WITH TIME ZONE,
+			step_input JSONB,
+			model VARCHAR(100),
+			provider VARCHAR(100),
+			gate_checked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			step_completed_at TIMESTAMP WITH TIME ZONE,
+			UNIQUE(workflow_id, step_id)
+		);
+	`
 }
 
 func cleanupTestWorkflows(t *testing.T, db *sql.DB, tenantID string) {

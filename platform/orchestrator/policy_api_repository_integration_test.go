@@ -7,32 +7,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"testing"
 	"time"
+
+	"axonflow/platform/testutil"
 
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for PolicyRepository
-// These tests require DATABASE_URL to be set
+// Always uses testcontainers for consistent schema
 
 func getTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	t.Helper()
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
-
-	return db
+	// Always use testcontainers to ensure consistent schema.
+	// The CI DATABASE_URL may have a different schema version.
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, testutil.DynamicPoliciesSchema())
+	return pg.DB
 }
 
 func cleanupTestPolicies(t *testing.T, db *sql.DB, tenantID string) {

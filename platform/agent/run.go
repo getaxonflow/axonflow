@@ -821,7 +821,7 @@ func Run() {
 	if configFile := os.Getenv("AXONFLOW_CONFIG_FILE"); configFile != "" {
 		log.Printf("[MCP] Using config file from AXONFLOW_CONFIG_FILE: %s", configFile)
 	}
-	if err := InitializeMCPRegistry(); err != nil {
+	if err := InitializeMCPRegistryWithDB(authDB); err != nil {
 		log.Printf("Warning: Failed to initialize MCP registry: %v", err)
 		log.Println("Agent will run without MCP connector support")
 	} else {

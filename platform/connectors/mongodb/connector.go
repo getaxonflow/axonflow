@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -27,6 +26,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 const (
@@ -44,6 +44,7 @@ const (
 // It provides CRUD operations, aggregation pipeline support, and production-ready
 // connection management for MongoDB 4.0+ databases.
 type MongoDBConnector struct {
+	sdk.BaseConnector
 	config     *base.ConnectorConfig
 	client     *mongo.Client
 	database   *mongo.Database
@@ -54,14 +55,43 @@ type MongoDBConnector struct {
 
 // NewMongoDBConnector creates a new MongoDB connector instance
 func NewMongoDBConnector() *MongoDBConnector {
-	return &MongoDBConnector{
-		logger: log.New(os.Stdout, "[MCP_MONGODB] ", log.LstdFlags),
-	}
+	conn := &MongoDBConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("mongodb")
+	conn.SetVersion("1.0.0")
+	conn.SetCapabilities([]string{
+		"query",
+		"execute",
+		"crud",
+		"aggregation",
+		"connection_pooling",
+		"transactions",
+	})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{"database"},
+		map[string]interface{}{
+			"host":            "localhost",
+			"port":            27017,
+			"max_pool_size":   DefaultMaxPoolSize,
+			"min_pool_size":   DefaultMinPoolSize,
+			"connect_timeout": DefaultConnectTimeout.String(),
+		},
+	))
+	conn.logger = conn.GetLogger()
+	return conn
 }
 
 // Connect establishes a connection to MongoDB with connection pooling
 func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("mongodb", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "mongodb"
+	}
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Build connection URI
 	uri, err := c.buildURI(config)
@@ -75,10 +105,10 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 	// Connection pool settings
 	maxPoolSize := uint64(DefaultMaxPoolSize)
 	minPoolSize := uint64(DefaultMinPoolSize)
-	if val, ok := config.Options["max_pool_size"].(float64); ok {
+	if val := c.GetIntOption("max_pool_size", int(maxPoolSize)); val > 0 {
 		maxPoolSize = uint64(val)
 	}
-	if val, ok := config.Options["min_pool_size"].(float64); ok {
+	if val := c.GetIntOption("min_pool_size", int(minPoolSize)); val >= 0 {
 		minPoolSize = uint64(val)
 	}
 	clientOpts.SetMaxPoolSize(maxPoolSize)
@@ -86,7 +116,7 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 
 	// Timeouts
 	connectTimeout := DefaultConnectTimeout
-	if val, ok := config.Options["connect_timeout"].(string); ok {
+	if val := c.GetStringOption("connect_timeout", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			connectTimeout = duration
 		}
@@ -94,21 +124,21 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 	clientOpts.SetConnectTimeout(connectTimeout)
 
 	// Socket timeout
-	if val, ok := config.Options["socket_timeout"].(string); ok {
+	if val := c.GetStringOption("socket_timeout", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			clientOpts.SetSocketTimeout(duration)
 		}
 	}
 
 	// Server selection timeout
-	if val, ok := config.Options["server_selection_timeout"].(string); ok {
+	if val := c.GetStringOption("server_selection_timeout", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			clientOpts.SetServerSelectionTimeout(duration)
 		}
 	}
 
 	// Read preference
-	if rp, ok := config.Options["read_preference"].(string); ok {
+	if rp := c.GetStringOption("read_preference", ""); rp != "" {
 		switch strings.ToLower(rp) {
 		case "primary":
 			clientOpts.SetReadPreference(readpref.Primary())
@@ -125,7 +155,7 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 
 	// App name for monitoring
 	appName := "AxonFlow-MongoDB-Connector"
-	if name, ok := config.Options["app_name"].(string); ok {
+	if name := c.GetStringOption("app_name", ""); name != "" {
 		appName = name
 	}
 	clientOpts.SetAppName(appName)
@@ -155,7 +185,7 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 	c.client = client
 
 	// Set database
-	if dbName, ok := config.Options["database"].(string); ok {
+	if dbName := c.GetStringOption("database", ""); dbName != "" {
 		c.dbName = dbName
 		c.database = client.Database(dbName)
 	} else {
@@ -163,11 +193,13 @@ func (c *MongoDBConnector) Connect(ctx context.Context, config *base.ConnectorCo
 	}
 
 	// Set default collection (optional)
-	if collection, ok := config.Options["collection"].(string); ok {
+	if collection := c.GetStringOption("collection", ""); collection != "" {
 		c.collection = collection
 	}
 
-	c.logger.Printf("Connected to MongoDB: %s (database=%s, max_pool=%d)",
+	c.GetMetrics().RecordConnect()
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to MongoDB: %s (database=%s, max_pool=%d)",
 		config.Name, c.dbName, maxPoolSize)
 
 	return nil
@@ -254,8 +286,9 @@ func (c *MongoDBConnector) Disconnect(ctx context.Context) error {
 		return base.NewConnectorError(c.Name(), "Disconnect", "failed to disconnect", err)
 	}
 
-	c.logger.Printf("Disconnected from MongoDB: %s", c.Name())
-	return nil
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from MongoDB: %s", c.Name())
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the MongoDB connection is healthy
@@ -319,11 +352,8 @@ func (c *MongoDBConnector) Query(ctx context.Context, query *base.Query) (*base.
 
 	// Apply timeout
 	timeout := query.Timeout
-	if timeout == 0 && c.config != nil {
-		timeout = c.config.Timeout
-	}
 	if timeout == 0 {
-		timeout = DefaultTimeout
+		timeout = c.GetTimeout()
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -360,7 +390,7 @@ func (c *MongoDBConnector) Query(ctx context.Context, query *base.Query) (*base.
 
 	duration := time.Since(start)
 
-	c.logger.Printf("Query executed (%s.%s): %d results in %v",
+	c.Log("Query executed (%s.%s): %d results in %v",
 		operation, collectionName, len(results), duration)
 
 	return &base.QueryResult{
@@ -380,11 +410,8 @@ func (c *MongoDBConnector) Execute(ctx context.Context, cmd *base.Command) (*bas
 
 	// Apply timeout
 	timeout := cmd.Timeout
-	if timeout == 0 && c.config != nil {
-		timeout = c.config.Timeout
-	}
 	if timeout == 0 {
-		timeout = DefaultTimeout
+		timeout = c.GetTimeout()
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -424,7 +451,7 @@ func (c *MongoDBConnector) Execute(ctx context.Context, cmd *base.Command) (*bas
 		return nil, base.NewConnectorError(c.Name(), "Execute", "command execution failed", err)
 	}
 
-	c.logger.Printf("Command executed (%s.%s): %d affected in %v",
+	c.Log("Command executed (%s.%s): %d affected in %v",
 		cmd.Action, collectionName, rowsAffected, duration)
 
 	return &base.CommandResult{
@@ -436,34 +463,13 @@ func (c *MongoDBConnector) Execute(ctx context.Context, cmd *base.Command) (*bas
 	}, nil
 }
 
-// Name returns the connector name
+// Name returns the connector name.
+// Preserves legacy behavior used by tests and callers that set c.config directly.
 func (c *MongoDBConnector) Name() string {
 	if c.config == nil {
 		return "mongodb"
 	}
 	return c.config.Name
-}
-
-// Type returns the connector type
-func (c *MongoDBConnector) Type() string {
-	return "mongodb"
-}
-
-// Version returns the connector version
-func (c *MongoDBConnector) Version() string {
-	return "1.0.0"
-}
-
-// Capabilities returns the list of supported capabilities
-func (c *MongoDBConnector) Capabilities() []string {
-	return []string{
-		"query",
-		"execute",
-		"aggregation",
-		"connection_pooling",
-		"transactions",
-		"change_streams",
-	}
 }
 
 // parseStatement extracts operation and collection from statement

@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -26,19 +27,31 @@ var ErrEnterpriseFeature = errors.New("slack connector is an enterprise feature 
 // SlackConnector is the Community stub for the Slack messaging connector.
 // The full implementation is available in the enterprise edition.
 type SlackConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewSlackConnector creates a new Slack connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewSlackConnector() *SlackConnector {
-	return &SlackConnector{}
+	conn := &SlackConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("slack")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to Slack API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *SlackConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("slack", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "slack"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
 	return base.NewConnectorError(config.Name, "Connect", "slack connector requires enterprise license", ErrEnterpriseFeature)
 }
 
@@ -75,20 +88,4 @@ func (c *SlackConnector) Name() string {
 		return c.config.Name
 	}
 	return "slack"
-}
-
-// Type returns the connector type.
-func (c *SlackConnector) Type() string {
-	return "slack"
-}
-
-// Version returns the connector version.
-func (c *SlackConnector) Version() string {
-	return "community-stub"
-}
-
-// Capabilities returns the list of capabilities.
-// Community stub: Returns empty list (no capabilities in Community mode).
-func (c *SlackConnector) Capabilities() []string {
-	return []string{}
 }

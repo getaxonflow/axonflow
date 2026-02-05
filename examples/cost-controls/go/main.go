@@ -128,7 +128,7 @@ func main() {
 		fmt.Printf("   ERROR: %v\n\n", err)
 		assertCheck(false, "GetBudgetStatus succeeded")
 	} else {
-		assertCheck(status.Budget != nil, "BudgetStatus includes budget details")
+		assertCheck(status.Budget.ID != "", "BudgetStatus includes budget details")
 		assertCheck(status.Percentage >= 0, "BudgetStatus percentage is valid")
 		fmt.Printf("   Used: $%.2f / $%.2f (%.1f%%)\n", status.UsedUSD, status.Budget.LimitUSD, status.Percentage)
 		fmt.Printf("   Remaining: $%.2f\n", status.RemainingUSD)

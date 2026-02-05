@@ -10,6 +10,13 @@ AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-audit-logging-demo}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-audit-user}"
+
+AUTH_HEADER=()
+if [ -n "$CLIENT_SECRET" ]; then
+    AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
+    AUTH_HEADER=(-H "Authorization: Basic $AUTH_B64")
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,11 +63,12 @@ PRECHECK_START=$(get_ms)
 
 PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
+    "${AUTH_HEADER[@]}" \
     -H "X-Client-ID: $CLIENT_ID" \
     -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
         \"query\": \"$QUERY\",
-        \"user_token\": \"audit-user\",
+        \"user_token\": \"$USER_TOKEN\",
         \"client_id\": \"$CLIENT_ID\"
     }")
 
@@ -105,6 +113,7 @@ AUDIT_START=$(get_ms)
 
 AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
     -H "Content-Type: application/json" \
+    "${AUTH_HEADER[@]}" \
     -H "X-Client-ID: $CLIENT_ID" \
     -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
@@ -159,18 +168,30 @@ echo ""
 echo -e "${YELLOW}GET /api/v1/audit/tenant/$CLIENT_ID${NC}"
 echo ""
 
-AUDIT_LOGS=$(curl -s "$ORCHESTRATOR_URL/api/v1/audit/tenant/$CLIENT_ID" \
+AUDIT_LOGS=$(curl -s "${AUTH_HEADER[@]}" "$ORCHESTRATOR_URL/api/v1/audit/tenant/$CLIENT_ID" \
     -H "X-Client-ID: $CLIENT_ID" \
     -H "X-Client-Secret: $CLIENT_SECRET")
 
-LOG_COUNT=$(echo "$AUDIT_LOGS" | jq -r 'if type == "array" then length else 0 end')
+LOG_COUNT=$(echo "$AUDIT_LOGS" | jq -r '
+    if type == "array" then length
+    elif has("entries") and (.entries | type) == "array" then (.entries | length)
+    else 0
+    end
+')
 
 echo "   Found $LOG_COUNT audit log entries"
 echo ""
 
 if [ "$LOG_COUNT" -gt 0 ]; then
     echo "   Latest entries:"
-    echo "$AUDIT_LOGS" | jq -r '.[:3][] | "   - \(.timestamp // "N/A"): \(.provider // "N/A")/\(.model // "N/A") - \(.token_usage.total_tokens // 0) tokens"' 2>/dev/null || echo "   (No entries to display)"
+    echo "$AUDIT_LOGS" | jq -r '
+        if type == "array" then .[:3]
+        elif has("entries") and (.entries | type) == "array" then .entries[:3]
+        else []
+        end
+        | .[]
+        | "   - \(.timestamp // \"N/A\"): \(.provider // \"N/A\")/\(.model // \"N/A\") - \(.token_usage.total_tokens // 0) tokens"
+    ' 2>/dev/null || echo "   (No entries to display)"
 fi
 echo ""
 
@@ -180,6 +201,7 @@ echo ""
 
 SEARCH_RESPONSE=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/audit/search" \
     -H "Content-Type: application/json" \
+    "${AUTH_HEADER[@]}" \
     -H "X-Client-ID: $CLIENT_ID" \
     -H "X-Client-Secret: $CLIENT_SECRET" \
     -d "{
@@ -187,7 +209,12 @@ SEARCH_RESPONSE=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/audit/search" \
         \"limit\": 5
     }")
 
-SEARCH_COUNT=$(echo "$SEARCH_RESPONSE" | jq -r 'if type == "array" then length else 0 end')
+SEARCH_COUNT=$(echo "$SEARCH_RESPONSE" | jq -r '
+    if type == "array" then length
+    elif has("entries") and (.entries | type) == "array" then (.entries | length)
+    else 0
+    end
+')
 echo "   Search returned $SEARCH_COUNT entries"
 echo ""
 

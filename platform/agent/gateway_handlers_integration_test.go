@@ -21,17 +21,40 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/lib/pq"
 )
 
+// getTestDB returns a database connection for integration tests.
+// Uses DATABASE_URL if set, otherwise starts a testcontainers PostgreSQL instance.
+func getTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	// If DATABASE_URL is set, use it directly
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to connect to database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Database ping failed: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+
+	// Otherwise, use testcontainers
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	return pg.DB
+}
+
 // TestGatewayPreCheckIntegration tests the full pre-check flow with a real database
 func TestGatewayPreCheckIntegration(t *testing.T) {
-	// Skip if DATABASE_URL not provided
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping integration test")
-	}
+	// Get database connection (uses testcontainers if DATABASE_URL not set)
+	db := getTestDB(t)
 
 	// Enable community mode for testing (no license validation)
 	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
@@ -44,25 +67,13 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 	}()
 
-	// Connect to database
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer db.Close()
-
-	// Test database connection
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Database ping failed: %v", err)
-	}
-
 	// Set global authDB for handlers (save/restore to avoid leaking state)
 	originalAuthDB := authDB
 	authDB = db
 	defer func() { authDB = originalAuthDB }()
 
 	// Run migration for gateway tables if not exists
-	_, err = db.Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS gateway_contexts (
 			context_id VARCHAR(36) PRIMARY KEY,
 			client_id VARCHAR(255) NOT NULL,
@@ -253,11 +264,8 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 
 // TestGatewayPreCheckIntegration_EnterpriseMode tests pre-check flow with JWT authentication in enterprise mode
 func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
-	// Skip if DATABASE_URL not provided
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping integration test")
-	}
+	// Get database connection (uses testcontainers if DATABASE_URL not set)
+	db := getTestDB(t)
 
 	// Set enterprise mode with a known JWT secret
 	originalDeploymentMode := os.Getenv("DEPLOYMENT_MODE")
@@ -273,24 +281,13 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 		jwtSecret = originalJWTSecret
 	}()
 
-	// Connect to database
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Database ping failed: %v", err)
-	}
-
 	// Set global authDB for handlers (save/restore to avoid leaking state)
 	originalAuthDB := authDB
 	authDB = db
 	defer func() { authDB = originalAuthDB }()
 
 	// Run migration for gateway tables if not exists
-	_, err = db.Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS gateway_contexts (
 			context_id VARCHAR(36) PRIMARY KEY,
 			client_id VARCHAR(255) NOT NULL,

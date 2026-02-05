@@ -10,15 +10,32 @@ import (
 	"regexp"
 	"testing"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // TestSingaporePIIIntegration tests Singapore PII detection with real database
-// when DATABASE_URL is available, otherwise runs unit tests with mock engine.
+// Uses testcontainers if DATABASE_URL is not set.
 func TestSingaporePIIIntegration(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping integration test")
+	var db *sql.DB
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		var err error
+		db, err = sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to connect to database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Database ping failed: %v", err)
+		}
+	} else {
+		testutil.SkipIfNoDocker(t)
+		pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+		pg.RunMigration(t, testutil.StaticPoliciesSchema())
+		pg.RunMigration(t, testutil.SingaporePIISeedData())
+		db = pg.DB
 	}
 
 	// Enable community mode for testing
@@ -31,17 +48,6 @@ func TestSingaporePIIIntegration(t *testing.T) {
 			os.Unsetenv("DEPLOYMENT_MODE")
 		}
 	}()
-
-	// Connect to database
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Database ping failed: %v", err)
-	}
 
 	// Verify Singapore PII policies exist in database
 	t.Run("Singapore PII policies seeded", func(t *testing.T) {

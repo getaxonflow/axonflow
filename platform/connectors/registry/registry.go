@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/config"
 )
 
 // ConnectorFactory creates a connector instance based on type
@@ -47,12 +48,32 @@ func NewRegistry() *Registry {
 	}
 }
 
+// RegistryOption configures a registry during creation.
+type RegistryOption func(*registryOptions)
+
+type registryOptions struct {
+	encryptor *config.CredentialEncryptor
+}
+
+// WithEncryptor sets a credential encryptor for the registry's storage layer.
+func WithEncryptor(enc *config.CredentialEncryptor) RegistryOption {
+	return func(o *registryOptions) {
+		o.encryptor = enc
+	}
+}
+
 // NewRegistryWithStorage creates a new connector registry with PostgreSQL persistence
-func NewRegistryWithStorage(dbURL string) (*Registry, error) {
+func NewRegistryWithStorage(dbURL string, opts ...RegistryOption) (*Registry, error) {
+	var o registryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	storage, err := NewPostgreSQLStorage(dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
+	storage.encryptor = o.encryptor
 
 	registry := &Registry{
 		connectors: make(map[string]base.Connector),

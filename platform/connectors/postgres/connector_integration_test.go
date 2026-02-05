@@ -10,17 +10,20 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/testutil"
 )
 
 // Integration tests for PostgresConnector
-// These tests require DATABASE_URL to be set
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDBURL(t *testing.T) string {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	t.Helper()
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		return dbURL
 	}
-	return dbURL
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	return pg.URL
 }
 
 func TestPostgresConnector_Integration_Connect(t *testing.T) {

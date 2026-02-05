@@ -10,17 +10,21 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/testutil"
 )
 
 // Integration tests for PostgreSQLStorage
-// These tests require DATABASE_URL to be set
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDBURL(t *testing.T) string {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	t.Helper()
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		return dbURL
 	}
-	return dbURL
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, testutil.ConnectorRegistrySchema())
+	return pg.URL
 }
 
 func TestPostgreSQLStorage_Integration_NewAndClose(t *testing.T) {

@@ -258,6 +258,88 @@ func (r *Registry) Disable(name string) error {
 	return nil
 }
 
+// Update atomically replaces a provider's configuration.
+// The old provider instance is removed and will be re-instantiated lazily on next use.
+// This is atomic — there is no window where the provider is missing from the registry.
+func (r *Registry) Update(ctx context.Context, config *ProviderConfig) error {
+	if config == nil {
+		return &RegistryError{Code: ErrRegistryInvalidConfig, Message: "config cannot be nil"}
+	}
+	if config.Name == "" {
+		return &RegistryError{Code: ErrRegistryInvalidConfig, Message: "provider name is required"}
+	}
+
+	// Validate the new config
+	if err := ValidateConfig(*config); err != nil {
+		return &RegistryError{
+			ProviderName: config.Name,
+			Code:         ErrRegistryInvalidConfig,
+			Message:      fmt.Sprintf("invalid configuration: %v", err),
+			Cause:        err,
+		}
+	}
+
+	// Check license allows this provider type
+	if !r.validator.IsProviderAllowed(ctx, config.Type) {
+		requiredTier := GetTierForProvider(config.Type)
+		currentTier := r.validator.GetCurrentTier(ctx)
+		return &RegistryError{
+			ProviderName: config.Name,
+			Code:         ErrRegistryLicenseRequired,
+			Message: fmt.Sprintf("provider type %q requires %s license (current: %s) - upgrade at https://getaxonflow.com/enterprise",
+				config.Type, requiredTier, currentTier),
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Verify provider exists
+	if _, exists := r.configs[config.Name]; !exists {
+		if _, exists := r.providers[config.Name]; !exists {
+			return &RegistryError{
+				ProviderName: config.Name,
+				Code:         ErrRegistryNotFound,
+				Message:      fmt.Sprintf("provider %q not found", config.Name),
+			}
+		}
+	}
+
+	// Save old state for rollback
+	oldConfig := r.configs[config.Name]
+	oldProvider := r.providers[config.Name]
+
+	// Atomically replace: remove old instance, store new config
+	delete(r.providers, config.Name)
+	configCopy := *config
+	r.configs[config.Name] = &configCopy
+
+	// Persist to storage if available — rollback in-memory on failure
+	if r.storage != nil {
+		if err := r.storage.SaveProvider(ctx, &configCopy); err != nil {
+			// Rollback in-memory change to maintain consistency with storage
+			r.configs[config.Name] = oldConfig
+			if oldProvider != nil {
+				r.providers[config.Name] = oldProvider
+			}
+			return &RegistryError{
+				ProviderName: config.Name,
+				Code:         ErrRegistryStorageError,
+				Message:      fmt.Sprintf("failed to persist updated provider %s: %v", config.Name, err),
+				Cause:        err,
+			}
+		}
+	}
+
+	// Clear stale health result
+	r.healthMu.Lock()
+	delete(r.healthResults, config.Name)
+	r.healthMu.Unlock()
+
+	r.logger.Printf("Updated provider: %s (type: %s)", config.Name, config.Type)
+	return nil
+}
+
 // Unregister removes a provider from the registry.
 func (r *Registry) Unregister(ctx context.Context, name string) error {
 	r.mu.Lock()

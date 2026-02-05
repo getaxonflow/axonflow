@@ -84,6 +84,11 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	log.Printf("[MCPRouter] Routing query to agent - connector: %s, query: %s, user: %s",
 		connector, req.Query, req.User.Email)
 
+	tenantID := req.User.TenantID
+	if tenantID == "" {
+		tenantID = req.Client.TenantID
+	}
+
 	// Build agent MCP request
 	// Format matches platform/agent/mcp_handler.go:228-242 (MCPQueryRequest)
 	// Use internal service credentials for orchestrator-to-agent authentication.
@@ -92,6 +97,7 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	agentReq := map[string]interface{}{
 		"client_id":  serviceauth.ClientID,
 		"user_token": serviceauth.GetInternalServiceToken(internalTokenGenerator),
+		"tenant_id":  tenantID,
 		"connector":  connector,
 		"statement":  req.Query, // e.g., "search_flights", "search_hotels"
 		"parameters": params,
