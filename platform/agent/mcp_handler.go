@@ -30,8 +30,6 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
-	"axonflow/platform/shared/serviceauth"
-	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
@@ -51,6 +49,8 @@ import (
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // Global MCP connector registry
@@ -345,6 +345,23 @@ func GetRuntimeConfigService() *config.RuntimeConfigService {
 	return runtimeConfigService
 }
 
+// validateTenantConnectorAccess checks tenant access using runtime configuration when available.
+// Falls back to static registry for backward compatibility.
+func validateTenantConnectorAccess(ctx context.Context, connectorName, tenantID string) error {
+	if runtimeConfigService != nil {
+		if _, _, err := runtimeConfigService.GetConnectorConfig(ctx, tenantID, connectorName); err != nil {
+			log.Printf("[MCP] Runtime connector access check failed for %q (tenant: %s): %v; falling back to static registry validation",
+				connectorName, tenantID, err)
+		} else {
+			return nil
+		}
+	}
+	if mcpRegistry == nil {
+		return fmt.Errorf("MCP registry not initialized")
+	}
+	return mcpRegistry.ValidateTenantAccess(connectorName, tenantID)
+}
+
 // GetConnectorForTenant retrieves a connector for a specific tenant.
 // It uses the TenantConnectorRegistry for dynamic loading (ADR-007 compliant).
 // Falls back to the static registry if TenantConnectorRegistry is not initialized.
@@ -589,6 +606,7 @@ type MCPQueryRequest struct {
 	ClientID   string                 `json:"client_id"`   // Required for authentication
 	LicenseKey string                 `json:"license_key"` // Service license key for permission validation
 	UserToken  string                 `json:"user_token"`  // Required for authentication
+	TenantID   string                 `json:"tenant_id"`   // Tenant for internal service requests
 	Connector  string                 `json:"connector"`   // Connector name
 	Operation  string                 `json:"operation"`   // Operation name (e.g., "search_flights", "query")
 	Statement  string                 `json:"statement"`   // SQL/CQL statement
@@ -660,10 +678,14 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		// Uses HMAC-signed tokens if AXONFLOW_INTERNAL_SERVICE_SECRET is configured,
 		// with backward compatibility for legacy plain-secret tokens.
 		log.Printf("[MCP] Internal orchestrator request - bypassing client and user token validation")
+		tenantID := req.TenantID
+		if tenantID == "" {
+			tenantID = req.ClientID
+		}
 		client = &Client{
 			ID:          serviceauth.ClientID,
 			Name:        "Orchestrator Internal",
-			TenantID:    "", // Internal service has no tenant restriction
+			TenantID:    tenantID,
 			Permissions: []string{"query", "execute", "mcp"},
 			RateLimit:   0, // No rate limit for internal service
 			Enabled:     true,
@@ -672,7 +694,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			ID:          0,
 			Email:       "orchestrator@axonflow.internal",
 			Name:        "Orchestrator Internal",
-			TenantID:    "", // Internal service has no tenant restriction
+			TenantID:    tenantID,
 			Role:        "service",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
@@ -719,7 +741,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	// 3. Validate tenant has access to connector (only for non-service licenses)
 	// V2 service licenses already validated permissions via EvaluateMCPPermission above
 	if !servicePermissionGranted {
-		if err := mcpRegistry.ValidateTenantAccess(req.Connector, user.TenantID); err != nil {
+		if err := validateTenantConnectorAccess(ctx, req.Connector, user.TenantID); err != nil {
 			sendErrorResponse(w, "Unauthorized connector access", http.StatusForbidden, nil)
 			return
 		}
@@ -1029,6 +1051,7 @@ type MCPExecuteRequest struct {
 	ClientID   string                 `json:"client_id"`   // Required for authentication
 	LicenseKey string                 `json:"license_key"` // Service license key for permission validation
 	UserToken  string                 `json:"user_token"`  // Required for authentication
+	TenantID   string                 `json:"tenant_id"`   // Tenant for internal service requests
 	Connector  string                 `json:"connector"`   // Connector name
 	Operation  string                 `json:"operation"`   // Operation name (e.g., "insert", "update", "delete")
 	Action     string                 `json:"action"`      // Action type (INSERT, UPDATE, DELETE)
@@ -1104,10 +1127,14 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
 		log.Printf("[MCP Execute] Internal orchestrator request - bypassing client and user token validation")
+		tenantID := req.TenantID
+		if tenantID == "" {
+			tenantID = req.ClientID
+		}
 		client = &Client{
 			ID:          serviceauth.ClientID,
 			Name:        "Orchestrator Internal",
-			TenantID:    "",
+			TenantID:    tenantID,
 			Permissions: []string{"query", "execute", "mcp"},
 			RateLimit:   0,
 			Enabled:     true,
@@ -1116,7 +1143,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			ID:          0,
 			Email:       "orchestrator@axonflow.internal",
 			Name:        "Orchestrator Internal",
-			TenantID:    "",
+			TenantID:    tenantID,
 			Role:        "service",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
@@ -1156,7 +1183,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	// Validate tenant has access to connector (only for non-service licenses)
 	// V2 service licenses already validated permissions via EvaluateMCPPermission above
 	if !servicePermissionGranted {
-		if err := mcpRegistry.ValidateTenantAccess(req.Connector, user.TenantID); err != nil {
+		if err := validateTenantConnectorAccess(ctx, req.Connector, user.TenantID); err != nil {
 			sendErrorResponse(w, "Unauthorized connector access", http.StatusForbidden, nil)
 			return
 		}

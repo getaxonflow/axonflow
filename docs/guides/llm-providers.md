@@ -1174,6 +1174,36 @@ curl -X PUT http://localhost:8080/api/v1/llm-providers/routing \
 
 See [LLM Provider Architecture](../reference/llm-architecture.md#rest-api-reference) for full API documentation.
 
+### Provider Pinning (Advanced)
+
+By default, request-level provider selection is a **preference**:
+
+- `context.provider` selects a preferred provider.
+- If that provider fails, normal failover rules can select another healthy provider.
+
+For compliance-sensitive or deterministic routing, strict pinning is available:
+
+- `context.strict_provider: true` enforces hard pinning for that request.
+- With strict pinning, the selected provider must succeed or the request fails (no fallback).
+- Server default can be set with `LLM_STRICT_PROVIDER_DEFAULT=true`; request-level flag still takes precedence.
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Summarize this report",
+    "request_type": "chat",
+    "context": {
+      "provider": "openai",
+      "strict_provider": true
+    },
+    "user": {"email":"analyst@example.com","role":"analyst"},
+    "client": {"id":"analytics-app","tenant_id":"tenant-1"}
+  }'
+```
+
 ### Customer Portal (Enterprise)
 
 Enterprise customers can manage LLM providers through the Customer Portal UI:

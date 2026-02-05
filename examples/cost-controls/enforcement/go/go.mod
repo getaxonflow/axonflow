@@ -2,7 +2,4 @@ module cost-controls-enforcement
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v3 v3.0.0
-
-// For local development, use:
-
+require github.com/getaxonflow/axonflow-sdk-go/v3 v3.2.0

@@ -42,6 +42,10 @@ type RequestContext struct {
 	// Provider is the explicitly requested provider name (if any)
 	Provider string
 
+	// StrictProvider enforces hard pinning when Provider is set.
+	// When true, failover is disabled and the requested provider must succeed.
+	StrictProvider bool
+
 	// Model is the explicitly requested model (if any)
 	Model string
 

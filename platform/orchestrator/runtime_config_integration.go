@@ -20,16 +20,18 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/config"
+	"axonflow/platform/orchestrator/llm"
 )
 
 // LLM Provider name constants for validation and consistency.
 // Use these constants instead of magic strings when referencing providers.
 const (
-	ProviderOpenAI    = "openai"
-	ProviderAnthropic = "anthropic"
-	ProviderBedrock   = "bedrock"
-	ProviderOllama    = "ollama"
-	ProviderGemini    = "gemini"
+	ProviderOpenAI      = "openai"
+	ProviderAnthropic   = "anthropic"
+	ProviderBedrock     = "bedrock"
+	ProviderOllama      = "ollama"
+	ProviderGemini      = "gemini"
+	ProviderAzureOpenAI = "azure-openai"
 )
 
 // ValidLLMProviders is the list of supported LLM provider names.
@@ -39,6 +41,7 @@ var ValidLLMProviders = []string{
 	ProviderBedrock,
 	ProviderOllama,
 	ProviderGemini,
+	ProviderAzureOpenAI,
 }
 
 // isValidLLMProvider checks if the given provider name is valid.
@@ -97,6 +100,106 @@ func GetRuntimeConfigService() *config.RuntimeConfigService {
 	runtimeConfigMu.RLock()
 	defer runtimeConfigMu.RUnlock()
 	return runtimeConfigService
+}
+
+func setEnvOrUnset(key, value string) {
+	if value == "" {
+		_ = os.Unsetenv(key)
+		return
+	}
+	_ = os.Setenv(key, value)
+}
+
+// LLMConfigToProviderConfigs converts LLMRouterConfig to provider configs
+// for direct bootstrap, bypassing goroutine-unsafe os.Setenv calls.
+func LLMConfigToProviderConfigs(cfg LLMRouterConfig) []*llm.ProviderConfig {
+	var configs []*llm.ProviderConfig
+
+	if cfg.OpenAIKey != "" {
+		configs = append(configs, &llm.ProviderConfig{
+			Name:    "openai",
+			Type:    llm.ProviderTypeOpenAI,
+			APIKey:  cfg.OpenAIKey,
+			Enabled: true,
+		})
+	}
+	if cfg.AnthropicKey != "" {
+		configs = append(configs, &llm.ProviderConfig{
+			Name:    "anthropic",
+			Type:    llm.ProviderTypeAnthropic,
+			APIKey:  cfg.AnthropicKey,
+			Enabled: true,
+		})
+	}
+	if cfg.GeminiKey != "" {
+		c := &llm.ProviderConfig{
+			Name:    "gemini",
+			Type:    llm.ProviderTypeGemini,
+			APIKey:  cfg.GeminiKey,
+			Enabled: true,
+		}
+		if cfg.GeminiModel != "" {
+			c.Model = cfg.GeminiModel
+		}
+		configs = append(configs, c)
+	}
+	if cfg.OllamaEndpoint != "" {
+		c := &llm.ProviderConfig{
+			Name:     "ollama",
+			Type:     llm.ProviderTypeOllama,
+			Endpoint: cfg.OllamaEndpoint,
+			Enabled:  true,
+		}
+		if cfg.OllamaModel != "" {
+			c.Model = cfg.OllamaModel
+		}
+		configs = append(configs, c)
+	}
+	if cfg.AzureOpenAIEndpoint != "" && cfg.AzureOpenAIAPIKey != "" && cfg.AzureOpenAIDeploymentName != "" {
+		c := &llm.ProviderConfig{
+			Name:     "azure-openai",
+			Type:     llm.ProviderTypeAzureOpenAI,
+			Endpoint: cfg.AzureOpenAIEndpoint,
+			APIKey:   cfg.AzureOpenAIAPIKey,
+			Model:    cfg.AzureOpenAIDeploymentName,
+			Enabled:  true,
+			Settings: make(map[string]any),
+		}
+		if cfg.AzureOpenAIAPIVersion != "" {
+			c.Settings["api_version"] = cfg.AzureOpenAIAPIVersion
+		}
+		configs = append(configs, c)
+	}
+	if cfg.BedrockRegion != "" && cfg.BedrockModel != "" {
+		configs = append(configs, &llm.ProviderConfig{
+			Name:    "bedrock",
+			Type:    llm.ProviderTypeBedrock,
+			Region:  cfg.BedrockRegion,
+			Model:   cfg.BedrockModel,
+			Enabled: true,
+		})
+	}
+
+	return configs
+}
+
+// ApplyLLMConfigToEnv projects RuntimeConfigService output into bootstrap env vars.
+//
+// DEPRECATED: Use LLMConfigToProviderConfigs with BootstrapConfig.ProviderConfigs instead.
+// This function uses goroutine-unsafe os.Setenv and leaks credentials to child processes.
+func ApplyLLMConfigToEnv(cfg LLMRouterConfig) {
+	setEnvOrUnset("OPENAI_API_KEY", cfg.OpenAIKey)
+	setEnvOrUnset("ANTHROPIC_API_KEY", cfg.AnthropicKey)
+	setEnvOrUnset("GOOGLE_API_KEY", cfg.GeminiKey)
+	setEnvOrUnset("GOOGLE_MODEL", cfg.GeminiModel)
+	setEnvOrUnset("BEDROCK_REGION", cfg.BedrockRegion)
+	setEnvOrUnset("BEDROCK_MODEL", cfg.BedrockModel)
+	setEnvOrUnset("OLLAMA_ENDPOINT", cfg.OllamaEndpoint)
+	setEnvOrUnset("OLLAMA_MODEL", cfg.OllamaModel)
+	setEnvOrUnset("AZURE_OPENAI_ENDPOINT", cfg.AzureOpenAIEndpoint)
+	setEnvOrUnset("AZURE_OPENAI_API_KEY", cfg.AzureOpenAIAPIKey)
+	setEnvOrUnset("AZURE_OPENAI_DEPLOYMENT_NAME", cfg.AzureOpenAIDeploymentName)
+	setEnvOrUnset("AZURE_OPENAI_API_VERSION", cfg.AzureOpenAIAPIVersion)
 }
 
 // LoadLLMConfigFromService loads LLM configuration from the RuntimeConfigService.
@@ -193,6 +296,35 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 				}
 				log.Printf("[LLM Config] Gemini provider loaded from %s", source)
 			}
+		case ProviderAzureOpenAI:
+			endpoint, hasEndpoint := providerConfig["endpoint"].(string)
+			deployment, hasDeployment := providerConfig["deployment_name"].(string)
+			if deployment == "" {
+				if altDeployment, ok := providerConfig["deployment"].(string); ok {
+					deployment = altDeployment
+					hasDeployment = altDeployment != ""
+				}
+			}
+
+			apiKey := credentials["api_key"]
+			if apiKey == "" {
+				apiKey = credentials["azure_openai_api_key"]
+			}
+
+			if hasEndpoint && endpoint != "" && hasDeployment && deployment != "" && apiKey != "" {
+				routerConfig.AzureOpenAIEndpoint = endpoint
+				routerConfig.AzureOpenAIAPIKey = apiKey
+				routerConfig.AzureOpenAIDeploymentName = deployment
+				if apiVersion, ok := providerConfig["api_version"].(string); ok && apiVersion != "" {
+					routerConfig.AzureOpenAIAPIVersion = apiVersion
+				}
+				log.Printf("[LLM Config] Azure OpenAI provider loaded from %s (endpoint: %s, deployment: %s)",
+					source, endpoint, deployment)
+			} else {
+				log.Printf("[LLM Config] WARNING: Azure OpenAI provider requires endpoint, deployment_name, and api_key. "+
+					"Got endpoint=%q deployment_name=%q api_key_set=%v - provider disabled",
+					endpoint, deployment, apiKey != "")
+			}
 		}
 	}
 
@@ -212,6 +344,9 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 	}
 	if routerConfig.GeminiKey != "" {
 		providers = append(providers, ProviderGemini)
+	}
+	if routerConfig.AzureOpenAIEndpoint != "" {
+		providers = append(providers, ProviderAzureOpenAI)
 	}
 
 	if len(providers) == 0 {
@@ -256,7 +391,6 @@ func RefreshLLMConfig(ctx context.Context, tenantID string) error {
 
 	return nil
 }
-
 
 // SetConfigFileLoaderFromEnv initializes a config file loader from environment variables.
 // This completes the ADR-007 three-tier configuration: Database > Config File > Env Vars

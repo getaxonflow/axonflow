@@ -19,16 +19,15 @@ import (
 	"strings"
 	"testing"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // TestEnsureSchemaMigrationsTable_UpgradeOldSchema tests upgrading from old schema to new
 func TestEnsureSchemaMigrationsTable_UpgradeOldSchema(t *testing.T) {
-	// Skip if no test database available
-	dbURL := getTestDatabaseURL()
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
-	}
+	// Get test database URL (uses testcontainers if not set)
+	dbURL := getTestDatabaseURLWithContainer(t)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -129,11 +128,8 @@ func TestEnsureSchemaMigrationsTable_UpgradeOldSchema(t *testing.T) {
 
 // TestEnsureSchemaMigrationsTable_NewSchema tests creating new schema from scratch
 func TestEnsureSchemaMigrationsTable_NewSchema(t *testing.T) {
-	// Skip if no test database available
-	dbURL := getTestDatabaseURL()
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
-	}
+	// Get test database URL (uses testcontainers if not set)
+	dbURL := getTestDatabaseURLWithContainer(t)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -183,11 +179,8 @@ func TestEnsureSchemaMigrationsTable_NewSchema(t *testing.T) {
 
 // TestEnsureSchemaMigrationsTable_AlreadyUpgraded tests idempotency when schema is already new
 func TestEnsureSchemaMigrationsTable_AlreadyUpgraded(t *testing.T) {
-	// Skip if no test database available
-	dbURL := getTestDatabaseURL()
-	if dbURL == "" {
-		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
-	}
+	// Get test database URL (uses testcontainers if not set)
+	dbURL := getTestDatabaseURLWithContainer(t)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -248,6 +241,19 @@ func getTestDatabaseURL() string {
 	}
 	// Fall back to DATABASE_URL if available
 	return getEnvOrDefault("DATABASE_URL", "")
+}
+
+// getTestDatabaseURLWithContainer returns a test database URL, using testcontainers if needed.
+func getTestDatabaseURLWithContainer(t *testing.T) string {
+	t.Helper()
+
+	if url := getTestDatabaseURL(); url != "" {
+		return url
+	}
+
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	return pg.URL
 }
 
 // getEnvOrDefault is a helper to get environment variables with defaults

@@ -26,13 +26,15 @@ func main() {
 	fmt.Println()
 
 	// Initialize clients
+	clientID := getEnv("AXONFLOW_CLIENT_ID", "audit-logging-demo")
 	axClient := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
-		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "audit-logging-example"),
+		ClientID:     clientID,
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
 	openaiKey := getEnv("OPENAI_API_KEY", "")
+	userToken := getEnv("AXONFLOW_USER_TOKEN", "audit-user")
 	if openaiKey == "" {
 		fmt.Println("OPENAI_API_KEY not set. Using mock LLM response.")
 	}
@@ -59,7 +61,7 @@ func main() {
 		preCheckStart := time.Now()
 
 		preCheck, err := axClient.GetPolicyApprovedContext(
-			"audit-user",
+			userToken,
 			q.query,
 			nil,
 			map[string]interface{}{"example": "audit-logging"},
@@ -178,7 +180,7 @@ func main() {
 
 	// Get audit logs for tenant (default pagination)
 	fmt.Println("1. GetAuditLogsByTenant (default options):")
-	tenantLogs, err := axClient.GetAuditLogsByTenant(ctx, "audit-logging-demo", nil)
+	tenantLogs, err := axClient.GetAuditLogsByTenant(ctx, clientID, nil)
 	if err != nil {
 		fmt.Printf("   Error: %v\n", err)
 	} else {
@@ -194,7 +196,7 @@ func main() {
 
 	// Get audit logs with custom pagination
 	fmt.Println("2. GetAuditLogsByTenant (limit=5, offset=0):")
-	paginatedLogs, err := axClient.GetAuditLogsByTenant(ctx, "audit-logging-demo", &axonflow.AuditQueryOptions{
+	paginatedLogs, err := axClient.GetAuditLogsByTenant(ctx, clientID, &axonflow.AuditQueryOptions{
 		Limit:  5,
 		Offset: 0,
 	})
@@ -209,7 +211,7 @@ func main() {
 	// Search audit logs with filters
 	fmt.Println("3. SearchAuditLogs (with filters):")
 	searchResult, err := axClient.SearchAuditLogs(ctx, &axonflow.AuditSearchRequest{
-		ClientID:    "audit-logging-demo",
+		ClientID:    clientID,
 		RequestType: "chat",
 		Limit:       10,
 	})

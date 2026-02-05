@@ -16,17 +16,18 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 	"sort"
 	"time"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // PostgresConnector implements the MCP Connector interface for PostgreSQL
 type PostgresConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 	db     *sql.DB
 	logger *log.Logger
@@ -34,14 +35,44 @@ type PostgresConnector struct {
 
 // NewPostgresConnector creates a new PostgreSQL connector instance
 func NewPostgresConnector() *PostgresConnector {
-	return &PostgresConnector{
-		logger: log.New(os.Stdout, "[MCP_POSTGRES] ", log.LstdFlags),
-	}
+	conn := &PostgresConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("postgres")
+	conn.SetVersion("1.0.0")
+	conn.SetCapabilities([]string{
+		"query",
+		"execute",
+		"transactions",
+		"prepared_statements",
+		"connection_pooling",
+	})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{},
+		map[string]interface{}{
+			"max_open_conns":    25,
+			"max_idle_conns":    5,
+			"conn_max_lifetime": "5m",
+			"timeout_seconds":   30,
+		},
+	))
+	conn.logger = conn.GetLogger()
+	return conn
 }
 
 // Connect establishes a connection to PostgreSQL
 func (c *PostgresConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("postgres", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "postgres"
+	}
+	if config.ConnectionURL == "" {
+		return base.NewConnectorError(config.Name, "Connect", "connection URL is required", nil)
+	}
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Open database connection
 	db, err := sql.Open("postgres", config.ConnectionURL)
@@ -54,13 +85,13 @@ func (c *PostgresConnector) Connect(ctx context.Context, config *base.ConnectorC
 	maxIdleConns := 5
 	connMaxLifetime := 5 * time.Minute
 
-	if val, ok := config.Options["max_open_conns"].(int); ok {
+	if val := c.GetIntOption("max_open_conns", maxOpenConns); val > 0 {
 		maxOpenConns = val
 	}
-	if val, ok := config.Options["max_idle_conns"].(int); ok {
+	if val := c.GetIntOption("max_idle_conns", maxIdleConns); val >= 0 {
 		maxIdleConns = val
 	}
-	if val, ok := config.Options["conn_max_lifetime"].(string); ok {
+	if val := c.GetStringOption("conn_max_lifetime", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			connMaxLifetime = duration
 		}
@@ -76,7 +107,8 @@ func (c *PostgresConnector) Connect(ctx context.Context, config *base.ConnectorC
 	}
 
 	c.db = db
-	c.logger.Printf("Connected to PostgreSQL: %s (max_conns=%d)", config.Name, maxOpenConns)
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to PostgreSQL: %s (max_conns=%d)", config.Name, maxOpenConns)
 
 	return nil
 }
@@ -88,11 +120,12 @@ func (c *PostgresConnector) Disconnect(ctx context.Context) error {
 	}
 
 	if err := c.db.Close(); err != nil {
-		return base.NewConnectorError(c.config.Name, "Disconnect", "failed to close connection", err)
+		return base.NewConnectorError(c.Name(), "Disconnect", "failed to close connection", err)
 	}
 
-	c.logger.Printf("Disconnected from PostgreSQL: %s", c.config.Name)
-	return nil
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from PostgreSQL: %s", c.Name())
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the database connection is healthy
@@ -136,13 +169,13 @@ func (c *PostgresConnector) HealthCheck(ctx context.Context) (*base.HealthStatus
 // Query executes a SELECT query and returns results
 func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	if c.db == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "database not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Query", "database not connected", nil)
 	}
 
 	// Apply timeout
 	timeout := query.Timeout
 	if timeout == 0 {
-		timeout = c.config.Timeout
+		timeout = c.GetTimeout()
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -150,21 +183,21 @@ func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base
 	// Convert parameters map to slice for PostgreSQL positional parameters
 	args, err := c.buildArgs(query.Parameters)
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "failed to build query parameters", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "failed to build query parameters", err)
 	}
 
 	// Execute query
 	start := time.Now()
 	rows, err := c.db.QueryContext(queryCtx, query.Statement, args...)
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "query execution failed", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "query execution failed", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	// Get column names
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "failed to get columns", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "failed to get columns", err)
 	}
 
 	// Scan rows
@@ -184,7 +217,7 @@ func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base
 
 		// Scan row
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return nil, base.NewConnectorError(c.config.Name, "Query", "failed to scan row", err)
+			return nil, base.NewConnectorError(c.Name(), "Query", "failed to scan row", err)
 		}
 
 		// Build result map
@@ -203,32 +236,32 @@ func (c *PostgresConnector) Query(ctx context.Context, query *base.Query) (*base
 
 	// Check for errors during iteration
 	if err := rows.Err(); err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "error during row iteration", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "error during row iteration", err)
 	}
 
 	duration := time.Since(start)
 
-	c.logger.Printf("Query executed: %d rows in %v", len(results), duration)
+	c.Log("Query executed: %d rows in %v", len(results), duration)
 
 	return &base.QueryResult{
 		Rows:      results,
 		RowCount:  len(results),
 		Duration:  duration,
 		Cached:    false,
-		Connector: c.config.Name,
+		Connector: c.Name(),
 	}, nil
 }
 
 // Execute runs INSERT, UPDATE, DELETE, or other write operations
 func (c *PostgresConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	if c.db == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "database not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "database not connected", nil)
 	}
 
 	// Apply timeout
 	timeout := cmd.Timeout
 	if timeout == 0 {
-		timeout = c.config.Timeout
+		timeout = c.GetTimeout()
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -236,14 +269,14 @@ func (c *PostgresConnector) Execute(ctx context.Context, cmd *base.Command) (*ba
 	// Convert parameters
 	args, err := c.buildArgs(cmd.Parameters)
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "failed to build command parameters", err)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "failed to build command parameters", err)
 	}
 
 	// Execute command
 	start := time.Now()
 	result, err := c.db.ExecContext(execCtx, cmd.Statement, args...)
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "command execution failed", err)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "command execution failed", err)
 	}
 
 	duration := time.Since(start)
@@ -251,48 +284,28 @@ func (c *PostgresConnector) Execute(ctx context.Context, cmd *base.Command) (*ba
 	// Get rows affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		c.logger.Printf("Warning: Could not get rows affected: %v", err)
+		c.Log("Warning: Could not get rows affected: %v", err)
 		rowsAffected = 0
 	}
 
-	c.logger.Printf("Command executed: %d rows affected in %v", rowsAffected, duration)
+	c.Log("Command executed: %d rows affected in %v", rowsAffected, duration)
 
 	return &base.CommandResult{
 		Success:      true,
 		RowsAffected: int(rowsAffected),
 		Duration:     duration,
 		Message:      fmt.Sprintf("%s executed successfully", cmd.Action),
-		Connector:    c.config.Name,
+		Connector:    c.Name(),
 	}, nil
 }
 
-// Name returns the connector name
+// Name returns the connector name.
+// Preserves legacy behavior used by tests and callers that set c.config directly.
 func (c *PostgresConnector) Name() string {
 	if c.config == nil {
 		return "postgres"
 	}
 	return c.config.Name
-}
-
-// Type returns the connector type
-func (c *PostgresConnector) Type() string {
-	return "postgres"
-}
-
-// Version returns the connector version
-func (c *PostgresConnector) Version() string {
-	return "1.0.0"
-}
-
-// Capabilities returns the list of supported capabilities
-func (c *PostgresConnector) Capabilities() []string {
-	return []string{
-		"query",
-		"execute",
-		"transactions",
-		"prepared_statements",
-		"connection_pooling",
-	}
 }
 
 // buildArgs converts parameter map to positional argument slice.

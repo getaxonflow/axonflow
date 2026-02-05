@@ -5,6 +5,7 @@ package llm
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -411,4 +412,86 @@ func TestUnifiedRouter_ListHealthyProviders(t *testing.T) {
 	if len(healthy) != 0 {
 		t.Errorf("expected 0 healthy providers, got %d", len(healthy))
 	}
+}
+
+func TestUnifiedRouter_StrictProviderSemantics(t *testing.T) {
+	ctx := context.Background()
+	registry := NewRegistry()
+
+	failing := NewMockProvider("preferred-provider", ProviderTypeOpenAI)
+	failing.completeErr = NewProviderError("preferred-provider", ErrCodeRateLimit, "simulated failure")
+	fallback := NewMockProvider("fallback-provider", ProviderTypeAnthropic)
+
+	if err := registry.RegisterProvider("preferred-provider", failing, &ProviderConfig{
+		Name:    "preferred-provider",
+		Type:    ProviderTypeOpenAI,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("failed to register preferred provider: %v", err)
+	}
+	if err := registry.RegisterProvider("fallback-provider", fallback, &ProviderConfig{
+		Name:    "fallback-provider",
+		Type:    ProviderTypeAnthropic,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("failed to register fallback provider: %v", err)
+	}
+
+	// Seed healthy provider cache used by fallback selection.
+	registry.HealthCheck(ctx)
+
+	router := NewUnifiedRouter(UnifiedRouterConfig{
+		Registry: registry,
+		RoutingConfig: RoutingConfig{
+			Strategy: RoutingStrategyWeighted,
+		},
+		HealthCheckInterval: 1 * time.Hour,
+	})
+	defer router.Close()
+
+	t.Run("provider preference allows fallback by default", func(t *testing.T) {
+		resp, info, err := router.RouteRequest(ctx, RequestContext{
+			Query:       "hello",
+			RequestType: "chat",
+			Provider:    "preferred-provider",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp == nil || info == nil {
+			t.Fatalf("expected response and provider info")
+		}
+		if info.Provider != "fallback-provider" {
+			t.Fatalf("expected fallback-provider, got %q", info.Provider)
+		}
+	})
+
+	t.Run("strict provider disables fallback", func(t *testing.T) {
+		_, _, err := router.RouteRequest(ctx, RequestContext{
+			Query:          "hello",
+			RequestType:    "chat",
+			Provider:       "preferred-provider",
+			StrictProvider: true,
+		})
+		if err == nil {
+			t.Fatalf("expected strict provider error")
+		}
+		if !strings.Contains(err.Error(), "provider failed") {
+			t.Fatalf("expected provider failure error, got: %v", err)
+		}
+	})
+
+	t.Run("policy allowed providers remain strict", func(t *testing.T) {
+		_, _, err := router.RouteRequest(ctx, RequestContext{
+			Query:                  "hello",
+			RequestType:            "chat",
+			PolicyAllowedProviders: []string{"preferred-provider"},
+		})
+		if err == nil {
+			t.Fatalf("expected policy strict error")
+		}
+		if !strings.Contains(err.Error(), "compliant") && !strings.Contains(err.Error(), "allowed") {
+			t.Fatalf("expected compliant/allowed error, got: %v", err)
+		}
+	})
 }

@@ -18,31 +18,33 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for PostgresStorage
-// These tests require DATABASE_URL to be set and the schema to be migrated
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to open database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Failed to ping database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
 	}
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-
-	// Check connection
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
-
-	return db
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, testutil.LLMProvidersSchema())
+	return pg.DB
 }
 
 func setTestOrgID(t *testing.T, db *sql.DB, orgID string) {

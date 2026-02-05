@@ -1,24 +1,29 @@
 # Azure OpenAI PII Detection - Python
 
-Demonstrates AxonFlow's PII detection with Azure OpenAI as the LLM provider.
+Demonstrates AxonFlow's PII detection and blocking with Azure OpenAI as the LLM provider.
 
-## PII Types Detected
+## PII Types
 
-- US Social Security Numbers (SSN)
-- Credit Card Numbers
-- India PAN Numbers
-- India Aadhaar Numbers
-- Email Addresses
-- Phone Numbers (warning only)
+| Type | Severity | PII_ACTION=block |
+|------|----------|-----------------|
+| US Social Security Number (SSN) | Critical | Blocked |
+| Credit Card Number | Critical | Blocked |
+| India Aadhaar Number | Critical | Blocked |
+| India PAN Number | Low | Detected, not blocked |
+| Email Address | Low | Detected, not blocked |
+| Phone Number | Low | Detected, not blocked |
 
 ## Prerequisites
 
-- AxonFlow running with Azure OpenAI configured
+- AxonFlow running with `PII_ACTION=block`
 - Python 3.9+
 
 ## Run
 
 ```bash
+# Start AxonFlow with PII blocking enabled
+PII_ACTION=block docker compose up -d
+
 pip install -r requirements.txt
 python main.py
 ```
@@ -26,6 +31,8 @@ python main.py
 ## How It Works
 
 1. AxonFlow scans queries for PII patterns before sending to Azure OpenAI
-2. Blocked if sensitive PII found (SSN, credit cards, PAN, Aadhaar)
-3. Warned but allowed for less sensitive PII (phone numbers)
-4. All detections logged for audit
+2. The `PII_ACTION` environment variable controls enforcement:
+   - `block` — reject requests containing critical PII (SSN, credit cards, Aadhaar)
+   - `redact` (default) — redact PII before forwarding to LLM
+   - `warn` / `log` — allow with warning or audit logging
+3. All detections are logged for audit in `policy_info.policies_evaluated`

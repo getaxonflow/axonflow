@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -26,19 +27,31 @@ var ErrEnterpriseFeature = errors.New("snowflake connector is an enterprise feat
 // SnowflakeConnector is the Community stub for the Snowflake data warehouse connector.
 // The full implementation is available in the enterprise edition.
 type SnowflakeConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewSnowflakeConnector creates a new Snowflake connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewSnowflakeConnector() *SnowflakeConnector {
-	return &SnowflakeConnector{}
+	conn := &SnowflakeConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("snowflake")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to Snowflake.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *SnowflakeConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("snowflake", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "snowflake"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
 	return base.NewConnectorError(config.Name, "Connect", "snowflake connector requires enterprise license", ErrEnterpriseFeature)
 }
 
@@ -75,20 +88,4 @@ func (c *SnowflakeConnector) Name() string {
 		return c.config.Name
 	}
 	return "snowflake"
-}
-
-// Type returns the connector type.
-func (c *SnowflakeConnector) Type() string {
-	return "snowflake"
-}
-
-// Version returns the connector version.
-func (c *SnowflakeConnector) Version() string {
-	return "community-stub"
-}
-
-// Capabilities returns the list of capabilities.
-// Community stub: Returns empty list (no capabilities in Community mode).
-func (c *SnowflakeConnector) Capabilities() []string {
-	return []string{}
 }

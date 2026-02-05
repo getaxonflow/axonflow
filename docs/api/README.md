@@ -121,6 +121,8 @@ curl -X POST "https://agent.getaxonflow.com/api/request" \
     "client_id": "analytics-app",
     "request_type": "llm_chat",
     "context": {
+      "provider": "openai",
+      "strict_provider": false,
       "model_preference": "gpt-4"
     }
   }'

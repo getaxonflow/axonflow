@@ -15,17 +15,18 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/gocql/gocql" // Cassandra/Scylla driver
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // CassandraConnector implements the MCP Connector interface for Apache Cassandra / ScyllaDB
 type CassandraConnector struct {
+	sdk.BaseConnector
 	config  *base.ConnectorConfig
 	cluster *gocql.ClusterConfig
 	session *gocql.Session
@@ -34,14 +35,42 @@ type CassandraConnector struct {
 
 // NewCassandraConnector creates a new Cassandra connector instance
 func NewCassandraConnector() *CassandraConnector {
-	return &CassandraConnector{
-		logger: log.New(os.Stdout, "[MCP_CASSANDRA] ", log.LstdFlags),
-	}
+	conn := &CassandraConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("cassandra")
+	conn.SetVersion("1.0.0")
+	conn.SetCapabilities([]string{
+		"query",
+		"execute",
+		"batch_operations",
+		"consistency_levels",
+		"token_aware_routing",
+	})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{},
+		map[string]interface{}{
+			"consistency": "QUORUM",
+			"num_conns":   2,
+		},
+	))
+	conn.logger = conn.GetLogger()
+	return conn
 }
 
 // Connect establishes a connection to Cassandra cluster
 func (c *CassandraConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("cassandra", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "cassandra"
+	}
+	if config.ConnectionURL == "" {
+		return base.NewConnectorError(config.Name, "Connect", "connection URL is required", nil)
+	}
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Parse connection URL (format: cassandra://host1,host2:port/keyspace)
 	hosts, keyspace, err := parseConnectionURL(config.ConnectionURL)
@@ -55,7 +84,7 @@ func (c *CassandraConnector) Connect(ctx context.Context, config *base.Connector
 
 	// Set consistency level
 	consistency := "QUORUM"
-	if val, ok := config.Options["consistency"].(string); ok {
+	if val := c.GetStringOption("consistency", consistency); val != "" {
 		consistency = val
 	}
 	cluster.Consistency = parseConsistency(consistency)
@@ -79,7 +108,7 @@ func (c *CassandraConnector) Connect(ctx context.Context, config *base.Connector
 
 	// Connection pool settings
 	cluster.NumConns = 2
-	if val, ok := config.Options["num_conns"].(int); ok {
+	if val := c.GetIntOption("num_conns", 2); val > 0 {
 		cluster.NumConns = val
 	}
 
@@ -91,7 +120,8 @@ func (c *CassandraConnector) Connect(ctx context.Context, config *base.Connector
 
 	c.cluster = cluster
 	c.session = session
-	c.logger.Printf("Connected to Cassandra: %s (keyspace=%s, consistency=%s)", config.Name, keyspace, consistency)
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to Cassandra: %s (keyspace=%s, consistency=%s)", config.Name, keyspace, consistency)
 
 	return nil
 }
@@ -103,9 +133,10 @@ func (c *CassandraConnector) Disconnect(ctx context.Context) error {
 	}
 
 	c.session.Close()
-	c.logger.Printf("Disconnected from Cassandra: %s", c.config.Name)
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from Cassandra: %s", c.Name())
 
-	return nil
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the Cassandra connection is healthy
@@ -149,7 +180,7 @@ func (c *CassandraConnector) HealthCheck(ctx context.Context) (*base.HealthStatu
 // Query executes a CQL SELECT query and returns results
 func (c *CassandraConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	if c.session == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "session not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Query", "session not connected", nil)
 	}
 
 	// Build CQL query with parameters
@@ -203,26 +234,26 @@ func (c *CassandraConnector) Query(ctx context.Context, query *base.Query) (*bas
 
 	// Check for errors
 	if err := iter.Close(); err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "query execution failed", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "query execution failed", err)
 	}
 
 	duration := time.Since(start)
 
-	c.logger.Printf("CQL Query executed: %d rows in %v", len(results), duration)
+	c.Log("CQL Query executed: %d rows in %v", len(results), duration)
 
 	return &base.QueryResult{
 		Rows:      results,
 		RowCount:  len(results),
 		Duration:  duration,
 		Cached:    false,
-		Connector: c.config.Name,
+		Connector: c.Name(),
 	}, nil
 }
 
 // Execute runs INSERT, UPDATE, DELETE, or other write operations
 func (c *CassandraConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	if c.session == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "session not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "session not connected", nil)
 	}
 
 	// Build CQL command
@@ -252,47 +283,27 @@ func (c *CassandraConnector) Execute(ctx context.Context, cmd *base.Command) (*b
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "command execution failed", err)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "command execution failed", err)
 	}
 
-	c.logger.Printf("CQL Command executed in %v", duration)
+	c.Log("CQL Command executed in %v", duration)
 
 	return &base.CommandResult{
 		Success:      true,
 		RowsAffected: 1, // Cassandra doesn't return affected rows
 		Duration:     duration,
 		Message:      fmt.Sprintf("%s executed successfully", cmd.Action),
-		Connector:    c.config.Name,
+		Connector:    c.Name(),
 	}, nil
 }
 
-// Name returns the connector name
+// Name returns the connector name.
+// Preserves legacy behavior used by tests and callers that set c.config directly.
 func (c *CassandraConnector) Name() string {
 	if c.config == nil {
 		return "cassandra"
 	}
 	return c.config.Name
-}
-
-// Type returns the connector type
-func (c *CassandraConnector) Type() string {
-	return "cassandra"
-}
-
-// Version returns the connector version
-func (c *CassandraConnector) Version() string {
-	return "1.0.0"
-}
-
-// Capabilities returns the list of supported capabilities
-func (c *CassandraConnector) Capabilities() []string {
-	return []string{
-		"query",
-		"execute",
-		"batch_operations",
-		"consistency_levels",
-		"token_aware_routing",
-	}
 }
 
 // parseConnectionURL parses Cassandra connection URL

@@ -617,7 +617,16 @@ if info.ProviderName != preferredProvider {
 }
 ```
 
-### 3. Monitor Metrics
+### 3. Use Strict Provider Pinning Only When Needed
+
+Request-level provider selection defaults to preference semantics:
+
+- `context.provider` = preferred provider (fallback allowed)
+- `context.strict_provider=true` = hard pin (no fallback)
+
+Use strict pinning for compliance or deterministic behavior, but keep default preference mode for higher availability.
+
+### 4. Monitor Metrics
 
 Track provider performance:
 
@@ -634,7 +643,7 @@ for name, ps := range status {
 }
 ```
 
-### 4. Test License Gating
+### 5. Test License Gating
 
 Ensure enterprise features are properly gated:
 

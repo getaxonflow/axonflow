@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -26,19 +27,31 @@ var ErrEnterpriseFeature = errors.New("salesforce connector is an enterprise fea
 // SalesforceConnector is the Community stub for the Salesforce CRM connector.
 // The full implementation is available in the enterprise edition.
 type SalesforceConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewSalesforceConnector creates a new Salesforce connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewSalesforceConnector() *SalesforceConnector {
-	return &SalesforceConnector{}
+	conn := &SalesforceConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("salesforce")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to Salesforce API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *SalesforceConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("salesforce", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "salesforce"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
 	return base.NewConnectorError(config.Name, "Connect", "salesforce connector requires enterprise license", ErrEnterpriseFeature)
 }
 
@@ -75,20 +88,4 @@ func (c *SalesforceConnector) Name() string {
 		return c.config.Name
 	}
 	return "salesforce"
-}
-
-// Type returns the connector type.
-func (c *SalesforceConnector) Type() string {
-	return "salesforce"
-}
-
-// Version returns the connector version.
-func (c *SalesforceConnector) Version() string {
-	return "community-stub"
-}
-
-// Capabilities returns the list of capabilities.
-// Community stub: Returns empty list (no capabilities in Community mode).
-func (c *SalesforceConnector) Capabilities() []string {
-	return []string{}
 }

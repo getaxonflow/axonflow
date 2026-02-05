@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.1.0] - 2026-02-05
+
+### Community
+
+#### Added
+
+- **AES-256-GCM Connector Credential Encryption** (#1157): Credentials encrypted at rest via `CONNECTOR_ENCRYPTION_KEY` env var
+  - Credentials stored separately from connection URLs — no secrets in `connection_url` column
+  - Supports encrypted, JSON-quoted encrypted, and plain JSON formats (backward compatible)
+- **Connector SDK Runtime Wiring** (#1140): Connector installs persist to `connector_configs` table; Agent reads runtime configs from DB with static fallback
+  - All SDK-backed connectors (Postgres, MySQL, MongoDB, Redis, Cassandra, HTTP) migrated to `connectors/sdk.BaseConnector`
+  - Runtime config service loads connector credentials and options from DB, reconstructs connection URLs at runtime
+- **LLM Provider SDK Registration** (#1140): SDK-backed LLM providers (OpenAI, Anthropic, Gemini) registered at orchestrator startup via factory pattern
+  - Azure OpenAI runtime config parity across env/config/DB paths
+- **Strict Provider Pinning** (#1140): `context.strict_provider=true` hard-pins to a specific provider; default remains preference with failover
+- **Direct LLM Config Passing** (#1157): `BootstrapFromConfig` replaces goroutine-unsafe `ApplyLLMConfigToEnv` / `os.Setenv`
+- **Atomic LLM Provider Update** (#1157): `Registry.Update()` method prevents gap where provider is missing during reconfiguration
+- **Audit Logging Examples** (#1135): Complete audit logging examples across Go, Python, TypeScript, Java SDKs
+- **Testcontainers for Integration Tests** (#1136, #1137): PostgreSQL integration tests use testcontainers instead of mock DB
+- **Runtime Connector Config Migrations** (#1140): `007_runtime_connector_configuration.sql`, `045_connector_configs_credentials.sql`
+
+#### Fixed
+
+- **Encrypted credentials never decrypted on load** (#1157): `RuntimeConfigService` now uses `CredentialEncryptor.Decrypt()` instead of `json.Unmarshal`
+- **MySQL DSN credentials persisted in stored URLs** (#1157): `StripURLCredentials` now handles `@tcp()` and `@unix()` DSN formats
+- **Connector uninstall DB/registry divergence** (#1157): Unregister from memory first, then delete DB record
+- **PII detection examples require `PII_ACTION=block`** (#1154): Updated examples and docs with prerequisite
+- **Migration runner safety** (#1140): `_down.sql` files skipped by migration runner to prevent accidental rollbacks
+- **Internal MCP calls carry tenant ID** (#1140): Orchestrator→Agent MCP calls now include tenant ID for correct access isolation
+
+#### Changed
+
+- **Connector install/uninstall requires `tenant_id`** when a DB is present (#1140, #1157): Prevents silent inconsistent state; matches schema constraints
+- **`context.provider` remains preference** (#1140): Failover still default unless `strict_provider` is set
+- **LLM provider runtime constraints** (#1140): Expanded allowed provider names to include `gemini`, `azure-openai`, and `custom`
+- **Connector runtime constraints** (#1140): Expanded allowed connector types to include SDK-backed connectors (http/mysql/mongodb/redis/s3/etc)
+- **SDK versions bumped to v3.2.0** across all examples and docs (#1158, #1145)
+- **README**: Design Partner program CTA (#1149), Feedback Week (#1151), LLM provider scope clarification (#1159)
+
+### Enterprise
+
+#### Added
+
+- **Enterprise runtime config bootstrap** (#1140): Ensures runtime connector/LLM config tables are created after `customers` exists
+- **Bedrock example hardening** (#1140): Enterprise Bedrock example now uses standard env aliases + enterprise JWT for policy pre-checks
+
 ## [4.0.0] - 2026-02-03
 
 ### Community

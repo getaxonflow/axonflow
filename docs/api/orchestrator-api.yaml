@@ -247,6 +247,8 @@ paths:
                     org_id: "org-123"
                     tenant_id: "tenant-abc"
                   context:
+                    provider: "openai"
+                    strict_provider: false
                     model_preference: "gpt-4"
                   timestamp: "2025-01-15T10:30:00Z"
               skipLLM:
@@ -4675,6 +4677,11 @@ components:
           $ref: '#/components/schemas/ClientContext'
         context:
           type: object
+          description: |
+            Free-form request metadata. Routing controls:
+            - `provider` (string): preferred provider
+            - `strict_provider` (boolean, optional): when true, hard-pins `provider` and disables fallback
+              for this request. Default is false unless server env `LLM_STRICT_PROVIDER_DEFAULT=true`.
           additionalProperties: true
         timestamp:
           type: string

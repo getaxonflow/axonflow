@@ -145,6 +145,10 @@ func TestLoadLLMConfigFromService_AllProviders(t *testing.T) {
 	t.Setenv("BEDROCK_MODEL", "claude-3-5-sonnet")
 	t.Setenv("OLLAMA_ENDPOINT", "http://localhost:11434")
 	t.Setenv("OLLAMA_MODEL", "llama3:70b")
+	t.Setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+	t.Setenv("AZURE_OPENAI_API_KEY", "azure-key-test")
+	t.Setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
+	t.Setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
 
 	ctx := context.Background()
 	config := LoadLLMConfigFromService(ctx, "multi-provider-tenant")
@@ -168,6 +172,18 @@ func TestLoadLLMConfigFromService_AllProviders(t *testing.T) {
 	if config.OllamaModel != "llama3:70b" {
 		t.Errorf("Expected OllamaModel 'llama3:70b', got '%s'", config.OllamaModel)
 	}
+	if config.AzureOpenAIEndpoint != "https://example.openai.azure.com" {
+		t.Errorf("Expected AzureOpenAIEndpoint 'https://example.openai.azure.com', got '%s'", config.AzureOpenAIEndpoint)
+	}
+	if config.AzureOpenAIAPIKey != "azure-key-test" {
+		t.Errorf("Expected AzureOpenAIAPIKey 'azure-key-test', got '%s'", config.AzureOpenAIAPIKey)
+	}
+	if config.AzureOpenAIDeploymentName != "gpt-4o-mini" {
+		t.Errorf("Expected AzureOpenAIDeploymentName 'gpt-4o-mini', got '%s'", config.AzureOpenAIDeploymentName)
+	}
+	if config.AzureOpenAIAPIVersion != "2024-08-01-preview" {
+		t.Errorf("Expected AzureOpenAIAPIVersion '2024-08-01-preview', got '%s'", config.AzureOpenAIAPIVersion)
+	}
 }
 
 func TestLoadLLMConfigFromService_NoProvidersConfigured(t *testing.T) {
@@ -180,6 +196,7 @@ func TestLoadLLMConfigFromService_NoProvidersConfigured(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("BEDROCK_REGION", "")
 	t.Setenv("OLLAMA_ENDPOINT", "")
+	t.Setenv("AZURE_OPENAI_ENDPOINT", "")
 
 	ctx := context.Background()
 	config := LoadLLMConfigFromService(ctx, "no-provider-tenant")
@@ -196,6 +213,9 @@ func TestLoadLLMConfigFromService_NoProvidersConfigured(t *testing.T) {
 	}
 	if config.OllamaEndpoint != "" {
 		t.Errorf("Expected empty OllamaEndpoint, got '%s'", config.OllamaEndpoint)
+	}
+	if config.AzureOpenAIEndpoint != "" {
+		t.Errorf("Expected empty AzureOpenAIEndpoint, got '%s'", config.AzureOpenAIEndpoint)
 	}
 }
 
@@ -237,6 +257,8 @@ func TestIsValidLLMProvider(t *testing.T) {
 		{"valid anthropic", "anthropic", true},
 		{"valid bedrock", "bedrock", true},
 		{"valid ollama", "ollama", true},
+		{"valid gemini", "gemini", true},
+		{"valid azure-openai", "azure-openai", true},
 		{"invalid provider", "invalid", false},
 		{"empty provider", "", false},
 		{"case sensitive OpenAI", "OpenAI", false},
@@ -270,11 +292,70 @@ func TestProviderConstants(t *testing.T) {
 	if ProviderGemini != "gemini" {
 		t.Errorf("ProviderGemini = %q, want %q", ProviderGemini, "gemini")
 	}
+	if ProviderAzureOpenAI != "azure-openai" {
+		t.Errorf("ProviderAzureOpenAI = %q, want %q", ProviderAzureOpenAI, "azure-openai")
+	}
 
 	// Verify ValidLLMProviders contains all constants
-	if len(ValidLLMProviders) != 5 {
-		t.Errorf("ValidLLMProviders has %d entries, want 5", len(ValidLLMProviders))
+	if len(ValidLLMProviders) != 6 {
+		t.Errorf("ValidLLMProviders has %d entries, want 6", len(ValidLLMProviders))
 	}
+}
+
+func TestApplyLLMConfigToEnv(t *testing.T) {
+	keys := []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"GOOGLE_API_KEY",
+		"GOOGLE_MODEL",
+		"BEDROCK_REGION",
+		"BEDROCK_MODEL",
+		"OLLAMA_ENDPOINT",
+		"OLLAMA_MODEL",
+		"AZURE_OPENAI_ENDPOINT",
+		"AZURE_OPENAI_API_KEY",
+		"AZURE_OPENAI_DEPLOYMENT_NAME",
+		"AZURE_OPENAI_API_VERSION",
+	}
+	for _, k := range keys {
+		t.Setenv(k, "seed-value")
+	}
+
+	ApplyLLMConfigToEnv(LLMRouterConfig{
+		OpenAIKey:                 "openai-key",
+		AnthropicKey:              "",
+		GeminiKey:                 "gemini-key",
+		GeminiModel:               "gemini-2.0-flash",
+		BedrockRegion:             "us-east-1",
+		BedrockModel:              "anthropic.claude-3-haiku-20240307-v1:0",
+		OllamaEndpoint:            "http://localhost:11434",
+		OllamaModel:               "llama3.1:latest",
+		AzureOpenAIEndpoint:       "https://example.openai.azure.com",
+		AzureOpenAIAPIKey:         "azure-key",
+		AzureOpenAIDeploymentName: "gpt-4o-mini",
+		AzureOpenAIAPIVersion:     "2024-08-01-preview",
+	})
+
+	assertEnv := func(key, expected string) {
+		t.Helper()
+		got := os.Getenv(key)
+		if got != expected {
+			t.Fatalf("%s = %q, want %q", key, got, expected)
+		}
+	}
+
+	assertEnv("OPENAI_API_KEY", "openai-key")
+	assertEnv("GOOGLE_API_KEY", "gemini-key")
+	assertEnv("GOOGLE_MODEL", "gemini-2.0-flash")
+	assertEnv("BEDROCK_REGION", "us-east-1")
+	assertEnv("BEDROCK_MODEL", "anthropic.claude-3-haiku-20240307-v1:0")
+	assertEnv("OLLAMA_ENDPOINT", "http://localhost:11434")
+	assertEnv("OLLAMA_MODEL", "llama3.1:latest")
+	assertEnv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+	assertEnv("AZURE_OPENAI_API_KEY", "azure-key")
+	assertEnv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
+	assertEnv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+	assertEnv("ANTHROPIC_API_KEY", "")
 }
 
 // Note: TestGetSetLLMRouter removed in v2.3.0.

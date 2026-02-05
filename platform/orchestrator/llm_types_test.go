@@ -63,18 +63,22 @@ func TestRoutingStrategyConstants(t *testing.T) {
 func TestLLMRouterConfigFields(t *testing.T) {
 	// Test that LLMRouterConfig can be initialized with all fields
 	config := LLMRouterConfig{
-		OpenAIKey:       "test-openai-key",
-		AnthropicKey:    "test-anthropic-key",
-		GeminiKey:       "test-gemini-key",
-		GeminiModel:     "gemini-pro",
-		BedrockRegion:   "us-east-1",
-		BedrockModel:    "anthropic.claude-3-sonnet",
-		OllamaEndpoint:  "http://localhost:11434",
-		OllamaModel:     "llama2",
-		LocalEndpoint:   "http://localhost:11434", // deprecated
-		RoutingStrategy: RoutingStrategyWeighted,
-		ProviderWeights: map[string]float64{"openai": 0.5, "anthropic": 0.5},
-		DefaultProvider: "openai",
+		OpenAIKey:                 "test-openai-key",
+		AnthropicKey:              "test-anthropic-key",
+		GeminiKey:                 "test-gemini-key",
+		GeminiModel:               "gemini-pro",
+		AzureOpenAIEndpoint:       "https://example.openai.azure.com",
+		AzureOpenAIAPIKey:         "test-azure-key",
+		AzureOpenAIDeploymentName: "gpt-4o-mini",
+		AzureOpenAIAPIVersion:     "2024-08-01-preview",
+		BedrockRegion:             "us-east-1",
+		BedrockModel:              "anthropic.claude-3-sonnet",
+		OllamaEndpoint:            "http://localhost:11434",
+		OllamaModel:               "llama2",
+		LocalEndpoint:             "http://localhost:11434", // deprecated
+		RoutingStrategy:           RoutingStrategyWeighted,
+		ProviderWeights:           map[string]float64{"openai": 0.5, "anthropic": 0.5},
+		DefaultProvider:           "openai",
 	}
 
 	// Verify fields are set correctly
@@ -86,6 +90,9 @@ func TestLLMRouterConfigFields(t *testing.T) {
 	}
 	if config.RoutingStrategy != RoutingStrategyWeighted {
 		t.Error("RoutingStrategy not set correctly")
+	}
+	if config.AzureOpenAIDeploymentName != "gpt-4o-mini" {
+		t.Error("AzureOpenAIDeploymentName not set correctly")
 	}
 	if len(config.ProviderWeights) != 2 {
 		t.Error("ProviderWeights not set correctly")

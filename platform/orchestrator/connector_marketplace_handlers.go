@@ -1,13 +1,5 @@
 // Copyright 2025 AxonFlow
 // SPDX-License-Identifier: BUSL-1.1
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package orchestrator
 
@@ -17,23 +9,21 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/connectors/base"
-	httpconnector "axonflow/platform/connectors/http"
-	"axonflow/platform/connectors/mongodb"
-	"axonflow/platform/connectors/mysql"
-	"axonflow/platform/connectors/postgres"
-	"axonflow/platform/connectors/redis"
+	"axonflow/platform/connectors/config"
 	"axonflow/platform/connectors/registry"
 )
 
 // Global connector registry
 var connectorRegistry *registry.Registry
+
+// credentialEncryptor handles encryption/decryption of connector credentials at rest.
+var credentialEncryptor *config.CredentialEncryptor
 
 // ConnectorMetadata represents connector information for the marketplace
 type ConnectorMetadata struct {
@@ -61,200 +51,42 @@ type ConnectorInstallRequest struct {
 	Credentials map[string]string      `json:"credentials"`
 }
 
-// buildConnectionURL constructs a connection URL from options and credentials for database connectors.
-// Credentials are properly URL-encoded to handle special characters like @, :, /, etc.
+// buildConnectionURL constructs a connection URL from options and credentials.
+// Delegates to base.BuildConnectionURL for the actual URL construction.
 func buildConnectionURL(connectorType string, options map[string]interface{}, credentials map[string]string) string {
-	// If connection_url is explicitly provided, use it
-	if connURL, ok := options["connection_url"].(string); ok && connURL != "" {
-		return connURL
-	}
-
-	// Extract common fields with nil safety
-	host := getStringOption(options, "host", "localhost")
-	database := getStringOption(options, "database", "")
-
-	// Safely extract credentials (nil map safe)
-	var username, password string
-	if credentials != nil {
-		username = credentials["username"]
-		password = credentials["password"]
-	}
-
-	switch connectorType {
-	case "postgres":
-		port := getIntOption(options, "port", 5432)
-		// Support both ssl_mode and sslmode for flexibility
-		sslMode := getStringOption(options, "ssl_mode", "")
-		if sslMode == "" {
-			sslMode = getStringOption(options, "sslmode", "disable")
-		}
-		return buildPostgresURL(host, port, database, username, password, sslMode)
-
-	case "mysql":
-		port := getIntOption(options, "port", 3306)
-		return buildMySQLURL(host, port, database, username, password)
-
-	case "mongodb":
-		port := getIntOption(options, "port", 27017)
-		authSource := getStringOption(options, "auth_source", "")
-		return buildMongoDBURL(host, port, database, username, password, authSource)
-
-	case "redis":
-		port := getIntOption(options, "port", 6379)
-		db := getIntOption(options, "db", 0)
-		return buildRedisURL(host, port, db, password)
-
-	case "cassandra":
-		port := getIntOption(options, "port", 9042)
-		keyspace := getStringOption(options, "keyspace", database)
-		return buildCassandraURL(host, port, keyspace, username, password)
-
-	default:
-		// For HTTP and other connectors, use base_url if provided
-		if baseURL, ok := options["base_url"].(string); ok {
-			return baseURL
-		}
-		return ""
-	}
+	return base.BuildConnectionURL(connectorType, options, credentials)
 }
 
-// buildPostgresURL constructs a PostgreSQL connection URL with proper encoding
-func buildPostgresURL(host string, port int, database, username, password, sslMode string) string {
-	u := &url.URL{
-		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", host, port),
-		Path:   "/" + database,
-	}
-	if username != "" && password != "" {
-		u.User = url.UserPassword(username, password)
-	} else if username != "" {
-		u.User = url.User(username)
-	}
-	q := u.Query()
-	q.Set("sslmode", sslMode)
-	u.RawQuery = q.Encode()
-	return u.String()
-}
-
-// buildMySQLURL constructs a MySQL DSN with proper encoding
-// MySQL DSN format: [username[:password]@][protocol[(address)]]/dbname[?param1=value1&...]
-func buildMySQLURL(host string, port int, database, username, password string) string {
-	// MySQL driver uses a different format than standard URLs
-	// We need to escape special characters in username/password
-	if username != "" && password != "" {
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
-			url.QueryEscape(username),
-			url.QueryEscape(password),
-			host, port, database)
-	}
-	if username != "" {
-		return fmt.Sprintf("%s@tcp(%s:%d)/%s", url.QueryEscape(username), host, port, database)
-	}
-	return fmt.Sprintf("tcp(%s:%d)/%s", host, port, database)
-}
-
-// buildMongoDBURL constructs a MongoDB connection URL with proper encoding
-func buildMongoDBURL(host string, port int, database, username, password, authSource string) string {
-	u := &url.URL{
-		Scheme: "mongodb",
-		Host:   fmt.Sprintf("%s:%d", host, port),
-		Path:   "/" + database,
-	}
-	if username != "" && password != "" {
-		u.User = url.UserPassword(username, password)
-	} else if username != "" {
-		u.User = url.User(username)
-	}
-	if authSource != "" {
-		q := u.Query()
-		q.Set("authSource", authSource)
-		u.RawQuery = q.Encode()
-	}
-	return u.String()
-}
-
-// buildRedisURL constructs a Redis connection URL with proper encoding
-func buildRedisURL(host string, port, db int, password string) string {
-	u := &url.URL{
-		Scheme: "redis",
-		Host:   fmt.Sprintf("%s:%d", host, port),
-		Path:   fmt.Sprintf("/%d", db),
-	}
-	if password != "" {
-		// Redis uses empty username with password
-		u.User = url.UserPassword("", password)
-	}
-	return u.String()
-}
-
-// buildCassandraURL constructs a Cassandra connection URL
-// Cassandra typically uses host:port/keyspace format
-func buildCassandraURL(host string, port int, keyspace, username, password string) string {
-	u := &url.URL{
-		Scheme: "cassandra",
-		Host:   fmt.Sprintf("%s:%d", host, port),
-		Path:   "/" + keyspace,
-	}
-	if username != "" && password != "" {
-		u.User = url.UserPassword(username, password)
-	} else if username != "" {
-		u.User = url.User(username)
-	}
-	return u.String()
-}
-
-// getStringOption safely extracts a string from options map (nil-safe)
+// getStringOption safely extracts a string from options map (nil-safe).
 func getStringOption(options map[string]interface{}, key, defaultVal string) string {
-	if options == nil {
-		return defaultVal
-	}
-	if val, ok := options[key].(string); ok {
-		return val
-	}
-	return defaultVal
+	return base.GetStringOption(options, key, defaultVal)
 }
 
-// getIntOption safely extracts an int from options map (handles float64 from JSON, nil-safe)
+// getIntOption safely extracts an int from options map (handles float64 from JSON, nil-safe).
 func getIntOption(options map[string]interface{}, key string, defaultVal int) int {
-	if options == nil {
-		return defaultVal
-	}
-	if val, ok := options[key].(float64); ok {
-		return int(val)
-	}
-	if val, ok := options[key].(int); ok {
-		return val
-	}
-	return defaultVal
+	return base.GetIntOption(options, key, defaultVal)
 }
 
 // createConnectorInstance is a factory function that creates connector instances by type
 func createConnectorInstance(connectorType string) (base.Connector, error) {
-	switch connectorType {
-	case "amadeus":
-		return NewAmadeusConnector(), nil
-	case "redis":
-		return redis.NewRedisConnector(), nil
-	case "http":
-		return httpconnector.NewHTTPConnector(), nil
-	case "postgres":
-		return postgres.NewPostgresConnector(), nil
-	case "mysql":
-		return mysql.NewMySQLConnector(), nil
-	case "mongodb":
-		return mongodb.NewMongoDBConnector(), nil
-	default:
-		return nil, fmt.Errorf("unsupported connector type: %s", connectorType)
-	}
+	return createConnectorInstanceByType(connectorType)
 }
 
 // initializeConnectorRegistry initializes the global connector registry
 func initializeConnectorRegistry() {
+	// Initialize credential encryption (no-op when CONNECTOR_ENCRYPTION_KEY not set)
+	credentialEncryptor = config.NewCredentialEncryptor()
+	if credentialEncryptor.IsEnabled() {
+		log.Println("Connector credential encryption enabled (AES-256-GCM)")
+	} else {
+		log.Println("Connector credential encryption disabled (set CONNECTOR_ENCRYPTION_KEY to enable)")
+	}
+
 	// Check if DATABASE_URL is available for persistent storage
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL != "" {
 		var err error
-		connectorRegistry, err = registry.NewRegistryWithStorage(dbURL)
+		connectorRegistry, err = registry.NewRegistryWithStorage(dbURL, registry.WithEncryptor(credentialEncryptor))
 		if err != nil {
 			log.Printf("Failed to initialize registry with storage: %v. Falling back to in-memory.", err)
 			connectorRegistry = registry.NewRegistry()
@@ -277,177 +109,7 @@ func initializeConnectorRegistry() {
 
 // getConnectorMetadata returns metadata for all available connectors
 func getConnectorMetadata() []ConnectorMetadata {
-	return []ConnectorMetadata{
-		{
-			ID:          "amadeus-travel",
-			Name:        "Amadeus Travel API",
-			Type:        "amadeus",
-			Version:     "0.2.0",
-			Description: "Access flight search, hotel search, and airport information from Amadeus Travel API",
-			Category:    "Travel",
-			Icon:        "✈️",
-			Tags:        []string{"travel", "flights", "hotels", "api"},
-			Capabilities: []string{"query", "flights", "hotels", "airports"},
-			ConfigSchema: map[string]interface{}{
-				"type": "object",
-				"required": []string{"api_key", "api_secret"},
-				"properties": map[string]interface{}{
-					"environment": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"test", "production"},
-						"default": "test",
-						"description": "API environment (test or production)",
-					},
-				},
-				"credentials": map[string]interface{}{
-					"api_key": map[string]interface{}{
-						"type": "string",
-						"description": "Amadeus API Key",
-					},
-					"api_secret": map[string]interface{}{
-						"type": "string",
-						"description": "Amadeus API Secret",
-					},
-				},
-			},
-		},
-		{
-			ID:          "redis-cache",
-			Name:        "Redis Cache",
-			Type:        "redis",
-			Version:     "0.2.0",
-			Description: "High-performance key-value caching with sub-10ms latency",
-			Category:    "Cache",
-			Icon:        "⚡",
-			Tags:        []string{"cache", "redis", "kv-store", "performance"},
-			Capabilities: []string{"query", "execute", "cache", "kv-store"},
-			ConfigSchema: map[string]interface{}{
-				"type": "object",
-				"required": []string{"host"},
-				"properties": map[string]interface{}{
-					"host": map[string]interface{}{
-						"type": "string",
-						"description": "Redis host",
-					},
-					"port": map[string]interface{}{
-						"type": "number",
-						"default": 6379,
-						"description": "Redis port",
-					},
-					"db": map[string]interface{}{
-						"type": "number",
-						"default": 0,
-						"description": "Redis database number",
-					},
-				},
-				"credentials": map[string]interface{}{
-					"password": map[string]interface{}{
-						"type": "string",
-						"description": "Redis password (optional)",
-					},
-				},
-			},
-		},
-		{
-			ID:          "http-rest",
-			Name:        "HTTP REST API",
-			Type:        "http",
-			Version:     "0.2.0",
-			Description: "Generic REST API connector with multiple authentication methods",
-			Category:    "API",
-			Icon:        "🔌",
-			Tags:        []string{"http", "rest", "api", "generic"},
-			Capabilities: []string{"query", "execute", "rest-api"},
-			ConfigSchema: map[string]interface{}{
-				"type": "object",
-				"required": []string{"base_url"},
-				"properties": map[string]interface{}{
-					"base_url": map[string]interface{}{
-						"type": "string",
-						"description": "Base URL of the API",
-					},
-					"auth_type": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"none", "bearer", "basic", "api-key"},
-						"default": "none",
-						"description": "Authentication type",
-					},
-					"timeout": map[string]interface{}{
-						"type": "number",
-						"default": 30,
-						"description": "Request timeout in seconds",
-					},
-					"headers": map[string]interface{}{
-						"type": "object",
-						"description": "Custom headers to include in requests",
-					},
-				},
-				"credentials": map[string]interface{}{
-					"token": map[string]interface{}{
-						"type": "string",
-						"description": "Bearer token (for bearer auth)",
-					},
-					"username": map[string]interface{}{
-						"type": "string",
-						"description": "Username (for basic auth)",
-					},
-					"password": map[string]interface{}{
-						"type": "string",
-						"description": "Password (for basic auth)",
-					},
-					"api_key": map[string]interface{}{
-						"type": "string",
-						"description": "API key (for api-key auth)",
-					},
-					"header_name": map[string]interface{}{
-						"type": "string",
-						"default": "X-API-Key",
-						"description": "Header name for API key (for api-key auth)",
-					},
-				},
-			},
-		},
-		{
-			ID:          "postgresql",
-			Name:        "PostgreSQL Database",
-			Type:        "postgres",
-			Version:     "0.1.0",
-			Description: "Connect to PostgreSQL databases with connection pooling",
-			Category:    "Database",
-			Icon:        "🐘",
-			Tags:        []string{"database", "sql", "postgres"},
-			Capabilities: []string{"query", "execute", "transactions"},
-			ConfigSchema: map[string]interface{}{
-				"type": "object",
-				"required": []string{"host", "database"},
-				"properties": map[string]interface{}{
-					"host": map[string]interface{}{
-						"type": "string",
-						"description": "PostgreSQL host",
-					},
-					"port": map[string]interface{}{
-						"type": "number",
-						"default": 5432,
-						"description": "PostgreSQL port",
-					},
-					"database": map[string]interface{}{
-						"type": "string",
-						"description": "Database name",
-					},
-				},
-				"credentials": map[string]interface{}{
-					"username": map[string]interface{}{
-						"type": "string",
-						"description": "Database username",
-					},
-					"password": map[string]interface{}{
-						"type": "string",
-						"description": "Database password",
-					},
-				},
-			},
-		},
-	}
+	return getConnectorMetadataByEdition()
 }
 
 // listConnectorsHandler returns all available connectors with their metadata
@@ -464,9 +126,8 @@ func listConnectorsHandler(w http.ResponseWriter, r *http.Request) {
 		if installed {
 			// Get health status
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
 			status, err := connectorRegistry.HealthCheckSingle(ctx, metadata[i].ID)
+			cancel()
 			if err == nil && status != nil {
 				metadata[i].Healthy = status.Healthy
 				metadata[i].LastCheck = status.Timestamp.Format(time.RFC3339)
@@ -553,34 +214,47 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create connector instance
-	var connector base.Connector
-	switch connectorType {
-	case "amadeus":
-		connector = NewAmadeusConnector() // Use orchestrator's version with real OAuth
-	case "redis":
-		connector = redis.NewRedisConnector()
-	case "http":
-		connector = httpconnector.NewHTTPConnector()
-	case "postgres":
-		connector = postgres.NewPostgresConnector()
-	default:
+	connector, err := createConnectorInstanceByType(connectorType)
+	if err != nil {
 		http.Error(w, "Unsupported connector type", http.StatusBadRequest)
 		return
 	}
 
+	tenantID := resolveTenantID(r, req.TenantID)
+	if usageDB != nil && (tenantID == "" || tenantID == "*") {
+		http.Error(w, "tenant_id is required for connector installation", http.StatusBadRequest)
+		return
+	}
+	if tenantID == "" {
+		tenantID = "*"
+	}
+
 	// Create config with properly constructed ConnectionURL
+	displayName := req.Name
+	if displayName == "" {
+		displayName = connectorID
+	}
 	config := &base.ConnectorConfig{
-		Name:          req.Name,
+		Name:          displayName,
 		Type:          connectorType,
 		ConnectionURL: buildConnectionURL(connectorType, req.Options, req.Credentials),
-		TenantID:      req.TenantID,
+		TenantID:      tenantID,
 		Options:       req.Options,
 		Credentials:   req.Credentials,
 		Timeout:       30 * time.Second,
 	}
 
-	// Register connector
+	if err := upsertConnectorConfig(r.Context(), connectorID, connectorType, tenantID, &req, config); err != nil {
+		http.Error(w, "Failed to persist connector config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Register connector in-memory; roll back DB write on failure
 	if err := connectorRegistry.Register(connectorID, connector, config); err != nil {
+		// Best-effort rollback: remove the DB record we just wrote
+		if rbErr := deleteConnectorConfig(r.Context(), connectorID, tenantID); rbErr != nil {
+			log.Printf("[Connector Marketplace] WARNING: Registry failed and DB rollback also failed for %s: register=%v, rollback=%v", connectorID, err, rbErr)
+		}
 		http.Error(w, "Failed to install connector: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -601,8 +275,30 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	connectorID := vars["id"]
 
+	tenantID := resolveTenantID(r, "")
+	if tenantID == "" && connectorRegistry != nil {
+		if cfg, err := connectorRegistry.GetConfig(connectorID); err == nil {
+			tenantID = cfg.TenantID
+		}
+	}
+	if usageDB != nil && (tenantID == "" || tenantID == "*") {
+		http.Error(w, "tenant_id is required for connector uninstall", http.StatusBadRequest)
+		return
+	}
+	// Unregister from memory first — if this fails, the DB record is still intact
+	// and the connector remains consistently registered in both places.
 	if err := connectorRegistry.Unregister(connectorID); err != nil {
 		http.Error(w, "Failed to uninstall connector: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := deleteConnectorConfig(r.Context(), connectorID, tenantID); err != nil {
+		// Memory unregistration succeeded but DB delete failed.
+		// Log the error — the orphaned DB record will be harmless (connector
+		// can't serve requests without being in the registry) and will be
+		// overwritten on re-install.
+		log.Printf("Warning: connector %q unregistered from memory but DB delete failed: %v", connectorID, err)
+		http.Error(w, "Failed to delete connector config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -613,6 +309,147 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+func resolveTenantID(r *http.Request, requested string) string {
+	if requested != "" && requested != "*" {
+		return requested
+	}
+	if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+		return headerTenant
+	}
+	return requested
+}
+
+func upsertConnectorConfig(ctx context.Context, connectorID, connectorType, tenantID string, req *ConnectorInstallRequest, config *base.ConnectorConfig) error {
+	if usageDB == nil {
+		log.Printf("[Connector Marketplace] usageDB not initialized; skipping connector config upsert")
+		return nil
+	}
+
+	options := req.Options
+	if options == nil {
+		options = make(map[string]interface{})
+	}
+	credentials := req.Credentials
+	if credentials == nil {
+		credentials = make(map[string]string)
+	}
+
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		return fmt.Errorf("failed to serialize options: %w", err)
+	}
+	var credentialsJSON []byte
+	if credentialEncryptor != nil {
+		credentialsJSON, err = credentialEncryptor.Encrypt(credentials)
+	} else {
+		credentialsJSON, err = json.Marshal(credentials)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to serialize credentials: %w", err)
+	}
+
+	meta := findConnectorMetadata(connectorID)
+	displayName := req.Name
+	if displayName == "" && meta != nil {
+		displayName = meta.Name
+	}
+	description := ""
+	if meta != nil {
+		description = meta.Description
+	}
+
+	// Build credential-free URL for storage. Credentials are stored separately
+	// in the encrypted credentials column and injected at runtime.
+	storedURL := buildConnectionURL(connectorType, options, nil)
+
+	timeoutMs := int(config.Timeout / time.Millisecond)
+	query := `
+		INSERT INTO connector_configs (
+			tenant_id,
+			connector_name,
+			connector_type,
+			display_name,
+			description,
+			connection_url,
+			options,
+			credentials,
+			timeout_ms,
+			max_retries,
+			enabled,
+			health_status,
+			created_by,
+			updated_by
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, 'unknown', $11, $11
+		)
+		ON CONFLICT (tenant_id, connector_name) DO UPDATE SET
+			connector_type = EXCLUDED.connector_type,
+			display_name = EXCLUDED.display_name,
+			description = EXCLUDED.description,
+			connection_url = EXCLUDED.connection_url,
+			options = EXCLUDED.options,
+			credentials = EXCLUDED.credentials,
+			timeout_ms = EXCLUDED.timeout_ms,
+			max_retries = EXCLUDED.max_retries,
+			enabled = EXCLUDED.enabled,
+			health_status = EXCLUDED.health_status,
+			updated_by = EXCLUDED.updated_by
+	`
+
+	_, err = usageDB.ExecContext(
+		ctx,
+		query,
+		tenantID,
+		connectorID,
+		connectorType,
+		displayName,
+		description,
+		storedURL,
+		optionsJSON,
+		credentialsJSON,
+		timeoutMs,
+		config.MaxRetries,
+		"connector_marketplace",
+	)
+	if err != nil {
+		return fmt.Errorf("connector config upsert failed: %w", err)
+	}
+
+	return nil
+}
+
+func deleteConnectorConfig(ctx context.Context, connectorID, tenantID string) error {
+	if usageDB == nil {
+		log.Printf("[Connector Marketplace] usageDB not initialized; skipping connector config delete")
+		return nil
+	}
+	if tenantID == "" || tenantID == "*" {
+		return fmt.Errorf("tenant_id required to delete connector config")
+	}
+
+	_, err := usageDB.ExecContext(
+		ctx,
+		`DELETE FROM connector_configs WHERE tenant_id = $1 AND connector_name = $2`,
+		tenantID,
+		connectorID,
+	)
+	if err != nil {
+		return fmt.Errorf("connector config delete failed: %w", err)
+	}
+
+	return nil
+}
+
+func findConnectorMetadata(connectorID string) *ConnectorMetadata {
+	for _, meta := range getConnectorMetadata() {
+		if meta.ID == connectorID {
+			found := meta
+			return &found
+		}
+	}
+	return nil
 }
 
 // connectorHealthCheckHandler performs health check on a specific connector

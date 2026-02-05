@@ -15,13 +15,15 @@ import OpenAI from "openai";
 
 const axonflow = new AxonFlow({
   endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
-  clientId: process.env.AXONFLOW_CLIENT_ID || "",
+  clientId: process.env.AXONFLOW_CLIENT_ID || "audit-logging-demo",
   clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "",
-  tenant: process.env.AXONFLOW_TENANT || "audit-logging-demo",
+  tenant: process.env.AXONFLOW_CLIENT_ID || process.env.AXONFLOW_TENANT || "audit-logging-demo",
 });
 
 const openaiKey = process.env.OPENAI_API_KEY || "";
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
+const userToken = process.env.AXONFLOW_USER_TOKEN || "audit-user";
+const clientId = process.env.AXONFLOW_CLIENT_ID || "audit-logging-demo";
 
 interface QueryTest {
   name: string;
@@ -67,7 +69,7 @@ async function main() {
     let precheck;
     try {
       precheck = await axonflow.getPolicyApprovedContext({
-        userToken: "audit-user",
+        userToken,
         query: q.query,
         context: { example: "audit-logging" },
       });
@@ -182,7 +184,7 @@ async function main() {
   // Get audit logs for tenant (default pagination)
   console.log("1. getAuditLogsByTenant (default options):");
   try {
-    const tenantLogs = await axonflow.getAuditLogsByTenant("audit-logging-demo");
+    const tenantLogs = await axonflow.getAuditLogsByTenant(clientId);
     console.log(`   Found ${tenantLogs.entries.length} entries`);
     assertCheck(Array.isArray(tenantLogs.entries), "getAuditLogsByTenant returns entries array");
     if (tenantLogs.entries.length > 0) {
@@ -200,7 +202,7 @@ async function main() {
   // Get audit logs with custom pagination
   console.log("2. getAuditLogsByTenant (limit=5, offset=0):");
   try {
-    const paginatedLogs = await axonflow.getAuditLogsByTenant("audit-logging-demo", {
+    const paginatedLogs = await axonflow.getAuditLogsByTenant(clientId, {
       limit: 5,
       offset: 0,
     });
@@ -218,7 +220,7 @@ async function main() {
   console.log("3. searchAuditLogs (with filters):");
   try {
     const searchResult = await axonflow.searchAuditLogs({
-      clientId: "audit-logging-demo",
+      clientId,
       requestType: "chat",
       limit: 10,
     });

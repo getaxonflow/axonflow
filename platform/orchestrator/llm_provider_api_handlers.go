@@ -21,6 +21,8 @@ import (
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/orchestrator/llm"
+	_ "axonflow/platform/orchestrator/llm/openai"
+	_ "axonflow/platform/orchestrator/llm/providers"
 )
 
 // Note: maxRequestBodySize and allowedOrigins are defined in policy_api_handlers.go
@@ -363,14 +365,9 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 		config.Settings = req.Settings
 	}
 
-	// Update in registry by unregister + re-register
-	if err := h.registry.Unregister(r.Context(), providerName); err != nil {
-		h.logger.Printf("[LLMProviderAPI] update error (unregister) provider %s: %v", providerName, err)
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update provider")
-		return
-	}
-	if err := h.registry.Register(r.Context(), config); err != nil {
-		h.logger.Printf("[LLMProviderAPI] update error (register) provider %s: %v", providerName, err)
+	// Atomically update provider config in registry
+	if err := h.registry.Update(r.Context(), config); err != nil {
+		h.logger.Printf("[LLMProviderAPI] update error provider %s: %v", providerName, err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update provider")
 		return
 	}
@@ -540,14 +537,8 @@ func (h *LLMProviderAPIHandler) updateRoutingConfigMux(w http.ResponseWriter, r 
 		}
 		if config != nil {
 			config.Weight = weight
-			// Registry doesn't have Update - must unregister and re-register
-			if err := h.registry.Unregister(r.Context(), name); err != nil {
-				h.logger.Printf("[LLMProviderAPI] unregister error provider %s: %v", name, err)
-				h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update routing")
-				return
-			}
-			if err := h.registry.Register(r.Context(), config); err != nil {
-				h.logger.Printf("[LLMProviderAPI] re-register error provider %s: %v", name, err)
+			if err := h.registry.Update(r.Context(), config); err != nil {
+				h.logger.Printf("[LLMProviderAPI] update routing error provider %s: %v", name, err)
 				h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update routing")
 				return
 			}

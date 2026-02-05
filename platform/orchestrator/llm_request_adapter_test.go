@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -24,9 +25,9 @@ func TestLLMRouterInterfaceCompliance(t *testing.T) {
 // TestNewUnifiedRouterWrapper tests wrapper creation
 func TestNewUnifiedRouterWrapper(t *testing.T) {
 	tests := []struct {
-		name       string
-		router     *llm.UnifiedRouter
-		wantNil    bool
+		name    string
+		router  *llm.UnifiedRouter
+		wantNil bool
 	}{
 		{
 			name:    "nil router creates wrapper with nil underlying",
@@ -61,6 +62,18 @@ func TestUnifiedRouterWrapper_Underlying(t *testing.T) {
 
 // TestOrchestratorRequestToLLMContext tests request conversion
 func TestOrchestratorRequestToLLMContext(t *testing.T) {
+	originalStrictDefault, hadStrictDefault := os.LookupEnv("LLM_STRICT_PROVIDER_DEFAULT")
+	if hadStrictDefault {
+		t.Cleanup(func() {
+			_ = os.Setenv("LLM_STRICT_PROVIDER_DEFAULT", originalStrictDefault)
+		})
+	} else {
+		t.Cleanup(func() {
+			_ = os.Unsetenv("LLM_STRICT_PROVIDER_DEFAULT")
+		})
+	}
+	_ = os.Unsetenv("LLM_STRICT_PROVIDER_DEFAULT")
+
 	tests := []struct {
 		name     string
 		req      OrchestratorRequest
@@ -162,6 +175,24 @@ func TestOrchestratorRequestToLLMContext(t *testing.T) {
 			},
 		},
 		{
+			name: "request with strict provider enabled",
+			req: OrchestratorRequest{
+				Query:       "Pin provider",
+				RequestType: "chat",
+				Context: map[string]interface{}{
+					"provider":        "openai",
+					"strict_provider": true,
+				},
+			},
+			expected: llm.RequestContext{
+				Query:          "Pin provider",
+				RequestType:    "chat",
+				Provider:       "openai",
+				StrictProvider: true,
+				AllowLocal:     true,
+			},
+		},
+		{
 			name: "request with empty context map",
 			req: OrchestratorRequest{
 				Query:       "Empty context",
@@ -201,6 +232,9 @@ func TestOrchestratorRequestToLLMContext(t *testing.T) {
 			if result.Provider != tt.expected.Provider {
 				t.Errorf("Provider: got %q, want %q", result.Provider, tt.expected.Provider)
 			}
+			if result.StrictProvider != tt.expected.StrictProvider {
+				t.Errorf("StrictProvider: got %v, want %v", result.StrictProvider, tt.expected.StrictProvider)
+			}
 			if result.Model != tt.expected.Model {
 				t.Errorf("Model: got %q, want %q", result.Model, tt.expected.Model)
 			}
@@ -217,6 +251,44 @@ func TestOrchestratorRequestToLLMContext(t *testing.T) {
 				t.Errorf("AllowLocal: got %v, want %v", result.AllowLocal, tt.expected.AllowLocal)
 			}
 		})
+	}
+}
+
+func TestOrchestratorRequestToLLMContext_StrictProviderDefault(t *testing.T) {
+	originalStrictDefault, hadStrictDefault := os.LookupEnv("LLM_STRICT_PROVIDER_DEFAULT")
+	if hadStrictDefault {
+		t.Cleanup(func() {
+			_ = os.Setenv("LLM_STRICT_PROVIDER_DEFAULT", originalStrictDefault)
+		})
+	} else {
+		t.Cleanup(func() {
+			_ = os.Unsetenv("LLM_STRICT_PROVIDER_DEFAULT")
+		})
+	}
+
+	_ = os.Setenv("LLM_STRICT_PROVIDER_DEFAULT", "true")
+
+	result := OrchestratorRequestToLLMContext(OrchestratorRequest{
+		Query:       "default strict",
+		RequestType: "chat",
+		Context: map[string]interface{}{
+			"provider": "openai",
+		},
+	})
+	if !result.StrictProvider {
+		t.Fatalf("StrictProvider should default to true from env")
+	}
+
+	result = OrchestratorRequestToLLMContext(OrchestratorRequest{
+		Query:       "request override",
+		RequestType: "chat",
+		Context: map[string]interface{}{
+			"provider":        "openai",
+			"strict_provider": false,
+		},
+	})
+	if result.StrictProvider {
+		t.Fatalf("StrictProvider should honor request override=false")
 	}
 }
 
@@ -532,9 +604,9 @@ func TestLegacyStatusToProviderStatus(t *testing.T) {
 
 // mockLLMRouterInterface is a mock implementation for testing
 type mockLLMRouterInterface struct {
-	routeRequestFn        func(ctx context.Context, req OrchestratorRequest) (*LLMResponse, *ProviderInfo, error)
-	isHealthyFn           func() bool
-	getProviderStatusFn   func() map[string]ProviderStatus
+	routeRequestFn          func(ctx context.Context, req OrchestratorRequest) (*LLMResponse, *ProviderInfo, error)
+	isHealthyFn             func() bool
+	getProviderStatusFn     func() map[string]ProviderStatus
 	updateProviderWeightsFn func(weights map[string]float64) error
 }
 

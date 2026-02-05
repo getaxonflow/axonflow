@@ -86,6 +86,11 @@ type BootstrapConfig struct {
 	// DefaultWeights sets default routing weights for providers.
 	// If nil, equal weights are used.
 	DefaultWeights map[ProviderType]float64
+
+	// ProviderConfigs supplies provider configs directly, bypassing env var detection.
+	// When set, BootstrapFromEnv skips environment variable scanning and uses these
+	// configs instead. This avoids goroutine-unsafe os.Setenv calls.
+	ProviderConfigs []*ProviderConfig
 }
 
 // BootstrapResult contains the result of the bootstrap process.
@@ -166,7 +171,14 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		}
 	}
 
-	// Bootstrap each provider type
+	// If caller supplied ProviderConfigs directly, use them instead of env vars.
+	// This avoids the goroutine-unsafe os.Setenv round-trip via ApplyLLMConfigToEnv.
+	if len(cfg.ProviderConfigs) > 0 {
+		logger.Printf("Bootstrapping from %d supplied provider configs (bypassing env vars)", len(cfg.ProviderConfigs))
+		return bootstrapFromConfigs(cfg, registry, logger, healthTimeout, enabledFilter, result)
+	}
+
+	// Bootstrap each provider type from environment variables
 	providers := []struct {
 		name      string
 		ptype     ProviderType
@@ -420,6 +432,65 @@ func bootstrapAzureOpenAI() (*ProviderConfig, error) {
 	}
 
 	return config, nil
+}
+
+// bootstrapFromConfigs registers pre-built ProviderConfigs into the registry.
+// This bypasses env var detection entirely. When enabledFilter is non-empty,
+// only providers whose type is in the filter list are registered.
+func bootstrapFromConfigs(cfg *BootstrapConfig, registry *Registry, logger *log.Logger, healthTimeout time.Duration, enabledFilter []ProviderType, result *BootstrapResult) (*BootstrapResult, error) {
+	ctx := context.Background()
+
+	for _, config := range cfg.ProviderConfigs {
+		if config == nil || config.Name == "" {
+			continue
+		}
+
+		// Respect EnabledProviders filter
+		if len(enabledFilter) > 0 && !containsProviderType(enabledFilter, config.Type) {
+			logger.Printf("Skipping %s: type %q not in enabled providers filter", config.Name, config.Type)
+			continue
+		}
+
+		if err := registry.Register(ctx, config); err != nil {
+			logger.Printf("Failed to register %s: %v", config.Name, err)
+			result.ProvidersFailed[config.Name] = err
+			continue
+		}
+
+		if !cfg.SkipHealthCheck {
+			healthCtx, cancel := context.WithTimeout(ctx, healthTimeout)
+			healthResult, err := registry.HealthCheckSingle(healthCtx, config.Name)
+			cancel()
+
+			if err != nil {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: health check failed: %v", config.Name, err))
+			} else if healthResult.Status != HealthStatusHealthy {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s: health check status: %s (%s)",
+						config.Name, healthResult.Status, healthResult.Message))
+			}
+		}
+
+		result.ProvidersBootstrapped = append(result.ProvidersBootstrapped, config.Name)
+		logger.Printf("Successfully bootstrapped %s (from config)", config.Name)
+	}
+
+	// Set default provider
+	defaultProvider := os.Getenv(EnvLLMDefaultProvider)
+	if defaultProvider != "" {
+		if registry.Has(defaultProvider) {
+			result.DefaultProvider = defaultProvider
+		} else {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("default provider %q not available", defaultProvider))
+		}
+	}
+
+	logger.Printf("Bootstrap from config complete: %d providers registered, %d failed",
+		len(result.ProvidersBootstrapped), len(result.ProvidersFailed))
+
+	return result, nil
 }
 
 // containsProviderType checks if a provider type is in the list.

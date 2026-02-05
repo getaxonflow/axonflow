@@ -34,6 +34,11 @@ docker compose up -d
 
 # Set API key for LLM calls
 export OPENAI_API_KEY=sk-your-key-here
+
+# For authenticated environments, provide client credentials and a JWT user token
+export AXONFLOW_CLIENT_ID=local-test
+export AXONFLOW_CLIENT_SECRET=<license-or-client-secret>
+export AXONFLOW_USER_TOKEN=<jwt-token>
 ```
 
 ## Run Examples
@@ -78,6 +83,17 @@ Each example demonstrates the complete Gateway Mode workflow:
 2. Your code makes the LLM call (using OpenAI in these examples)
 3. Audit logs the interaction with token usage and latency
 4. Final output shows governance overhead vs LLM latency
+
+## SDK + HTTP Coverage
+
+This example set covers the audit read methods added for issue `#878`:
+
+| Capability | Go | Python | TypeScript | Java | HTTP |
+|------------|----|--------|------------|------|------|
+| Pre-check (`getPolicyApprovedContext`) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/policy/pre-check`) |
+| Audit write (`auditLLMCall`) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/audit/llm-call`) |
+| Audit search (`SearchAuditLogs` / equivalent) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/v1/audit/search`) |
+| Tenant logs (`GetAuditLogsByTenant` / equivalent) | ✅ | ✅ | ✅ | ✅ | ✅ (`GET /api/v1/audit/tenant/{tenant_id}`) |
 
 ## Audit Log Fields
 

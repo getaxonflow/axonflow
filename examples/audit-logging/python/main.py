@@ -50,6 +50,9 @@ async def main() -> int:
     print("=" * 50)
     print()
 
+    user_token = os.getenv("AXONFLOW_USER_TOKEN", "audit-user")
+    client_id = os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo")
+
     openai_key = os.getenv("OPENAI_API_KEY", "")
     openai_client = None
     if OPENAI_AVAILABLE and openai_key:
@@ -60,7 +63,7 @@ async def main() -> int:
 
     async with AxonFlow(
         endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        client_id=os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
+        client_id=client_id,
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
 
@@ -70,7 +73,7 @@ async def main() -> int:
         try:
             precheck_start = time.time()
             precheck = await axonflow.get_policy_approved_context(
-                user_token="audit-user",
+                user_token=user_token,
                 query=query,
                 context={"example": "audit-logging"},
             )
@@ -129,7 +132,7 @@ async def main() -> int:
         print("2. Blocked Query - SQL Injection Pre-check")
         try:
             blocked_precheck = await axonflow.get_policy_approved_context(
-                user_token="audit-user",
+                user_token=user_token,
                 query="SELECT * FROM users; DROP TABLE users;--",
                 context={"example": "audit-logging"},
             )
@@ -146,12 +149,12 @@ async def main() -> int:
     print("3. Query Audit Logs")
     async with AxonFlow(
         endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        client_id=os.getenv("AXONFLOW_CLIENT_ID", "audit-logging-demo"),
+        client_id=client_id,
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as query_client:
         try:
             tenant_logs = await query_client.get_audit_logs_by_tenant(
-                "audit-logging-demo",
+                client_id,
                 AuditQueryOptions(limit=10, offset=0),
             )
             assert_check(tenant_logs is not None, "get_audit_logs_by_tenant succeeded")
@@ -166,7 +169,7 @@ async def main() -> int:
         try:
             search_result = await query_client.search_audit_logs(
                 AuditSearchRequest(
-                    client_id="audit-logging-demo",
+                    client_id=client_id,
                     limit=10,
                 )
             )

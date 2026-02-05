@@ -12,7 +12,6 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -30,9 +29,10 @@ import (
 
 // init registers all built-in provider factories.
 // These are the Community providers available without an enterprise license.
+// Note: OpenAI is registered in the llm/openai package to avoid import cycles
+// while using the LLM SDK.
 func init() {
 	RegisterFactory(ProviderTypeAnthropic, NewAnthropicProviderFactory)
-	RegisterFactory(ProviderTypeOpenAI, NewOpenAIProviderFactory)
 	RegisterFactory(ProviderTypeOllama, NewOllamaProviderFactory)
 	RegisterFactory(ProviderTypeGemini, NewGeminiProviderFactory)
 	RegisterFactory(ProviderTypeAzureOpenAI, NewAzureOpenAIProviderFactory)
@@ -198,471 +198,11 @@ func (a *AnthropicProviderAdapter) EstimateCost(req CompletionRequest) *CostEsti
 // Verify interface compliance at compile time.
 var _ Provider = (*AnthropicProviderAdapter)(nil)
 
-// OpenAI provider implementation
-
-// OpenAI provider constants.
-const (
-	// OpenAIDefaultModel is the default OpenAI model.
-	OpenAIDefaultModel = "gpt-4o"
-
-	// OpenAIDefaultEndpoint is the default OpenAI API endpoint.
-	OpenAIDefaultEndpoint = "https://api.openai.com"
-
-	// OpenAIDefaultTimeout is the default timeout for OpenAI requests.
-	OpenAIDefaultTimeout = 120 * time.Second
-
-	// OpenAI GPT-4o pricing per 1K tokens (as of 2025).
-	openAIInputCostPer1K  = 0.0025 // $2.50/1M input
-	openAIOutputCostPer1K = 0.01   // $10/1M output
-)
-
 // Anthropic pricing constants per 1K tokens (Claude 3.5 Sonnet).
 const (
-	anthropicInputCostPer1K  = 0.003  // $3/1M input
-	anthropicOutputCostPer1K = 0.015  // $15/1M output
+	anthropicInputCostPer1K  = 0.003 // $3/1M input
+	anthropicOutputCostPer1K = 0.015 // $15/1M output
 )
-
-// NewOpenAIProviderFactory creates an OpenAI provider from configuration.
-func NewOpenAIProviderFactory(config ProviderConfig) (Provider, error) {
-	if config.APIKey == "" && config.APIKeySecretARN == "" {
-		return nil, &FactoryError{
-			ProviderType: ProviderTypeOpenAI,
-			Code:         ErrFactoryInvalidConfig,
-			Message:      "API key is required for OpenAI provider",
-		}
-	}
-
-	// Default model
-	model := config.Model
-	if model == "" {
-		model = OpenAIDefaultModel
-	}
-
-	// Default timeout
-	timeout := OpenAIDefaultTimeout
-	if config.TimeoutSeconds > 0 {
-		timeout = time.Duration(config.TimeoutSeconds) * time.Second
-	}
-
-	// Build endpoint
-	endpoint := config.Endpoint
-	if endpoint == "" {
-		endpoint = OpenAIDefaultEndpoint
-	}
-
-	return &OpenAIProvider{
-		name:     config.Name,
-		apiKey:   config.APIKey,
-		endpoint: endpoint,
-		model:    model,
-		timeout:  timeout,
-		client:   &http.Client{Timeout: timeout},
-		healthy:  true,
-	}, nil
-}
-
-// OpenAIProvider implements Provider for OpenAI's GPT models.
-type OpenAIProvider struct {
-	name     string
-	apiKey   string
-	endpoint string
-	model    string
-	timeout  time.Duration
-	client   *http.Client
-	healthy  bool
-	mu       sync.RWMutex
-}
-
-// Name returns the provider instance name.
-func (p *OpenAIProvider) Name() string {
-	return p.name
-}
-
-// Type returns the provider type.
-func (p *OpenAIProvider) Type() ProviderType {
-	return ProviderTypeOpenAI
-}
-
-// Complete generates a completion for the given request.
-func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	start := time.Now()
-
-	model := req.Model
-	if model == "" {
-		model = p.model
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4096
-	}
-
-	temperature := req.Temperature
-	if temperature < 0 {
-		temperature = 0.7
-	}
-
-	// Build messages
-	messages := make([]map[string]string, 0, 2)
-	if req.SystemPrompt != "" {
-		messages = append(messages, map[string]string{
-			"role":    "system",
-			"content": req.SystemPrompt,
-		})
-	}
-	messages = append(messages, map[string]string{
-		"role":    "user",
-		"content": req.Prompt,
-	})
-
-	// Build OpenAI request
-	openAIReq := map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"max_tokens":  maxTokens,
-		"temperature": temperature,
-	}
-
-	if req.TopP > 0 {
-		openAIReq["top_p"] = req.TopP
-	}
-
-	if len(req.StopSequences) > 0 {
-		openAIReq["stop"] = req.StopSequences
-	}
-
-	reqBody, err := json.Marshal(openAIReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.endpoint+"/v1/chat/completions", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		p.setHealthy(false)
-		return nil, fmt.Errorf("OpenAI API error: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode >= 500 {
-			p.setHealthy(false)
-		}
-		return nil, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	p.setHealthy(true)
-
-	var openAIResp struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Index        int `json:"index"`
-			Message      struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	content := ""
-	finishReason := ""
-	if len(openAIResp.Choices) > 0 {
-		content = openAIResp.Choices[0].Message.Content
-		finishReason = openAIResp.Choices[0].FinishReason
-	}
-
-	return &CompletionResponse{
-		Content: content,
-		Model:   openAIResp.Model,
-		Usage: UsageStats{
-			PromptTokens:     openAIResp.Usage.PromptTokens,
-			CompletionTokens: openAIResp.Usage.CompletionTokens,
-			TotalTokens:      openAIResp.Usage.TotalTokens,
-		},
-		Latency:      time.Since(start),
-		FinishReason: finishReason,
-		Metadata: map[string]any{
-			"provider":   "openai",
-			"request_id": openAIResp.ID,
-		},
-	}, nil
-}
-
-// HealthCheck verifies the provider is operational.
-func (p *OpenAIProvider) HealthCheck(ctx context.Context) (*HealthCheckResult, error) {
-	p.mu.RLock()
-	healthy := p.healthy && p.apiKey != ""
-	p.mu.RUnlock()
-
-	status := HealthStatusUnhealthy
-	message := "provider reports unhealthy"
-	if healthy {
-		status = HealthStatusHealthy
-		message = "provider is operational"
-	}
-
-	return &HealthCheckResult{
-		Status:      status,
-		Latency:     0,
-		Message:     message,
-		LastChecked: time.Now(),
-	}, nil
-}
-
-// Capabilities returns the list of features this provider supports.
-func (p *OpenAIProvider) Capabilities() []Capability {
-	return []Capability{
-		CapabilityChat,
-		CapabilityCompletion,
-		CapabilityStreaming,
-		CapabilityVision,
-		CapabilityFunctionCalling,
-		CapabilityCodeGeneration,
-		CapabilityEmbeddings,
-	}
-}
-
-// SupportsStreaming indicates if the provider supports streaming responses.
-func (p *OpenAIProvider) SupportsStreaming() bool {
-	return true
-}
-
-// CompleteStream generates a streaming completion for the given request.
-func (p *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionRequest, handler StreamHandler) (*CompletionResponse, error) {
-	start := time.Now()
-
-	model := req.Model
-	if model == "" {
-		model = p.model
-	}
-
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4096
-	}
-
-	temperature := req.Temperature
-	if temperature < 0 {
-		temperature = 0.7
-	}
-
-	// Build messages
-	messages := make([]map[string]string, 0, 2)
-	if req.SystemPrompt != "" {
-		messages = append(messages, map[string]string{
-			"role":    "system",
-			"content": req.SystemPrompt,
-		})
-	}
-	messages = append(messages, map[string]string{
-		"role":    "user",
-		"content": req.Prompt,
-	})
-
-	// Build OpenAI request with streaming enabled
-	openAIReq := map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"max_tokens":  maxTokens,
-		"temperature": temperature,
-		"stream":      true,
-	}
-
-	if req.TopP > 0 {
-		openAIReq["top_p"] = req.TopP
-	}
-
-	if len(req.StopSequences) > 0 {
-		openAIReq["stop"] = req.StopSequences
-	}
-
-	reqBody, err := json.Marshal(openAIReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.endpoint+"/v1/chat/completions", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		p.setHealthy(false)
-		return nil, fmt.Errorf("OpenAI API error: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode >= 500 {
-			p.setHealthy(false)
-		}
-		return nil, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	p.setHealthy(true)
-
-	// Parse SSE stream
-	var fullContent strings.Builder
-	var finishReason string
-	var usage UsageStats
-	var responseModel string
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
-		}
-
-		// Parse SSE data
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Choices []struct {
-				Index int `json:"index"`
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-				FinishReason string `json:"finish_reason"`
-			} `json:"choices"`
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				TotalTokens      int `json:"total_tokens"`
-			} `json:"usage,omitempty"`
-		}
-
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // Skip malformed chunks
-		}
-
-		if chunk.Model != "" {
-			responseModel = chunk.Model
-		}
-
-		if len(chunk.Choices) > 0 {
-			choice := chunk.Choices[0]
-			if choice.Delta.Content != "" {
-				fullContent.WriteString(choice.Delta.Content)
-
-				// Call handler with chunk
-				if handler != nil {
-					if err := handler(StreamChunk{
-						Content: choice.Delta.Content,
-						Done:    false,
-					}); err != nil {
-						return nil, fmt.Errorf("stream handler error: %w", err)
-					}
-				}
-			}
-
-			if choice.FinishReason != "" {
-				finishReason = choice.FinishReason
-			}
-		}
-
-		if chunk.Usage != nil {
-			usage = UsageStats{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading stream: %w", err)
-	}
-
-	// Send final done chunk
-	if handler != nil {
-		if err := handler(StreamChunk{
-			Content: "",
-			Done:    true,
-		}); err != nil {
-			return nil, fmt.Errorf("stream handler error: %w", err)
-		}
-	}
-
-	return &CompletionResponse{
-		Content:      fullContent.String(),
-		Model:        responseModel,
-		Usage:        usage,
-		Latency:      time.Since(start),
-		FinishReason: finishReason,
-		Metadata: map[string]any{
-			"provider": "openai",
-			"streamed": true,
-		},
-	}, nil
-}
-
-// EstimateCost provides a cost estimate for a given request.
-func (p *OpenAIProvider) EstimateCost(req CompletionRequest) *CostEstimate {
-	estimatedInputTokens, estimatedOutputTokens := estimateTokens(req)
-	totalEstimate := calculateCost(estimatedInputTokens, estimatedOutputTokens,
-		openAIInputCostPer1K, openAIOutputCostPer1K)
-
-	return &CostEstimate{
-		InputCostPer1K:        openAIInputCostPer1K,
-		OutputCostPer1K:       openAIOutputCostPer1K,
-		EstimatedInputTokens:  estimatedInputTokens,
-		EstimatedOutputTokens: estimatedOutputTokens,
-		TotalEstimate:         totalEstimate,
-		Currency:              "USD",
-	}
-}
-
-// setHealthy updates the provider health status.
-func (p *OpenAIProvider) setHealthy(healthy bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.healthy = healthy
-}
-
-// Verify interface compliance at compile time.
-var _ Provider = (*OpenAIProvider)(nil)
-var _ StreamingProvider = (*OpenAIProvider)(nil)
 
 // Ollama provider implementation
 
@@ -847,10 +387,10 @@ func (p *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		Latency:      time.Since(start),
 		FinishReason: finishReason,
 		Metadata: map[string]any{
-			"provider":            "ollama",
-			"total_duration_ns":   ollamaResp.TotalDuration,
-			"load_duration_ns":    ollamaResp.LoadDuration,
-			"eval_duration_ns":    ollamaResp.EvalDuration,
+			"provider":          "ollama",
+			"total_duration_ns": ollamaResp.TotalDuration,
+			"load_duration_ns":  ollamaResp.LoadDuration,
+			"eval_duration_ns":  ollamaResp.EvalDuration,
 		},
 	}, nil
 }
@@ -1006,11 +546,11 @@ func (p *OllamaProvider) CompleteStream(ctx context.Context, req CompletionReque
 	decoder := json.NewDecoder(resp.Body)
 	for decoder.More() {
 		var chunk struct {
-			Model              string `json:"model"`
-			Response           string `json:"response"`
-			Done               bool   `json:"done"`
-			PromptEvalCount    int    `json:"prompt_eval_count"`
-			EvalCount          int    `json:"eval_count"`
+			Model           string `json:"model"`
+			Response        string `json:"response"`
+			Done            bool   `json:"done"`
+			PromptEvalCount int    `json:"prompt_eval_count"`
+			EvalCount       int    `json:"eval_count"`
 		}
 
 		if err := decoder.Decode(&chunk); err != nil {

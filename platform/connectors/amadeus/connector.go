@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -26,19 +27,31 @@ var ErrEnterpriseFeature = errors.New("amadeus connector is an enterprise featur
 // AmadeusConnector is the Community stub for the Amadeus Travel API connector.
 // The full implementation is available in the enterprise edition.
 type AmadeusConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewAmadeusConnector creates a new Amadeus connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewAmadeusConnector() *AmadeusConnector {
-	return &AmadeusConnector{}
+	conn := &AmadeusConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("amadeus")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to Amadeus API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *AmadeusConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("amadeus", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "amadeus"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
 	return base.NewConnectorError(config.Name, "Connect", "amadeus connector requires enterprise license", ErrEnterpriseFeature)
 }
 
@@ -75,20 +88,4 @@ func (c *AmadeusConnector) Name() string {
 		return c.config.Name
 	}
 	return "amadeus"
-}
-
-// Type returns the connector type.
-func (c *AmadeusConnector) Type() string {
-	return "amadeus"
-}
-
-// Version returns the connector version.
-func (c *AmadeusConnector) Version() string {
-	return "community-stub"
-}
-
-// Capabilities returns the list of capabilities.
-// Community stub: Returns empty list (no capabilities in Community mode).
-func (c *AmadeusConnector) Capabilities() []string {
-	return []string{}
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/config"
 	"axonflow/platform/connectors/registry"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/serviceauth"
@@ -42,14 +43,14 @@ type mockConnector struct {
 	executeError  error
 }
 
-func (m *mockConnector) Name() string                                                       { return "mock" }
-func (m *mockConnector) Type() string                                                       { return "mock" }
-func (m *mockConnector) Version() string                                                    { return "1.0.0" }
+func (m *mockConnector) Name() string    { return "mock" }
+func (m *mockConnector) Type() string    { return "mock" }
+func (m *mockConnector) Version() string { return "1.0.0" }
 func (m *mockConnector) Capabilities() []string {
 	return []string{"query", "execute"}
 }
-func (m *mockConnector) Connect(ctx context.Context, cfg *base.ConnectorConfig) error      { return nil }
-func (m *mockConnector) Disconnect(ctx context.Context) error                              { return nil }
+func (m *mockConnector) Connect(ctx context.Context, cfg *base.ConnectorConfig) error { return nil }
+func (m *mockConnector) Disconnect(ctx context.Context) error                         { return nil }
 func (m *mockConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, error) {
 	return &base.HealthStatus{Healthy: true}, nil
 }
@@ -80,6 +81,32 @@ func (m *mockConnector) Execute(ctx context.Context, cmd *base.Command) (*base.C
 		Duration:     5 * time.Millisecond,
 		Message:      "Success",
 	}, nil
+}
+
+func TestValidateTenantConnectorAccess_FallbackToStaticRegistry(t *testing.T) {
+	originalRegistry := mcpRegistry
+	originalRuntimeConfigService := runtimeConfigService
+	t.Cleanup(func() {
+		mcpRegistry = originalRegistry
+		runtimeConfigService = originalRuntimeConfigService
+	})
+
+	mcpRegistry = registry.NewRegistry()
+	if err := mcpRegistry.Register("http-rest", &mockConnector{}, &base.ConnectorConfig{
+		Name:     "http-rest",
+		Type:     "http",
+		TenantID: "tenant-a",
+		Timeout:  1 * time.Second,
+	}); err != nil {
+		t.Fatalf("failed to register test connector: %v", err)
+	}
+
+	// Empty runtime service returns "no connector configurations found" and should fall back.
+	runtimeConfigService = config.NewRuntimeConfigService(config.RuntimeConfigServiceOptions{})
+
+	if err := validateTenantConnectorAccess(context.Background(), "http-rest", "tenant-a"); err != nil {
+		t.Fatalf("expected fallback access check to succeed, got error: %v", err)
+	}
 }
 
 // TestRegisterMCPHandlers tests handler registration
@@ -1017,8 +1044,8 @@ func TestMCPQueryHandler_ExfiltrationRowLimitExceeded(t *testing.T) {
 
 	// Set up exfiltration checker with low row limit
 	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
-		MaxRowsPerQuery:  5,                   // Very low limit for testing
-		MaxBytesPerQuery: 10 * 1024 * 1024,    // 10MB - won't be hit
+		MaxRowsPerQuery:  5,                // Very low limit for testing
+		MaxBytesPerQuery: 10 * 1024 * 1024, // 10MB - won't be hit
 		Enabled:          true,
 	})
 
@@ -1091,8 +1118,8 @@ func TestMCPQueryHandler_ExfiltrationByteLimitExceeded(t *testing.T) {
 
 	// Set up exfiltration checker with low byte limit
 	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
-		MaxRowsPerQuery:  10000,  // High row limit - won't be hit
-		MaxBytesPerQuery: 100,    // Very low byte limit - will be hit
+		MaxRowsPerQuery:  10000, // High row limit - won't be hit
+		MaxBytesPerQuery: 100,   // Very low byte limit - will be hit
 		Enabled:          true,
 	})
 
@@ -1334,11 +1361,11 @@ func TestMCPQueryHandler_DynamicPolicyBlocks(t *testing.T) {
 
 	// Initialize dynamic policy evaluator pointing to mock server
 	sharedpolicy.InitGlobalDynamicPolicyEvaluatorWithConfig(sharedpolicy.DynamicPolicyConfig{
-		Enabled:             true,
+		Enabled:              true,
 		OrchestratorEndpoint: server.URL,
-		Timeout:             5 * time.Second,
-		GracefulDegradation: false, // Don't fall back on error
-		EnabledConnectors:   []string{"test-db"},
+		Timeout:              5 * time.Second,
+		GracefulDegradation:  false, // Don't fall back on error
+		EnabledConnectors:    []string{"test-db"},
 	})
 
 	reqBody := MCPQueryRequest{
@@ -1811,7 +1838,7 @@ func TestMCPQueryHandler_ExfiltrationWithEnabledFalse(t *testing.T) {
 
 	// Set up exfiltration checker with Enabled=false
 	sharedpolicy.InitGlobalExfiltrationCheckerWithLimits(sharedpolicy.ExfiltrationLimits{
-		MaxRowsPerQuery:  5,  // Would fail if enabled
+		MaxRowsPerQuery:  5, // Would fail if enabled
 		MaxBytesPerQuery: 100,
 		Enabled:          false, // Disabled
 	})

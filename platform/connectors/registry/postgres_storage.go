@@ -22,12 +22,14 @@ import (
 	_ "github.com/lib/pq"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/config"
 )
 
 // PostgreSQLStorage implements persistent storage for connector registry
 type PostgreSQLStorage struct {
-	db     *sql.DB
-	logger *log.Logger
+	db        *sql.DB
+	encryptor *config.CredentialEncryptor
+	logger    *log.Logger
 }
 
 // ConnectorRecord represents a persisted connector configuration
@@ -126,7 +128,12 @@ func (s *PostgreSQLStorage) SaveConnector(ctx context.Context, id string, config
 		return fmt.Errorf("failed to marshal options: %w", err)
 	}
 
-	credentialsJSON, err := json.Marshal(config.Credentials)
+	var credentialsJSON []byte
+	if s.encryptor != nil {
+		credentialsJSON, err = s.encryptor.Encrypt(config.Credentials)
+	} else {
+		credentialsJSON, err = json.Marshal(config.Credentials)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to marshal credentials: %w", err)
 	}
@@ -190,7 +197,12 @@ func (s *PostgreSQLStorage) GetConnector(ctx context.Context, id string) (*base.
 	}
 
 	var credentials map[string]string
-	if err := json.Unmarshal(credentialsJSON, &credentials); err != nil {
+	if s.encryptor != nil {
+		credentials, err = s.encryptor.Decrypt(credentialsJSON)
+	} else {
+		err = json.Unmarshal(credentialsJSON, &credentials)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal credentials: %w", err)
 	}
 

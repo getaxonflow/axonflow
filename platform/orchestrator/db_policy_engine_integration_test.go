@@ -18,17 +18,61 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for DatabaseDynamicPolicyEngine with real PostgreSQL
-// These tests require DATABASE_URL to be set
+// Uses testcontainers if DATABASE_URL is not set
+
+// setupTestDBEnv ensures DATABASE_URL is set, using testcontainers if needed.
+// Returns a cleanup function to restore the original value.
+func setupTestDBEnv(t *testing.T) func() {
+	t.Helper()
+
+	originalURL := os.Getenv("DATABASE_URL")
+	if originalURL != "" {
+		// DATABASE_URL already set, nothing to do
+		return func() {}
+	}
+
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, dbPolicyEngineSchema())
+
+	os.Setenv("DATABASE_URL", pg.URL)
+	return func() {
+		if originalURL != "" {
+			os.Setenv("DATABASE_URL", originalURL)
+		} else {
+			os.Unsetenv("DATABASE_URL")
+		}
+	}
+}
+
+// dbPolicyEngineSchema returns the schema needed for policy engine tests.
+func dbPolicyEngineSchema() string {
+	return `
+		CREATE TABLE IF NOT EXISTS dynamic_policies (
+			policy_id VARCHAR(36) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			description TEXT,
+			policy_type VARCHAR(50) NOT NULL,
+			conditions JSONB NOT NULL DEFAULT '[]',
+			actions JSONB NOT NULL DEFAULT '[]',
+			tenant_id VARCHAR(255) NOT NULL,
+			priority INTEGER DEFAULT 0,
+			enabled BOOLEAN DEFAULT true,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`
+}
 
 func TestDatabaseDynamicPolicyEngine_Initialization(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
 	// DATABASE_URL is already set from environment
 
@@ -49,12 +93,10 @@ func TestDatabaseDynamicPolicyEngine_Initialization(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	// Create test database connection to insert test policy
 	db, err := sql.Open("postgres", dbURL)
@@ -106,12 +148,10 @@ func TestDatabaseDynamicPolicyEngine_RefreshPolicies(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	// Create test database connection
 	db, err := sql.Open("postgres", dbURL)
@@ -162,12 +202,10 @@ func TestDatabaseDynamicPolicyEngine_GetPolicy(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_EvaluatePolicies(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	// Create test database connection
 	db, err := sql.Open("postgres", dbURL)
@@ -253,12 +291,8 @@ func TestDatabaseDynamicPolicyEngine_InvalidDBURL(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_HealthCheck(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
-
-	// DATABASE_URL is already set from environment
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
 	engine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
@@ -281,12 +315,10 @@ func TestDatabaseDynamicPolicyEngine_HealthCheck(t *testing.T) {
 }
 
 func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithConditions(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -354,12 +386,10 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithConditions(t *testing.T
 }
 
 func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithAllowedProviders(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -413,12 +443,10 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithAllowedProviders(t *tes
 }
 
 func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithBlockAction(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
-	// DATABASE_URL is already set from environment
+	dbURL := os.Getenv("DATABASE_URL")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -490,12 +518,8 @@ func TestDatabaseDynamicPolicyEngine_EvaluatePoliciesWithBlockAction(t *testing.
 }
 
 func TestDatabaseDynamicPolicyEngine_ListActivePolicies(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
-
-	// DATABASE_URL is already set from environment
+	cleanup := setupTestDBEnv(t)
+	defer cleanup()
 
 	engine, err := NewDatabaseDynamicPolicyEngine()
 	if err != nil {
