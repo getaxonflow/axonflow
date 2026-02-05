@@ -206,6 +206,45 @@ AxonFlow protects sensitive data in audit logs:
 
 ## Querying Audit Logs
 
+### SDK and API Query Methods
+
+Use the SDK read methods (issue `#878`) or HTTP API directly:
+
+```go
+result, err := client.SearchAuditLogs(ctx, &axonflow.AuditSearchRequest{
+    ClientID: "my-client",
+    Limit:    50,
+})
+tenantLogs, err := client.GetAuditLogsByTenant(ctx, "my-client", nil)
+```
+
+```python
+result = await client.search_audit_logs(AuditSearchRequest(client_id="my-client", limit=50))
+tenant_logs = await client.get_audit_logs_by_tenant("my-client", AuditQueryOptions(limit=50))
+```
+
+```typescript
+const result = await client.searchAuditLogs({ clientId: "my-client", limit: 50 });
+const tenantLogs = await client.getAuditLogsByTenant("my-client", { limit: 50, offset: 0 });
+```
+
+```java
+AuditSearchResponse result = client.searchAuditLogs(
+    AuditSearchRequest.builder().clientId("my-client").limit(50).build()
+);
+AuditSearchResponse tenantLogs = client.getAuditLogsByTenant("my-client");
+```
+
+```bash
+curl -X POST http://localhost:8080/api/v1/audit/search \
+  -H "Content-Type: application/json" \
+  -H "X-Client-ID: my-client" \
+  -d '{"client_id":"my-client","limit":50}'
+
+curl http://localhost:8080/api/v1/audit/tenant/my-client \
+  -H "X-Client-ID: my-client"
+```
+
 ### Daily Summary (MCP)
 
 ```sql

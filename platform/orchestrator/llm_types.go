@@ -38,6 +38,12 @@ type LLMRouterConfig struct {
 	GeminiKey    string
 	GeminiModel  string
 
+	// Azure OpenAI configuration
+	AzureOpenAIEndpoint       string
+	AzureOpenAIAPIKey         string
+	AzureOpenAIDeploymentName string
+	AzureOpenAIAPIVersion     string
+
 	// Bedrock configuration
 	BedrockRegion string
 	BedrockModel  string

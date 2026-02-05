@@ -6,9 +6,63 @@ package orchestrator
 import (
 	"context"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 
 	"axonflow/platform/orchestrator/llm"
 )
+
+func strictProviderDefaultFromEnv() bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv("LLM_STRICT_PROVIDER_DEFAULT")))
+	if raw == "" {
+		return false
+	}
+
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			log.Printf("[LLM_ADAPTER] Ignoring invalid LLM_STRICT_PROVIDER_DEFAULT value %q (expected true/false)", raw)
+			return false
+		}
+		return parsed
+	}
+}
+
+func parseStrictProviderFlag(ctx map[string]interface{}) (bool, bool) {
+	if ctx == nil {
+		return false, false
+	}
+
+	raw, ok := ctx["strict_provider"]
+	if !ok {
+		return false, false
+	}
+
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		normalized := strings.TrimSpace(strings.ToLower(v))
+		switch normalized {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		default:
+			log.Printf("[LLM_ADAPTER] Ignoring invalid context.strict_provider value %q (expected boolean)", v)
+			return false, false
+		}
+	default:
+		log.Printf("[LLM_ADAPTER] Ignoring non-boolean context.strict_provider value of type %T", raw)
+		return false, false
+	}
+}
 
 // LLMRouterInterface defines the interface for LLM routing that components
 // like PlanningEngine, ResultAggregator, and WorkflowEngine depend on.
@@ -86,6 +140,7 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 	maxTokens := 0
 	temperature := 0.0
 	systemPrompt := ""
+	strictProvider := strictProviderDefaultFromEnv()
 
 	// Policy routing hints (Issue #883 - strict provider enforcement)
 	policyPreferredProvider := ""
@@ -119,6 +174,9 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		if sp, ok := req.Context["system_prompt"].(string); ok {
 			systemPrompt = sp
 		}
+		if strict, provided := parseStrictProviderFlag(req.Context); provided {
+			strictProvider = strict
+		}
 
 		// Extract policy routing hints injected by dynamic policy evaluation
 		if pp, ok := req.Context["policy_preferred_provider"].(string); ok {
@@ -141,6 +199,7 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		OrgID:                   req.Client.OrgID,
 		TenantID:                req.Client.TenantID,
 		Provider:                provider,
+		StrictProvider:          strictProvider,
 		Model:                   model,
 		MaxTokens:               maxTokens,
 		Temperature:             temperature,

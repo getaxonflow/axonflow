@@ -28,11 +28,17 @@ Once agents touch real systems, teams run into familiar problems: partial failur
 
 AxonFlow treats agents as long-running, stateful systems that require governance, observability, and control at runtime — not just good prompts.
 
-> **Using AxonFlow in evaluation or production?**
+> **Evaluating AxonFlow in production?** We're opening limited Design Partner slots.
 >
-> If you are evaluating AxonFlow internally and prefer to share questions or feedback privately, you are welcome to reach out at **hello@getaxonflow.com**. This includes early evaluations, partial integrations, or cases where you are still determining fit.
+> Free 30-minute architecture and incident-readiness review, priority issue triage, roadmap input, and early feature access.
 >
-> We are particularly interested in understanding where real systems encounter constraints around permissions, compliance, reliability, cost, or organizational ownership. All conversations are treated as confidential, and there is no expectation of commitment or follow-up unless you want one.
+> [Apply here](https://getaxonflow.com/design-partner?utm_source=readme_platform) or email [design-partners@getaxonflow.com](mailto:design-partners@getaxonflow.com).
+>
+> No commitment required. We reply within 48 hours.
+
+> **AxonFlow Feedback Week (Feb 5–12, 2026)** — We're shipping 3 improvements from user feedback.
+>
+> [Share feedback](https://github.com/getaxonflow/axonflow/discussions/239) or email [hello@getaxonflow.com](mailto:hello@getaxonflow.com) for private feedback.
 
 ---
 
@@ -82,6 +88,9 @@ curl http://localhost:8081/health
 | **Google Gemini** | ✅ | ✅ | Gemini 3 Flash, Gemini 3 Pro |
 | **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
+
+> LLM provider configuration applies to Proxy Mode and MAP, where AxonFlow routes requests to the provider.
+> In Gateway Mode and WCP, your application calls the LLM directly, including via frameworks like LangChain or CrewAI, so any provider works.
 
 → **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 
@@ -288,11 +297,11 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.0.0</version>
+    <version>3.2.0</version>
 </dependency>
 ```
 
-> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.0.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
+> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.1.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
 
 ### Python
 
@@ -328,7 +337,7 @@ const response = await axonflow.protect(async () => {
 ### Go
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go"
+import "github.com/getaxonflow/axonflow-sdk-go/v3"
 
 client := axonflow.NewClient("http://localhost:8080")
 response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{

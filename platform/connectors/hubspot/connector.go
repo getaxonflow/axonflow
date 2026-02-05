@@ -10,6 +10,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -18,20 +19,32 @@ var ErrEnterpriseFeature = errors.New("hubspot connector is an enterprise featur
 // HubSpotConnector is the Community stub for the HubSpot CRM connector.
 // The full implementation is available in the enterprise edition.
 type HubSpotConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewHubSpotConnector creates a new HubSpot connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewHubSpotConnector() *HubSpotConnector {
-	return &HubSpotConnector{}
+	conn := &HubSpotConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("hubspot")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to HubSpot API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *HubSpotConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("hubspot", "Connect", "config is required", nil)
+	}
 	c.config = config
-	return ErrEnterpriseFeature
+	if config.Type == "" {
+		config.Type = "hubspot"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
+	return base.NewConnectorError(config.Name, "Connect", "hubspot connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
@@ -67,16 +80,6 @@ func (c *HubSpotConnector) Name() string {
 		return c.config.Name
 	}
 	return "hubspot"
-}
-
-// Type returns the connector type.
-func (c *HubSpotConnector) Type() string {
-	return "hubspot"
-}
-
-// Version returns the connector version.
-func (c *HubSpotConnector) Version() string {
-	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.

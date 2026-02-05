@@ -56,6 +56,7 @@ BEGIN
                 description TEXT,
                 connection_url VARCHAR(500),
                 options JSONB DEFAULT '{}',
+                credentials JSONB DEFAULT '{}',
                 credentials_secret_arn VARCHAR(500),
                 credentials_secret_version VARCHAR(100),
                 timeout_ms INTEGER DEFAULT 30000,
@@ -70,7 +71,9 @@ BEGIN
                 updated_by VARCHAR(100),
                 UNIQUE(tenant_id, connector_name),
                 CONSTRAINT check_connector_type CHECK (connector_type IN (
-                    'postgres', 'cassandra', 'salesforce', 'amadeus', 'slack', 'snowflake', 'custom'
+                    'postgres', 'cassandra', 'salesforce', 'amadeus', 'slack', 'snowflake',
+                    'http', 'mysql', 'mongodb', 'redis', 's3', 'azureblob', 'gcs',
+                    'hubspot', 'jira', 'servicenow', 'custom'
                 )),
                 CONSTRAINT check_health_status CHECK (health_status IN ('healthy', 'unhealthy', 'unknown'))
             )
@@ -89,6 +92,7 @@ BEGIN
 
     -- ============================================================
     -- 3. LLM Provider Configurations Table (Orchestrator)
+    -- Supports runtime providers: bedrock, ollama, openai, anthropic, gemini, azure-openai, custom
     -- ============================================================
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'llm_provider_configs') THEN
         EXECUTE $table$
@@ -112,7 +116,9 @@ BEGIN
                 created_by VARCHAR(100),
                 updated_by VARCHAR(100),
                 UNIQUE(tenant_id, provider_name),
-                CONSTRAINT check_provider_name CHECK (provider_name IN ('bedrock', 'ollama', 'openai', 'anthropic')),
+                CONSTRAINT check_provider_name CHECK (provider_name IN (
+                    'bedrock', 'ollama', 'openai', 'anthropic', 'gemini', 'azure-openai', 'custom'
+                )),
                 CONSTRAINT check_llm_health_status CHECK (health_status IN ('healthy', 'unhealthy', 'unknown')),
                 CONSTRAINT check_weight_range CHECK (weight >= 0.00 AND weight <= 1.00)
             )
@@ -212,6 +218,7 @@ CREATE OR REPLACE FUNCTION get_connector_config(
     connector_type VARCHAR(50),
     connection_url VARCHAR(500),
     options JSONB,
+    credentials JSONB,
     credentials_secret_arn VARCHAR(500),
     timeout_ms INTEGER,
     max_retries INTEGER,
@@ -232,6 +239,7 @@ BEGIN
         cc.connector_type,
         cc.connection_url,
         cc.options,
+        cc.credentials,
         cc.credentials_secret_arn,
         cc.timeout_ms,
         cc.max_retries,

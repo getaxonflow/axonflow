@@ -13,12 +13,15 @@ Proxy Mode is the simplest integration - your app just sends queries to AxonFlow
 
 ## Prerequisites
 
-- AxonFlow running with Azure OpenAI configured
+- AxonFlow running with `PII_ACTION=block` (for PII blocking test)
 - Go 1.21+
 
 ## Run
 
 ```bash
+# Start AxonFlow with PII blocking enabled
+PII_ACTION=block docker compose up -d
+
 go mod tidy
 go run main.go
 ```

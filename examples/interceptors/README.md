@@ -14,10 +14,10 @@ providing transparent policy enforcement without changing your existing code pat
 
 | Language | Directory | SDK Version |
 |----------|-----------|-------------|
-| Go | [go/](./go/) | v1.15.0 |
-| Python | [python/](./python/) | v0.11.0 |
-| Java | [java/](./java/) | v1.10.0 |
-| TypeScript | [typescript/](./typescript/) | v1.12.0 |
+| Go | [go/](./go/) | v3.2.0 |
+| Python | [python/](./python/) | v3.2.0 |
+| Java | [java/](./java/) | v3.2.0 |
+| TypeScript | [typescript/](./typescript/) | v3.1.0 (source build while npm is blocked) |
 
 ## Quick Start
 

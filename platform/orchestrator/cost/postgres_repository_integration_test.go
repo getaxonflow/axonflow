@@ -11,28 +11,33 @@ import (
 	"testing"
 	"time"
 
+	"axonflow/platform/testutil"
+
 	_ "github.com/lib/pq"
 )
 
 // Integration tests for PostgresRepository
-// These tests require DATABASE_URL to be set
+// Uses testcontainers if DATABASE_URL is not set
 
 func getTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
+	t.Helper()
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		db, err := sql.Open("postgres", dbURL)
+		if err != nil {
+			t.Fatalf("Failed to open database: %v", err)
+		}
+		if err := db.Ping(); err != nil {
+			t.Fatalf("Failed to ping database: %v", err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
 	}
 
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping database: %v", err)
-	}
-
-	return db
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+	pg.RunMigration(t, testutil.CostSchema())
+	return pg.DB
 }
 
 func cleanupTestBudgets(t *testing.T, db *sql.DB, tenantID string) {

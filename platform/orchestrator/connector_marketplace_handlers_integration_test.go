@@ -21,16 +21,33 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
+	"axonflow/platform/testutil"
 )
 
 // Integration tests for connector marketplace handlers with real PostgreSQL database
-// These tests require DATABASE_URL to be set
+// Uses testcontainers if DATABASE_URL is not set
+
+// getTestDBURL returns a database URL for integration tests.
+// Uses DATABASE_URL if set, otherwise starts a testcontainers PostgreSQL instance.
+func getTestDBURL(t *testing.T) string {
+	t.Helper()
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		return dbURL
+	}
+
+	// Use testcontainers
+	testutil.SkipIfNoDocker(t)
+	pg := testutil.StartPostgres(t, testutil.DefaultPostgresConfig())
+
+	// Run connector registry schema
+	pg.RunMigration(t, testutil.ConnectorRegistrySchema())
+
+	return pg.URL
+}
 
 func TestConnectorMarketplace_InitializeConnectorRegistry_WithDatabase(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	dbURL := getTestDBURL(t)
 
 	// Save original registry and restore after test
 	originalRegistry := connectorRegistry
@@ -83,10 +100,7 @@ func TestConnectorMarketplace_InitializeConnectorRegistry_WithInvalidDB(t *testi
 }
 
 func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	dbURL := getTestDBURL(t)
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -168,10 +182,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Install(t *testing.T) {
 }
 
 func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	dbURL := getTestDBURL(t)
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -262,10 +273,7 @@ func TestConnectorMarketplace_ConnectorPersistence_Uninstall(t *testing.T) {
 }
 
 func TestConnectorMarketplace_PeriodicReload_Mechanism(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("Skipping integration test - DATABASE_URL not set")
-	}
+	dbURL := getTestDBURL(t)
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

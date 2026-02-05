@@ -7,6 +7,10 @@
 //
 // No need to manage Azure OpenAI credentials in your app - AxonFlow handles everything.
 //
+// Prerequisites:
+//
+//	PII_ACTION=block docker compose up -d
+//
 // VALIDATION: This example exits with code 1 if any assertion fails.
 package main
 
@@ -62,8 +66,8 @@ func main() {
 		"provider": "azure-openai",
 	}, true, "SQL injection blocked")
 
-	// Example 4: PII - should be detected
-	fmt.Println("\n--- Example 4: PII Detection ---")
+	// Example 4: PII - should be blocked (requires PII_ACTION=block)
+	fmt.Println("\n--- Example 4: PII Detection (should be blocked) ---")
 	runQuery(client, "Send invoice to john.doe@company.com with SSN 123-45-6789", map[string]interface{}{
 		"provider": "azure-openai",
 	}, true, "PII detection")

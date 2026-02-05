@@ -18,10 +18,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"axonflow/platform/connectors/base"
+
+	"github.com/lib/pq"
 )
 
 // SecretsManager provides an interface for retrieving secrets
@@ -57,6 +60,7 @@ type ConnectorConfigDB struct {
 	Description              string                 `json:"description,omitempty"`
 	ConnectionURL            string                 `json:"connection_url,omitempty"`
 	Options                  map[string]interface{} `json:"options"`
+	Credentials              map[string]string      `json:"credentials,omitempty"`
 	CredentialsSecretARN     string                 `json:"credentials_secret_arn,omitempty"`
 	CredentialsSecretVersion string                 `json:"credentials_secret_version,omitempty"`
 	TimeoutMs                int                    `json:"timeout_ms"`
@@ -81,6 +85,7 @@ type RuntimeConfigService struct {
 	db             *sql.DB
 	cache          *ConfigCache
 	secretsManager SecretsManager
+	encryptor      *CredentialEncryptor
 	logger         *log.Logger
 	mu             sync.RWMutex
 
@@ -102,6 +107,7 @@ type ConfigFileLoader interface {
 type RuntimeConfigServiceOptions struct {
 	DB             *sql.DB
 	SecretsManager SecretsManager
+	Encryptor      *CredentialEncryptor
 	ConfigFile     string
 	SelfHosted     bool
 	CacheTTL       time.Duration
@@ -120,10 +126,16 @@ func NewRuntimeConfigService(opts RuntimeConfigServiceOptions) *RuntimeConfigSer
 		cacheTTL = 30 * time.Second
 	}
 
+	encryptor := opts.Encryptor
+	if encryptor == nil {
+		encryptor = NewCredentialEncryptor()
+	}
+
 	svc := &RuntimeConfigService{
 		db:             opts.DB,
 		cache:          NewConfigCache(cacheTTL),
 		secretsManager: opts.SecretsManager,
+		encryptor:      encryptor,
 		configFile:     opts.ConfigFile,
 		selfHosted:     opts.SelfHosted,
 		logger:         logger,
@@ -290,27 +302,28 @@ func (s *RuntimeConfigService) GetCacheHitRate() float64 {
 
 // loadConnectorsFromDatabase loads connector configs from the database
 func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, tenantID string) ([]*base.ConnectorConfig, error) {
-	query := `
+	queryWithCredentials := `
 		SELECT
 			cc.id,
 			cc.tenant_id,
 			cc.connector_name,
 			cc.connector_type,
-			cc.display_name,
-			cc.description,
-			cc.connection_url,
-			cc.options,
-			cc.credentials_secret_arn,
-			cc.credentials_secret_version,
+			COALESCE(cc.display_name, ''),
+			COALESCE(cc.description, ''),
+			COALESCE(cc.connection_url, ''),
+			COALESCE(cc.options, '{}'::jsonb),
+			COALESCE(cc.credentials, '{}'::jsonb),
+			COALESCE(cc.credentials_secret_arn, ''),
+			COALESCE(cc.credentials_secret_version, ''),
 			cc.timeout_ms,
 			cc.max_retries,
 			cc.enabled,
-			cc.health_status,
-			COALESCE(
+			COALESCE(cc.health_status, 'unknown'),
+			to_jsonb(COALESCE(
 				cdo_tenant.blocked_operations,
 				cdo_global.blocked_operations,
 				ARRAY[]::TEXT[]
-			) as blocked_operations
+			)) as blocked_operations
 		FROM connector_configs cc
 		LEFT JOIN connector_dangerous_operations cdo_tenant
 			ON cc.connector_type = cdo_tenant.connector_type
@@ -322,7 +335,47 @@ func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, t
 		ORDER BY cc.connector_name
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID)
+	legacyQuery := `
+		SELECT
+			cc.id,
+			cc.tenant_id,
+			cc.connector_name,
+			cc.connector_type,
+			COALESCE(cc.display_name, ''),
+			COALESCE(cc.description, ''),
+			COALESCE(cc.connection_url, ''),
+			COALESCE(cc.options, '{}'::jsonb),
+			'{}'::jsonb,
+			COALESCE(cc.credentials_secret_arn, ''),
+			COALESCE(cc.credentials_secret_version, ''),
+			cc.timeout_ms,
+			cc.max_retries,
+			cc.enabled,
+			COALESCE(cc.health_status, 'unknown'),
+			to_jsonb(COALESCE(
+				cdo_tenant.blocked_operations,
+				cdo_global.blocked_operations,
+				ARRAY[]::TEXT[]
+			)) as blocked_operations
+		FROM connector_configs cc
+		LEFT JOIN connector_dangerous_operations cdo_tenant
+			ON cc.connector_type = cdo_tenant.connector_type
+			AND cc.tenant_id = cdo_tenant.tenant_id
+		LEFT JOIN connector_dangerous_operations cdo_global
+			ON cc.connector_type = cdo_global.connector_type
+			AND cdo_global.tenant_id IS NULL
+		WHERE cc.tenant_id = $1 AND cc.enabled = true
+		ORDER BY cc.connector_name
+	`
+
+	rows, err := s.db.QueryContext(ctx, queryWithCredentials, tenantID)
+	if err != nil {
+		// Backward compatibility for databases that predate connector_configs.credentials.
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "42703" && strings.Contains(pqErr.Message, "cc.credentials") {
+			s.logger.Printf("connector_configs.credentials column not found, retrying with legacy query")
+			rows, err = s.db.QueryContext(ctx, legacyQuery, tenantID)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -332,28 +385,46 @@ func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, t
 	for rows.Next() {
 		var dbConfig ConnectorConfigDB
 		var optionsJSON []byte
-		var blockedOps []string
+		var credentialsJSON []byte
+		var blockedOpsJSON []byte
+
+		var displayName, description sql.NullString
+		var secretARN, secretVersion sql.NullString
 
 		err := rows.Scan(
 			&dbConfig.ID,
 			&dbConfig.TenantID,
 			&dbConfig.ConnectorName,
 			&dbConfig.ConnectorType,
-			&dbConfig.DisplayName,
-			&dbConfig.Description,
+			&displayName,
+			&description,
 			&dbConfig.ConnectionURL,
 			&optionsJSON,
-			&dbConfig.CredentialsSecretARN,
-			&dbConfig.CredentialsSecretVersion,
+			&credentialsJSON,
+			&secretARN,
+			&secretVersion,
 			&dbConfig.TimeoutMs,
 			&dbConfig.MaxRetries,
 			&dbConfig.Enabled,
 			&dbConfig.HealthStatus,
-			&blockedOps,
+			&blockedOpsJSON,
 		)
 		if err != nil {
 			s.logger.Printf("Error scanning connector config: %v", err)
 			continue
+		}
+
+		if displayName.Valid {
+			dbConfig.DisplayName = displayName.String
+		}
+		if description.Valid {
+			dbConfig.Description = description.String
+		}
+		if secretARN.Valid {
+			dbConfig.CredentialsSecretARN = secretARN.String
+		}
+		if secretVersion.Valid {
+			dbConfig.CredentialsSecretVersion = secretVersion.String
 		}
 
 		// Parse options JSON
@@ -366,7 +437,25 @@ func (s *RuntimeConfigService) loadConnectorsFromDatabase(ctx context.Context, t
 			dbConfig.Options = make(map[string]interface{})
 		}
 
-		dbConfig.BlockedOperations = blockedOps
+		// Parse credentials JSON (handles encrypted and plaintext formats)
+		if len(credentialsJSON) > 0 {
+			creds, err := s.encryptor.Decrypt(credentialsJSON)
+			if err != nil {
+				s.logger.Printf("Error decrypting credentials for %s: %v", dbConfig.ConnectorName, err)
+				dbConfig.Credentials = make(map[string]string)
+			} else {
+				dbConfig.Credentials = creds
+			}
+		} else {
+			dbConfig.Credentials = make(map[string]string)
+		}
+
+		if len(blockedOpsJSON) > 0 {
+			if err := json.Unmarshal(blockedOpsJSON, &dbConfig.BlockedOperations); err != nil {
+				s.logger.Printf("Error parsing blocked_operations for %s: %v", dbConfig.ConnectorName, err)
+				dbConfig.BlockedOperations = nil
+			}
+		}
 
 		// Convert to base.ConnectorConfig
 		cfg := s.dbConfigToBaseConfig(&dbConfig)
@@ -616,16 +705,62 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 		s.logger.Println("Loaded Gemini config from environment variables")
 	}
 
+	// Azure OpenAI configuration
+	if endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT"); endpoint != "" {
+		apiKey := os.Getenv("AZURE_OPENAI_API_KEY")
+		deployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+		if apiKey != "" && deployment != "" {
+			apiVersion := os.Getenv("AZURE_OPENAI_API_VERSION")
+			if apiVersion == "" {
+				apiVersion = "2024-08-01-preview"
+			}
+
+			configs = append(configs, &LLMProviderConfig{
+				ProviderName: "azure-openai",
+				DisplayName:  "Azure OpenAI",
+				Config: map[string]interface{}{
+					"endpoint":        endpoint,
+					"deployment_name": deployment,
+					"api_version":     apiVersion,
+				},
+				Credentials: map[string]string{
+					"api_key": apiKey,
+				},
+				Priority: 5,
+				Weight:   1.0,
+				Enabled:  true,
+			})
+			s.logger.Println("Loaded Azure OpenAI config from environment variables")
+		} else {
+			s.logger.Printf("Skipping Azure OpenAI config from environment variables: endpoint set but missing api_key or deployment_name")
+		}
+	}
+
 	return configs
 }
 
-// dbConfigToBaseConfig converts a database config to base.ConnectorConfig
+// dbConfigToBaseConfig converts a database config to base.ConnectorConfig.
+// The stored connection_url is credential-free; credentials are injected at
+// runtime by rebuilding the full URL from options + decrypted credentials.
 func (s *RuntimeConfigService) dbConfigToBaseConfig(dbConfig *ConnectorConfigDB) *base.ConnectorConfig {
+	credentials := dbConfig.Credentials
+	if credentials == nil {
+		credentials = make(map[string]string)
+	}
+
+	// Reconstruct the full connection URL with credentials injected.
+	// The stored URL is credential-free; credentials come from the
+	// separately encrypted credentials column.
+	connectionURL := dbConfig.ConnectionURL
+	if hasCredentials(credentials) {
+		connectionURL = base.BuildConnectionURL(dbConfig.ConnectorType, dbConfig.Options, credentials)
+	}
+
 	cfg := &base.ConnectorConfig{
 		Name:          dbConfig.ConnectorName,
 		Type:          dbConfig.ConnectorType,
-		ConnectionURL: dbConfig.ConnectionURL,
-		Credentials:   make(map[string]string),
+		ConnectionURL: connectionURL,
+		Credentials:   credentials,
 		Options:       dbConfig.Options,
 		Timeout:       time.Duration(dbConfig.TimeoutMs) * time.Millisecond,
 		MaxRetries:    dbConfig.MaxRetries,
@@ -638,6 +773,11 @@ func (s *RuntimeConfigService) dbConfigToBaseConfig(dbConfig *ConnectorConfigDB)
 	}
 
 	return cfg
+}
+
+// hasCredentials returns true if the credentials map contains non-empty auth values.
+func hasCredentials(creds map[string]string) bool {
+	return creds["username"] != "" || creds["password"] != ""
 }
 
 // StartPeriodicCleanup starts a background goroutine that cleans up expired cache entries

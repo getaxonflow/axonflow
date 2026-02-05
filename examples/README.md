@@ -119,10 +119,10 @@ All examples use the latest SDK versions:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| Python | `axonflow` | ^0.14.0 |
-| TypeScript | `@axonflow/sdk` | ^1.4.2 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go` | v1.5.1 |
-| Java | `com.getaxonflow:axonflow-sdk` | 1.1.2 |
+| Python | `axonflow` | >=3.2.0 |
+| TypeScript | `@axonflow/sdk` | ^3.1.0 (source build while npm is blocked) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v3` | v3.2.0 |
+| Java | `com.getaxonflow:axonflow-sdk` | 3.2.0 |
 
 ## Environment Configuration
 

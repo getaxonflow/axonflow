@@ -16,7 +16,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -26,6 +25,7 @@ import (
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 const (
@@ -48,6 +48,7 @@ var namedParamRegex = regexp.MustCompile(`:(\w+)`)
 // It provides connection pooling, parameterized queries, and production-ready
 // error handling for MySQL 5.7+ and MySQL 8.0+ databases.
 type MySQLConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 	db     *sql.DB
 	logger *log.Logger
@@ -55,14 +56,42 @@ type MySQLConnector struct {
 
 // NewMySQLConnector creates a new MySQL connector instance
 func NewMySQLConnector() *MySQLConnector {
-	return &MySQLConnector{
-		logger: log.New(os.Stdout, "[MCP_MYSQL] ", log.LstdFlags),
-	}
+	conn := &MySQLConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("mysql")
+	conn.SetVersion("1.0.0")
+	conn.SetCapabilities([]string{
+		"query",
+		"execute",
+		"transactions",
+		"prepared_statements",
+		"connection_pooling",
+		"last_insert_id",
+	})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{},
+		map[string]interface{}{
+			"max_open_conns":     DefaultMaxOpenConns,
+			"max_idle_conns":     DefaultMaxIdleConns,
+			"conn_max_lifetime":  DefaultConnMaxLifetime.String(),
+			"conn_max_idle_time": DefaultConnMaxIdleTime.String(),
+		},
+	))
+	conn.logger = conn.GetLogger()
+	return conn
 }
 
 // Connect establishes a connection to MySQL with connection pooling
 func (c *MySQLConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("mysql", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "mysql"
+	}
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Build DSN from connection URL or options
 	dsn, err := c.buildDSN(config)
@@ -82,18 +111,18 @@ func (c *MySQLConnector) Connect(ctx context.Context, config *base.ConnectorConf
 	connMaxLifetime := DefaultConnMaxLifetime
 	connMaxIdleTime := DefaultConnMaxIdleTime
 
-	if val, ok := config.Options["max_open_conns"].(float64); ok {
-		maxOpenConns = int(val)
+	if val := c.GetIntOption("max_open_conns", maxOpenConns); val > 0 {
+		maxOpenConns = val
 	}
-	if val, ok := config.Options["max_idle_conns"].(float64); ok {
-		maxIdleConns = int(val)
+	if val := c.GetIntOption("max_idle_conns", maxIdleConns); val >= 0 {
+		maxIdleConns = val
 	}
-	if val, ok := config.Options["conn_max_lifetime"].(string); ok {
+	if val := c.GetStringOption("conn_max_lifetime", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			connMaxLifetime = duration
 		}
 	}
-	if val, ok := config.Options["conn_max_idle_time"].(string); ok {
+	if val := c.GetStringOption("conn_max_idle_time", ""); val != "" {
 		if duration, err := time.ParseDuration(val); err == nil {
 			connMaxIdleTime = duration
 		}
@@ -114,7 +143,8 @@ func (c *MySQLConnector) Connect(ctx context.Context, config *base.ConnectorConf
 	}
 
 	c.db = db
-	c.logger.Printf("Connected to MySQL: %s (max_open=%d, max_idle=%d)",
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to MySQL: %s (max_open=%d, max_idle=%d)",
 		config.Name, maxOpenConns, maxIdleConns)
 
 	return nil
@@ -156,15 +186,15 @@ func (c *MySQLConnector) buildDSN(config *base.ConnectorConfig) (string, error) 
 
 	// Add default parameters for production use
 	params := []string{
-		"parseTime=true",           // Parse TIME/DATE/DATETIME to time.Time
-		"loc=UTC",                  // Use UTC timezone
-		"charset=utf8mb4",          // Full UTF-8 support
+		"parseTime=true",  // Parse TIME/DATE/DATETIME to time.Time
+		"loc=UTC",         // Use UTC timezone
+		"charset=utf8mb4", // Full UTF-8 support
 		"collation=utf8mb4_unicode_ci",
-		"timeout=10s",              // Connection timeout
-		"readTimeout=30s",          // Read timeout
-		"writeTimeout=30s",         // Write timeout
-		"multiStatements=false",    // Disable multi-statements (SQL injection prevention)
-		"interpolateParams=false",  // Use server-side prepared statements
+		"timeout=10s",             // Connection timeout
+		"readTimeout=30s",         // Read timeout
+		"writeTimeout=30s",        // Write timeout
+		"multiStatements=false",   // Disable multi-statements (SQL injection prevention)
+		"interpolateParams=false", // Use server-side prepared statements
 	}
 
 	// TLS configuration
@@ -216,8 +246,9 @@ func (c *MySQLConnector) Disconnect(ctx context.Context) error {
 		return base.NewConnectorError(c.Name(), "Disconnect", "failed to close connection", err)
 	}
 
-	c.logger.Printf("Disconnected from MySQL: %s", c.Name())
-	return nil
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from MySQL: %s", c.Name())
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the database connection is healthy
@@ -252,14 +283,14 @@ func (c *MySQLConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, e
 	_ = row.Scan(&version)
 
 	details := map[string]string{
-		"open_connections":  strconv.Itoa(stats.OpenConnections),
-		"in_use":            strconv.Itoa(stats.InUse),
-		"idle":              strconv.Itoa(stats.Idle),
-		"wait_count":        strconv.FormatInt(stats.WaitCount, 10),
-		"wait_duration":     stats.WaitDuration.String(),
-		"max_idle_closed":   strconv.FormatInt(stats.MaxIdleClosed, 10),
+		"open_connections":    strconv.Itoa(stats.OpenConnections),
+		"in_use":              strconv.Itoa(stats.InUse),
+		"idle":                strconv.Itoa(stats.Idle),
+		"wait_count":          strconv.FormatInt(stats.WaitCount, 10),
+		"wait_duration":       stats.WaitDuration.String(),
+		"max_idle_closed":     strconv.FormatInt(stats.MaxIdleClosed, 10),
 		"max_lifetime_closed": strconv.FormatInt(stats.MaxLifetimeClosed, 10),
-		"mysql_version":     version,
+		"mysql_version":       version,
 	}
 
 	return &base.HealthStatus{
@@ -278,11 +309,8 @@ func (c *MySQLConnector) Query(ctx context.Context, query *base.Query) (*base.Qu
 
 	// Apply timeout
 	timeout := query.Timeout
-	if timeout == 0 && c.config != nil {
-		timeout = c.config.Timeout
-	}
 	if timeout == 0 {
-		timeout = DefaultTimeout
+		timeout = c.GetTimeout()
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -348,7 +376,7 @@ func (c *MySQLConnector) Query(ctx context.Context, query *base.Query) (*base.Qu
 
 	duration := time.Since(start)
 
-	c.logger.Printf("Query executed: %d rows in %v", len(results), duration)
+	c.Log("Query executed: %d rows in %v", len(results), duration)
 
 	return &base.QueryResult{
 		Rows:      results,
@@ -367,11 +395,8 @@ func (c *MySQLConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 
 	// Apply timeout
 	timeout := cmd.Timeout
-	if timeout == 0 && c.config != nil {
-		timeout = c.config.Timeout
-	}
 	if timeout == 0 {
-		timeout = DefaultTimeout
+		timeout = c.GetTimeout()
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -394,7 +419,7 @@ func (c *MySQLConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 	// Get rows affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		c.logger.Printf("Warning: Could not get rows affected: %v", err)
+		c.Log("Warning: Could not get rows affected: %v", err)
 		rowsAffected = 0
 	}
 
@@ -411,7 +436,7 @@ func (c *MySQLConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 		message = fmt.Sprintf("%s executed successfully", cmd.Action)
 	}
 
-	c.logger.Printf("Command executed: %d rows affected in %v", rowsAffected, duration)
+	c.Log("Command executed: %d rows affected in %v", rowsAffected, duration)
 
 	return &base.CommandResult{
 		Success:      true,
@@ -422,34 +447,13 @@ func (c *MySQLConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 	}, nil
 }
 
-// Name returns the connector name
+// Name returns the connector name.
+// Preserves legacy behavior used by tests and callers that set c.config directly.
 func (c *MySQLConnector) Name() string {
 	if c.config == nil {
 		return "mysql"
 	}
 	return c.config.Name
-}
-
-// Type returns the connector type
-func (c *MySQLConnector) Type() string {
-	return "mysql"
-}
-
-// Version returns the connector version
-func (c *MySQLConnector) Version() string {
-	return "1.0.0"
-}
-
-// Capabilities returns the list of supported capabilities
-func (c *MySQLConnector) Capabilities() []string {
-	return []string{
-		"query",
-		"execute",
-		"transactions",
-		"prepared_statements",
-		"connection_pooling",
-		"last_insert_id",
-	}
 }
 
 // buildArgs converts parameter map to positional argument slice for MySQL

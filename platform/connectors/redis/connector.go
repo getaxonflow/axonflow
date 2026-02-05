@@ -16,17 +16,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // RedisConnector implements the MCP Connector interface for Redis
 type RedisConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 	client *redis.Client
 	logger *log.Logger
@@ -34,29 +35,42 @@ type RedisConnector struct {
 
 // NewRedisConnector creates a new Redis connector instance
 func NewRedisConnector() *RedisConnector {
-	return &RedisConnector{
-		logger: log.New(os.Stdout, "[MCP_REDIS] ", log.LstdFlags),
-	}
+	conn := &RedisConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("redis")
+	conn.SetVersion("0.2.0")
+	conn.SetCapabilities([]string{"query", "execute", "cache", "kv-store"})
+	conn.SetValidator(sdk.NewDefaultConfigValidator(
+		[]string{"host"},
+		map[string]interface{}{
+			"port": 6379,
+			"db":   0,
+		},
+	))
+	conn.logger = conn.GetLogger()
+	return conn
 }
 
 // Connect establishes a connection to Redis
 func (c *RedisConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("redis", "Connect", "config is required", nil)
+	}
 	c.config = config
+	if config.Type == "" {
+		config.Type = "redis"
+	}
+	if err := c.BaseConnector.Connect(ctx, config); err != nil {
+		return err
+	}
 
 	// Parse Redis connection options
-	host := config.Options["host"].(string)
-	port := 6379
-	if p, ok := config.Options["port"].(float64); ok {
-		port = int(p)
+	host := c.GetStringOption("host", "")
+	if host == "" {
+		return base.NewConnectorError(config.Name, "Connect", "host option is required", nil)
 	}
-	password := ""
-	if pw, ok := config.Credentials["password"]; ok {
-		password = pw
-	}
-	db := 0
-	if d, ok := config.Options["db"].(float64); ok {
-		db = int(d)
-	}
+	port := c.GetIntOption("port", 6379)
+	password := c.GetCredential("password")
+	db := c.GetIntOption("db", 0)
 
 	// Create Redis client
 	c.client = redis.NewClient(&redis.Options{
@@ -75,7 +89,8 @@ func (c *RedisConnector) Connect(ctx context.Context, config *base.ConnectorConf
 		return base.NewConnectorError(config.Name, "Connect", "failed to ping Redis", err)
 	}
 
-	c.logger.Printf("Connected to Redis: %s (db=%d, pool_size=100)", config.Name, db)
+	c.GetMetrics().RecordConnect()
+	c.Log("Connected to Redis: %s (db=%d, pool_size=100)", config.Name, db)
 
 	return nil
 }
@@ -87,11 +102,12 @@ func (c *RedisConnector) Disconnect(ctx context.Context) error {
 	}
 
 	if err := c.client.Close(); err != nil {
-		return base.NewConnectorError(c.config.Name, "Disconnect", "failed to close connection", err)
+		return base.NewConnectorError(c.Name(), "Disconnect", "failed to close connection", err)
 	}
 
-	c.logger.Printf("Disconnected from Redis: %s", c.config.Name)
-	return nil
+	c.GetMetrics().RecordDisconnect()
+	c.Log("Disconnected from Redis: %s", c.Name())
+	return c.BaseConnector.Disconnect(ctx)
 }
 
 // HealthCheck verifies the Redis connection is healthy
@@ -137,7 +153,7 @@ func (c *RedisConnector) HealthCheck(ctx context.Context) (*base.HealthStatus, e
 // Query executes a read operation (GET, EXISTS, TTL, KEYS)
 func (c *RedisConnector) Query(ctx context.Context, query *base.Query) (*base.QueryResult, error) {
 	if c.client == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "client not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Query", "client not connected", nil)
 	}
 
 	operation := query.Statement
@@ -157,14 +173,14 @@ func (c *RedisConnector) Query(ctx context.Context, query *base.Query) (*base.Qu
 	case "STATS":
 		rows, err = c.stats(ctx)
 	default:
-		return nil, base.NewConnectorError(c.config.Name, "Query",
+		return nil, base.NewConnectorError(c.Name(), "Query",
 			fmt.Sprintf("unsupported operation: %s", operation), nil)
 	}
 
 	duration := time.Since(start)
 
 	if err != nil {
-		return nil, base.NewConnectorError(c.config.Name, "Query", "query execution failed", err)
+		return nil, base.NewConnectorError(c.Name(), "Query", "query execution failed", err)
 	}
 
 	return &base.QueryResult{
@@ -172,14 +188,14 @@ func (c *RedisConnector) Query(ctx context.Context, query *base.Query) (*base.Qu
 		RowCount:  len(rows),
 		Duration:  duration,
 		Cached:    false,
-		Connector: c.config.Name,
+		Connector: c.Name(),
 	}, nil
 }
 
 // Execute executes a write operation (SET, DELETE, EXPIRE)
 func (c *RedisConnector) Execute(ctx context.Context, cmd *base.Command) (*base.CommandResult, error) {
 	if c.client == nil {
-		return nil, base.NewConnectorError(c.config.Name, "Execute", "client not connected", nil)
+		return nil, base.NewConnectorError(c.Name(), "Execute", "client not connected", nil)
 	}
 
 	action := cmd.Action
@@ -196,7 +212,7 @@ func (c *RedisConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 	case "EXPIRE":
 		rowsAffected, message, err = c.expire(ctx, cmd.Parameters)
 	default:
-		return nil, base.NewConnectorError(c.config.Name, "Execute",
+		return nil, base.NewConnectorError(c.Name(), "Execute",
 			fmt.Sprintf("unsupported action: %s", action), nil)
 	}
 
@@ -208,7 +224,7 @@ func (c *RedisConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 			RowsAffected: 0,
 			Duration:     duration,
 			Message:      err.Error(),
-			Connector:    c.config.Name,
+			Connector:    c.Name(),
 		}, nil
 	}
 
@@ -217,31 +233,17 @@ func (c *RedisConnector) Execute(ctx context.Context, cmd *base.Command) (*base.
 		RowsAffected: rowsAffected,
 		Duration:     duration,
 		Message:      message,
-		Connector:    c.config.Name,
+		Connector:    c.Name(),
 	}, nil
 }
 
-// Name returns the connector instance name
+// Name returns the connector instance name.
+// Preserves legacy behavior used by tests and callers that set c.config directly.
 func (c *RedisConnector) Name() string {
 	if c.config != nil {
 		return c.config.Name
 	}
 	return "redis-connector"
-}
-
-// Type returns the connector type
-func (c *RedisConnector) Type() string {
-	return "redis"
-}
-
-// Version returns the connector version
-func (c *RedisConnector) Version() string {
-	return "0.2.0"
-}
-
-// Capabilities returns the list of connector capabilities
-func (c *RedisConnector) Capabilities() []string {
-	return []string{"query", "execute", "cache", "kv-store"}
 }
 
 // get retrieves a value from Redis

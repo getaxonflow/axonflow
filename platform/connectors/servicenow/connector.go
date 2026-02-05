@@ -10,6 +10,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -18,20 +19,32 @@ var ErrEnterpriseFeature = errors.New("servicenow connector is an enterprise fea
 // ServiceNowConnector is the Community stub for the ServiceNow ITSM connector.
 // The full implementation is available in the enterprise edition.
 type ServiceNowConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewServiceNowConnector creates a new ServiceNow connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewServiceNowConnector() *ServiceNowConnector {
-	return &ServiceNowConnector{}
+	conn := &ServiceNowConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("servicenow")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to ServiceNow API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *ServiceNowConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("servicenow", "Connect", "config is required", nil)
+	}
 	c.config = config
-	return ErrEnterpriseFeature
+	if config.Type == "" {
+		config.Type = "servicenow"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
+	return base.NewConnectorError(config.Name, "Connect", "servicenow connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
@@ -67,16 +80,6 @@ func (c *ServiceNowConnector) Name() string {
 		return c.config.Name
 	}
 	return "servicenow"
-}
-
-// Type returns the connector type.
-func (c *ServiceNowConnector) Type() string {
-	return "servicenow"
-}
-
-// Version returns the connector version.
-func (c *ServiceNowConnector) Version() string {
-	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.

@@ -71,8 +71,14 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/orchestrator/llmadapters/* ./orchestrator/llmadapters/ && \
         echo "LLM Adapters module copied (Bedrock support)"; \
       fi && \
+      echo "=== Copying EE connectors ===" && \
+      if [ -d "/src/ee/platform/connectors" ]; then \
+        cp -r /src/ee/platform/connectors/* ./connectors/ && \
+        echo "Enterprise connectors copied"; \
+      fi && \
       echo "=== Downloading enterprise dependencies ===" && \
       go get github.com/aws/aws-sdk-go-v2/service/marketplacemetering@latest && \
+      go get github.com/snowflakedb/gosnowflake@latest && \
       echo "Enterprise dependencies downloaded"; \
     elif [ "$EDITION" = "enterprise" ]; then \
       echo "ERROR: Enterprise build requested but ee/ directory not found" && exit 1; \

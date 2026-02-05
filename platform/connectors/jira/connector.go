@@ -10,6 +10,7 @@ import (
 	"errors"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/connectors/sdk"
 )
 
 // ErrEnterpriseFeature is returned when attempting to use enterprise-only features
@@ -18,20 +19,32 @@ var ErrEnterpriseFeature = errors.New("jira connector is an enterprise feature -
 // JiraConnector is the Community stub for the Jira connector.
 // The full implementation is available in the enterprise edition.
 type JiraConnector struct {
+	sdk.BaseConnector
 	config *base.ConnectorConfig
 }
 
 // NewJiraConnector creates a new Jira connector instance.
 // Community stub: Returns a stub that will error on Connect().
 func NewJiraConnector() *JiraConnector {
-	return &JiraConnector{}
+	conn := &JiraConnector{}
+	conn.BaseConnector = *sdk.NewBaseConnector("jira")
+	conn.SetVersion("community-stub")
+	conn.SetCapabilities([]string{})
+	return conn
 }
 
 // Connect establishes a connection to Jira API.
 // Community stub: Always returns ErrEnterpriseFeature.
 func (c *JiraConnector) Connect(ctx context.Context, config *base.ConnectorConfig) error {
+	if config == nil {
+		return base.NewConnectorError("jira", "Connect", "config is required", nil)
+	}
 	c.config = config
-	return ErrEnterpriseFeature
+	if config.Type == "" {
+		config.Type = "jira"
+	}
+	_ = c.BaseConnector.Connect(ctx, config)
+	return base.NewConnectorError(config.Name, "Connect", "jira connector requires enterprise license", ErrEnterpriseFeature)
 }
 
 // Disconnect closes the connection.
@@ -67,16 +80,6 @@ func (c *JiraConnector) Name() string {
 		return c.config.Name
 	}
 	return "jira"
-}
-
-// Type returns the connector type.
-func (c *JiraConnector) Type() string {
-	return "jira"
-}
-
-// Version returns the connector version.
-func (c *JiraConnector) Version() string {
-	return "community-stub"
 }
 
 // Capabilities returns the list of capabilities.

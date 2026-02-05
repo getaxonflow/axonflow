@@ -36,17 +36,17 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/node_enforcement"
-	"axonflow/platform/orchestrator/cost"   // Cost controls & budget management (#764)
+	"axonflow/platform/orchestrator/cost"    // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/masfeat" // MAS FEAT module - Community stub or EE impl
-	"axonflow/platform/orchestrator/rbi"    // RBI FREE-AI module - Community stub or EE impl
-	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
-	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
-	"axonflow/platform/orchestrator/ui"       // Embedded execution viewer UI
+	"axonflow/platform/orchestrator/masfeat"          // MAS FEAT module - Community stub or EE impl
+	"axonflow/platform/orchestrator/planning"         // MAP two-step execution (#927)
+	"axonflow/platform/orchestrator/rbi"              // RBI FREE-AI module - Community stub or EE impl
+	"axonflow/platform/orchestrator/replay"           // Execution replay/debug mode (#763)
 	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/ui"               // Embedded execution viewer UI
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
-	"axonflow/platform/shared/execution"             // Unified execution tracking (#1075)
+	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -70,31 +70,31 @@ var (
 	}
 	// Note: Legacy llmRouter *LLMRouter removed in v2.3.0.
 	// All LLM routing now uses llmRouterWrapper LLMRouterInterface.
-	responseProcessor  *ResponseProcessor
-	auditLogger        *AuditLogger
-	metricsCollector   *MetricsCollector
-	workflowEngine     *WorkflowEngine
-	hitlWorkflowEngine *HITLWorkflowEngine                // HITL-aware workflow engine (Issue #1082)
-	hitlEnabled        bool                               // HITL mode flag (Issue #1082)
-	planningEngine     *PlanningEngine                    // Multi-Agent Planning v0.1
-	resultAggregator   *ResultAggregator                  // Multi-Agent Planning v0.1
-	mcpQueryRouter     *MCPQueryRouter                    // MCP query routing to agent
-	agentMCPEndpoint   string                             // Agent MCP handler endpoint
-	usageDB            *sql.DB                            // Database for usage metering
-	heartbeatService   *node_enforcement.HeartbeatService // Node enforcement
-	nodeMonitor        *node_enforcement.NodeMonitor      // Node enforcement
-	policyAPIHandler         *PolicyAPIHandler         // Policy CRUD API handler
-	dynamicPolicyAPIHandler  *DynamicPolicyAPIHandler  // Dynamic Policy API handler (ADR-026)
-	templateAPIHandler       *TemplateAPIHandler       // Policy Templates API handler
-	llmProviderRouter     *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
-	llmRouterWrapper      LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
-	llmProviderAPIHandler *LLMProviderAPIHandler             // LLM Provider REST API handler
+	responseProcessor       *ResponseProcessor
+	auditLogger             *AuditLogger
+	metricsCollector        *MetricsCollector
+	workflowEngine          *WorkflowEngine
+	hitlWorkflowEngine      *HITLWorkflowEngine                // HITL-aware workflow engine (Issue #1082)
+	hitlEnabled             bool                               // HITL mode flag (Issue #1082)
+	planningEngine          *PlanningEngine                    // Multi-Agent Planning v0.1
+	resultAggregator        *ResultAggregator                  // Multi-Agent Planning v0.1
+	mcpQueryRouter          *MCPQueryRouter                    // MCP query routing to agent
+	agentMCPEndpoint        string                             // Agent MCP handler endpoint
+	usageDB                 *sql.DB                            // Database for usage metering
+	heartbeatService        *node_enforcement.HeartbeatService // Node enforcement
+	nodeMonitor             *node_enforcement.NodeMonitor      // Node enforcement
+	policyAPIHandler        *PolicyAPIHandler                  // Policy CRUD API handler
+	dynamicPolicyAPIHandler *DynamicPolicyAPIHandler           // Dynamic Policy API handler (ADR-026)
+	templateAPIHandler      *TemplateAPIHandler                // Policy Templates API handler
+	llmProviderRouter       *llm.UnifiedRouter                 // Unified LLM provider router (ADR-007, ADR-022)
+	llmRouterWrapper        LLMRouterInterface                 // Interface for router compatibility (ADR-022 Phase 6)
+	llmProviderAPIHandler   *LLMProviderAPIHandler             // LLM Provider REST API handler
 
 	// Enterprise Compliance Modules
-	sebiModule    *sebi.SEBIModule   // SEBI AI/ML Guidelines compliance (India)
-	rbiModule     *rbi.RBIModule     // RBI FREE-AI Framework compliance (India Banking)
-	euaiactModule *euaiact.Module    // EU AI Act compliance (Europe)
-	masfeatModule *masfeat.Module    // MAS FEAT compliance (Singapore)
+	sebiModule    *sebi.SEBIModule // SEBI AI/ML Guidelines compliance (India)
+	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
+	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
+	masfeatModule *masfeat.Module  // MAS FEAT compliance (Singapore)
 
 	// Execution Replay/Debug Mode (#763)
 	replayService *replay.Service // Execution replay service
@@ -105,8 +105,8 @@ var (
 	costHandler *cost.Handler // Cost control HTTP handlers
 
 	// MAP Two-Step Execution (#925)
-	planService         *planning.Service      // Plan storage and retrieval for GeneratePlan/ExecutePlan
-	mapExecutionTracker *MAPExecutionTracker   // Unified execution tracking for MAP (#1075)
+	planService         *planning.Service             // Plan storage and retrieval for GeneratePlan/ExecutePlan
+	mapExecutionTracker *MAPExecutionTracker          // Unified execution tracking for MAP (#1075)
 	executionRepo       execution.ExecutionRepository // Execution history repository
 
 	// Workflow Control Plane V1 (#834)
@@ -284,6 +284,7 @@ type ProviderInfo struct {
 //   - BEDROCK_REGION, BEDROCK_MODEL: AWS Bedrock configuration
 //   - OLLAMA_ENDPOINT, OLLAMA_MODEL: Ollama configuration
 //   - GOOGLE_API_KEY, GOOGLE_MODEL: Google Gemini configuration
+//   - AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME: Azure OpenAI configuration
 //
 // Routing Configuration (Phase 1: Community):
 //   - LLM_ROUTING_STRATEGY: "weighted" (default), "round_robin", "failover"
@@ -311,6 +312,12 @@ func LoadLLMConfig() LLMRouterConfig {
 	config.GeminiKey = os.Getenv("GOOGLE_API_KEY")
 	config.GeminiModel = os.Getenv("GOOGLE_MODEL")
 
+	// Azure OpenAI configuration
+	config.AzureOpenAIEndpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
+	config.AzureOpenAIAPIKey = os.Getenv("AZURE_OPENAI_API_KEY")
+	config.AzureOpenAIDeploymentName = os.Getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+	config.AzureOpenAIAPIVersion = os.Getenv("AZURE_OPENAI_API_VERSION")
+
 	// Backward compatibility: LocalEndpoint
 	if config.OllamaEndpoint == "" {
 		config.LocalEndpoint = os.Getenv("LOCAL_LLM_ENDPOINT")
@@ -337,6 +344,9 @@ func LoadLLMConfig() LLMRouterConfig {
 	}
 	if config.GeminiKey != "" {
 		log.Printf("  - Gemini: enabled (key: %s..., model: %s)", config.GeminiKey[:min(10, len(config.GeminiKey))], config.GeminiModel)
+	}
+	if config.AzureOpenAIEndpoint != "" {
+		log.Printf("  - Azure OpenAI: enabled (endpoint: %s, deployment: %s)", config.AzureOpenAIEndpoint, config.AzureOpenAIDeploymentName)
 	}
 	if config.LocalEndpoint != "" && config.OllamaEndpoint == "" {
 		log.Printf("  - Local LLM: enabled (endpoint: %s) [deprecated: use OLLAMA_ENDPOINT]", config.LocalEndpoint)
@@ -427,9 +437,9 @@ func Run() {
 	r.HandleFunc("/api/v1/workflows/executions/{id}/hitl-status", getHITLExecutionStatusHandler).Methods("GET")
 
 	// Multi-Agent Planning endpoints (v0.1)
-	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")           // GeneratePlan (stores plan)
-	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")   // ExecutePlan (executes stored plan)
-	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")     // GetPlanStatus (retrieve plan)
+	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")         // GeneratePlan (stores plan)
+	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST") // ExecutePlan (executes stored plan)
+	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")   // GetPlanStatus (retrieve plan)
 
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
@@ -765,14 +775,17 @@ func initializeComponents() {
 	if tenantID == "" {
 		tenantID = "default" // Fallback for single-tenant deployments
 	}
-	// Load config for logging purposes (actual router initialization is below)
-	_ = LoadLLMConfigFromService(ctx, tenantID)
+	// Load runtime config and convert directly to provider configs, bypassing
+	// goroutine-unsafe os.Setenv (see ApplyLLMConfigToEnv deprecation).
+	runtimeLLMConfig := LoadLLMConfigFromService(ctx, tenantID)
+	providerConfigs := LLMConfigToProviderConfigs(runtimeLLMConfig)
 
 	// Initialize pluggable LLM provider system (ADR-007 Phase 2, ADR-022)
 	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
 	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
-		SkipHealthCheck: false, // Perform health checks on startup
+		SkipHealthCheck:  false, // Perform health checks on startup
+		ProviderConfigs:  providerConfigs,
 	})
 	if err != nil {
 		log.Printf("⚠️  LLM bootstrap error: %v (LLM features may be unavailable)", err)
