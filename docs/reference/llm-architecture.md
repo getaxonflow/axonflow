@@ -202,7 +202,7 @@ type Provider interface {
 |------|----------|---------|-------------|
 | OpenAI | `ProviderTypeOpenAI` | Community | OpenAI GPT models |
 | Anthropic | `ProviderTypeAnthropic` | Community | Anthropic Claude models |
-| Ollama | `ProviderTypeOllama` | Community | Self-hosted open-source models |
+| Ollama | `ProviderTypeOllama` | Community | Self-hosted open-weight models |
 | Bedrock | `ProviderTypeBedrock` | Enterprise | AWS Bedrock managed models |
 | Gemini | `ProviderTypeGemini` | Enterprise | Google Gemini models |
 | Custom | `ProviderTypeCustom` | Enterprise | Third-party or custom providers |

@@ -68,7 +68,7 @@ The following are **in scope** for security reports:
 
 - AxonFlow Agent (API gateway component)
 - AxonFlow Orchestrator (routing and policy enforcement)
-- AxonFlow SDKs (TypeScript, Go)
+- AxonFlow SDKs (Go, Python, TypeScript, Java)
 - Customer Portal (backend and frontend)
 - MCP Connectors (PostgreSQL, Redis, Salesforce, Snowflake, Amadeus, etc.)
 - AWS Marketplace CloudFormation templates
@@ -127,6 +127,7 @@ AxonFlow includes comprehensive security features by default:
 
 - **Row-Level Security (RLS)**: Database-level multi-tenant isolation
 - **PII Detection & Redaction**: Real-time content filtering to prevent data leakage
+- **Credential Encryption**: AES-256-GCM encryption for connector credentials (v4.1.0+)
 - **Encryption at Rest**: AES-256 encryption for all stored data
 - **Encryption in Transit**: TLS 1.3 for all network communication
 - **Multi-Tenant Isolation**: Complete logical separation between tenants
@@ -194,9 +195,9 @@ AxonFlow includes comprehensive security features by default:
 
 - **GDPR Ready**: Data residency controls, right to deletion, data portability
 - **EU AI Act Ready**: Risk classification, transparency, audit trails
-- **SOC 2 Type II**: In progress (target: Q2 2025)
+- **SOC 2 Type II**: In progress (target: Q3 2026)
 - **HIPAA**: Architecture supports HIPAA compliance (BAA available)
-- **ISO 27001**: In progress (target: Q3 2025)
+- **ISO 27001**: In progress (target: Q4 2026)
 
 ### Compliance Features
 
@@ -222,7 +223,7 @@ AxonFlow includes comprehensive security features by default:
 
 - **Automated Testing**: All tests must pass before merge
 - **Security Scanning**: Trivy scans on every build
-- **Code Coverage**: Minimum 70% coverage enforced
+- **Code Coverage**: Minimum 76% coverage enforced
 - **Signed Commits**: GPG signing for releases (recommended)
 - **Immutable Builds**: Docker images tagged with git commit SHA
 
@@ -324,7 +325,7 @@ Security updates will be released as follows:
 - **Medium/Low severity vulnerabilities**: Included in next regular release
 
 Security advisories will be published at:
-- GitHub Security Advisories: https://github.com/axonflow/axonflow/security/advisories
+- GitHub Security Advisories: https://github.com/getaxonflow/axonflow/security/advisories
 - Email notifications to registered users
 - Blog post at https://getaxonflow.com/blog
 
@@ -410,5 +411,6 @@ We would like to thank the following security researchers for responsibly disclo
 
 ---
 
-**Last Updated:** December 5, 2025
-**Version:** 2.1
+**Last Updated:** February 2026
+
+**Version:** 2.2
