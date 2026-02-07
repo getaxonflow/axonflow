@@ -683,6 +683,7 @@ type ollamaProvider struct {
 	client      *http.Client
 	healthy     bool
 	base        *llmsdk.CustomProvider
+	inner       llm.Provider // cached underlying provider for request delegation
 	rateLimiter *llmsdk.RateLimiter
 	mu          sync.RWMutex
 }
@@ -712,6 +713,18 @@ func NewOllamaProviderFactory(config llm.ProviderConfig) (llm.Provider, error) {
 		client:   &http.Client{Timeout: timeout},
 		healthy:  true,
 	}
+	// Create the underlying non-SDK provider once for request delegation
+	inner, err := llm.NewOllamaProviderFactory(llm.ProviderConfig{
+		Name:           provider.name,
+		Type:           llm.ProviderTypeOllama,
+		Endpoint:       endpoint,
+		Model:          model,
+		TimeoutSeconds: int(timeout / time.Second),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create underlying ollama provider: %w", err)
+	}
+	provider.inner = inner
 	provider.rateLimiter = buildSDKRateLimiter(config.RateLimit)
 
 	builder := llmsdk.NewProviderBuilder(provider.name, llm.ProviderTypeOllama).
@@ -749,33 +762,13 @@ func (p *ollamaProvider) Complete(ctx context.Context, req llm.CompletionRequest
 }
 
 func (p *ollamaProvider) completeRequest(ctx context.Context, req llm.CompletionRequest) (*llm.CompletionResponse, error) {
-	fallback, err := llm.NewOllamaProviderFactory(llm.ProviderConfig{
-		Name:           p.name,
-		Type:           llm.ProviderTypeOllama,
-		Endpoint:       p.endpoint,
-		Model:          p.model,
-		TimeoutSeconds: int(p.timeout / time.Second),
-	})
-	if err != nil {
-		return nil, err
-	}
-	resp, err := fallback.Complete(ctx, req)
+	resp, err := p.inner.Complete(ctx, req)
 	p.setHealthy(err == nil)
 	return resp, err
 }
 
 func (p *ollamaProvider) CompleteStream(ctx context.Context, req llm.CompletionRequest, handler llm.StreamHandler) (*llm.CompletionResponse, error) {
-	fallback, err := llm.NewOllamaProviderFactory(llm.ProviderConfig{
-		Name:           p.name,
-		Type:           llm.ProviderTypeOllama,
-		Endpoint:       p.endpoint,
-		Model:          p.model,
-		TimeoutSeconds: int(p.timeout / time.Second),
-	})
-	if err != nil {
-		return nil, err
-	}
-	streaming, ok := fallback.(llm.StreamingProvider)
+	streaming, ok := p.inner.(llm.StreamingProvider)
 	if !ok {
 		return nil, fmt.Errorf("ollama provider does not support streaming")
 	}

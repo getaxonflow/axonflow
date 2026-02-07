@@ -20,6 +20,7 @@ const (
 	PlanStatusCompleted PlanStatus = "completed"
 	PlanStatusFailed    PlanStatus = "failed"
 	PlanStatusExpired   PlanStatus = "expired"
+	PlanStatusCancelled PlanStatus = "cancelled"
 )
 
 // DefaultPlanTTL is the default time-to-live for plans (1 hour)

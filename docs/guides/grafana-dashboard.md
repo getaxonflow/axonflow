@@ -1,5 +1,9 @@
 # Grafana Dashboard Guide
 
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0
+
 The AxonFlow Community Dashboard provides real-time visibility into your AI governance platform's security, performance, and policy enforcement metrics.
 
 ## Quick Start
@@ -13,6 +17,8 @@ docker compose up -d
 open http://localhost:3000
 # Login: admin / grafana_localdev456
 ```
+
+> **Port note:** Grafana runs on port **3000** in the main `docker-compose.yaml` (standard for local development). The `support-demo` compose profile uses port 3001 to avoid conflicts. If you see references to port 3001 elsewhere, that applies only to the support-demo environment.
 
 Navigate to **Dashboards → AxonFlow → AxonFlow Community** to view the dashboard.
 

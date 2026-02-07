@@ -49,6 +49,7 @@ type DynamicPolicyEngine struct {
 	cache          *PolicyCache
 	lastDBRefresh  time.Time
 	dbAvailable    bool
+	stopCh         chan struct{}
 }
 
 // DynamicPolicy represents a runtime policy that can be evaluated against
@@ -126,8 +127,9 @@ type RiskCalculator struct {
 // PolicyCache caches policy evaluation results to improve performance.
 // Cache entries expire based on TTL and are periodically cleaned up.
 type PolicyCache struct {
-	cache sync.Map
-	ttl   time.Duration
+	cache  sync.Map
+	ttl    time.Duration
+	stopCh chan struct{}
 }
 
 // NewDynamicPolicyEngine creates a new dynamic policy engine with in-memory
@@ -146,6 +148,7 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 		policies:       loadDefaultDynamicPolicies(),
 		riskCalculator: NewRiskCalculator(),
 		cache:          NewPolicyCache(5 * time.Minute),
+		stopCh:         make(chan struct{}),
 	}
 
 	// Try to connect to database
@@ -630,17 +633,38 @@ func (e *DynamicPolicyEngine) logAuditEvent(action, details string) {
 }
 
 // reloadPoliciesRoutine periodically reloads policies from storage
+// Close stops background goroutines and releases resources.
+func (e *DynamicPolicyEngine) Close() {
+	select {
+	case <-e.stopCh:
+		// already closed
+	default:
+		close(e.stopCh)
+	}
+	if e.cache != nil {
+		e.cache.Close()
+	}
+	if e.db != nil {
+		_ = e.db.Close()
+	}
+}
+
 func (e *DynamicPolicyEngine) reloadPoliciesRoutine() {
 	ticker := time.NewTicker(30 * time.Second) // More frequent for dynamic policies
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if e.dbAvailable {
-			if err := e.loadPoliciesFromDB(); err != nil {
-				log.Printf("Failed to reload dynamic policies from DB: %v", err)
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+			if e.dbAvailable {
+				if err := e.loadPoliciesFromDB(); err != nil {
+					log.Printf("Failed to reload dynamic policies from DB: %v", err)
+				}
+			} else {
+				log.Println("Policy reload check completed (using defaults - no DB)")
 			}
-		} else {
-			log.Println("Policy reload check completed (using defaults - no DB)")
 		}
 	}
 }
@@ -720,13 +744,24 @@ func (r *RiskCalculator) CalculateRiskScore(req OrchestratorRequest) float64 {
 // PolicyCache implementation
 func NewPolicyCache(ttl time.Duration) *PolicyCache {
 	cache := &PolicyCache{
-		ttl: ttl,
+		ttl:    ttl,
+		stopCh: make(chan struct{}),
 	}
 
 	// Start cleanup routine
 	go cache.cleanupRoutine()
 
 	return cache
+}
+
+// Close stops the background cleanup goroutine.
+func (c *PolicyCache) Close() {
+	select {
+	case <-c.stopCh:
+		// already closed
+	default:
+		close(c.stopCh)
+	}
 }
 
 func (c *PolicyCache) Get(key string) (interface{}, bool) {
@@ -741,12 +776,17 @@ func (c *PolicyCache) cleanupRoutine() {
 	ticker := time.NewTicker(c.ttl)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		// Simple cleanup - in production, track expiration times
-		c.cache.Range(func(key, _ interface{}) bool {
-			c.cache.Delete(key)
-			return true
-		})
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			// Simple cleanup - in production, track expiration times
+			c.cache.Range(func(key, _ interface{}) bool {
+				c.cache.Delete(key)
+				return true
+			})
+		}
 	}
 }
 

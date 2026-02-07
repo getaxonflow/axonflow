@@ -128,7 +128,7 @@ func main() {
 	fmt.Println()
 
 	// Step 4: Demonstrate unified execution status types
-	fmt.Println("Unified Execution Status Types (SDK v2.7.0):")
+	fmt.Println("Unified Execution Status Types:")
 	fmt.Println("  ExecutionType constants:")
 	fmt.Printf("    - MAP: %s\n", axonflow.ExecutionTypeMAP)
 	fmt.Printf("    - WCP: %s\n", axonflow.ExecutionTypeWCP)
@@ -138,6 +138,7 @@ func main() {
 	fmt.Printf("    - Running: %s\n", axonflow.ExecutionStatusRunning)
 	fmt.Printf("    - Completed: %s\n", axonflow.ExecutionStatusCompleted)
 	fmt.Printf("    - Failed: %s\n", axonflow.ExecutionStatusFailed)
+	fmt.Printf("    - Cancelled: %s\n", axonflow.ExecutionStatusCancelled)
 	fmt.Println()
 	fmt.Println("  StepStatusValue helpers:")
 	fmt.Printf("    - IsTerminal(completed): %v\n", axonflow.StepStatusCompleted.IsTerminal())
@@ -145,7 +146,7 @@ func main() {
 	fmt.Printf("    - IsBlocking(blocked): %v\n", axonflow.StepStatusBlocked.IsBlocking())
 	fmt.Println()
 
-	// Step 5: Try unified execution API (may fail if backend not wired)
+	// Step 5: Try unified execution API
 	fmt.Println("Testing unified execution API...")
 	execStatus, err := client.GetExecutionStatus(workflow.WorkflowID)
 	if err != nil {
@@ -194,7 +195,39 @@ func main() {
 	}
 	fmt.Println()
 
-	// Step 8: Demonstrate ResumeWorkflow (by aborting then resuming)
+	// Step 8: Test CancelExecution (create workflow, then cancel)
+	fmt.Println("Step 8: Test CancelExecution")
+	fmt.Println("----------------------------")
+	cancelTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
+		WorkflowName: "cancel-test-demo",
+		Source:       axonflow.WorkflowSourceExternal,
+		TotalSteps:   2,
+	})
+	if err != nil {
+		fmt.Printf("   Error creating cancel test workflow: %v\n", err)
+		assertCheck(false, "CreateWorkflow for cancel test succeeded")
+	} else {
+		fmt.Printf("   Created workflow: %s\n", cancelTest.WorkflowID)
+
+		// Try cancelling via unified API
+		err = client.CancelExecution(cancelTest.WorkflowID, "testing unified cancel")
+		if err != nil {
+			fmt.Printf("   Note: CancelExecution returned error: %v\n", err)
+			fmt.Println("   (Cancel propagation requires unified handler wiring)")
+		} else {
+			fmt.Printf("   Cancelled workflow: %s\n", cancelTest.WorkflowID)
+			// Verify the status
+			cancelStatus, err := client.GetWorkflow(cancelTest.WorkflowID)
+			if err == nil {
+				fmt.Printf("   Status after cancel: %s\n", cancelStatus.Status)
+				assertCheck(cancelStatus.Status == "aborted" || cancelStatus.Status == "cancelled",
+					"Workflow is aborted/cancelled after CancelExecution")
+			}
+		}
+	}
+	fmt.Println()
+
+	// Step 9: Demonstrate ResumeWorkflow (by aborting then resuming)
 	fmt.Println("Testing ResumeWorkflow...")
 	// Create a new workflow to test resume
 	resumeTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
@@ -247,6 +280,9 @@ func main() {
 	fmt.Println("  Unified Execution:")
 	fmt.Println("    - GetExecutionStatus()")
 	fmt.Println("    - ListUnifiedExecutions()")
+	fmt.Println("    - CancelExecution()")
+	fmt.Println("  SSE Streaming:")
+	fmt.Println("    - GET /api/v1/unified/executions/{id}/stream")
 	fmt.Println("  Helper Types:")
 	fmt.Println("    - ExecutionType (map_plan, wcp_workflow)")
 	fmt.Println("    - ExecutionStatusValue with IsTerminal()")

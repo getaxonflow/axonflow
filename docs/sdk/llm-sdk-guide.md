@@ -1,5 +1,11 @@
 # LLM Provider SDK Integration Guide
 
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0
+
+> **Scope:** This guide covers the internal Go LLM provider system used within the AxonFlow platform. For client SDK usage (Go, Python, TypeScript, Java), see the [SDK Quick Start](./README.md).
+
 This guide shows how to integrate AxonFlow's LLM provider system into your Go applications.
 
 ## Installation
@@ -544,3 +550,7 @@ for name, ps := range status {
 - [LLM Provider Architecture](../reference/llm-architecture.md) - Deep dive into internals
 - [LLM Provider Configuration](../guides/llm-providers.md) - User configuration guide
 - [TypeScript SDK Guide](./typescript-quickstart.md) - TypeScript SDK usage
+
+---
+
+Last Updated: February 2026

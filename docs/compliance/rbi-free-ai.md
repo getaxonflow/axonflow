@@ -1,5 +1,7 @@
 # RBI FREE-AI Framework Compliance
 
+*Last updated: February 2026 | AxonFlow Platform v4.1.0 | SDKs v3.2.0*
+
 AxonFlow provides comprehensive compliance support for the Reserve Bank of India's **Framework for Responsible and Ethical Enablement of AI (FREE-AI)** guidelines for Indian banking institutions.
 
 ## Overview
@@ -11,7 +13,7 @@ The RBI FREE-AI Framework (August 2025) establishes governance requirements for 
 - **Incident Management** - AI incident reporting with severity-based escalation
 - **Kill Switch** - Emergency AI disable with full audit trail
 - **Board Reporting** - Quarterly and annual compliance reports
-- **Audit Export** - 7-year retention with RBI-compliant export format
+- **Audit Export** - 10-year retention with RBI-compliant export format
 - **PII Detection** - 11 India-specific PII types (Aadhaar, PAN, UPI, etc.)
 
 ## Feature Availability
@@ -24,7 +26,7 @@ The RBI FREE-AI Framework (August 2025) establishes governance requirements for 
 | Incident Management | - | Full workflow |
 | Kill Switch | - | Full workflow |
 | Board Reporting | - | Full workflow |
-| 7-year Audit Export | - | RBI format |
+| 10-year Audit Export | - | RBI format |
 | Policy Templates | Basic | Full library |
 
 ## API Endpoints (Enterprise)
@@ -41,6 +43,112 @@ All RBI compliance APIs are available at `/api/v1/rbi/`:
 | `GET/POST /audit-exports` | Audit data export |
 | `GET /policies/templates` | RBI policy templates |
 | `GET /dashboard` | Compliance dashboard |
+
+### curl Examples
+
+**Register an AI system:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/ai-systems" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Loan Approval AI",
+    "risk_category": "high",
+    "description": "AI-driven loan approval for retail banking",
+    "owner": "risk-team@bank.com",
+    "board_approval_date": "2025-12-01"
+  }'
+# Alternative auth: -H "Authorization: Basic <base64(client_id:client_secret)>"
+```
+
+**Activate kill switch:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/killswitches" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "system_id": "loan-approval-ai",
+    "reason": "safety",
+    "activated_by": "compliance-officer@bank.com",
+    "notes": "Anomalous approval rates detected"
+  }'
+```
+
+**Export audit data (10-year retention):**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/audit-exports" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_date": "2025-01-01T00:00:00Z",
+    "end_date": "2025-12-31T23:59:59Z",
+    "format": "json",
+    "include_pii_redaction_log": true
+  }'
+```
+
+**Proxy an LLM call (RBI policies applied automatically):**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/query/execute" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_token": "banker-456",
+    "query": "Assess credit risk for customer with Aadhaar 2345 6789 0123",
+    "request_type": "credit_assessment",
+    "context": {"department": "retail_banking"}
+  }'
+```
+
+### SDK Integration
+
+**Go:**
+
+```go
+import "github.com/getaxonflow/axonflow-sdk-go/v3/axonflow"
+
+client := axonflow.NewClient(axonflow.AxonFlowConfig{
+    Endpoint:     "https://your-axonflow-host",
+    ClientID:     "your-client-id",
+    ClientSecret: "your-client-secret",
+})
+
+response, err := client.ProxyLLMCall(
+    "banker-456",
+    "Assess credit risk for customer with Aadhaar 2345 6789 0123",
+    "credit_assessment",
+    map[string]interface{}{"department": "retail_banking"},
+)
+// Aadhaar number will be detected and redacted per RBI policy
+```
+
+**Python:**
+
+```python
+from axonflow import AxonFlow
+
+client = AxonFlow(
+    endpoint="https://your-axonflow-host",
+    client_id="your-client-id",
+    client_secret="your-client-secret",
+)
+
+response = client.proxy_llm_call(
+    user_token="banker-456",
+    query="Assess credit risk for customer with Aadhaar 2345 6789 0123",
+    request_type="credit_assessment",
+    context={"department": "retail_banking"},
+)
+# Aadhaar number will be detected and redacted per RBI policy
+```
 
 ## PII Detection Types
 
@@ -100,13 +208,15 @@ RBI compliance uses dedicated tables (migration 301):
 # Enable RBI compliance features
 RBI_COMPLIANCE_ENABLED=true
 RBI_PII_MIN_CONFIDENCE=0.6
-RBI_AUDIT_RETENTION_YEARS=7
+RBI_AUDIT_RETENTION_YEARS=10
 ```
 
 ## Documentation
 
-- [Full RBI FREE-AI Compliance Guide](../RBI_FREE_AI_COMPLIANCE.md) - Detailed implementation guide
+- [Full RBI FREE-AI Compliance Guide](../RBI_FREE_AI_COMPLIANCE.md) - Detailed implementation guide with all API endpoints
 - [RBI FREE-AI Framework](https://www.rbi.org.in/) - Official RBI guidelines
+- [EU AI Act Compliance](./eu-ai-act.md) - EU AI Act compliance guide
+- [SEBI Compliance](./sebi-ai-ml.md) - SEBI AI/ML guidelines
 - [API Reference](../api/orchestrator-api.yaml) - OpenAPI specification
 
 ## Support

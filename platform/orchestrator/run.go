@@ -1031,8 +1031,13 @@ func initializeComponents() {
 		wcpExecutionTracker := NewWCPExecutionTracker(executionRepo, workflowControlService)
 		workflowControlService.SetExecutionTracker(wcpExecutionTracker)
 
+		// Create EventHub for SSE streaming (#1074)
+		executionEventHub := execution.NewEventHub()
+		mapExecutionTracker.SetEventHub(executionEventHub)
+		wcpExecutionTracker.SetEventHub(executionEventHub)
+
 		// Create unified execution handler for both MAP and WCP (#1075)
-		unifiedExecutionHandler = NewUnifiedExecutionHandler(executionRepo, mapExecutionTracker, wcpExecutionTracker)
+		unifiedExecutionHandler = NewUnifiedExecutionHandler(executionRepo, mapExecutionTracker, wcpExecutionTracker, executionEventHub, planService)
 		log.Println("Unified Execution Handler initialized ✅")
 
 		workflowControlHandler = workflow_control.NewHandler(workflowControlService)

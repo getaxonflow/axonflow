@@ -35,7 +35,7 @@ Contributors are listed here as their PRs are merged.
 
 | Name | Contribution | PR |
 |------|--------------|-----|
-| *Help improve our docs!* | - | - |
+| [Gregory Zak](https://github.com/gzak) | Support demo documentation fixes | [#125](https://github.com/getaxonflow/axonflow/pull/125) |
 
 ## Recognition
 
@@ -60,9 +60,13 @@ We value all types of contributions:
 | Metric | Count |
 |--------|-------|
 | Total Contributors | 2 |
-| PRs Merged | - |
-| Issues Closed | - |
+| PRs Merged (Community) | 4 |
+| Releases Published | 12+ |
 
 ---
 
 *Want to see your name here? Check out our [open issues](https://github.com/getaxonflow/axonflow/issues) and submit a PR!*
+
+---
+
+*Last Updated: February 2026*

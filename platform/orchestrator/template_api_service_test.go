@@ -804,3 +804,772 @@ func TestTemplateService_ValidateApplyRequest_WithPriority(t *testing.T) {
 		t.Errorf("Expected no error for valid priority, got %v", err)
 	}
 }
+
+// =============================================================================
+// Additional edge case tests to improve coverage
+// =============================================================================
+
+func TestValidateApplyRequest_MultipleErrors(t *testing.T) {
+	service := &TemplateService{}
+
+	template := &PolicyTemplate{
+		Variables: []TemplateVariable{
+			{Name: "required_var", Required: true, Type: "string"},
+			{Name: "another_required", Required: true, Type: "number"},
+		},
+	}
+
+	// Empty name AND missing required variables should produce multiple errors
+	req := &ApplyTemplateRequest{
+		PolicyName:  "",
+		Description: string(make([]byte, 501)),
+		Variables:   map[string]interface{}{},
+	}
+
+	err := service.validateApplyRequest(template, req)
+	if err == nil {
+		t.Fatal("Expected validation error, got nil")
+	}
+
+	validationErr, ok := err.(*TemplateValidationError)
+	if !ok {
+		t.Fatalf("Expected *TemplateValidationError, got %T", err)
+	}
+
+	// Should have at least 4 errors: policy_name, description, required_var, another_required
+	if len(validationErr.Errors) < 4 {
+		t.Errorf("Expected at least 4 errors, got %d: %v", len(validationErr.Errors), validationErr.Errors)
+	}
+
+	// The Error() method should join them with semicolons
+	errStr := validationErr.Error()
+	if !containsSubstring(errStr, ";") {
+		t.Errorf("Expected semicolons in multi-error string, got: %s", errStr)
+	}
+}
+
+func TestValidateApplyRequest_ExactBoundaryLengths(t *testing.T) {
+	service := &TemplateService{}
+
+	template := &PolicyTemplate{
+		Variables: []TemplateVariable{},
+	}
+
+	tests := []struct {
+		name    string
+		req     *ApplyTemplateRequest
+		wantErr bool
+	}{
+		{
+			name: "exactly 3-char policy name is valid",
+			req: &ApplyTemplateRequest{
+				PolicyName: "abc",
+				Variables:  map[string]interface{}{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "exactly 100-char policy name is valid",
+			req: &ApplyTemplateRequest{
+				PolicyName: string(make([]byte, 100)),
+				Variables:  map[string]interface{}{},
+			},
+			// NOTE: make([]byte, 100) produces null bytes - depends on implementation
+			// The actual string has 100 characters of \x00, still length 100
+			wantErr: false,
+		},
+		{
+			name: "exactly 500-char description is valid",
+			req: &ApplyTemplateRequest{
+				PolicyName:  "Valid Name",
+				Description: string(make([]byte, 500)),
+				Variables:   map[string]interface{}{},
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-string variable skips pattern validation",
+			req: &ApplyTemplateRequest{
+				PolicyName: "Valid Name",
+				Variables:  map[string]interface{}{"count": 42},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := service.validateApplyRequest(template, tt.req)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateApplyRequest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateApplyRequest_NonStringVariableSkipsPatternValidation(t *testing.T) {
+	service := &TemplateService{}
+
+	// A variable with a validation pattern, but the value provided is a number (not a string)
+	// Should not fail — pattern validation only applies to string values
+	template := &PolicyTemplate{
+		Variables: []TemplateVariable{
+			{Name: "threshold", Required: true, Type: "number", Validation: `^\d+$`},
+		},
+	}
+
+	req := &ApplyTemplateRequest{
+		PolicyName: "Valid Name",
+		Variables:  map[string]interface{}{"threshold": 100},
+	}
+
+	err := service.validateApplyRequest(template, req)
+	if err != nil {
+		t.Errorf("Expected no error for non-string variable with pattern, got %v", err)
+	}
+}
+
+func TestValidateApplyRequest_OptionalVariableNotProvided(t *testing.T) {
+	service := &TemplateService{}
+
+	template := &PolicyTemplate{
+		Variables: []TemplateVariable{
+			{Name: "optional_var", Required: false, Type: "string", Validation: `^[a-z]+$`},
+		},
+	}
+
+	// Optional variable not provided — should pass without checking pattern
+	req := &ApplyTemplateRequest{
+		PolicyName: "Valid Name",
+		Variables:  map[string]interface{}{},
+	}
+
+	err := service.validateApplyRequest(template, req)
+	if err != nil {
+		t.Errorf("Expected no error for missing optional variable, got %v", err)
+	}
+}
+
+func TestSubstituteVariables_OverrideDefaults(t *testing.T) {
+	service := &TemplateService{}
+
+	template := map[string]interface{}{
+		"limit":  "{{max_limit}}",
+		"window": "{{time_window}}",
+	}
+
+	varDefs := []TemplateVariable{
+		{Name: "max_limit", Required: false, Default: 100},
+		{Name: "time_window", Required: false, Default: 60},
+	}
+
+	// Override one default, leave the other
+	values := map[string]interface{}{
+		"max_limit": 200,
+	}
+
+	result, err := service.substituteVariables(template, varDefs, values)
+	if err != nil {
+		t.Fatalf("substituteVariables() error = %v", err)
+	}
+
+	if result["limit"] != 200 {
+		t.Errorf("Expected overridden limit 200, got %v", result["limit"])
+	}
+	if result["window"] != 60 {
+		t.Errorf("Expected default window 60, got %v", result["window"])
+	}
+}
+
+func TestSubstituteVariables_EmptyVarDefs(t *testing.T) {
+	service := &TemplateService{}
+
+	template := map[string]interface{}{
+		"static_field": "no variables here",
+	}
+
+	result, err := service.substituteVariables(template, nil, nil)
+	if err != nil {
+		t.Fatalf("substituteVariables() error = %v", err)
+	}
+
+	if result["static_field"] != "no variables here" {
+		t.Errorf("Expected static field unchanged, got %v", result["static_field"])
+	}
+}
+
+func TestSubstituteVariables_AllDefaults(t *testing.T) {
+	service := &TemplateService{}
+
+	template := map[string]interface{}{
+		"a": "{{alpha}}",
+		"b": "{{beta}}",
+	}
+
+	varDefs := []TemplateVariable{
+		{Name: "alpha", Required: false, Default: "first"},
+		{Name: "beta", Required: false, Default: "second"},
+	}
+
+	// No user values provided, all should come from defaults
+	result, err := service.substituteVariables(template, varDefs, map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("substituteVariables() error = %v", err)
+	}
+
+	if result["a"] != "first" {
+		t.Errorf("Expected 'first', got %v", result["a"])
+	}
+	if result["b"] != "second" {
+		t.Errorf("Expected 'second', got %v", result["b"])
+	}
+}
+
+func TestDeepSubstitute_DeeplyNested(t *testing.T) {
+	service := &TemplateService{}
+
+	variables := map[string]interface{}{
+		"val": "replaced",
+	}
+
+	// Three levels of nesting
+	input := map[string]interface{}{
+		"level1": map[string]interface{}{
+			"level2": map[string]interface{}{
+				"level3": "{{val}}",
+			},
+		},
+	}
+
+	result, err := service.deepSubstitute(input, variables)
+	if err != nil {
+		t.Fatalf("deepSubstitute() error = %v", err)
+	}
+
+	m1, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected map at level 0")
+	}
+	m2, ok := m1["level1"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected map at level 1")
+	}
+	m3, ok := m2["level2"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected map at level 2")
+	}
+	if m3["level3"] != "replaced" {
+		t.Errorf("Expected 'replaced' at level 3, got %v", m3["level3"])
+	}
+}
+
+func TestDeepSubstitute_MixedSlice(t *testing.T) {
+	service := &TemplateService{}
+
+	variables := map[string]interface{}{
+		"name": "world",
+	}
+
+	input := []interface{}{
+		"{{name}}",
+		42,
+		true,
+		nil,
+		map[string]interface{}{"key": "{{name}}"},
+		[]interface{}{"{{name}}", "static"},
+	}
+
+	result, err := service.deepSubstitute(input, variables)
+	if err != nil {
+		t.Fatalf("deepSubstitute() error = %v", err)
+	}
+
+	arr, ok := result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected []interface{}, got %T", result)
+	}
+
+	if len(arr) != 6 {
+		t.Fatalf("Expected 6 elements, got %d", len(arr))
+	}
+
+	// String variable preserves type (entire string is variable)
+	if arr[0] != "world" {
+		t.Errorf("arr[0]: expected 'world', got %v", arr[0])
+	}
+	// Primitives unchanged
+	if arr[1] != 42 {
+		t.Errorf("arr[1]: expected 42, got %v", arr[1])
+	}
+	if arr[2] != true {
+		t.Errorf("arr[2]: expected true, got %v", arr[2])
+	}
+	if arr[3] != nil {
+		t.Errorf("arr[3]: expected nil, got %v", arr[3])
+	}
+	// Nested map
+	nestedMap, ok := arr[4].(map[string]interface{})
+	if !ok {
+		t.Fatalf("arr[4]: expected map, got %T", arr[4])
+	}
+	if nestedMap["key"] != "world" {
+		t.Errorf("arr[4][key]: expected 'world', got %v", nestedMap["key"])
+	}
+	// Nested slice
+	nestedSlice, ok := arr[5].([]interface{})
+	if !ok {
+		t.Fatalf("arr[5]: expected slice, got %T", arr[5])
+	}
+	if nestedSlice[0] != "world" {
+		t.Errorf("arr[5][0]: expected 'world', got %v", nestedSlice[0])
+	}
+	if nestedSlice[1] != "static" {
+		t.Errorf("arr[5][1]: expected 'static', got %v", nestedSlice[1])
+	}
+}
+
+func TestDeepSubstitute_FloatAndOtherPrimitives(t *testing.T) {
+	service := &TemplateService{}
+
+	variables := map[string]interface{}{}
+
+	tests := []struct {
+		name  string
+		input interface{}
+		want  interface{}
+	}{
+		{"float64", float64(3.14), float64(3.14)},
+		{"int", 42, 42},
+		{"int64", int64(999), int64(999)},
+		{"bool true", true, true},
+		{"bool false", false, false},
+		{"nil", nil, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := service.deepSubstitute(tt.input, variables)
+			if err != nil {
+				t.Fatalf("deepSubstitute() error = %v", err)
+			}
+			if result != tt.want {
+				t.Errorf("deepSubstitute(%v) = %v, want %v", tt.input, result, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubstituteString_SingleVariableNotFound(t *testing.T) {
+	service := &TemplateService{}
+
+	// Entire string is a single variable, but variable is not in the map
+	result := service.substituteString("{{missing}}", map[string]interface{}{})
+
+	// Should return the original string unchanged
+	if result != "{{missing}}" {
+		t.Errorf("Expected '{{missing}}', got %v", result)
+	}
+}
+
+func TestSubstituteString_PartialMatchMissing(t *testing.T) {
+	service := &TemplateService{}
+
+	// Multiple variables, one present and one missing
+	result := service.substituteString("{{found}} and {{missing}}", map[string]interface{}{
+		"found": "here",
+	})
+
+	expected := "here and {{missing}}"
+	if result != expected {
+		t.Errorf("Expected '%s', got %v", expected, result)
+	}
+}
+
+func TestSubstituteString_EmptyString(t *testing.T) {
+	service := &TemplateService{}
+
+	result := service.substituteString("", map[string]interface{}{"foo": "bar"})
+	if result != "" {
+		t.Errorf("Expected empty string, got %v", result)
+	}
+}
+
+func TestSubstituteString_MapVariable(t *testing.T) {
+	service := &TemplateService{}
+
+	config := map[string]interface{}{"key": "value"}
+	result := service.substituteString("{{config}}", map[string]interface{}{
+		"config": config,
+	})
+
+	// Single variable should preserve the map type
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected map[string]interface{}, got %T", result)
+	}
+	if resultMap["key"] != "value" {
+		t.Errorf("Expected map with key=value, got %v", resultMap)
+	}
+}
+
+func TestExtractPolicyFields_ActionWithoutConfig(t *testing.T) {
+	service := &TemplateService{}
+
+	template := map[string]interface{}{
+		"type":     "security",
+		"priority": float64(80),
+		"conditions": []interface{}{
+			map[string]interface{}{
+				"field":    "query",
+				"operator": "contains",
+				"value":    "DROP TABLE",
+			},
+		},
+		"actions": []interface{}{
+			map[string]interface{}{
+				"type": "block",
+				// No "config" key
+			},
+		},
+	}
+
+	policyType, conditions, actions, priority, err := service.extractPolicyFields(template)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+
+	if policyType != "security" {
+		t.Errorf("type = %v, want 'security'", policyType)
+	}
+	if priority != 80 {
+		t.Errorf("priority = %v, want 80", priority)
+	}
+	if len(conditions) != 1 {
+		t.Errorf("conditions len = %v, want 1", len(conditions))
+	}
+	if len(actions) != 1 {
+		t.Errorf("actions len = %v, want 1", len(actions))
+	}
+	if actions[0].Type != "block" {
+		t.Errorf("action type = %v, want 'block'", actions[0].Type)
+	}
+	if actions[0].Config != nil {
+		t.Errorf("action config = %v, want nil", actions[0].Config)
+	}
+}
+
+func TestExtractPolicyFields_ConditionFieldExtraction(t *testing.T) {
+	service := &TemplateService{}
+
+	template := map[string]interface{}{
+		"conditions": []interface{}{
+			map[string]interface{}{
+				"field":    "user.role",
+				"operator": "equals",
+				"value":    "admin",
+			},
+		},
+		"actions": []interface{}{
+			map[string]interface{}{
+				"type":   "alert",
+				"config": map[string]interface{}{"channel": "slack"},
+			},
+		},
+	}
+
+	policyType, conditions, actions, priority, err := service.extractPolicyFields(template)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+
+	// Check defaults
+	if policyType != "content" {
+		t.Errorf("type = %v, want default 'content'", policyType)
+	}
+	if priority != 50 {
+		t.Errorf("priority = %v, want default 50", priority)
+	}
+
+	// Verify condition fields
+	if conditions[0].Field != "user.role" {
+		t.Errorf("condition field = %v, want 'user.role'", conditions[0].Field)
+	}
+	if conditions[0].Operator != "equals" {
+		t.Errorf("condition operator = %v, want 'equals'", conditions[0].Operator)
+	}
+	if conditions[0].Value != "admin" {
+		t.Errorf("condition value = %v, want 'admin'", conditions[0].Value)
+	}
+
+	// Verify action config
+	if actions[0].Type != "alert" {
+		t.Errorf("action type = %v, want 'alert'", actions[0].Type)
+	}
+	if actions[0].Config["channel"] != "slack" {
+		t.Errorf("action config channel = %v, want 'slack'", actions[0].Config["channel"])
+	}
+}
+
+func TestExtractPolicyFields_StringPriorityFallsToDefault(t *testing.T) {
+	service := &TemplateService{}
+
+	// Priority is a string (not float64 or int) — should fall to default 50
+	template := map[string]interface{}{
+		"type":     "content",
+		"priority": "high",
+		"conditions": []interface{}{
+			map[string]interface{}{"field": "q", "operator": "eq", "value": "x"},
+		},
+		"actions": []interface{}{
+			map[string]interface{}{"type": "log", "config": map[string]interface{}{}},
+		},
+	}
+
+	_, _, _, priority, err := service.extractPolicyFields(template)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+	if priority != 50 {
+		t.Errorf("priority = %v, want default 50 for string priority", priority)
+	}
+}
+
+func TestExtractPolicyFields_NonMapConditionIgnored(t *testing.T) {
+	service := &TemplateService{}
+
+	// A condition that is not a map[string]interface{} should be skipped
+	template := map[string]interface{}{
+		"conditions": []interface{}{
+			"not a map",
+			map[string]interface{}{"field": "q", "operator": "eq", "value": "x"},
+		},
+		"actions": []interface{}{
+			map[string]interface{}{"type": "log", "config": map[string]interface{}{}},
+		},
+	}
+
+	_, conditions, _, _, err := service.extractPolicyFields(template)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+	// Only the valid map condition should be extracted
+	if len(conditions) != 1 {
+		t.Errorf("Expected 1 condition (non-map skipped), got %d", len(conditions))
+	}
+}
+
+func TestExtractPolicyFields_NonMapActionIgnored(t *testing.T) {
+	service := &TemplateService{}
+
+	// An action that is not a map[string]interface{} should be skipped
+	template := map[string]interface{}{
+		"conditions": []interface{}{
+			map[string]interface{}{"field": "q", "operator": "eq", "value": "x"},
+		},
+		"actions": []interface{}{
+			"not a map",
+			map[string]interface{}{"type": "log", "config": map[string]interface{}{}},
+		},
+	}
+
+	_, _, actions, _, err := service.extractPolicyFields(template)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+	// Only the valid map action should be extracted
+	if len(actions) != 1 {
+		t.Errorf("Expected 1 action (non-map skipped), got %d", len(actions))
+	}
+}
+
+func TestExtractPolicyFields_ConditionsNotSlice(t *testing.T) {
+	service := &TemplateService{}
+
+	// conditions key exists but is not a slice — treated as empty
+	template := map[string]interface{}{
+		"conditions": "not a slice",
+		"actions": []interface{}{
+			map[string]interface{}{"type": "log", "config": map[string]interface{}{}},
+		},
+	}
+
+	_, _, _, _, err := service.extractPolicyFields(template)
+	if err == nil {
+		t.Fatal("Expected error for non-slice conditions")
+	}
+	if !containsSubstring(err.Error(), "condition") {
+		t.Errorf("Expected error about conditions, got: %v", err)
+	}
+}
+
+func TestExtractPolicyFields_ActionsNotSlice(t *testing.T) {
+	service := &TemplateService{}
+
+	// actions key exists but is not a slice
+	template := map[string]interface{}{
+		"conditions": []interface{}{
+			map[string]interface{}{"field": "q", "operator": "eq", "value": "x"},
+		},
+		"actions": "not a slice",
+	}
+
+	_, _, _, _, err := service.extractPolicyFields(template)
+	if err == nil {
+		t.Fatal("Expected error for non-slice actions")
+	}
+	if !containsSubstring(err.Error(), "action") {
+		t.Errorf("Expected error about actions, got: %v", err)
+	}
+}
+
+func TestGetStringFromMap_NilMap(t *testing.T) {
+	// Passing nil map should not panic
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("getStringFromMap panicked on nil map: %v", r)
+		}
+	}()
+
+	// Note: nil map works for read operations in Go, returns zero value
+	var m map[string]interface{}
+	result := getStringFromMap(m, "any")
+	if result != "" {
+		t.Errorf("Expected empty string for nil map, got %v", result)
+	}
+}
+
+func TestTemplateValidationError_SingleError(t *testing.T) {
+	err := &TemplateValidationError{
+		Errors: []TemplateFieldError{
+			{Field: "name", Message: "is required"},
+		},
+	}
+
+	errStr := err.Error()
+	expected := "name: is required"
+	if errStr != expected {
+		t.Errorf("Error() = %q, want %q", errStr, expected)
+	}
+}
+
+func TestTemplateValidationError_EmptyErrors(t *testing.T) {
+	err := &TemplateValidationError{
+		Errors: []TemplateFieldError{},
+	}
+
+	errStr := err.Error()
+	if errStr != "" {
+		t.Errorf("Error() with empty errors = %q, want empty string", errStr)
+	}
+}
+
+func TestSubstituteVariablesAndExtractPolicyFields_Integration(t *testing.T) {
+	service := &TemplateService{}
+
+	// Simulate a complete template application flow using only pure functions
+	template := map[string]interface{}{
+		"type":     "{{policy_type}}",
+		"priority": "{{priority}}",
+		"conditions": []interface{}{
+			map[string]interface{}{
+				"field":    "{{field}}",
+				"operator": "contains",
+				"value":    "{{pattern}}",
+			},
+		},
+		"actions": []interface{}{
+			map[string]interface{}{
+				"type": "{{action}}",
+				"config": map[string]interface{}{
+					"message": "Blocked: {{reason}}",
+				},
+			},
+		},
+	}
+
+	varDefs := []TemplateVariable{
+		{Name: "policy_type", Required: true},
+		{Name: "priority", Required: false, Default: 50},
+		{Name: "field", Required: true},
+		{Name: "pattern", Required: true},
+		{Name: "action", Required: false, Default: "block"},
+		{Name: "reason", Required: false, Default: "policy violation"},
+	}
+
+	values := map[string]interface{}{
+		"policy_type": "security",
+		"priority":    75,
+		"field":       "query",
+		"pattern":     "DROP TABLE",
+	}
+
+	// Step 1: Substitute variables
+	processed, err := service.substituteVariables(template, varDefs, values)
+	if err != nil {
+		t.Fatalf("substituteVariables() error = %v", err)
+	}
+
+	// Step 2: Extract policy fields
+	policyType, conditions, actions, priority, err := service.extractPolicyFields(processed)
+	if err != nil {
+		t.Fatalf("extractPolicyFields() error = %v", err)
+	}
+
+	// Verify results
+	if policyType != "security" {
+		t.Errorf("type = %v, want 'security'", policyType)
+	}
+	if priority != 75 {
+		t.Errorf("priority = %v, want 75", priority)
+	}
+	if len(conditions) != 1 {
+		t.Fatalf("conditions len = %v, want 1", len(conditions))
+	}
+	if conditions[0].Field != "query" {
+		t.Errorf("condition field = %v, want 'query'", conditions[0].Field)
+	}
+	if conditions[0].Value != "DROP TABLE" {
+		t.Errorf("condition value = %v, want 'DROP TABLE'", conditions[0].Value)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %v, want 1", len(actions))
+	}
+	if actions[0].Type != "block" {
+		t.Errorf("action type = %v, want 'block' (default)", actions[0].Type)
+	}
+	if actions[0].Config["message"] != "Blocked: policy violation" {
+		t.Errorf("action message = %v, want 'Blocked: policy violation'", actions[0].Config["message"])
+	}
+}
+
+// TestNewTemplateService tests the constructor returns a properly initialized service
+func TestNewTemplateService(t *testing.T) {
+	templateRepo := &TemplateRepository{}
+	policyRepo := &PolicyRepository{}
+
+	service := NewTemplateService(templateRepo, policyRepo)
+
+	if service == nil {
+		t.Fatal("NewTemplateService() returned nil")
+	}
+	if service.templateRepo != templateRepo {
+		t.Error("Expected service.templateRepo to match the provided template repository")
+	}
+	if service.policyRepo != policyRepo {
+		t.Error("Expected service.policyRepo to match the provided policy repository")
+	}
+}
+
+func TestNewTemplateService_NilRepos(t *testing.T) {
+	service := NewTemplateService(nil, nil)
+
+	if service == nil {
+		t.Fatal("NewTemplateService(nil, nil) returned nil")
+	}
+	if service.templateRepo != nil {
+		t.Error("Expected service.templateRepo to be nil")
+	}
+	if service.policyRepo != nil {
+		t.Error("Expected service.policyRepo to be nil")
+	}
+}
