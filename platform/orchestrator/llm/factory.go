@@ -201,6 +201,22 @@ func ValidateConfig(config ProviderConfig) error {
 			}
 		}
 
+	case ProviderTypeAzureOpenAI:
+		if config.APIKey == "" && config.APIKeySecretARN == "" {
+			return &FactoryError{
+				ProviderType: config.Type,
+				Code:         ErrFactoryInvalidConfig,
+				Message:      "API key or secret ARN is required for Azure OpenAI",
+			}
+		}
+		if config.Endpoint == "" {
+			return &FactoryError{
+				ProviderType: config.Type,
+				Code:         ErrFactoryInvalidConfig,
+				Message:      "endpoint is required for Azure OpenAI",
+			}
+		}
+
 	case ProviderTypeBedrock:
 		if config.Region == "" {
 			return &FactoryError{

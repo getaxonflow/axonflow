@@ -60,7 +60,7 @@ type ConnectorConfigDB struct {
 	Description              string                 `json:"description,omitempty"`
 	ConnectionURL            string                 `json:"connection_url,omitempty"`
 	Options                  map[string]interface{} `json:"options"`
-	Credentials              map[string]string      `json:"credentials,omitempty"`
+	Credentials              map[string]string      `json:"-"`
 	CredentialsSecretARN     string                 `json:"credentials_secret_arn,omitempty"`
 	CredentialsSecretVersion string                 `json:"credentials_secret_version,omitempty"`
 	TimeoutMs                int                    `json:"timeout_ms"`
@@ -777,7 +777,12 @@ func (s *RuntimeConfigService) dbConfigToBaseConfig(dbConfig *ConnectorConfigDB)
 
 // hasCredentials returns true if the credentials map contains non-empty auth values.
 func hasCredentials(creds map[string]string) bool {
-	return creds["username"] != "" || creds["password"] != ""
+	for _, key := range []string{"username", "password", "api_key", "token", "private_key", "client_secret"} {
+		if creds[key] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // StartPeriodicCleanup starts a background goroutine that cleans up expired cache entries

@@ -92,4 +92,4 @@ Each example shows how to access the `code_artifact` field in the response:
 
 ## Documentation
 
-See the full [Code Governance documentation](https://docs.getaxonflow.com/docs/features/code-governance) for more details.
+See the full [Code Governance documentation](https://docs.getaxonflow.com/docs/governance/code-governance) for more details.

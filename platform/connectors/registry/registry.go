@@ -239,16 +239,19 @@ func (r *Registry) Unregister(name string) error {
 	defer r.mu.Unlock()
 
 	connector, exists := r.connectors[name]
-	if !exists {
+	_, hasConfig := r.configs[name]
+	if !exists && !hasConfig {
 		return fmt.Errorf("connector '%s' not found", name)
 	}
 
-	// Disconnect the connector
-	ctx, cancel := context.WithTimeout(context.Background(), 5*1000000000) // 5 seconds
+	// Disconnect the connector if instantiated
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := connector.Disconnect(ctx); err != nil {
-		r.logger.Printf("Error disconnecting connector '%s': %v", name, err)
+	if exists {
+		if err := connector.Disconnect(ctx); err != nil {
+			r.logger.Printf("Error disconnecting connector '%s': %v", name, err)
+		}
 	}
 
 	delete(r.connectors, name)
@@ -334,25 +337,37 @@ func (r *Registry) GetConfig(name string) (*base.ConnectorConfig, error) {
 	return config, nil
 }
 
-// List returns all registered connector names
+// List returns all registered connector names (including lazy-loaded configs)
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.connectors))
+	seen := make(map[string]bool, len(r.connectors)+len(r.configs))
 	for name := range r.connectors {
+		seen[name] = true
+	}
+	for name := range r.configs {
+		seen[name] = true
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
 		names = append(names, name)
 	}
 
 	return names
 }
 
-// ListWithTypes returns all registered connectors with their types
+// ListWithTypes returns all registered connectors with their types (including lazy-loaded configs)
 func (r *Registry) ListWithTypes() map[string]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	result := make(map[string]string)
+	result := make(map[string]string, len(r.connectors)+len(r.configs))
+	for name, config := range r.configs {
+		result[name] = config.Type
+	}
+	// Instantiated connectors override config entries (authoritative type)
 	for name, connector := range r.connectors {
 		result[name] = connector.Type()
 	}

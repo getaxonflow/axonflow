@@ -62,8 +62,9 @@ type ExecutionRepository interface {
 // BaseExecutionTracker provides common functionality for execution tracking.
 // MAP and WCP trackers embed this and add their specific logic.
 type BaseExecutionTracker struct {
-	repo  ExecutionRepository
-	clock Clock // For testing
+	repo     ExecutionRepository
+	clock    Clock // For testing
+	eventHub *EventHub
 }
 
 // Clock interface for time operations (enables testing)
@@ -90,6 +91,33 @@ func NewBaseExecutionTrackerWithClock(repo ExecutionRepository, clock Clock) *Ba
 		repo:  repo,
 		clock: clock,
 	}
+}
+
+// SetEventHub sets the event hub for publishing execution state changes.
+func (t *BaseExecutionTracker) SetEventHub(hub *EventHub) {
+	t.eventHub = hub
+}
+
+// GetEventHub returns the event hub, or nil if not set.
+func (t *BaseExecutionTracker) GetEventHub() *EventHub {
+	return t.eventHub
+}
+
+// publishEvent publishes an execution event to the event hub.
+// No-op if the event hub is not set.
+func (t *BaseExecutionTracker) publishEvent(ctx context.Context, eventType string, executionID string) {
+	if t.eventHub == nil {
+		return
+	}
+	exec, err := t.repo.Get(ctx, executionID)
+	if err != nil {
+		return
+	}
+	t.eventHub.Publish(ExecutionEvent{
+		EventType:   eventType,
+		ExecutionID: executionID,
+		Data:        exec,
+	})
 }
 
 // StartExecution creates a new execution record.
@@ -120,6 +148,7 @@ func (t *BaseExecutionTracker) StartExecution(ctx context.Context, req CreateExe
 		return nil, err
 	}
 
+	t.publishEvent(ctx, EventExecutionStarted, exec.ExecutionID)
 	return exec, nil
 }
 
@@ -175,7 +204,11 @@ func (t *BaseExecutionTracker) ListExecutions(ctx context.Context, req ListExecu
 // CompleteExecution marks an execution as completed.
 func (t *BaseExecutionTracker) CompleteExecution(ctx context.Context, executionID string, result interface{}) error {
 	now := t.clock.Now()
-	return t.repo.UpdateStatus(ctx, executionID, StatusCompleted, &now, "")
+	if err := t.repo.UpdateStatus(ctx, executionID, StatusCompleted, &now, ""); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventExecutionCompleted, executionID)
+	return nil
 }
 
 // FailExecution marks an execution as failed.
@@ -185,13 +218,21 @@ func (t *BaseExecutionTracker) FailExecution(ctx context.Context, executionID st
 	if err != nil {
 		errMsg = err.Error()
 	}
-	return t.repo.UpdateStatus(ctx, executionID, StatusFailed, &now, errMsg)
+	if updateErr := t.repo.UpdateStatus(ctx, executionID, StatusFailed, &now, errMsg); updateErr != nil {
+		return updateErr
+	}
+	t.publishEvent(ctx, EventExecutionFailed, executionID)
+	return nil
 }
 
 // CancelExecution marks an execution as cancelled.
 func (t *BaseExecutionTracker) CancelExecution(ctx context.Context, executionID string, reason string) error {
 	now := t.clock.Now()
-	return t.repo.UpdateStatus(ctx, executionID, StatusCancelled, &now, reason)
+	if err := t.repo.UpdateStatus(ctx, executionID, StatusCancelled, &now, reason); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventExecutionCancelled, executionID)
+	return nil
 }
 
 // AddStep adds a new step to the execution.
@@ -232,7 +273,11 @@ func (t *BaseExecutionTracker) StartStep(ctx context.Context, executionID, stepI
 	}
 
 	exec.UpdatedAt = now
-	return t.repo.Update(ctx, exec)
+	if err := t.repo.Update(ctx, exec); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventStepStarted, executionID)
+	return nil
 }
 
 // CompleteStep marks a step as completed.
@@ -253,7 +298,11 @@ func (t *BaseExecutionTracker) CompleteStep(ctx context.Context, executionID, st
 	}
 
 	exec.UpdatedAt = now
-	return t.repo.UpdateSteps(ctx, executionID, exec.Steps)
+	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventStepCompleted, executionID)
+	return nil
 }
 
 // FailStep marks a step as failed.
@@ -280,7 +329,11 @@ func (t *BaseExecutionTracker) FailStep(ctx context.Context, executionID, stepID
 	}
 
 	exec.UpdatedAt = now
-	return t.repo.UpdateSteps(ctx, executionID, exec.Steps)
+	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventStepFailed, executionID)
+	return nil
 }
 
 // UpdateStepDecision updates the policy decision for a step (WCP use case).
@@ -310,7 +363,11 @@ func (t *BaseExecutionTracker) UpdateStepDecision(ctx context.Context, execution
 	}
 
 	exec.UpdatedAt = t.clock.Now()
-	return t.repo.UpdateSteps(ctx, executionID, exec.Steps)
+	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+		return err
+	}
+	t.publishEvent(ctx, EventStepDecision, executionID)
+	return nil
 }
 
 // RecordStepCost records the cost for a step.

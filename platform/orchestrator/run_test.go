@@ -883,7 +883,12 @@ func setupTestComponents(ctx context.Context) {
 
 // teardownTestComponents cleans up test components
 func teardownTestComponents() {
-	// Optional cleanup if needed
+	if metricsCollector != nil {
+		metricsCollector.Close()
+	}
+	if c, ok := dynamicPolicyEngine.(interface{ Close() }); ok {
+		c.Close()
+	}
 }
 
 func TestMetricsHandler(t *testing.T) {

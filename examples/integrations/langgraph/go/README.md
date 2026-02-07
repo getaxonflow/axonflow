@@ -133,4 +133,4 @@ All tests completed!
 
 - [TypeScript SDK Example](../typescript/) - Same patterns in TypeScript
 - [LangGraph Documentation](https://python.langchain.com/docs/langgraph)
-- [AxonFlow Go SDK](https://docs.getaxonflow.com/sdk/go-getting-started)
+- [AxonFlow Go SDK](https://docs.getaxonflow.com/docs/sdk/go-getting-started)

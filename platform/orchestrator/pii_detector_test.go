@@ -14,6 +14,8 @@ package orchestrator
 import (
 	"strings"
 	"testing"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // =============================================================================
@@ -1075,4 +1077,223 @@ func TestIsRepeatedDigits_Extended(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Shared Policy Engine Mapping Tests (Issue #963, #975)
+// =============================================================================
+
+func TestMapCategoryToPIIType(t *testing.T) {
+	tests := []struct {
+		name     string
+		category sharedpolicy.PolicyCategory
+		expected PIIType
+	}{
+		{
+			name:     "US PII maps to SSN",
+			category: sharedpolicy.CategoryPIIUS,
+			expected: PIITypeSSN,
+		},
+		{
+			name:     "Global PII maps to CreditCard",
+			category: sharedpolicy.CategoryPIIGlobal,
+			expected: PIITypeCreditCard,
+		},
+		{
+			name:     "India PII maps to BankAccount",
+			category: sharedpolicy.CategoryPIIIndia,
+			expected: PIITypeBankAccount,
+		},
+		{
+			name:     "EU PII maps to IBAN",
+			category: sharedpolicy.CategoryPIIEU,
+			expected: PIITypeIBAN,
+		},
+		{
+			name:     "Singapore PII falls through to default Email",
+			category: sharedpolicy.CategoryPIISingapore,
+			expected: PIITypeEmail,
+		},
+		{
+			name:     "Security category falls through to default Email",
+			category: sharedpolicy.CategorySecuritySQLi,
+			expected: PIITypeEmail,
+		},
+		{
+			name:     "Unknown category falls through to default Email",
+			category: sharedpolicy.PolicyCategory("unknown-category"),
+			expected: PIITypeEmail,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapCategoryToPIIType(tt.category)
+			if got != tt.expected {
+				t.Errorf("mapCategoryToPIIType(%q) = %q, want %q", tt.category, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMapSeverityToPIISeverity(t *testing.T) {
+	tests := []struct {
+		name     string
+		severity sharedpolicy.Severity
+		expected PIISeverity
+	}{
+		{
+			name:     "Critical maps to Critical",
+			severity: sharedpolicy.SeverityCritical,
+			expected: PIISeverityCritical,
+		},
+		{
+			name:     "High maps to High",
+			severity: sharedpolicy.SeverityHigh,
+			expected: PIISeverityHigh,
+		},
+		{
+			name:     "Medium maps to Medium",
+			severity: sharedpolicy.SeverityMedium,
+			expected: PIISeverityMedium,
+		},
+		{
+			name:     "Low maps to Low (default branch)",
+			severity: sharedpolicy.SeverityLow,
+			expected: PIISeverityLow,
+		},
+		{
+			name:     "Unknown severity falls through to default Low",
+			severity: sharedpolicy.Severity("unknown"),
+			expected: PIISeverityLow,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapSeverityToPIISeverity(tt.severity)
+			if got != tt.expected {
+				t.Errorf("mapSeverityToPIISeverity(%q) = %q, want %q", tt.severity, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestConvertSharedResultToPIIResults(t *testing.T) {
+	t.Run("nil input returns nil", func(t *testing.T) {
+		got := ConvertSharedResultToPIIResults(nil)
+		if got != nil {
+			t.Errorf("ConvertSharedResultToPIIResults(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("empty matched policies returns empty slice", func(t *testing.T) {
+		result := &sharedpolicy.ResponseResult{
+			MatchedPolicies: []sharedpolicy.PolicyMatch{},
+		}
+		got := ConvertSharedResultToPIIResults(result)
+		if len(got) != 0 {
+			t.Errorf("Expected empty slice, got %d results", len(got))
+		}
+	})
+
+	t.Run("single match converts correctly", func(t *testing.T) {
+		result := &sharedpolicy.ResponseResult{
+			MatchedPolicies: []sharedpolicy.PolicyMatch{
+				{
+					PolicyID: "sys_pii_ssn",
+					Category: sharedpolicy.CategoryPIIUS,
+					Severity: sharedpolicy.SeverityCritical,
+				},
+			},
+		}
+		got := ConvertSharedResultToPIIResults(result)
+		if len(got) != 1 {
+			t.Fatalf("Expected 1 result, got %d", len(got))
+		}
+		if got[0].Type != PIITypeSSN {
+			t.Errorf("Type = %q, want %q", got[0].Type, PIITypeSSN)
+		}
+		if got[0].Value != "[DETECTED]" {
+			t.Errorf("Value = %q, want %q", got[0].Value, "[DETECTED]")
+		}
+		if got[0].Severity != PIISeverityCritical {
+			t.Errorf("Severity = %q, want %q", got[0].Severity, PIISeverityCritical)
+		}
+		if got[0].Confidence != 1.0 {
+			t.Errorf("Confidence = %f, want 1.0", got[0].Confidence)
+		}
+	})
+
+	t.Run("multiple matches with different categories and severities", func(t *testing.T) {
+		result := &sharedpolicy.ResponseResult{
+			MatchedPolicies: []sharedpolicy.PolicyMatch{
+				{
+					PolicyID: "sys_pii_ssn",
+					Category: sharedpolicy.CategoryPIIUS,
+					Severity: sharedpolicy.SeverityCritical,
+				},
+				{
+					PolicyID: "sys_pii_credit_card",
+					Category: sharedpolicy.CategoryPIIGlobal,
+					Severity: sharedpolicy.SeverityHigh,
+				},
+				{
+					PolicyID: "sys_pii_iban",
+					Category: sharedpolicy.CategoryPIIEU,
+					Severity: sharedpolicy.SeverityMedium,
+				},
+			},
+		}
+		got := ConvertSharedResultToPIIResults(result)
+		if len(got) != 3 {
+			t.Fatalf("Expected 3 results, got %d", len(got))
+		}
+
+		// Verify first result: US PII / Critical
+		if got[0].Type != PIITypeSSN {
+			t.Errorf("Result[0].Type = %q, want %q", got[0].Type, PIITypeSSN)
+		}
+		if got[0].Severity != PIISeverityCritical {
+			t.Errorf("Result[0].Severity = %q, want %q", got[0].Severity, PIISeverityCritical)
+		}
+
+		// Verify second result: Global PII / High
+		if got[1].Type != PIITypeCreditCard {
+			t.Errorf("Result[1].Type = %q, want %q", got[1].Type, PIITypeCreditCard)
+		}
+		if got[1].Severity != PIISeverityHigh {
+			t.Errorf("Result[1].Severity = %q, want %q", got[1].Severity, PIISeverityHigh)
+		}
+
+		// Verify third result: EU PII / Medium
+		if got[2].Type != PIITypeIBAN {
+			t.Errorf("Result[2].Type = %q, want %q", got[2].Type, PIITypeIBAN)
+		}
+		if got[2].Severity != PIISeverityMedium {
+			t.Errorf("Result[2].Severity = %q, want %q", got[2].Severity, PIISeverityMedium)
+		}
+
+		// All results should have [DETECTED] value and confidence 1.0
+		for i, r := range got {
+			if r.Value != "[DETECTED]" {
+				t.Errorf("Result[%d].Value = %q, want %q", i, r.Value, "[DETECTED]")
+			}
+			if r.Confidence != 1.0 {
+				t.Errorf("Result[%d].Confidence = %f, want 1.0", i, r.Confidence)
+			}
+		}
+	})
+
+	t.Run("result with no matched policies but non-nil result", func(t *testing.T) {
+		result := &sharedpolicy.ResponseResult{
+			PoliciesEvaluated: 10,
+			Blocked:           false,
+			// MatchedPolicies is nil (zero value)
+		}
+		got := ConvertSharedResultToPIIResults(result)
+		if len(got) != 0 {
+			t.Errorf("Expected empty slice for result with no matches, got %d", len(got))
+		}
+	})
 }

@@ -1,6 +1,8 @@
 # Choosing an Integration Mode
 
-**Last Updated:** January 14, 2026
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0 | **SDKs:** v3.2.0
 
 AxonFlow offers three integration modes to fit different requirements. This guide helps you choose the right one for your application.
 
@@ -410,4 +412,4 @@ MCP_DYNAMIC_POLICIES_GRACEFUL=true  # Continue if Orchestrator unavailable
 - [Proxy Mode Guide](./proxy-mode.md) - Deep dive into Proxy Mode
 - [Gateway Mode Migration Guide](./gateway-mode.md) - Deep dive into Gateway Mode
 - [MCP Connector Architecture](../../technical-docs/MCP_CONNECTOR_ARCHITECTURE.md) - Full MCP architecture
-- [SDK Comparison](../reference/sdk-comparison.md) - TypeScript vs Go vs Python SDKs
+- [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) - Full method coverage matrix across all SDKs

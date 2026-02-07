@@ -1,50 +1,60 @@
 # TypeScript SDK Technical Specification
 
-**Version:** 1.0.0
-**Last Updated:** September 30, 2025
+**Last Updated:** February 2026
+
+**SDK Version:** v3.2.0 | **Platform Version:** v4.1.0
+
 **Status:** Production Ready
+
+---
 
 ## Architecture Overview
 
-The SDK implements an invisible governance layer for AI applications, providing real-time policy enforcement with minimal latency overhead.
+The AxonFlow TypeScript SDK provides a single `AxonFlow` client class that communicates with the AxonFlow Agent and Orchestrator services. The SDK implements two integration modes (Proxy Mode and Gateway Mode), plus full CRUD operations for policies, connectors, workflows, budgets, and more.
 
-### Core Design Principles
+### Design Principles
 
-1. **Zero Dependencies**: No external packages for security and size
-2. **Isomorphic**: Works in Node.js and browsers
-3. **Non-Invasive**: 3-line integration without code restructuring
-4. **Fail-Open**: Gracefully degrades if service unavailable
-5. **Performance First**: Minimal overhead on AI calls (typically single-digit ms)
+1. **Node.js 18+** -- Uses native `fetch` and `Buffer`; not designed for browser environments.
+2. **Client Credentials Auth** -- `clientId`/`clientSecret` sent as `Authorization: Basic` header.
+3. **Fail-Open** -- Gracefully degrades if the AxonFlow service is unavailable (production mode).
+4. **Typed Errors** -- Custom error classes for policy violations, authentication failures, timeouts, and more.
+5. **Dual Build** -- Ships both CommonJS (`dist/cjs/`) and ESM (`dist/esm/`) builds.
 
 ## Component Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│           Application Code              │
-├─────────────────────────────────────────┤
-│         TypeScript SDK Layer            │
-│  ┌────────────────────────────────┐    │
-│  │      Client (client.ts)        │    │
-│  │  - Configuration management    │    │
-│  │  - Request interception        │    │
-│  │  - Response processing         │    │
-│  └────────────────────────────────┘    │
-│  ┌────────────────────────────────┐    │
-│  │    Interceptors (interceptors/)│    │
-│  │  - OpenAI wrapper              │    │
-│  │  - Anthropic wrapper           │    │
-│  │  - Generic HTTP interceptor    │    │
-│  └────────────────────────────────┘    │
-│  ┌────────────────────────────────┐    │
-│  │      Policies (policies/)      │    │
-│  │  - PII detection engine        │    │
-│  │  - Content filtering           │    │
-│  │  - Rate limiting               │    │
-│  └────────────────────────────────┘    │
-├─────────────────────────────────────────┤
-│         Control Plane API               │
-│    (Agent + Orchestrator Services)      │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│             Application Code                 │
+├──────────────────────────────────────────────┤
+│            TypeScript SDK Layer              │
+│  ┌────────────────────────────────────────┐  │
+│  │         AxonFlow Client                │  │
+│  │  - Proxy Mode (proxyLLMCall)           │  │
+│  │  - Gateway Mode (getPolicyApproved-    │  │
+│  │    Context + auditLLMCall)             │  │
+│  │  - Policy CRUD (static + dynamic)      │  │
+│  │  - Multi-Agent Planning (MAP)          │  │
+│  │  - Connector management (MCP)          │  │
+│  │  - Workflow Control Plane (WCP)        │  │
+│  │  - Cost controls (budgets + usage)     │  │
+│  │  - Execution replay + audit logs       │  │
+│  │  - Code governance (Enterprise)        │  │
+│  └────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────┐  │
+│  │     Typed Error Classes                │  │
+│  │  - PolicyViolationError                │  │
+│  │  - AuthenticationError                 │  │
+│  │  - TimeoutError / RateLimitError       │  │
+│  │  - APIError / ConnectionError          │  │
+│  │  - ConfigurationError                  │  │
+│  │  - ConnectorError                      │  │
+│  │  - PlanExecutionError                  │  │
+│  │  - VersionConflictError                │  │
+│  └────────────────────────────────────────┘  │
+├──────────────────────────────────────────────┤
+│         AxonFlow Control Plane               │
+│    (Agent + Orchestrator Services)           │
+└──────────────────────────────────────────────┘
 ```
 
 ## API Specification
@@ -52,348 +62,370 @@ The SDK implements an invisible governance layer for AI applications, providing 
 ### Client Initialization
 
 ```typescript
-interface Config {
-  apiKey: string;                    // Required: Authentication key
-  endpoint?: string;                 // Optional: API endpoint (default: production)
-  environment?: 'production' | 'sandbox'; // Optional: Environment mode
-  timeout?: number;                  // Optional: Request timeout in ms (default: 5000)
-  failOpen?: boolean;               // Optional: Fail open on errors (default: true in prod)
-  debug?: boolean;                  // Optional: Enable debug logging (default: false)
+import { AxonFlow } from '@axonflow/sdk';
+
+const client = new AxonFlow({
+  endpoint: 'http://localhost:8080',
+  clientId: 'my-org',
+  clientSecret: 'my-license-key',
+  debug: true,
+});
+```
+
+### Configuration
+
+```typescript
+interface AxonFlowConfig {
+  clientId?: string;          // Authentication identity
+  clientSecret?: string;      // Authentication credential
+  endpoint?: string;          // Agent URL (default: https://staging-eu.getaxonflow.com)
+  mode?: 'sandbox' | 'production'; // Default: production when credentials provided
+  tenant?: string;            // Deprecated; use clientId instead
+  debug?: boolean;            // Enable debug logging (default: false)
+  timeout?: number;           // Request timeout in ms (default: 30000)
+  mapTimeout?: number;        // MAP timeout in ms (default: 120000)
+  retry?: {
+    enabled: boolean;         // Default: true
+    maxAttempts?: number;     // Default: 3
+    delay?: number;           // Initial delay in ms (default: 1000)
+  };
   cache?: {
-    enabled: boolean;               // Enable response caching
-    ttl: number;                    // Cache TTL in seconds
-    maxSize: number;                // Max cache entries
+    enabled: boolean;         // Default: true
+    ttl?: number;             // Cache TTL in ms (default: 60000)
   };
 }
 ```
 
+**Validation rules:**
+- Providing `clientSecret` without `clientId` throws a `ConfigurationError`.
+- When neither `clientId` nor `clientSecret` is provided, the SDK operates in community mode with no authentication headers.
+
 ### Core Methods
 
-#### protect()
-Primary method for wrapping AI operations with governance.
+#### proxyLLMCall() -- Proxy Mode
+
+Routes a query through the AxonFlow Agent, which handles policy enforcement, LLM provider routing, and response processing.
 
 ```typescript
-async protect<T>(
-  operation: () => Promise<T>,
-  options?: ProtectOptions
-): Promise<T>
+async proxyLLMCall(options: ExecuteQueryOptions): Promise<ExecuteQueryResponse>
 
-interface ProtectOptions {
-  metadata?: Record<string, any>;   // Additional context
-  policies?: string[];              // Specific policies to apply
-  mode?: 'enforce' | 'monitor';    // Enforcement mode
+interface ExecuteQueryOptions {
+  userToken?: string;                         // User token (defaults to "anonymous")
+  query: string;                              // Query or prompt
+  requestType: 'chat' | 'sql' | 'mcp-query' | 'multi-agent-plan' | 'execute-plan';
+  context?: Record<string, unknown>;          // Additional context
+}
+
+interface ExecuteQueryResponse {
+  success: boolean;
+  data?: unknown;
+  result?: string;
+  planId?: string;
+  requestId?: string;
+  metadata: Record<string, unknown>;
+  error?: string;
+  blocked: boolean;
+  blockReason?: string;
+  policyInfo?: PolicyInfo;
+  budgetInfo?: BudgetInfo;
 }
 ```
 
-#### wrapClient()
-Helper for wrapping entire AI client instances.
+#### getPolicyApprovedContext() -- Gateway Mode Pre-Check
+
+Evaluates policies against a query before making a direct LLM call.
 
 ```typescript
-function wrapOpenAIClient(
-  client: OpenAI,
-  axonflow: AxonFlowClient
-): OpenAI
+async getPolicyApprovedContext(
+  options: PolicyApprovalOptions
+): Promise<PolicyApprovalResult>
 
-function wrapAnthropicClient(
-  client: Anthropic,
-  axonflow: AxonFlowClient
-): Anthropic
-```
-
-## Request Flow
-
-### 1. Request Interception
-```
-Application → SDK.protect() → Validate → Extract Content
-```
-
-### 2. Policy Evaluation
-```
-Content → PII Detection → Policy Check → Transformation
-```
-
-### 3. Service Communication
-```
-Transformed Request → Control Plane API → Response
-```
-
-### 4. Response Processing
-```
-API Response → Validation → Reverse Transform → Application
-```
-
-## Policy Engine
-
-### PII Detection Patterns
-
-| Type | Pattern | Replacement |
-|------|---------|-------------|
-| SSN | `\d{3}-?\d{2}-?\d{4}` | `[SSN_REDACTED]` |
-| Credit Card | `\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}` | `[CARD_REDACTED]` |
-| Passport | `[A-Z]{1,2}\d{6,9}` | `[PASSPORT_REDACTED]` |
-| Email | `[\w.-]+@[\w.-]+\.\w+` | `[EMAIL_REDACTED]` |
-| Phone | `\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}` | `[PHONE_REDACTED]` |
-
-### Policy Types
-
-1. **Static Policies** (Cached locally)
-   - PII patterns
-   - Blocked keywords
-   - Rate limits
-   - Content filters
-
-2. **Dynamic Policies** (Evaluated server-side)
-   - User-specific rules
-   - Context-aware decisions
-   - Real-time threat detection
-   - Cost optimization routing
-
-## Performance Characteristics
-
-### Latency Budget
-
-| Component | P50 | P95 | P99 | Target |
-|-----------|-----|-----|-----|--------|
-| SDK Overhead | 2ms | 5ms | 9ms | <10ms |
-| Network (Local) | 1ms | 2ms | 3ms | <5ms |
-| Policy Evaluation | 1ms | 3ms | 5ms | <5ms |
-| **Total** | **4ms** | **10ms** | **17ms** | **<20ms** |
-
-### Memory Usage
-
-- Initial load: <1MB
-- Runtime (idle): <5MB
-- Runtime (active): <10MB
-- Cache (max): Configurable, default 50MB
-
-### Bundle Size
-
-- Uncompressed: 45KB
-- Minified: 28KB
-- Gzipped: 9.2KB
-- Brotli: 7.8KB
-
-## Security Considerations
-
-### API Key Management
-- Never exposed in client-side code
-- Transmitted only via Authorization header
-- Rotatable without code changes
-- Environment-specific keys supported
-
-### Data Privacy
-- No data persistence in SDK
-- PII never logged
-- Secure erasure of sensitive data
-- No telemetry or tracking
-
-### Network Security
-- HTTPS only
-- Certificate pinning available
-- Request signing for integrity
-- Replay attack prevention
-
-## Error Handling
-
-### Error Types
-
-```typescript
-enum ErrorCode {
-  UNAUTHORIZED = 'UNAUTHORIZED',
-  RATE_LIMITED = 'RATE_LIMITED',
-  POLICY_VIOLATION = 'POLICY_VIOLATION',
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  TIMEOUT = 'TIMEOUT',
-  INVALID_CONFIG = 'INVALID_CONFIG'
+interface PolicyApprovalOptions {
+  userToken: string;
+  query: string;
+  dataSources?: string[];
+  context?: Record<string, unknown>;
 }
 
-class SDKError extends Error {
-  code: ErrorCode;
-  details: Record<string, any>;
-  retryable: boolean;
-  fallbackAction?: () => any;
+interface PolicyApprovalResult {
+  contextId: string;
+  approved: boolean;
+  requiresRedaction?: boolean;
+  approvedData: Record<string, unknown>;
+  policies: string[];
+  rateLimitInfo?: RateLimitInfo;
+  expiresAt: Date;
+  blockReason?: string;
 }
 ```
 
-### Retry Strategy
+#### auditLLMCall() -- Gateway Mode Audit
+
+Logs the result of a direct LLM call for compliance tracking.
 
 ```typescript
-interface RetryConfig {
-  maxAttempts: 3;
-  backoffMultiplier: 2;
-  initialDelay: 100;      // ms
-  maxDelay: 5000;        // ms
-  retryableErrors: [
-    'NETWORK_ERROR',
-    'TIMEOUT'
-  ];
+async auditLLMCall(options: AuditOptions): Promise<AuditResult>
+
+interface AuditOptions {
+  contextId: string;            // From getPolicyApprovedContext()
+  responseSummary: string;
+  provider: string;             // e.g., "openai", "anthropic"
+  model: string;                // e.g., "gpt-4", "claude-3-opus"
+  tokenUsage: TokenUsage;
+  latencyMs: number;
+  metadata?: Record<string, unknown>;
+}
+
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+interface AuditResult {
+  success: boolean;
+  auditId: string;
 }
 ```
-
-## Deployment Modes
-
-### Production Mode
-- Fail open on service unavailable
-- Async policy updates
-- Response caching enabled
-- Minimal logging
-
-### Sandbox Mode
-- Fail closed for testing
-- Synchronous policy evaluation
-- No caching
-- Verbose logging
-
-### Development Mode
-- Mock responses available
-- Debug inspector enabled
-- Performance profiling
-- Request replay
-
-## Monitoring & Observability
-
-### Metrics Collected
-
-| Metric | Type | Purpose |
-|--------|------|---------|
-| request_count | Counter | Total requests processed |
-| request_duration | Histogram | Latency distribution |
-| policy_violations | Counter | Violations by type |
-| pii_redactions | Counter | PII items redacted |
-| cache_hit_rate | Gauge | Cache effectiveness |
-| error_rate | Gauge | Error percentage |
 
 ### Health Checks
 
 ```typescript
+// Check Agent health
+async healthCheck(): Promise<HealthStatus>
+
+// Check Orchestrator health
+async orchestratorHealthCheck(): Promise<HealthStatus>
+
 interface HealthStatus {
-  sdk_version: string;
-  api_reachable: boolean;
-  cache_enabled: boolean;
-  policies_loaded: boolean;
-  last_sync: Date;
-  latency_ms: number;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  version?: string;
+  uptime?: string;
+  components?: Record<string, { status: string; message?: string }>;
 }
 ```
 
-## Integration Patterns
+### Multi-Agent Planning (MAP)
 
-### Pattern 1: Wrapper Approach
 ```typescript
-import { wrapOpenAIClient } from '@axonflow/sdk';
+async generatePlan(
+  query: string,
+  domain?: string,
+  userToken?: string,
+  options?: GeneratePlanOptions
+): Promise<PlanResponse>
 
-const protectedClient = wrapOpenAIClient(openai, axonflow);
-// Use normally, protection is invisible
+async executePlan(planId: string, userToken?: string): Promise<PlanExecutionResponse>
+async getPlanStatus(planId: string): Promise<PlanExecutionResponse>
+async cancelPlan(planId: string, reason?: string): Promise<CancelPlanResponse>
+async updatePlan(planId: string, request: UpdatePlanRequest): Promise<UpdatePlanResponse>
+async resumePlan(planId: string, approved?: boolean): Promise<ResumePlanResponse>
+async rollbackPlan(planId: string, targetVersion: number): Promise<RollbackPlanResponse>
+async getPlanVersions(planId: string): Promise<PlanVersionsResponse>
 ```
 
-### Pattern 2: Decorator Approach
+### Policy Management
+
+#### Static Policies (Regex-based)
+
 ```typescript
-class AIService {
-  @protect()
-  async generateResponse(prompt: string) {
-    return this.openai.complete(prompt);
+async listStaticPolicies(options?: ListStaticPoliciesOptions): Promise<StaticPolicy[]>
+async getStaticPolicy(id: string): Promise<StaticPolicy>
+async createStaticPolicy(policy: CreateStaticPolicyRequest): Promise<StaticPolicy>
+async updateStaticPolicy(id: string, policy: UpdateStaticPolicyRequest): Promise<StaticPolicy>
+async deleteStaticPolicy(id: string): Promise<void>
+async toggleStaticPolicy(id: string, enabled: boolean): Promise<StaticPolicy>
+async getEffectiveStaticPolicies(options?: EffectivePoliciesOptions): Promise<StaticPolicy[]>
+async testPattern(pattern: string, testInputs: string[]): Promise<TestPatternResult>
+async getStaticPolicyVersions(id: string): Promise<PolicyVersion[]>
+```
+
+#### Dynamic Policies (Context-aware)
+
+```typescript
+async listDynamicPolicies(options?: ListDynamicPoliciesOptions): Promise<DynamicPolicy[]>
+async getDynamicPolicy(id: string): Promise<DynamicPolicy>
+async createDynamicPolicy(policy: CreateDynamicPolicyRequest): Promise<DynamicPolicy>
+async updateDynamicPolicy(id: string, policy: UpdateDynamicPolicyRequest): Promise<DynamicPolicy>
+async deleteDynamicPolicy(id: string): Promise<void>
+async toggleDynamicPolicy(id: string, enabled: boolean): Promise<DynamicPolicy>
+async getEffectiveDynamicPolicies(options?: EffectivePoliciesOptions): Promise<DynamicPolicy[]>
+```
+
+#### Policy Overrides
+
+```typescript
+async createPolicyOverride(policyId: string, override: CreatePolicyOverrideRequest): Promise<PolicyOverride>
+async deletePolicyOverride(policyId: string): Promise<void>
+async listPolicyOverrides(): Promise<PolicyOverride[]>
+```
+
+### MCP Connectors
+
+```typescript
+async listConnectors(): Promise<ConnectorMetadata[]>
+async installConnector(request: ConnectorInstallRequest): Promise<void>
+async uninstallConnector(connectorName: string): Promise<void>
+async getConnector(connectorId: string): Promise<ConnectorMetadata>
+async getConnectorHealth(connectorId: string): Promise<ConnectorHealthStatus>
+async queryConnector(connectorName: string, ...): Promise<any>
+async mcpQuery(options: { connector: string; tool: string; arguments: Record<string, unknown> }): Promise<any>
+async mcpExecute(options: { connector: string; tool: string; arguments: Record<string, unknown> }): Promise<any>
+```
+
+### Workflow Control Plane (WCP)
+
+```typescript
+async createWorkflow(request: CreateWorkflowRequest): Promise<CreateWorkflowResponse>
+async getWorkflow(workflowId: string): Promise<WorkflowStatusResponse>
+async stepGate(workflowId: string, stepId: string, request: StepGateRequest): Promise<StepGateResponse>
+async listWorkflows(options?: ListWorkflowsOptions): Promise<ListWorkflowsResponse>
+async completeWorkflow(workflowId: string): Promise<void>
+async abortWorkflow(workflowId: string, reason?: string): Promise<void>
+async approveStep(workflowId: string, stepId: string): Promise<ApproveStepResponse>
+async rejectStep(workflowId: string, stepId: string, reason?: string): Promise<RejectStepResponse>
+async getPendingApprovals(options?: PendingApprovalsOptions): Promise<PendingApprovalsResponse>
+```
+
+### Cost Controls
+
+```typescript
+async createBudget(request: CreateBudgetRequest): Promise<Budget>
+async getBudget(budgetId: string): Promise<Budget>
+async listBudgets(options?: ListBudgetsOptions): Promise<BudgetsResponse>
+async updateBudget(budgetId: string, request: UpdateBudgetRequest): Promise<Budget>
+async deleteBudget(budgetId: string): Promise<void>
+async getBudgetStatus(budgetId: string): Promise<BudgetStatus>
+async getBudgetAlerts(budgetId: string): Promise<BudgetAlertsResponse>
+async checkBudget(request: BudgetCheckRequest): Promise<BudgetDecision>
+async getUsageSummary(period?: string): Promise<UsageSummary>
+async getUsageBreakdown(groupBy: string, period?: string): Promise<UsageBreakdown>
+async listUsageRecords(options?: ListUsageRecordsOptions): Promise<UsageRecordsResponse>
+async getPricing(provider?: string, model?: string): Promise<PricingListResponse>
+```
+
+### Execution Replay
+
+```typescript
+async listExecutions(options?: ListExecutionsOptions): Promise<ListExecutionsResponse>
+async getExecution(executionId: string): Promise<ExecutionDetail>
+async getExecutionSteps(executionId: string): Promise<ExecutionSnapshot[]>
+async getExecutionTimeline(executionId: string): Promise<TimelineEntry[]>
+async exportExecution(executionId: string, options?: ExecutionExportOptions): Promise<any>
+async deleteExecution(executionId: string): Promise<void>
+```
+
+### Audit Logs
+
+```typescript
+async searchAuditLogs(request?: AuditSearchRequest): Promise<AuditSearchResponse>
+async getAuditLogsByTenant(tenantId: string, options?: AuditQueryOptions): Promise<AuditSearchResponse>
+```
+
+### Webhooks
+
+```typescript
+async createWebhook(request: CreateWebhookRequest): Promise<WebhookSubscription>
+async getWebhook(webhookId: string): Promise<WebhookSubscription>
+async updateWebhook(webhookId: string, request: UpdateWebhookRequest): Promise<WebhookSubscription>
+async deleteWebhook(webhookId: string): Promise<void>
+async listWebhooks(): Promise<ListWebhooksResponse>
+```
+
+## Error Handling
+
+All errors extend the base `AxonFlowError` class:
+
+| Error Class | When Thrown | Key Properties |
+|-------------|------------|----------------|
+| `ConfigurationError` | Invalid SDK configuration | `message` |
+| `ConnectionError` | Network or DNS failure | `cause` |
+| `AuthenticationError` | Invalid credentials (401/403) | `message` |
+| `PolicyViolationError` | Request blocked by policy | `blockReason`, `policies` |
+| `RateLimitError` | Rate limit exceeded | `limit`, `remaining`, `resetAt` |
+| `TimeoutError` | Request timed out | `timeoutMs` |
+| `APIError` | Non-2xx HTTP response | `statusCode`, `statusText`, `body` |
+| `ConnectorError` | MCP connector failure | `connector`, `operation` |
+| `PlanExecutionError` | MAP step failure | `planId`, `step` |
+| `VersionConflictError` | Optimistic concurrency conflict (409) | `planId`, `expectedVersion`, `currentVersion` |
+
+```typescript
+import { PolicyViolationError, AuthenticationError } from '@axonflow/sdk';
+
+try {
+  const response = await client.proxyLLMCall({
+    query: 'My SSN is 123-45-6789',
+    requestType: 'chat',
+  });
+} catch (error) {
+  if (error instanceof PolicyViolationError) {
+    console.error('Policy blocked:', error.blockReason);
+    console.error('Violated policies:', error.policies);
   }
 }
 ```
 
-### Pattern 3: Middleware Approach
-```typescript
-app.use(axonflowMiddleware({
-  apiKey: process.env.AXONFLOW_KEY,
-  routes: ['/api/ai/*']
-}));
+## Request Flow
+
+### Proxy Mode
+
+```
+1. Application calls client.proxyLLMCall(options)
+2. SDK sends POST /api/request to Agent with auth headers
+3. Agent evaluates static + dynamic policies
+4. Agent checks budget limits (if configured)
+5. Agent routes to configured LLM provider
+6. Agent processes response (PII redaction, code analysis)
+7. SDK returns ExecuteQueryResponse with policyInfo and budgetInfo
 ```
 
-## Testing Support
+### Gateway Mode
 
-### Mock Mode
-```typescript
-const axonflow = AxonFlow.mock({
-  responses: {
-    '/protect': { status: 'allowed' }
-  }
-});
+```
+1. Application calls client.getPolicyApprovedContext(options)
+2. SDK sends pre-check request to Agent
+3. Agent returns PolicyApprovalResult with contextId
+4. Application makes direct LLM call (approved queries only)
+5. Application calls client.auditLLMCall(options) with contextId
+6. Agent logs audit entry for compliance
 ```
 
-### Test Utilities
-```typescript
-import { testUtils } from '@axonflow/sdk';
+## Security
 
-testUtils.assertPIIRedacted(response);
-testUtils.assertPolicyApplied(response, 'rate_limit');
-testUtils.measureLatency(operation);
-```
+### Credential Handling
 
-## Migration Guide
+- Credentials are sent as `Authorization: Basic base64(clientId:clientSecret)` on every request.
+- The SDK also sends `X-Tenant-ID: {clientId}` for multi-tenant routing.
+- Credentials are never logged, even when `debug: true` is enabled.
+- No data is persisted by the SDK; all state lives server-side.
 
-### From Direct AI Calls
-```typescript
-// Before
-const response = await openai.complete(prompt);
+### Network
 
-// After (Option 1: Minimal change)
-const response = await axonflow.protect(() =>
-  openai.complete(prompt)
-);
+- HTTPS is recommended for all production deployments.
+- All requests include `Content-Type: application/json`.
+- Timeouts are enforced via `AbortSignal.timeout()` to prevent hanging connections.
 
-// After (Option 2: Full wrapper)
-const protectedOpenAI = wrapOpenAIClient(openai, axonflow);
-const response = await protectedOpenAI.complete(prompt);
-```
+## Compatibility
 
-## Compatibility Matrix
+| Requirement | Version |
+|-------------|---------|
+| Node.js | 18+ |
+| TypeScript | 4.7+ (optional; JavaScript is also supported) |
 
-| Environment | Version | Support |
-|-------------|---------|---------|
-| Node.js | 14+ | ✅ Full |
-| Chrome | 90+ | ✅ Full |
-| Firefox | 88+ | ✅ Full |
-| Safari | 14+ | ✅ Full |
-| Edge | 90+ | ✅ Full |
-| React | 16.8+ | ✅ Full |
-| Next.js | 12+ | ✅ Full |
-| Vue | 3+ | ✅ Full |
-| Angular | 12+ | ✅ Full |
+> **Note on npm version:** The published npm package (`@axonflow/sdk`) is at v2.3.0 due to an ongoing npm publishing issue. The SDK source is at v3.2.0. To use v3.2.0 features, build from source and use `npm link`. See the [Architecture](typescript-architecture.md#npm-version-note) doc for instructions.
 
-## Performance Benchmarks
+## Exports
 
-### Operation Benchmarks (1M operations)
+The SDK exports from `@axonflow/sdk`:
 
-| Operation | Ops/sec | Memory | CPU |
-|-----------|---------|--------|-----|
-| protect() call | 125,000 | 8MB | 12% |
-| PII detection | 85,000 | 12MB | 25% |
-| Policy evaluation | 95,000 | 10MB | 18% |
-| Cache lookup | 450,000 | 15MB | 5% |
-
-### Real-world Scenarios
-
-| Scenario | Requests/sec | P99 Latency | Error Rate |
-|----------|--------------|-------------|------------|
-| Chat application | 1,000 | 9.5ms | 0.01% |
-| Batch processing | 5,000 | 12ms | 0.02% |
-| Real-time API | 10,000 | 15ms | 0.03% |
-
-## Roadmap
-
-### v1.1 (Q4 2025)
-- WebSocket support
-- Streaming response handling
-- Additional AI provider wrappers
-- GraphQL interceptor
-
-### v1.2 (Q1 2026)
-- Edge runtime optimization
-- WebAssembly build
-- Offline policy sync
-- Request batching
-
-### v2.0 (Q2 2026)
-- Multi-tenant isolation
-- Custom policy DSL
-- Advanced caching strategies
-- Distributed tracing
+- **`AxonFlow`** -- The client class (also available as `default` export).
+- **`VERSION`** -- SDK version string (`'3.2.0'`).
+- **`wasRedacted()`** -- Utility to check if a connector response was redacted.
+- **`WorkflowHelpers`** -- Helper utilities for workflow operations.
+- **`ExecutionHelpers`** -- Helper utilities for unified execution operations.
+- **Error classes** -- All typed error classes listed above.
+- **Type exports** -- All TypeScript interfaces and types for configuration, requests, responses, policies, planning, connectors, workflows, cost controls, code governance, execution replay, and MAS FEAT compliance.
 
 ---
 
-*This specification serves as the authoritative reference for SDK implementation and integration.*
+*This specification describes the AxonFlow TypeScript SDK v3.2.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*

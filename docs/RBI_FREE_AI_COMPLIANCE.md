@@ -1,5 +1,7 @@
 # RBI FREE-AI Framework Compliance Guide
 
+*Last updated: February 2026 | AxonFlow Platform v4.1.0 | SDKs v3.2.0*
+
 This guide covers AxonFlow's compliance features for the Reserve Bank of India (RBI) Framework for Responsible and Ethical Enablement of AI (FREE-AI) published in August 2025.
 
 ## Overview
@@ -37,6 +39,25 @@ PUT  /api/v1/rbi/ai-systems/{id}     # Update system
 GET  /api/v1/rbi/ai-systems/summary  # Registry summary
 ```
 
+**Example: Register a new AI system:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/ai-systems" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Credit Scoring Engine",
+    "risk_category": "high",
+    "description": "ML-based credit scoring for retail loans",
+    "owner": "risk-analytics@bank.com",
+    "board_approval_date": "2025-11-15",
+    "model_type": "gradient_boosting",
+    "data_sources": ["bureau_data", "transaction_history"]
+  }'
+# Alternative auth: -H "Authorization: Basic <base64(client_id:client_secret)>"
+```
+
 ### 2. Model Validation
 
 Per RBI FREE-AI Section 3.2, AI models require independent validation before deployment.
@@ -52,6 +73,23 @@ GET  /api/v1/rbi/validations         # List validations
 POST /api/v1/rbi/validations         # Record new validation
 GET  /api/v1/rbi/validations/{id}    # Get validation details
 PUT  /api/v1/rbi/validations/{id}    # Update validation status
+```
+
+**Example: Record a model validation:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/validations" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "system_id": "credit-scoring-engine",
+    "validation_type": "independent",
+    "validator": "external-audit-firm@example.com",
+    "result": "passed",
+    "findings": "Model performance within acceptable thresholds",
+    "next_validation_date": "2026-06-15"
+  }'
 ```
 
 ### 3. Incident Management
@@ -73,6 +111,22 @@ PUT  /api/v1/rbi/incidents/{id}         # Update incident
 POST /api/v1/rbi/incidents/{id}/resolve # Resolve incident
 ```
 
+**Example: Report an AI incident:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/incidents" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "system_id": "credit-scoring-engine",
+    "severity": "high",
+    "description": "Model producing anomalous approval rates for segment X",
+    "reported_by": "risk-officer@bank.com",
+    "impact": "Potential over-approval of high-risk loans"
+  }'
+```
+
 ### 4. Kill Switch
 
 Per RBI FREE-AI Section 2.4, organizations must maintain the ability to immediately halt AI operations.
@@ -90,6 +144,21 @@ GET  /api/v1/rbi/killswitches                 # List kill switches
 POST /api/v1/rbi/killswitches                 # Activate kill switch
 GET  /api/v1/rbi/killswitches/{id}            # Get status
 POST /api/v1/rbi/killswitches/{id}/deactivate # Deactivate
+```
+
+**Example: Activate emergency kill switch:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/killswitches" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "system_id": "credit-scoring-engine",
+    "reason": "compliance",
+    "activated_by": "chief-risk-officer@bank.com",
+    "notes": "RBI audit finding - immediate halt required"
+  }'
 ```
 
 ### 5. Board Reporting
@@ -110,6 +179,20 @@ GET  /api/v1/rbi/reports/{id}         # Get report details
 POST /api/v1/rbi/reports/{id}/submit  # Submit to board
 ```
 
+**Example: Generate quarterly board report:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/reports" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "report_type": "quarterly",
+    "quarter": "Q4-2025",
+    "include_sections": ["ai_systems", "incidents", "validations", "pii_stats"]
+  }'
+```
+
 ### 6. Audit Export
 
 Per RBI FREE-AI requirements, audit trails must be retained for 10 years.
@@ -124,6 +207,21 @@ GET  /api/v1/rbi/audit-exports              # List exports
 POST /api/v1/rbi/audit-exports              # Create export
 GET  /api/v1/rbi/audit-exports/{id}         # Get export status
 GET  /api/v1/rbi/audit-exports/{id}/download # Download export
+```
+
+**Example: Create a 10-year compliant audit export:**
+
+```bash
+curl -X POST "https://your-axonflow-host/api/v1/rbi/audit-exports" \
+  -H "X-Client-Id: your-client-id" \
+  -H "X-Client-Secret: your-client-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_date": "2016-01-01T00:00:00Z",
+    "end_date": "2025-12-31T23:59:59Z",
+    "format": "json",
+    "include_pii_redaction_log": true
+  }'
 ```
 
 ## Indian PII Detection
@@ -272,8 +370,9 @@ Use this checklist to verify RBI FREE-AI compliance:
 
 ## Related Documentation
 
-- [SEBI Compliance Guide](./SEBI_COMPLIANCE.md) - SEBI AI/ML Guidelines
-- [EU AI Act Compliance](./EU_AI_ACT_COMPLIANCE.md) - EU AI Act compliance
+- [SEBI Compliance Guide](./compliance/sebi-ai-ml.md) - SEBI AI/ML Guidelines
+- [EU AI Act Compliance](./compliance/eu-ai-act.md) - EU AI Act compliance
+- [RBI FREE-AI Summary](./compliance/rbi-free-ai.md) - Condensed RBI compliance reference
 - [API Reference](./api/orchestrator-api.yaml) - OpenAPI specification
 
 ## Support
