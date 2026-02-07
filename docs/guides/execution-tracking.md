@@ -1,5 +1,9 @@
 # Unified Execution Tracking
 
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0 | **SDK Version:** v3.2.0
+
 Unified Execution Tracking provides a consistent way to monitor and track the status of both MAP (Multi-Agent Planning) plans and WCP (Workflow Control Plane) workflows. This enables real-time progress monitoring, duration tracking, and cost analytics across all AxonFlow execution types.
 
 ## Overview
@@ -52,7 +56,7 @@ Response:
       "step_name": "research",
       "step_type": "llm_call",
       "status": "running",
-      "started_at": "2025-01-15T10:00:08Z"
+      "started_at": "2026-02-07T10:00:08Z"
     },
     {
       "step_id": "step_2_synthesize",
@@ -118,7 +122,11 @@ The response uses the same unified schema, making it easy to build monitoring da
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
 
-const client = new AxonFlow({ baseUrl: 'http://localhost:8080' });
+const client = new AxonFlow({
+  endpoint: process.env.AXONFLOW_ENDPOINT!,
+  clientId: process.env.AXONFLOW_CLIENT_ID!,
+  clientSecret: process.env.AXONFLOW_CLIENT_SECRET!,
+});
 
 // Create and execute a plan
 const plan = await client.plans.create({
@@ -151,10 +159,15 @@ const pollInterval = setInterval(async () => {
 ### Python
 
 ```python
-from axonflow import AxonFlow
+import os
 import time
+from axonflow import AxonFlow
 
-client = AxonFlow(base_url="http://localhost:8080")
+client = AxonFlow(
+    endpoint=os.environ["AXONFLOW_ENDPOINT"],
+    client_id=os.environ["AXONFLOW_CLIENT_ID"],
+    client_secret=os.environ["AXONFLOW_CLIENT_SECRET"],
+)
 
 # Create and execute a plan
 plan = client.plans.create(
@@ -189,13 +202,18 @@ package main
 
 import (
     "fmt"
+    "os"
     "time"
 
     "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
 
 func main() {
-    client := axonflow.NewClient("http://localhost:8080")
+    client := axonflow.NewClient(axonflow.AxonFlowConfig{
+        Endpoint:     os.Getenv("AXONFLOW_ENDPOINT"),
+        ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
+        ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
+    })
 
     // Create and execute a plan
     plan, _ := client.Plans.Create(axonflow.CreatePlanRequest{
@@ -225,6 +243,43 @@ func main() {
 
         time.Sleep(time.Second)
     }
+}
+```
+
+### Java
+
+```java
+import com.axonflow.sdk.AxonFlowClient;
+
+AxonFlowClient client = AxonFlowClient.builder()
+    .endpoint(System.getenv("AXONFLOW_ENDPOINT"))
+    .clientId(System.getenv("AXONFLOW_CLIENT_ID"))
+    .clientSecret(System.getenv("AXONFLOW_CLIENT_SECRET"))
+    .build();
+
+// Create and execute a plan
+var plan = client.plans().create("Analyze sales data for Q4", "finance");
+
+// Poll for status
+while (true) {
+    var status = client.plans().getStatus(plan.getPlanId());
+
+    System.out.printf("Progress: %.1f%%%n", status.getProgressPercent());
+    System.out.printf("Status: %s%n", status.getStatus());
+    System.out.printf("Duration: %s%n", status.getDuration());
+
+    for (var step : status.getSteps()) {
+        System.out.printf("  %s: %s%n", step.getStepName(), step.getStatus());
+    }
+
+    if (status.isTerminal()) {
+        if (status.getActualCostUsd() != null) {
+            System.out.printf("Total cost: $%.4f%n", status.getActualCostUsd());
+        }
+        break;
+    }
+
+    Thread.sleep(1000);
 }
 ```
 

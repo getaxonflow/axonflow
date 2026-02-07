@@ -1,19 +1,25 @@
 # License Migration Guide: V1 to V2
 
-This guide explains how to migrate from the deprecated V1 license format to the current V2 format.
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0
+
+This guide explains how to migrate from the removed V1 license format to the current V2 format.
 
 ## Overview
 
-AxonFlow uses license keys to validate your subscription tier and organization. As of PR #167, we have transitioned from V1 to V2 license format for improved security and features.
+AxonFlow uses license keys to validate your subscription tier and organization. The platform has transitioned from V1 to V2 license format for improved security and features. As of Platform v4.1.0 (February 2026), V2 is the only supported format.
 
 ### Version Comparison
 
-| Feature | V1 (Deprecated) | V2 (Current) |
-|---------|----------------|--------------|
+| Feature | V1 (Removed) | V2 (Current) |
+|---------|-------------|--------------|
 | Format | `AXON-TIER-ORG-EXPIRY-SIG` | `AXON-V2-xxx-yyy` |
-| Security | Basic signature | Enhanced cryptographic signature |
+| Security | Basic signature | URL-safe Base64, 8-char cryptographic signature |
 | Node Limits | Not enforced | Enforced per tier |
 | API Rate Limits | Not enforced | Enforced per tier |
+| Connector Limits | Not enforced | Enforced per tier (v4.1.0+) |
+| Credential Encryption | None | AES-256-GCM at rest (v4.1.0+) |
 | Auto-Renewal | Manual | AWS Marketplace integrated |
 
 ## Identifying Your License Version
@@ -21,7 +27,7 @@ AxonFlow uses license keys to validate your subscription tier and organization. 
 ### V1 License Format (Deprecated)
 
 ```
-AXON-PILOT-acme-20251231-abc123
+AXON-PILOT-acme-20261231-abc123
      ├──── ├──── ├──────── └───── Signature
      │     │     └──────────────── Expiry (YYYYMMDD)
      │     └────────────────────── Organization ID
@@ -46,7 +52,7 @@ V2 licenses are automatically generated when you:
 
 **AWS Marketplace Customers:**
 - V2 licenses are automatically provisioned
-- No action required if deployed after November 2025
+- No action required if deployed after November 2025 (all new deployments use V2 automatically)
 
 **Self-Hosted Customers:**
 - Contact sales@getaxonflow.com for V2 license
@@ -59,8 +65,8 @@ V2 licenses are automatically generated when you:
 Replace your existing license key:
 
 ```bash
-# Old (V1)
-AXONFLOW_LICENSE_KEY=AXON-PILOT-acme-20251231-abc123
+# Old (V1) - no longer accepted
+AXONFLOW_LICENSE_KEY=AXON-PILOT-acme-20261231-abc123
 
 # New (V2)
 AXONFLOW_LICENSE_KEY=AXON-V2-a1b2c3d4-e5f6g7h8
@@ -159,19 +165,22 @@ Contact us for a V2 license:
 
 ## License Tier Comparison
 
-| Tier | Nodes | Monthly Requests | Price |
-|------|-------|-----------------|-------|
-| Pilot | 5 | 50,000 | $7,000/month |
-| Professional | 10 | 500,000 | $20,000/month |
-| Enterprise | Unlimited | Unlimited | Contact Sales |
+| Tier | Nodes | Connectors | Monthly Requests | Price |
+|------|-------|------------|-----------------|-------|
+| Community | 1 | 3 | 10,000 | Free |
+| Basic | 3 | 10 | 100,000 | $3,500/month |
+| Professional | 10 | Unlimited | 500,000 | $20,000/month |
+| Enterprise | Unlimited | Unlimited | Unlimited | Contact Sales |
+
+> **Note:** The Pilot tier has been replaced by the Basic tier as of Platform v4.1.0. Existing Pilot licenses are automatically mapped to Basic tier during V2 migration. The Community Edition (source-available under BSL 1.1) is free for non-production use.
 
 ## FAQ
 
 ### Q: Will my V1 license stop working?
 
-**A:** V1 licenses are no longer accepted. The validation layer rejects V1 format keys and requires V2. Generate a V2 key using the keygen utility:
+**A:** V1 licenses are no longer accepted as of Platform v4.1.0. The validation layer rejects V1 format keys with the error "V1 license format is deprecated". Expired V2 licenses are also correctly rejected (`valid=false`). Contact sales@getaxonflow.com for a new V2 key, or generate one using the keygen utility:
 ```bash
-./keygen -tier ENT -org YOUR_ORG -service-name platform -service-type backend-service -days 365
+./keygen -tier BASIC -org YOUR_ORG -service-name platform -service-type backend-service -days 365
 ```
 
 ### Q: Is there a cost to migrate?

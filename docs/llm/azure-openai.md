@@ -1,5 +1,9 @@
 # Azure OpenAI Provider
 
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0 | **SDKs:** v3.2.0
+
 AxonFlow supports Azure OpenAI Service as a Community LLM provider, available without an enterprise license.
 
 ## Quick Start
@@ -29,10 +33,19 @@ export AZURE_OPENAI_API_VERSION="2024-08-01-preview"
 docker compose up -d
 
 # Test with Proxy Mode
-curl -X POST http://localhost:8080/api/request \
+curl -X POST http://localhost:8080/api/v1/query/execute \
   -H "Content-Type: application/json" \
-  -d '{"query": "Hello!", "context": {"provider": "azure-openai"}}'
+  -H "X-Client-Id: demo-org" \
+  -H "X-Client-Secret: your-license-key" \
+  -d '{
+    "user_token": "user-123",
+    "query": "Hello!",
+    "request_type": "chat",
+    "context": {"provider": "azure-openai"}
+  }'
 ```
+
+> **Authentication:** All AxonFlow API requests require `X-Client-Id` and `X-Client-Secret` headers. Alternatively, use `Authorization: Basic` with Base64-encoded `clientId:clientSecret`.
 
 ## Authentication Patterns
 
@@ -115,19 +128,88 @@ requests.post(f"{AXONFLOW_URL}/api/v1/audit", json={
 })
 ```
 
-## Proxy Mode Example
+## Proxy Mode SDK Examples
 
-Proxy Mode is simpler - AxonFlow handles the Azure OpenAI call:
+Proxy Mode is simpler -- AxonFlow handles the Azure OpenAI call for you, applying policies and audit logging automatically.
+
+### Python SDK
 
 ```python
-import requests
+from axonflow import AxonFlow
 
-response = requests.post("http://localhost:8080/api/request", json={
-    "query": "Explain Azure OpenAI in one sentence.",
-    "context": {"provider": "azure-openai"}
-}).json()
+client = AxonFlow(
+    endpoint="http://localhost:8080",
+    client_id="demo-org",
+    client_secret="your-license-key",
+)
 
-print(response["response"])
+response = client.proxy_llm_call(
+    user_token="user-123",
+    query="Explain Azure OpenAI in one sentence.",
+    request_type="chat",
+    context={"provider": "azure-openai"},
+)
+print(response.content)
+```
+
+### Go SDK
+
+```go
+client, err := axonflow.NewClient(axonflow.AxonFlowConfig{
+    Endpoint:     "http://localhost:8080",
+    ClientID:     "demo-org",
+    ClientSecret: "your-license-key",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := client.ProxyLLMCall(
+    "user-123",
+    "Explain Azure OpenAI in one sentence.",
+    "chat",
+    map[string]interface{}{"provider": "azure-openai"},
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Content)
+```
+
+### TypeScript SDK
+
+```typescript
+const client = new AxonFlow({
+  endpoint: 'http://localhost:8080',
+  clientId: 'demo-org',
+  clientSecret: 'your-license-key',
+});
+
+const response = await client.proxyLLMCall({
+  userToken: 'user-123',
+  query: 'Explain Azure OpenAI in one sentence.',
+  requestType: 'chat',
+  context: { provider: 'azure-openai' },
+});
+console.log(response.content);
+```
+
+### Java SDK
+
+```java
+AxonFlowClient client = AxonFlowClient.builder()
+    .endpoint("http://localhost:8080")
+    .clientId("demo-org")
+    .clientSecret("your-license-key")
+    .build();
+
+var response = client.proxyLlmCall(
+    "user-123",
+    "Explain Azure OpenAI in one sentence.",
+    "chat",
+    Map.of("provider", "azure-openai")
+);
+System.out.println(response.getContent());
 ```
 
 ## Troubleshooting
@@ -167,5 +249,5 @@ Complete code examples are available:
 
 ## See Also
 
-- [LLM Routing](./routing.md) - Configure provider routing
+- [LLM Providers Guide](../guides/llm-providers.md) - Configure provider routing
 - [Azure OpenAI Documentation](https://learn.microsoft.com/azure/ai-services/openai/)

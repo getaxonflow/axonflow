@@ -1,5 +1,9 @@
 # Google Gemini Provider
 
+**Last Updated:** February 2026
+
+**Platform Version:** v4.1.0 | **SDKs:** v3.2.0
+
 AxonFlow supports Google's Gemini models for LLM routing and orchestration. This guide covers configuration, supported models, and usage.
 
 ## Quick Start
@@ -83,29 +87,68 @@ Proxy mode routes requests through AxonFlow for simple integration:
 ```python
 from axonflow import AxonFlow
 
-async with AxonFlow(endpoint="http://localhost:8080") as client:
-    # Execute query through AxonFlow (routes to configured Gemini provider)
-    response = await client.execute_query(
-        user_token="user-123",
-        query="Explain quantum computing",
-        request_type="chat",
-        context={"provider": "gemini", "model": "gemini-2.0-flash"}
-    )
-    print(response.content)
+client = AxonFlow(
+    endpoint="http://localhost:8080",
+    client_id="demo-org",
+    client_secret="your-license-key",
+)
+
+# Proxy call through AxonFlow (routes to configured Gemini provider)
+response = client.proxy_llm_call(
+    user_token="user-123",
+    query="Explain quantum computing",
+    request_type="chat",
+    context={"provider": "gemini", "model": "gemini-2.0-flash"},
+)
+print(response.content)
 ```
 
 ### Proxy Mode (cURL)
 
 ```bash
-curl -X POST http://localhost:8080/api/request \
+curl -X POST http://localhost:8080/api/v1/query/execute \
   -H "Content-Type: application/json" \
-  -H "X-User-Token: user-123" \
+  -H "X-Client-Id: demo-org" \
+  -H "X-Client-Secret: your-license-key" \
   -d '{
+    "user_token": "user-123",
     "query": "What is machine learning?",
-    "provider": "gemini",
-    "model": "gemini-2.0-flash",
+    "request_type": "chat",
+    "context": {
+      "provider": "gemini",
+      "model": "gemini-2.0-flash"
+    },
     "max_tokens": 500
   }'
+```
+
+> **Authentication:** All AxonFlow API requests require `X-Client-Id` and `X-Client-Secret` headers. Alternatively, use `Authorization: Basic` with Base64-encoded `clientId:clientSecret`.
+
+### Proxy Mode (Go SDK)
+
+```go
+client, err := axonflow.NewClient(axonflow.AxonFlowConfig{
+    Endpoint:     "http://localhost:8080",
+    ClientID:     "demo-org",
+    ClientSecret: "your-license-key",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resp, err := client.ProxyLLMCall(
+    "user-123",
+    "Explain quantum computing",
+    "chat",
+    map[string]interface{}{
+        "provider": "gemini",
+        "model":    "gemini-2.0-flash",
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(resp.Content)
 ```
 
 ### Gateway Mode (TypeScript SDK)
@@ -118,7 +161,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const axonflow = new AxonFlow({
   endpoint: 'http://localhost:8080',
-  apiKey: 'your-axonflow-key'
+  clientId: 'demo-org',
+  clientSecret: 'your-license-key',
 });
 
 // 1. Pre-check: Get policy approval
@@ -168,16 +212,19 @@ for await (const chunk of result.stream) {
 
 ## Pricing
 
-Gemini pricing (as of January 2025):
+Gemini pricing (as of February 2026 -- verify at [Google AI pricing](https://ai.google.dev/pricing)):
 
 | Model | Input (per 1M tokens) | Output (per 1M tokens) |
 |-------|----------------------|------------------------|
+| Gemini 2.5 Flash | $0.15 | $0.60 |
+| Gemini 2.5 Pro (≤200K) | $1.25 | $10.00 |
+| Gemini 2.5 Pro (>200K) | $2.50 | $15.00 |
 | Gemini 2.0 Flash | $0.10 | $0.40 |
-| Gemini 1.5 Pro (≤128K) | $1.25 | $5.00 |
-| Gemini 1.5 Pro (>128K) | $2.50 | $10.00 |
-| Gemini 1.5 Flash | $0.075 | $0.30 |
+| Gemini 2.0 Flash Lite | $0.075 | $0.30 |
+| Gemini 1.5 Pro (legacy) | $1.25 | $5.00 |
+| Gemini 1.5 Flash (legacy) | $0.075 | $0.30 |
 
-AxonFlow provides cost estimation via the `/api/cost/estimate` endpoint.
+> **Note:** Pricing is subject to change. Always verify at Google's official pricing page. AxonFlow provides cost estimation via the `/api/v1/cost/estimate` endpoint.
 
 ## Error Handling
 
@@ -260,6 +307,5 @@ routing:
 
 ## See Also
 
-- [LLM Provider Overview](./overview.md)
-- [Multi-Model Routing](./routing.md)
-- [Cost Optimization](../guides/cost-optimization.md)
+- [LLM Providers Guide](../guides/llm-providers.md) - Provider configuration and routing
+- [Cost Controls Guide](../governance/cost-controls.md) - Budget management and usage tracking
