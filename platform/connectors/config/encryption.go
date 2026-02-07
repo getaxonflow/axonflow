@@ -19,8 +19,7 @@ import (
 // When no encryption key is configured (dev/community mode), credentials pass through
 // as plaintext JSON for backward compatibility.
 type CredentialEncryptor struct {
-	key     []byte     // 32-byte AES-256 key
-	gcm     cipher.AEAD // cached GCM instance (safe for concurrent use)
+	key     []byte // 32-byte AES-256 key
 	enabled bool
 }
 
@@ -56,16 +55,7 @@ func NewCredentialEncryptorFromKey(encodedKey string) *CredentialEncryptor {
 		return &CredentialEncryptor{enabled: false}
 	}
 
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return &CredentialEncryptor{enabled: false}
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return &CredentialEncryptor{enabled: false}
-	}
-
-	return &CredentialEncryptor{key: key, gcm: gcm, enabled: true}
+	return &CredentialEncryptor{key: key, enabled: true}
 }
 
 // IsEnabled returns true if encryption is active.
@@ -92,12 +82,22 @@ func (e *CredentialEncryptor) Encrypt(creds map[string]string) ([]byte, error) {
 		return plaintext, nil
 	}
 
-	nonce := make([]byte, e.gcm.NonceSize())
+	block, err := aes.NewCipher(e.key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	ciphertext := e.gcm.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
 
 	// Prefix with "enc:" and base64-encode, then JSON-marshal as a string
 	// so it is valid JSONB (the credentials column is typed JSONB).
@@ -153,13 +153,23 @@ func (e *CredentialEncryptor) decryptCiphertext(encoded string) (map[string]stri
 		return nil, fmt.Errorf("failed to decode ciphertext: %w", err)
 	}
 
-	nonceSize := e.gcm.NonceSize()
+	block, err := aes.NewCipher(e.key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := e.gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt: %w", err)
 	}

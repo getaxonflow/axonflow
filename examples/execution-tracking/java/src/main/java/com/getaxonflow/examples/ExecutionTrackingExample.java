@@ -199,36 +199,7 @@ public class ExecutionTrackingExample {
             }
             System.out.println();
 
-            // Step 8: Test cancelExecution (create workflow, then cancel)
-            System.out.println("Testing cancelExecution...");
-            try {
-                CreateWorkflowRequest cancelRequest = CreateWorkflowRequest.builder()
-                    .workflowName("cancel-test-demo")
-                    .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(2)
-                    .build();
-                CreateWorkflowResponse cancelTest = client.createWorkflow(cancelRequest);
-                System.out.println("  Created workflow: " + cancelTest.getWorkflowId());
-                try {
-                    client.cancelExecution(cancelTest.getWorkflowId(), "testing unified cancel");
-                    System.out.println("  Cancelled workflow: " + cancelTest.getWorkflowId());
-                    // Verify status
-                    WorkflowStatusResponse cancelStatus = client.getWorkflow(cancelTest.getWorkflowId());
-                    String statusVal = cancelStatus.getStatus().getValue();
-                    assertCheck(
-                        "aborted".equals(statusVal) || "cancelled".equals(statusVal),
-                        "Workflow is aborted/cancelled after cancelExecution (got " + statusVal + ")"
-                    );
-                } catch (Exception e) {
-                    System.out.println("  Note: cancelExecution returned error: " + e.getMessage());
-                    System.out.println("  (Cancel propagation requires unified handler wiring)");
-                }
-            } catch (Exception e) {
-                System.out.println("  Error creating cancel test workflow: " + e.getMessage());
-            }
-            System.out.println();
-
-            // Step 9: Demonstrate resumeWorkflow (by aborting then resuming)
+            // Step 8: Demonstrate resumeWorkflow (by aborting then resuming)
             System.out.println("Testing resumeWorkflow...");
             try {
                 CreateWorkflowRequest resumeRequest = CreateWorkflowRequest.builder()
@@ -271,9 +242,6 @@ public class ExecutionTrackingExample {
             System.out.println("  Unified Execution:");
             System.out.println("    - getExecutionStatus()");
             System.out.println("    - listUnifiedExecutions()");
-            System.out.println("    - cancelExecution()");
-            System.out.println("  SSE Streaming:");
-            System.out.println("    - GET /api/v1/unified/executions/{id}/stream");
             System.out.println("  Helper Types:");
             System.out.println("    - ExecutionType (map_plan, wcp_workflow)");
             System.out.println("    - ExecutionStatusValue with isTerminal()");

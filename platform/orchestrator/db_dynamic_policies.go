@@ -36,7 +36,6 @@ type DatabaseDynamicPolicyEngine struct {
 	cacheTimeout time.Duration
 	refreshing   bool
 	refreshMu    sync.Mutex
-	stopCh       chan struct{}
 }
 
 func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
@@ -75,7 +74,6 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 		policies:     make(map[string]interface{}),
 		cacheTimeout: 30 * time.Second,
 		lastRefresh:  time.Now(), // Initialize to prevent zero-time issues
-		stopCh:       make(chan struct{}),
 	}
 
 	// Initialize schema
@@ -323,28 +321,23 @@ func (e *DatabaseDynamicPolicyEngine) backgroundRefresh() {
 	ticker := time.NewTicker(e.cacheTimeout)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-e.stopCh:
-			return
-		case <-ticker.C:
-			// Non-blocking refresh
-			e.refreshMu.Lock()
-			if !e.refreshing {
-				e.refreshing = true
-				e.refreshMu.Unlock()
+	for range ticker.C {
+		// Non-blocking refresh
+		e.refreshMu.Lock()
+		if !e.refreshing {
+			e.refreshing = true
+			e.refreshMu.Unlock()
 
-				go func() {
-					if err := e.refreshPolicies(); err != nil {
-						log.Printf("Background policy refresh failed: %v", err)
-					}
-					e.refreshMu.Lock()
-					e.refreshing = false
-					e.refreshMu.Unlock()
-				}()
-			} else {
+			go func() {
+				if err := e.refreshPolicies(); err != nil {
+					log.Printf("Background policy refresh failed: %v", err)
+				}
+				e.refreshMu.Lock()
+				e.refreshing = false
 				e.refreshMu.Unlock()
-			}
+			}()
+		} else {
+			e.refreshMu.Unlock()
 		}
 	}
 }
@@ -353,13 +346,7 @@ func (e *DatabaseDynamicPolicyEngine) reportMetrics() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-e.stopCh:
-			return
-		case <-ticker.C:
-		}
-
+	for range ticker.C {
 		e.mu.RLock()
 		policyCount := len(e.policies)
 		lastRefresh := e.lastRefresh
@@ -995,14 +982,6 @@ func (e *DatabaseDynamicPolicyEngine) IsHealthy() bool {
 }
 
 func (e *DatabaseDynamicPolicyEngine) Close() error {
-	if e.stopCh != nil {
-		select {
-		case <-e.stopCh:
-			// already closed
-		default:
-			close(e.stopCh)
-		}
-	}
 	if e.db != nil {
 		_ = e.db.Close()
 	}

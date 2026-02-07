@@ -7,7 +7,6 @@ import (
 
 func TestCalculatePercentile(t *testing.T) {
 	collector := NewMetricsCollector()
-	defer collector.Close()
 
 	tests := []struct {
 		name       string
@@ -66,7 +65,6 @@ func TestCalculatePercentile(t *testing.T) {
 
 func TestGetRiskScoreBucket(t *testing.T) {
 	collector := NewMetricsCollector()
-	defer collector.Close()
 
 	tests := []struct {
 		name  string

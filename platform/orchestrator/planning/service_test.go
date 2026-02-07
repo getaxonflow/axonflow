@@ -646,7 +646,6 @@ func TestPlanStatus_Constants(t *testing.T) {
 		PlanStatusCompleted,
 		PlanStatusFailed,
 		PlanStatusExpired,
-		PlanStatusCancelled,
 	}
 
 	expectedValues := []string{
@@ -655,7 +654,6 @@ func TestPlanStatus_Constants(t *testing.T) {
 		"completed",
 		"failed",
 		"expired",
-		"cancelled",
 	}
 
 	for i, status := range statuses {
@@ -723,126 +721,6 @@ func TestNoOpRepository_GetPlan(t *testing.T) {
 	}
 	if plan != nil {
 		t.Error("expected nil plan")
-	}
-}
-
-func TestService_CancelPlan(t *testing.T) {
-	t.Run("cancel pending plan", func(t *testing.T) {
-		repo := NewMockRepository()
-		svc := NewService(repo)
-
-		// Store a plan
-		plan, err := svc.StorePlan(context.Background(), &CreatePlanRequest{
-			PlanID:             "plan_cancel_1",
-			Query:              "Test query",
-			Domain:             "generic",
-			WorkflowDefinition: validWorkflowJSON(),
-			StepCount:          1,
-		})
-		if err != nil {
-			t.Fatalf("StorePlan failed: %v", err)
-		}
-		if plan.Status != PlanStatusPending {
-			t.Fatalf("Plan status = %s, want pending", plan.Status)
-		}
-
-		// Cancel it
-		err = svc.CancelPlan(context.Background(), "plan_cancel_1", "user requested")
-		if err != nil {
-			t.Fatalf("CancelPlan failed: %v", err)
-		}
-
-		// Verify cancelled
-		got, err := svc.GetPlan(context.Background(), "plan_cancel_1")
-		if err != nil {
-			t.Fatalf("GetPlan failed: %v", err)
-		}
-		if got.Status != PlanStatusCancelled {
-			t.Errorf("Status = %s, want cancelled", got.Status)
-		}
-		if got.ErrorMessage != "user requested" {
-			t.Errorf("ErrorMessage = %q, want %q", got.ErrorMessage, "user requested")
-		}
-	})
-
-	t.Run("cancel executing plan", func(t *testing.T) {
-		repo := NewMockRepository()
-		svc := NewService(repo)
-
-		// Store and start executing
-		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
-			PlanID:             "plan_cancel_2",
-			Query:              "Test query",
-			Domain:             "generic",
-			WorkflowDefinition: validWorkflowJSON(),
-			StepCount:          1,
-		})
-		_, _ = svc.GetPlanForExecution(context.Background(), "plan_cancel_2", "")
-
-		// Cancel it
-		err := svc.CancelPlan(context.Background(), "plan_cancel_2", "timeout")
-		if err != nil {
-			t.Fatalf("CancelPlan failed: %v", err)
-		}
-
-		got, _ := svc.GetPlan(context.Background(), "plan_cancel_2")
-		if got.Status != PlanStatusCancelled {
-			t.Errorf("Status = %s, want cancelled", got.Status)
-		}
-	})
-
-	t.Run("cancel completed plan fails", func(t *testing.T) {
-		repo := NewMockRepository()
-		svc := NewService(repo)
-
-		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
-			PlanID:             "plan_cancel_3",
-			Query:              "Test query",
-			Domain:             "generic",
-			WorkflowDefinition: validWorkflowJSON(),
-			StepCount:          1,
-		})
-		_ = svc.MarkPlanCompleted(context.Background(), "plan_cancel_3", nil)
-
-		err := svc.CancelPlan(context.Background(), "plan_cancel_3", "too late")
-		if err == nil {
-			t.Error("CancelPlan should fail for completed plan")
-		}
-	})
-
-	t.Run("cancel already cancelled plan fails", func(t *testing.T) {
-		repo := NewMockRepository()
-		svc := NewService(repo)
-
-		_, _ = svc.StorePlan(context.Background(), &CreatePlanRequest{
-			PlanID:             "plan_cancel_4",
-			Query:              "Test query",
-			Domain:             "generic",
-			WorkflowDefinition: validWorkflowJSON(),
-			StepCount:          1,
-		})
-		_ = svc.CancelPlan(context.Background(), "plan_cancel_4", "first cancel")
-
-		err := svc.CancelPlan(context.Background(), "plan_cancel_4", "second cancel")
-		if err == nil {
-			t.Error("CancelPlan should fail for already cancelled plan")
-		}
-	})
-
-	t.Run("cancel nonexistent plan fails", func(t *testing.T) {
-		repo := NewMockRepository()
-		svc := NewService(repo)
-
-		err := svc.CancelPlan(context.Background(), "nonexistent", "reason")
-		if err == nil {
-			t.Error("CancelPlan should fail for nonexistent plan")
-		}
-	})
-}
-
-func TestPlanStatus_Cancelled(t *testing.T) {
-	if PlanStatusCancelled != "cancelled" {
-		t.Errorf("PlanStatusCancelled = %q, want %q", PlanStatusCancelled, "cancelled")
 	}
 }
 

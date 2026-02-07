@@ -1,7 +1,5 @@
 # Getting Started with AxonFlow
 
-**Last Updated: February 2026** | **Platform: v4.1.0** | **SDKs: v3.2.0**
-
 **Build your first AI agent in 10 minutes** - No ML experience required.
 
 ---
@@ -174,30 +172,17 @@ Choose your language:
 go get github.com/getaxonflow/axonflow-sdk-go/v3
 ```
 
-**Python:**
+**Python (coming Q1 2026):**
 ```bash
 pip install axonflow-sdk
 ```
 
-**Java:**
-```xml
-<dependency>
-    <groupId>com.getaxonflow</groupId>
-    <artifactId>axonflow-sdk</artifactId>
-    <version>3.2.0</version>
-</dependency>
-```
-
-**TypeScript:**
+**JavaScript/TypeScript (coming Q1 2026):**
 ```bash
-npm install @axonflow/sdk
+npm install axonflow-sdk
 ```
 
 ### Step 3: Write Your First Agent (3 minutes)
-
-Choose your language below. All four SDKs are fully supported at v3.2.0.
-
-#### Go
 
 Create `customer-support-agent.go`:
 
@@ -214,24 +199,27 @@ import (
 )
 
 func main() {
-    // Initialize AxonFlow client
-    client := axonflow.NewClient(axonflow.AxonFlowConfig{
+    // Initialize AxonFlow client with OAuth2-style credentials
+    client := axonflow.NewClient(axonflow.Config{
         Endpoint:     "https://your-axonflow.example.com",      // From CloudFormation or localhost:8080
         ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),          // Your organization ID
-        ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),      // License key
+        ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),      // Optional for community mode
     })
 
     // Define your query
     query := "How do I reset my password?"
-    userToken := "cust_12345"
-    requestType := "support"
-    queryContext := map[string]interface{}{
-        "product": "SaaS Platform",
-    }
 
     // Execute query through AxonFlow
     ctx := context.Background()
-    response, err := client.ProxyLLMCall(ctx, userToken, query, requestType, queryContext)
+    response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
+        Query: query,
+        Context: map[string]interface{}{
+            "customer_id":   "cust_12345",
+            "product":       "SaaS Platform",
+            "intent":        "support",
+        },
+    })
+
     if err != nil {
         log.Fatalf("Query failed: %v", err)
     }
@@ -242,104 +230,6 @@ func main() {
     fmt.Printf("\nResponse Time: %.2fs\n", response.Metadata.Duration.Seconds())
     fmt.Printf("Tokens Used: %d\n", response.Metadata.TokensUsed)
     fmt.Printf("Cost: $%.4f\n", response.Metadata.Cost)
-}
-```
-
-#### Python
-
-Create `customer_support_agent.py`:
-
-```python
-import os
-from axonflow import AxonFlow
-
-# Initialize AxonFlow client
-client = AxonFlow(
-    endpoint="https://your-axonflow.example.com",       # From CloudFormation or localhost:8080
-    client_id=os.environ["AXONFLOW_CLIENT_ID"],         # Your organization ID
-    client_secret=os.environ["AXONFLOW_CLIENT_SECRET"], # License key
-)
-
-# Execute query through AxonFlow
-query = "How do I reset my password?"
-response = client.proxy_llm_call(
-    user_token="cust_12345",
-    query=query,
-    request_type="support",
-    context={"product": "SaaS Platform"},
-)
-
-# Print the AI response
-print(f"Customer Question: {query}\n")
-print(f"AI Response:\n{response.result}")
-print(f"\nResponse Time: {response.metadata.duration:.2f}s")
-print(f"Tokens Used: {response.metadata.tokens_used}")
-print(f"Cost: ${response.metadata.cost:.4f}")
-```
-
-#### TypeScript
-
-Create `customer-support-agent.ts`:
-
-```typescript
-import { AxonFlow } from "@axonflow/sdk";
-
-// Initialize AxonFlow client
-const client = new AxonFlow({
-  endpoint: "https://your-axonflow.example.com",        // From CloudFormation or localhost:8080
-  clientId: process.env.AXONFLOW_CLIENT_ID!,            // Your organization ID
-  clientSecret: process.env.AXONFLOW_CLIENT_SECRET!,    // License key
-});
-
-// Execute query through AxonFlow
-const query = "How do I reset my password?";
-const response = await client.proxyLLMCall({
-  query,
-  userToken: "cust_12345",
-  requestType: "support",
-  context: { product: "SaaS Platform" },
-});
-
-// Print the AI response
-console.log(`Customer Question: ${query}\n`);
-console.log(`AI Response:\n${response.result}`);
-console.log(`\nResponse Time: ${response.metadata.duration.toFixed(2)}s`);
-console.log(`Tokens Used: ${response.metadata.tokensUsed}`);
-console.log(`Cost: $${response.metadata.cost.toFixed(4)}`);
-```
-
-#### Java
-
-Create `CustomerSupportAgent.java`:
-
-```java
-import com.getaxonflow.sdk.AxonFlowClient;
-
-public class CustomerSupportAgent {
-    public static void main(String[] args) {
-        // Initialize AxonFlow client
-        var client = AxonFlowClient.builder()
-            .endpoint("https://your-axonflow.example.com")  // From CloudFormation or localhost:8080
-            .clientId(System.getenv("AXONFLOW_CLIENT_ID"))
-            .clientSecret(System.getenv("AXONFLOW_CLIENT_SECRET"))
-            .build();
-
-        // Execute query through AxonFlow
-        String query = "How do I reset my password?";
-        var response = client.proxyLlmCall(
-            "cust_12345",   // userToken
-            query,
-            "support",      // requestType
-            Map.of("product", "SaaS Platform")
-        );
-
-        // Print the AI response
-        System.out.printf("Customer Question: %s%n%n", query);
-        System.out.printf("AI Response:%n%s%n", response.getResult());
-        System.out.printf("%nResponse Time: %.2fs%n", response.getMetadata().getDuration());
-        System.out.printf("Tokens Used: %d%n", response.getMetadata().getTokensUsed());
-        System.out.printf("Cost: $%.4f%n", response.getMetadata().getCost());
-    }
 }
 ```
 
@@ -392,25 +282,25 @@ Let's make the agent smarter by connecting it to your knowledge base:
 
 ```go
 // Add RAG (Retrieval-Augmented Generation)
-query := "How do I reset my password?"
-userToken := "cust_12345"
-requestType := "support"
-queryContext := map[string]interface{}{
-    "product": "SaaS Platform",
+response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
+    Query: "How do I reset my password?",
+    Context: map[string]interface{}{
+        "customer_id": "cust_12345",
+        "product":     "SaaS Platform",
+        "intent":      "support",
 
-    // NEW: Add knowledge base context
-    "knowledge_sources": []string{
-        "postgresql://docs_db/support_articles",  // Your FAQ database
-        "s3://company-docs/help-center/",         // Your help center docs
+        // NEW: Add knowledge base context
+        "knowledge_sources": []string{
+            "postgresql://docs_db/support_articles",  // Your FAQ database
+            "s3://company-docs/help-center/",         // Your help center docs
+        },
+
+        // NEW: Add custom instructions
+        "system_prompt": "You are a helpful customer support agent for Acme Corp. " +
+                        "Always be friendly, concise, and provide specific steps. " +
+                        "If you don't know the answer, direct customers to support@acme.com.",
     },
-
-    // NEW: Add custom instructions
-    "system_prompt": "You are a helpful customer support agent for Acme Corp. " +
-                    "Always be friendly, concise, and provide specific steps. " +
-                    "If you don't know the answer, direct customers to support@acme.com.",
-}
-
-response, err := client.ProxyLLMCall(ctx, userToken, query, requestType, queryContext)
+})
 ```
 
 **AxonFlow will automatically:**
@@ -430,7 +320,7 @@ response, err := client.ProxyLLMCall(ctx, userToken, query, requestType, queryCo
 │  Your App       │  (Go, Python, JS, etc.)
 └────────┬────────┘
          │
-         │ 1. ProxyLLMCall(token, query, type, ctx)
+         │ 1. ExecuteQuery(query, context)
          ▼
 ┌─────────────────────────┐
 │  AxonFlow Agent         │  (Your VPC)
@@ -489,7 +379,7 @@ response, err := client.ProxyLLMCall(ctx, userToken, query, requestType, queryCo
 
 1. **Your App** → Agent
    ```go
-   client.ProxyLLMCall(ctx, userToken, "What were our top 3 customers last quarter?", "analytics", nil)
+   client.ExecuteQuery(ctx, "What were our top 3 customers last quarter?")
    ```
 
 2. **Agent** validates credentials, checks policies, applies rate limits
@@ -555,12 +445,13 @@ docker compose restart agent
 
 Now you can query your database with natural language:
 ```go
-response, err := client.ProxyLLMCall(ctx, userToken, "How many users signed up last week?", "analytics",
-    map[string]interface{}{
+response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
+    Query: "How many users signed up last week?",
+    Context: map[string]interface{}{
         "mcp_connector": "postgresql",
         "database":      "production",
     },
-)
+})
 ```
 
 ### 2. Define Custom Agents
@@ -615,7 +506,7 @@ agent, err := client.LoadAgent("customer-support")
 response, err := agent.Query(ctx, "How do I reset my password?")
 ```
 
-**See full guide:** [Configurable Agents Reference](./reference/configurable-agents.md)
+**See full guide:** [Agent Definition Reference](./reference/agent-definition.md)
 
 ### 3. Deploy to Production
 
@@ -653,24 +544,49 @@ bash scripts/load-testing/run-load-test.sh --target production --duration 10m
 
 ### 4. Explore Example Applications
 
-AxonFlow includes example applications covering common use cases. See the full list in [`examples/README.md`](../examples/README.md).
+AxonFlow includes 3 complete example applications:
 
-**Key examples:**
+**1. Healthcare AI Assistant** (`examples/healthcare/`)
+- HIPAA-compliant patient data queries
+- Integration with Epic/Cerner EHR systems
+- Natural language medication lookup
+- Appointment scheduling
 
-| Example | Description |
-|---------|-------------|
-| [`hello-world/`](../examples/hello-world/) | Basic SDK usage in Go, Python, TypeScript, and Java |
-| [`llm-providers/`](../examples/llm-providers/) | LLM integration with OpenAI, Bedrock, Anthropic, Ollama |
-| [`execution-tracking/`](../examples/execution-tracking/) | Workflow execution control and step ledger |
-| [`mcp-connectors/`](../examples/mcp-connectors/) | Connect to Salesforce, Snowflake, and other data sources |
-| [`pii-detection/`](../examples/pii-detection/) | PII detection and redaction |
-| [`cost-controls/`](../examples/cost-controls/) | Budget management and usage tracking |
+**2. E-commerce Recommendation Engine** (`examples/ecommerce/`)
+- Product recommendations based on browsing history
+- Inventory queries ("Do you have size M in blue?")
+- Order tracking ("Where is my order?")
+- Returns and refunds automation
 
-**Run the hello-world example:**
+**3. Trip Planning Assistant** (`examples/travel/`)
+- Flight and hotel search (Amadeus API)
+- Multi-city itinerary planning
+- Budget optimization
+- Real-time booking integration
+
+**Run examples:**
 ```bash
-cd examples/hello-world/http
-./example.sh
+# Healthcare
+cd examples/healthcare
+docker compose up -d
+open http://localhost:3000
+
+# E-commerce
+cd examples/ecommerce
+docker compose up -d
+open http://localhost:3001
+
+# Travel
+cd examples/travel
+docker compose up -d
+open http://localhost:3002
 ```
+
+Each example includes:
+- Complete source code (Go backend + React frontend)
+- Docker Compose setup
+- Sample data and test cases
+- Production deployment guide
 
 ---
 
@@ -784,9 +700,9 @@ aws ecs describe-service \
 
 **Documentation:**
 - Technical Docs: `technical-docs/`
-- API Reference: `docs/api/`
-- Configurable Agents: `docs/reference/configurable-agents.md`
-- SDK Documentation: `docs/sdk/README.md`
+- API Reference: `docs/api-reference.md`
+- Agent Definition: `docs/agent-definition.md`
+- Marketplace FAQ: `docs/MARKETPLACE_METERING_FAQ.md`
 
 **Community:**
 - Slack: https://getaxonflow.com/slack
@@ -804,7 +720,7 @@ aws ecs describe-service \
 
 You've built your first AI agent with AxonFlow! Here's what to explore next:
 
-1. **[Configurable Agents Guide](./reference/configurable-agents.md)** - Configure agent behavior and routing
+1. **[Agent Definition Guide](./reference/agent-definition.md)** - Define custom agents with YAML
 2. **[API Reference](./api/)** - API specifications and error codes
 3. **[Example Applications](../examples/)** - Healthcare, E-commerce, Trip Planning
 4. **[Production Deployment](../technical-docs/DEPLOYMENT_GUIDE.md)** - Deploy to AWS
@@ -816,5 +732,5 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: February 2026*
-*Platform Version: v4.1.0 | SDK Version: v3.2.0*
+*Last Updated: November 11, 2025*
+*Version: 1.0.0*

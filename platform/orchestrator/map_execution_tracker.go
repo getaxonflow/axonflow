@@ -156,12 +156,6 @@ func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string,
 		// Note: We use CompleteExecution but the status is determined by the repo
 		// This could be enhanced to support StatusExpired directly
 		return t.CompleteExecution(ctx, executionID, nil)
-	case planning.PlanStatusCancelled:
-		reason := errorMsg
-		if reason == "" {
-			reason = "plan cancelled"
-		}
-		return t.CancelExecution(ctx, executionID, reason)
 	}
 
 	return nil
@@ -228,7 +222,7 @@ func planToExecutionStatus(plan *planning.Plan) *execution.ExecutionStatus {
 	}
 
 	var completedAt *time.Time
-	if status == execution.StatusCompleted || status == execution.StatusFailed || status == execution.StatusExpired || status == execution.StatusCancelled {
+	if status == execution.StatusCompleted || status == execution.StatusFailed || status == execution.StatusExpired {
 		t := plan.UpdatedAt
 		completedAt = &t
 	}
@@ -280,8 +274,6 @@ func mapPlanStatus(status planning.PlanStatus) execution.ExecutionStatusValue {
 		return execution.StatusFailed
 	case planning.PlanStatusExpired:
 		return execution.StatusExpired
-	case planning.PlanStatusCancelled:
-		return execution.StatusCancelled
 	default:
 		return execution.StatusPending
 	}

@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // Test NewResponseProcessor initialization
@@ -1280,73 +1278,6 @@ func TestDetectPII_WithEnhancedDisabled(t *testing.T) {
 	// Should still detect PII using legacy detector
 	if len(detected) == 0 {
 		t.Error("Legacy detector should still detect PII")
-	}
-}
-
-// TestSetSharedPolicyEngine tests setting and clearing the shared policy engine
-func TestSetSharedPolicyEngine(t *testing.T) {
-	processor := NewResponseProcessor()
-
-	// Initially, the shared engine may or may not be set depending on global state.
-	// Explicitly set it to nil first.
-	processor.SetSharedPolicyEngine(nil)
-	if processor.sharedPolicyEngine != nil {
-		t.Error("After SetSharedPolicyEngine(nil), sharedPolicyEngine should be nil")
-	}
-	if processor.useSharedEngine {
-		t.Error("After SetSharedPolicyEngine(nil), useSharedEngine should be false")
-	}
-
-	// Set a non-nil engine
-	engine := &sharedpolicy.UnifiedPolicyEngine{}
-	processor.SetSharedPolicyEngine(engine)
-	if processor.sharedPolicyEngine != engine {
-		t.Error("After SetSharedPolicyEngine(engine), sharedPolicyEngine should be the provided engine")
-	}
-	if !processor.useSharedEngine {
-		t.Error("After SetSharedPolicyEngine(non-nil), useSharedEngine should be true")
-	}
-
-	// Set back to nil
-	processor.SetSharedPolicyEngine(nil)
-	if processor.sharedPolicyEngine != nil {
-		t.Error("After SetSharedPolicyEngine(nil) again, sharedPolicyEngine should be nil")
-	}
-	if processor.useSharedEngine {
-		t.Error("After SetSharedPolicyEngine(nil) again, useSharedEngine should be false")
-	}
-}
-
-// TestSetUseSharedEngine tests enabling and disabling the shared engine flag
-func TestSetUseSharedEngine(t *testing.T) {
-	processor := NewResponseProcessor()
-
-	// Clear shared engine first
-	processor.SetSharedPolicyEngine(nil)
-
-	// Enable without engine set - should remain false
-	processor.SetUseSharedEngine(true)
-	if processor.useSharedEngine {
-		t.Error("SetUseSharedEngine(true) without engine should leave useSharedEngine false")
-	}
-
-	// Set engine, then enable
-	engine := &sharedpolicy.UnifiedPolicyEngine{}
-	processor.sharedPolicyEngine = engine
-	processor.SetUseSharedEngine(true)
-	if !processor.useSharedEngine {
-		t.Error("SetUseSharedEngine(true) with engine should set useSharedEngine true")
-	}
-
-	// Disable
-	processor.SetUseSharedEngine(false)
-	if processor.useSharedEngine {
-		t.Error("SetUseSharedEngine(false) should set useSharedEngine false")
-	}
-
-	// Engine should still be set
-	if processor.sharedPolicyEngine != engine {
-		t.Error("SetUseSharedEngine should not change the sharedPolicyEngine reference")
 	}
 }
 

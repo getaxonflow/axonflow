@@ -131,7 +131,6 @@ func TestEndToEndPlanningToExecution(t *testing.T) {
 // TestDynamicPolicyEngineIntegration tests dynamic policy engine integration
 func TestDynamicPolicyEngineIntegration(t *testing.T) {
 	dynamicEngine := NewDynamicPolicyEngine()
-	defer dynamicEngine.Close()
 
 	tests := []struct {
 		name  string

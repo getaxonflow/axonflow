@@ -22,7 +22,7 @@ type PlanAuditEntry struct {
 	PlanID     string
 	Query      string
 	Domain     string
-	Operation  string // created, execution_started, completed, failed, expired, cancelled
+	Operation  string // created, execution_started, completed, failed, expired
 	Status     string // pending, executing, completed, failed, expired
 	StepCount  int
 	ErrorMsg   string
@@ -248,43 +248,6 @@ func (s *Service) MarkPlanFailed(ctx context.Context, planID string, errMsg stri
 			UserID:    plan.UserID,
 		})
 	}
-
-	return nil
-}
-
-// CancelPlan cancels a pending or executing plan
-func (s *Service) CancelPlan(ctx context.Context, planID string, reason string) error {
-	// Get plan details for validation and audit logging
-	plan, err := s.repo.GetPlan(ctx, planID)
-	if err != nil {
-		return fmt.Errorf("failed to get plan: %w", err)
-	}
-
-	// Only pending or executing plans can be cancelled
-	if plan.Status != PlanStatusPending && plan.Status != PlanStatusExecuting {
-		return fmt.Errorf("plan is in %s status, cannot cancel", plan.Status)
-	}
-
-	if err := s.repo.UpdatePlanStatus(ctx, planID, PlanStatusCancelled, nil, reason); err != nil {
-		return fmt.Errorf("failed to cancel plan: %w", err)
-	}
-
-	log.Printf("[PlanService] Plan %s cancelled: %s", planID, reason)
-
-	// Audit log: plan cancelled
-	s.logAudit(ctx, &PlanAuditEntry{
-		PlanID:    planID,
-		Query:     plan.Query,
-		Domain:    plan.Domain,
-		Operation: "cancelled",
-		Status:    string(PlanStatusCancelled),
-		StepCount: plan.StepCount,
-		ErrorMsg:  reason,
-		TenantID:  plan.TenantID,
-		OrgID:     plan.OrgID,
-		ClientID:  plan.ClientID,
-		UserID:    plan.UserID,
-	})
 
 	return nil
 }

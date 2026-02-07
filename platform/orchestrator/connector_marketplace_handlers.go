@@ -429,7 +429,7 @@ func deleteConnectorConfig(ctx context.Context, connectorID, tenantID string) er
 		return fmt.Errorf("tenant_id required to delete connector config")
 	}
 
-	result, err := usageDB.ExecContext(
+	_, err := usageDB.ExecContext(
 		ctx,
 		`DELETE FROM connector_configs WHERE tenant_id = $1 AND connector_name = $2`,
 		tenantID,
@@ -437,10 +437,6 @@ func deleteConnectorConfig(ctx context.Context, connectorID, tenantID string) er
 	)
 	if err != nil {
 		return fmt.Errorf("connector config delete failed: %w", err)
-	}
-
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		log.Printf("[Connector Marketplace] No connector config found for tenant=%s connector=%s", tenantID, connectorID)
 	}
 
 	return nil

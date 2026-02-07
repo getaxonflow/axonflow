@@ -1,9 +1,5 @@
 # SEBI AI/ML Compliance Guide
 
-> **Comprehensive reference:** For the full SEBI AI/ML framework mapping including API endpoints, policy templates, and audit export workflows, see [sebi-ai-ml.md](./sebi-ai-ml.md). This document focuses on Indian PII detection details and hands-on implementation examples.
-
-*Last updated: February 2026 | AxonFlow Platform v4.1.0 | SDKs v3.2.0*
-
 This guide covers AxonFlow's compliance features for the Securities and Exchange Board of India (SEBI) AI/ML Guidelines (June 2025 Consultation Paper) and the Digital Personal Data Protection Act (DPDP) 2023.
 
 ## Overview
@@ -102,16 +98,13 @@ AxonFlow includes pre-built policy templates for SEBI AI/ML guidelines. These ar
 
 ```bash
 # List available SEBI templates
-curl -X GET "https://your-axonflow-host/api/v1/templates?category=sebi" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X GET "https://api.getaxonflow.com/api/v1/templates?category=sebi" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: your-tenant"
-# Alternative: -H "Authorization: Basic <base64(client_id:client_secret)>"
 
 # Apply a template
-curl -X POST "https://your-axonflow-host/api/v1/templates/sebi-aiml-ethics/apply" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X POST "https://api.getaxonflow.com/api/v1/templates/sebi-aiml-ethics/apply" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: your-tenant" \
   -H "Content-Type: application/json" \
   -d '{"priority": 100}'
@@ -149,9 +142,8 @@ SET retention_days = EXCLUDED.retention_days,
 
 ```bash
 # Check retention status
-curl -X GET "https://your-axonflow-host/api/v1/sebi/audit/retention" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X GET "https://api.getaxonflow.com/api/v1/sebi/audit/retention" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: 123"
 ```
 
@@ -180,14 +172,13 @@ The SEBI Audit Export API provides regulatory-ready exports for SEBI submissions
 ### Export Audit Data
 
 ```bash
-curl -X POST "https://your-axonflow-host/api/v1/sebi/audit/export" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X POST "https://api.getaxonflow.com/api/v1/sebi/audit/export" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: 123" \
   -H "Content-Type: application/json" \
   -d '{
-    "start_date": "2025-01-01T00:00:00Z",
-    "end_date": "2025-12-31T23:59:59Z",
+    "start_date": "2024-01-01T00:00:00Z",
+    "end_date": "2024-12-31T23:59:59Z",
     "data_types": ["policy_violations", "llm_calls", "decision_chain"],
     "format": "json",
     "framework": "SEBI_AI_ML",
@@ -214,9 +205,8 @@ curl -X POST "https://your-axonflow-host/api/v1/sebi/audit/export" \
 ### Compliance Readiness Check
 
 ```bash
-curl -X GET "https://your-axonflow-host/api/v1/sebi/audit/readiness" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X GET "https://api.getaxonflow.com/api/v1/sebi/audit/readiness" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: 123"
 ```
 
@@ -256,9 +246,8 @@ SEBI guidelines require human oversight for high-risk AI/ML decisions. AxonFlow'
 
 ```bash
 # Enable HITL for high-risk decisions
-curl -X POST "https://your-axonflow-host/api/v1/hitl/config" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
+curl -X POST "https://api.getaxonflow.com/api/v1/hitl/config" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Org-ID: 123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -300,68 +289,6 @@ Use this checklist to verify SEBI AI/ML compliance:
 - [ ] Set up HITL escalation workflows
 - [ ] Configure compliance dashboards
 
-## SDK Integration Examples
-
-### Proxying LLM Calls with SEBI Compliance Policies
-
-Once SEBI policy templates are applied, all LLM calls routed through AxonFlow are automatically subject to PII detection and audit logging.
-
-**curl:**
-
-```bash
-# Proxy an LLM call through AxonFlow (SEBI policies applied automatically)
-curl -X POST "https://your-axonflow-host/api/v1/query/execute" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_token": "analyst-123",
-    "query": "Summarize the quarterly earnings for client PAN ABCPD1234E",
-    "request_type": "financial_analysis",
-    "context": {"department": "equity_research"}
-  }'
-```
-
-**Go:**
-
-```go
-import "github.com/getaxonflow/axonflow-sdk-go/v3/axonflow"
-
-client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:     "https://your-axonflow-host",
-    ClientID:     "your-client-id",
-    ClientSecret: "your-client-secret",
-})
-
-response, err := client.ProxyLLMCall(
-    "analyst-123",
-    "Summarize the quarterly earnings for client PAN ABCPD1234E",
-    "financial_analysis",
-    map[string]interface{}{"department": "equity_research"},
-)
-// PAN will be detected and redacted per SEBI policy before reaching the LLM
-```
-
-**Python:**
-
-```python
-from axonflow import AxonFlow
-
-client = AxonFlow(
-    endpoint="https://your-axonflow-host",
-    client_id="your-client-id",
-    client_secret="your-client-secret",
-)
-
-response = client.proxy_llm_call(
-    user_token="analyst-123",
-    query="Summarize the quarterly earnings for client PAN ABCPD1234E",
-    request_type="financial_analysis",
-    context={"department": "equity_research"},
-)
-# PAN will be detected and redacted per SEBI policy before reaching the LLM
-```
-
 ## API Reference
 
 | Endpoint | Method | Description | Enterprise |
@@ -375,7 +302,6 @@ response = client.proxy_llm_call(
 
 ## References
 
-- [SEBI AI/ML Framework Compliance (comprehensive)](./sebi-ai-ml.md) - Full framework mapping with API endpoints
 - [SEBI AI/ML Guidelines Consultation Paper (June 2025)](https://www.sebi.gov.in/)
 - [Digital Personal Data Protection Act 2023](https://www.meity.gov.in/dpdp-act-2023)
 - [AxonFlow PII Detection](../guides/pii-detection.md)

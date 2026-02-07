@@ -7,34 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [4.2.0]
-
-### Community
-
-#### Added
-
-- **Unified Execution Cancel Endpoint** (#1074, #1075): `POST /api/v1/unified/executions/{id}/cancel` propagates cancellation to both MAP plans and WCP workflows
-  - MAP: calls `CancelPlan()` → sets `PlanStatusCancelled` → syncs to `execution_history`
-  - WCP: calls `AbortWorkflow()` → triggers `OnWorkflowAborted` callback → syncs to `execution_history`
-- **SSE Streaming Endpoint** (#1074): `GET /api/v1/unified/executions/{id}/stream` provides real-time execution events
-  - Events: `execution.started`, `execution.completed`, `execution.failed`, `execution.cancelled`, `step.started`, `step.completed`, `step.failed`, `step.decision`
-  - Auto-closes on terminal state; no external dependencies (pure Go channels)
-- **EventHub Pub-Sub** (#1074): Channel-based event bus in `platform/shared/execution/event_hub.go`
-  - Follows `audit_queue.go` pattern: buffered channels (cap 16), non-blocking publish
-  - Both MAP and WCP trackers publish events on state transitions
-- **MAP Plan Cancellation** (#1074): `PlanStatusCancelled` constant and `CancelPlan()` method in planning service
-- **Unified Execution Handler Tests**: 14 tests covering list, get, cancel, SSE stream, CORS, and route registration
-- **EventHub Tests**: 9 tests covering pub/sub, slow subscriber drop, concurrent access
-- **CancelPlan Tests**: 6 tests covering cancel from pending/executing states, validation
-
-#### Changed
-
-- **BaseExecutionTracker**: Now publishes events via EventHub after every state change (start, complete, fail, cancel, step transitions)
-- **UnifiedExecutionHandler**: Accepts EventHub and PlanService; registers cancel and stream routes
-- **ADR-030**: Updated with SSE streaming and cancellation architecture patterns
-
----
-
 ## [4.1.0] - 2026-02-05
 
 ### Community

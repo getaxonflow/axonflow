@@ -6,28 +6,23 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 
-	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/shared/execution"
 )
 
 // UnifiedExecutionHandler handles HTTP requests for unified execution status tracking.
 // This supports both MAP plans and WCP workflows through a common API.
 type UnifiedExecutionHandler struct {
-	repo        execution.ExecutionRepository
-	mapTracker  *MAPExecutionTracker
-	wcpTracker  *WCPExecutionTracker
-	eventHub    *execution.EventHub
-	planService *planning.Service
-	logger      *log.Logger
+	repo               execution.ExecutionRepository
+	mapTracker         *MAPExecutionTracker
+	wcpTracker         *WCPExecutionTracker
+	logger             *log.Logger
 }
 
 // NewUnifiedExecutionHandler creates a new unified execution handler.
@@ -35,16 +30,12 @@ func NewUnifiedExecutionHandler(
 	repo execution.ExecutionRepository,
 	mapTracker *MAPExecutionTracker,
 	wcpTracker *WCPExecutionTracker,
-	eventHub *execution.EventHub,
-	planService *planning.Service,
 ) *UnifiedExecutionHandler {
 	return &UnifiedExecutionHandler{
-		repo:        repo,
-		mapTracker:  mapTracker,
-		wcpTracker:  wcpTracker,
-		eventHub:    eventHub,
-		planService: planService,
-		logger:      log.Default(),
+		repo:       repo,
+		mapTracker: mapTracker,
+		wcpTracker: wcpTracker,
+		logger:     log.Default(),
 	}
 }
 
@@ -54,8 +45,6 @@ func (h *UnifiedExecutionHandler) RegisterRoutes(r *mux.Router) {
 	// Unified execution status API - separate from replay
 	r.HandleFunc("/api/v1/unified/executions", h.ListExecutions).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/unified/executions/{id}", h.GetExecutionStatus).Methods("GET", "OPTIONS")
-	r.HandleFunc("/api/v1/unified/executions/{id}/cancel", h.CancelExecution).Methods("POST", "OPTIONS")
-	r.HandleFunc("/api/v1/unified/executions/{id}/stream", h.StreamExecutionStatus).Methods("GET", "OPTIONS")
 }
 
 // ListExecutions handles GET /api/v1/unified/executions
@@ -182,205 +171,11 @@ func (h *UnifiedExecutionHandler) GetExecutionStatus(w http.ResponseWriter, r *h
 	h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 }
 
-// CancelExecution handles POST /api/v1/unified/executions/{id}/cancel
-// Propagates cancellation to the appropriate subsystem (WCP or MAP).
-func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		h.handleCORS(w, r)
-		return
-	}
-
-	executionID := mux.Vars(r)["id"]
-	if executionID == "" {
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
-		return
-	}
-
-	// Parse optional reason from body
-	var req execution.CancelExecutionRequest
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req) // Ignore decode errors — reason is optional
-	}
-	if req.Reason == "" {
-		req.Reason = "cancelled via unified API"
-	}
-
-	ctx := r.Context()
-
-	// Look up the execution
-	exec, err := h.repo.Get(ctx, executionID)
-	if err != nil {
-		if errors.Is(err, execution.ErrExecutionNotFound) {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
-			return
-		}
-		h.logger.Printf("[UnifiedExecution] CancelExecution lookup error for %s: %v", executionID, err)
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up execution")
-		return
-	}
-
-	// Check if already terminal
-	if exec.IsTerminal() {
-		h.writeError(w, http.StatusConflict, "CONFLICT",
-			fmt.Sprintf("Execution is already in terminal state: %s", exec.Status))
-		return
-	}
-
-	// Propagate to subsystem based on execution type
-	switch exec.ExecutionType {
-	case execution.ExecutionTypeWCP:
-		// WCP: abort the workflow
-		workflowID, _ := exec.Metadata["workflow_id"].(string)
-		if workflowID == "" {
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Missing workflow_id in execution metadata")
-			return
-		}
-		if h.wcpTracker == nil || h.wcpTracker.wcpService == nil {
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "WCP service not available")
-			return
-		}
-		if err := h.wcpTracker.wcpService.AbortWorkflow(ctx, workflowID, req.Reason); err != nil {
-			h.logger.Printf("[UnifiedExecution] WCP AbortWorkflow error for %s: %v", workflowID, err)
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to cancel WCP workflow")
-			return
-		}
-
-	case execution.ExecutionTypeMAP:
-		// MAP: cancel the plan
-		planID, _ := exec.Metadata["plan_id"].(string)
-		if planID == "" {
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Missing plan_id in execution metadata")
-			return
-		}
-		if h.planService == nil {
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Plan service not available")
-			return
-		}
-		if err := h.planService.CancelPlan(ctx, planID, req.Reason); err != nil {
-			h.logger.Printf("[UnifiedExecution] MAP CancelPlan error for %s: %v", planID, err)
-			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to cancel MAP plan")
-			return
-		}
-		// Sync status to execution_history
-		if h.mapTracker != nil {
-			_ = h.mapTracker.SyncPlanStatus(ctx, planID, planning.PlanStatusCancelled, req.Reason)
-		}
-
-	default:
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST",
-			fmt.Sprintf("Unknown execution type: %s", exec.ExecutionType))
-		return
-	}
-
-	// Return updated status
-	updated, err := h.repo.Get(ctx, executionID)
-	if err != nil {
-		// Cancel succeeded but couldn't fetch updated status — return a generic success
-		h.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"execution_id": executionID,
-			"status":       "cancelled",
-			"message":      "Execution cancelled successfully",
-		})
-		return
-	}
-	updated.ProgressPercent = updated.CalculateProgress()
-	updated.Duration = updated.CalculateDuration()
-	h.writeJSON(w, http.StatusOK, updated)
-}
-
-// StreamExecutionStatus handles GET /api/v1/unified/executions/{id}/stream
-// Streams execution state changes via Server-Sent Events (SSE).
-func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		h.handleCORS(w, r)
-		return
-	}
-
-	executionID := mux.Vars(r)["id"]
-	if executionID == "" {
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Execution ID is required")
-		return
-	}
-
-	// Verify execution exists
-	exec, err := h.repo.Get(r.Context(), executionID)
-	if err != nil {
-		if errors.Is(err, execution.ErrExecutionNotFound) {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
-			return
-		}
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up execution")
-		return
-	}
-
-	// Check SSE support
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Streaming not supported")
-		return
-	}
-
-	if h.eventHub == nil {
-		h.writeError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "Event streaming not available")
-		return
-	}
-
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(http.StatusOK)
-
-	// Send initial state
-	h.writeSSEEvent(w, "status", exec)
-	flusher.Flush()
-
-	// If already terminal, close immediately
-	if exec.IsTerminal() {
-		return
-	}
-
-	// Subscribe to events
-	ch := h.eventHub.Subscribe(executionID)
-	defer h.eventHub.Unsubscribe(executionID, ch)
-
-	// Heartbeat ticker to prevent proxy idle timeouts
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Send SSE comment as keepalive
-			if _, err := fmt.Fprintf(w, ":keepalive\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-		case event, ok := <-ch:
-			if !ok {
-				return
-			}
-			h.writeSSEEvent(w, event.EventType, event.Data)
-			flusher.Flush()
-
-			// Close on terminal state
-			if event.Data != nil && event.Data.IsTerminal() {
-				return
-			}
-		}
-	}
-}
-
 // --- Helper methods ---
 
 func (h *UnifiedExecutionHandler) handleCORS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Org-ID")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -403,15 +198,4 @@ func (h *UnifiedExecutionHandler) writeError(w http.ResponseWriter, status int, 
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp) // Error intentionally ignored for error responses
-}
-
-func (h *UnifiedExecutionHandler) writeSSEEvent(w http.ResponseWriter, eventType string, data interface{}) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		h.logger.Printf("[UnifiedExecution] SSE marshal error: %v", err)
-		return
-	}
-	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", time.Now().UnixMilli(), eventType, jsonData); err != nil {
-		h.logger.Printf("[UnifiedExecution] SSE write error: %v", err)
-	}
 }

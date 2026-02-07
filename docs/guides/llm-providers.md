@@ -28,10 +28,6 @@
 
 ---
 
-**Last Updated:** February 2026
-
-**Platform Version:** v4.1.0 | **SDK Version:** v3.2.0
-
 ## Overview
 
 AxonFlow supports multiple LLM providers for multi-agent orchestration. Shadow Mode allows you to safely test a new LLM provider alongside your current production provider before fully switching over.
@@ -390,7 +386,7 @@ export LLM_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
 - `anthropic.claude-3-5-sonnet-20240620-v1:0` (recommended)
 - `anthropic.claude-3-haiku-20240307-v1:0` (cost-effective)
 - `anthropic.claude-3-opus-20240229-v1:0` (highest accuracy)
-- `meta.llama3-70b-instruct-v1:0` (open-weight)
+- `meta.llama3-70b-instruct-v1:0` (open-source)
 - `amazon.titan-text-express-v1` (AWS native)
 - `mistral.mistral-large-2402-v1:0` (multilingual)
 
@@ -1156,10 +1152,10 @@ The orchestrator exposes a full REST API for provider CRUD operations:
 
 ```bash
 # List all providers
-curl -X GET http://localhost:8081/api/v1/llm-providers
+curl -X GET http://localhost:8080/api/v1/llm-providers
 
 # Create a new provider
-curl -X POST http://localhost:8081/api/v1/llm-providers \
+curl -X POST http://localhost:8080/api/v1/llm-providers \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-anthropic",
@@ -1171,7 +1167,7 @@ curl -X POST http://localhost:8081/api/v1/llm-providers \
   }'
 
 # Update routing weights
-curl -X PUT http://localhost:8081/api/v1/llm-providers/routing \
+curl -X PUT http://localhost:8080/api/v1/llm-providers/routing \
   -H "Content-Type: application/json" \
   -d '{"weights": {"my-anthropic": 70, "my-openai": 30}}'
 ```
@@ -1194,7 +1190,7 @@ For compliance-sensitive or deterministic routing, strict pinning is available:
 Example:
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/process \
+curl -X POST http://localhost:8080/api/v1/process \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Summarize this report",

@@ -1,8 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: February 2026** | **Platform: v4.1.0** | **SDKs: v3.2.0**
-
-Public documentation for AxonFlow - synced to the Community Edition repository.
+Public documentation for AxonFlow - synced to the open source repository.
 
 ## Quick Start
 
@@ -16,7 +14,7 @@ Configuration and how-to guides for common tasks.
 
 | Guide | Description |
 |-------|-------------|
-| [Community Configuration](./guides/community-configuration.md) | Configure AxonFlow Community Edition |
+| [Community Configuration](./guides/community-configuration.md) | Configure AxonFlow Community edition |
 | [LLM Providers](./guides/llm-providers.md) | Configure LLM providers (OpenAI, Anthropic) |
 | [Choosing a Mode](./guides/choosing-a-mode.md) | Gateway vs Proxy mode comparison |
 | [Gateway Mode](./guides/gateway-mode.md) | Migrate to Gateway Mode SDK |
@@ -31,35 +29,13 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. All SDKs are at v3.2.0.
-
 | Document | Description |
 |----------|-------------|
-| [SDK Feature Coverage](./SDK_FEATURE_COVERAGE.md) | Method coverage matrix across all SDKs |
+| [SDK Comparison](./reference/sdk-comparison.md) | Compare Go vs TypeScript SDKs |
+| [TypeScript Quickstart](./sdk/typescript-quickstart.md) | Get started with TypeScript SDK |
+| [TypeScript Architecture](./sdk/typescript-architecture.md) | SDK architecture and design |
+| [TypeScript Specification](./sdk/typescript-specification.md) | Full API specification |
 | [LLM SDK Guide](./sdk/llm-sdk-guide.md) | Using LLM providers with SDK |
-
-### Go SDK
-
-- **Repository:** [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go)
-- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v3`
-
-### Python SDK
-
-- **Repository:** [github.com/getaxonflow/axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python)
-- **Install:** `pip install axonflow-sdk`
-
-### Java SDK
-
-- **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:3.2.0`
-
-### TypeScript SDK
-
-- **Repository:** [github.com/getaxonflow/axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript)
-- **Install:** `npm install @axonflow/sdk`
-- [TypeScript Quickstart](./sdk/typescript-quickstart.md) - Get started with TypeScript SDK
-- [TypeScript Architecture](./sdk/typescript-architecture.md) - SDK architecture and design
-- [TypeScript Specification](./sdk/typescript-specification.md) - Full API specification
 
 ## Reference
 
@@ -67,9 +43,11 @@ Technical specifications and architecture documentation.
 
 | Document | Description |
 |----------|-------------|
+| [Agent Definition](./reference/agent-definition.md) | Agent architecture and configuration |
 | [Configurable Agents](./reference/configurable-agents.md) | Configure agents via YAML (MAP 0.5) |
 | [LLM Architecture](./reference/llm-architecture.md) | LLM provider system architecture |
 | [Policy Templates](./reference/policy-templates.md) | Policy templates API |
+| [MCP v0.2 Release](./reference/mcp-v02-release.md) | MCP protocol v0.2 changes |
 | [Secrets & Logging](./reference/secrets-logging-checklist.md) | Security checklist |
 | [License Migration](./reference/license-migration.md) | License key migration guide |
 
@@ -81,8 +59,6 @@ Regulatory compliance documentation.
 |----------|-------------|
 | [EU AI Act](./compliance/eu-ai-act.md) | EU AI Act compliance features |
 | [SEBI Compliance](./compliance/sebi-compliance.md) | SEBI regulatory compliance (India) |
-| [SEBI AI/ML Framework](./compliance/sebi-ai-ml.md) | SEBI AI/ML circular compliance |
-| [RBI Free AI](./compliance/rbi-free-ai.md) | RBI guidelines for AI in banking (India) |
 
 ## API Documentation
 
@@ -120,4 +96,4 @@ Enterprise-only features are documented in `/ee/docs/`:
 
 ## Internal Documentation
 
-For internal architecture and technical decisions, see `/technical-docs/` (not synced to Community Edition).
+For internal architecture and technical decisions, see `/technical-docs/` (not synced to Community edition).

@@ -188,4 +188,4 @@ LLM routing is configured server-side via environment variables:
 
 - [LLM Provider Configuration](https://docs.getaxonflow.com/docs/llm/overview)
 - [SDK Examples](../go/) for language-specific SDKs
-- [Gateway Mode Guide](https://docs.getaxonflow.com/docs/sdk/gateway-mode)
+- [Gateway Mode Guide](https://docs.getaxonflow.com/docs/concepts/gateway-mode)

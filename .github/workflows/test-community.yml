@@ -35,7 +35,7 @@ jobs:
       go-code: ${{ steps.filter.outputs.go-code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Detect Go code changes
         uses: dorny/paths-filter@v3
@@ -98,12 +98,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
           cache: true
           cache-dependency-path: platform/go.sum
 
@@ -138,8 +138,9 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Orchestrator Coverage: $coverage%"
 
-          # Raised to 76.0% — consistent with Agent threshold (PR #1163 brought coverage to 76.8%)
-          threshold=76.0
+          # Threshold lowered to 73.0% to accommodate replay package postgres_repository.go
+          # which requires integration tests (PR #838 - Execution Replay feature)
+          threshold=73.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "❌ Orchestrator coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -182,8 +183,7 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Connector Coverage: $coverage%"
 
-          # Raised to 76.0% — consistent with Agent/Orchestrator (PR #1163 brought coverage to 77.1%)
-          threshold=76.0
+          threshold=62.0
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "Connector coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -225,12 +225,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
           cache: true
           cache-dependency-path: platform/go.sum
 
@@ -284,12 +284,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
           cache: true
           cache-dependency-path: platform/go.sum
 
@@ -354,6 +354,6 @@ jobs:
           echo "All tests passed!"
           echo ""
           echo "Coverage thresholds verified:"
-          echo "  - Orchestrator: 76%"
+          echo "  - Orchestrator: 73.5%"
           echo "  - Agent: 76%"
-          echo "  - Connectors: 76%"
+          echo "  - Connectors: 62%"
