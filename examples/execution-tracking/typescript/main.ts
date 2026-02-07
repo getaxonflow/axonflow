@@ -201,34 +201,7 @@ async function main(): Promise<void> {
   }
   console.log();
 
-  // Step 8: Test cancelExecution (create workflow, then cancel)
-  console.log('Testing cancelExecution...');
-  try {
-    const cancelTest = await client.createWorkflow({
-      workflow_name: 'cancel-test-demo',
-      source: 'external',
-      total_steps: 2,
-    });
-    console.log(`  Created workflow: ${cancelTest.workflow_id}`);
-    try {
-      await client.cancelExecution(cancelTest.workflow_id, 'testing unified cancel');
-      console.log(`  Cancelled workflow: ${cancelTest.workflow_id}`);
-      // Verify status
-      const cancelStatus = await client.getWorkflow(cancelTest.workflow_id);
-      assertCheck(
-        cancelStatus.status === 'aborted' || cancelStatus.status === 'cancelled',
-        `Workflow is aborted/cancelled after cancelExecution (got: ${cancelStatus.status})`,
-      );
-    } catch (err) {
-      console.log(`  Note: cancelExecution returned error: ${err}`);
-      console.log('  (Cancel propagation requires unified handler wiring)');
-    }
-  } catch (err) {
-    console.log(`  Error creating cancel test workflow: ${err}`);
-  }
-  console.log();
-
-  // Step 9: Demonstrate resumeWorkflow (by aborting then resuming)
+  // Step 8: Demonstrate resumeWorkflow (by aborting then resuming)
   console.log('Testing resumeWorkflow...');
   try {
     const resumeTest = await client.createWorkflow({
@@ -268,9 +241,6 @@ async function main(): Promise<void> {
   console.log('  Unified Execution:');
   console.log('    - getExecutionStatus()');
   console.log('    - listUnifiedExecutions()');
-  console.log('    - cancelExecution()');
-  console.log('  SSE Streaming:');
-  console.log('    - GET /api/v1/unified/executions/{id}/stream');
   console.log('  Helper Types:');
   console.log('    - ExecutionType (map_plan, wcp_workflow)');
   console.log('    - ExecutionStatusValue with isTerminal()');

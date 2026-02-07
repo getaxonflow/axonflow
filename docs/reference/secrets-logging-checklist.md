@@ -1,11 +1,7 @@
 # AWS Secrets Manager - Deployment Checklist
 
-**Version:** 1.1
-
-**Last Updated:** February 2026
-
-**Platform Version:** v4.1.0
-
+**Version:** 1.0
+**Last Updated:** November 23, 2025
 **Purpose:** Pre-deployment validation checklist for AWS Secrets Manager secrets
 
 ---
@@ -52,8 +48,6 @@ Secrets:
 - [ ] `axonflow/{environment}/anthropic-credentials` - Anthropic API credentials
 - [ ] `axonflow/{environment}/client-openai-credentials` - Client OpenAI credentials
 - [ ] `axonflow/{environment}/client-anthropic-credentials` - Client Anthropic credentials
-- [ ] `axonflow/{environment}/azure-openai-credentials` - Azure OpenAI credentials
-- [ ] `axonflow/{environment}/google-credentials` - Google Gemini API credentials
 
 ### Step 2: Verify Secrets Exist
 
@@ -157,49 +151,9 @@ $ aws secretsmanager get-secret-value ... | jq .
 {
   "api_key": "sk-ant-..."
 }
-
-// Azure OpenAI
-{
-  "endpoint": "https://your-resource.cognitiveservices.azure.com",
-  "api_key": "...",
-  "deployment_name": "gpt-4o-mini"
-}
-
-// Google Gemini
-{
-  "api_key": "..."
-}
 ```
 
-### Step 5: Credential Encryption (v4.1.0+)
-
-As of Platform v4.1.0, connector credentials stored in the database are encrypted at rest using **AES-256-GCM**. This applies to all connector configurations registered via the orchestrator API.
-
-**How it works:**
-- The `CredentialEncryptor` uses AES-256-GCM with a cached cipher for performance
-- Credentials in `ConnectorConfigDB` are tagged `json:"-"` to prevent accidental serialization
-- The encryption key is derived from the `AXONFLOW_CREDENTIAL_ENCRYPTION_KEY` environment variable
-- Credential fields are auto-detected via `hasCredentials()` which checks for keys like `api_key`, `api_secret`, `client_secret`, `password`, `bot_token`, `private_key`, and others
-
-**Required environment variable:**
-```bash
-export AXONFLOW_CREDENTIAL_ENCRYPTION_KEY="your-32-byte-base64-encoded-key"
-```
-
-**Generate a key:**
-```bash
-openssl rand -base64 32
-```
-
-**Checklist:**
-- [ ] `AXONFLOW_CREDENTIAL_ENCRYPTION_KEY` is set in all environments
-- [ ] Key is stored in AWS Secrets Manager (not in plaintext config files)
-- [ ] Key is the same across all services in a given environment (orchestrator + agent)
-- [ ] Key rotation plan documented (re-encrypt existing credentials after rotation)
-
-> **Important:** If `AXONFLOW_CREDENTIAL_ENCRYPTION_KEY` is not set, the platform will refuse to start. This is a hard requirement as of v4.1.0.
-
-### Step 6: Fix Plain Text Secrets
+### Step 5: Fix Plain Text Secrets
 
 **If a secret is plain text, convert to JSON:**
 
@@ -227,7 +181,7 @@ aws secretsmanager get-secret-value \
   --output text | jq .
 ```
 
-### Step 7: Verify CloudWatch Log Groups Exist
+### Step 6: Verify CloudWatch Log Groups Exist
 
 **Log groups must exist BEFORE deployment:**
 
@@ -243,7 +197,7 @@ aws logs describe-log-groups \
 
 **If missing, CloudFormation will create them during deployment.**
 
-### Step 8: Verify TaskExecutionRole Permissions
+### Step 7: Verify TaskExecutionRole Permissions
 
 **Check IAM role has Secrets Manager permissions:**
 
@@ -414,27 +368,14 @@ aws iam put-role-policy \
 
 **Note:** Production has plain text `-api-key` secrets but CloudFormation references `-credentials`
 
-### Production US (us-east-1)
+### Other Regions (us-east-1, ap-south-1)
 
-**Status:** Active (axonflow-production-us stack)
+**Status:** ❌ No secrets created yet
 
-**Required Secrets:**
-- [x] axonflow/production/database-password (JSON format verified)
-- [x] axonflow/production/database-app-password (JSON format verified)
-- [x] axonflow/production/openai-credentials (JSON format verified)
-- [x] axonflow/production/anthropic-credentials (JSON format verified)
-- [x] axonflow/production/credential-encryption-key (JSON format verified)
-
-### Production India (ap-south-1)
-
-**Status:** Active (axonflow-production-banking-india stack)
-
-**Required Secrets:**
-- [x] axonflow/production/database-password (JSON format verified)
-- [x] axonflow/production/database-app-password (JSON format verified)
-- [x] axonflow/production/credential-encryption-key (JSON format verified)
-
-> **Note:** Use `./scripts/sync-secrets.sh --sync-from us-east-1 --environment production` to synchronize secrets across regions. Verify `private_key` fields are present in connector credentials after sync.
+**Before deploying to these regions:**
+1. Run `scripts/create-secrets.sh --region <region> --environment <env>`
+2. Run validation script to verify JSON format
+3. Proceed with deployment
 
 ---
 
@@ -449,7 +390,6 @@ aws iam put-role-policy \
 
 ## Last Verified
 
-- **Date:** February 2026
+- **Date:** November 23, 2025
 - **Verified By:** AxonFlow Team
-- **Platform Version:** v4.1.0
-- **Status:** All active regions validated (us-east-1 production, ap-south-1 production, eu-central-1 staging). Credential encryption (AES-256-GCM) verified operational.
+- **Status:** eu-central-1 staging and production validated, other regions need setup

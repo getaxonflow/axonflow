@@ -1,9 +1,5 @@
 # Proxy Mode Guide
 
-**Last Updated:** February 2026
-
-**Platform Version:** v4.1.0 | **SDK Version:** v3.2.0
-
 Proxy Mode is the simplest way to add governance to your AI applications. AxonFlow acts as a proxy between your application and LLM providers, handling policy enforcement, PII detection, rate limiting, and audit logging automatically.
 
 ## How It Works
@@ -69,10 +65,7 @@ const response = await axonflow.protect(async () => {
 ### Go
 
 ```go
-import (
-    "os"
-    "github.com/getaxonflow/axonflow-sdk-go/v3"
-)
+import "github.com/getaxonflow/axonflow-sdk-go/v3"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     os.Getenv("AXONFLOW_AGENT_URL"),
@@ -80,8 +73,8 @@ client := axonflow.NewClient(axonflow.AxonFlowConfig{
     ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
 })
 
-// Proxy a governed LLM call
-resp, err := client.ProxyLLMCall(
+// Execute governed query
+resp, err := client.ExecuteQuery(
     userToken,
     "Analyze this data...",
     "chat",
@@ -92,7 +85,6 @@ resp, err := client.ProxyLLMCall(
 ### Python
 
 ```python
-import os
 from axonflow import AxonFlow
 
 async with AxonFlow(
@@ -100,31 +92,11 @@ async with AxonFlow(
     client_id=os.environ["AXONFLOW_CLIENT_ID"],
     client_secret=os.environ["AXONFLOW_CLIENT_SECRET"]
 ) as client:
-    response = await client.proxy_llm_call(
+    response = await client.execute_query(
         user_token="user-jwt",
         query="Analyze this data...",
         request_type="chat"
     )
-```
-
-### Java
-
-```java
-import com.axonflow.sdk.AxonFlowClient;
-
-AxonFlowClient client = AxonFlowClient.builder()
-    .endpoint(System.getenv("AXONFLOW_AGENT_URL"))
-    .clientId(System.getenv("AXONFLOW_CLIENT_ID"))
-    .clientSecret(System.getenv("AXONFLOW_CLIENT_SECRET"))
-    .build();
-
-// Proxy a governed LLM call
-var response = client.proxyLlmCall(
-    userToken,
-    "Analyze this data...",
-    "chat",
-    null
-);
 ```
 
 ## When to Use Proxy Mode
@@ -316,8 +288,6 @@ const axonflow = new AxonFlow({
 | Audit Coverage | 100% automatic | Manual (call audit API) |
 | LLM Control | Limited (AxonFlow routes) | Full (you choose) |
 | Best For | Simple apps, compliance | Frameworks, performance |
-
-**Note on SDK methods:** The `protect()` wrapper shown in the TypeScript examples above is only available in the TypeScript SDK. For Go, Python, and Java, use the canonical proxy methods (`ProxyLLMCall`, `proxy_llm_call`, `proxyLlmCall`) as shown in the Quick Start section.
 
 ## Next Steps
 

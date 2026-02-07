@@ -1,10 +1,6 @@
 # MCP Audit Logging
 
-**Last Updated:** February 2026
-
-**Platform Version:** v4.1.0 | **SDK Version:** v3.2.0
-
-This guide covers audit logging specific to MCP (Model Context Protocol) connector operations. For general audit logging (LLM proxy calls, policy evaluations), see [Audit Logging](./audit-logging.md). Every MCP query and execute operation is automatically logged to provide a complete audit trail for compliance and security analysis.
+This guide explains how AxonFlow captures audit logs for all MCP (Model Context Protocol) connector operations. Every query and execute operation is automatically logged to provide a complete audit trail for compliance and security analysis.
 
 ## Overview
 
@@ -156,100 +152,21 @@ LIMIT 50;
 
 ## SDK Integration
 
-The SDK's `ConnectorResponse` includes `PolicyInfo` that matches the audit entry. The `audit_id` in the database can be used to correlate SDK responses with audit entries.
-
-### Go
+The SDK's `ConnectorResponse` includes `PolicyInfo` that matches the audit entry:
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v3"
-
-client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:     os.Getenv("AXONFLOW_ENDPOINT"),
-    ClientID:     os.Getenv("AXONFLOW_CLIENT_ID"),
-    ClientSecret: os.Getenv("AXONFLOW_CLIENT_SECRET"),
-})
-
 result, err := client.MCPQuery(ctx, axonflow.MCPQueryRequest{
     Connector: "postgres",
     Statement: "SELECT email FROM users",
 })
-if err != nil {
-    log.Fatalf("MCP query failed: %v", err)
-}
 
 if result.PolicyInfo != nil {
-    fmt.Printf("Audit ID: %s\n", result.PolicyInfo.AuditID)
     fmt.Printf("Policies evaluated: %d\n", result.PolicyInfo.PoliciesEvaluated)
-    fmt.Printf("Redacted: %v\n", result.PolicyInfo.WasRedacted())
     fmt.Printf("Redacted fields: %v\n", result.PolicyInfo.RedactedFields)
 }
 ```
 
-### Python
-
-```python
-import os
-from axonflow import AxonFlow
-
-client = AxonFlow(
-    endpoint=os.environ["AXONFLOW_ENDPOINT"],
-    client_id=os.environ["AXONFLOW_CLIENT_ID"],
-    client_secret=os.environ["AXONFLOW_CLIENT_SECRET"],
-)
-
-result = client.mcp_query(connector="postgres", statement="SELECT email FROM users")
-
-if result.policy_info:
-    print(f"Audit ID: {result.policy_info.audit_id}")
-    print(f"Policies evaluated: {result.policy_info.policies_evaluated}")
-    print(f"Redacted: {result.policy_info.was_redacted()}")
-    print(f"Redacted fields: {result.policy_info.redacted_fields}")
-```
-
-### TypeScript
-
-```typescript
-import { AxonFlow } from '@axonflow/sdk';
-
-const client = new AxonFlow({
-  endpoint: process.env.AXONFLOW_ENDPOINT!,
-  clientId: process.env.AXONFLOW_CLIENT_ID!,
-  clientSecret: process.env.AXONFLOW_CLIENT_SECRET!,
-});
-
-const result = await client.mcpQuery({
-  connector: 'postgres',
-  statement: 'SELECT email FROM users',
-});
-
-if (result.policyInfo) {
-  console.log(`Audit ID: ${result.policyInfo.auditId}`);
-  console.log(`Policies evaluated: ${result.policyInfo.policiesEvaluated}`);
-  console.log(`Redacted: ${result.policyInfo.wasRedacted()}`);
-  console.log(`Redacted fields: ${result.policyInfo.redactedFields}`);
-}
-```
-
-### Java
-
-```java
-import com.axonflow.sdk.AxonFlowClient;
-
-AxonFlowClient client = AxonFlowClient.builder()
-    .endpoint(System.getenv("AXONFLOW_ENDPOINT"))
-    .clientId(System.getenv("AXONFLOW_CLIENT_ID"))
-    .clientSecret(System.getenv("AXONFLOW_CLIENT_SECRET"))
-    .build();
-
-var result = client.mcpQuery("postgres", "SELECT email FROM users");
-
-if (result.getPolicyInfo() != null) {
-    System.out.println("Audit ID: " + result.getPolicyInfo().getAuditId());
-    System.out.println("Policies evaluated: " + result.getPolicyInfo().getPoliciesEvaluated());
-    System.out.println("Redacted: " + result.getPolicyInfo().wasRedacted());
-    System.out.println("Redacted fields: " + result.getPolicyInfo().getRedactedFields());
-}
-```
+The `audit_id` in the database can be used to correlate SDK responses with audit entries.
 
 ## Gateway vs Proxy Mode
 

@@ -57,7 +57,7 @@ jobs:
       sdk-relevant: ${{ steps.filter.outputs.sdk-relevant }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Detect SDK-relevant changes
         uses: dorny/paths-filter@v3
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v6

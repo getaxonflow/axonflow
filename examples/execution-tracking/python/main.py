@@ -191,31 +191,6 @@ def main() -> int:
             print("   (This is expected if backend unified handler not yet wired)")
         print()
 
-        # Test 10: CancelExecution (create workflow, then cancel)
-        print("10. CancelExecution - Unified cancel API...")
-        try:
-            cancel_wf = client.create_workflow(CreateWorkflowRequest(
-                workflow_name="cancel-test-demo",
-                source=WorkflowSource.EXTERNAL,
-                total_steps=2,
-            ))
-            print(f"   Created workflow: {cancel_wf.workflow_id}")
-            try:
-                client.cancel_execution(cancel_wf.workflow_id, "testing unified cancel")
-                print(f"   Cancelled workflow: {cancel_wf.workflow_id}")
-                # Verify status
-                cancel_status = client.get_workflow(cancel_wf.workflow_id)
-                assert_check(
-                    cancel_status.status.value in ("aborted", "cancelled"),
-                    f"Workflow is aborted/cancelled after cancel_execution (got {cancel_status.status.value})",
-                )
-            except Exception as e:
-                print(f"   Note: cancel_execution returned error: {e}")
-                print("   (Cancel propagation requires unified handler wiring)")
-        except Exception as e:
-            print(f"   Error creating cancel test workflow: {e}")
-        print()
-
     finally:
         client.close()
 
@@ -231,12 +206,6 @@ def main() -> int:
         print("    - complete_workflow()")
         print("    - get_workflow()")
         print("    - list_workflows()")
-        print("  Unified Execution:")
-        print("    - get_execution_status()")
-        print("    - list_unified_executions()")
-        print("    - cancel_execution()")
-        print("  SSE Streaming:")
-        print("    - GET /api/v1/unified/executions/{id}/stream")
         print("  Type Constants:")
         print("    - ExecutionType (map_plan, wcp_workflow)")
         print("    - ExecutionStatusValue with is_terminal()")

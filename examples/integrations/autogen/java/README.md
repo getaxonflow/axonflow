@@ -138,4 +138,4 @@ All tests completed!
 
 - [Python SDK Example](../governed_agent.py) - Proxy Mode integration
 - [AutoGen Documentation](https://microsoft.github.io/autogen/)
-- [AxonFlow Java SDK](https://docs.getaxonflow.com/docs/sdk/java-getting-started)
+- [AxonFlow Java SDK](https://docs.getaxonflow.com/sdk/java-getting-started)

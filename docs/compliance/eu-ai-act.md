@@ -1,7 +1,5 @@
 # EU AI Act Compliance Guide
 
-*Last updated: February 2026 | AxonFlow Platform v4.1.0 | SDKs v3.2.0*
-
 AxonFlow provides comprehensive support for EU AI Act compliance. This guide covers the key features and APIs available for organizations operating AI systems in the European Union.
 
 ## Overview
@@ -41,7 +39,7 @@ Every AI decision is automatically traced with full context, enabling complete a
 All AI responses include transparency headers:
 
 ```http
-X-AI-Decision-ID: dec-20260207-12345
+X-AI-Decision-ID: dec-20251207-12345
 X-AI-Trace-ID: trace-abc123
 X-AI-Model: claude-3-5-sonnet-20241022
 X-AI-Processing-Time-Ms: 1234
@@ -56,9 +54,9 @@ Decision chains are stored in a structured format:
 
 ```json
 {
-  "decision_id": "dec-20260207-12345",
+  "decision_id": "dec-20251207-12345",
   "trace_id": "trace-abc123",
-  "timestamp": "2026-02-07T12:34:56Z",
+  "timestamp": "2025-12-07T12:34:56Z",
   "org_id": "org-123",
   "agent_id": "agent-456",
   "input": {
@@ -108,37 +106,29 @@ policy:
 
 ### API Endpoints
 
-```bash
-# List pending HITL decisions
-curl -X GET "https://your-axonflow-host/api/v1/hitl/decisions?status=pending&org_id=org-123" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret"
-# Alternative auth: -H "Authorization: Basic <base64(client_id:client_secret)>"
+```http
+# List pending decisions
+GET /api/v1/hitl/decisions?status=pending&org_id=org-123
 
-# Approve a decision
-curl -X POST "https://your-axonflow-host/api/v1/hitl/decisions/{id}/approve" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "approved_by": "reviewer@company.com",
-    "comments": "Verified against policy guidelines"
-  }'
+# Get decision details
+GET /api/v1/hitl/decisions/{id}
 
-# Reject a decision
-curl -X POST "https://your-axonflow-host/api/v1/hitl/decisions/{id}/reject" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "rejected_by": "reviewer@company.com",
-    "reason": "Missing required documentation"
-  }'
+# Approve decision
+POST /api/v1/hitl/decisions/{id}/approve
+{
+  "approved_by": "reviewer@company.com",
+  "comments": "Verified against policy guidelines"
+}
+
+# Reject decision
+POST /api/v1/hitl/decisions/{id}/reject
+{
+  "rejected_by": "reviewer@company.com",
+  "reason": "Missing required documentation"
+}
 
 # Get HITL metrics
-curl -X GET "https://your-axonflow-host/api/v1/hitl/metrics?org_id=org-123" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret"
+GET /api/v1/hitl/metrics?org_id=org-123
 ```
 
 ## Audit Retention (Enterprise)
@@ -169,38 +159,29 @@ audit:
 
 ### API Endpoints
 
-```bash
+```http
 # List exports
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/export" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/export
+X-Org-ID: org-123
 
 # Create export request
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/export" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "export_type": "full_audit",
-    "format": "json",
-    "date_from": "2025-01-01T00:00:00Z",
-    "date_to": "2025-12-31T23:59:59Z",
-    "model_ids": ["model-123", "model-456"]
-  }'
+POST /api/v1/euaiact/export
+X-Org-ID: org-123
+{
+  "export_type": "full_audit",
+  "format": "json",
+  "date_from": "2025-01-01T00:00:00Z",
+  "date_to": "2025-12-31T23:59:59Z",
+  "model_ids": ["model-123", "model-456"]
+}
 
 # Get export status
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/export/{id}" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/export/{id}
+X-Org-ID: org-123
 
 # Download export
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/export/{id}/download" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/export/{id}/download
+X-Org-ID: org-123
 ```
 
 ### Export Types
@@ -225,12 +206,12 @@ Export audit data in the format specified by EU AI Act technical standards.
   "export_metadata": {
     "format_version": "1.0",
     "regulation": "EU_AI_ACT_2024_1689",
-    "generated_at": "2026-02-07T12:00:00Z",
+    "generated_at": "2025-12-07T12:00:00Z",
     "org_id": "org-123"
   },
   "system_info": {
     "provider": "AxonFlow Enterprise",
-    "version": "4.1.0",
+    "version": "3.2.0",
     "deployment_type": "in_vpc"
   },
   "decisions": [...],
@@ -268,33 +249,25 @@ circuit_breaker:
 
 ### API Endpoints
 
-```bash
+```http
 # Activate circuit breaker
-curl -X POST "https://your-axonflow-host/api/v1/circuit-breaker/activate" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "org_id": "org-123",
-    "reason": "Detected bias in loan decisions",
-    "activated_by": "compliance@company.com"
-  }'
+POST /api/v1/circuit-breaker/activate
+{
+  "org_id": "org-123",
+  "reason": "Detected bias in loan decisions",
+  "activated_by": "compliance@company.com"
+}
 
 # Check circuit breaker status
-curl -X GET "https://your-axonflow-host/api/v1/circuit-breaker/status?org_id=org-123" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret"
+GET /api/v1/circuit-breaker/status?org_id=org-123
 
 # Deactivate circuit breaker
-curl -X POST "https://your-axonflow-host/api/v1/circuit-breaker/deactivate" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "org_id": "org-123",
-    "deactivated_by": "compliance@company.com",
-    "resolution": "Bias detected in training data, model retrained"
-  }'
+POST /api/v1/circuit-breaker/deactivate
+{
+  "org_id": "org-123",
+  "deactivated_by": "compliance@company.com",
+  "resolution": "Bias detected in training data, model retrained"
+}
 ```
 
 ## Accuracy Metrics & Bias Detection (Enterprise)
@@ -303,70 +276,55 @@ Monitor AI system accuracy and detect potential biases.
 
 ### Accuracy Metrics
 
-```bash
+```http
 # Get accuracy summary
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/accuracy" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/accuracy
+X-Org-ID: org-123
 
 # Record a metric
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/accuracy/record" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model_id": "model-456",
-    "metric_type": "precision",
-    "value": 0.95,
-    "sample_size": 10000,
-    "context": {
-      "task_type": "classification",
-      "dataset": "validation_set_2025q4"
-    }
-  }'
+POST /api/v1/euaiact/accuracy/record
+X-Org-ID: org-123
+{
+  "model_id": "model-456",
+  "metric_type": "precision",
+  "value": 0.95,
+  "sample_size": 10000,
+  "context": {
+    "task_type": "classification",
+    "dataset": "validation_set_2025q4"
+  }
+}
 
 # Get accuracy history
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/accuracy/history?model_id=model-456&period=30d" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/accuracy/history?model_id=model-456&period=30d
+X-Org-ID: org-123
 ```
 
 ### Bias Detection
 
-```bash
+```http
 # Record bias measurement
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/accuracy/bias" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model_id": "model-456",
-    "category": "gender",
-    "group_metrics": {
-      "male": {"count": 5000, "positive_rate": 0.78},
-      "female": {"count": 5000, "positive_rate": 0.69}
-    }
-  }'
+POST /api/v1/euaiact/accuracy/bias
+X-Org-ID: org-123
+{
+  "model_id": "model-456",
+  "category": "gender",
+  "group_metrics": {
+    "male": {"count": 5000, "positive_rate": 0.78},
+    "female": {"count": 5000, "positive_rate": 0.69}
+  }
+}
 
 # Get alerts (including bias alerts)
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/accuracy/alerts" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/accuracy/alerts
+X-Org-ID: org-123
 
 # Acknowledge alert
-curl -X PUT "https://your-axonflow-host/api/v1/euaiact/accuracy/alerts/{id}" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "status": "acknowledged",
-    "acknowledged_by": "compliance@company.com"
-  }'
+PUT /api/v1/euaiact/accuracy/alerts/{id}
+{
+  "status": "acknowledged",
+  "acknowledged_by": "compliance@company.com"
+}
 ```
 
 ## Conformity Assessment (Enterprise)
@@ -384,49 +342,55 @@ Manage EU AI Act conformity assessments per Article 43.
 
 ### API Endpoints
 
-```bash
+```http
 # List assessments
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/conformity" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/conformity
+X-Org-ID: org-123
 
 # Create assessment
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/conformity" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Q1 2026 Conformity Assessment",
-    "assessment_type": "self_assessment",
-    "risk_category": "high",
-    "system_name": "Customer Support AI",
-    "system_version": "1.0.0"
-  }'
+POST /api/v1/euaiact/conformity
+X-Org-ID: org-123
+{
+  "name": "Q4 2025 Conformity Assessment",
+  "assessment_type": "self_assessment",
+  "risk_category": "high",
+  "system_name": "Customer Support AI",
+  "system_version": "1.0.0"
+}
 
 # Get assessment details
-curl -X GET "https://your-axonflow-host/api/v1/euaiact/conformity/{id}" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+GET /api/v1/euaiact/conformity/{id}
+X-Org-ID: org-123
+
+# Update assessment
+PUT /api/v1/euaiact/conformity/{id}
+X-Org-ID: org-123
+{
+  "requirements": {
+    "article_9": {"status": "compliant", "evidence": "..."},
+    "article_10": {"status": "partial", "evidence": "..."}
+  }
+}
 
 # Submit for review
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/conformity/{id}/submit" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123"
+POST /api/v1/euaiact/conformity/{id}/submit
+X-Org-ID: org-123
 
 # Approve assessment
-curl -X POST "https://your-axonflow-host/api/v1/euaiact/conformity/{id}/approve" \
-  -H "X-Client-Id: your-client-id" \
-  -H "X-Client-Secret: your-client-secret" \
-  -H "X-Org-ID: org-123" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "approved_by": "ciso@company.com",
-    "comments": "All checks verified"
-  }'
+POST /api/v1/euaiact/conformity/{id}/approve
+X-Org-ID: org-123
+{
+  "approved_by": "ciso@company.com",
+  "comments": "All checks verified"
+}
+
+# Reject assessment
+POST /api/v1/euaiact/conformity/{id}/reject
+X-Org-ID: org-123
+{
+  "rejected_by": "ciso@company.com",
+  "reason": "Missing Article 12 evidence"
+}
 ```
 
 ### Assessment Types
@@ -470,90 +434,6 @@ circuit_breaker_activations_total{org_id, reason}
 conformity_assessments_total{org_id, type, risk_category}
 conformity_assessment_status{org_id, status}
 conformity_compliance_score{org_id, article}
-```
-
-## SDK Integration
-
-Proxy LLM calls through AxonFlow with EU AI Act compliance policies applied automatically. Decision chains, transparency headers, and audit logs are generated for every request.
-
-**Go:**
-
-```go
-import "github.com/getaxonflow/axonflow-sdk-go/v3/axonflow"
-
-client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:     "https://your-axonflow-host",
-    ClientID:     "your-client-id",
-    ClientSecret: "your-client-secret",
-})
-
-response, err := client.ProxyLLMCall(
-    "user-eu-001",
-    "Assess this loan application for regulatory compliance",
-    "loan_assessment",
-    map[string]interface{}{"region": "eu", "risk_level": "high"},
-)
-// Decision chain trace ID is available in response headers
-// HITL will be triggered if confidence < threshold per policy
-```
-
-**Python:**
-
-```python
-from axonflow import AxonFlow
-
-client = AxonFlow(
-    endpoint="https://your-axonflow-host",
-    client_id="your-client-id",
-    client_secret="your-client-secret",
-)
-
-response = client.proxy_llm_call(
-    user_token="user-eu-001",
-    query="Assess this loan application for regulatory compliance",
-    request_type="loan_assessment",
-    context={"region": "eu", "risk_level": "high"},
-)
-# Decision chain trace ID is available in response headers
-# HITL will be triggered if confidence < threshold per policy
-```
-
-**TypeScript:**
-
-```typescript
-import { AxonFlow } from '@axonflow/sdk';
-
-const client = new AxonFlow({
-  endpoint: 'https://your-axonflow-host',
-  clientId: 'your-client-id',
-  clientSecret: 'your-client-secret',
-});
-
-const response = await client.proxyLLMCall(
-  'user-eu-001',
-  'Assess this loan application for regulatory compliance',
-  'loan_assessment',
-  { region: 'eu', risk_level: 'high' },
-);
-```
-
-**Java:**
-
-```java
-import com.axonflow.sdk.AxonFlowClient;
-
-AxonFlowClient client = AxonFlowClient.builder()
-    .endpoint("https://your-axonflow-host")
-    .clientId("your-client-id")
-    .clientSecret("your-client-secret")
-    .build();
-
-var response = client.proxyLlmCall(
-    "user-eu-001",
-    "Assess this loan application for regulatory compliance",
-    "loan_assessment",
-    Map.of("region", "eu", "risk_level", "high")
-);
 ```
 
 ## Getting Started

@@ -479,8 +479,8 @@ spectral lint policy-api.yaml
 
 ## Related Resources
 
-- [SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)
-- [Gateway Mode Guide](https://docs.getaxonflow.com/docs/sdk/gateway-mode)
-- [Proxy Mode Guide](https://docs.getaxonflow.com/docs/sdk/proxy-mode)
-- [MCP Connectors](https://docs.getaxonflow.com/docs/mcp/overview)
+- [SDK Documentation](https://docs.getaxonflow.com/sdk)
+- [Gateway Mode Guide](https://docs.getaxonflow.com/sdk/gateway-mode)
+- [Proxy Mode Guide](https://docs.getaxonflow.com/sdk/proxy-mode)
+- [MCP Connectors](https://docs.getaxonflow.com/connectors)
 - [OpenAPI 3.0 Specification](https://spec.openapis.org/oas/v3.0.3)

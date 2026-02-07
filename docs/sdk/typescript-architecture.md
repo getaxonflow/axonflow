@@ -1,275 +1,139 @@
 # AxonFlow TypeScript SDK Architecture
 
-**Last Updated:** February 2026
-
-**SDK Version:** v3.2.0 | **Platform Version:** v4.1.0
-
----
-
-## Overview
-
-The AxonFlow TypeScript SDK (`@axonflow/sdk`) provides a typed client for integrating AI governance into Node.js applications. It communicates with the AxonFlow Agent and Orchestrator services to enforce policies, manage connectors, handle Multi-Agent Planning (MAP), and audit LLM interactions.
-
-The SDK supports two primary integration modes:
-
-- **Proxy Mode** -- AxonFlow routes LLM calls through its Agent, applying policies transparently.
-- **Gateway Mode** -- Your application makes direct LLM calls while using AxonFlow for pre-check policy approval and post-call auditing.
-
 ## Core Design Principles
 
-1. **Single Client** -- One `AxonFlow` class handles all interactions (proxy, gateway, connectors, planning, policies, workflows, cost controls).
-2. **Client Credentials Auth** -- Authentication uses `clientId` and `clientSecret`, sent as `Authorization: Basic` headers.
-3. **Fail-Open by Default** -- Production mode degrades gracefully if the AxonFlow service is unavailable.
-4. **TypeScript-First** -- Full type definitions for all request/response types, error classes, and configuration options.
-5. **Node.js Runtime** -- Requires Node.js 18+ (uses native `fetch`, `Buffer`, `AbortSignal.timeout`).
+### 1. Invisible Governance
+- Zero UI changes required
+- No user training needed
+- Drop-in replacement for AI calls
+- 30-day pilot-to-production promise
 
-## Package Structure
+### 2. Simple Integration
+```typescript
+// Before: Direct AI call
+const response = await openai.complete(prompt);
 
+// After: With AxonFlow (3 lines)
+import { AxonFlow } from '@axonflow/sdk';
+const af = new AxonFlow({ apiKey: 'your-key' });
+const response = await af.protect(() => openai.complete(prompt));
+```
+
+### 3. Universal Compatibility
+- Works in Node.js (backend)
+- Works in browsers (frontend)
+- Works with React/Next.js/Vue
+- TypeScript + JavaScript support
+
+## SDK Architecture
+
+### Package Structure
 ```
 @axonflow/sdk/
 ├── src/
-│   ├── index.ts              # Public exports (AxonFlow, types, errors, VERSION)
-│   ├── client.ts             # AxonFlow client class (all methods)
-│   ├── errors.ts             # Typed error classes
-│   └── types/
-│       ├── config.ts          # AxonFlowConfig interface
-│       ├── gateway.ts         # Gateway Mode types (PolicyApprovalResult, AuditOptions, etc.)
-│       ├── proxy.ts           # Proxy Mode types (ExecuteQueryOptions, ExecuteQueryResponse, etc.)
-│       ├── policies.ts        # Static/Dynamic policy CRUD types
-│       ├── planning.ts        # Multi-Agent Planning (MAP) types
-│       ├── connector.ts       # MCP connector types
-│       ├── workflows.ts       # Workflow Control Plane (WCP) types
-│       ├── cost-controls.ts   # Budget and usage tracking types
-│       ├── code-governance.ts # Git provider and PR types (Enterprise)
-│       ├── execution-replay.ts # Execution history types
-│       ├── execution.ts       # Unified execution types
-│       └── masfeat.ts         # MAS FEAT compliance types (Enterprise)
-├── dist/
-│   ├── cjs/                   # CommonJS build
-│   └── esm/                   # ES Module build
+│   ├── index.ts           # Main entry point
+│   ├── client.ts          # AxonFlow client class
+│   ├── interceptors/
+│   │   ├── openai.ts      # OpenAI interceptor
+│   │   ├── anthropic.ts   # Anthropic interceptor
+│   │   └── base.ts        # Base interceptor interface
+│   ├── types/
+│   │   ├── config.ts      # Configuration types
+│   │   ├── policy.ts      # Policy types
+│   │   └── response.ts    # Response types
+│   ├── utils/
+│   │   ├── retry.ts       # Retry logic
+│   │   ├── cache.ts       # Response caching
+│   │   └── logger.ts      # Debug logging
+│   └── constants.ts       # SDK constants
+├── dist/                  # Compiled output
+├── examples/
+│   ├── node-basic/        # Basic Node.js example
+│   ├── react-app/         # React integration
+│   └── nextjs-app/        # Next.js integration
+├── tests/
 ├── package.json
-└── tsconfig.json
+├── tsconfig.json
+└── README.md
 ```
 
-## Client Class
+### Core Components
 
-The `AxonFlow` class is the single entry point for all SDK functionality.
-
-### Initialization
-
+#### 1. AxonFlow Client
 ```typescript
-import { AxonFlow } from '@axonflow/sdk';
+class AxonFlow {
+  constructor(config: AxonFlowConfig) {
+    this.apiKey = config.apiKey;
+    this.endpoint = config.endpoint || 'https://api.axonflow.com';
+    this.mode = config.mode || 'production';
+  }
 
-const client = new AxonFlow({
-  endpoint: 'http://localhost:8080',
-  clientId: 'my-org',
-  clientSecret: 'my-license-key',
-});
-```
-
-### Configuration Interface
-
-```typescript
-interface AxonFlowConfig {
-  clientId?: string;          // Authentication identity (X-Client-Id)
-  clientSecret?: string;      // Authentication credential (X-Client-Secret)
-  endpoint?: string;          // AxonFlow Agent URL (default: https://staging-eu.getaxonflow.com)
-  mode?: 'sandbox' | 'production'; // Deployment mode
-  tenant?: string;            // Multi-tenant routing context (deprecated; use clientId)
-  debug?: boolean;            // Enable debug logging (default: false)
-  timeout?: number;           // Request timeout in ms (default: 30000)
-  mapTimeout?: number;        // MAP operation timeout in ms (default: 120000)
-  retry?: {
-    enabled: boolean;
-    maxAttempts?: number;     // Default: 3
-    delay?: number;           // Default: 1000ms
-  };
-  cache?: {
-    enabled: boolean;
-    ttl?: number;             // Cache TTL in ms (default: 60000)
-  };
-}
-```
-
-### Authentication
-
-The SDK sends credentials as an `Authorization: Basic` header using base64-encoded `clientId:clientSecret`. It also sends `X-Tenant-ID` set to the `clientId` value for multi-tenant routing.
-
-For Community Edition (self-hosted) deployments without authentication, you can omit `clientId` and `clientSecret`. The SDK defaults to `"community"` as the effective client ID.
-
-## Integration Modes
-
-### Proxy Mode
-
-AxonFlow acts as a proxy between your application and the LLM provider. The Agent handles policy enforcement, LLM routing, and response processing.
-
-```typescript
-const response = await client.proxyLLMCall({
-  userToken: 'user-123',
-  query: 'Explain quantum computing',
-  requestType: 'chat',
-  context: { provider: 'openai', model: 'gpt-4' },
-});
-
-if (response.success) {
-  console.log('Response:', response.data);
-  console.log('Policies evaluated:', response.policyInfo?.policiesEvaluated);
-}
-```
-
-**Request types:** `'chat'`, `'sql'`, `'mcp-query'`, `'multi-agent-plan'`, `'execute-plan'`
-
-### Gateway Mode
-
-Your application makes direct LLM calls. AxonFlow provides pre-call policy checks and post-call audit logging.
-
-```typescript
-import OpenAI from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// Step 1: Pre-check -- get policy approval
-const ctx = await client.getPolicyApprovedContext({
-  userToken: 'user-123',
-  query: prompt,
-});
-
-if (!ctx.approved) {
-  throw new Error(`Query blocked: ${ctx.blockReason}`);
-}
-
-// Step 2: Make direct LLM call
-const start = Date.now();
-const response = await openai.chat.completions.create({
-  model: 'gpt-4',
-  messages: [{ role: 'user', content: prompt }],
-});
-const latencyMs = Date.now() - start;
-
-// Step 3: Audit the call
-await client.auditLLMCall({
-  contextId: ctx.contextId,
-  responseSummary: response.choices[0].message.content?.substring(0, 100) || '',
-  provider: 'openai',
-  model: 'gpt-4',
-  tokenUsage: {
-    promptTokens: response.usage?.prompt_tokens || 0,
-    completionTokens: response.usage?.completion_tokens || 0,
-    totalTokens: response.usage?.total_tokens || 0,
-  },
-  latencyMs,
-});
-```
-
-## Method Categories
-
-The `AxonFlow` client exposes methods across several functional areas:
-
-| Category | Key Methods | Description |
-|----------|-------------|-------------|
-| **Proxy Mode** | `proxyLLMCall()` | Route LLM calls through AxonFlow Agent |
-| **Gateway Mode** | `getPolicyApprovedContext()`, `auditLLMCall()` | Pre-check and audit direct LLM calls |
-| **Health** | `healthCheck()`, `orchestratorHealthCheck()` | Check Agent and Orchestrator status |
-| **Static Policies** | `listStaticPolicies()`, `createStaticPolicy()`, `updateStaticPolicy()`, `deleteStaticPolicy()`, `toggleStaticPolicy()`, `testPattern()` | CRUD and management of regex-based policies |
-| **Dynamic Policies** | `listDynamicPolicies()`, `createDynamicPolicy()`, `updateDynamicPolicy()`, `deleteDynamicPolicy()`, `toggleDynamicPolicy()` | CRUD for context-aware policies |
-| **Policy Overrides** | `createPolicyOverride()`, `deletePolicyOverride()`, `listPolicyOverrides()` | Per-tenant policy overrides |
-| **Multi-Agent Planning** | `generatePlan()`, `executePlan()`, `getPlanStatus()`, `cancelPlan()`, `updatePlan()`, `resumePlan()`, `rollbackPlan()`, `getPlanVersions()` | MAP lifecycle |
-| **Connectors** | `listConnectors()`, `installConnector()`, `uninstallConnector()`, `queryConnector()`, `mcpQuery()`, `mcpExecute()` | MCP connector management |
-| **Workflows** | `createWorkflow()`, `getWorkflow()`, `stepGate()`, `listWorkflows()`, `approveStep()`, `rejectStep()`, `getPendingApprovals()` | Workflow Control Plane (WCP) |
-| **Cost Controls** | `createBudget()`, `getBudget()`, `checkBudget()`, `getUsageSummary()`, `getUsageBreakdown()`, `getPricing()` | Budget and usage management |
-| **Execution Replay** | `listExecutions()`, `getExecution()`, `getExecutionTimeline()`, `exportExecution()` | Execution history and audit |
-| **Audit Logs** | `searchAuditLogs()`, `getAuditLogsByTenant()` | Audit log queries |
-| **Code Governance** | `configureGitProvider()`, `createPR()`, `listPRs()` | Git-based code governance (Enterprise) |
-| **Webhooks** | `createWebhook()`, `updateWebhook()`, `deleteWebhook()`, `listWebhooks()` | Event webhook subscriptions |
-
-## Error Handling
-
-The SDK provides typed error classes that extend a common `AxonFlowError` base:
-
-```typescript
-import {
-  AxonFlowError,
-  ConfigurationError,
-  ConnectionError,
-  PolicyViolationError,
-  AuthenticationError,
-  RateLimitError,
-  TimeoutError,
-  APIError,
-  ConnectorError,
-  PlanExecutionError,
-  VersionConflictError,
-} from '@axonflow/sdk';
-
-try {
-  const response = await client.proxyLLMCall({ ... });
-} catch (error) {
-  if (error instanceof PolicyViolationError) {
-    console.log('Blocked:', error.blockReason, error.policies);
-  } else if (error instanceof AuthenticationError) {
-    console.log('Auth failed:', error.message);
-  } else if (error instanceof TimeoutError) {
-    console.log('Timed out after', error.timeoutMs, 'ms');
-  } else if (error instanceof APIError) {
-    console.log('API error:', error.statusCode, error.body);
+  async protect<T>(aiCall: () => Promise<T>): Promise<T> {
+    // Intercept and govern the AI call
+    const request = this.interceptRequest(aiCall);
+    const validated = await this.validateWithAgent(request);
+    const response = await this.executeCall(validated);
+    return this.processResponse(response);
   }
 }
 ```
 
-## Request Flow
-
-### Proxy Mode Flow
-
-```
-Application
-  └─> client.proxyLLMCall(options)
-        └─> POST /api/request (Agent)
-              ├─ Policy evaluation (static + dynamic)
-              ├─ PII detection and redaction
-              ├─ Budget check
-              ├─ LLM provider routing
-              └─ Response processing
-        └─> ExecuteQueryResponse (with policyInfo, budgetInfo)
+#### 2. Interceptor Pattern
+```typescript
+interface Interceptor {
+  canHandle(call: any): boolean;
+  extractRequest(call: any): Request;
+  executeProtected(request: Request): Promise<Response>;
+}
 ```
 
-### Gateway Mode Flow
-
-```
-Application
-  ├─> client.getPolicyApprovedContext(options)
-  │     └─> Agent pre-check endpoint
-  │     └─> PolicyApprovalResult (contextId, approved, policies)
-  │
-  ├─> Direct LLM call (OpenAI, Anthropic, etc.)
-  │
-  └─> client.auditLLMCall(options)
-        └─> Agent audit endpoint
-        └─> AuditResult (auditId, success)
+#### 3. Configuration
+```typescript
+interface AxonFlowConfig {
+  apiKey: string;
+  endpoint?: string;
+  mode?: 'sandbox' | 'production';
+  tenant?: string;
+  retry?: RetryConfig;
+  cache?: CacheConfig;
+  debug?: boolean;
+}
 ```
 
-## Compatibility
+## Implementation Plan
 
-| Requirement | Minimum Version |
-|-------------|----------------|
-| Node.js | 18+ |
-| TypeScript | 4.7+ (optional) |
+### Phase 1: Core SDK (Today)
+1. Package setup with TypeScript
+2. Basic client with protect() method
+3. OpenAI interceptor
+4. Simple policy enforcement
 
-> **Note:** The SDK is designed for Node.js server-side use. It relies on `Buffer` and native `fetch` (Node.js 18+). Browser usage is not supported.
+### Phase 2: Serko Demo (Today)
+1. Travel booking example
+2. PII protection demo
+3. Cost control policies
+4. Audit trail
 
-## npm Version Note
+### Phase 3: Documentation (Today)
+1. Quickstart guide
+2. API reference
+3. Integration examples
+4. Troubleshooting
 
-The published npm version of `@axonflow/sdk` is v2.3.0 due to an ongoing npm publishing issue. The source code is at v3.2.0. To use the latest features, build the SDK from source:
+### Phase 4: Testing & Deployment (Tomorrow)
+1. Unit tests
+2. Integration tests
+3. npm publishing
+4. Staging deployment
 
-```bash
-git clone https://github.com/getaxonflow/axonflow-sdk-typescript.git
-cd axonflow-sdk-typescript
-npm install && npm run build
-npm link
+## Success Metrics
+- Integration time: <30 minutes
+- Code changes: <5 lines
+- Performance overhead: Typically single-digit ms
+- Bundle size: <50KB
 
-# In your project:
-npm link @axonflow/sdk
-```
-
----
-
-*This document describes the architecture of the AxonFlow TypeScript SDK v3.2.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
+## Risk Mitigation
+- No external dependencies (pure TypeScript)
+- Graceful fallback if AxonFlow unavailable
+- Clear error messages
+- Extensive logging for debugging

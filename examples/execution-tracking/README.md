@@ -216,6 +216,6 @@ GET /api/v1/executions?execution_type=map_plan&status=completed&limit=10
 
 ## Learn More
 
-- [Execution Tracking Guide](https://docs.getaxonflow.com/docs/orchestration/execution-viewer)
-- [API Reference](https://docs.getaxonflow.com/docs/api/orchestrator-endpoints)
+- [Execution Tracking Guide](https://docs.getaxonflow.com/docs/guides/execution-tracking)
+- [API Reference](https://docs.getaxonflow.com/docs/api/orchestrator)
 - [SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)

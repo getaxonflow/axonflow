@@ -16,7 +16,7 @@ jobs:
     name: Check Coverage Threshold Changes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -53,7 +53,7 @@ jobs:
             Per project policy:
             - Coverage thresholds should NOT be lowered without explicit approval
             - If coverage is failing, add more tests instead of lowering thresholds
-            - Current thresholds: Orchestrator 76%, Agent 76%, Connectors 76%, Shared Policy 80%, EE Orchestrator 80%, EE Agent 50%
+            - Current thresholds: Agent 74%, Orchestrator 72%, Connectors 55%
 
             If this change is intentional and approved, please add a comment confirming.`;
 
@@ -84,7 +84,7 @@ jobs:
         with:
           script: |
             const approvedMaintainers = ['saurabhjain1592'];
-            const approvalKeyword = 'LGTM';
+            const approvalKeyword = 'LGTM: threshold change';
 
             // Check 1: Explicit approval review from approved maintainers
             const reviews = await github.rest.pulls.listReviews({
@@ -124,7 +124,7 @@ jobs:
             }
 
             console.log('❌ PR needs approval from @saurabhjain1592');
-            console.log('Either submit an "Approve" review, or comment with: LGTM');
+            console.log('Either submit an "Approve" review, or comment with: ' + approvalKeyword);
             core.setOutput('approved', 'false');
 
       - name: Fail if thresholds lowered without approval

@@ -41,7 +41,7 @@ docker compose ps
 That's it! You now have:
 - Agent API running on http://localhost:8080
 - Orchestrator API on http://localhost:8081
-- Customer Portal on http://localhost:3001
+- Customer Portal on http://localhost:8082
 - Grafana dashboards on http://localhost:3000 (admin / grafana_localdev456)
 - Prometheus metrics on http://localhost:9090
 - PostgreSQL on localhost:5432
@@ -91,7 +91,7 @@ docker compose logs -f agent orchestrator
 # 4. Test API endpoints
 curl http://localhost:8080/health  # Agent
 curl http://localhost:8081/health  # Orchestrator
-curl http://localhost:3001/health  # Customer Portal
+curl http://localhost:8082/health  # Customer Portal
 ```
 
 ### Daily Development Workflow
@@ -426,7 +426,7 @@ connectors:
 ### Connector Contribution Guidelines
 
 - **License:** All contributions must be Apache 2.0 compatible
-- **Testing:** Minimum 76% test coverage required
+- **Testing:** Minimum 65% test coverage required
 - **Documentation:** README with configuration and usage examples
 - **Dependencies:** Minimize external dependencies
 - **Security:** No hardcoded credentials, use configuration
@@ -460,7 +460,7 @@ make test-coverage
 ### Test Coverage Requirements
 
 - All new code should have tests
-- Aim for >76% test coverage
+- Aim for >65% test coverage
 - Integration tests for critical paths
 
 ## Submitting Changes

@@ -1,58 +1,44 @@
 # AxonFlow
 
-> Self-hosted governance and execution control for production AI systems.
+> Self-hosted governance and orchestration for production AI systems.
 
 ## TL;DR
 
-- **What:** A control plane that sits between your app and LLM providers, applying real-time policy enforcement, execution control, and orchestration
-- **How it works:** Two capabilities — **governance** (policy enforcement, PII detection, audit trails) and **execution control** (Workflow Control Plane, step ledger, retries) — usable independently or together
+- **What:** A control plane that sits between your app and LLM providers, applying real-time policy enforcement and orchestration
+- **How it works:** Runs AI workflows end-to-end as a control plane, with an optional gateway mode for incremental adoption
 - **How it runs:** Docker Compose locally, no signup, no license key required
-- **Core features:** Policy enforcement (PII, injection attacks), audit trails, multi-model routing, multi-agent planning (MAP), workflow control plane (WCP)
+- **Core features:** Policy enforcement (PII, injection attacks), audit trails, multi-model routing, multi-agent planning
 - **License:** BSL 1.1 (source-available) — converts to Apache 2.0 after 4 years
 - **Not for:** Hobby scripts or single-prompt experiments — built for teams taking AI to production
 
-**[Full Documentation](https://docs.getaxonflow.com)** · **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · **[API Reference](./docs/api/)**
+📘 **[Full Documentation](https://docs.getaxonflow.com)** · 🚀 **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · 🔌 **[API Reference](./docs/api/)**
 
 *AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, **Go**, and **Java**.*
 
-**2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
+🎥 **2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
 
-**Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning — [Watch on YouTube](https://youtu.be/Q2CZ1qnquhg)
+🎥 **Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning — [Watch on YouTube](https://youtu.be/Q2CZ1qnquhg)
 
 ---
 
-## Pick Your First 10-Minute Path
+## Why This Exists
 
-AxonFlow has two primary capabilities. Start with whichever matches your use case:
+Most agent frameworks optimize for authoring workflows, not operating them.
+Once agents touch real systems, teams run into familiar problems: partial failures, retries with side effects, missing permissions, and no runtime visibility.
 
-### Path A: Govern Existing LLM Calls
+AxonFlow treats agents as long-running, stateful systems that require governance, observability, and control at runtime — not just good prompts.
 
-Add policy enforcement, PII detection, and audit trails to your current AI stack — without changing your orchestration logic.
+> **Evaluating AxonFlow in production?** We're opening limited Design Partner slots.
+>
+> Free 30-minute architecture and incident-readiness review, priority issue triage, roadmap input, and early feature access.
+>
+> [Apply here](https://getaxonflow.com/design-partner?utm_source=readme_platform) or email [design-partners@getaxonflow.com](mailto:design-partners@getaxonflow.com).
+>
+> No commitment required. We reply within 48 hours.
 
-```bash
-# Gateway Mode: Pre-check → Your LLM call → Audit
-curl -X POST http://localhost:8080/api/policy/pre-check \
-  -H "Content-Type: application/json" \
-  -d '{"user_token": "demo-user", "client_id": "demo-client", "query": "Look up customer with SSN 123-45-6789"}'
-# Returns: {"approved": true, "requires_redaction": true, "pii_detected": ["ssn"]}
-```
-
-Works with LangChain, CrewAI, or any framework — AxonFlow acts as a governance sidecar.
-
-> **[Choosing a mode guide](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** — covers Gateway Mode, Proxy Mode, and when to use each.
-
-### Path B: Execution Control for Long-Running Workflows
-
-Use the Workflow Control Plane (WCP) to manage multi-step AI workflows with step-level gates, a durable ledger, cancellation, and SSE streaming.
-
-```bash
-# Run the execution tracking demo (requires Docker services running)
-./examples/execution-tracking/http/example.sh
-```
-
-This creates a WCP workflow, runs step-level gate checks, records a step ledger, demonstrates cancellation, and shows unified execution status.
-
-> **[Execution tracking guide](https://docs.getaxonflow.com/docs/guides/execution-tracking)** — WCP workflow creation, step gates, SSE streaming, and unified execution status.
+> **AxonFlow Feedback Week (Feb 5–12, 2026)** — We're shipping 3 improvements from user feedback.
+>
+> [Share feedback](https://github.com/getaxonflow/axonflow/discussions/239) or email [hello@getaxonflow.com](mailto:hello@getaxonflow.com) for private feedback.
 
 ---
 
@@ -86,26 +72,11 @@ curl http://localhost:8081/health
 | Service | URL | Purpose |
 |---------|-----|---------|
 | Agent | http://localhost:8080 | Policy enforcement, PII detection |
-| Orchestrator | http://localhost:8081 | LLM routing, WCP, tenant policies |
+| Orchestrator | http://localhost:8081 | LLM routing, tenant policies |
 | Grafana | http://localhost:3000 | Dashboards (admin / grafana_localdev456) |
 | Prometheus | http://localhost:9090 | Metrics |
 
 > **Note:** All commands in this README assume you're in the repository root directory (`cd axonflow`).
-
-### Execution Control Demo (60 seconds)
-
-With services running, try the execution control workflow:
-
-```bash
-./examples/execution-tracking/http/example.sh
-```
-
-This demonstrates:
-1. **MAP plan creation** via `/api/request`
-2. **WCP workflow** with step-level gate checks and completion
-3. **Cancellation** via the unified execution API
-4. **SSE streaming** for real-time execution events
-5. **Workflow listing** and status queries
 
 ### Supported LLM Providers
 
@@ -121,7 +92,7 @@ This demonstrates:
 > LLM provider configuration applies to Proxy Mode and MAP, where AxonFlow routes requests to the provider.
 > In Gateway Mode and WCP, your application calls the LLM directly, including via frameworks like LangChain or CrewAI, so any provider works.
 
-> **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
+→ **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
 
 ### See Governance in Action (30 seconds)
 
@@ -170,7 +141,6 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 - Platform teams building internal AI infrastructure
 - Regulated industries (healthcare, finance, legal) with compliance requirements
 - Teams wanting audit trails and policy enforcement without building it themselves
-- Teams running multi-step agent workflows that need execution control, retries, and step-level visibility
 
 **Not a good fit:**
 - Single-prompt experiments or notebooks
@@ -190,11 +160,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
 
-> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
-
-**Workflow Control Plane (WCP)** — Govern long-running, multi-step AI workflows with step-level gate checks, a durable step ledger, cancellation, and SSE streaming. WCP works with any orchestration framework — your code controls execution, AxonFlow controls governance and visibility.
-
-**Multi-Agent Planning (MAP)** — Define agents in YAML, let AxonFlow turn natural language requests into executable workflows with automatic plan generation and execution tracking.
+→ **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
 
 **SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
 
@@ -208,11 +174,13 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
 
+**Multi-Agent Planning** — Define agents in YAML, let AxonFlow turn natural language requests into executable workflows.
+
 **Proxy Mode** — Full request lifecycle: policy, planning, routing, audit. Recommended for new projects.
 
 **Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
 
-> **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
+→ **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
 
 ### Integration Options
 
@@ -223,9 +191,9 @@ For Go, Java, Python, and TypeScript applications, we recommend using the **[Axo
 | **SDKs** | Application code, services, strongly typed environments |
 | **HTTP APIs** | Agents, automation, CLI tools, CI pipelines, languages without SDKs |
 
-All features—policy enforcement, audit logging, MCP connectors, WCP workflows—are available via both SDKs and HTTP.
+All features—policy enforcement, audit logging, MCP connectors—are available via both SDKs and HTTP.
 
-> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
+→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
 
 ### vs LangChain / LangSmith
 
@@ -258,7 +226,7 @@ All features—policy enforcement, audit logging, MCP connectors, WCP workflows�
                    ┌─────────────────────────────────────┐
                    │        Orchestrator (:8081)         │
                    │  ┌───────────┐ ┌─────────────┐      │
-                   │  │  WCP /    │ │ Multi-Agent │      │
+                   │  │  Tenant   │ │ Multi-Agent │      │
                    │  │  Policies │ │  Planning   │      │
                    │  └───────────┘ └─────────────┘      │
                    └───────────────┬─────────────────────┘
@@ -273,7 +241,7 @@ All features—policy enforcement, audit logging, MCP connectors, WCP workflows�
 ```
 
 - **Agent** (:8080): Policy enforcement, PII detection, SQLi response scanning, MCP connectors
-- **Orchestrator** (:8081): LLM routing, WCP workflows, tenant policies, multi-agent planning
+- **Orchestrator** (:8081): LLM routing, tenant policies, multi-agent planning
 
 ### Why AxonFlow often becomes the default control plane
 
@@ -333,7 +301,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 </dependency>
 ```
 
-> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.2.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
+> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.1.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
 
 ### Python
 
@@ -352,51 +320,43 @@ async with AxonFlow(endpoint="http://localhost:8080") as ax:
 
 ```typescript
 import { AxonFlow } from '@axonflow/sdk';
+import OpenAI from 'openai';
 
-const axonflow = new AxonFlow({
-  endpoint: 'http://localhost:8080',
-  clientId: 'my-app',
-  clientSecret: 'my-secret'
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const axonflow = new AxonFlow({ endpoint: 'http://localhost:8080' });
 
-const response = await axonflow.proxyLLMCall({
-  userToken: 'user-123',
-  query: 'Analyze customer sentiment',
-  requestType: 'chat'
+// Wrap any AI call with AxonFlow protection
+const response = await axonflow.protect(async () => {
+  return openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: 'Analyze customer sentiment' }]
+  });
 });
 ```
 
 ### Go
 
 ```go
-import axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+import "github.com/getaxonflow/axonflow-sdk-go/v3"
 
-client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:     "http://localhost:8080",
-    ClientID:     "my-app",
-    ClientSecret: "my-secret",
+client := axonflow.NewClient("http://localhost:8080")
+response, err := client.ExecuteQuery(ctx, axonflow.QueryRequest{
+    UserToken:   "user-123",
+    Query:       "Analyze customer sentiment",
+    RequestType: "chat",
 })
-
-response, err := client.ProxyLLMCall(
-    "user-123",                          // userToken
-    "Analyze customer sentiment",        // query
-    "chat",                              // requestType
-    map[string]interface{}{},            // context
-)
 ```
 
 ### Java
 
 ```java
-import com.getaxonflow.sdk.AxonFlowClient;
+import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.*;
 
-AxonFlowClient client = AxonFlowClient.builder()
+AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
     .endpoint("http://localhost:8080")
-    .clientId("my-app")
-    .clientSecret("my-secret")
-    .build();
+    .build());
 
 // Gateway Mode: Pre-check → Your LLM call → Audit
 PolicyApprovalResult approval = client.getPolicyApprovedContext(
@@ -417,7 +377,7 @@ if (approval.isApproved()) {
 }
 ```
 
-> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
+→ **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
 
 ---
 
@@ -425,12 +385,11 @@ if (approval.isApproved()) {
 
 | Example | Description |
 |---------|-------------|
-| **[Execution Tracking](examples/execution-tracking/)** | WCP workflows, step ledger, MAP plans, cancellation |
 | **[Support Demo](examples/support-demo/)** | Customer support with PII redaction and RBAC |
 | **[Code Governance](examples/code-governance/)** | Detect and audit LLM-generated code |
 | **[Hello World](examples/hello-world/)** | Minimal SDK example (30 lines) |
 
-> **[Browse all examples](examples/)**
+→ **[Browse all examples](examples/)**
 
 ---
 
@@ -449,12 +408,11 @@ For a full development environment with health checks and automatic waits, use:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development guide.
 
-| Package | Coverage | Threshold |
-|---------|----------|-----------|
-| Orchestrator | 76.8% | 76% |
-| Agent | 76.6% | 76% |
-| Connectors | 77.1% | 76% |
-| Shared Policy | 82.4% | 80% |
+| Package | Coverage |
+|---------|----------|
+| Agent | 78.7% |
+| Orchestrator | 73.9% |
+| Connectors | 63.4% |
 
 ---
 
@@ -462,7 +420,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development guide.
 
 We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-- 76% minimum test coverage required
+- 70% minimum test coverage required
 - Tests must be fast (<5s), deterministic
 - Security-first: validate inputs, no secrets in logs
 
@@ -476,18 +434,6 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - **Enterprise:** [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
 
 ---
-
-> **Evaluating AxonFlow in production?** We're opening limited Design Partner slots.
->
-> Free 30-minute architecture and incident-readiness review, priority issue triage, roadmap input, and early feature access.
->
-> [Apply here](https://getaxonflow.com/design-partner?utm_source=readme_platform) or email [design-partners@getaxonflow.com](mailto:design-partners@getaxonflow.com).
->
-> No commitment required. We reply within 48 hours.
-
-> **AxonFlow Feedback Week (Feb 5-12, 2026)** — We're shipping 3 improvements from user feedback.
->
-> [Share feedback](https://github.com/getaxonflow/axonflow/discussions/239) or email [hello@getaxonflow.com](mailto:hello@getaxonflow.com) for private feedback.
 
 ### Public Issues (Technical Questions Welcome)
 
@@ -512,6 +458,6 @@ No attribution. No tracking. No follow-up unless you explicitly opt in.
 
 ---
 
-_Quick Start verified locally: Feb 2026_
+_Quick Start verified locally: Jan 2026_
 
 <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=ece81e19-1365-4ed9-b8c0-7a92ecf04292" />

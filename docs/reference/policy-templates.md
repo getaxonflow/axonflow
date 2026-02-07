@@ -1,9 +1,5 @@
 # Policy Templates API
 
-**Last Updated:** February 2026
-
-**Platform Version:** v4.1.0 | **SDKs:** v3.2.0
-
 The Policy Templates API enables programmatic access to pre-defined policy templates. Templates provide a starting point for creating policies with configurable variables, reducing the complexity of policy creation.
 
 ## Base URL
@@ -12,16 +8,7 @@ All endpoints are prefixed with `/api/v1/templates`.
 
 ## Authentication
 
-All endpoints require authentication via `X-Client-Id` and `X-Client-Secret` headers:
-
-```
-X-Client-Id: your-client-id
-X-Client-Secret: your-client-secret
-```
-
-Alternatively, you can use `Authorization: Basic` with Base64-encoded `clientId:clientSecret`.
-
-For multi-tenant operations, the `X-Org-ID` header identifies the tenant, and `X-User-ID` is used for audit tracking:
+All endpoints require authentication via the `X-Org-ID` header. Some endpoints also accept `X-User-ID` for audit tracking.
 
 ```
 X-Org-ID: your-tenant-id
@@ -52,8 +39,6 @@ Retrieve a paginated list of policy templates with optional filtering.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates?category=rate_limiting&page=1&page_size=10" \
-  -H "X-Client-Id: demo-org" \
-  -H "X-Client-Secret: your-license-key" \
   -H "X-Org-ID: tenant-123"
 ```
 
@@ -108,8 +93,8 @@ curl -X GET "http://localhost:8080/api/v1/templates?category=rate_limiting&page=
       "is_active": true,
       "version": "1.0",
       "tags": ["rate-limiting", "security"],
-      "created_at": "2026-02-01T10:00:00Z",
-      "updated_at": "2026-02-01T10:00:00Z"
+      "created_at": "2025-01-15T10:00:00Z",
+      "updated_at": "2025-01-15T10:00:00Z"
     }
   ],
   "pagination": {
@@ -137,8 +122,6 @@ Retrieve a single template by its ID.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/general_rate_limiting" \
-  -H "X-Client-Id: demo-org" \
-  -H "X-Client-Secret: your-license-key" \
   -H "X-Org-ID: tenant-123"
 ```
 
@@ -158,8 +141,8 @@ curl -X GET "http://localhost:8080/api/v1/templates/general_rate_limiting" \
     "is_active": true,
     "version": "1.0",
     "tags": ["rate-limiting", "security"],
-    "created_at": "2026-02-01T10:00:00Z",
-    "updated_at": "2026-02-01T10:00:00Z"
+    "created_at": "2025-01-15T10:00:00Z",
+    "updated_at": "2025-01-15T10:00:00Z"
   }
 }
 ```
@@ -191,8 +174,6 @@ Create a new policy from a template by providing variable values.
 ```bash
 curl -X POST "http://localhost:8080/api/v1/templates/general_rate_limiting/apply" \
   -H "Content-Type: application/json" \
-  -H "X-Client-Id: demo-org" \
-  -H "X-Client-Secret: your-license-key" \
   -H "X-Org-ID: tenant-123" \
   -H "X-User-ID: user-456" \
   -d '{
@@ -237,8 +218,8 @@ curl -X POST "http://localhost:8080/api/v1/templates/general_rate_limiting/apply
     "enabled": true,
     "tenant_id": "tenant-123",
     "created_by": "user-456",
-    "created_at": "2026-02-01T12:00:00Z",
-    "updated_at": "2026-02-01T12:00:00Z"
+    "created_at": "2025-01-15T12:00:00Z",
+    "updated_at": "2025-01-15T12:00:00Z"
   },
   "usage_id": "660e8400-e29b-41d4-a716-446655440001",
   "message": "Successfully created policy 'API Rate Limit - Production' from template 'general_rate_limiting'"
@@ -255,8 +236,6 @@ Retrieve all available template categories.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/categories" \
-  -H "X-Client-Id: demo-org" \
-  -H "X-Client-Secret: your-license-key" \
   -H "X-Org-ID: tenant-123"
 ```
 
@@ -287,8 +266,6 @@ Retrieve template usage statistics for your tenant.
 
 ```bash
 curl -X GET "http://localhost:8080/api/v1/templates/stats" \
-  -H "X-Client-Id: demo-org" \
-  -H "X-Client-Secret: your-license-key" \
   -H "X-Org-ID: tenant-123"
 ```
 
@@ -301,13 +278,13 @@ curl -X GET "http://localhost:8080/api/v1/templates/stats" \
       "template_id": "general_rate_limiting",
       "template_name": "general_rate_limiting",
       "usage_count": 15,
-      "last_used_at": "2026-02-01T11:30:00Z"
+      "last_used_at": "2025-01-15T11:30:00Z"
     },
     {
       "template_id": "general_content_filter",
       "template_name": "general_content_filter",
       "usage_count": 8,
-      "last_used_at": "2026-01-30T16:45:00Z"
+      "last_used_at": "2025-01-14T16:45:00Z"
     }
   ]
 }
@@ -377,144 +354,6 @@ Template variables use the `{{variable_name}}` syntax within the template JSON. 
 | `boolean` | True/false | `true` |
 | `array` | List of values | `["a", "b", "c"]` |
 
-## SDK Examples
-
-### Go SDK — List and Apply Templates
-
-```go
-package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"bytes"
-)
-
-func main() {
-	baseURL := "http://localhost:8080"
-	clientID := "demo-org"
-	clientSecret := "your-license-key"
-	orgID := "tenant-123"
-
-	// List templates
-	req, _ := http.NewRequest("GET", baseURL+"/api/v1/templates?category=rate_limiting", nil)
-	req.Header.Set("X-Client-Id", clientID)
-	req.Header.Set("X-Client-Secret", clientSecret)
-	req.Header.Set("X-Org-ID", orgID)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	var listResp map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&listResp)
-	fmt.Printf("Templates: %v\n", listResp)
-
-	// Apply a template
-	applyBody, _ := json.Marshal(map[string]interface{}{
-		"policy_name": "API Rate Limit - Production",
-		"variables": map[string]interface{}{
-			"threshold":      1000,
-			"window_seconds": 60,
-		},
-		"enabled": true,
-	})
-
-	req, _ = http.NewRequest("POST",
-		baseURL+"/api/v1/templates/general_rate_limiting/apply",
-		bytes.NewReader(applyBody),
-	)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Client-Id", clientID)
-	req.Header.Set("X-Client-Secret", clientSecret)
-	req.Header.Set("X-Org-ID", orgID)
-
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	var applyResp map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&applyResp)
-	fmt.Printf("Created policy: %v\n", applyResp)
-}
-```
-
-### Python SDK — List and Apply Templates
-
-```python
-import requests
-
-BASE_URL = "http://localhost:8080"
-HEADERS = {
-    "X-Client-Id": "demo-org",
-    "X-Client-Secret": "your-license-key",
-    "X-Org-ID": "tenant-123",
-}
-
-# List rate limiting templates
-resp = requests.get(
-    f"{BASE_URL}/api/v1/templates",
-    headers=HEADERS,
-    params={"category": "rate_limiting"},
-)
-templates = resp.json()
-print(f"Found {len(templates['templates'])} templates")
-
-# Apply a template to create a policy
-resp = requests.post(
-    f"{BASE_URL}/api/v1/templates/general_rate_limiting/apply",
-    headers={**HEADERS, "Content-Type": "application/json", "X-User-ID": "user-456"},
-    json={
-        "policy_name": "API Rate Limit - Production",
-        "variables": {"threshold": 1000, "window_seconds": 60},
-        "enabled": True,
-    },
-)
-result = resp.json()
-print(f"Created policy: {result['policy']['id']}")
-```
-
-### TypeScript SDK — List and Apply Templates
-
-```typescript
-const BASE_URL = 'http://localhost:8080';
-const headers = {
-  'X-Client-Id': 'demo-org',
-  'X-Client-Secret': 'your-license-key',
-  'X-Org-ID': 'tenant-123',
-};
-
-// List templates
-const listResp = await fetch(
-  `${BASE_URL}/api/v1/templates?category=rate_limiting`,
-  { headers },
-);
-const templates = await listResp.json();
-console.log(`Found ${templates.templates.length} templates`);
-
-// Apply a template
-const applyResp = await fetch(
-  `${BASE_URL}/api/v1/templates/general_rate_limiting/apply`,
-  {
-    method: 'POST',
-    headers: { ...headers, 'Content-Type': 'application/json', 'X-User-ID': 'user-456' },
-    body: JSON.stringify({
-      policy_name: 'API Rate Limit - Production',
-      variables: { threshold: 1000, window_seconds: 60 },
-      enabled: true,
-    }),
-  },
-);
-const result = await applyResp.json();
-console.log(`Created policy: ${result.policy.id}`);
-```
-
 ## CORS Support
 
 All endpoints support CORS with the following headers:
@@ -522,7 +361,7 @@ All endpoints support CORS with the following headers:
 ```
 Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type, Authorization, X-Client-Id, X-Client-Secret, X-Org-ID, X-User-ID
+Access-Control-Allow-Headers: Content-Type, Authorization, X-Org-ID, X-User-ID
 ```
 
 Preflight requests (`OPTIONS`) return `200 OK` with the appropriate CORS headers.
