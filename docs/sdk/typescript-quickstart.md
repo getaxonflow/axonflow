@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.2.0 | **Platform Version:** v4.1.0
+**SDK Version:** v3.3.0 | **Platform Version:** v4.2.0
 
 ---
 
@@ -18,7 +18,7 @@
 npm install @axonflow/sdk
 ```
 
-> **Note:** The published npm version is v2.3.0. The SDK source is at v3.2.0. To use v3.2.0 features (dynamic policy tiers, unified execution, etc.), build from source:
+> **Note:** The published npm version is v2.3.0. The SDK source is at v3.3.0. To use v3.3.0 features (dynamic policy tiers, unified execution, etc.), build from source:
 >
 > ```bash
 > git clone https://github.com/getaxonflow/axonflow-sdk-typescript.git

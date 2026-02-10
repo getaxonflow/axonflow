@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.2.0 | **Platform Version:** v4.1.0
+**SDK Version:** v3.3.0 | **Platform Version:** v4.2.0
 
 ---
 
@@ -258,7 +258,7 @@ Application
 
 ## npm Version Note
 
-The published npm version of `@axonflow/sdk` is v2.3.0 due to an ongoing npm publishing issue. The source code is at v3.2.0. To use the latest features, build the SDK from source:
+The published npm version of `@axonflow/sdk` is v2.3.0 due to an ongoing npm publishing issue. The source code is at v3.3.0. To use the latest features, build the SDK from source:
 
 ```bash
 git clone https://github.com/getaxonflow/axonflow-sdk-typescript.git
@@ -272,4 +272,4 @@ npm link @axonflow/sdk
 
 ---
 
-*This document describes the architecture of the AxonFlow TypeScript SDK v3.2.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
+*This document describes the architecture of the AxonFlow TypeScript SDK v3.3.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
