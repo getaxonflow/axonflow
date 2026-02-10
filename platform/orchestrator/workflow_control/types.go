@@ -176,6 +176,11 @@ type AbortWorkflowRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// FailWorkflowRequest is the request to mark a workflow as failed
+type FailWorkflowRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // ListWorkflowsOptions contains filters for listing workflows
 type ListWorkflowsOptions struct {
 	Status   *WorkflowStatus `json:"status,omitempty"`

@@ -648,10 +648,28 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID string, reason st
 
 	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", workflowID, reason)
 
+	// Audit log: workflow failed
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		Operation:    "failed",
+		Reason:       reason,
+		TenantID:     workflow.TenantID,
+		ClientID:     workflow.ClientID,
+		UserID:       workflow.UserID,
+	})
+
 	// Unified execution tracking
 	s.trackExecution(ctx, "workflow_failed", func() error {
 		return s.executionTracker.OnWorkflowFailed(ctx, workflowID, reason)
 	})
+
+	// Webhook notification
+	s.fireWebhook(ctx, "workflow.failed", map[string]interface{}{
+		"workflow_id":   workflowID,
+		"workflow_name": workflow.WorkflowName,
+		"reason":        reason,
+	}, workflow.TenantID, workflow.OrgID)
 
 	return nil
 }

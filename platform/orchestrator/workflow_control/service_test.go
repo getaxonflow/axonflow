@@ -1387,6 +1387,134 @@ func TestMockRepositoryGetStepsForWorkflowNotFound(t *testing.T) {
 	}
 }
 
+// === Webhook Notification Tests ===
+
+// MockWebhookNotifier records webhook events for testing
+type MockWebhookNotifier struct {
+	Events []webhookEvent
+}
+
+type webhookEvent struct {
+	EventType string
+	Data      map[string]interface{}
+	TenantID  string
+	OrgID     string
+}
+
+func (m *MockWebhookNotifier) Fire(ctx context.Context, eventType string, data map[string]interface{}, tenantID, orgID string) {
+	m.Events = append(m.Events, webhookEvent{
+		EventType: eventType,
+		Data:      data,
+		TenantID:  tenantID,
+		OrgID:     orgID,
+	})
+}
+
+func TestFailWorkflow_FiresWebhook(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	notifier := &MockWebhookNotifier{}
+	svc.SetWebhookNotifier(notifier)
+	ctx := context.Background()
+
+	// Create a workflow
+	workflow, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "webhook-test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("failed to create workflow: %v", err)
+	}
+
+	// Fail the workflow
+	err = svc.FailWorkflow(ctx, workflow.WorkflowID, "LLM provider timeout")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify webhook was fired
+	if len(notifier.Events) != 1 {
+		t.Fatalf("webhook events = %d, want 1", len(notifier.Events))
+	}
+
+	event := notifier.Events[0]
+	if event.EventType != "workflow.failed" {
+		t.Errorf("event_type = %s, want workflow.failed", event.EventType)
+	}
+	if event.Data["workflow_id"] != workflow.WorkflowID {
+		t.Errorf("workflow_id = %v, want %s", event.Data["workflow_id"], workflow.WorkflowID)
+	}
+	if event.Data["workflow_name"] != "webhook-test-workflow" {
+		t.Errorf("workflow_name = %v, want webhook-test-workflow", event.Data["workflow_name"])
+	}
+	if event.Data["reason"] != "LLM provider timeout" {
+		t.Errorf("reason = %v, want 'LLM provider timeout'", event.Data["reason"])
+	}
+	if event.TenantID != "tenant-1" {
+		t.Errorf("tenant_id = %s, want tenant-1", event.TenantID)
+	}
+	if event.OrgID != "org-1" {
+		t.Errorf("org_id = %s, want org-1", event.OrgID)
+	}
+}
+
+func TestAbortWorkflow_FiresWebhook(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	notifier := &MockWebhookNotifier{}
+	svc.SetWebhookNotifier(notifier)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "abort-test",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled")
+
+	if len(notifier.Events) != 1 {
+		t.Fatalf("webhook events = %d, want 1", len(notifier.Events))
+	}
+	if notifier.Events[0].EventType != "workflow.aborted" {
+		t.Errorf("event_type = %s, want workflow.aborted", notifier.Events[0].EventType)
+	}
+}
+
+func TestCompleteWorkflow_FiresWebhook(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	notifier := &MockWebhookNotifier{}
+	svc.SetWebhookNotifier(notifier)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "complete-test",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID)
+
+	if len(notifier.Events) != 1 {
+		t.Fatalf("webhook events = %d, want 1", len(notifier.Events))
+	}
+	if notifier.Events[0].EventType != "workflow.completed" {
+		t.Errorf("event_type = %s, want workflow.completed", notifier.Events[0].EventType)
+	}
+}
+
+func TestFailWorkflow_NoWebhookWithoutNotifier(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil) // No webhook notifier
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "no-webhook-test",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Should not panic when no notifier is set
+	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestDefaultPolicyEvaluatorEvaluateStepGate(t *testing.T) {
 	evaluator := &DefaultPolicyEvaluator{}
 	ctx := context.Background()

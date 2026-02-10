@@ -223,6 +223,56 @@ curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/complete" \
 echo -e "   ${GREEN}Workflow completed!${NC}"
 echo ""
 
+# Step 5b: Fail Workflow (test /fail endpoint)
+echo -e "${BLUE}Step 5b: Fail Workflow${NC}"
+echo "   Creating a workflow to test /fail endpoint..."
+
+fail_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
+    -H "Content-Type: application/json" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -d '{
+        "workflow_name": "wcp-fail-test",
+        "source": "external",
+        "total_steps": 2,
+        "metadata": {
+            "example": "fail-workflow-http"
+        }
+    }')
+
+FAIL_WF_ID=$(echo "$fail_create" | jq -r '.workflow_id // ""')
+if [ -z "$FAIL_WF_ID" ] || [ "$FAIL_WF_ID" = "null" ]; then
+    echo -e "   ${RED}Failed to create fail-test workflow${NC}"
+    echo "   Response: $fail_create"
+else
+    echo "   Workflow ID: $FAIL_WF_ID"
+
+    # Call /fail endpoint
+    fail_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$FAIL_WF_ID/fail" \
+        -H "Content-Type: application/json" \
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -d '{"reason": "LLM provider timeout"}')
+
+    fail_status=$(echo "$fail_response" | jq -r '.status // "unknown"')
+    fail_reason=$(echo "$fail_response" | jq -r '.reason // ""')
+    echo -e "   ${GREEN}Workflow failed!${NC}"
+    echo "   Status: $fail_status"
+    echo "   Reason: $fail_reason"
+
+    # Verify status via GET
+    verify_response=$(curl -s "$AGENT_URL/api/v1/workflows/$FAIL_WF_ID" \
+        -H "X-Client-ID: $CLIENT_ID" \
+        -H "X-Client-Secret: $CLIENT_SECRET")
+    verify_status=$(echo "$verify_response" | jq -r '.status // "unknown"')
+    if [ "$verify_status" = "failed" ]; then
+        echo -e "   ${GREEN}Verified: workflow status is 'failed'${NC}"
+    else
+        echo -e "   ${RED}ERROR: expected 'failed', got '$verify_status'${NC}"
+    fi
+fi
+echo ""
+
 # Step 6: Get final workflow status
 echo -e "${BLUE}Step 6: Workflow Status${NC}"
 status_response=$(curl -s "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID" \
