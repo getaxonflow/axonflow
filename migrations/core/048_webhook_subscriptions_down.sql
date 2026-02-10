@@ -1,0 +1,11 @@
+-- Migration 048 DOWN: Webhook subscriptions
+-- DOCUMENTED NO-OP: Dropping webhook_subscriptions and webhook_deliveries
+-- tables would lose all webhook configuration and delivery history data.
+-- If a rollback is needed, the tables can remain safely — they are additive
+-- and do not break existing queries.
+--
+-- To manually rollback if truly needed:
+--   DROP TRIGGER IF EXISTS trigger_webhook_subscriptions_updated_at ON webhook_subscriptions;
+--   DROP FUNCTION IF EXISTS update_webhook_subscriptions_updated_at();
+--   DROP TABLE IF EXISTS webhook_deliveries;
+--   DROP TABLE IF EXISTS webhook_subscriptions;

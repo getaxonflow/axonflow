@@ -120,6 +120,22 @@ func (m *MockMAPRepository) UpdateCost(ctx context.Context, executionID string, 
 	return nil
 }
 
+func (m *MockMAPRepository) CountActive(_ context.Context, tenantID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, exec := range m.executions {
+		if exec.TenantID == tenantID && (exec.Status == execution.StatusRunning || exec.Status == execution.StatusPending) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *MockMAPRepository) PurgeOldest(_ context.Context, _ string, _ int) (int64, error) {
+	return 0, nil
+}
+
 // MockPlanService implements a minimal planning.Service for testing
 type MockPlanService struct {
 	plans map[string]*planning.Plan

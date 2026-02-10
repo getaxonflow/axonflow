@@ -180,12 +180,27 @@ Create policies that match workflow steps:
 }
 ```
 
+## SSE Streaming
+
+WCP supports real-time execution monitoring via Server-Sent Events (SSE). Use `streamExecutionStatus()` to receive live updates as workflow steps are evaluated and completed.
+
+```python
+# Stream execution status updates in real time
+async for event in client.stream_execution_status(workflow_id=workflow.workflow_id):
+    print(f"Step: {event.step_id}, Status: {event.status}")
+```
+
+| Feature | Edition | Notes |
+|---------|---------|-------|
+| SSE streaming (`streamExecutionStatus`) | Community | 5 concurrent connections per tenant |
+
 ## API Reference
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/workflows` | Create workflow |
 | GET | `/api/v1/workflows/{id}` | Get workflow status |
+| GET | `/api/v1/workflows/{id}/stream` | SSE stream for real-time execution status |
 | POST | `/api/v1/workflows/{id}/steps/{step_id}/gate` | Check step gate |
 | POST | `/api/v1/workflows/{id}/steps/{step_id}/complete` | Mark step completed |
 | POST | `/api/v1/workflows/{id}/complete` | Complete workflow |

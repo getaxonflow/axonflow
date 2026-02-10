@@ -710,6 +710,8 @@ func TestOllamaProvider_CompleteStream(t *testing.T) {
 }
 
 func TestFactoriesRegistration(t *testing.T) {
+	// Plain factories are registered via init() in factories.go as fallbacks.
+	// SDK-backed factories from providers/ override them in production.
 	t.Run("Anthropic factory is registered", func(t *testing.T) {
 		if !HasFactory(ProviderTypeAnthropic) {
 			t.Error("expected Anthropic factory to be registered")

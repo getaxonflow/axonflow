@@ -471,6 +471,130 @@ X-RateLimit-Reset: 1705312200
 - Verify API keys are configured
 - Check provider service status
 
+## Tier Limit Errors (403)
+
+### Policy Limit Exceeded
+
+```json
+{
+  "error": {
+    "code": "POLICY_LIMIT_EXCEEDED",
+    "message": "Tenant policy limit reached (20). Upgrade to Evaluation tier for 50 policies.",
+    "current_count": 20,
+    "limit": 20,
+    "tier": "community",
+    "upgrade_path": "evaluation"
+  }
+}
+```
+
+**Cause:** You've reached the maximum number of tenant policies for your tier.
+
+**Tier Limits:**
+| Tier | Tenant Policy Limit |
+|------|---------------------|
+| Community | 20 |
+| Evaluation | 50 |
+| Enterprise | Unlimited |
+
+**Solution:**
+- Delete unused policies to free up quota
+- Upgrade to Evaluation tier (free) for 50 policies: https://getaxonflow.com/evaluation-license
+- Upgrade to Enterprise for unlimited policies
+
+---
+
+### Organization Tier Required
+
+```json
+{
+  "error": {
+    "code": "ORG_TIER_EVALUATION_OR_HIGHER",
+    "message": "Organization policies require Evaluation tier or higher. Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
+    "tier": "community",
+    "required_tier": "evaluation"
+  }
+}
+```
+
+**Cause:** Organization-wide policies are not available in Community tier.
+
+**Tier Limits:**
+| Tier | Org Policies |
+|------|--------------|
+| Community | 0 (not available) |
+| Evaluation | 5 |
+| Enterprise | Unlimited |
+
+**Solution:**
+- Get a free Evaluation license at https://getaxonflow.com/evaluation-license
+- Or upgrade to Enterprise for unlimited org policies
+
+---
+
+### Organization Policy Limit Exceeded
+
+```json
+{
+  "error": {
+    "code": "ORG_POLICY_LIMIT_EXCEEDED",
+    "message": "Organization policy limit reached (5). Upgrade to Enterprise for unlimited org policies.",
+    "current_count": 5,
+    "limit": 5,
+    "tier": "evaluation",
+    "upgrade_path": "enterprise"
+  }
+}
+```
+
+**Cause:** You've reached the maximum number of organization policies for Evaluation tier.
+
+**Tier Limits:**
+| Tier | Org Policy Limit |
+|------|------------------|
+| Community | 0 |
+| Evaluation | 5 |
+| Enterprise | Unlimited |
+
+**Solution:**
+- Delete unused org policies to free up quota
+- Upgrade to Enterprise for unlimited org policies
+
+---
+
+### Custom Policy Connector Limit Exceeded
+
+```json
+{
+  "error": {
+    "code": "CONNECTOR_LIMIT_EXCEEDED",
+    "message": "Custom policy connector limit reached (2). Upgrade to Evaluation tier for 5 connectors with custom policies.",
+    "current_count": 2,
+    "limit": 2,
+    "tier": "community",
+    "upgrade_path": "evaluation"
+  }
+}
+```
+
+**Cause:** You've reached the maximum number of connectors with custom policies for your tier. All connectors can be registered in all tiers, but tenant-level policies (rate limiting, budgets, time/role access) are limited by tier.
+
+**Tier Limits:**
+| Tier | Connectors with Custom Policies |
+|------|-------------------------------|
+| Community | 2 |
+| Evaluation | 5 |
+| Enterprise | Unlimited |
+
+**Enforcement:** When more connectors are configured than the tier allows, only the first N connectors (in the order listed in `MCP_DYNAMIC_POLICIES_CONNECTORS`) have custom policies enabled. Connectors beyond the limit are registered but without custom policies. Reorder the env var to change priority.
+
+**Solution:**
+- Reorder `MCP_DYNAMIC_POLICIES_CONNECTORS` to prioritize connectors that need custom policies
+- Upgrade to Evaluation tier (free) for 5 connectors with custom policies
+- Upgrade to Enterprise for unlimited connectors with custom policies
+
+---
+
 ## Policy-Specific Errors
 
 ### PII Detection (Default: Redact)

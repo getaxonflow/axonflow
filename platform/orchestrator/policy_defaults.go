@@ -186,7 +186,7 @@ func loadDefaultDynamicPolicies() []DynamicPolicy {
 				{
 					Field:    "user.role",
 					Operator: "equals",
-					Value:    "basic",
+					Value:    "evaluation",
 				},
 			},
 			Actions: []PolicyAction{

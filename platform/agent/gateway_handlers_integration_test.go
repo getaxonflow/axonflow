@@ -326,7 +326,7 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 	}
 
 	// Generate a valid V2 license key for enterprise auth
-	testLicenseKey := generateTestLicenseKey("test-client-enterprise", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("test-client-enterprise", "Enterprise", "20351231")
 
 	// Helper to generate signed JWTs for testing
 	generateTestJWT := func(claims map[string]interface{}, secret string) string {

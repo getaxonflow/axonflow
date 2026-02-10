@@ -130,6 +130,9 @@ type StepGateRequest struct {
 	StepInput map[string]interface{} `json:"step_input,omitempty"`
 	Model     string                 `json:"model,omitempty"`
 	Provider  string                 `json:"provider,omitempty"`
+	// GateOverride bypasses the policy evaluator and forces a specific decision.
+	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
+	GateOverride *GateDecision `json:"-"`
 }
 
 // StepGateResponse is the response for a step gate check

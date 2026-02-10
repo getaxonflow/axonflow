@@ -22,7 +22,7 @@ import (
 const (
 	// MaxTenantPoliciesCommunity is the maximum number of custom tenant policies
 	// allowed in Community edition.
-	MaxTenantPoliciesCommunity = 30
+	MaxTenantPoliciesCommunity = 20
 
 	// MaxVersionHistoryCommunity is the maximum number of version history entries
 	// returned in Community edition.

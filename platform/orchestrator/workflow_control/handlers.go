@@ -38,7 +38,8 @@ func NewHandlerWithLogger(service *Service, logger *log.Logger) *Handler {
 	}
 }
 
-// RegisterRoutes registers workflow control API routes with a gorilla/mux router
+// RegisterRoutes registers core workflow control API routes with a gorilla/mux router.
+// Core routes include workflow lifecycle and step gates (available in all editions).
 func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Workflow lifecycle
 	r.HandleFunc("/api/v1/workflows", h.CreateWorkflow).Methods("POST", "OPTIONS")
@@ -51,8 +52,11 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Step gates - the core governance endpoint
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/gate", h.StepGate).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/complete", h.MarkStepCompleted).Methods("POST", "OPTIONS")
+}
 
-	// Approval endpoints (Enterprise)
+// RegisterEnterpriseRoutes registers enterprise-only approval routes with a gorilla/mux router.
+// Approval endpoints (approve, reject, pending) are only available in enterprise mode.
+func (h *Handler) RegisterEnterpriseRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/approvals/pending", h.GetPendingApprovals).Methods("GET", "OPTIONS")
@@ -84,6 +88,11 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	workflow, err := h.service.CreateWorkflow(r.Context(), &req, tenantID, orgID, userID, clientID)
 	if err != nil {
+		if strings.Contains(err.Error(), "concurrent execution limit reached") {
+			h.writeError(w, http.StatusTooManyRequests, "CONCURRENT_EXECUTION_LIMIT",
+				"Maximum concurrent executions reached. Upgrade your license for higher limits: https://docs.getaxonflow.com/evaluation-license")
+			return
+		}
 		h.logger.Printf("[WorkflowControl] CreateWorkflow error: %v", err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create workflow")
 		return

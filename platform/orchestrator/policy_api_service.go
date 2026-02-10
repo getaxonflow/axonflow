@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"axonflow/platform/agent/license"
 )
 
 // PolicyEngineRefresher is an interface for policy engines that can refresh their cache.
@@ -275,6 +277,71 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 	for i, p := range req.Policies {
 		if err := s.validateCreateRequest(&p); err != nil {
 			return nil, fmt.Errorf("policy %d validation failed: %w", i, err)
+		}
+	}
+
+	// Check tier limits before import to prevent bulk import from bypassing limits
+	if len(req.Policies) > 0 {
+		licenseTier := s.licenseChecker.Tier()
+
+		// Count how many new org-tier and tenant-tier policies are being imported
+		var newOrgCount, newTenantCount int
+		for _, p := range req.Policies {
+			if p.Tier == TierSystem {
+				return nil, NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
+			}
+			if p.Tier == TierOrganization {
+				newOrgCount++
+			} else {
+				newTenantCount++
+			}
+		}
+
+		// Organization tier requires Evaluation or higher license
+		if newOrgCount > 0 && !license.IsEvaluationOrHigher(licenseTier) {
+			return nil, NewTierValidationError(
+				"Organization-tier policies require Evaluation or Enterprise license. "+
+					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
+				ErrCodeOrgTierEvaluationOrHigher,
+			)
+		}
+
+		// For Evaluation tier, enforce org policy limit
+		if newOrgCount > 0 && licenseTier == license.TierEvaluation {
+			existingOrgCount, err := s.repo.CountOrgPolicies(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to count organization policies: %w", err)
+			}
+			limit := s.licenseChecker.OrgPolicyLimit()
+			if existingOrgCount+newOrgCount > limit {
+				return nil, NewTierValidationError(
+					fmt.Sprintf("Import would exceed organization policy limit of %d for Evaluation tier (current: %d, importing: %d). "+
+						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit, existingOrgCount, newOrgCount),
+					ErrCodeOrgPolicyLimitExceeded,
+				)
+			}
+		}
+
+		// Tenant tier: check policy limit for non-paid tiers
+		if newTenantCount > 0 && !license.IsPaidTier(licenseTier) {
+			existingTenantCount, err := s.repo.CountByTenant(ctx, tenantID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to count policies: %w", err)
+			}
+			limit := s.licenseChecker.PolicyLimit()
+			if existingTenantCount+newTenantCount > limit {
+				var upgradeMsg string
+				if licenseTier == license.TierCommunity {
+					upgradeMsg = "Get a free Evaluation license for 50 policies at https://getaxonflow.com/evaluation-license"
+				} else {
+					upgradeMsg = "Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise"
+				}
+				return nil, NewTierValidationError(
+					fmt.Sprintf("Import would exceed policy limit of %d for %s tier (current: %d, importing: %d). %s",
+						limit, licenseTier, existingTenantCount, newTenantCount, upgradeMsg),
+					ErrCodePolicyLimitExceeded,
+				)
+			}
 		}
 	}
 
@@ -606,25 +673,56 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID stri
 		tier = TierTenant
 	}
 
+	licenseTier := s.licenseChecker.Tier()
+
 	// System tier cannot be created via API
 	if tier == TierSystem {
 		return NewTierValidationError("System policies cannot be created via API", ErrCodeSystemTierImmutable)
 	}
 
-	// Organization tier requires Enterprise license
-	if tier == TierOrganization && !s.licenseChecker.IsEnterprise() {
-		return NewTierValidationError("Organization-tier policies require Enterprise license", ErrCodeOrgTierEnterprise)
+	// Organization tier requires Evaluation or Enterprise license
+	if tier == TierOrganization {
+		if !license.IsEvaluationOrHigher(licenseTier) {
+			return NewTierValidationError(
+				"Organization-tier policies require Evaluation or Enterprise license. "+
+					"Get a free Evaluation license at https://getaxonflow.com/evaluation-license",
+				ErrCodeOrgTierEvaluationOrHigher,
+			)
+		}
+
+		// For Evaluation tier, enforce org policy limit
+		if licenseTier == license.TierEvaluation {
+			count, err := s.repo.CountOrgPolicies(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to count organization policies: %w", err)
+			}
+			limit := s.licenseChecker.OrgPolicyLimit()
+			if count >= limit {
+				return NewTierValidationError(
+					fmt.Sprintf("Organization policy limit of %d reached for Evaluation tier. "+
+						"Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise", limit),
+					ErrCodeOrgPolicyLimitExceeded,
+				)
+			}
+		}
 	}
 
-	// Tenant tier: check policy limit for Community edition
-	if tier == TierTenant && !s.licenseChecker.IsEnterprise() {
+	// Tenant tier: check policy limit for non-paid tiers
+	if tier == TierTenant && !license.IsPaidTier(licenseTier) {
 		count, err := s.repo.CountByTenant(ctx, tenantID)
 		if err != nil {
 			return fmt.Errorf("failed to count policies: %w", err)
 		}
-		if count >= CommunityPolicyLimit {
+		limit := s.licenseChecker.PolicyLimit()
+		if count >= limit {
+			var upgradeMsg string
+			if licenseTier == license.TierCommunity {
+				upgradeMsg = "Get a free Evaluation license for 50 policies at https://getaxonflow.com/evaluation-license"
+			} else {
+				upgradeMsg = "Upgrade to Enterprise for unlimited policies at https://getaxonflow.com/enterprise"
+			}
 			return NewTierValidationError(
-				fmt.Sprintf("Policy limit of %d reached for Community edition", CommunityPolicyLimit),
+				fmt.Sprintf("Policy limit of %d reached for %s tier. %s", limit, licenseTier, upgradeMsg),
 				ErrCodePolicyLimitExceeded,
 			)
 		}

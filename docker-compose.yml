@@ -82,7 +82,7 @@ services:
 
       # Service ports and mode
       PORT: 8080
-      DEPLOYMENT_MODE: community
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
 
       # ============================================================
@@ -113,6 +113,7 @@ services:
       # MCP Policy Features (Issue #966, #968)
       # Dynamic policy evaluation is opt-in - enable via MCP_DYNAMIC_POLICIES_ENABLED=true
       MCP_DYNAMIC_POLICIES_ENABLED: ${MCP_DYNAMIC_POLICIES_ENABLED:-false}
+      MCP_DYNAMIC_POLICIES_CONNECTORS: ${MCP_DYNAMIC_POLICIES_CONNECTORS:-}
 
       # Security scanning - detection actions (Issue #891)
       # Philosophy: Block high-confidence threats, warn on heuristics, redact PII
@@ -211,7 +212,7 @@ services:
 
       # Service ports and mode
       PORT: 8081
-      DEPLOYMENT_MODE: community
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
 
       # ============================================================

@@ -883,7 +883,12 @@ func setupTestComponents(ctx context.Context) {
 
 // teardownTestComponents cleans up test components
 func teardownTestComponents() {
-	// Optional cleanup if needed
+	if metricsCollector != nil {
+		metricsCollector.Close()
+	}
+	if c, ok := dynamicPolicyEngine.(interface{ Close() }); ok {
+		c.Close()
+	}
 }
 
 func TestMetricsHandler(t *testing.T) {
@@ -2660,8 +2665,9 @@ func TestGetPlanStatusHandler(t *testing.T) {
 				if completedSteps, ok := body["completed_steps"].(float64); !ok || completedSteps != 0 {
 					t.Errorf("Expected completed_steps=0 for executing plan, got %v", body["completed_steps"])
 				}
-				if status, ok := body["status"].(string); !ok || status != "executing" {
-					t.Errorf("Expected status=executing, got %v", body["status"])
+				// Unified pipeline normalizes "executing" to "running" (matches SDK conventions)
+				if status, ok := body["status"].(string); !ok || status != "running" {
+					t.Errorf("Expected status=running (unified), got %v", body["status"])
 				}
 			},
 		},
@@ -3136,6 +3142,30 @@ func TestExecutePlanHandler_PolicyBlocked_ResponseFields(t *testing.T) {
 
 	if _, ok := response["policy_info"]; !ok {
 		t.Error("Response should have 'policy_info' field when blocked")
+	}
+}
+
+func TestPlanExecutionTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		steps    int
+		expected time.Duration
+	}{
+		{"zero steps uses minimum", 0, 60 * time.Second},
+		{"one step uses minimum", 1, 60 * time.Second},
+		{"two steps uses minimum", 2, 60 * time.Second},
+		{"three steps scales", 3, 90 * time.Second},
+		{"five steps scales", 5, 150 * time.Second},
+		{"ten steps scales", 10, 300 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := planExecutionTimeout(tt.steps)
+			if got != tt.expected {
+				t.Errorf("planExecutionTimeout(%d) = %v, want %v", tt.steps, got, tt.expected)
+			}
+		})
 	}
 }
 

@@ -75,7 +75,7 @@ func SetupTestDatabase(t *testing.T, config *TestConfig) *sql.DB {
 	// Ensure test organization exists
 	_, err = db.Exec(`
 		INSERT INTO organizations (org_id, name, tier, license_key, status, max_nodes, expires_at)
-		VALUES ($1, 'Integration Test Org', 'ENT', $2, 'ACTIVE', 100, NOW() + INTERVAL '365 days')
+		VALUES ($1, 'Integration Test Org', 'Enterprise', $2, 'ACTIVE', 100, NOW() + INTERVAL '365 days')
 		ON CONFLICT (org_id) DO UPDATE
 		SET license_key = EXCLUDED.license_key,
 		    status = 'ACTIVE',

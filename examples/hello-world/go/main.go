@@ -36,10 +36,12 @@ func main() {
 		Endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
 	})
 
+	userToken := getEnv("AXONFLOW_USER_TOKEN", "hello-world-user")
+
 	// Test 1: Safe Query - should be approved
 	fmt.Println("Test 1: Safe Query")
 	fmt.Println("------------------")
-	result1, err1 := client.GetPolicyApprovedContext("", "What is the weather today?", nil, nil)
+	result1, err1 := client.GetPolicyApprovedContext(userToken, "What is the weather today?", nil, nil)
 	assertCheck(err1 == nil, "Safe query does not return error")
 	if err1 == nil {
 		assertCheck(result1.Approved, "Safe query is approved")
@@ -52,7 +54,7 @@ func main() {
 	// Test 2: SQL Injection - should be blocked
 	fmt.Println("Test 2: SQL Injection")
 	fmt.Println("---------------------")
-	result2, err2 := client.GetPolicyApprovedContext("", "SELECT * FROM users; DROP TABLE users;", nil, nil)
+	result2, err2 := client.GetPolicyApprovedContext(userToken, "SELECT * FROM users; DROP TABLE users;", nil, nil)
 	assertCheck(err2 == nil, "SQLi query does not return error")
 	if err2 == nil {
 		assertCheck(!result2.Approved, "SQLi query is blocked")
@@ -66,7 +68,7 @@ func main() {
 	// Test 3: PII (SSN) - should be approved (redact mode)
 	fmt.Println("Test 3: PII (SSN)")
 	fmt.Println("-----------------")
-	result3, err3 := client.GetPolicyApprovedContext("", "Process payment for SSN 123-45-6789", nil, nil)
+	result3, err3 := client.GetPolicyApprovedContext(userToken, "Process payment for SSN 123-45-6789", nil, nil)
 	assertCheck(err3 == nil, "PII query does not return error")
 	if err3 == nil {
 		assertCheck(result3.Approved, "PII query is approved (redact mode)")

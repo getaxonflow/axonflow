@@ -14,6 +14,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -294,6 +295,62 @@ func TestRegistry_Register(t *testing.T) {
 		}
 		if regErr.Code != ErrRegistryLicenseRequired {
 			t.Errorf("error code = %q, want %q", regErr.Code, ErrRegistryLicenseRequired)
+		}
+	})
+
+	t.Run("provider count limit enforced", func(t *testing.T) {
+		fm := NewFactoryManager()
+		fm.Register(ProviderTypeOllama, func(config ProviderConfig) (Provider, error) {
+			return NewMockProvider(config.Name, config.Type), nil
+		})
+		// Limit to 2 providers
+		r := NewRegistry(WithFactoryManager(fm), WithMaxProviders(2))
+
+		// Register 2 providers — should succeed
+		for i := 0; i < 2; i++ {
+			err := r.Register(ctx, &ProviderConfig{
+				Name: fmt.Sprintf("provider-%d", i),
+				Type: ProviderTypeOllama,
+			})
+			if err != nil {
+				t.Fatalf("Register provider-%d error = %v", i, err)
+			}
+		}
+
+		// Third should fail
+		err := r.Register(ctx, &ProviderConfig{
+			Name: "provider-overflow",
+			Type: ProviderTypeOllama,
+		})
+		if err == nil {
+			t.Fatal("expected error when exceeding provider limit")
+		}
+
+		var regErr *RegistryError
+		if !errors.As(err, &regErr) {
+			t.Fatalf("expected RegistryError, got %T", err)
+		}
+		if regErr.Code != ErrRegistryProviderLimit {
+			t.Errorf("error code = %q, want %q", regErr.Code, ErrRegistryProviderLimit)
+		}
+	})
+
+	t.Run("provider count unlimited with -1", func(t *testing.T) {
+		fm := NewFactoryManager()
+		fm.Register(ProviderTypeOllama, func(config ProviderConfig) (Provider, error) {
+			return NewMockProvider(config.Name, config.Type), nil
+		})
+		r := NewRegistry(WithFactoryManager(fm), WithMaxProviders(-1))
+
+		// Should be able to register many providers
+		for i := 0; i < 10; i++ {
+			err := r.Register(ctx, &ProviderConfig{
+				Name: fmt.Sprintf("unlimited-%d", i),
+				Type: ProviderTypeOllama,
+			})
+			if err != nil {
+				t.Fatalf("Register unlimited-%d error = %v", i, err)
+			}
 		}
 	})
 }

@@ -146,7 +146,7 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	r.PathPrefix("/api/v1/pricing").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
 
 	// Multi-Agent Planning (MAP)
-	r.PathPrefix("/api/v1/plan").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
+	r.PathPrefix("/api/v1/plan").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Execution Replay
 	r.PathPrefix("/api/v1/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")

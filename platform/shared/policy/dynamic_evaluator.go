@@ -6,6 +6,7 @@ package policy
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -86,6 +87,9 @@ func NewDynamicPolicyEvaluatorFromEnv() *DynamicPolicyEvaluator {
 		}
 		config.EnabledConnectors = connectors
 	}
+
+	// Enforce custom policy connector limit — truncate to tier limit
+	config.EnabledConnectors = EnforceCustomPolicyConnectorLimit(config)
 
 	log.Printf("[DynamicPolicyEvaluator] Initialized: enabled=%v, endpoint=%s, timeout=%v, graceful=%v, connectors=%v",
 		config.Enabled, config.OrchestratorEndpoint, config.Timeout, config.GracefulDegradation, config.EnabledConnectors)
@@ -229,15 +233,115 @@ func (e *DynamicPolicyEvaluator) GetConfig() DynamicPolicyConfig {
 	return e.config
 }
 
+// resolveConnectorLimitTier determines the license tier for connector limit enforcement.
+// DEPLOYMENT_MODE controls feature gating (community vs enterprise deployment).
+// AXONFLOW_LICENSE_KEY determines resource limits within community mode.
+// Enterprise deployment modes (saas, in-vpc-enterprise, etc.) get unlimited connectors.
+func resolveConnectorLimitTier() (tier string) {
+	mode := os.Getenv("DEPLOYMENT_MODE")
+	// Enterprise deployment modes → unlimited
+	if mode != "community" && mode != "" {
+		return "enterprise"
+	}
+	// Community deployment mode: extract tier from license key payload
+	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
+	if licenseKey == "" {
+		return "community"
+	}
+	if t := extractTierFromLicenseKey(licenseKey); t != "" {
+		return strings.ToLower(t)
+	}
+	return "evaluation" // fallback for unparseable keys
+}
+
+// extractTierFromLicenseKey reads the tier field from the license payload
+// without full validation (signature is verified elsewhere at startup).
+func extractTierFromLicenseKey(key string) string {
+	if !strings.HasPrefix(key, "AXON-") {
+		return ""
+	}
+	rest := key[5:]
+	dotIdx := strings.LastIndex(rest, ".")
+	if dotIdx < 1 {
+		return ""
+	}
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(rest[:dotIdx])
+	if err != nil {
+		return ""
+	}
+	var p struct {
+		Tier string `json:"tier"`
+	}
+	if json.Unmarshal(payloadJSON, &p) != nil {
+		return ""
+	}
+	return p.Tier
+}
+
+// ValidateCustomPolicyConnectorLimit checks if the enabled connectors exceed the tier's
+// custom policy connector limit. All connectors can be registered in all tiers, but
+// tenant-level policies (rate limiting, budgets, time/role access) are limited by tier.
+// Returns an error if the limit is exceeded for the current tier.
+func ValidateCustomPolicyConnectorLimit(config DynamicPolicyConfig) error {
+	tier := resolveConnectorLimitTier()
+	var limit int
+
+	switch tier {
+	case "enterprise":
+		return nil // Unlimited
+	case "evaluation":
+		limit = config.MaxCustomPolicyConnectorsEvaluation
+	default: // community
+		limit = config.MaxCustomPolicyConnectorsCommunity
+	}
+
+	if limit > 0 && len(config.EnabledConnectors) > limit {
+		return fmt.Errorf("%s tier supports custom policies on a maximum of %d connectors, got %d. Register unlimited connectors, but connectors with custom policies (rate limiting, budgets, time/role access) are limited to %d; upgrade to Enterprise for unlimited connectors with custom policies",
+			tier, limit, len(config.EnabledConnectors), limit)
+	}
+	return nil
+}
+
+// EnforceCustomPolicyConnectorLimit truncates the enabled connectors list to the tier's
+// custom policy limit. Connectors beyond the limit are dropped and logged.
+// Returns the (possibly truncated) list of enabled connectors.
+func EnforceCustomPolicyConnectorLimit(config DynamicPolicyConfig) []string {
+	tier := resolveConnectorLimitTier()
+	var limit int
+
+	switch tier {
+	case "enterprise":
+		return config.EnabledConnectors // Unlimited
+	case "evaluation":
+		limit = config.MaxCustomPolicyConnectorsEvaluation
+	default: // community
+		limit = config.MaxCustomPolicyConnectorsCommunity
+	}
+
+	if limit > 0 && len(config.EnabledConnectors) > limit {
+		rejected := config.EnabledConnectors[limit:]
+		kept := config.EnabledConnectors[:limit]
+		log.Printf("[DynamicPolicyEvaluator] %s tier: custom policies limited to %d connectors. Enabled: %v. Rejected (over limit): %v. Order is based on config; reorder MCP_DYNAMIC_POLICIES_CONNECTORS to change priority. Upgrade to Enterprise for unlimited.",
+			tier, limit, kept, rejected)
+		return kept
+	}
+	return config.EnabledConnectors
+}
+
 // UpdateConfig updates the configuration.
 // Thread-safe; takes effect immediately for subsequent evaluations.
-func (e *DynamicPolicyEvaluator) UpdateConfig(config DynamicPolicyConfig) {
+// Returns an error if the connector limit is exceeded.
+func (e *DynamicPolicyEvaluator) UpdateConfig(config DynamicPolicyConfig) error {
+	if err := ValidateCustomPolicyConnectorLimit(config); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.config = config
 	e.httpClient.Timeout = config.Timeout
 	log.Printf("[DynamicPolicyEvaluator] Config updated: enabled=%v, endpoint=%s, timeout=%v",
 		config.Enabled, config.OrchestratorEndpoint, config.Timeout)
+	return nil
 }
 
 // IsGracefulDegradationEnabled returns whether graceful degradation is enabled.
