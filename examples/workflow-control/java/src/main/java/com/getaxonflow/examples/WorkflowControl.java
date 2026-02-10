@@ -207,6 +207,55 @@ public class WorkflowControl {
             assertCheck(true, "Workflow completed successfully");
             System.out.println();
 
+            // Step 5b: Fail Workflow (raw HTTP — SDK method not yet available)
+            System.out.println("Step 5b: Fail Workflow");
+            System.out.println("   Testing /fail endpoint...");
+            try {
+                CreateWorkflowResponse failWf = client.createWorkflow(
+                    CreateWorkflowRequest.builder()
+                        .workflowName("wcp-fail-test")
+                        .source(WorkflowSource.EXTERNAL)
+                        .totalSteps(2)
+                        .metadata(Map.of("test", "fail-workflow"))
+                        .build()
+                );
+                assertCheck(failWf.getWorkflowId() != null, "Fail-test workflow created with valid ID");
+                System.out.println("   Workflow ID: " + failWf.getWorkflowId());
+
+                // Call /fail endpoint via raw HTTP (SDK method not yet available)
+                String agentUrl = getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080");
+                String failUrl = agentUrl + "/api/v1/workflows/" + failWf.getWorkflowId() + "/fail";
+                URL failEndpoint = new URL(failUrl);
+                HttpURLConnection failConn = (HttpURLConnection) failEndpoint.openConnection();
+                failConn.setRequestMethod("POST");
+                failConn.setRequestProperty("Content-Type", "application/json");
+                failConn.setRequestProperty("X-Client-ID", getEnv("AXONFLOW_CLIENT_ID", "workflow-control-java"));
+                failConn.setRequestProperty("X-Client-Secret", getEnv("AXONFLOW_CLIENT_SECRET", ""));
+                failConn.setDoOutput(true);
+                failConn.setConnectTimeout(10000);
+                failConn.setReadTimeout(10000);
+                failConn.getOutputStream().write("{\"reason\":\"LLM provider timeout\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                failConn.getOutputStream().flush();
+
+                int failStatus = failConn.getResponseCode();
+                assertCheck(failStatus == 200, "FailWorkflow returns HTTP 200 (got " + failStatus + ")");
+
+                java.io.InputStream failInputStream = failConn.getInputStream();
+                String failBody = new String(failInputStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                assertCheck(failBody.contains("\"failed\""), "FailWorkflow response contains 'failed' status");
+                System.out.println("   Status: " + failStatus);
+                System.out.println("   Body: " + failBody);
+                failConn.disconnect();
+
+                // Verify via SDK
+                WorkflowStatusResponse failedWfStatus = client.getWorkflow(failWf.getWorkflowId());
+                assertCheck("failed".equals(failedWfStatus.getStatus().getValue()), "Workflow status verified as 'failed' (got: " + failedWfStatus.getStatus().getValue() + ")");
+            } catch (Exception failEx) {
+                System.out.println("   ERROR: FailWorkflow test failed: " + failEx.getMessage());
+                failures.add("fail_workflow test failed: " + failEx.getMessage());
+            }
+            System.out.println();
+
             // Step 6: Get final workflow status
             System.out.println("Step 6: Workflow Status");
             WorkflowStatusResponse status = client.getWorkflow(workflow.getWorkflowId());
@@ -480,6 +529,7 @@ public class WorkflowControl {
             System.out.println("  2. Check step gates (policy evaluation)");
             System.out.println("  3. Mark steps completed (progress tracking)");
             System.out.println("  4. Complete workflow (lifecycle management)");
+            System.out.println("  5b. Fail workflow (via /fail endpoint)");
             System.out.println("  5. Approve steps (enterprise approval flow)");
             System.out.println("  6. Reject steps (enterprise rejection flow)");
             System.out.println("  7. List pending approvals (enterprise)");

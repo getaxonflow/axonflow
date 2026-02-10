@@ -190,6 +190,51 @@ async def main() -> int:
                 failures.append(f"complete_workflow failed: {e}")
             print()
 
+            # Test 5b: Fail Workflow (raw HTTP — SDK method not yet available)
+            print("5b. FailWorkflow - via /fail endpoint")
+            fail_workflow_id = None
+            try:
+                fail_wf = await client.create_workflow(
+                    CreateWorkflowRequest(
+                        workflow_name="wcp-fail-test",
+                        source=WorkflowSource.EXTERNAL,
+                        total_steps=2,
+                        metadata={"test": "fail-workflow"},
+                    )
+                )
+                fail_workflow_id = fail_wf.workflow_id
+                assert_check(fail_wf.workflow_id != "", "Fail-test workflow created with valid ID")
+                print(f"   Workflow ID: {fail_wf.workflow_id}")
+
+                # Call /fail endpoint via raw HTTP (SDK method not yet available)
+                agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+                fail_url = f"{agent_url}/api/v1/workflows/{fail_wf.workflow_id}/fail"
+                fail_resp = sync_requests.post(
+                    fail_url,
+                    json={"reason": "LLM provider timeout"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Client-ID": os.getenv("AXONFLOW_CLIENT_ID", "workflow-control-python"),
+                        "X-Client-Secret": os.getenv("AXONFLOW_CLIENT_SECRET", ""),
+                    },
+                    timeout=10,
+                )
+                assert_check(fail_resp.status_code == 200, f"FailWorkflow returns HTTP 200 (got {fail_resp.status_code})")
+                fail_body = fail_resp.json()
+                assert_check(fail_body.get("status") == "failed", f"FailWorkflow status is 'failed' (got: {fail_body.get('status')})")
+                print(f"   Status: {fail_body.get('status')}")
+                print(f"   Reason: {fail_body.get('reason')}")
+
+                # Verify via SDK
+                failed_status = await client.get_workflow(fail_wf.workflow_id)
+                assert_check(
+                    failed_status.status is not None and failed_status.status.value == "failed",
+                    f"Workflow status verified as 'failed' (got: {failed_status.status.value if failed_status.status else 'None'})",
+                )
+            except Exception as e:
+                failures.append(f"fail_workflow test failed: {e}")
+            print()
+
             # Test 6: Get final workflow status
             print("6. GetWorkflow - Final Status")
             try:
@@ -495,6 +540,7 @@ async def main() -> int:
         print("  - step_gate() with LLM_CALL, TOOL_CALL, CONNECTOR_CALL")
         print("  - mark_step_completed()")
         print("  - complete_workflow()")
+        print("  - fail_workflow() via /fail endpoint")
         print("  - get_workflow()")
         print("  - GateDecision enum values and helpers")
         print("  - approve_step()")

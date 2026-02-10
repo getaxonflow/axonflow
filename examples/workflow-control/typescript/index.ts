@@ -168,6 +168,46 @@ async function main() {
     assertCheck(true, "Workflow completed successfully");
     console.log();
 
+    // Step 5b: Fail Workflow (raw HTTP — SDK method not yet available)
+    console.log("Step 5b: Fail Workflow");
+    console.log("   Testing /fail endpoint...");
+    try {
+      const failWorkflow = await axonflow.createWorkflow({
+        workflow_name: "wcp-fail-test",
+        source: "external",
+        total_steps: 2,
+        metadata: { test: "fail-workflow" },
+      });
+      assertCheck(!!failWorkflow.workflow_id, "Fail-test workflow created with valid ID");
+      console.log(`   Workflow ID: ${failWorkflow.workflow_id}`);
+
+      // Call /fail endpoint via raw HTTP (SDK method not yet available)
+      const agentUrl = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
+      const failUrl = `${agentUrl}/api/v1/workflows/${failWorkflow.workflow_id}/fail`;
+      const failResp = await fetch(failUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-ID": process.env.AXONFLOW_CLIENT_ID || "workflow-control-ts",
+          "X-Client-Secret": process.env.AXONFLOW_CLIENT_SECRET || "",
+        },
+        body: JSON.stringify({ reason: "LLM provider timeout" }),
+      });
+      assertCheck(failResp.status === 200, `FailWorkflow returns HTTP 200 (got ${failResp.status})`);
+      const failBody = await failResp.json() as Record<string, unknown>;
+      assertCheck(failBody.status === "failed", `FailWorkflow status is 'failed' (got: ${failBody.status})`);
+      console.log(`   Status: ${failBody.status}`);
+      console.log(`   Reason: ${failBody.reason}`);
+
+      // Verify via SDK
+      const failedStatus = await axonflow.getWorkflow(failWorkflow.workflow_id);
+      assertCheck(failedStatus.status === "failed", `Workflow status verified as 'failed' (got: ${failedStatus.status})`);
+    } catch (failErr) {
+      const msg = failErr instanceof Error ? failErr.message : String(failErr);
+      failures.push(`fail_workflow test failed: ${msg}`);
+    }
+    console.log();
+
     // Step 6: Get final workflow status
     console.log("Step 6: Workflow Status");
     const status = await axonflow.getWorkflow(workflow.workflow_id);
@@ -236,9 +276,9 @@ async function main() {
         pendingResp !== null && pendingResp !== undefined,
         "getPendingApprovals returned a response"
       );
-      if (pendingResp?.items) {
-        assertCheck(Array.isArray(pendingResp.items), "Pending approvals has items array");
-        console.log(`   Pending approvals count: ${pendingResp.items.length}`);
+      if (pendingResp?.approvals) {
+        assertCheck(Array.isArray(pendingResp.approvals), "Pending approvals has approvals array");
+        console.log(`   Pending approvals count: ${pendingResp.approvals.length}`);
       }
       if (pendingResp?.total !== undefined) {
         console.log(`   Total pending: ${pendingResp.total}`);
@@ -317,9 +357,9 @@ async function main() {
         allPending !== null && allPending !== undefined,
         "getPendingApprovals returned a response"
       );
-      if (allPending?.items) {
-        assertCheck(Array.isArray(allPending.items), "Response has items array");
-        console.log(`   Items count: ${allPending.items.length}`);
+      if (allPending?.approvals) {
+        assertCheck(Array.isArray(allPending.approvals), "Response has approvals array");
+        console.log(`   Approvals count: ${allPending.approvals.length}`);
       }
       if (allPending?.total !== undefined) {
         assertCheck(typeof allPending.total === "number", "Response has numeric total count");
@@ -418,6 +458,7 @@ async function main() {
       console.log("  2. Check step gates (policy evaluation)");
       console.log("  3. Mark steps completed (progress tracking)");
       console.log("  4. Complete workflow (lifecycle management)");
+      console.log("  5b. Fail workflow (via /fail endpoint)");
       console.log("  5. Approve steps (enterprise approval flow)");
       console.log("  6. Reject steps (enterprise rejection flow)");
       console.log("  7. List pending approvals (enterprise)");

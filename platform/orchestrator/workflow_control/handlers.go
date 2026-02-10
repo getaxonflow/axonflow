@@ -46,6 +46,7 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows", h.ListWorkflows).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}", h.GetWorkflow).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/complete", h.CompleteWorkflow).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/workflows/{id}/fail", h.FailWorkflow).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/abort", h.AbortWorkflow).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/resume", h.ResumeWorkflow).Methods("POST", "OPTIONS")
 
@@ -298,6 +299,49 @@ func (h *Handler) CompleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		"workflow_id": workflowID,
 		"status":      WorkflowStatusCompleted,
 		"message":     "Workflow completed successfully",
+	})
+}
+
+// FailWorkflow handles POST /api/v1/workflows/{id}/fail
+func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	workflowID := mux.Vars(r)["id"]
+	if workflowID == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
+		return
+	}
+
+	var req FailWorkflowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req.Reason = "Failed"
+	}
+	if req.Reason == "" {
+		req.Reason = "Failed"
+	}
+
+	if err := h.service.FailWorkflow(r.Context(), workflowID, req.Reason); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
+			return
+		}
+		if strings.Contains(err.Error(), "terminal state") {
+			h.writeError(w, http.StatusConflict, "WORKFLOW_TERMINAL", err.Error())
+			return
+		}
+		h.logger.Printf("[WorkflowControl] FailWorkflow error for %s: %v", workflowID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fail workflow")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"workflow_id": workflowID,
+		"status":      WorkflowStatusFailed,
+		"message":     "Workflow marked as failed",
+		"reason":      req.Reason,
 	})
 }
 
