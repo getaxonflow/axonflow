@@ -13,11 +13,9 @@ package agent
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -38,7 +36,7 @@ func TestValidateViaOrganizations_Success(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Generate a valid V2 test license key
-	testLicenseKey := generateTestLicenseKey("test-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("test-org", "Enterprise", "20351231")
 
 	// V2 licenses DON'T query the database - no mock expectations needed
 	// The license signature is cryptographically verified instead
@@ -58,8 +56,8 @@ func TestValidateViaOrganizations_Success(t *testing.T) {
 		t.Errorf("expected org_id=test-org, got %s", client.OrgID)
 	}
 
-	if client.LicenseTier != "ENT" {
-		t.Errorf("expected tier=ENT, got %s", client.LicenseTier)
+	if client.LicenseTier != "Enterprise" {
+		t.Errorf("expected tier=Enterprise, got %s", client.LicenseTier)
 	}
 
 	// V2 licenses should NOT trigger database queries
@@ -78,7 +76,7 @@ func TestValidateViaOrganizations_V2LicenseIsAuthority(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Generate a valid V2 license for an org that doesn't exist in DB
-	testLicenseKey := generateTestLicenseKey("nonexistent-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("nonexistent-org", "Enterprise", "20351231")
 
 	// V2 licenses bypass database lookup - no mock expectations
 	// The license signature is sufficient for authentication
@@ -117,7 +115,7 @@ func TestValidateViaOrganizations_ExpiredOrg(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Create license that expires yesterday
-	testLicenseKey := generateTestLicenseKey("expired-org", "ENT", "20231201") // Past date
+	testLicenseKey := generateTestLicenseKey("expired-org", "Enterprise", "20231201") // Past date
 
 	ctx := context.Background()
 	client, err := validateViaOrganizations(ctx, db, "test-client", testLicenseKey)
@@ -218,7 +216,7 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	testLicenseKey := generateTestLicenseKey("test-org-api", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("test-org-api", "Enterprise", "20351231")
 
 	// Mock API keys query (first auth path)
 	// Query returns 22 columns (includes c.customer_id, c.enabled, pt.requests_per_minute)
@@ -233,7 +231,7 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 		time.Now().Add(365*24*time.Hour), 30, []byte(`["query","llm"]`), nil,
 		true, nil, nil, 0,
 		"customer-001", "Test Org", "test-org-api", "saas",
-		"ENT", "tenant-001", "active", true, 500,
+		"Enterprise", "tenant-001", "active", true, 500,
 	)
 
 	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
@@ -254,8 +252,8 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 		t.Errorf("expected org_id=test-org-api, got %s", client.OrgID)
 	}
 
-	if client.LicenseTier != "ENT" {
-		t.Errorf("expected tier=ENT, got %s", client.LicenseTier)
+	if client.LicenseTier != "Enterprise" {
+		t.Errorf("expected tier=Enterprise, got %s", client.LicenseTier)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -273,7 +271,7 @@ func TestValidateClientLicenseDB_ViaOrganizations(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	testLicenseKey := generateTestLicenseKey("test-org-new", "PRO", "20351231")
+	testLicenseKey := generateTestLicenseKey("test-org-new", "Professional", "20351231")
 
 	// First query (API keys) returns no rows - this triggers fallback to validateViaOrganizations
 	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
@@ -297,11 +295,11 @@ func TestValidateClientLicenseDB_ViaOrganizations(t *testing.T) {
 		t.Errorf("expected org_id=test-org-new, got %s", client.OrgID)
 	}
 
-	if client.LicenseTier != "PRO" {
-		t.Errorf("expected tier=PRO, got %s", client.LicenseTier)
+	if client.LicenseTier != "Professional" {
+		t.Errorf("expected tier=Professional, got %s", client.LicenseTier)
 	}
 
-	if client.RateLimit != 100 { // PRO tier = 100/min
+	if client.RateLimit != 100 { // Professional tier = 100/min
 		t.Errorf("expected rate_limit=100, got %d", client.RateLimit)
 	}
 
@@ -359,7 +357,7 @@ func TestValidateViaAPIKeys_Success(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	testLicenseKey := generateTestLicenseKey("api-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("api-org", "Enterprise", "20351231")
 
 	rows := sqlmock.NewRows([]string{
 		"api_key_id", "customer_id", "license_key", "key_name", "key_type",
@@ -372,7 +370,7 @@ func TestValidateViaAPIKeys_Success(t *testing.T) {
 		time.Now().Add(365*24*time.Hour), 30, []byte(`["query","llm","connector"]`), 1000,
 		true, nil, time.Now().Add(-1*time.Hour), 42,
 		"customer-002", "API Org", "api-org", "saas",
-		"ENT", "tenant-002", "active", true, 500,
+		"Enterprise", "tenant-002", "active", true, 500,
 	)
 
 	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
@@ -422,7 +420,7 @@ func TestValidateViaAPIKeys_ExpiredLicense(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Create expired license (past date)
-	testLicenseKey := generateTestLicenseKey("expired-api-org", "ENT", "20231201")
+	testLicenseKey := generateTestLicenseKey("expired-api-org", "Enterprise", "20231201")
 
 	ctx := context.Background()
 	_, err = validateViaAPIKeys(ctx, db, "test-client", testLicenseKey)
@@ -442,7 +440,7 @@ func TestValidateViaAPIKeys_RevokedKey(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	testLicenseKey := generateTestLicenseKey("revoked-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("revoked-org", "Enterprise", "20351231")
 	revokedTime := time.Now().Add(-24 * time.Hour)
 
 	rows := sqlmock.NewRows([]string{
@@ -456,7 +454,7 @@ func TestValidateViaAPIKeys_RevokedKey(t *testing.T) {
 		time.Now().Add(365*24*time.Hour), 30, []byte(`["query"]`), nil,
 		false, &revokedTime, nil, 100, // k.enabled=false, revoked_at set
 		"customer-003", "Revoked Org", "revoked-org", "saas",
-		"ENT", "tenant-003", "active", false, 500, // c.enabled also false
+		"Enterprise", "tenant-003", "active", false, 500, // c.enabled also false
 	)
 
 	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
@@ -575,7 +573,7 @@ func TestCreateAPIKey_Success(t *testing.T) {
 
 	// Mock customer lookup
 	customerRows := sqlmock.NewRows([]string{"organization_id", "tier"}).
-		AddRow("create-org", "PRO")
+		AddRow("create-org", "Professional")
 
 	mock.ExpectQuery("SELECT organization_id, tier FROM customers WHERE customer_id").
 		WithArgs("customer-create").
@@ -596,9 +594,9 @@ func TestCreateAPIKey_Success(t *testing.T) {
 		t.Error("expected license key, got empty string")
 	}
 
-	// License key should be V2 format starting with AXON-V2-
-	if !contains(licenseKey, "AXON-V2-") {
-		t.Errorf("expected V2 license key to contain 'AXON-V2-', got: %s", licenseKey)
+	// License key should be Ed25519 format: AXON-{PAYLOAD}.{SIGNATURE}
+	if !contains(licenseKey, "AXON-") || !contains(licenseKey, ".") {
+		t.Errorf("expected Ed25519 license key with AXON- prefix and . separator, got: %s", licenseKey)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -690,13 +688,25 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 }
 
 // ==================================================================
-// V2 SERVICE LICENSE TESTS - NO DATABASE LOOKUP
+// SERVICE LICENSE TESTS - NO DATABASE LOOKUP
 // ==================================================================
 
-// generateTestV2ServiceLicenseKey creates a valid V2 service license for testing.
-// V2 licenses are self-contained with cryptographic signature validation.
-func generateTestV2ServiceLicenseKey(tenantID, tier, serviceName, serviceType string, permissions []string, expiryDate string) string {
-	hmacSecret := "axonflow-license-secret-2025-change-in-production"
+// generateTestServiceLicenseKey creates a valid Ed25519-signed service license for testing.
+// Service licenses are self-contained with Ed25519 signature validation.
+func generateTestServiceLicenseKey(tenantID, tier, serviceName, serviceType string, permissions []string, expiryDate string) string {
+	// Ed25519 private key seeds matching the public keys in license_community.go
+	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
+	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
+
+	var seed []byte
+	switch tier {
+	case "Evaluation":
+		seed = evalSeed
+	default: // Enterprise, Professional, Plus
+		seed = entSeed
+	}
+
+	privateKey := ed25519.NewKeyFromSeed(seed)
 
 	payload := map[string]interface{}{
 		"tier":         tier,
@@ -704,21 +714,21 @@ func generateTestV2ServiceLicenseKey(tenantID, tier, serviceName, serviceType st
 		"service_name": serviceName,
 		"service_type": serviceType,
 		"permissions":  permissions,
+		"issued_at":    time.Now().Format("20060102"),
 		"expires_at":   expiryDate,
 	}
 
 	payloadJSON, _ := json.Marshal(payload)
 	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	h := hmac.New(sha256.New, []byte(hmacSecret))
-	h.Write([]byte(payloadBase64))
-	signature := hex.EncodeToString(h.Sum(nil))[:8]
+	signature := ed25519.Sign(privateKey, []byte(payloadBase64))
+	signatureBase64 := base64.RawURLEncoding.EncodeToString(signature)
 
-	return fmt.Sprintf("AXON-V2-%s-%s", payloadBase64, signature)
+	return fmt.Sprintf("AXON-%s.%s", payloadBase64, signatureBase64)
 }
 
 // TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup verifies that
-// V2 service licenses bypass database lookup entirely. The cryptographic signature
+// service licenses bypass database lookup entirely. The Ed25519 signature
 // is sufficient to validate all claims (tenant_id, tier, permissions, expiry).
 func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -729,9 +739,9 @@ func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T
 
 	// Generate a valid V2 service license
 	// Note: This org doesn't exist in DB, but should still work for V2 licenses
-	testLicenseKey := generateTestV2ServiceLicenseKey(
+	testLicenseKey := generateTestServiceLicenseKey(
 		"travel-us",                              // tenant_id
-		"ENT",                                    // tier
+		"Enterprise",                             // tier
 		"trip-planner",                           // service_name
 		"client-application",                     // service_type
 		[]string{"mcp:amadeus:*", "mcp:slack:*"}, // permissions
@@ -766,8 +776,8 @@ func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T
 		t.Errorf("expected ServiceName=trip-planner, got %s", client.ServiceName)
 	}
 
-	if client.LicenseTier != "ENT" {
-		t.Errorf("expected LicenseTier=ENT, got %s", client.LicenseTier)
+	if client.LicenseTier != "Enterprise" {
+		t.Errorf("expected LicenseTier=Enterprise, got %s", client.LicenseTier)
 	}
 
 	// Permissions should come from the license
@@ -787,16 +797,16 @@ func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T
 }
 
 // TestValidateViaOrganizations_V2ServiceLicense_EnterpriseTier verifies
-// that V2 service licenses correctly map tier to rate limits.
+// that service licenses correctly map tier to rate limits.
 func TestValidateViaOrganizations_V2ServiceLicense_EnterpriseTier(t *testing.T) {
 	testCases := []struct {
 		name         string
 		tier         string
 		expectedRate int
 	}{
-		{"PRO tier", "PRO", 100},
-		{"ENT tier", "ENT", 500},
-		{"PLUS tier", "PLUS", 1000},
+		{"Professional tier", "Professional", 100},
+		{"Enterprise tier", "Enterprise", 500},
+		{"Plus tier", "Plus", 1000},
 	}
 
 	for _, tc := range testCases {
@@ -807,7 +817,7 @@ func TestValidateViaOrganizations_V2ServiceLicense_EnterpriseTier(t *testing.T) 
 			}
 			defer func() { _ = db.Close() }()
 
-			testLicenseKey := generateTestV2ServiceLicenseKey(
+			testLicenseKey := generateTestServiceLicenseKey(
 				"test-tenant",
 				tc.tier,
 				"test-service",
@@ -840,7 +850,7 @@ func TestValidateViaOrganizations_V2ServiceLicense_EnterpriseTier(t *testing.T) 
 }
 
 // TestValidateViaOrganizations_V2ServiceLicense_DefaultPermissions verifies
-// that V2 licenses without explicit permissions get default ones.
+// that service licenses without explicit permissions get default ones.
 func TestValidateViaOrganizations_V2ServiceLicense_DefaultPermissions(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -849,9 +859,9 @@ func TestValidateViaOrganizations_V2ServiceLicense_DefaultPermissions(t *testing
 	defer func() { _ = db.Close() }()
 
 	// Generate V2 license with empty permissions
-	testLicenseKey := generateTestV2ServiceLicenseKey(
+	testLicenseKey := generateTestServiceLicenseKey(
 		"test-tenant",
-		"PRO",
+		"Professional",
 		"test-service",
 		"backend-service",
 		[]string{}, // Empty permissions
@@ -892,7 +902,7 @@ func TestValidateViaOrganizations_V2ServiceLicense_DefaultPermissions(t *testing
 
 // NOTE: TestValidateViaOrganizations_V1License_StillRequiresDB was removed because
 // V1 license format (AXON-TIER-ORG-EXPIRY-SIG) is deprecated as of PR #167.
-// All licenses are now V2 format (AXON-V2-PAYLOAD-SIG) which bypass database lookup.
+// All licenses are now Ed25519 format (AXON-PAYLOAD.SIGNATURE) which bypass database lookup.
 
 // TestSafePrefix tests the safePrefix utility function
 func TestSafePrefix(t *testing.T) {

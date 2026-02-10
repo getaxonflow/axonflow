@@ -131,4 +131,4 @@ All tests completed!
 
 - [Go SDK Example](../go/) - Same patterns in Go
 - [LangGraph Documentation](https://python.langchain.com/docs/langgraph)
-- [AxonFlow TypeScript SDK](https://docs.getaxonflow.com/sdk/typescript-getting-started)
+- [AxonFlow TypeScript SDK](https://docs.getaxonflow.com/docs/sdk/typescript-getting-started)

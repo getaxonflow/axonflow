@@ -18,6 +18,7 @@ import (
 type Repository interface {
 	// Workflow operations
 	Create(ctx context.Context, workflow *Workflow) error
+	Delete(ctx context.Context, workflowID string) error
 	GetByID(ctx context.Context, workflowID string) (*Workflow, error)
 	UpdateStatus(ctx context.Context, workflowID string, status WorkflowStatus) error
 	Complete(ctx context.Context, workflowID string) error
@@ -94,6 +95,13 @@ func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) err
 		workflow.UpdatedAt,
 	)
 
+	return err
+}
+
+// Delete removes a workflow record by ID.
+func (r *PostgresRepository) Delete(ctx context.Context, workflowID string) error {
+	query := `DELETE FROM workflows WHERE workflow_id = $1`
+	_, err := r.db.ExecContext(ctx, query, workflowID)
 	return err
 }
 
@@ -356,6 +364,12 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		if completedAt.Valid {
 			workflow.CompletedAt = &completedAt.Time
 		}
+
+		steps, err := r.GetStepsForWorkflow(ctx, workflow.WorkflowID)
+		if err != nil {
+			return nil, 0, err
+		}
+		workflow.Steps = steps
 
 		workflows = append(workflows, workflow)
 	}

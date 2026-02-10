@@ -156,6 +156,12 @@ func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string,
 		// Note: We use CompleteExecution but the status is determined by the repo
 		// This could be enhanced to support StatusExpired directly
 		return t.CompleteExecution(ctx, executionID, nil)
+	case planning.PlanStatusCancelled:
+		reason := errorMsg
+		if reason == "" {
+			reason = "plan cancelled"
+		}
+		return t.CancelExecution(ctx, executionID, reason)
 	}
 
 	return nil
@@ -222,9 +228,27 @@ func planToExecutionStatus(plan *planning.Plan) *execution.ExecutionStatus {
 	}
 
 	var completedAt *time.Time
-	if status == execution.StatusCompleted || status == execution.StatusFailed || status == execution.StatusExpired {
+	if status == execution.StatusCompleted || status == execution.StatusFailed || status == execution.StatusExpired || status == execution.StatusCancelled {
 		t := plan.UpdatedAt
 		completedAt = &t
+	}
+
+	metadata := map[string]interface{}{
+		"plan_id":            plan.PlanID,
+		"complexity":         plan.Complexity,
+		"parallel":           plan.Parallel,
+		"estimated_duration": plan.EstimatedDuration,
+		"execution_mode":     plan.ExecutionMode,
+		"expires_at":         plan.ExpiresAt,
+		"version":            plan.Version,
+	}
+
+	// Preserve execution_result and workflow_definition for legacy path enrichment
+	if len(plan.ExecutionResult) > 0 {
+		metadata["execution_result"] = plan.ExecutionResult
+	}
+	if len(plan.WorkflowDefinition) > 0 {
+		metadata["workflow_definition"] = plan.WorkflowDefinition
 	}
 
 	exec := &execution.ExecutionStatus{
@@ -244,16 +268,9 @@ func planToExecutionStatus(plan *planning.Plan) *execution.ExecutionStatus {
 		OrgID:            plan.OrgID,
 		UserID:           plan.UserID,
 		ClientID:         plan.ClientID,
-		Metadata: map[string]interface{}{
-			"plan_id":            plan.PlanID,
-			"complexity":         plan.Complexity,
-			"parallel":           plan.Parallel,
-			"estimated_duration": plan.EstimatedDuration,
-			"execution_mode":     plan.ExecutionMode,
-			"expires_at":         plan.ExpiresAt,
-		},
-		CreatedAt: plan.CreatedAt,
-		UpdatedAt: plan.UpdatedAt,
+		Metadata:         metadata,
+		CreatedAt:        plan.CreatedAt,
+		UpdatedAt:        plan.UpdatedAt,
 	}
 
 	exec.Duration = exec.CalculateDuration()
@@ -274,6 +291,8 @@ func mapPlanStatus(status planning.PlanStatus) execution.ExecutionStatusValue {
 		return execution.StatusFailed
 	case planning.PlanStatusExpired:
 		return execution.StatusExpired
+	case planning.PlanStatusCancelled:
+		return execution.StatusCancelled
 	default:
 		return execution.StatusPending
 	}

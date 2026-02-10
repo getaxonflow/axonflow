@@ -1,0 +1,9 @@
+-- Migration 047 DOWN: Plan versioning
+-- DOCUMENTED NO-OP: Removing the version column and plan_versions table
+-- would lose version history data. If a rollback is needed, the column
+-- and table can remain safely — they are additive and do not break
+-- existing queries.
+--
+-- To manually rollback if truly needed:
+--   DROP TABLE IF EXISTS plan_versions;
+--   ALTER TABLE plans DROP COLUMN IF EXISTS version;

@@ -101,12 +101,19 @@ type WorkflowAuditEntry struct {
 	Metadata     map[string]interface{}
 }
 
+// WebhookNotifier fires webhook notifications for WCP events.
+type WebhookNotifier interface {
+	// Fire sends a webhook event to all matching subscriptions (best-effort, async).
+	Fire(ctx context.Context, eventType string, data map[string]interface{}, tenantID, orgID string)
+}
+
 // Service handles workflow control plane business logic
 type Service struct {
 	repo             Repository
 	policyEvaluator  PolicyEvaluator
 	auditLogger      WorkflowAuditLogger
 	executionTracker WorkflowExecutionTracker
+	webhookNotifier  WebhookNotifier
 	logger           *log.Logger
 	baseURL          string // Base URL for approval URLs
 }
@@ -150,6 +157,19 @@ func (s *Service) SetAuditLogger(auditLogger WorkflowAuditLogger) {
 // SetExecutionTracker sets the unified execution tracker for the service
 func (s *Service) SetExecutionTracker(tracker WorkflowExecutionTracker) {
 	s.executionTracker = tracker
+}
+
+// SetWebhookNotifier sets the webhook notifier for the service
+func (s *Service) SetWebhookNotifier(notifier WebhookNotifier) {
+	s.webhookNotifier = notifier
+}
+
+// fireWebhook sends a webhook notification if a notifier is configured (best-effort)
+func (s *Service) fireWebhook(ctx context.Context, eventType string, data map[string]interface{}, tenantID, orgID string) {
+	if s.webhookNotifier == nil {
+		return
+	}
+	s.webhookNotifier.Fire(ctx, eventType, data, tenantID, orgID)
 }
 
 // logAudit logs a workflow audit entry if an audit logger is configured
@@ -229,12 +249,24 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		},
 	})
 
-	// Unified execution tracking
-	s.trackExecution(ctx, "workflow_created", func() error {
-		return s.executionTracker.OnWorkflowCreated(ctx, workflow)
-	})
+	// Unified execution tracking — propagate concurrent limit errors
+	if s.executionTracker != nil {
+		if err := s.executionTracker.OnWorkflowCreated(ctx, workflow); err != nil {
+			if isConcurrentLimitError(err) {
+				// Roll back the workflow creation
+				_ = s.repo.Delete(ctx, workflow.WorkflowID)
+				return nil, fmt.Errorf("concurrent execution limit reached: %w", err)
+			}
+			s.logger.Printf("[WorkflowControl] Execution tracking error (workflow_created): %v", err)
+		}
+	}
 
 	return workflow, nil
+}
+
+// isConcurrentLimitError checks if the error is a concurrent execution limit error.
+func isConcurrentLimitError(err error) bool {
+	return err != nil && err.Error() == "concurrent execution limit reached"
 }
 
 // GetWorkflow retrieves a workflow by ID
@@ -293,8 +325,17 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		ClientID:     clientID,
 	}
 
-	// Evaluate policies
-	evaluation := s.policyEvaluator.EvaluateStepGate(ctx, gateCtx)
+	// Evaluate policies (or use override for MAP confirm/step modes)
+	var evaluation *StepGateEvaluation
+	if req.GateOverride != nil {
+		evaluation = &StepGateEvaluation{
+			Decision:  *req.GateOverride,
+			Reason:    "Gate override: execution mode requires " + string(*req.GateOverride),
+			PolicyIDs: []string{"execution-mode-override"},
+		}
+	} else {
+		evaluation = s.policyEvaluator.EvaluateStepGate(ctx, gateCtx)
+	}
 
 	// Convert step input to JSON for storage
 	stepInputJSON, _ := json.Marshal(stepInput)
@@ -375,6 +416,18 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		return s.executionTracker.OnStepGate(ctx, workflowID, step)
 	})
 
+	// Webhook notification for require_approval decisions
+	if evaluation.Decision == GateDecisionRequireApproval {
+		s.fireWebhook(ctx, "step.approval_required", map[string]interface{}{
+			"workflow_id":   workflowID,
+			"workflow_name": workflow.WorkflowName,
+			"step_id":       stepID,
+			"step_name":     req.StepName,
+			"step_type":     string(req.StepType),
+			"approval_url":  response.ApprovalURL,
+		}, tenantID, orgID)
+	}
+
 	return response, nil
 }
 
@@ -399,6 +452,16 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 
 	s.logger.Printf("[WorkflowControl] Step approved: workflow=%s step=%s by=%s",
 		workflowID, stepID, approvedBy)
+
+	// Webhook notification (best-effort — get workflow for tenant context)
+	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
+		s.fireWebhook(ctx, "step.approved", map[string]interface{}{
+			"workflow_id": workflowID,
+			"step_id":     stepID,
+			"step_name":   step.StepName,
+			"approved_by": approvedBy,
+		}, wf.TenantID, wf.OrgID)
+	}
 
 	return nil
 }
@@ -429,6 +492,16 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rej
 
 	s.logger.Printf("[WorkflowControl] Step rejected: workflow=%s step=%s by=%s",
 		workflowID, stepID, rejectedBy)
+
+	// Webhook notification (best-effort)
+	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
+		s.fireWebhook(ctx, "step.rejected", map[string]interface{}{
+			"workflow_id": workflowID,
+			"step_id":     stepID,
+			"step_name":   step.StepName,
+			"rejected_by": rejectedBy,
+		}, wf.TenantID, wf.OrgID)
+	}
 
 	return nil
 }
@@ -494,6 +567,13 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 		return s.executionTracker.OnWorkflowAborted(ctx, workflowID, reason)
 	})
 
+	// Webhook notification
+	s.fireWebhook(ctx, "workflow.aborted", map[string]interface{}{
+		"workflow_id":   workflowID,
+		"workflow_name": workflow.WorkflowName,
+		"reason":        reason,
+	}, workflow.TenantID, workflow.OrgID)
+
 	return nil
 }
 
@@ -540,6 +620,13 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 	s.trackExecution(ctx, "workflow_completed", func() error {
 		return s.executionTracker.OnWorkflowCompleted(ctx, workflowID)
 	})
+
+	// Webhook notification
+	s.fireWebhook(ctx, "workflow.completed", map[string]interface{}{
+		"workflow_id":     workflowID,
+		"workflow_name":   workflow.WorkflowName,
+		"steps_executed":  len(workflow.Steps),
+	}, workflow.TenantID, workflow.OrgID)
 
 	return nil
 }

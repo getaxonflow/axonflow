@@ -150,5 +150,5 @@ All 12 Cost Control methods tested!
 
 ## Related Documentation
 
-- [Cost Controls Guide](https://docs.getaxonflow.com/governance/cost-controls)
-- [API Reference](https://docs.getaxonflow.com/api/orchestrator-api)
+- [Cost Controls Guide](https://docs.getaxonflow.com/docs/governance/cost-management)
+- [API Reference](https://docs.getaxonflow.com/docs/api/orchestrator-endpoints)

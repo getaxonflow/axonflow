@@ -267,6 +267,7 @@ func TestAggregateEmptyResults(t *testing.T) {
 // TestNewMetricsCollector verifies initialization
 func TestNewMetricsCollector(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	if collector == nil {
 		t.Fatal("Expected collector to be initialized")
@@ -288,6 +289,7 @@ func TestNewMetricsCollector(t *testing.T) {
 // TestRecordRequest verifies request recording
 func TestRecordRequest(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	// Record multiple requests
 	collector.RecordRequest("sql", "openai", 50*time.Millisecond)
@@ -320,6 +322,7 @@ func TestRecordRequest(t *testing.T) {
 // TestRecordBlockedRequest verifies blocked request tracking
 func TestRecordBlockedRequest(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	collector.RecordBlockedRequest("sql", "sql_injection")
 	collector.RecordBlockedRequest("sql", "sql_injection")
@@ -340,6 +343,7 @@ func TestRecordBlockedRequest(t *testing.T) {
 // TestRecordPolicyEvaluation verifies policy evaluation tracking
 func TestRecordPolicyEvaluation(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	collector.RecordPolicyEvaluation(5*time.Millisecond, 0.25, []string{"policy1"})
 	collector.RecordPolicyEvaluation(10*time.Millisecond, 0.75, []string{"policy2"})
@@ -372,6 +376,7 @@ func TestRecordPolicyEvaluation(t *testing.T) {
 // TestRecordRedaction verifies redaction tracking
 func TestRecordRedaction(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	// RecordRedaction takes field count, not type
 	collector.RecordRedaction(2) // 2 fields redacted
@@ -389,6 +394,7 @@ func TestRecordRedaction(t *testing.T) {
 // TestRecordProviderUsage verifies provider usage tracking
 func TestRecordProviderUsage(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	collector.RecordProviderUsage("openai", 1000, 0.02)  // 1000 tokens, $0.02
 	collector.RecordProviderUsage("openai", 1500, 0.03)  // 1500 tokens, $0.03
@@ -425,6 +431,7 @@ func TestRecordProviderUsage(t *testing.T) {
 // TestRecordProviderError verifies error tracking
 func TestRecordProviderError(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	collector.RecordProviderError("openai")
 	collector.RecordProviderError("openai")
@@ -445,6 +452,7 @@ func TestRecordProviderError(t *testing.T) {
 // TestMetricsReset verifies reset functionality
 func TestMetricsReset(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	// Add some metrics
 	collector.RecordRequest("sql", "openai", 50*time.Millisecond)
@@ -474,6 +482,7 @@ func TestMetricsReset(t *testing.T) {
 // TestConcurrentMetricRecording verifies thread safety
 func TestConcurrentMetricRecording(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	done := make(chan bool, 100)
 
@@ -505,6 +514,7 @@ func TestConcurrentMetricRecording(t *testing.T) {
 // TestMetricsPercentileCalculation verifies percentile calculation
 func TestMetricsPercentileCalculation(t *testing.T) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 
 	// Record requests with known latencies
 	collector.RecordRequest("sql", "openai", 10*time.Millisecond)

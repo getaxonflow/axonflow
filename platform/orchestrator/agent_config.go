@@ -124,11 +124,31 @@ var ValidAgentTypes = map[string]bool{
 	"connector-call": true,
 }
 
-// ValidExecutionModes lists the allowed execution modes
+// ValidExecutionModes lists the allowed execution modes (community)
 var ValidExecutionModes = map[string]bool{
 	"sequential": true,
 	"parallel":   true,
 	"auto":       true,
+	"balanced":   true,
+}
+
+// EnterpriseExecutionModes lists modes only available in enterprise
+var EnterpriseExecutionModes = map[string]bool{
+	"confirm": true,
+	"step":    true,
+}
+
+// IsValidExecutionMode checks if a mode is valid for the given deployment tier.
+// Community modes (sequential, parallel, auto, balanced) are always valid.
+// Enterprise modes (confirm, step) require isEnterprise=true.
+func IsValidExecutionMode(mode string, isEnterprise bool) bool {
+	if ValidExecutionModes[mode] {
+		return true
+	}
+	if isEnterprise && EnterpriseExecutionModes[mode] {
+		return true
+	}
+	return false
 }
 
 // LoadAgentConfig loads and parses an agent configuration file
@@ -240,7 +260,7 @@ func validateSpec(spec *AgentConfigSpec) error {
 func validateExecutionConfig(config *ExecutionConfig) error {
 	// Default mode validation (allow empty for default)
 	if config.DefaultMode != "" && !ValidExecutionModes[config.DefaultMode] {
-		return fmt.Errorf("invalid default_mode '%s': must be one of sequential, parallel, auto", config.DefaultMode)
+		return fmt.Errorf("invalid default_mode '%s': must be one of sequential, parallel, auto, balanced", config.DefaultMode)
 	}
 
 	// Validate max_parallel_tasks

@@ -24,6 +24,7 @@ import (
 // TestNewDynamicPolicyEngine tests engine initialization
 func TestNewDynamicPolicyEngine(t *testing.T) {
 	engine := NewDynamicPolicyEngine()
+	defer engine.Close()
 
 	if engine == nil {
 		t.Fatal("Expected non-nil engine")
@@ -614,6 +615,7 @@ func TestCalculateRiskScore(t *testing.T) {
 // TestPolicyCache tests cache operations
 func TestPolicyCache(t *testing.T) {
 	cache := NewPolicyCache(5 * time.Minute)
+	defer cache.Close()
 
 	// Test Set and Get
 	testKey := "test-key"

@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS license_keys (
     org_id VARCHAR(255), -- Multi-tenant isolation column for RLS
     key_hash VARCHAR(512) NOT NULL UNIQUE,
     tenant_id VARCHAR(255) NOT NULL,
-    tier VARCHAR(20) NOT NULL CHECK (tier IN ('PRO', 'ENT', 'PLUS')),
+    tier VARCHAR(20) NOT NULL CHECK (tier IN ('Professional', 'Enterprise', 'Plus', 'Evaluation')),
     issued_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     active BOOLEAN DEFAULT true,

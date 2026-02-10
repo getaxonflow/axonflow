@@ -28,13 +28,14 @@ import (
 //   - In-memory only: Providers are registered programmatically
 //   - With storage: Providers are persisted to PostgreSQL and synced across replicas
 type Registry struct {
-	providers map[string]Provider        // Active provider instances
-	configs   map[string]*ProviderConfig // Provider configurations (may not be instantiated yet)
-	storage   Storage                    // Optional persistent storage
-	factory   *FactoryManager            // Factory for creating providers
-	validator LicenseValidator           // License validator for provider access control
-	logger    *log.Logger
-	mu        sync.RWMutex
+	providers    map[string]Provider        // Active provider instances
+	configs      map[string]*ProviderConfig // Provider configurations (may not be instantiated yet)
+	storage      Storage                    // Optional persistent storage
+	factory      *FactoryManager            // Factory for creating providers
+	validator    LicenseValidator           // License validator for provider access control
+	maxProviders int                        // Maximum provider count (-1 = unlimited, 0 = use default)
+	logger       *log.Logger
+	mu           sync.RWMutex
 
 	// Health monitoring
 	healthResults map[string]*HealthCheckResult
@@ -90,6 +91,14 @@ func WithFactoryManager(fm *FactoryManager) RegistryOption {
 func WithLicenseValidator(v LicenseValidator) RegistryOption {
 	return func(r *Registry) {
 		r.validator = v
+	}
+}
+
+// WithMaxProviders sets the maximum number of providers that can be registered.
+// Use -1 for unlimited (Enterprise). Use 0 to defer to default behavior.
+func WithMaxProviders(max int) RegistryOption {
+	return func(r *Registry) {
+		r.maxProviders = max
 	}
 }
 
@@ -156,6 +165,25 @@ func (r *Registry) Register(ctx context.Context, config *ProviderConfig) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Check provider count limit (tier enforcement)
+	if r.maxProviders > 0 {
+		currentCount := len(r.configs) + len(r.providers)
+		// Deduplicate: don't double-count providers that also have configs
+		for name := range r.providers {
+			if _, hasConfig := r.configs[name]; hasConfig {
+				currentCount--
+			}
+		}
+		if currentCount >= r.maxProviders {
+			return &RegistryError{
+				ProviderName: config.Name,
+				Code:         ErrRegistryProviderLimit,
+				Message: fmt.Sprintf("maximum number of LLM providers reached (%d) - upgrade at https://getaxonflow.com/evaluation-license",
+					r.maxProviders),
+			}
+		}
+	}
 
 	// Check for duplicate
 	if _, exists := r.configs[config.Name]; exists {
@@ -769,6 +797,9 @@ const (
 
 	// ErrRegistryLicenseRequired indicates the provider type requires a license upgrade.
 	ErrRegistryLicenseRequired = "registry_license_required"
+
+	// ErrRegistryProviderLimit indicates the maximum number of providers has been reached.
+	ErrRegistryProviderLimit = "registry_provider_limit"
 )
 
 // Error implements the error interface.

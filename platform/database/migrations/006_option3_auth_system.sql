@@ -27,13 +27,13 @@ CREATE TABLE IF NOT EXISTS pricing_tiers (
 INSERT INTO pricing_tiers (tier, deployment_mode, monthly_price, included_requests, max_nodes, max_users, requests_per_minute, overage_rate_per_1k, support_sla_hours, features) VALUES
 -- SaaS Mode
 ('STARTER', 'saas', 500000, 500000, NULL, 5, 2000, 0.1000, 24, '{"sso": false, "rbac": "basic", "email_support": true}'),
-('PRO', 'saas', 1500000, 3000000, NULL, 25, 10000, 0.0300, 12, '{"sso": true, "rbac": "standard", "email_support": true}'),
-('ENT', 'saas', 5000000, 10000000, NULL, NULL, 30000, 0.0100, 4, '{"sso": true, "rbac": "advanced", "dedicated_environment": true, "priority_support": true, "support_24x7": true}'),
+('Professional', 'saas', 1500000, 3000000, NULL, 25, 10000, 0.0300, 12, '{"sso": true, "rbac": "standard", "email_support": true}'),
+('Enterprise', 'saas', 5000000, 10000000, NULL, NULL, 30000, 0.0100, 4, '{"sso": true, "rbac": "advanced", "dedicated_environment": true, "priority_support": true, "support_24x7": true}'),
 
 -- In-VPC Mode
-('PRO', 'in-vpc', 2000000, NULL, 10, 25, 10000, NULL, 12, '{"sso": true, "rbac": "standard", "email_support": true, "node_based": true}'),
-('ENT', 'in-vpc', 6000000, NULL, 50, NULL, 30000, NULL, 4, '{"sso": true, "rbac": "advanced", "priority_support": true, "support_24x7": true, "node_based": true}'),
-('PLUS', 'in-vpc', NULL, NULL, NULL, NULL, 100000, NULL, 1, '{"sso": true, "rbac": "advanced", "dedicated_sa": true, "unlimited_nodes": true, "custom_pricing": true, "support_24x7": true}');
+('Professional', 'in-vpc', 2000000, NULL, 10, 25, 10000, NULL, 12, '{"sso": true, "rbac": "standard", "email_support": true, "node_based": true}'),
+('Enterprise', 'in-vpc', 6000000, NULL, 50, NULL, 30000, NULL, 4, '{"sso": true, "rbac": "advanced", "priority_support": true, "support_24x7": true, "node_based": true}'),
+('Plus', 'in-vpc', NULL, NULL, NULL, NULL, 100000, NULL, 1, '{"sso": true, "rbac": "advanced", "dedicated_sa": true, "unlimited_nodes": true, "custom_pricing": true, "support_24x7": true}');
 
 -- ============================================================
 -- 2. Customers Table
@@ -302,11 +302,11 @@ INSERT INTO customers (
     enabled,
     notes
 ) VALUES
-('Healthcare Demo', 'healthcare', 'in-vpc', 'PLUS', 'healthcare_tenant', 'billing@healthcare-demo.com', '2025-01-01', 'active', true, 'Demo account for healthcare vertical'),
-('E-commerce Demo', 'ecommerce', 'in-vpc', 'PLUS', 'ecommerce_tenant', 'billing@ecommerce-demo.com', '2025-01-01', 'active', true, 'Demo account for ecommerce vertical'),
-('Legacy Client 1', 'client1', 'in-vpc', 'ENT', 'tenant_1', 'billing@client1.com', '2024-06-01', 'active', true, 'Legacy client from initial deployment'),
-('Legacy Client 2', 'client2', 'in-vpc', 'ENT', 'tenant_2', 'billing@client2.com', '2024-06-01', 'active', true, 'Legacy client from initial deployment'),
-('Load Testing', 'loadtest', 'in-vpc', 'PLUS', 'loadtest_tenant', 'noreply@getaxonflow.com', '2025-01-01', 'active', true, 'Internal load testing account')
+('Healthcare Demo', 'healthcare', 'in-vpc', 'Plus', 'healthcare_tenant', 'billing@healthcare-demo.com', '2025-01-01', 'active', true, 'Demo account for healthcare vertical'),
+('E-commerce Demo', 'ecommerce', 'in-vpc', 'Plus', 'ecommerce_tenant', 'billing@ecommerce-demo.com', '2025-01-01', 'active', true, 'Demo account for ecommerce vertical'),
+('Legacy Client 1', 'client1', 'in-vpc', 'Enterprise', 'tenant_1', 'billing@client1.com', '2024-06-01', 'active', true, 'Legacy client from initial deployment'),
+('Legacy Client 2', 'client2', 'in-vpc', 'Enterprise', 'tenant_2', 'billing@client2.com', '2024-06-01', 'active', true, 'Legacy client from initial deployment'),
+('Load Testing', 'loadtest', 'in-vpc', 'Plus', 'loadtest_tenant', 'noreply@getaxonflow.com', '2025-01-01', 'active', true, 'Internal load testing account')
 ON CONFLICT (organization_id) DO NOTHING;
 
 -- Insert API keys for existing customers (using existing license keys from Option 2)

@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.2.0] - 2026-02-10
+
+### Community
+
+#### Added
+
+- **Evaluation Tier Licensing**: Free 90-day license with elevated limits for production proof-of-concepts
+  - Request at [getaxonflow.com/evaluation-license](https://getaxonflow.com/evaluation-license)
+  - Limits: 50 tenant policies, 5 org policies, 5 connectors with custom policies, 3 LLM providers, 14-day audit retention, 100 plans, 25 versions/plan
+  - Graceful degradation to Community tier on expiry — no downtime, no data loss
+- **Ed25519 License Signing**: Asymmetric cryptographic signatures replace HMAC-SHA256
+  - Public keys embedded in binary; private keys stay in infrastructure (AWS Secrets Manager)
+  - Format: `AXON-{PAYLOAD}.{SIGNATURE}` — old V2 (`AXON-V2-...`) and V1 formats rejected with clear upgrade message
+  - Two keypairs: evaluation (for free licenses) and enterprise (for paid licenses) — blast radius isolation
+- **Feature Limits Boundary Testing**: `examples/feature-limits/http/test_feature_limits.sh` validates all tier limits across Community, Evaluation, and Enterprise modes
+- **E2E Setup Script**: `scripts/setup-e2e-testing.sh` now supports `evaluation` mode alongside `community` and `enterprise`
+- **Workflow Control Plane v1** (#834): Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
+  - `POST /api/v1/workflows` — Register workflow with name, source, total_steps, metadata
+  - `GET /api/v1/workflows` — List workflows with status/source filters
+  - `GET /api/v1/workflows/{id}` — Get workflow status and step history
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/gate` — Policy-based step gate (allow/block/require_approval)
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/complete` — Mark step completed with output data
+  - `POST /api/v1/workflows/{id}/complete` — Mark workflow completed
+  - `POST /api/v1/workflows/{id}/abort` — Abort workflow with reason
+  - `POST /api/v1/workflows/{id}/resume` — Resume after approval
+  - Step gate responses include `policies_evaluated` and `policies_matched` for policy transparency
+  - Audit logging: `workflow_created`, `workflow_step_gate`, `workflow_completed`, `workflow_aborted`
+- **MAP Plan Versioning & Rollback** (#1072): Full plan lifecycle management with optimistic locking
+  - `UpdatePlan()` — Update plan with version conflict detection (`ErrVersionConflict` on mismatch)
+  - `GetPlanVersions()` — Retrieve full version history with change tracking (changed_by, change_type, change_summary)
+  - `RollbackPlan()` — Restore to a previous version snapshot (creates pre-rollback snapshot first)
+  - `CleanupExpiredPlans()` — Background worker removes expired plans (configurable interval, default 15min)
+  - Community limits: max 25 plans with versioning, max 10 versions per plan
+  - Migration `047_plan_versioning.sql`: adds `version` column to plans, creates `plan_versions` table
+- **MAP Confirm & Step Execution Modes** (#1072): HITL execution modes via WCP infrastructure
+  - Confirm mode: every step requires explicit approval before proceeding
+  - Step mode: first step auto-allowed, subsequent steps require approval
+  - Creates WCP workflow (`map-confirm-{planID}` / `map-step-{planID}`) to track step gates
+  - Maps plan steps to WCP step types (llm-call, tool-call, connector-call, etc.)
+- **MAP Plan Cancellation** (#1074): `PlanStatusCancelled` constant and `CancelPlan()` method in planning service
+- **Unified Execution Tracking** (#1074, #1075): Consistent status tracking across MAP plans and WCP workflows
+  - `GET /api/v1/unified/executions` — List executions with type/status filters
+  - `GET /api/v1/unified/executions/{id}` — Get status by execution ID, workflow ID, or plan ID
+  - `POST /api/v1/unified/executions/{id}/cancel` — Cancel execution (propagates to MAP or WCP)
+  - MAPExecutionTracker: adapts planning service to unified format, syncs plan state changes
+  - WCPExecutionTracker: adapts WCP service to unified format, maps step decisions to unified status
+  - Lookup by execution ID, `wf_*`/`wcp_*` prefix, `plan_*` prefix, or metadata search
+- **SSE Execution Streaming** (#1074): `GET /api/v1/unified/executions/{id}/stream` provides real-time execution events
+  - Events: `execution.started`, `execution.completed`, `execution.failed`, `execution.cancelled`, `step.started`, `step.completed`, `step.failed`, `step.decision`
+  - Auto-closes on terminal state; no external dependencies (pure Go channels)
+  - Per-tenant connection limits: Community (5), Evaluation (25), Enterprise (unlimited)
+  - HTTP 429 with `Retry-After: 30` header when limit exceeded
+  - `ConnectionTracker` with atomic acquire/release pattern (handles disconnect, timeout, panic)
+- **EventHub Pub-Sub** (#1074): Channel-based event bus in `platform/shared/execution/event_hub.go`
+  - Buffered channels (cap 16), non-blocking publish with slow subscriber protection
+  - Both MAP and WCP trackers publish events on state transitions
+- **Unified Execution Handler Tests**: Tests covering list, get, cancel, CORS, and route registration
+- **CancelPlan Tests**: 6 tests covering cancel from pending/executing states, validation
+- **Cost Estimation** (#1072): `GET /api/v1/plans/{id}/cost` and `POST /api/v1/plans/estimate` for pre-execution cost estimation with per-step breakdowns
+- **MAP + WCP Examples**: `map-confirm-mode/`, `map-lifecycle/`, `workflow-control/` across all 5 languages (Go, Python, TypeScript, Java, HTTP)
+
+#### Fixed
+
+- **Tenant ownership check on unified execution endpoints**: Execution list/get/cancel now validates tenant ownership, preventing cross-tenant data access
+- **Agent gateway always returned `success: true`**: Orchestrator errors (409 cancelled, 410 expired, 403 blocked) were buried in nested response data — agent never propagated them to `ClientResponse`. SDKs never raised exceptions for failed operations. Also fixed metrics counting errors as successes and usage recorder status codes.
+- **MAP confirm mode not enforced**: `ConfirmModeEvaluator` was defined but never wired into WCP `StepGate()`. Policy engine always returned "allow" instead of "require_approval". Fixed by adding `GateOverride` to `StepGateRequest`, used by `ExecuteWithConfirm` and `resumePlanHandler`.
+- **MAP execution timeout too tight**: Hardcoded 60s timeout caused `context deadline exceeded` on multi-step balanced mode plans. Now scales to 30s per step with 60s minimum floor.
+- **Examples hardcoded user tokens**: All examples now read `AXONFLOW_USER_TOKEN` env var with safe community defaults
+- **25 broken documentation links**: Replaced stale `docs.getaxonflow.com` URLs across 15 markdown files
+- **Down migrations 045/046 destructive**: Replaced destructive Down sections with no-ops to prevent CI `psql -f` from reversing Up migrations
+
+#### Changed
+
+- **License format migration**: All licenses must use Ed25519 format (`AXON-{PAYLOAD}.{SIGNATURE}`). Old V2 HMAC format (`AXON-V2-...`) returns Community tier with upgrade guidance. No action needed for users without a license (Community mode unchanged).
+- **HMAC startup check removed**: `ValidateHMACSecretAtStartup()` is now a no-op — no HMAC secret environment variable required at startup
+- **BaseExecutionTracker**: Now publishes events via EventHub after every state change (start, complete, fail, cancel, step transitions)
+- **UnifiedExecutionHandler**: Accepts EventHub and PlanService; registers cancel, stream, and list/get routes
+- **ADR-030**: Updated with SSE streaming, cancellation, and versioning architecture patterns
+- **License tier names normalized**: `PRO`→`Professional`, `ENT`→`Enterprise`, `PLUS`→`Plus`, `BASIC`/`EVALUATION`→`Evaluation`. Migration 122 updates all tier-related tables. DB constraint enforces canonical names.
+- **SDK versions bumped to v3.3.0** across all examples and docs
+- **CI dependencies bumped**: actions/checkout v6, actions/setup-go v6, Go 1.25, Docker Alpine 3.23
+- **Coverage thresholds raised to 76%** for orchestrator and connectors modules
+- **Documentation quality improved** across 36 files: correct auth patterns, SDK method names, "source-available" terminology, current versions
+
+### Enterprise
+
+#### Added
+
+- **WCP HITL Approval Gates** (#1169): Human-in-the-loop approval for workflow steps
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/approve` — Approve a pending step (requires approval_id from gate)
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/reject` — Reject step with optional reason
+  - `GET /api/v1/workflows/approvals/pending` — List all workflows awaiting human approval
+  - Approval URLs generated for notification links
+- **Webhook Notification System** (#1169): Event-driven notifications for workflow and approval events
+  - `POST /api/v1/webhooks` — Create webhook subscription
+  - `GET /api/v1/webhooks` — List subscriptions
+  - `GET /api/v1/webhooks/{id}` — Get subscription details
+  - `PUT /api/v1/webhooks/{id}` — Update subscription
+  - `DELETE /api/v1/webhooks/{id}` — Delete subscription
+  - 7 event types: `step.approval_required`, `step.approved`, `step.rejected`, `step.completed`, `workflow.completed`, `workflow.aborted`, `workflow.failed`
+  - HMAC-SHA256 request signing when secret configured; secret never exposed in API responses
+  - SSRF protection: blocks private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8)
+  - Retry strategy: exponential backoff (1s, 2s, 4s), max 3 retries, 10s timeout per attempt
+  - Migration `048_webhook_subscriptions.sql`: subscription and delivery tracking tables
+
+---
+
 ## [4.1.0] - 2026-02-05
 
 ### Community

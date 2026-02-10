@@ -1,7 +1,8 @@
 #!/bin/bash
 # AxonFlow Unified Execution Tracking Example - HTTP/cURL
 #
-# This example demonstrates execution tracking for both MAP plans and WCP workflows.
+# This example demonstrates execution tracking for both MAP plans and WCP workflows,
+# including cancellation and SSE streaming.
 #
 # Issue #1075 - EPIC #1074: Unified Workflow Infrastructure
 
@@ -139,9 +140,61 @@ echo "   Steps: $WF_STEPS"
 echo ""
 
 # =============================================
-# Part 3: List Workflows
+# Part 3: Cancel Execution
 # =============================================
-echo -e "\033[1;34m=== Part 3: List Workflows ===\033[0m"
+echo -e "\033[1;34m=== Part 3: Cancel Execution ===\033[0m"
+echo ""
+
+# Create a workflow to cancel
+echo "Creating workflow to test cancellation..."
+CANCEL_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+  -H "Content-Type: application/json" \
+  -H "$AUTH_HEADER" \
+  -d '{
+    "workflow_name": "cancel-test-demo",
+    "source": "external",
+    "total_steps": 2
+  }')
+
+CANCEL_WF_ID=$(echo "$CANCEL_WF_RESPONSE" | jq -r '.workflow_id // empty')
+if [ -n "$CANCEL_WF_ID" ]; then
+  echo "   Created workflow: $CANCEL_WF_ID"
+
+  # Cancel via unified API
+  echo "   Cancelling via POST /api/v1/unified/executions/{id}/cancel..."
+  CANCEL_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/unified/executions/${CANCEL_WF_ID}/cancel" \
+    -H "Content-Type: application/json" \
+    -H "$AUTH_HEADER" \
+    -d '{"reason": "testing unified cancel endpoint"}')
+
+  CANCEL_STATUS=$(echo "$CANCEL_RESPONSE" | jq -r '.status // .error.code // "unknown"')
+  echo "   Cancel response status: $CANCEL_STATUS"
+else
+  echo "   Note: Could not create workflow for cancel test"
+fi
+echo ""
+
+# =============================================
+# Part 4: SSE Streaming (example curl command)
+# =============================================
+echo -e "\033[1;34m=== Part 4: SSE Streaming ===\033[0m"
+echo ""
+echo "SSE streaming endpoint:"
+echo "   GET /api/v1/unified/executions/{id}/stream"
+echo ""
+echo "Example curl command (use with a running execution):"
+echo "   curl -N '${ORCHESTRATOR_URL}/api/v1/unified/executions/EXECUTION_ID/stream' \\"
+echo "     -H '$AUTH_HEADER'"
+echo ""
+echo "Events: execution.started, execution.completed, execution.failed,"
+echo "        execution.cancelled, step.started, step.completed,"
+echo "        step.failed, step.decision"
+echo ""
+
+# =============================================
+# Part 5: List Workflows
+# =============================================
+echo -e "\033[1;34m=== Part 5: List Workflows ===\033[0m"
 echo ""
 
 LIST_RESPONSE=$(curl -s "${ORCHESTRATOR_URL}/api/v1/workflows?limit=5" \
@@ -165,7 +218,9 @@ if [ "$WF_STATUS" = "completed" ]; then
   echo "  1. MAP plan creation via /api/request"
   echo "  2. WCP workflow creation, step gates, completion"
   echo "  3. Workflow status tracking"
-  echo "  4. Workflow listing"
+  echo "  4. Cancel execution via POST /api/v1/unified/executions/{id}/cancel"
+  echo "  5. SSE streaming via GET /api/v1/unified/executions/{id}/stream"
+  echo "  6. Workflow listing"
 else
   echo -e "\033[0;31mUnified Execution Tracking Test: FAIL\033[0m"
   echo "Final workflow status: $WF_STATUS (expected: completed)"

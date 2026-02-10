@@ -92,7 +92,7 @@ func TestCreateOverride(t *testing.T) {
 				// Check license tier (Enterprise)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
 				// GetByID returns tenant tier policy (not system)
 				mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
@@ -126,7 +126,7 @@ func TestCreateOverride(t *testing.T) {
 				// Check license tier (Enterprise)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("PLUS"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Plus"))
 
 				// GetByID returns system tier policy
 				mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
@@ -168,7 +168,7 @@ func TestCreateOverride(t *testing.T) {
 				// Check license tier
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
 				// GetByID returns system tier policy
 				mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).

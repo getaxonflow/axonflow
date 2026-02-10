@@ -168,11 +168,11 @@ Contact us for a V2 license:
 | Tier | Nodes | Connectors | Monthly Requests | Price |
 |------|-------|------------|-----------------|-------|
 | Community | 1 | 3 | 10,000 | Free |
-| Basic | 3 | 10 | 100,000 | $3,500/month |
+| Evaluation | 3 | 10 | 100,000 | Free |
 | Professional | 10 | Unlimited | 500,000 | $20,000/month |
 | Enterprise | Unlimited | Unlimited | Unlimited | Contact Sales |
 
-> **Note:** The Pilot tier has been replaced by the Basic tier as of Platform v4.1.0. Existing Pilot licenses are automatically mapped to Basic tier during V2 migration. The Community Edition (source-available under BSL 1.1) is free for non-production use.
+> **Note:** The Pilot tier has been replaced by the Evaluation tier as of Platform v4.2.0. Existing Pilot and Basic licenses are automatically mapped to Evaluation tier during V2 migration. The Community Edition (source-available under BSL 1.1) is free for non-production use.
 
 ## FAQ
 
@@ -180,7 +180,7 @@ Contact us for a V2 license:
 
 **A:** V1 licenses are no longer accepted as of Platform v4.1.0. The validation layer rejects V1 format keys with the error "V1 license format is deprecated". Expired V2 licenses are also correctly rejected (`valid=false`). Contact sales@getaxonflow.com for a new V2 key, or generate one using the keygen utility:
 ```bash
-./keygen -tier BASIC -org YOUR_ORG -service-name platform -service-type backend-service -days 365
+./keygen -tier Evaluation -org YOUR_ORG -service-name platform -service-type backend-service -days 365
 ```
 
 ### Q: Is there a cost to migrate?

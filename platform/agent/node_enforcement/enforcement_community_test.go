@@ -174,7 +174,7 @@ func TestMultiChannelAlerter_SendNodeViolationAlert(t *testing.T) {
 			violation: &ViolationInfo{
 				OrgID:             "org-123",
 				LicenseKeyHash:    "hash123",
-				Tier:              "ENT",
+				Tier:              "Enterprise",
 				MaxNodesAllowed:   10,
 				ActualNodeCount:   15,
 				ExcessNodes:       5,
@@ -340,7 +340,7 @@ func TestViolationInfo_Fields(t *testing.T) {
 	_ = ViolationInfo{
 		OrgID:             "org-1",
 		LicenseKeyHash:    "hash",
-		Tier:              "ENT",
+		Tier:              "Enterprise",
 		MaxNodesAllowed:   10,
 		ActualNodeCount:   15,
 		ExcessNodes:       5,
