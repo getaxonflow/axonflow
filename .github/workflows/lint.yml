@@ -49,7 +49,7 @@ jobs:
       go-code: ${{ steps.filter.outputs.go-code }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Detect Go code changes
         uses: dorny/paths-filter@v3
@@ -77,12 +77,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache: false  # golangci-lint has its own cache
 
       - name: Install golangci-lint
@@ -153,6 +153,9 @@ jobs:
 
           echo ""
           echo "✅ All modules passed linting!"
+
+      - name: Lint DEPLOYMENT_MODE pattern (Issue #1133)
+        run: bash scripts/lint-deployment-mode.sh
 
   lint-summary:
     name: Lint Summary

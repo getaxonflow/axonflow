@@ -281,14 +281,32 @@ Teams typically start by placing AxonFlow in front of a single workflow or agent
 
 ---
 
-## Community vs Enterprise
+## Three-Tier Licensing
 
-Community is for experimentation and validation. Enterprise is what IT, security, and compliance require for production rollout.
+AxonFlow offers three tiers. Evaluation and Community use the same core features, with different capacity limits:
+
+| Feature | Community | Evaluation (Free) | Enterprise |
+|---------|-----------|-------------------|------------|
+| Tenant policies | 20 | 50 | Unlimited |
+| Org-wide policies | 0 | 5 | Unlimited |
+| Audit retention | 3 days | 14 days | 3650 days |
+| Concurrent executions | 5 | 25 | Unlimited |
+| Execution history | 50 | 500 | Unlimited |
+
+Also includes higher limits for LLM providers and MAP planning. Full matrix in docs.
 
 ### Stay on Community if:
 - Single team prototyping AI features
-- No centralized identity or IT controls required
-- No regulatory or audit requirements
+- Development and evaluation
+- Your limits fit in Community capacity (for example, 20 tenant policies and 5 concurrent executions)
+
+### Upgrade to Evaluation (Free) when:
+- Taking AI to production with a small team
+- Need organization-wide policies (up to 5)
+- Need more execution capacity (history, concurrency, plans)
+- Want 14-day audit retention
+
+**Get your free Evaluation license:** https://getaxonflow.com/evaluation-license
 
 ### You need Enterprise when:
 
@@ -309,7 +327,7 @@ Community is for experimentation and validation. Enterprise is what IT, security
 - Priority support with SLA
 - Customer Portal UI for runtime management
 
-See the full **[Community vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
+See the full **[Community vs Evaluation vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
 *(designed for security reviews, procurement, and platform evaluations)*
 
 **Enterprise:** [AWS Marketplace](https://aws.amazon.com/marketplace) or [sales@getaxonflow.com](mailto:sales@getaxonflow.com)

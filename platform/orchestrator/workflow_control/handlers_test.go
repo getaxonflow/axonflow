@@ -463,6 +463,7 @@ func TestHandlerRouteRegistration(t *testing.T) {
 	router := mux.NewRouter()
 
 	handler.RegisterRoutes(router)
+	handler.RegisterEnterpriseRoutes(router)
 
 	// Test that routes are registered
 	routes := []struct {
@@ -488,6 +489,86 @@ func TestHandlerRouteRegistration(t *testing.T) {
 			match := &mux.RouteMatch{}
 			if !router.Match(req, match) {
 				t.Errorf("route not registered: %s %s", route.method, route.path)
+			}
+		})
+	}
+}
+
+func TestHandlerCoreRouteRegistration(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+	router := mux.NewRouter()
+
+	// Only register core routes (no enterprise routes)
+	handler.RegisterRoutes(router)
+
+	coreRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/workflows"},
+		{http.MethodGet, "/api/v1/workflows"},
+		{http.MethodGet, "/api/v1/workflows/{id}"},
+		{http.MethodPost, "/api/v1/workflows/{id}/complete"},
+		{http.MethodPost, "/api/v1/workflows/{id}/abort"},
+		{http.MethodPost, "/api/v1/workflows/{id}/resume"},
+		{http.MethodPost, "/api/v1/workflows/{id}/steps/{step_id}/gate"},
+		{http.MethodPost, "/api/v1/workflows/{id}/steps/{step_id}/complete"},
+	}
+
+	for _, route := range coreRoutes {
+		t.Run("core_"+route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			match := &mux.RouteMatch{}
+			if !router.Match(req, match) {
+				t.Errorf("core route not registered: %s %s", route.method, route.path)
+			}
+		})
+	}
+
+	// Enterprise approval routes should NOT be registered
+	enterpriseRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/workflows/test-id/steps/step-1/approve"},
+		{http.MethodPost, "/api/v1/workflows/test-id/steps/step-1/reject"},
+		{http.MethodGet, "/api/v1/workflows/approvals/pending"},
+	}
+
+	for _, route := range enterpriseRoutes {
+		t.Run("enterprise_not_registered_"+route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			match := &mux.RouteMatch{}
+			if router.Match(req, match) {
+				t.Errorf("enterprise route should NOT be registered in community mode: %s %s", route.method, route.path)
+			}
+		})
+	}
+}
+
+func TestHandlerEnterpriseRouteRegistration(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+	router := mux.NewRouter()
+
+	handler.RegisterRoutes(router)
+	handler.RegisterEnterpriseRoutes(router)
+
+	// All enterprise approval routes should be registered
+	enterpriseRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/workflows/{id}/steps/{step_id}/approve"},
+		{http.MethodPost, "/api/v1/workflows/{id}/steps/{step_id}/reject"},
+		{http.MethodGet, "/api/v1/workflows/approvals/pending"},
+	}
+
+	for _, route := range enterpriseRoutes {
+		t.Run("enterprise_"+route.method+" "+route.path, func(t *testing.T) {
+			req := httptest.NewRequest(route.method, route.path, nil)
+			match := &mux.RouteMatch{}
+			if !router.Match(req, match) {
+				t.Errorf("enterprise route not registered: %s %s", route.method, route.path)
 			}
 		})
 	}

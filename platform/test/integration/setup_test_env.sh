@@ -91,7 +91,7 @@ if [ -z "$TEST_LICENSE_KEY" ]; then
 
     # Generate a test license key (simplified version)
     # In production, this would use the actual license generation tool
-    TIER="ENT"
+    TIER="Enterprise"
     EXPIRY=$(date -u -v+1y +%Y%m%d 2>/dev/null || date -u -d "+1 year" +%Y%m%d)
     SIGNATURE=$(echo -n "AXON-${TIER}-${TEST_ORG_ID}-${EXPIRY}" | openssl dgst -sha256 -hmac "test-secret-key-for-integration-tests" | cut -d' ' -f2 | cut -c1-8)
     TEST_LICENSE_KEY="AXON-${TIER}-${TEST_ORG_ID}-${EXPIRY}-${SIGNATURE}"
@@ -110,7 +110,7 @@ INSERT INTO organizations (org_id, name, tier, license_key, status, max_nodes, e
 VALUES (
     '${TEST_ORG_ID}',
     'Integration Test Organization',
-    'ENT',
+    'Enterprise',
     '${TEST_LICENSE_KEY}',
     'ACTIVE',
     100,

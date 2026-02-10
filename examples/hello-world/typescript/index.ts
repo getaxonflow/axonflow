@@ -45,7 +45,7 @@ async function main() {
     // Step 1: Pre-check with AxonFlow policies
     console.log("Step 1: Policy pre-check...");
     const preCheck = await axonflow.getPolicyApprovedContext({
-      userToken: "demo-user",
+      userToken: process.env.AXONFLOW_USER_TOKEN || "demo-user",
       query,
       context: { example: "hello-world" },
     });

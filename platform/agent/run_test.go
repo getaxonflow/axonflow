@@ -14,11 +14,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1115,33 +1115,43 @@ func setOAuth2BasicAuth(r *http.Request, clientID string, clientSecret string) {
 	r.Header.Set("Authorization", "Basic "+credentials)
 }
 
-// Helper function to generate valid V2 test license keys with known HMAC secret
-// V2 format: AXON-V2-{BASE64_JSON}-{SIGNATURE}
+// Helper function to generate valid Ed25519-signed test license keys.
+// Format: AXON-{BASE64URL(JSON_PAYLOAD)}.{BASE64URL(ED25519_SIGNATURE)}
 func generateTestLicenseKey(orgID string, tier string, expiryDate string) string {
-	// Use default HMAC secret for testing
-	hmacSecret := "axonflow-license-secret-2025-change-in-production"
+	// Ed25519 private key seeds matching the public keys in license_community.go.
+	// These are TEST keys — the production private keys stay in AWS Secrets Manager.
+	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
+	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
 
-	// Create V2 service license payload
+	var seed []byte
+	switch tier {
+	case "Evaluation":
+		seed = evalSeed
+	default: // Enterprise, Professional, Plus
+		seed = entSeed
+	}
+
+	privateKey := ed25519.NewKeyFromSeed(seed)
+
+	// Create Ed25519 service license payload
 	payload := map[string]interface{}{
 		"tier":         tier,
 		"tenant_id":    orgID,
 		"service_name": orgID + "-service",
 		"service_type": "backend-service",
 		"permissions":  []string{"query", "llm"},
+		"issued_at":    time.Now().Format("20060102"),
 		"expires_at":   expiryDate,
 	}
 
-	// Encode payload as JSON then base64
 	payloadJSON, _ := json.Marshal(payload)
 	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	// Calculate HMAC-SHA256 signature of the base64 payload
-	h := hmac.New(sha256.New, []byte(hmacSecret))
-	h.Write([]byte(payloadBase64))
-	signature := hex.EncodeToString(h.Sum(nil))[:8] // First 8 chars
+	// Sign with Ed25519
+	signature := ed25519.Sign(privateKey, []byte(payloadBase64))
+	signatureBase64 := base64.RawURLEncoding.EncodeToString(signature)
 
-	// Return V2 license key: AXON-V2-{BASE64_PAYLOAD}-{SIGNATURE}
-	return fmt.Sprintf("AXON-V2-%s-%s", payloadBase64, signature)
+	return fmt.Sprintf("AXON-%s.%s", payloadBase64, signatureBase64)
 }
 
 // TestClientRequestHandler_SuccessPath tests the happy path with valid auth and policy
@@ -1161,7 +1171,7 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 	}
 
 	// Create test license key (expires in future)
-	testLicenseKey := generateTestLicenseKey("test-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("test-org", "Enterprise", "20351231")
 
 	// Add test client to knownClients
 	knownClients["test-client-success"] = &ClientAuth{
@@ -1253,7 +1263,7 @@ func TestClientRequestHandler_ClientDisabled(t *testing.T) {
 		}
 	}
 
-	testLicenseKey := generateTestLicenseKey("disabled-org", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("disabled-org", "Enterprise", "20351231")
 
 	// Add disabled client to knownClients
 	knownClients["test-client-disabled"] = &ClientAuth{
@@ -1307,7 +1317,7 @@ func TestClientRequestHandler_TenantMismatch(t *testing.T) {
 		}
 	}
 
-	testLicenseKey := generateTestLicenseKey("tenant-test", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("tenant-test", "Enterprise", "20351231")
 
 	// Add client with different tenant
 	knownClients["test-client-tenant"] = &ClientAuth{
@@ -1391,7 +1401,7 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 	}()
 	orchestratorURL = mockOrch.URL
 
-	testLicenseKey := generateTestLicenseKey("policy-test", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("policy-test", "Enterprise", "20351231")
 
 	// Add test client - TenantID must match license org for tenant isolation to pass
 	knownClients["test-client-policy"] = &ClientAuth{
@@ -1454,7 +1464,7 @@ func TestClientRequestHandler_OrchestratorError(t *testing.T) {
 		staticPolicyEngine = NewStaticPolicyEngine()
 	}
 
-	testLicenseKey := generateTestLicenseKey("orch-error", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("orch-error", "Enterprise", "20351231")
 
 	knownClients["test-client-orch-error"] = &ClientAuth{
 		ClientID:   "test-client-orch-error",
@@ -1519,7 +1529,7 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 		staticPolicyEngine = NewStaticPolicyEngine()
 	}
 
-	testLicenseKey := generateTestLicenseKey("multi-agent", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("multi-agent", "Enterprise", "20351231")
 
 	knownClients["test-client-multi-agent"] = &ClientAuth{
 		ClientID:   "test-client-multi-agent",
@@ -1641,7 +1651,7 @@ func TestMCPQueryHandler_Success(t *testing.T) {
 		}
 	}
 
-	testLicenseKey := generateTestLicenseKey("mcp-test", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("mcp-test", "Enterprise", "20351231")
 
 	// Add test client
 	knownClients["test-mcp-client"] = &ClientAuth{
@@ -1728,7 +1738,7 @@ func TestMCPExecuteHandler_Success(t *testing.T) {
 		}
 	}
 
-	testLicenseKey := generateTestLicenseKey("mcp-exec-test", "ENT", "20351231")
+	testLicenseKey := generateTestLicenseKey("mcp-exec-test", "Enterprise", "20351231")
 
 	// Add test client
 	knownClients["test-mcp-exec-client"] = &ClientAuth{

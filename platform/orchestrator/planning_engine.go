@@ -25,10 +25,18 @@ import (
 
 // PlanningEngine generates workflows from natural language queries
 type PlanningEngine struct {
-	llmRouter LLMRouterInterface
-	templates map[string]*DomainTemplate
-	registry  *AgentRegistry // Config-based agent registry (MAP 0.5)
-	logger    *logger.Logger
+	llmRouter       LLMRouterInterface
+	templates       map[string]*DomainTemplate
+	registry        *AgentRegistry // Config-based agent registry (MAP 0.5)
+	logger          *logger.Logger
+	connectorRouter *ConnectorRouter // Generic connector routing (MAP v1.0)
+	pricingConfig   PlanCostEstimator // Cost estimation for plan steps
+}
+
+// PlanCostEstimator is the interface used by the planning engine to estimate costs.
+// This avoids a direct dependency on the cost package.
+type PlanCostEstimator interface {
+	EstimateCost(provider, model string, estimatedTokensIn, estimatedTokensOut int) float64
 }
 
 // DomainTemplate provides hints for specific domains
@@ -155,6 +163,16 @@ func (e *PlanningEngine) GetAgentRegistry() *AgentRegistry {
 	return e.registry
 }
 
+// SetPricingConfig sets the cost estimator used for plan cost estimation.
+func (e *PlanningEngine) SetPricingConfig(pricing PlanCostEstimator) {
+	e.pricingConfig = pricing
+}
+
+// SetConnectorRouter sets the generic connector router.
+func (e *PlanningEngine) SetConnectorRouter(router *ConnectorRouter) {
+	e.connectorRouter = router
+}
+
 // Initialize domain-specific templates
 func (e *PlanningEngine) initializeTemplates() {
 	// Travel domain
@@ -276,9 +294,16 @@ func (e *PlanningEngine) GeneratePlan(ctx context.Context, req PlanGenerationReq
 		e.applyExecutionMode(workflow, req.ExecutionMode)
 	}
 
+	// 4. Estimate cost for each step
+	estimatedCost := e.estimatePlanCost(workflow)
+	if estimatedCost > 0 {
+		workflow.EstimatedCostUSD = &estimatedCost
+	}
+
 	elapsed := time.Since(startTime)
 	e.logger.InfoWithDuration(clientID, requestID, "Plan generated", float64(elapsed.Milliseconds()), map[string]interface{}{
-		"steps": len(workflow.Spec.Steps),
+		"steps":              len(workflow.Spec.Steps),
+		"estimated_cost_usd": estimatedCost,
 	})
 
 	return workflow, nil
@@ -440,8 +465,11 @@ func (e *PlanningEngine) generateWorkflowDefinition(ctx context.Context, req Pla
 		return e.generateTemplateWorkflow(req.Query, analysis), nil
 	}
 
-	// Convert flight/hotel steps to Amadeus connector-calls for travel domain
-	if analysis.Domain == "travel" {
+	// Route steps to connectors via generic capability-based routing
+	e.routeToConnectors(workflow, req.Query, req.ClientID, req.RequestID)
+
+	// Fallback: if no generic router, use legacy Amadeus-specific routing for travel domain
+	if e.connectorRouter == nil && analysis.Domain == "travel" {
 		e.convertToAmadeusConnectorCalls(workflow, req.Query, req.ClientID, req.RequestID)
 	}
 
@@ -745,7 +773,84 @@ func (e *PlanningEngine) createTaskStep(taskName string, query string, domain st
 	}
 }
 
+// routeToConnectors uses the generic capability-based connector router to convert
+// eligible LLM-call steps to connector-call steps. This replaces the Amadeus-specific
+// routing for any domain with registered connectors.
+func (e *PlanningEngine) routeToConnectors(workflow *Workflow, query, clientID, requestID string) {
+	if e.connectorRouter == nil || workflow == nil {
+		return
+	}
+
+	convertedCount := 0
+	for i := range workflow.Spec.Steps {
+		step := &workflow.Spec.Steps[i]
+		if step.Type != "llm-call" {
+			continue
+		}
+
+		// Enterprise mode supports fallback chains; community uses single best match
+		useEnterpriseFallback := !isCommunityMode()
+
+		if useEnterpriseFallback {
+			matches := e.connectorRouter.FindAllMatches(step.Name, query)
+			if len(matches) > 0 {
+				match := matches[0] // Primary connector
+				e.logger.Info(clientID, requestID, "Routing step to connector (enterprise, fallback chain available)", map[string]interface{}{
+					"step_name":   step.Name,
+					"connector":   match.Connector,
+					"operation":   match.Operation,
+					"domain":      match.Domain,
+					"fallbacks":   len(matches) - 1,
+				})
+				e.applyConnectorMatch(step, &match, query)
+				convertedCount++
+			}
+		} else {
+			match := e.connectorRouter.FindBestMatch(step.Name, query)
+			if match != nil {
+				e.logger.Info(clientID, requestID, "Routing step to connector (community)", map[string]interface{}{
+					"step_name": step.Name,
+					"connector": match.Connector,
+					"operation": match.Operation,
+					"domain":    match.Domain,
+				})
+				e.applyConnectorMatch(step, match, query)
+				convertedCount++
+			}
+		}
+	}
+
+	if convertedCount > 0 {
+		e.logger.Info(clientID, requestID, "Generic connector routing complete", map[string]interface{}{
+			"converted_steps": convertedCount,
+		})
+	}
+}
+
+// applyConnectorMatch converts an LLM-call step to a connector-call step.
+func (e *PlanningEngine) applyConnectorMatch(step *WorkflowStep, match *ConnectorMatch, query string) {
+	step.Type = "connector-call"
+	step.Connector = match.Connector
+	step.Operation = "query"
+	step.Statement = match.Operation
+	step.Timeout = "30s"
+
+	// Extract parameters based on the operation type
+	if strings.Contains(match.Operation, "flight") {
+		step.Parameters = e.extractFlightParameters(query)
+	} else if strings.Contains(match.Operation, "hotel") {
+		step.Parameters = e.extractHotelParameters(query)
+	} else {
+		step.Parameters = map[string]interface{}{"query": query}
+	}
+
+	// Clear LLM-specific fields
+	step.Prompt = ""
+	step.MaxTokens = 0
+}
+
 // Convert LLM-generated flight/hotel steps to Amadeus connector-calls
+// Deprecated: Use routeToConnectors with a ConnectorRouter instead.
 func (e *PlanningEngine) convertToAmadeusConnectorCalls(workflow *Workflow, query, clientID, requestID string) {
 	if workflow == nil {
 		return
@@ -891,8 +996,18 @@ Provide specific, detailed information with actionable recommendations.`, taskNa
 	}
 }
 
-// Check if Amadeus API credentials are configured
+// isAmadeusConfigured checks if Amadeus API credentials are configured.
+// Also returns true if a connector router has a travel capability registered.
 func (e *PlanningEngine) isAmadeusConfigured() bool {
+	// Check generic router first
+	if e.connectorRouter != nil {
+		for _, cap := range e.connectorRouter.ListCapabilities() {
+			if cap.Domain == "travel" {
+				return true
+			}
+		}
+	}
+	// Fallback to env var check
 	apiKey := os.Getenv("AMADEUS_API_KEY")
 	apiSecret := os.Getenv("AMADEUS_API_SECRET")
 	return apiKey != "" && apiSecret != ""
@@ -914,11 +1029,115 @@ func (e *PlanningEngine) optimizeExecutionMode(workflow *Workflow, analysis *Que
 	return workflow
 }
 
-// Apply user-specified execution mode
+// applyExecutionMode applies the user-specified execution mode to a workflow
 func (e *PlanningEngine) applyExecutionMode(workflow *Workflow, mode string) {
-	// User override - would need to extend WorkflowStep to support this
-	// For now, just log the preference
-	log.Printf("[PlanningEngine] User execution mode override: %s", mode)
+	if workflow == nil || len(workflow.Spec.Steps) == 0 {
+		return
+	}
+
+	log.Printf("[PlanningEngine] Applying execution mode: %s", mode)
+
+	switch mode {
+	case "sequential":
+		// Mark all steps as sequential — no parallelism
+		// Nothing special to do; the executor will run them sequentially
+		// when enableParallel=false
+
+	case "parallel":
+		// Mark all non-synthesis steps as parallel-eligible
+		// Ensure timeouts are set for parallel execution
+		for i := range workflow.Spec.Steps {
+			if workflow.Spec.Steps[i].Timeout == "" {
+				workflow.Spec.Steps[i].Timeout = "30s"
+			}
+		}
+
+	case "balanced":
+		e.applyBalancedMode(workflow)
+
+	case "confirm", "step":
+		// These are handled at execution time by WCP gates (Phase 3a)
+		// Store the mode as metadata for the executor
+		log.Printf("[PlanningEngine] Execution mode '%s' will be handled by WCP gates at execution time", mode)
+
+	default:
+		// "auto" or unknown — let optimizeExecutionMode handle it
+		log.Printf("[PlanningEngine] Unknown or auto mode: %s", mode)
+	}
+}
+
+// applyBalancedMode applies balanced execution: I/O-bound connector-calls run in parallel,
+// LLM-calls run sequentially to respect rate limits, synthesis step always last.
+func (e *PlanningEngine) applyBalancedMode(workflow *Workflow) {
+	if workflow == nil || len(workflow.Spec.Steps) == 0 {
+		return
+	}
+
+	log.Printf("[PlanningEngine] Applying balanced mode to %d steps", len(workflow.Spec.Steps))
+
+	// Tag connector-call steps for parallel execution and
+	// LLM-call steps for sequential execution. The executor
+	// uses this information via groupStepsForBalancedExecution.
+	for i := range workflow.Spec.Steps {
+		step := &workflow.Spec.Steps[i]
+		if step.Type == "connector-call" {
+			// I/O-bound steps get parallel-eligible timeout
+			if step.Timeout == "" {
+				step.Timeout = "30s"
+			}
+		}
+	}
+}
+
+// estimatePlanCost calculates an estimated cost for all LLM steps in the workflow.
+// Connector-call steps are treated as zero cost (no LLM tokens consumed).
+// Returns 0 if no pricing config is set.
+func (e *PlanningEngine) estimatePlanCost(workflow *Workflow) float64 {
+	if e.pricingConfig == nil || workflow == nil {
+		return 0
+	}
+
+	var totalCost float64
+
+	// Default token estimates per step when not specified
+	const defaultTokensIn = 1000
+	const defaultTokensOut = 500
+
+	// Determine the default provider from LLM router status.
+	// The model defaults to a common model; per-step overrides take precedence.
+	defaultProvider := "openai"
+	defaultModel := "gpt-4o"
+	if e.llmRouter != nil {
+		status := e.llmRouter.GetProviderStatus()
+		for name, s := range status {
+			if s.Healthy {
+				defaultProvider = name
+				break
+			}
+		}
+	}
+
+	for _, step := range workflow.Spec.Steps {
+		if step.Type == "connector-call" {
+			// Connector calls don't consume LLM tokens
+			continue
+		}
+
+		// Use step-level provider/model if set, otherwise defaults
+		provider := step.Provider
+		if provider == "" {
+			provider = defaultProvider
+		}
+		model := step.Model
+		if model == "" {
+			model = defaultModel
+		}
+
+		stepCost := e.pricingConfig.EstimateCost(provider, model, defaultTokensIn, defaultTokensOut)
+		totalCost += stepCost
+	}
+
+	return totalCost
 }
 
 // IsHealthy checks if planning engine is operational
@@ -1079,19 +1298,52 @@ func (e *PlanningEngine) parseNumber(s string) int {
 	return 0
 }
 
+// knownCityCodes maps city names (lowercase) to IATA city codes.
+var knownCityCodes = map[string]string{
+	"paris": "PAR", "london": "LON", "new york": "NYC", "tokyo": "TYO",
+	"singapore": "SIN", "mumbai": "BOM", "delhi": "DEL", "bangalore": "BLR",
+	"dubai": "DXB", "hong kong": "HKG", "sydney": "SYD", "berlin": "BER",
+	"amsterdam": "AMS", "san francisco": "SFO", "los angeles": "LAX",
+	"chicago": "CHI", "miami": "MIA", "bangkok": "BKK", "seoul": "ICN",
+	"shanghai": "SHA", "beijing": "PEK", "rome": "ROM", "madrid": "MAD",
+	"barcelona": "BCN", "zurich": "ZRH", "vienna": "VIE", "prague": "PRG",
+	"istanbul": "IST", "cairo": "CAI", "nairobi": "NBO", "lagos": "LOS",
+	"toronto": "YTO", "vancouver": "YVR", "mexico city": "MEX",
+	"sao paulo": "SAO", "buenos aires": "BUE", "lima": "LIM",
+}
+
+// knownIATACodes is the set of valid IATA codes from knownCityCodes (for fallback matching).
+var knownIATACodes map[string]bool
+
+func init() {
+	knownIATACodes = make(map[string]bool, len(knownCityCodes))
+	for _, code := range knownCityCodes {
+		knownIATACodes[code] = true
+	}
+}
+
 // extractHotelParameters extracts parameters from query for Amadeus hotel search
 func (e *PlanningEngine) extractHotelParameters(query string) map[string]interface{} {
 	params := make(map[string]interface{})
+	queryLower := strings.ToLower(query)
 
-	// Extract city from query
-	query = strings.ToLower(query)
-
-	// Extract destination
-	words := strings.Fields(query)
-	for _, word := range words {
-		if len(word) > 2 && word[0] >= 'A' && word[0] <= 'Z' {
-			params["city_code"] = word
+	// First try to match known city names (case-insensitive)
+	for city, code := range knownCityCodes {
+		if strings.Contains(queryLower, city) {
+			params["city_code"] = code
 			break
+		}
+	}
+
+	// Fallback: check for 3-letter uppercase words that match a known IATA code
+	if _, ok := params["city_code"]; !ok {
+		words := strings.Fields(query)
+		for _, word := range words {
+			upper := strings.ToUpper(strings.Trim(word, ".,!?;:"))
+			if len(upper) == 3 && knownIATACodes[upper] {
+				params["city_code"] = upper
+				break
+			}
 		}
 	}
 

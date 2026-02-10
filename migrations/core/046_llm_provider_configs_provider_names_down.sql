@@ -1,13 +1,9 @@
 -- Migration 046 Down: Revert llm_provider_configs provider name constraint
+--
+-- NOTE: Migration 021 already creates the full provider name constraint including
+-- gemini, azure-openai, and custom. This down migration only needs to undo what 046
+-- actually added (which is nothing if 021 ran first). We intentionally do NOT narrow
+-- the constraint or delete provider rows, since 021 created the full constraint.
 
-ALTER TABLE llm_provider_configs
-    DROP CONSTRAINT IF EXISTS check_provider_name;
-
--- Remove provider rows that are not valid under the legacy constraint.
-DELETE FROM llm_provider_configs
-WHERE provider_name IN ('gemini', 'azure-openai', 'custom');
-
-ALTER TABLE llm_provider_configs
-    ADD CONSTRAINT check_provider_name CHECK (provider_name IN (
-        'bedrock', 'ollama', 'openai', 'anthropic'
-    ));
+-- No-op: 046's changes are redundant with 021. Reverting would break the schema
+-- by removing provider types that 021 already provides.

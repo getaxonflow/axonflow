@@ -509,24 +509,50 @@ type DynamicPolicyConfig struct {
 
 	// EnabledConnectors lists connectors that use dynamic policies.
 	// Empty list means all connectors are enabled.
-	// Community edition has 2-connector limit.
+	// Community edition has 2 connectors with custom policies limit, Evaluation has 5.
 	EnabledConnectors []string `json:"enabled_connectors"`
 
-	// MaxConnectorsInCommunity is the limit for community edition.
-	// Enterprise has unlimited connectors.
-	MaxConnectorsInCommunity int `json:"max_connectors_community"`
+	// MaxCustomPolicyConnectorsCommunity is the limit for connectors with custom policies in community edition.
+	// All connectors can be registered in all tiers; only tenant-level policies are limited.
+	MaxCustomPolicyConnectorsCommunity int `json:"max_custom_policy_connectors_community"`
+
+	// MaxCustomPolicyConnectorsEvaluation is the limit for connectors with custom policies in evaluation edition.
+	// Enterprise has unlimited connectors with custom policies.
+	MaxCustomPolicyConnectorsEvaluation int `json:"max_custom_policy_connectors_evaluation"`
 }
 
 // DefaultDynamicPolicyConfig returns production-safe defaults.
 // Dynamic policies are disabled by default for backward compatibility.
 func DefaultDynamicPolicyConfig() DynamicPolicyConfig {
 	return DynamicPolicyConfig{
-		Enabled:                  false,
-		OrchestratorEndpoint:     "http://localhost:8081",
-		Timeout:                  5 * time.Second,
-		GracefulDegradation:      true,
-		EnabledConnectors:        nil, // All connectors when enabled
-		MaxConnectorsInCommunity: 2,   // Community edition limit
+		Enabled:                       false,
+		OrchestratorEndpoint:          "http://localhost:8081",
+		Timeout:                       5 * time.Second,
+		GracefulDegradation:           true,
+		EnabledConnectors:             nil, // All connectors when enabled
+		MaxCustomPolicyConnectorsCommunity:  2, // Community: max connectors with custom policies
+		MaxCustomPolicyConnectorsEvaluation: 5, // Evaluation: max connectors with custom policies
+	}
+}
+
+// CustomPolicyConnectorLimitForTier returns the custom policy connector limit based on the license tier.
+// This limits the number of connectors that can have tenant-level policies (rate limiting, budgets,
+// time/role access) enabled. All connectors can be registered in all tiers.
+// Returns -1 for unlimited (Enterprise).
+func (c *DynamicPolicyConfig) CustomPolicyConnectorLimitForTier(tier string) int {
+	switch tier {
+	case "enterprise", "Enterprise", "Plus", "Professional":
+		return -1 // Unlimited
+	case "evaluation", "Evaluation":
+		if c.MaxCustomPolicyConnectorsEvaluation > 0 {
+			return c.MaxCustomPolicyConnectorsEvaluation
+		}
+		return 5 // Default Evaluation limit
+	default:
+		if c.MaxCustomPolicyConnectorsCommunity > 0 {
+			return c.MaxCustomPolicyConnectorsCommunity
+		}
+		return 2 // Default Community limit
 	}
 }
 

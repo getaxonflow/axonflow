@@ -35,7 +35,8 @@ func BenchmarkNewResponseProcessor(b *testing.B) {
 // BenchmarkNewDynamicPolicyEngine benchmarks policy engine creation
 func BenchmarkNewDynamicPolicyEngine(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = NewDynamicPolicyEngine()
+		e := NewDynamicPolicyEngine()
+		e.Close()
 	}
 }
 
@@ -57,13 +58,15 @@ func BenchmarkDestinationToIATA(b *testing.B) {
 // BenchmarkNewMetricsCollector benchmarks metrics collector creation
 func BenchmarkNewMetricsCollector(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = NewMetricsCollector()
+		c := NewMetricsCollector()
+		c.Close()
 	}
 }
 
 // BenchmarkMetricsCollector_RecordRequest benchmarks metrics recording
 func BenchmarkMetricsCollector_RecordRequest(b *testing.B) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 	for i := 0; i < b.N; i++ {
 		collector.RecordRequest("sql", "openai", 50*time.Millisecond)
 	}
@@ -72,6 +75,7 @@ func BenchmarkMetricsCollector_RecordRequest(b *testing.B) {
 // BenchmarkMetricsCollector_GetMetrics benchmarks metrics retrieval
 func BenchmarkMetricsCollector_GetMetrics(b *testing.B) {
 	collector := NewMetricsCollector()
+	defer collector.Close()
 	for i := 0; i < 100; i++ {
 		collector.RecordRequest("sql", "openai", 50*time.Millisecond)
 	}
@@ -84,13 +88,15 @@ func BenchmarkMetricsCollector_GetMetrics(b *testing.B) {
 // BenchmarkNewPolicyCache benchmarks policy cache creation
 func BenchmarkNewPolicyCache(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = NewPolicyCache(5 * time.Minute)
+		c := NewPolicyCache(5 * time.Minute)
+		c.Close()
 	}
 }
 
 // BenchmarkPolicyCache_Get benchmarks policy cache retrieval
 func BenchmarkPolicyCache_Get(b *testing.B) {
 	cache := NewPolicyCache(5 * time.Minute)
+	defer cache.Close()
 	cache.Set("test-policy", &DynamicPolicy{ID: "test", Name: "Test"})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -101,6 +107,7 @@ func BenchmarkPolicyCache_Get(b *testing.B) {
 // BenchmarkPolicyCache_Set benchmarks policy cache updates
 func BenchmarkPolicyCache_Set(b *testing.B) {
 	cache := NewPolicyCache(5 * time.Minute)
+	defer cache.Close()
 	for i := 0; i < b.N; i++ {
 		cache.Set("policy-"+string(rune(i%100)), &DynamicPolicy{ID: "test"})
 	}

@@ -22,9 +22,22 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-// RegisterRoutes registers all cost control routes with a gorilla/mux router
+// RegisterRoutes registers all cost control routes with a gorilla/mux router.
+// This registers both community and enterprise routes for backward compatibility.
 func (h *Handler) RegisterRoutes(r *mux.Router) {
-	// Budget endpoints
+	h.RegisterCommunityRoutes(r)
+	h.RegisterEnterpriseRoutes(r)
+}
+
+// RegisterCommunityRoutes registers pricing and basic usage summary routes (community tier).
+func (h *Handler) RegisterCommunityRoutes(r *mux.Router) {
+	r.HandleFunc("/api/v1/pricing", h.GetPricing).Methods("GET", "OPTIONS")
+	r.HandleFunc("/api/v1/usage", h.GetUsageSummary).Methods("GET", "OPTIONS")
+}
+
+// RegisterEnterpriseRoutes registers budget management and analytics routes (enterprise tier).
+func (h *Handler) RegisterEnterpriseRoutes(r *mux.Router) {
+	// Budget CRUD endpoints
 	r.HandleFunc("/api/v1/budgets", h.CreateBudget).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/budgets", h.ListBudgets).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/budgets/check", h.CheckBudget).Methods("POST", "OPTIONS")
@@ -34,13 +47,9 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/budgets/{id}/status", h.GetBudgetStatus).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/budgets/{id}/alerts", h.GetBudgetAlerts).Methods("GET", "OPTIONS")
 
-	// Usage endpoints
-	r.HandleFunc("/api/v1/usage", h.GetUsageSummary).Methods("GET", "OPTIONS")
+	// Usage analytics endpoints
 	r.HandleFunc("/api/v1/usage/breakdown", h.GetUsageBreakdown).Methods("GET", "OPTIONS")
 	r.HandleFunc("/api/v1/usage/records", h.ListUsageRecords).Methods("GET", "OPTIONS")
-
-	// Pricing endpoint
-	r.HandleFunc("/api/v1/pricing", h.GetPricing).Methods("GET", "OPTIONS")
 }
 
 // CreateBudgetRequest is the request body for creating a budget

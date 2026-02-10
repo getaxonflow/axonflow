@@ -1,9 +1,6 @@
 # SDK Feature Coverage
 
-**Last Updated:** February 2026
-
-**SDK Version:** v3.2.0 | **Platform Version:** v4.1.0
-
+**Last Updated:** 2026-02-07
 **Reference:** ADR-022 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.
@@ -26,164 +23,101 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 
 | Method | Description | Status |
 |--------|-------------|--------|
-| `healthCheck()` | Verify connectivity | All SDKs |
-| `getPolicyApprovedContext()` | Pre-check policy before LLM call | All SDKs |
-| `preCheck()` | Alias for getPolicyApprovedContext | All SDKs |
-| `auditLLMCall()` | Log LLM call for audit | All SDKs |
-| `protect()` | Wrap LLM call with governance | TypeScript only |
-
-#### Tier 1 Usage Examples
-
-These are the most critical SDK methods -- called on every LLM request. Below are canonical patterns for each language.
-
-**Go:**
-
-```go
-client := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:     "http://localhost:8080",
-    ClientID:     "your-client-id",
-    ClientSecret: "your-client-secret",
-})
-
-// Pre-check policy before making the LLM call
-approved, err := client.GetPolicyApprovedContext(ctx, query, userToken)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Proxy an LLM call through AxonFlow governance
-response, err := client.ProxyLLMCall(userToken, query, "chat", nil)
-```
-
-**Python:**
-
-```python
-from axonflow import AxonFlow
-
-client = AxonFlow(
-    endpoint="http://localhost:8080",
-    client_id="your-client-id",
-    client_secret="your-client-secret",
-)
-
-# Pre-check policy before making the LLM call
-approved = client.get_policy_approved_context(query=query, user_token=user_token)
-
-# Proxy an LLM call through AxonFlow governance
-response = client.proxy_llm_call(
-    user_token=user_token,
-    query=query,
-    request_type="chat",
-)
-```
-
-**TypeScript:**
-
-```typescript
-import { AxonFlow } from "@axonflow/sdk";
-
-const client = new AxonFlow({
-    endpoint: "http://localhost:8080",
-    clientId: "your-client-id",
-    clientSecret: "your-client-secret",
-});
-
-// Pre-check policy before making the LLM call
-const approved = await client.getPolicyApprovedContext(query, userToken);
-
-// Proxy an LLM call through AxonFlow governance
-const response = await client.proxyLLMCall({
-    userToken: "user-token",
-    query: "Summarize Q4 revenue",
-    requestType: "chat",
-});
-```
-
-**Java:**
-
-```java
-import com.getaxonflow.sdk.AxonFlowClient;
-
-AxonFlowClient client = AxonFlowClient.builder()
-    .endpoint("http://localhost:8080")
-    .clientId("your-client-id")
-    .clientSecret("your-client-secret")
-    .build();
-
-// Pre-check policy before making the LLM call
-var approved = client.getPolicyApprovedContext(query, userToken);
-
-// Proxy an LLM call through AxonFlow governance
-var response = client.proxyLlmCall(userToken, query, "chat", null);
-```
-
----
+| `healthCheck()` | Verify connectivity | ✅ All SDKs |
+| `getPolicyApprovedContext()` | Pre-check policy before LLM call | ✅ All SDKs |
+| `preCheck()` | Alias for getPolicyApprovedContext | ✅ All SDKs |
+| `auditLLMCall()` | Log LLM call for audit | ✅ All SDKs |
+| `protect()` | Wrap LLM call with governance | ✅ TypeScript only |
 
 ### Tier 2: Feature Operations (Usually in SDK)
 
 #### System Policies (Pattern-Based)
 | Method | Description | Status |
 |--------|-------------|--------|
-| `listStaticPolicies()` | List all system policies | All SDKs |
-| `getStaticPolicy(id)` | Get policy by ID | All SDKs |
-| `createStaticPolicy()` | Create new policy | All SDKs |
-| `updateStaticPolicy()` | Update existing policy | All SDKs |
-| `deleteStaticPolicy()` | Delete policy | All SDKs |
-| `toggleStaticPolicy()` | Enable/disable policy | All SDKs |
-| `getEffectiveStaticPolicies()` | Get policies after inheritance | All SDKs |
-| `testPattern()` | Test regex pattern | All SDKs |
+| `listStaticPolicies()` | List all system policies | ✅ All SDKs |
+| `getStaticPolicy(id)` | Get policy by ID | ✅ All SDKs |
+| `createStaticPolicy()` | Create new policy | ✅ All SDKs |
+| `updateStaticPolicy()` | Update existing policy | ✅ All SDKs |
+| `deleteStaticPolicy()` | Delete policy | ✅ All SDKs |
+| `toggleStaticPolicy()` | Enable/disable policy | ✅ All SDKs |
+| `getEffectiveStaticPolicies()` | Get policies after inheritance | ✅ All SDKs |
+| `testPattern()` | Test regex pattern | ✅ All SDKs |
 
 #### MAP (Multi-Agent Planning)
 | Method | Description | Status |
 |--------|-------------|--------|
-| `generatePlan()` | Generate execution plan | All SDKs |
-| `executePlan()` | Execute a plan | All SDKs |
-| `getPlanStatus()` | Get plan execution status | All SDKs |
+| `generatePlan()` | Generate execution plan | ✅ All SDKs |
+| `generatePlanWithOptions()` | Generate plan with execution mode | ✅ All SDKs |
+| `executePlan()` | Execute a plan | ✅ All SDKs |
+| `getPlanStatus()` | Get plan execution status | ✅ All SDKs |
+| `cancelPlan()` | Cancel a pending/executing plan | ✅ All SDKs |
+| `updatePlan()` | Update plan with version check | ✅ All SDKs |
+| `getPlanVersions()` | Get plan version history | ✅ All SDKs |
+| `resumePlan()` | Resume paused plan (Enterprise) | ✅ All SDKs |
+| `rollbackPlan()` | Rollback plan to previous version | ✅ All SDKs |
+
+#### WCP Step Approval
+| Method | Description | Status |
+|--------|-------------|--------|
+| `approveStep()` | Approve a pending WCP step | ✅ All SDKs |
+| `rejectStep()` | Reject a pending WCP step | ✅ All SDKs |
+| `getPendingApprovals()` | List steps awaiting approval | ✅ All SDKs |
+
+#### SSE Streaming
+| Method | Description | Status |
+|--------|-------------|--------|
+| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.3.0) |
+
+#### Webhook Management
+| Method | Description | Status |
+|--------|-------------|--------|
+| `createWebhook()` | Create a webhook | ✅ All SDKs |
+| `getWebhook()` | Get webhook by ID | ✅ All SDKs |
+| `updateWebhook()` | Update existing webhook | ✅ All SDKs |
+| `deleteWebhook()` | Delete a webhook | ✅ All SDKs |
+| `listWebhooks()` | List all webhooks | ✅ All SDKs |
 
 #### MCP Connectors
 | Method | Description | Status |
 |--------|-------------|--------|
-| `listConnectors()` | List available connectors | All SDKs |
-| `installConnector()` | Install a connector | All SDKs |
-| `queryConnector()` | Query a connector | All SDKs |
-| `executeQuery()` | Execute connector query | All SDKs |
-
-#### Cost Controls (Platform v4.0.0+)
-
-Budget management and usage tracking are available via both HTTP API and SDK methods. See the [Cost Controls guide](governance/cost-controls.md) for detailed configuration options.
-
-| Method | Description | Status |
-|--------|-------------|--------|
-| `createBudget()` | Create budget | All SDKs |
-| `getBudget()` | Get budget | All SDKs |
-| `listBudgets()` | List budgets | All SDKs |
-| `getBudgetStatus()` | Get budget + usage | All SDKs |
-| `deleteBudget()` | Delete budget | All SDKs |
-| `getUsage()` | Get usage summary | All SDKs |
-| `getUsageBreakdown()` | Usage by dimension | All SDKs |
+| `listConnectors()` | List available connectors | ✅ All SDKs |
+| `installConnector()` | Install a connector | ✅ All SDKs |
+| `queryConnector()` | Query a connector | ✅ All SDKs |
+| `executeQuery()` | Execute connector query | ✅ All SDKs |
 
 #### MCP Policy Response Fields (Platform v3.2.0+)
 | Field | Description | Status |
 |-------|-------------|--------|
-| `policy_info.exfiltration_check` | Row/byte limits info | All SDKs |
-| `policy_info.dynamic_policy_info` | Tenant policy evaluation info | All SDKs |
+| `policy_info.exfiltration_check` | Row/byte limits info | ✅ All SDKs |
+| `policy_info.dynamic_policy_info` | Tenant policy evaluation info | ✅ All SDKs |
 
 #### Singapore PII Detection (MAS FEAT, Platform v3.7.0+)
 | Pattern | Description | Status |
 |---------|-------------|--------|
-| NRIC (S/T/M prefix) | Singapore National Registration Identity Card | System policy |
-| FIN (F/G prefix) | Foreign Identification Number | System policy |
-| UEN | Unique Entity Number (business registration) | System policy |
-| Phone (+65) | Singapore phone numbers (mobile/landline) | System policy |
-| Postal code (6-digit) | Singapore postal codes | System policy |
+| NRIC (S/T/M prefix) | Singapore National Registration Identity Card | ✅ System policy |
+| FIN (F/G prefix) | Foreign Identification Number | ✅ System policy |
+| UEN | Unique Entity Number (business registration) | ✅ System policy |
+| Phone (+65) | Singapore phone numbers (mobile/landline) | ✅ System policy |
+| Postal code (6-digit) | Singapore postal codes | ✅ System policy |
 
 #### Replay/Debug (Planned - #763)
 | Method | Description | Status |
 |--------|-------------|--------|
-| `listExecutions()` | List MAP executions | Planned |
-| `getExecution()` | Get execution details | Planned |
-| `getExecutionSteps()` | Get execution steps | Planned |
-| `exportExecution()` | Export execution JSON | Planned |
+| `listExecutions()` | List MAP executions | 🔜 Planned |
+| `getExecution()` | Get execution details | 🔜 Planned |
+| `getExecutionSteps()` | Get execution steps | 🔜 Planned |
+| `exportExecution()` | Export execution JSON | 🔜 Planned |
+
+#### Cost Controls (Planned - #764)
+| Method | Description | Status |
+|--------|-------------|--------|
+| `createBudget()` | Create budget | 🔜 Planned |
+| `getBudget()` | Get budget | 🔜 Planned |
+| `listBudgets()` | List budgets | 🔜 Planned |
+| `getBudgetStatus()` | Get budget + usage | 🔜 Planned |
+| `deleteBudget()` | Delete budget | 🔜 Planned |
+| `getUsage()` | Get usage summary | 🔜 Planned |
+| `getUsageBreakdown()` | Usage by dimension | 🔜 Planned |
 
 ---
 
@@ -273,12 +207,10 @@ All 4 SDKs should have identical method coverage:
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v3.2.0 | ~28 | Parity |
-| Python | v3.2.0 | ~28 | Parity |
-| TypeScript | v3.2.0 (source), npm v2.3.0 | ~29 | Parity (+protect) |
-| Java | v3.2.0 | ~28 | Parity |
-
-> **Note:** The TypeScript SDK npm registry is temporarily behind the source version. Build from source for the latest features. See the [SDK README](sdk/README.md) for install instructions.
+| Go | v3.3.0 | ~36 | ✅ |
+| Python | v3.3.0 | ~36 | ✅ |
+| TypeScript | v3.3.0 (source), npm 2.3.0 | ~37 | ✅ (+protect) |
+| Java | v3.3.0 | ~36 | ✅ |
 
 ---
 
@@ -286,7 +218,9 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
-| 2026-02-07 | Added Tier 1 usage examples for all 4 SDKs; promoted Cost Controls from Planned to available; updated SDK versions and method counts |
+| 2026-02-07 | Added SSE streaming (streamExecutionStatus) for real-time MAP/WCP execution monitoring |
+| 2026-02-07 | Added WCP step approval (approveStep, rejectStep, getPendingApprovals), rollbackPlan, webhook management (createWebhook, getWebhook, updateWebhook, deleteWebhook, listWebhooks) |
+| 2026-02-06 | Added MAP v1.0 methods: cancelPlan, updatePlan, getPlanVersions, resumePlan, generatePlanWithOptions |
 | 2026-02-02 | Added Singapore PII detection patterns (MAS FEAT compliance) |
 | 2026-01-14 | Added MCP policy response fields (exfiltration_check, dynamic_policy_info) |
 | 2026-01-03 | Initial document created |

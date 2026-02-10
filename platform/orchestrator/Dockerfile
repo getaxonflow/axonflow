@@ -71,6 +71,11 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/orchestrator/llmadapters/* ./orchestrator/llmadapters/ && \
         echo "LLM Adapters module copied (Bedrock support)"; \
       fi && \
+      if [ -d "/src/ee/platform/orchestrator/agents" ]; then \
+        mkdir -p ./orchestrator/ee/agents/ && \
+        cp -r /src/ee/platform/orchestrator/agents/* ./orchestrator/ee/agents/ && \
+        echo "Agent CRUD handler module copied (DB Agent Config)"; \
+      fi && \
       echo "=== Copying EE connectors ===" && \
       if [ -d "/src/ee/platform/connectors" ]; then \
         cp -r /src/ee/platform/connectors/* ./connectors/ && \
@@ -101,7 +106,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
 # - Community repo: Only has migrations/core/
 # - Enterprise repo: Has migrations/core/, migrations/enterprise/, migrations/industry/
 # Just copy what exists - no conditional logic needed
-FROM alpine:3.22 AS migrations-prep
+FROM alpine:3.23 AS migrations-prep
 
 # Copy migrations directory as-is from the repo
 COPY migrations/ /migrations/
@@ -127,7 +132,7 @@ RUN set -e && \
     echo "Total: $total migration files"
 
 # Final stage - minimal runtime image
-FROM alpine:3.22
+FROM alpine:3.23
 
 # AWS Marketplace metadata
 LABEL name="AxonFlow Orchestrator" \

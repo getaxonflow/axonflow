@@ -729,6 +729,176 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
+// --- CE Gating Tests ---
+
+func TestRegisterCommunityRoutes(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	handler.RegisterCommunityRoutes(r)
+
+	// Community routes should be registered
+	communityRoutes := []struct {
+		path   string
+		method string
+	}{
+		{"/api/v1/pricing", "GET"},
+		{"/api/v1/usage", "GET"},
+	}
+
+	for _, route := range communityRoutes {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		match := &mux.RouteMatch{}
+		if !r.Match(req, match) {
+			t.Errorf("community route %s %s not registered", route.method, route.path)
+		}
+	}
+
+	// Enterprise routes should NOT be registered
+	enterpriseRoutes := []struct {
+		path   string
+		method string
+	}{
+		{"/api/v1/budgets", "POST"},
+		{"/api/v1/budgets", "GET"},
+		{"/api/v1/budgets/check", "POST"},
+		{"/api/v1/budgets/test-id", "GET"},
+		{"/api/v1/budgets/test-id", "PUT"},
+		{"/api/v1/budgets/test-id", "DELETE"},
+		{"/api/v1/budgets/test-id/status", "GET"},
+		{"/api/v1/budgets/test-id/alerts", "GET"},
+		{"/api/v1/usage/breakdown", "GET"},
+		{"/api/v1/usage/records", "GET"},
+	}
+
+	for _, route := range enterpriseRoutes {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		match := &mux.RouteMatch{}
+		if r.Match(req, match) {
+			t.Errorf("enterprise route %s %s should NOT be registered in community mode", route.method, route.path)
+		}
+	}
+}
+
+func TestRegisterEnterpriseRoutes(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	handler.RegisterEnterpriseRoutes(r)
+
+	// Enterprise routes should be registered
+	enterpriseRoutes := []struct {
+		path   string
+		method string
+	}{
+		{"/api/v1/budgets", "POST"},
+		{"/api/v1/budgets", "GET"},
+		{"/api/v1/budgets/check", "POST"},
+		{"/api/v1/budgets/{id}", "GET"},
+		{"/api/v1/budgets/{id}", "PUT"},
+		{"/api/v1/budgets/{id}", "DELETE"},
+		{"/api/v1/budgets/{id}/status", "GET"},
+		{"/api/v1/budgets/{id}/alerts", "GET"},
+		{"/api/v1/usage/breakdown", "GET"},
+		{"/api/v1/usage/records", "GET"},
+	}
+
+	for _, route := range enterpriseRoutes {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		match := &mux.RouteMatch{}
+		if !r.Match(req, match) {
+			t.Errorf("enterprise route %s %s not registered", route.method, route.path)
+		}
+	}
+}
+
+func TestRegisterRoutes_BackwardCompatibility(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	// RegisterRoutes should register ALL routes (community + enterprise)
+	handler.RegisterRoutes(r)
+
+	allRoutes := []struct {
+		path   string
+		method string
+	}{
+		{"/api/v1/pricing", "GET"},
+		{"/api/v1/usage", "GET"},
+		{"/api/v1/budgets", "POST"},
+		{"/api/v1/budgets", "GET"},
+		{"/api/v1/budgets/check", "POST"},
+		{"/api/v1/budgets/{id}", "GET"},
+		{"/api/v1/budgets/{id}", "PUT"},
+		{"/api/v1/budgets/{id}", "DELETE"},
+		{"/api/v1/budgets/{id}/status", "GET"},
+		{"/api/v1/budgets/{id}/alerts", "GET"},
+		{"/api/v1/usage/breakdown", "GET"},
+		{"/api/v1/usage/records", "GET"},
+	}
+
+	for _, route := range allRoutes {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		match := &mux.RouteMatch{}
+		if !r.Match(req, match) {
+			t.Errorf("route %s %s not registered by RegisterRoutes()", route.method, route.path)
+		}
+	}
+}
+
+func TestCommunityOnlyRoutes_PricingWorks(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	// Only register community routes (simulates community mode)
+	handler.RegisterCommunityRoutes(r)
+
+	req := httptest.NewRequest("GET", "/api/v1/pricing", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("pricing status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+func TestCommunityOnlyRoutes_UsageSummaryWorks(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	// Only register community routes (simulates community mode)
+	handler.RegisterCommunityRoutes(r)
+
+	req := httptest.NewRequest("GET", "/api/v1/usage?org_id=org-1&period=monthly", nil)
+	req.Header.Set("X-Org-ID", "org-1")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("usage summary status = %v, want %v", rr.Code, http.StatusOK)
+	}
+}
+
+func TestCommunityOnlyRoutes_BudgetReturns404(t *testing.T) {
+	handler, _ := setupTestHandler()
+	r := mux.NewRouter()
+
+	// Only register community routes (simulates community mode)
+	handler.RegisterCommunityRoutes(r)
+
+	// Budget CRUD should not be available (returns 404/405 because route is unregistered)
+	budgetReq := httptest.NewRequest("POST", "/api/v1/budgets", bytes.NewReader([]byte(`{}`)))
+	budgetReq.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, budgetReq)
+
+	// gorilla/mux returns 405 for unregistered routes (Method Not Allowed)
+	// or 404 if no path matches at all
+	if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("budget POST in community mode = %v, want 404 or 405", rr.Code)
+	}
+}
+
 func TestFirstOrDefault(t *testing.T) {
 	tests := []struct {
 		name   string

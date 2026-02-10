@@ -15,47 +15,31 @@ import (
 	"context"
 	"fmt"
 	"sync"
-)
 
-// LicenseTier represents the license tier for feature gating.
-type LicenseTier string
-
-// License tiers that determine available features.
-const (
-	// LicenseTierCommunity is the Community tier with basic provider support.
-	LicenseTierCommunity LicenseTier = "Community"
-
-	// LicenseTierProfessional includes advanced providers and routing.
-	LicenseTierProfessional LicenseTier = "PRO"
-
-	// LicenseTierEnterprise includes all providers and enterprise features.
-	LicenseTierEnterprise LicenseTier = "ENT"
-
-	// LicenseTierEnterprisePlus includes all features plus dedicated support.
-	LicenseTierEnterprisePlus LicenseTier = "PLUS"
+	"axonflow/platform/agent/license"
 )
 
 // providerTierRequirement maps provider types to their minimum required tier.
 // Community-available providers require Community tier (no license needed).
 // Enterprise providers require at least Professional tier.
-var providerTierRequirement = map[ProviderType]LicenseTier{
+var providerTierRequirement = map[ProviderType]license.Tier{
 	// Community providers - available without license
-	ProviderTypeOllama:      LicenseTierCommunity,
-	ProviderTypeOpenAI:      LicenseTierCommunity,
-	ProviderTypeAnthropic:   LicenseTierCommunity,
-	ProviderTypeGemini:      LicenseTierCommunity, // Gemini available in Community edition
-	ProviderTypeAzureOpenAI: LicenseTierCommunity, // Azure OpenAI available in Community edition
+	ProviderTypeOllama:      license.TierCommunity,
+	ProviderTypeOpenAI:      license.TierCommunity,
+	ProviderTypeAnthropic:   license.TierCommunity,
+	ProviderTypeGemini:      license.TierCommunity,      // Gemini available in Community edition
+	ProviderTypeAzureOpenAI: license.TierCommunity,      // Azure OpenAI available in Community edition
 
 	// Enterprise providers - require license
-	ProviderTypeBedrock: LicenseTierProfessional,
-	ProviderTypeCustom:  LicenseTierProfessional,
+	ProviderTypeBedrock: license.TierProfessional,
+	ProviderTypeCustom:  license.TierProfessional,
 }
 
 // LicenseValidator defines the interface for license validation.
 // This allows different implementations for Community and Enterprise builds.
 type LicenseValidator interface {
 	// GetCurrentTier returns the current license tier.
-	GetCurrentTier(ctx context.Context) LicenseTier
+	GetCurrentTier(ctx context.Context) license.Tier
 
 	// IsProviderAllowed checks if a provider type is allowed by the current license.
 	IsProviderAllowed(ctx context.Context, providerType ProviderType) bool
@@ -70,8 +54,8 @@ type LicenseValidator interface {
 // LicenseError represents an error related to license validation.
 type LicenseError struct {
 	ProviderType ProviderType
-	RequiredTier LicenseTier
-	CurrentTier  LicenseTier
+	RequiredTier license.Tier
+	CurrentTier  license.Tier
 	Message      string
 }
 
@@ -87,14 +71,14 @@ func (e *LicenseError) Error() string {
 // It allows only Community-tier providers and doesn't require a license key.
 type CommunityLicenseValidator struct {
 	mu       sync.RWMutex
-	tier     LicenseTier
+	tier     license.Tier
 	features map[string]bool
 }
 
 // NewCommunityLicenseValidator creates a new Community license validator.
 func NewCommunityLicenseValidator() *CommunityLicenseValidator {
 	return &CommunityLicenseValidator{
-		tier: LicenseTierCommunity,
+		tier: license.TierCommunity,
 		features: map[string]bool{
 			"multi_provider":        true,  // Community supports multiple providers
 			"load_balancing":        true,  // Basic load balancing
@@ -117,7 +101,7 @@ func NewCommunityLicenseValidator() *CommunityLicenseValidator {
 }
 
 // GetCurrentTier returns the Community tier.
-func (v *CommunityLicenseValidator) GetCurrentTier(ctx context.Context) LicenseTier {
+func (v *CommunityLicenseValidator) GetCurrentTier(ctx context.Context) license.Tier {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.tier
@@ -130,7 +114,7 @@ func (v *CommunityLicenseValidator) IsProviderAllowed(ctx context.Context, provi
 		// Unknown provider type defaults to requiring Professional tier
 		return false
 	}
-	return requiredTier == LicenseTierCommunity
+	return requiredTier == license.TierCommunity
 }
 
 // ValidateLicense is a no-op in Community mode.
@@ -154,24 +138,24 @@ func (v *CommunityLicenseValidator) GetFeatures() map[string]bool {
 }
 
 // GetTierForProvider returns the minimum tier required for a provider type.
-func GetTierForProvider(providerType ProviderType) LicenseTier {
+func GetTierForProvider(providerType ProviderType) license.Tier {
 	tier, exists := providerTierRequirement[providerType]
 	if !exists {
-		return LicenseTierProfessional // Unknown providers require license
+		return license.TierProfessional // Unknown providers require license
 	}
 	return tier
 }
 
 // IsCommunityProvider returns true if the provider is available in Community mode.
 func IsCommunityProvider(providerType ProviderType) bool {
-	return GetTierForProvider(providerType) == LicenseTierCommunity
+	return GetTierForProvider(providerType) == license.TierCommunity
 }
 
 // GetCommunityProviders returns a list of providers available in Community mode.
 func GetCommunityProviders() []ProviderType {
 	var providers []ProviderType
 	for pt, tier := range providerTierRequirement {
-		if tier == LicenseTierCommunity {
+		if tier == license.TierCommunity {
 			providers = append(providers, pt)
 		}
 	}
@@ -182,30 +166,11 @@ func GetCommunityProviders() []ProviderType {
 func GetEnterpriseProviders() []ProviderType {
 	var providers []ProviderType
 	for pt, tier := range providerTierRequirement {
-		if tier != LicenseTierCommunity {
+		if tier != license.TierCommunity {
 			providers = append(providers, pt)
 		}
 	}
 	return providers
-}
-
-// TierSatisfiesRequirement checks if a given tier meets or exceeds the required tier.
-func TierSatisfiesRequirement(currentTier, requiredTier LicenseTier) bool {
-	tierRank := map[LicenseTier]int{
-		LicenseTierCommunity:      0,
-		LicenseTierProfessional:   1,
-		LicenseTierEnterprise:     2,
-		LicenseTierEnterprisePlus: 3,
-	}
-
-	currentRank, ok1 := tierRank[currentTier]
-	requiredRank, ok2 := tierRank[requiredTier]
-
-	if !ok1 || !ok2 {
-		return false
-	}
-
-	return currentRank >= requiredRank
 }
 
 // DefaultValidator is the global license validator instance.

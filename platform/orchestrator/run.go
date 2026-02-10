@@ -45,6 +45,7 @@ import (
 	"axonflow/platform/orchestrator/replay"           // Execution replay/debug mode (#763)
 	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
 	"axonflow/platform/orchestrator/ui"               // Embedded execution viewer UI
+	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
 )
@@ -108,13 +109,19 @@ var (
 	planService         *planning.Service             // Plan storage and retrieval for GeneratePlan/ExecutePlan
 	mapExecutionTracker *MAPExecutionTracker          // Unified execution tracking for MAP (#1075)
 	executionRepo       execution.ExecutionRepository // Execution history repository
+	mapWCPExecutor      *MAPWCPExecutor               // WCP-backed executor for confirm/step modes
 
 	// Workflow Control Plane V1 (#834)
 	workflowControlService *workflow_control.Service // Workflow governance service
 	workflowControlHandler *workflow_control.Handler // Workflow Control HTTP handlers
+	webhookHandler         *webhooks.Handler         // Webhook notification HTTP handlers
 
 	// Unified Execution Tracking (#1075)
 	unifiedExecutionHandler *UnifiedExecutionHandler // Unified execution status API
+
+	// Tier enforcement
+	tierChecker         LicenseChecker       // Global tier-aware license checker
+	auditCleanupService *AuditCleanupService // Tier-aware audit log cleanup
 )
 
 // Per-stage metrics (similar to Agent)
@@ -202,6 +209,12 @@ var (
 		},
 		[]string{"provider", "status"},
 	)
+	promPlanCleanups = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "axonflow_orchestrator_plan_cleanups_total",
+			Help: "Total number of expired plans cleaned up",
+		},
+	)
 )
 
 func init() {
@@ -211,6 +224,7 @@ func init() {
 	prometheus.MustRegister(promPolicyEvaluations)
 	prometheus.MustRegister(promBlockedRequests)
 	prometheus.MustRegister(promLLMCalls)
+	prometheus.MustRegister(promPlanCleanups)
 }
 
 // Request structures
@@ -436,10 +450,15 @@ func Run() {
 	// HITL endpoints (Issue #1082)
 	r.HandleFunc("/api/v1/workflows/executions/{id}/hitl-status", getHITLExecutionStatusHandler).Methods("GET")
 
-	// Multi-Agent Planning endpoints (v0.1)
-	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")         // GeneratePlan (stores plan)
-	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST") // ExecutePlan (executes stored plan)
-	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")   // GetPlanStatus (retrieve plan)
+	// Multi-Agent Planning endpoints (v0.1 + v1.0)
+	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")                // GeneratePlan (stores plan)
+	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")        // ExecutePlan (executes stored plan)
+	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")          // GetPlanStatus (retrieve plan)
+	r.HandleFunc("/api/v1/plan/{id}/cancel", cancelPlanHandler).Methods("POST")     // CancelPlan (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}/versions", getPlanVersionsHandler).Methods("GET") // GetPlanVersions (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}", updatePlanHandler).Methods("PUT")             // UpdatePlan (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}/resume", resumePlanHandler).Methods("POST")     // ResumePlan (MAP v1.0, Enterprise)
+	r.HandleFunc("/api/v1/plan/{id}/rollback/{version:[0-9]+}", rollbackPlanHandler).Methods("POST") // RollbackPlan (MAP v1.0, Enterprise)
 
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
@@ -524,8 +543,12 @@ func Run() {
 
 	// Cost Controls & Budget Management (#764)
 	if costHandler != nil {
-		costHandler.RegisterRoutes(r)
-		log.Println("Cost Controls API routes registered (/api/v1/budgets/..., /api/v1/usage/...)")
+		costHandler.RegisterCommunityRoutes(r)
+		log.Println("Cost pricing & usage summary API routes registered (community)")
+		if !isCommunityMode() {
+			costHandler.RegisterEnterpriseRoutes(r)
+			log.Println("Budget management & analytics API routes registered (enterprise)")
+		}
 	}
 
 	// Workflow Control Plane V1 (#834)
@@ -533,6 +556,16 @@ func Run() {
 	if workflowControlHandler != nil {
 		workflowControlHandler.RegisterRoutes(r)
 		log.Println("Workflow Control Plane API routes registered (/api/v1/workflows/...)")
+		if !isCommunityMode() {
+			workflowControlHandler.RegisterEnterpriseRoutes(r)
+			log.Println("WCP Enterprise routes registered (approval/rejection)")
+		}
+	}
+
+	// Webhook management routes (available in all modes — webhooks are a core MAP v1.0 feature)
+	if webhookHandler != nil {
+		webhookHandler.RegisterRoutes(r)
+		log.Println("Webhook API routes registered (/api/v1/webhooks/...)")
 	}
 
 	// Unified Execution Tracking (#1075)
@@ -540,6 +573,20 @@ func Run() {
 	if unifiedExecutionHandler != nil {
 		unifiedExecutionHandler.RegisterRoutes(r)
 		log.Println("Unified Execution API routes registered (/api/v1/unified/executions/...)")
+	}
+
+	// Agent Config CRUD API (MAP v1.0 — Enterprise)
+	// Full CRUD for database-backed agent configs (EE binary overrides the 501 stub)
+	if usageDB != nil && !isCommunityMode() {
+		if factory := GetAgentCRUDHandlerFactory(); factory != nil {
+			var registry *AgentRegistry
+			if planningEngine != nil {
+				registry = planningEngine.GetAgentRegistry()
+			}
+			agentCRUDHandler := factory(usageDB, registry)
+			r.PathPrefix("/api/v1/agents").Handler(agentCRUDHandler)
+			log.Println("Agent Config CRUD API routes registered (/api/v1/agents/...)")
+		}
 	}
 
 	// Start server
@@ -780,12 +827,19 @@ func initializeComponents() {
 	runtimeLLMConfig := LoadLLMConfigFromService(ctx, tenantID)
 	providerConfigs := LLMConfigToProviderConfigs(runtimeLLMConfig)
 
+	// Initialize tier-aware license checker early (needed for LLM registry provider count limit)
+	tierChecker = NewEnvLicenseChecker()
+	log.Printf("License tier: %s", tierChecker.Tier())
+
 	// Initialize pluggable LLM provider system (ADR-007 Phase 2, ADR-022)
 	// This uses the factory pattern from llm/factories.go and bootstrap from llm/bootstrap.go
 	log.Println("Initializing pluggable LLM provider system (ADR-007 Phase 2)...")
+	// Create registry with tier-aware provider count limit
+	llmRegistry := llm.NewRegistry(llm.WithMaxProviders(tierChecker.MaxLLMProviders()))
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
 		SkipHealthCheck:  false, // Perform health checks on startup
 		ProviderConfigs:  providerConfigs,
+		Registry:         llmRegistry,
 	})
 	if err != nil {
 		log.Printf("⚠️  LLM bootstrap error: %v (LLM features may be unavailable)", err)
@@ -863,6 +917,14 @@ func initializeComponents() {
 	auditLogger = NewAuditLogger(dbURL)
 	log.Println("Audit Logger initialized")
 
+	// Initialize Audit Cleanup Service (tier-aware retention enforcement)
+	// tierChecker already initialized above (before LLM registry creation)
+	if usageDB != nil {
+		auditCleanupService = NewAuditCleanupService(usageDB, tierChecker)
+		auditCleanupService.StartCleanupWorker(context.Background(), 1*time.Hour)
+		log.Printf("Audit Cleanup Service initialized (retention: %d days)", tierChecker.AuditRetentionDays())
+	}
+
 	// Initialize Metrics Collector
 	metricsCollector = NewMetricsCollector()
 	log.Println("Metrics Collector initialized")
@@ -907,8 +969,41 @@ func initializeComponents() {
 	if llmRouterWrapper != nil {
 		planningEngine = NewPlanningEngine(llmRouterWrapper)
 		log.Println("Planning Engine initialized with LLM-based decomposition")
+
+		// Wire database agent source for enterprise mode (MAP v1.0)
+		// This enables hybrid mode: file-based configs + database-backed configs (DB takes priority)
+		if usageDB != nil && !isCommunityMode() {
+			if factory := GetDatabaseAgentSourceFactory(); factory != nil {
+				dbSource := factory(usageDB)
+				orgID := os.Getenv("DEFAULT_ORG_ID")
+				if orgID == "" {
+					orgID = "default"
+				}
+				registry := planningEngine.GetAgentRegistry()
+				registry.SetDatabaseSource(dbSource, orgID)
+				if err := registry.LoadFromDatabase(context.Background()); err != nil {
+					log.Printf("⚠️  Failed to load database agent configs: %v", err)
+				} else {
+					stats := registry.HybridStats()
+					log.Printf("Database agent configs loaded (mode=%s, db_domains=%d, file_domains=%d)",
+						stats.Mode, stats.DBSourcedDomains, stats.FileSourcedDomains)
+				}
+			}
+		}
 	} else {
 		log.Println("WARNING: Planning Engine not initialized - LLM Router unavailable")
+	}
+
+	// Initialize generic connector router and wire to planning engine
+	connectorRouter := InitDefaultConnectorRouter()
+	if planningEngine != nil {
+		planningEngine.SetConnectorRouter(connectorRouter)
+		caps := connectorRouter.ListCapabilities()
+		if len(caps) > 0 {
+			log.Printf("Generic connector router wired to Planning Engine (%d capabilities)", len(caps))
+		} else {
+			log.Println("Generic connector router initialized (no capabilities configured)")
+		}
 	}
 
 	// Initialize Result Aggregator (Multi-Agent Planning v0.1)
@@ -987,22 +1082,51 @@ func initializeComponents() {
 		costHandler = cost.NewHandler(costService)
 		log.Println("Cost Controls Service initialized ✅")
 
+		// Wire cost estimation into planning engine for plan cost estimates
+		if planningEngine != nil && pricing != nil {
+			planningEngine.SetPricingConfig(pricing)
+			log.Println("Cost estimation wired to Planning Engine ✅")
+		}
+
 		// Initialize MAP Two-Step Execution (#925)
 		log.Println("Initializing Planning Service for MAP two-step execution...")
 		planRepo := planning.NewPostgresRepository(usageDB)
-		planService = planning.NewService(planRepo)
+		// Use tier-appropriate plan limits
+		planConfig := planning.ServiceConfig{
+			MaxPlansWithVersioning: tierChecker.MaxPlans(),
+			MaxVersionsPerPlan:     tierChecker.MaxVersionsPerPlan(),
+		}
+		planService = planning.NewServiceWithConfig(planRepo, planConfig)
 		// Wire audit logging for MAP (Issue #1019, #1020)
 		if auditLogger != nil {
 			planService.SetAuditLogger(NewMAPAuditAdapter(auditLogger))
 		}
-		// Start background cleanup worker for expired plans
-		planService.StartCleanupWorker(context.Background(), 15*time.Minute)
+		// Start background cleanup worker for expired plans (configurable interval)
+		cleanupInterval := 15 * time.Minute
+		if envInterval := os.Getenv("PLAN_CLEANUP_INTERVAL"); envInterval != "" {
+			if parsed, err := time.ParseDuration(envInterval); err == nil && parsed > 0 {
+				cleanupInterval = parsed
+				log.Printf("Using custom plan cleanup interval: %v", cleanupInterval)
+			} else {
+				log.Printf("Invalid PLAN_CLEANUP_INTERVAL %q, using default 15m", envInterval)
+			}
+		}
+		planService.StartCleanupWorkerWithMetrics(context.Background(), cleanupInterval, func(cleaned int, err error, duration time.Duration) {
+			if err == nil && cleaned > 0 {
+				promPlanCleanups.Add(float64(cleaned))
+			}
+		})
 		log.Println("Planning Service initialized ✅")
 
 		// Initialize unified execution tracking (#1075)
 		log.Println("Initializing Unified Execution Tracker for MAP...")
 		executionRepo = execution.NewPostgresRepository(usageDB)
 		mapExecutionTracker = NewMAPExecutionTracker(executionRepo, planService)
+		mapExecutionTracker.MaxConcurrentExecutions = tierChecker.MaxConcurrentExecutions()
+		// Wire execution repo to audit cleanup for history purging
+		if auditCleanupService != nil {
+			auditCleanupService.SetExecutionRepo(executionRepo)
+		}
 		log.Println("Unified Execution Tracker initialized ✅")
 
 		// Initialize Workflow Control Plane V1 (#834)
@@ -1029,14 +1153,34 @@ func initializeComponents() {
 
 		// Wire unified execution tracking for WCP (#1075)
 		wcpExecutionTracker := NewWCPExecutionTracker(executionRepo, workflowControlService)
+		wcpExecutionTracker.MaxConcurrentExecutions = tierChecker.MaxConcurrentExecutions()
 		workflowControlService.SetExecutionTracker(wcpExecutionTracker)
 
+		// Create EventHub for SSE streaming (#1074)
+		executionEventHub := execution.NewEventHub()
+		mapExecutionTracker.SetEventHub(executionEventHub)
+		wcpExecutionTracker.SetEventHub(executionEventHub)
+
 		// Create unified execution handler for both MAP and WCP (#1075)
-		unifiedExecutionHandler = NewUnifiedExecutionHandler(executionRepo, mapExecutionTracker, wcpExecutionTracker)
+		unifiedExecutionHandler = NewUnifiedExecutionHandler(executionRepo, mapExecutionTracker, wcpExecutionTracker, executionEventHub, planService)
+		unifiedExecutionHandler.SetLicenseChecker(tierChecker)
 		log.Println("Unified Execution Handler initialized ✅")
 
 		workflowControlHandler = workflow_control.NewHandler(workflowControlService)
 		log.Println("Workflow Control Plane Service initialized ✅")
+
+		// Initialize Webhook Notifications (MAP v1.0 Phase B)
+		webhookRepo := webhooks.NewPostgresRepository(usageDB)
+		webhookService := webhooks.NewService(webhookRepo, credentialEncryptor)
+		webhookHandler = webhooks.NewHandler(webhookService)
+		workflowControlService.SetWebhookNotifier(webhookService)
+		log.Println("Webhook Notifications Service initialized ✅")
+
+		// Initialize MAP WCP Executor for confirm/step modes (MAP v1.0 Phase 3a)
+		if planService != nil {
+			mapWCPExecutor = NewMAPWCPExecutor(workflowControlService, planService)
+			log.Println("MAP WCP Executor initialized (confirm/step modes) ✅")
+		}
 
 		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
 		log.Println("Initializing SEBI Compliance Module...")
@@ -1808,6 +1952,14 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		searchReq.Limit = 100
 	}
 
+	// Enforce tier-based retention window on search start time
+	if auditCleanupService != nil {
+		cutoff := auditCleanupService.RetentionCutoff()
+		if !cutoff.IsZero() && (searchReq.StartTime.IsZero() || searchReq.StartTime.Before(cutoff)) {
+			searchReq.StartTime = cutoff
+		}
+	}
+
 	results, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
 		sendErrorResponse(w, "Audit search failed: "+err.Error(), http.StatusInternalServerError)
@@ -1854,13 +2006,23 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Search audit logs for specific tenant
+	// Search audit logs for specific tenant with retention window
+	var startTime time.Time
+	if auditCleanupService != nil {
+		cutoff := auditCleanupService.RetentionCutoff()
+		if !cutoff.IsZero() {
+			startTime = cutoff
+		}
+	}
+
 	searchReq := struct {
-		TenantID string `json:"tenant_id"`
-		Limit    int    `json:"limit"`
+		TenantID  string    `json:"tenant_id"`
+		Limit     int       `json:"limit"`
+		StartTime time.Time `json:"start_time"`
 	}{
-		TenantID: tenantID,
-		Limit:    limit,
+		TenantID:  tenantID,
+		Limit:     limit,
+		StartTime: startTime,
 	}
 
 	results, err := auditLogger.SearchAuditLogs(searchReq)
@@ -1928,6 +2090,27 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+// planExecutionTimeout returns the context timeout for MAP plan execution.
+// Scales to 30s per step (matching single-step resume timeout), minimum 60s.
+// Balanced mode groups steps but each LLM call can take 10-20s.
+func planExecutionTimeout(stepCount int) time.Duration {
+	timeout := time.Duration(stepCount) * 30 * time.Second
+	if timeout < 60*time.Second {
+		timeout = 60 * time.Second
+	}
+	return timeout
+}
+
+// isCommunityMode returns true when running in Community mode.
+// Community mode: DEPLOYMENT_MODE == "community" or unset (empty string).
+// This gates feature access (enterprise-only routes, execution modes).
+// Evaluation tier elevates resource limits via LicenseChecker, not feature access —
+// evaluation users run the community binary with higher limits, not enterprise features.
+func isCommunityMode() bool {
+	mode := os.Getenv("DEPLOYMENT_MODE")
+	return mode == "community" || mode == ""
 }
 
 func getEnv(key, defaultValue string) string {
@@ -2288,7 +2471,19 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.ExecutionMode == "" {
-		req.ExecutionMode = "auto"
+		if execMode, ok := req.Context["execution_mode"].(string); ok && execMode != "" {
+			req.ExecutionMode = execMode
+			log.Printf("[GeneratePlan] ExecutionMode extracted from context: %s", execMode)
+		} else {
+			req.ExecutionMode = "auto"
+		}
+	}
+
+	// Validate execution mode (MAP v1.0)
+	isEnterprise := !isCommunityMode()
+	if !IsValidExecutionMode(req.ExecutionMode, isEnterprise) {
+		sendErrorResponse(w, fmt.Sprintf("Invalid execution mode: %s", req.ExecutionMode), http.StatusBadRequest)
+		return
 	}
 
 	// Generate plan ID
@@ -2442,6 +2637,8 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			sendErrorResponse(w, "Plan has expired: "+planID, http.StatusGone)
 		} else if errors.Is(err, planning.ErrPlanAlreadyRun) {
 			sendErrorResponse(w, "Plan has already been executed: "+planID, http.StatusConflict)
+		} else if errors.Is(err, planning.ErrPlanCancelled) {
+			sendErrorResponse(w, "Plan has been cancelled: "+planID, http.StatusConflict)
 		} else {
 			sendErrorResponse(w, "Failed to retrieve plan: "+err.Error(), http.StatusInternalServerError)
 		}
@@ -2455,6 +2652,21 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if mapExecutionTracker != nil {
 		execStatus, err := mapExecutionTracker.StartPlanExecution(r.Context(), plan)
 		if err != nil {
+			if errors.Is(err, execution.ErrConcurrentExecutionLimit) {
+				limit := 5 // Community default
+				if tierChecker != nil {
+					limit = tierChecker.MaxConcurrentExecutions()
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    "CONCURRENT_EXECUTION_LIMIT",
+						"message": fmt.Sprintf("Maximum concurrent executions (%d) reached. Upgrade your license for higher limits: https://docs.getaxonflow.com/evaluation-license", limit),
+					},
+				})
+				return
+			}
 			log.Printf("[ExecutePlan] Warning: failed to start unified tracking for %s: %v", planID, err)
 		} else {
 			unifiedExecID = execStatus.ExecutionID
@@ -2553,8 +2765,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 3: Execute workflow (with parallel support)
-	// 60-second timeout for MAP workflow execution (multiple LLM calls + connector calls)
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), planExecutionTimeout(len(workflow.Spec.Steps)))
 	defer cancel()
 
 	// Merge stored context with request context (request context takes precedence)
@@ -2566,8 +2777,59 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Add policy result to execution context for step snapshots (Issue #1020)
 	execContext["_policy_result"] = policyResult
 
-	enableParallel := plan.Parallel
-	execution, err := workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, enableParallel)
+	// Determine execution strategy based on plan's execution mode (MAP v1.0)
+	var execution *WorkflowExecution
+	switch plan.ExecutionMode {
+	case "sequential":
+		execution, err = workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, false)
+	case "parallel":
+		execution, err = workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, true)
+	case "balanced":
+		execution, err = workflowEngine.ExecuteWorkflowBalanced(ctx, workflow, execContext, req.User)
+	case "confirm", "step":
+		// Enterprise-only: WCP-gated execution (Phase 3a)
+		if isCommunityMode() {
+			_ = planService.MarkPlanFailed(r.Context(), planID, "confirm/step mode requires Enterprise license")
+			sendErrorResponse(w, "confirm/step execution mode requires Enterprise license", http.StatusForbidden)
+			return
+		}
+		if mapWCPExecutor == nil {
+			_ = planService.MarkPlanFailed(r.Context(), planID, "WCP executor not available")
+			sendErrorResponse(w, "WCP executor not initialized", http.StatusServiceUnavailable)
+			return
+		}
+		// Dispatch to WCP-gated execution — returns immediately with awaiting_approval status
+		var wcpResult *MAPWCPExecutionResult
+		if plan.ExecutionMode == "confirm" {
+			wcpResult, err = mapWCPExecutor.ExecuteWithConfirm(ctx, plan, &workflow,
+				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Client-ID"))
+		} else {
+			wcpResult, err = mapWCPExecutor.ExecuteWithStep(ctx, plan, &workflow,
+				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Client-ID"))
+		}
+		if err != nil {
+			log.Printf("[ExecutePlan] WCP execution setup failed for plan %s: %v", planID, err)
+			_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+			sendErrorResponse(w, "WCP execution setup failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Return immediately — client must call POST /plan/{id}/resume to advance steps
+		log.Printf("[ExecutePlan] Plan %s entering %s mode (workflow=%s)", planID, plan.ExecutionMode, wcpResult.WorkflowID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"plan_id":       wcpResult.PlanID,
+			"workflow_id":   wcpResult.WorkflowID,
+			"status":        wcpResult.Status,
+			"current_step":  wcpResult.CurrentStep,
+			"total_steps":   wcpResult.TotalSteps,
+			"step_name":     wcpResult.StepName,
+			"approval_info": wcpResult.ApprovalInfo,
+		})
+		return
+	default:
+		// "auto" or empty — backwards compatible with plan.Parallel boolean
+		execution, err = workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, plan.Parallel)
+	}
 	if err != nil {
 		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", planID, err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
@@ -2671,6 +2933,22 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract orgID for tenant isolation (consistent with cancelPlanHandler, updatePlanHandler, rollbackPlanHandler)
+	orgID := r.Header.Get("X-Org-ID")
+
+	// Always verify tenant ownership via the plan service before returning any data
+	plan, err := planService.GetPlan(r.Context(), planID)
+	if err != nil {
+		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", planID, err)
+		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
+		log.Printf("[GetPlanStatus] Authorization failed: plan %s belongs to org %s, requested by org %s", planID, plan.OrgID, orgID)
+		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+		return
+	}
+
 	// Use unified execution tracker if available (#1075)
 	if mapExecutionTracker != nil {
 		execStatus, err := mapExecutionTracker.GetPlanStatus(r.Context(), planID)
@@ -2690,51 +2968,15 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[GetPlanStatus] Unified tracking not available for %s, using legacy: %v", planID, err)
 	}
 
-	// Legacy: Get plan from storage
-	plan, err := planService.GetPlan(r.Context(), planID)
-	if err != nil {
-		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", planID, err)
-		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
+	// Convert plan to unified ExecutionStatus, then to API response.
+	// This ensures legacy and tracker paths return the same fields:
+	// progress_percent, steps[], execution_id, duration, started_at, version,
+	// execution_result, workflow_definition (all additive, backward-compatible).
+	execStatus := planToExecutionStatus(plan)
+	response := buildUnifiedStatusResponse(execStatus)
 
-	// Calculate completed steps based on plan status
-	completedSteps := 0
-	if plan.Status == planning.PlanStatusCompleted {
-		completedSteps = plan.StepCount
-	}
-
-	// Build response with plan status and metadata
-	// Note: SDK expects "total_steps" and "completed_steps" (not "step_count")
-	response := map[string]interface{}{
-		"plan_id":         plan.PlanID,
-		"status":          string(plan.Status),
-		"org_id":          plan.OrgID,
-		"query":           plan.Query,
-		"domain":          plan.Domain,
-		"complexity":      plan.Complexity,
-		"total_steps":     plan.StepCount,
-		"completed_steps": completedSteps,
-		"created_at":      plan.CreatedAt,
-		"expires_at":      plan.ExpiresAt,
-	}
-
-	// Include execution result if available
-	if len(plan.ExecutionResult) > 0 {
-		response["execution_result"] = plan.ExecutionResult
-	}
-
-	// Include workflow definition if available
-	if len(plan.WorkflowDefinition) > 0 {
-		response["workflow_definition"] = plan.WorkflowDefinition
-	}
-
-	// Include error if present
-	if plan.ErrorMessage != "" {
-		response["error"] = plan.ErrorMessage
-	}
-
-	log.Printf("[GetPlanStatus] Returning plan %s with status %s", planID, plan.Status)
+	log.Printf("[GetPlanStatus] Returning plan %s with status %s (legacy path, %.1f%% complete)",
+		planID, plan.Status, execStatus.ProgressPercent)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -2745,12 +2987,17 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 // buildUnifiedStatusResponse converts ExecutionStatus to API response format
 // This provides step-level details that the legacy handler doesn't have
 func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]interface{} {
-	// Calculate completed steps
+	// Calculate completed steps from the steps array if populated,
+	// otherwise use CurrentStepIndex (set by planToExecutionStatus based on plan status)
 	completedSteps := 0
-	for _, step := range exec.Steps {
-		if step.Status == execution.StepStatusCompleted {
-			completedSteps++
+	if len(exec.Steps) > 0 {
+		for _, step := range exec.Steps {
+			if step.Status == execution.StepStatusCompleted {
+				completedSteps++
+			}
 		}
+	} else {
+		completedSteps = exec.CurrentStepIndex
 	}
 
 	response := map[string]interface{}{
@@ -2779,6 +3026,15 @@ func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]inte
 		}
 		if executionMode, ok := exec.Metadata["execution_mode"]; ok {
 			response["execution_mode"] = executionMode
+		}
+		if version, ok := exec.Metadata["version"]; ok {
+			response["version"] = version
+		}
+		if execResult, ok := exec.Metadata["execution_result"]; ok {
+			response["execution_result"] = execResult
+		}
+		if workflowDef, ok := exec.Metadata["workflow_definition"]; ok {
+			response["workflow_definition"] = workflowDef
 		}
 	}
 
@@ -2838,6 +3094,466 @@ func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]inte
 	}
 
 	return response
+}
+
+// cancelPlanHandler cancels a pending or executing plan
+// SDK calls: POST /api/v1/plan/{id}/cancel
+func cancelPlanHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[CancelPlan] Received cancel plan request")
+
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse optional reason from body
+	var req planning.CancelPlanRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.Reason == "" {
+		req.Reason = "cancelled via API"
+	}
+
+	// Extract orgID from headers (set by agent auth)
+	orgID := r.Header.Get("X-Org-ID")
+
+	if err := planService.CancelPlan(r.Context(), planID, orgID, req.Reason); err != nil {
+		log.Printf("[CancelPlan] Failed to cancel plan %s: %v", planID, err)
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+			return
+		}
+		sendErrorResponse(w, "Failed to cancel plan: "+err.Error(), http.StatusConflict)
+		return
+	}
+
+	// Sync unified tracking
+	if mapExecutionTracker != nil {
+		_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCancelled, req.Reason)
+	}
+
+	log.Printf("[CancelPlan] Plan %s cancelled: %s", planID, req.Reason)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"plan_id": planID,
+		"status":  "cancelled",
+		"reason":  req.Reason,
+		"message": req.Reason,
+	})
+}
+
+// updatePlanHandler updates a plan with optimistic locking (version conflict detection)
+// SDK calls: PUT /api/v1/plan/{id}
+func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[UpdatePlan] Received update plan request")
+
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	var req planning.UpdatePlanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.PlanID = planID
+	req.OrgID = r.Header.Get("X-Org-ID")
+	req.ChangedBy = r.Header.Get("X-User-ID")
+
+	// Validate execution mode if provided
+	if req.ExecutionMode != "" {
+		isEnterprise := !isCommunityMode()
+		if !IsValidExecutionMode(req.ExecutionMode, isEnterprise) {
+			sendErrorResponse(w, "Invalid execution mode: "+req.ExecutionMode, http.StatusBadRequest)
+			return
+		}
+	}
+
+	plan, err := planService.UpdatePlan(r.Context(), &req)
+	if err != nil {
+		log.Printf("[UpdatePlan] Failed to update plan %s: %v", planID, err)
+		if errors.Is(err, planning.ErrVersionConflict) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "version_conflict",
+				"message": err.Error(),
+				"plan_id": planID,
+			})
+			return
+		}
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, planning.ErrMaxPlans) || errors.Is(err, planning.ErrMaxVersions) {
+			sendErrorResponse(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		sendErrorResponse(w, "Failed to update plan: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[UpdatePlan] Plan %s updated to version %d", planID, plan.Version)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"plan_id": plan.PlanID,
+		"version": plan.Version,
+		"status":  string(plan.Status),
+	})
+}
+
+// getPlanVersionsHandler retrieves version history for a plan
+// SDK calls: GET /api/v1/plan/{id}/versions
+func getPlanVersionsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[GetPlanVersions] Received get plan versions request")
+
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	orgID := r.Header.Get("X-Org-ID")
+
+	versions, err := planService.GetPlanVersions(r.Context(), planID, orgID)
+	if err != nil {
+		log.Printf("[GetPlanVersions] Failed to get versions for plan %s: %v", planID, err)
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+			return
+		}
+		sendErrorResponse(w, "Failed to get plan versions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[GetPlanVersions] Returning %d versions for plan %s", len(versions), planID)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"plan_id":  planID,
+		"versions": versions,
+	})
+}
+
+// resumePlanHandler resumes a paused plan (confirm/step mode, Enterprise only)
+// SDK calls: POST /api/v1/plan/{id}/resume
+func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[ResumePlan] Received resume plan request")
+
+	// Enterprise only
+	if isCommunityMode() {
+		sendErrorResponse(w, "Resume plan requires Enterprise license (confirm/step mode)", http.StatusForbidden)
+		return
+	}
+
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse resume request
+	var req struct {
+		Approved *bool `json:"approved"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	// Default approved to true
+	approved := true
+	if req.Approved != nil {
+		approved = *req.Approved
+	}
+
+	if mapWCPExecutor == nil || workflowControlService == nil {
+		sendErrorResponse(w, "WCP executor not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get the plan — must be in "executing" status (set during ExecutePlan)
+	plan, err := planService.GetPlan(r.Context(), planID)
+	if err != nil {
+		log.Printf("[ResumePlan] Plan %s not found: %v", planID, err)
+		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+		return
+	}
+	if plan.Status != planning.PlanStatusExecuting {
+		sendErrorResponse(w, fmt.Sprintf("Plan is in %s status, must be executing to resume", plan.Status), http.StatusBadRequest)
+		return
+	}
+
+	// Find the WCP workflow associated with this plan by naming convention
+	// Workflows are named "map-confirm-{planID}" or "map-step-{planID}"
+	orgID := r.Header.Get("X-Org-ID")
+	mapSource := workflow_control.WorkflowSource("map")
+	listResp, err := workflowControlService.ListWorkflows(r.Context(), workflow_control.ListWorkflowsOptions{
+		Source:   &mapSource,
+		TenantID: r.Header.Get("X-Tenant-ID"),
+		OrgID:    orgID,
+		Limit:    50,
+	})
+	if err != nil {
+		sendErrorResponse(w, "Failed to list workflows: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[ResumePlan] Searching workflows: source=map, tenantID=%s, orgID=%s", r.Header.Get("X-Tenant-ID"), orgID)
+	log.Printf("[ResumePlan] Found %d workflows", len(listResp.Workflows))
+	for i, wf := range listResp.Workflows {
+		log.Printf("[ResumePlan] Workflow[%d]: id=%s name=%s status=%s steps=%d", i, wf.WorkflowID, wf.WorkflowName, wf.Status, len(wf.Steps))
+	}
+
+	// Find the active workflow for this plan by matching workflow name
+	var targetWorkflowID string
+	var targetCurrentStep int
+	var targetSteps []workflow_control.StepInfo
+	for _, wf := range listResp.Workflows {
+		if (wf.WorkflowName == "map-confirm-"+planID || wf.WorkflowName == "map-step-"+planID) &&
+			wf.Status != workflow_control.WorkflowStatusCompleted &&
+			wf.Status != workflow_control.WorkflowStatusAborted &&
+			wf.Status != workflow_control.WorkflowStatusFailed {
+			targetWorkflowID = wf.WorkflowID
+			targetCurrentStep = wf.CurrentStepIndex
+			targetSteps = wf.Steps
+			break
+		}
+	}
+	if targetWorkflowID == "" {
+		sendErrorResponse(w, "No active WCP workflow found for this plan", http.StatusNotFound)
+		return
+	}
+
+	// Handle rejection: abort workflow + fail plan
+	if !approved {
+		log.Printf("[ResumePlan] Plan %s step rejected, aborting workflow %s", planID, targetWorkflowID)
+		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user")
+		_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"plan_id":     planID,
+			"workflow_id": targetWorkflowID,
+			"status":      "rejected",
+			"message":     "Step rejected, plan aborted",
+		})
+		return
+	}
+
+	// Handle approval: find pending step, approve it, execute it
+	log.Printf("[ResumePlan] Plan %s step approved, executing next step in workflow %s", planID, targetWorkflowID)
+
+	// Find the pending step from the workflow status response steps
+	var pendingStepID string
+	for _, step := range targetSteps {
+		if step.ApprovalStatus != nil && *step.ApprovalStatus == workflow_control.ApprovalStatusPending {
+			pendingStepID = step.StepID
+			break
+		}
+	}
+
+	if pendingStepID != "" {
+		// Approve the pending step in WCP
+		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-User-ID")); err != nil {
+			log.Printf("[ResumePlan] Failed to approve step %s: %v", pendingStepID, err)
+			sendErrorResponse(w, "Failed to approve step: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Execute the step (parse workflow, run through engine)
+	var workflow Workflow
+	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
+		sendErrorResponse(w, "Invalid workflow definition", http.StatusInternalServerError)
+		return
+	}
+
+	stepIndex := targetCurrentStep
+	if stepIndex >= len(workflow.Spec.Steps) {
+		// All steps completed — mark plan as completed
+		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
+		_ = planService.MarkPlanCompleted(r.Context(), planID, map[string]interface{}{"status": "all_steps_completed"})
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"plan_id":     planID,
+			"workflow_id": targetWorkflowID,
+			"status":      "completed",
+			"message":     "All steps completed",
+		})
+		return
+	}
+
+	// Execute the current step
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	execContext := make(map[string]interface{})
+	stepResult, err := mapWCPExecutor.ExecuteSingleStep(ctx, plan, &workflow, stepIndex, execContext, r.Header.Get("X-User-ID"), workflowEngine)
+	if err != nil {
+		log.Printf("[ResumePlan] Step execution failed: %v", err)
+		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error())
+		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		sendErrorResponse(w, "Step execution failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Mark step as completed in WCP
+	stepID := fmt.Sprintf("step_%d_%s", stepIndex, workflow.Spec.Steps[stepIndex].Name)
+	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID)
+
+	// Check if there are more steps
+	nextStepIndex := stepIndex + 1
+	if nextStepIndex >= len(workflow.Spec.Steps) {
+		// All steps done
+		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
+		_ = planService.MarkPlanCompleted(r.Context(), planID, stepResult.Output)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"plan_id":      planID,
+			"workflow_id":  targetWorkflowID,
+			"status":       "completed",
+			"step_result":  stepResult,
+			"message":      "All steps completed",
+		})
+		return
+	}
+
+	// Gate the next step for approval (confirm/step mode: all subsequent steps need approval)
+	nextStep := workflow.Spec.Steps[nextStepIndex]
+	requireApproval := workflow_control.GateDecisionRequireApproval
+	_, _ = workflowControlService.StepGate(r.Context(), targetWorkflowID,
+		fmt.Sprintf("step_%d_%s", nextStepIndex, nextStep.Name),
+		&workflow_control.StepGateRequest{
+			StepName:     nextStep.Name,
+			StepType:     mapStepTypeToWCP(nextStep.Type),
+			GateOverride: &requireApproval,
+		}, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), r.Header.Get("X-Client-ID"))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"plan_id":         planID,
+		"workflow_id":     targetWorkflowID,
+		"status":          "awaiting_approval",
+		"step_result":     stepResult,
+		"next_step":       nextStepIndex,
+		"next_step_name":  nextStep.Name,
+		"total_steps":     len(workflow.Spec.Steps),
+	})
+}
+
+// rollbackPlanHandler rolls back a plan to a previous version.
+// Community edition is subject to plan/version limits enforced by the planning service.
+// SDK calls: POST /api/v1/plan/{id}/rollback/{version}
+func rollbackPlanHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("[RollbackPlan] Received rollback plan request")
+
+	// Enterprise only — rollback requires version history which is an Enterprise feature
+	if isCommunityMode() {
+		sendErrorResponse(w, "Rollback plan requires Enterprise license", http.StatusForbidden)
+		return
+	}
+
+	if planService == nil {
+		sendErrorResponse(w, "Plan storage not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	vars := mux.Vars(r)
+	planID := vars["id"]
+	if planID == "" {
+		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
+		return
+	}
+
+	versionStr := vars["version"]
+	targetVersion, err := strconv.Atoi(versionStr)
+	if err != nil || targetVersion < 1 {
+		sendErrorResponse(w, "Invalid target version", http.StatusBadRequest)
+		return
+	}
+
+	req := &planning.RollbackPlanRequest{
+		PlanID:        planID,
+		TargetVersion: targetVersion,
+		OrgID:         r.Header.Get("X-Org-ID"),
+		RolledBackBy:  r.Header.Get("X-User-ID"),
+	}
+
+	plan, err := planService.RollbackPlan(r.Context(), req)
+	if err != nil {
+		log.Printf("[RollbackPlan] Failed to rollback plan %s: %v", planID, err)
+		if errors.Is(err, planning.ErrVersionConflict) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "version_conflict",
+				"message": err.Error(),
+				"plan_id": planID,
+			})
+			return
+		}
+		if errors.Is(err, planning.ErrVersionNotFound) {
+			sendErrorResponse(w, fmt.Sprintf("Version %d not found for plan %s", targetVersion, planID), http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, planning.ErrMaxPlans) || errors.Is(err, planning.ErrMaxVersions) {
+			sendErrorResponse(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		sendErrorResponse(w, "Failed to rollback plan: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[RollbackPlan] Plan %s rolled back to version %d (now v%d)", planID, targetVersion, plan.Version)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":          true,
+		"plan_id":          plan.PlanID,
+		"version":          plan.Version,
+		"previous_version": plan.Version - 1,
+		"status":           string(plan.Status),
+		"rolled_back_to":   targetVersion,
+	})
 }
 
 // convertWorkflowStepsToResponse converts workflow steps to SDK-compatible response format

@@ -66,7 +66,7 @@ async def main() -> int:
 
             try:
                 result = await axonflow.get_policy_approved_context(
-                    user_token="hello-world-user",
+                    user_token=os.getenv("AXONFLOW_USER_TOKEN", "hello-world-user"),
                     query=test["query"],
                 )
 

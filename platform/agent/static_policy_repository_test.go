@@ -172,7 +172,7 @@ func TestCreate(t *testing.T) {
 				// Check license tier (Enterprise)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
 				// Insert policy (no count check for Enterprise)
 				mock.ExpectExec(`INSERT INTO static_policies`).
@@ -221,7 +221,7 @@ func TestCreate(t *testing.T) {
 				// Check license tier (Enterprise)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("PLUS"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Plus"))
 
 				// Insert policy
 				mock.ExpectExec(`INSERT INTO static_policies`).
@@ -249,7 +249,7 @@ func TestCreate(t *testing.T) {
 				// Check license tier (Enterprise)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 			},
 			errContains: "organization_id is required",
 		},
@@ -271,7 +271,7 @@ func TestCreate(t *testing.T) {
 				// Check license tier (Enterprise for HITL)
 				mock.ExpectQuery(`SELECT license_tier FROM clients`).
 					WithArgs("tenant-1").
-					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
 				// Insert policy - verify the INSERT includes phase and action columns
 				// For require_approval: phase="request", action_request="require_approval", action_response=NULL
@@ -714,12 +714,12 @@ func TestGetVersions(t *testing.T) {
 		},
 		{
 			name:          "enterprise no limit",
-			licenseTier:   "ENT",
+			licenseTier:   "Enterprise",
 			expectedLimit: 1000,
 		},
 		{
 			name:          "enterprise plus no limit",
-			licenseTier:   "PLUS",
+			licenseTier:   "Plus",
 			expectedLimit: 1000,
 		},
 	}
@@ -902,9 +902,9 @@ func TestIsEnterpriseLicense(t *testing.T) {
 		expected   bool
 	}{
 		{"community", "Community", false, false},
-		{"professional", "PRO", false, false},
-		{"enterprise", "ENT", false, true},
-		{"enterprise plus", "PLUS", false, true},
+		{"professional", "Professional", false, false},
+		{"enterprise", "Enterprise", false, true},
+		{"enterprise plus", "Plus", false, true},
 		{"not found", "", true, false},
 	}
 
@@ -956,7 +956,7 @@ func BenchmarkCreate(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		mock.ExpectQuery(`SELECT license_tier FROM clients`).
 			WithArgs("tenant-1").
-			WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("ENT"))
+			WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 		mock.ExpectExec(`INSERT INTO static_policies`).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec(`INSERT INTO static_policy_versions`).

@@ -6,6 +6,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -199,6 +200,23 @@ func (m *MockRepository) UpdateCost(ctx context.Context, executionID string, est
 }
 
 // SetError helpers for testing error paths
+func (m *MockRepository) CountActive(ctx context.Context, tenantID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, exec := range m.executions {
+		if exec.TenantID == tenantID && (exec.Status == StatusRunning || exec.Status == StatusPending) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *MockRepository) PurgeOldest(ctx context.Context, tenantID string, keepCount int) (int64, error) {
+	// Simplified mock: just return 0
+	return 0, nil
+}
+
 func (m *MockRepository) SetCreateError(err error)  { m.createErr = err }
 func (m *MockRepository) SetGetError(err error)     { m.getErr = err }
 func (m *MockRepository) SetUpdateError(err error)  { m.updateErr = err }
@@ -314,6 +332,66 @@ func TestBaseExecutionTracker_StartExecution(t *testing.T) {
 				tt.checkFunc(t, exec)
 			}
 		})
+	}
+}
+
+func TestBaseExecutionTracker_ConcurrentExecutionLimit(t *testing.T) {
+	repo := NewMockRepository()
+	clock := &MockClock{now: time.Date(2026, 1, 23, 10, 0, 0, 0, time.UTC)}
+	tracker := NewBaseExecutionTrackerWithClock(repo, clock)
+	tracker.MaxConcurrentExecutions = 2
+
+	tenantID := "tenant-limit-test"
+
+	// Start 2 executions — should succeed
+	for i := 0; i < 2; i++ {
+		_, err := tracker.StartExecution(context.Background(), CreateExecutionRequest{
+			ExecutionType: ExecutionTypeMAP,
+			Name:          fmt.Sprintf("Exec %d", i),
+			TenantID:      tenantID,
+		})
+		if err != nil {
+			t.Fatalf("StartExecution %d error = %v", i, err)
+		}
+	}
+
+	// Third should fail with concurrent limit error
+	_, err := tracker.StartExecution(context.Background(), CreateExecutionRequest{
+		ExecutionType: ExecutionTypeMAP,
+		Name:          "Exec overflow",
+		TenantID:      tenantID,
+	})
+	if !errors.Is(err, ErrConcurrentExecutionLimit) {
+		t.Fatalf("expected ErrConcurrentExecutionLimit, got %v", err)
+	}
+
+	// Different tenant should succeed (limit is per-tenant)
+	_, err = tracker.StartExecution(context.Background(), CreateExecutionRequest{
+		ExecutionType: ExecutionTypeMAP,
+		Name:          "Other Tenant Exec",
+		TenantID:      "other-tenant",
+	})
+	if err != nil {
+		t.Fatalf("different tenant should succeed, got error: %v", err)
+	}
+}
+
+func TestBaseExecutionTracker_ConcurrentExecutionLimit_Unlimited(t *testing.T) {
+	repo := NewMockRepository()
+	clock := &MockClock{now: time.Date(2026, 1, 23, 10, 0, 0, 0, time.UTC)}
+	tracker := NewBaseExecutionTrackerWithClock(repo, clock)
+	tracker.MaxConcurrentExecutions = -1 // unlimited (Enterprise)
+
+	// Should be able to start many executions
+	for i := 0; i < 10; i++ {
+		_, err := tracker.StartExecution(context.Background(), CreateExecutionRequest{
+			ExecutionType: ExecutionTypeMAP,
+			Name:          fmt.Sprintf("Exec %d", i),
+			TenantID:      "tenant-unlimited",
+		})
+		if err != nil {
+			t.Fatalf("StartExecution %d error = %v", i, err)
+		}
 	}
 }
 

@@ -409,39 +409,31 @@ func Run() {
 	if isCommunityMode() {
 		log.Println("🏠 Community mode - skipping license validation")
 		log.Println("   Perfect for Community contributors and local development")
+	} else if licenseKey == "" {
+		log.Println("⚠️  AXONFLOW_LICENSE_KEY not set - running in central agent mode")
+		log.Println("   Central agents validate client license keys during request processing")
 	} else {
-		// Validate HMAC secret is properly configured before any license operations
-		// This is required for BOTH:
-		// 1. Agent-level license validation (when AXONFLOW_LICENSE_KEY is set)
-		// 2. Client license validation in central agent mode (during request processing)
-		if err := license.ValidateHMACSecretAtStartup(); err != nil {
-			log.Fatalf("[SECURITY] HMAC secret validation failed: %v", err)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		result, err := license.ValidateWithRetry(ctx, licenseKey, 3)
+		if err != nil {
+			log.Fatalf("License validation failed: %v", err)
 		}
 
-		if licenseKey == "" {
-			log.Println("⚠️  AXONFLOW_LICENSE_KEY not set - running in central agent mode")
-			log.Println("   Central agents validate client license keys during request processing")
-		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+		if !result.Valid {
+			log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
+		}
 
-			result, err := license.ValidateWithRetry(ctx, licenseKey, 3)
-			if err != nil {
-				log.Fatalf("License validation failed: %v", err)
-			}
+		log.Printf("✅ License validated successfully")
+		log.Printf("   Tier: %s", result.Tier)
+		log.Printf("   Max Nodes: %d", result.MaxNodes)
+		log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
 
-			if !result.Valid {
-				log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
-			}
-
-			log.Printf("✅ License validated successfully")
-			log.Printf("   Tier: %s", result.Tier)
-			log.Printf("   Max Nodes: %d", result.MaxNodes)
-			log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
-
-			if result.DaysUntilExpiry <= 30 {
-				log.Printf("   ⚠️  License expires in %d days - contact sales for renewal", result.DaysUntilExpiry)
-			}
+		if result.DaysUntilExpiry <= 3 && result.DaysUntilExpiry > 0 {
+			log.Printf("   ⚠️  LICENSE EXPIRING IN %d DAYS — renew at https://getaxonflow.com/evaluation-license", result.DaysUntilExpiry)
+		} else if result.DaysUntilExpiry <= 30 {
+			log.Printf("   ⚠️  License expires in %d days - contact sales for renewal", result.DaysUntilExpiry)
 		}
 	}
 
@@ -1312,69 +1304,99 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track successful request
-	if agentMetrics != nil {
-		atomic.AddInt64(&agentMetrics.successRequests, 1)
-		latencyMs := int64(time.Since(startTime).Milliseconds())
-		agentMetrics.recordLatency(latencyMs, "dynamic")
+	// Detect orchestrator-level errors (e.g., 409 cancelled, 410 expired, 403 blocked).
+	// forwardToOrchestrator returns nil error for any HTTP response with valid JSON,
+	// even non-2xx status codes. We must inspect the response body to determine
+	// if the orchestrator reported a business-level failure.
+	orchSuccess := true
+	orchError := ""
+	orchHTTPStatus := 200
+	orchMap, _ := orchestratorResp.(map[string]interface{})
+	if orchMap != nil {
+		if s, exists := orchMap["success"]; exists {
+			if sb, ok := s.(bool); ok {
+				orchSuccess = sb
+				if !sb {
+					orchHTTPStatus = 500
+				}
+			}
+		}
+		if e, exists := orchMap["error"]; exists {
+			if es, ok := e.(string); ok && es != "" {
+				orchError = es
+			}
+		}
 	}
 
-	// Record Prometheus metrics
-	promRequestsTotal.WithLabelValues("success").Inc()
+	// Track request outcome based on orchestrator response
+	latencyMs := int64(time.Since(startTime).Milliseconds())
+	if orchSuccess {
+		if agentMetrics != nil {
+			atomic.AddInt64(&agentMetrics.successRequests, 1)
+			agentMetrics.recordLatency(latencyMs, "dynamic")
+		}
+		promRequestsTotal.WithLabelValues("success").Inc()
+	} else {
+		if agentMetrics != nil {
+			atomic.AddInt64(&agentMetrics.failedRequests, 1)
+			agentMetrics.recordLatency(latencyMs, "dynamic")
+		}
+		promRequestsTotal.WithLabelValues("orchestrator_error").Inc()
+		log.Printf("[clientRequestHandler] Orchestrator returned error: %s", orchError)
+	}
 	promPolicyEvaluations.Inc()
-	promRequestDuration.WithLabelValues("dynamic").Observe(float64(time.Since(startTime).Milliseconds()))
+	promRequestDuration.WithLabelValues("dynamic").Observe(float64(latencyMs))
 
 	// Issue #1082: Record cost tracking after successful LLM call
 	// This updates budget usage so enforcement works on subsequent requests
-	if costService != nil {
-		if orchMap, ok := orchestratorResp.(map[string]interface{}); ok {
-			if providerInfoRaw, exists := orchMap["provider_info"]; exists {
-				if providerInfoMap, ok := providerInfoRaw.(map[string]interface{}); ok {
-					// Extract provider info
-					provider := ""
-					model := ""
-					tokensUsed := 0
-					costUSD := 0.0
+	// Skip cost recording for orchestrator errors (no LLM call was made)
+	if costService != nil && orchSuccess && orchMap != nil {
+		if providerInfoRaw, exists := orchMap["provider_info"]; exists {
+			if providerInfoMap, ok := providerInfoRaw.(map[string]interface{}); ok {
+				// Extract provider info
+				provider := ""
+				model := ""
+				tokensUsed := 0
+				costUSD := 0.0
 
-					if p, ok := providerInfoMap["provider"].(string); ok {
-						provider = p
-					}
-					if m, ok := providerInfoMap["model"].(string); ok {
-						model = m
-					}
-					if t, ok := providerInfoMap["tokens_used"].(float64); ok {
-						tokensUsed = int(t)
-					}
-					if c, ok := providerInfoMap["cost"].(float64); ok {
-						costUSD = c
+				if p, ok := providerInfoMap["provider"].(string); ok {
+					provider = p
+				}
+				if m, ok := providerInfoMap["model"].(string); ok {
+					model = m
+				}
+				if t, ok := providerInfoMap["tokens_used"].(float64); ok {
+					tokensUsed = int(t)
+				}
+				if c, ok := providerInfoMap["cost"].(float64); ok {
+					costUSD = c
+				}
+
+				// Record usage if we have token info
+				if tokensUsed > 0 || costUSD > 0 {
+					// Generate request ID (ClientRequest doesn't have one, generate based on timestamp)
+					requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+					usageRecord := &cost.UsageRecord{
+						RequestID: requestID,
+						Timestamp: time.Now().UTC(),
+						OrgID:     client.OrgID,
+						TenantID:  user.TenantID,
+						UserID:    fmt.Sprintf("%d", user.ID),
+						Provider:  provider,
+						Model:     model,
+						TokensIn:  tokensUsed / 2, // Approximate split (tokens_used is total)
+						TokensOut: tokensUsed / 2,
+						CostUSD:   costUSD,
 					}
 
-					// Record usage if we have token info
-					if tokensUsed > 0 || costUSD > 0 {
-						// Generate request ID (ClientRequest doesn't have one, generate based on timestamp)
-						requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
-						usageRecord := &cost.UsageRecord{
-							RequestID: requestID,
-							Timestamp: time.Now().UTC(),
-							OrgID:     client.OrgID,
-							TenantID:  user.TenantID,
-							UserID:    fmt.Sprintf("%d", user.ID),
-							Provider:  provider,
-							Model:     model,
-							TokensIn:  tokensUsed / 2, // Approximate split (tokens_used is total)
-							TokensOut: tokensUsed / 2,
-							CostUSD:   costUSD,
-						}
-
-						// Issue #1082: Record synchronously so budget enforcement works on subsequent requests
-						// This ensures budget check sees updated usage before allowing next request
-						ctx := context.Background()
-						if err := costService.RecordUsage(ctx, usageRecord); err != nil {
-							log.Printf("💰 [clientRequestHandler] Failed to record usage: %v", err)
-						} else {
-							log.Printf("💰 [clientRequestHandler] Recorded cost: provider=%s model=%s tokens=%d cost=$%.6f",
-								usageRecord.Provider, usageRecord.Model, usageRecord.TokensIn+usageRecord.TokensOut, usageRecord.CostUSD)
-						}
+					// Issue #1082: Record synchronously so budget enforcement works on subsequent requests
+					// This ensures budget check sees updated usage before allowing next request
+					ctx := context.Background()
+					if err := costService.RecordUsage(ctx, usageRecord); err != nil {
+						log.Printf("💰 [clientRequestHandler] Failed to record usage: %v", err)
+					} else {
+						log.Printf("💰 [clientRequestHandler] Recorded cost: provider=%s model=%s tokens=%d cost=$%.6f",
+							usageRecord.Provider, usageRecord.Model, usageRecord.TokensIn+usageRecord.TokensOut, usageRecord.CostUSD)
 					}
 				}
 			}
@@ -1400,14 +1422,18 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// 8. Return response with policy information
 	// Issue #1082: Extract "data" field from orchestratorResp (which now contains full response)
 	responseData := orchestratorResp
-	if orchMap, ok := orchestratorResp.(map[string]interface{}); ok {
+	if orchMap != nil {
 		if data, exists := orchMap["data"]; exists {
 			responseData = data
 		}
 	}
+
+	// orchSuccess and orchError were extracted above (after forwardToOrchestrator)
+	// and used for metrics, cost tracking, and now the client response.
 	response := ClientResponse{
-		Success: true,
+		Success: orchSuccess,
 		Data:    responseData,
+		Error:   orchError,
 		PolicyInfo: &PolicyEvaluationInfo{
 			PoliciesEvaluated: policyResult.TriggeredPolicies,
 			StaticChecks:      policyResult.ChecksPerformed,
@@ -1510,7 +1536,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 				InstanceType:   "agent",
 				HTTPMethod:     r.Method,
 				HTTPPath:       r.URL.Path,
-				HTTPStatusCode: 200, // Success if we got here
+				HTTPStatusCode: orchHTTPStatus,
 				LatencyMs:      time.Since(startTime).Milliseconds(),
 			})
 
@@ -1650,7 +1676,22 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 	// Make HTTP call to orchestrator
 	orchURL := orchestratorURL + orchEndpoint
 	log.Printf("🚀 Forwarding to orchestrator: %s (ClientID: %s, Type: %s)", orchURL, req.ClientID, req.RequestType)
-	resp, err := http.Post(orchURL, "application/json", bytes.NewBuffer(jsonData))
+	orchReq, err := http.NewRequest("POST", orchURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create orchestrator request: %v", err)
+	}
+	orchReq.Header.Set("Content-Type", "application/json")
+	// Forward tenant/org/client context so orchestrator handlers can access them
+	if user != nil && user.TenantID != "" {
+		orchReq.Header.Set("X-Tenant-ID", user.TenantID)
+	}
+	if client != nil {
+		orchReq.Header.Set("X-Client-ID", client.ID)
+		if (user == nil || user.TenantID == "") && client.TenantID != "" {
+			orchReq.Header.Set("X-Tenant-ID", client.TenantID)
+		}
+	}
+	resp, err := http.DefaultClient.Do(orchReq)
 	if err != nil {
 		log.Printf("❌ ERROR: Failed to call orchestrator at %s: %v", orchURL, err)
 		return nil, fmt.Errorf("orchestrator connection failed: %v", err)

@@ -20,6 +20,7 @@ import (
 type MetricsCollector struct {
 	metrics *Metrics
 	mu      sync.RWMutex
+	stopCh  chan struct{}
 }
 
 // Metrics represents collected metrics
@@ -89,6 +90,7 @@ func NewMetricsCollector() *MetricsCollector {
 			CollectionStarted: time.Now(),
 			LastResetTime:     time.Now(),
 		},
+		stopCh: make(chan struct{}),
 	}
 
 	// Start background tasks
@@ -369,16 +371,31 @@ func (c *MetricsCollector) copySystemMetrics() *SystemMetrics {
 	}
 }
 
+// Close stops background goroutines.
+func (c *MetricsCollector) Close() {
+	select {
+	case <-c.stopCh:
+		// already closed
+	default:
+		close(c.stopCh)
+	}
+}
+
 // systemMetricsUpdater updates system-level metrics
 func (c *MetricsCollector) systemMetricsUpdater() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.mu.Lock()
-		c.metrics.SystemMetrics.LastHealthCheck = time.Now()
-		// In production, perform actual health checks
-		c.metrics.SystemMetrics.HealthCheckPassed = true
-		c.mu.Unlock()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.mu.Lock()
+			c.metrics.SystemMetrics.LastHealthCheck = time.Now()
+			// In production, perform actual health checks
+			c.metrics.SystemMetrics.HealthCheckPassed = true
+			c.mu.Unlock()
+		}
 	}
 }

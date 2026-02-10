@@ -181,7 +181,7 @@ func BenchmarkValidateClientLicenseDB_APIKeys(b *testing.B) {
 
 	// Set up expected query and response
 	clientID := "test-client"
-	licenseKey := "AXON-ENT-testorg-20251118-abc123"
+	licenseKey := "AXON-Enterprise-testorg-20251118-abc123"
 
 	rows := sqlmock.NewRows([]string{
 		"api_key_id", "customer_id", "license_key", "key_name", "key_type",
@@ -194,7 +194,7 @@ func BenchmarkValidateClientLicenseDB_APIKeys(b *testing.B) {
 		time.Now().Add(365*24*time.Hour), 7, []byte(`["read", "write"]`), nil,
 		true, nil, nil, int64(1000),
 		"cust-1", "Test Org", "testorg", "in-vpc",
-		"ENT", "tenant-1", "active", true, 1000,
+		"Enterprise", "tenant-1", "active", true, 1000,
 	)
 
 	// Expect the query to be called
@@ -234,7 +234,7 @@ func BenchmarkValidateClientLicenseDB_Organizations(b *testing.B) {
 	defer func() { _ = db.Close() }()
 
 	clientID := "test-org"
-	licenseKey := "AXON-ENT-testorg-20251118-abc123"
+	licenseKey := "AXON-Enterprise-testorg-20251118-abc123"
 
 	// First query (API keys) will fail
 	mock.ExpectQuery("SELECT (.+) FROM api_keys k").
@@ -247,7 +247,7 @@ func BenchmarkValidateClientLicenseDB_Organizations(b *testing.B) {
 		"expires_at", "grace_period_days", "enabled", "status",
 		"requests_per_minute", "deployment_mode",
 	}).AddRow(
-		"testorg", "Test Organization", licenseKey, "ENT", 50,
+		"testorg", "Test Organization", licenseKey, "Enterprise", 50,
 		time.Now().Add(365*24*time.Hour), 7, true, "active",
 		1000, "in-vpc",
 	)
@@ -352,7 +352,7 @@ func BenchmarkFullRequestPath(b *testing.B) {
 
 	// Setup authentication mock
 	clientID := "test-client"
-	licenseKey := "AXON-ENT-testorg-20251118-abc123"
+	licenseKey := "AXON-Enterprise-testorg-20251118-abc123"
 	query := "SELECT * FROM orders WHERE customer_id = 'cust123'"
 
 	rows := sqlmock.NewRows([]string{
@@ -366,7 +366,7 @@ func BenchmarkFullRequestPath(b *testing.B) {
 		time.Now().Add(365*24*time.Hour), 7, []byte(`["read", "write"]`), nil,
 		true, nil, nil, int64(1000),
 		"cust-1", "Test Org", "testorg", "in-vpc",
-		"ENT", "tenant-1", "active", true, 1000,
+		"Enterprise", "tenant-1", "active", true, 1000,
 	)
 
 	ctx := context.Background()

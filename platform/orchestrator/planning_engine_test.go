@@ -666,19 +666,19 @@ func TestExtractHotelParameters(t *testing.T) {
 		expectedCityCode string
 	}{
 		{
-			name:             "Query with uppercase city code - converted to lowercase, uses default",
+			name:             "Query with known IATA code - matches NYC",
 			query:            "Find hotels in NYC",
-			expectedCityCode: "PAR", // ToLower makes uppercase check fail, so default is used
+			expectedCityCode: "NYC", // NYC is a known IATA code
 		},
 		{
-			name:             "Query with lowercase only - uses default",
+			name:             "Query with lowercase city name - matches paris",
 			query:            "find hotels in paris",
 			expectedCityCode: "PAR",
 		},
 		{
-			name:             "Query with mixed case city - uses default",
+			name:             "Query with capitalized city name - matches London",
 			query:            "Hotels in London please",
-			expectedCityCode: "PAR", // ToLower makes uppercase check fail
+			expectedCityCode: "LON", // "London" is in knownCityCodes
 		},
 		{
 			name:             "Empty query - uses default",
@@ -1328,5 +1328,305 @@ func TestGenerateWorkflowDefinitionEdgeCases(t *testing.T) {
 				t.Error("expected non-nil workflow")
 			}
 		})
+	}
+}
+
+// =============================================================================
+// Coverage tests for SetPricingConfig, SetConnectorRouter, routeToConnectors,
+// and applyConnectorMatch
+// =============================================================================
+
+type mockPlanCostEstimator struct{}
+
+func (m *mockPlanCostEstimator) EstimateCost(provider, model string, tokensIn, tokensOut int) float64 {
+	return 0.01
+}
+
+func TestPlanningEngine_SetPricingConfig(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	estimator := &mockPlanCostEstimator{}
+	engine.SetPricingConfig(estimator)
+
+	if engine.pricingConfig != estimator {
+		t.Error("Expected pricingConfig to be set")
+	}
+}
+
+func TestPlanningEngine_SetConnectorRouter(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	cr := NewConnectorRouter()
+	engine.SetConnectorRouter(cr)
+
+	if engine.connectorRouter != cr {
+		t.Error("Expected connectorRouter to be set")
+	}
+}
+
+func TestPlanningEngine_RouteToConnectors_NilRouter(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+	// connectorRouter is nil — should return immediately without panic
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "search-flights", Type: "llm-call", Prompt: "find flights"},
+			},
+		},
+	}
+
+	engine.routeToConnectors(workflow, "find flights to Paris", "test-client", "req-1")
+
+	// Step should remain unchanged
+	if workflow.Spec.Steps[0].Type != "llm-call" {
+		t.Errorf("Expected type 'llm-call', got %q", workflow.Spec.Steps[0].Type)
+	}
+}
+
+func TestPlanningEngine_RouteToConnectors_NilWorkflow(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+	engine.SetConnectorRouter(NewConnectorRouter())
+
+	// nil workflow — should return immediately without panic
+	engine.routeToConnectors(nil, "query", "client", "req-1")
+}
+
+func TestPlanningEngine_RouteToConnectors_CommunityMode(t *testing.T) {
+	// Set community mode
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	cr := NewConnectorRouter()
+	cr.RegisterCapability(ConnectorCapability{
+		Domain:     "travel",
+		Operations: []string{"search_flights"},
+		Connector:  "amadeus-travel",
+		Priority:   1,
+	})
+	engine.SetConnectorRouter(cr)
+
+	// Use a query without "flight" keyword so only the step name triggers the match
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "search-flights", Type: "llm-call", Prompt: "find options to Paris"},
+				{Name: "synthesize", Type: "llm-call", Prompt: "combine results"},
+			},
+		},
+	}
+
+	engine.routeToConnectors(workflow, "plan a trip to Paris", "test-client", "req-1")
+
+	// First step should be converted to connector-call (step name matches "flight" keyword)
+	if workflow.Spec.Steps[0].Type != "connector-call" {
+		t.Errorf("Step 0: expected type 'connector-call', got %q", workflow.Spec.Steps[0].Type)
+	}
+	if workflow.Spec.Steps[0].Connector != "amadeus-travel" {
+		t.Errorf("Step 0: expected connector 'amadeus-travel', got %q", workflow.Spec.Steps[0].Connector)
+	}
+	if workflow.Spec.Steps[0].Prompt != "" {
+		t.Errorf("Step 0: expected empty prompt after conversion, got %q", workflow.Spec.Steps[0].Prompt)
+	}
+
+	// Second step should remain llm-call (no keyword match for "synthesize")
+	if workflow.Spec.Steps[1].Type != "llm-call" {
+		t.Errorf("Step 1: expected type 'llm-call', got %q", workflow.Spec.Steps[1].Type)
+	}
+}
+
+func TestPlanningEngine_RouteToConnectors_EnterpriseMode(t *testing.T) {
+	// Set enterprise mode
+	t.Setenv("DEPLOYMENT_MODE", "enterprise")
+
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	cr := NewConnectorRouter()
+	cr.RegisterCapability(ConnectorCapability{
+		Domain:     "travel",
+		Operations: []string{"search_flights"},
+		Connector:  "amadeus-travel",
+		Priority:   1,
+	})
+	engine.SetConnectorRouter(cr)
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "search-flights", Type: "llm-call", Prompt: "find flights"},
+			},
+		},
+	}
+
+	engine.routeToConnectors(workflow, "find flights to NYC", "test-client", "req-2")
+
+	// Step should be converted via enterprise fallback chain path
+	if workflow.Spec.Steps[0].Type != "connector-call" {
+		t.Errorf("Expected type 'connector-call', got %q", workflow.Spec.Steps[0].Type)
+	}
+	if workflow.Spec.Steps[0].Connector != "amadeus-travel" {
+		t.Errorf("Expected connector 'amadeus-travel', got %q", workflow.Spec.Steps[0].Connector)
+	}
+}
+
+func TestPlanningEngine_RouteToConnectors_NoMatch(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	cr := NewConnectorRouter()
+	cr.RegisterCapability(ConnectorCapability{
+		Domain:     "travel",
+		Operations: []string{"search_flights"},
+		Connector:  "amadeus-travel",
+		Priority:   1,
+	})
+	engine.SetConnectorRouter(cr)
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "analyze-data", Type: "llm-call", Prompt: "analyze sales data"},
+			},
+		},
+	}
+
+	engine.routeToConnectors(workflow, "analyze quarterly sales", "test-client", "req-3")
+
+	// No keyword match — step should remain unchanged
+	if workflow.Spec.Steps[0].Type != "llm-call" {
+		t.Errorf("Expected type 'llm-call' (no match), got %q", workflow.Spec.Steps[0].Type)
+	}
+}
+
+func TestPlanningEngine_RouteToConnectors_SkipsNonLLMSteps(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	cr := NewConnectorRouter()
+	cr.RegisterCapability(ConnectorCapability{
+		Domain:     "travel",
+		Operations: []string{"search_flights"},
+		Connector:  "amadeus-travel",
+		Priority:   1,
+	})
+	engine.SetConnectorRouter(cr)
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "search-flights", Type: "connector-call", Connector: "existing"},
+			},
+		},
+	}
+
+	engine.routeToConnectors(workflow, "flights to Paris", "test-client", "req-4")
+
+	// Already a connector-call — should not be modified
+	if workflow.Spec.Steps[0].Connector != "existing" {
+		t.Errorf("Expected connector 'existing' (not modified), got %q", workflow.Spec.Steps[0].Connector)
+	}
+}
+
+func TestPlanningEngine_ApplyConnectorMatch_FlightOperation(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	step := &WorkflowStep{
+		Name:      "find-flights",
+		Type:      "llm-call",
+		Prompt:    "find flights to Paris",
+		MaxTokens: 500,
+	}
+
+	match := &ConnectorMatch{
+		Connector: "amadeus-travel",
+		Operation: "search_flights",
+		Domain:    "travel",
+	}
+
+	engine.applyConnectorMatch(step, match, "find flights from NYC to Paris on 2026-03-15")
+
+	if step.Type != "connector-call" {
+		t.Errorf("Expected type 'connector-call', got %q", step.Type)
+	}
+	if step.Connector != "amadeus-travel" {
+		t.Errorf("Expected connector 'amadeus-travel', got %q", step.Connector)
+	}
+	if step.Statement != "search_flights" {
+		t.Errorf("Expected statement 'search_flights', got %q", step.Statement)
+	}
+	if step.Prompt != "" {
+		t.Errorf("Expected empty prompt, got %q", step.Prompt)
+	}
+	if step.MaxTokens != 0 {
+		t.Errorf("Expected maxTokens 0, got %d", step.MaxTokens)
+	}
+	if step.Parameters == nil {
+		t.Error("Expected non-nil parameters for flight operation")
+	}
+}
+
+func TestPlanningEngine_ApplyConnectorMatch_HotelOperation(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	step := &WorkflowStep{
+		Name: "find-hotels",
+		Type: "llm-call",
+	}
+
+	match := &ConnectorMatch{
+		Connector: "amadeus-travel",
+		Operation: "search_hotels",
+		Domain:    "travel",
+	}
+
+	engine.applyConnectorMatch(step, match, "find hotels in Paris for 3 nights")
+
+	if step.Type != "connector-call" {
+		t.Errorf("Expected type 'connector-call', got %q", step.Type)
+	}
+	if step.Parameters == nil {
+		t.Error("Expected non-nil parameters for hotel operation")
+	}
+}
+
+func TestPlanningEngine_ApplyConnectorMatch_GenericOperation(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+
+	step := &WorkflowStep{
+		Name: "run-query",
+		Type: "llm-call",
+	}
+
+	match := &ConnectorMatch{
+		Connector: "my-connector",
+		Operation: "analyze_data",
+		Domain:    "analytics",
+	}
+
+	engine.applyConnectorMatch(step, match, "analyze quarterly sales")
+
+	if step.Type != "connector-call" {
+		t.Errorf("Expected type 'connector-call', got %q", step.Type)
+	}
+	// Generic operation: parameters should just have the query
+	if step.Parameters == nil {
+		t.Fatal("Expected non-nil parameters")
+	}
+	if step.Parameters["query"] != "analyze quarterly sales" {
+		t.Errorf("Expected query parameter, got %v", step.Parameters)
 	}
 }

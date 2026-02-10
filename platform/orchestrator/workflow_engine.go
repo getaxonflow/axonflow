@@ -81,10 +81,11 @@ type WorkflowEngine struct {
 
 // Workflow represents a workflow definition
 type Workflow struct {
-	APIVersion string            `json:"apiVersion"`
-	Kind       string            `json:"kind"`
-	Metadata   WorkflowMetadata  `json:"metadata"`
-	Spec       WorkflowSpec      `json:"spec"`
+	APIVersion       string            `json:"apiVersion"`
+	Kind             string            `json:"kind"`
+	Metadata         WorkflowMetadata  `json:"metadata"`
+	Spec             WorkflowSpec      `json:"spec"`
+	EstimatedCostUSD *float64          `json:"estimated_cost_usd,omitempty"`
 }
 
 type WorkflowMetadata struct {
@@ -952,6 +953,14 @@ type StepResult struct {
 // ExecuteWorkflowWithParallelSupport executes a workflow with parallel step support
 // This is the enhanced version used by Multi-Agent Planning
 func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext, enableParallel bool) (*WorkflowExecution, error) {
+	// Group steps by parallelizability
+	stepGroups := e.groupStepsForExecution(workflow.Spec.Steps, enableParallel)
+	return e.executeWorkflowWithStepGroups(ctx, workflow, input, user, stepGroups, enableParallel)
+}
+
+// executeWorkflowWithStepGroups is the shared execution loop for both parallel and balanced modes.
+// It takes pre-computed step groups and executes them in order.
+func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext, stepGroups []StepGroup, enableParallel bool) (*WorkflowExecution, error) {
 	// Initialize input map if nil
 	if input == nil {
 		input = make(map[string]interface{})
@@ -982,9 +991,6 @@ func (e *WorkflowEngine) ExecuteWorkflowWithParallelSupport(ctx context.Context,
 			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
 		}
 	}
-
-	// Group steps by parallelizability
-	stepGroups := e.groupStepsForExecution(workflow.Spec.Steps, enableParallel)
 
 	// Track global step index across groups for replay snapshots (#835)
 	globalStepIndex := 0
@@ -1171,6 +1177,80 @@ func (e *WorkflowEngine) groupStepsForExecution(steps []WorkflowStep, enablePara
 		groups = append(groups, StepGroup{
 			IsParallel: false,
 			Steps:      steps,
+		})
+	}
+
+	return groups
+}
+
+// ExecuteWorkflowBalanced executes a workflow with balanced mode:
+// - connector-call steps run in parallel (I/O-bound)
+// - llm-call steps run sequentially (rate-limit sensitive)
+// - synthesis step always runs last
+func (e *WorkflowEngine) ExecuteWorkflowBalanced(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
+	log.Printf("[Workflow] Executing in balanced mode: %s", workflow.Metadata.Name)
+
+	stepGroups := groupStepsForBalancedExecution(workflow.Spec.Steps)
+	log.Printf("[Workflow] Balanced mode grouped %d steps into %d groups", len(workflow.Spec.Steps), len(stepGroups))
+
+	return e.executeWorkflowWithStepGroups(ctx, workflow, input, user, stepGroups, true)
+}
+
+// groupStepsForBalancedExecution groups steps by type for balanced execution:
+// connector-call steps are grouped for parallel execution,
+// llm-call steps run sequentially, synthesis step always last.
+func groupStepsForBalancedExecution(steps []WorkflowStep) []StepGroup {
+	if len(steps) <= 1 {
+		return []StepGroup{{IsParallel: false, Steps: steps}}
+	}
+
+	var groups []StepGroup
+	var connectorSteps []WorkflowStep
+	var llmSteps []WorkflowStep
+	var synthesisStep *WorkflowStep
+
+	// Classify steps
+	for i := range steps {
+		step := steps[i]
+		nameLower := strings.ToLower(step.Name)
+
+		// Detect synthesis step (always last)
+		if strings.Contains(nameLower, "synthesize") ||
+			strings.Contains(nameLower, "combine") ||
+			strings.Contains(nameLower, "final") ||
+			strings.Contains(nameLower, "summary") {
+			synthesisStep = &step
+			continue
+		}
+
+		if step.Type == "connector-call" {
+			connectorSteps = append(connectorSteps, step)
+		} else {
+			llmSteps = append(llmSteps, step)
+		}
+	}
+
+	// Connector calls run in parallel (I/O-bound)
+	if len(connectorSteps) > 0 {
+		groups = append(groups, StepGroup{
+			IsParallel: len(connectorSteps) > 1,
+			Steps:      connectorSteps,
+		})
+	}
+
+	// LLM calls run sequentially (rate-limit sensitive)
+	if len(llmSteps) > 0 {
+		groups = append(groups, StepGroup{
+			IsParallel: false,
+			Steps:      llmSteps,
+		})
+	}
+
+	// Synthesis step always runs last, sequentially
+	if synthesisStep != nil {
+		groups = append(groups, StepGroup{
+			IsParallel: false,
+			Steps:      []WorkflowStep{*synthesisStep},
 		})
 	}
 

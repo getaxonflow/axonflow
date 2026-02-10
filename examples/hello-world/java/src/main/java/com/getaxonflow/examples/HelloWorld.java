@@ -85,7 +85,7 @@ public class HelloWorld {
                     PolicyApprovalRequest.builder()
                         .query(test.query)
                         .clientId(CLIENT_ID)
-                        .userToken("hello-world-user")
+                        .userToken(getEnv("AXONFLOW_USER_TOKEN", "hello-world-user"))
                         .build()
                 );
 

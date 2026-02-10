@@ -142,28 +142,30 @@ docker compose logs -f agent
 
 Let's build a **Customer Support Agent** that answers questions about your product using RAG (Retrieval-Augmented Generation).
 
-### Step 1: Create Your License Key (2 minutes)
+### Step 1: Choose Your Tier (2 minutes)
 
-Every AxonFlow deployment includes a license key generation tool:
+AxonFlow offers three licensing tiers:
+
+| Tier | License | Policies | Connectors with Custom Policies | Best For |
+|------|---------|----------|---------------------------|----------|
+| **Community** | None needed | 20 | 2 | Development, evaluation |
+| **Evaluation** | Free | 50 | 5 | Small teams, production |
+| **Enterprise** | Paid | Unlimited | Unlimited | Large organizations |
+
+All connectors can be registered in all tiers. Connectors with custom policies are those with tenant-level policies (rate limiting, budgets, time/role access).
+
+**For most users, start with Community** - no license needed!
+
+**Ready for production?** Get a free Evaluation license at: https://getaxonflow.com/evaluation-license
+
+**Need Enterprise features?** Contact sales@getaxonflow.com
+
+If you have an Evaluation or Enterprise license, set it:
 
 ```bash
-# Generate a license key for your organization
-docker exec -it axonflow-agent /app/keygen \
-  --tier PLUS \
-  --org my-company \
-  --expires-at 20261231 \
-  --output /tmp/license.key
-
-# View your license key
-cat /tmp/license.key
+# Set your license key (optional - not needed for Community tier)
+export AXONFLOW_LICENSE_KEY="AXON-V2-eyJ0aWVyIjoiRVZBTC...}-8d084b59"
 ```
-
-You'll get a license key like:
-```
-AXON-PLUS-my-company-20261231-a7f3b2c9
-```
-
-**Save this key** - you'll need it to authenticate your application.
 
 ### Step 2: Install the AxonFlow SDK (2 minutes)
 
@@ -688,14 +690,34 @@ cd examples/hello-world/http
 echo $AXONFLOW_CLIENT_ID
 # Should be: my-company (your organization identifier)
 
-echo $AXONFLOW_CLIENT_SECRET
-# Should be: AXON-PLUS-org-20261231-signature (optional for community mode)
+echo $AXONFLOW_LICENSE_KEY
+# Should be: AXON-V2-... (optional for Community tier)
 
-# Regenerate client secret if needed
-docker exec -it axonflow-agent /app/keygen \
-  --tier PLUS \
-  --org my-company \
-  --expires-at 20261231
+# Community tier: No license needed
+# Evaluation tier: Get free license at https://getaxonflow.com/evaluation-license
+# Enterprise tier: Contact sales@getaxonflow.com
+```
+
+#### 1b. "Policy limit exceeded" error
+
+**Problem:** You've reached the policy limit for your tier.
+
+**Tier Limits:**
+| Tier | Tenant Policies | Org Policies | Connectors with Custom Policies |
+|------|-----------------|--------------|---------------------------|
+| Community | 20 | 0 | 2 |
+| Evaluation | 50 | 5 | 5 |
+| Enterprise | Unlimited | Unlimited | Unlimited |
+
+**Solution:**
+```bash
+# Check your current tier
+curl -H "Authorization: Basic $(echo -n $AXONFLOW_CLIENT_ID: | base64)" \
+  http://localhost:8080/health
+
+# Upgrade options:
+# - Community → Evaluation (free): https://getaxonflow.com/evaluation-license
+# - Evaluation → Enterprise: Contact sales@getaxonflow.com
 ```
 
 #### 2. "Connection refused" when calling agent
@@ -755,7 +777,7 @@ curl -H "Authorization: Basic $(echo -n $AXONFLOW_CLIENT_ID:$AXONFLOW_CLIENT_SEC
 # }
 
 # To increase limits:
-# 1. Upgrade tier (PLUS → ENTERPRISE)
+# 1. Upgrade tier (Plus → Enterprise)
 # 2. Or contact sales@getaxonflow.com for custom limits
 ```
 

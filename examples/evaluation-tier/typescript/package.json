@@ -1,0 +1,16 @@
+{
+  "name": "axonflow-evaluation-tier-example",
+  "version": "1.0.0",
+  "description": "AxonFlow Evaluation Tier Licensing Example",
+  "main": "test_tier_limits.ts",
+  "scripts": {
+    "test": "npx ts-node test_tier_limits.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^3.0.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

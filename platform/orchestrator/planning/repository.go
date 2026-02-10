@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -33,6 +34,29 @@ type Repository interface {
 
 	// CleanupExpiredPlans removes expired plans
 	CleanupExpiredPlans(ctx context.Context) (int, error)
+
+	// UpdatePlanWithVersion updates a plan with optimistic locking.
+	// Returns ErrVersionConflict if the current version doesn't match expectedVersion.
+	UpdatePlanWithVersion(ctx context.Context, planID string, expectedVersion int, updates map[string]interface{}) (*Plan, error)
+
+	// SavePlanVersion saves a snapshot of a plan at a specific version
+	SavePlanVersion(ctx context.Context, version *PlanVersion) error
+
+	// GetPlanVersions retrieves all versions for a plan, ordered by version desc
+	GetPlanVersions(ctx context.Context, planID string) ([]PlanVersion, error)
+
+	// CountPlansWithVersioning returns the number of plans that have versioning enabled (version > 1)
+	CountPlansWithVersioning(ctx context.Context, orgID string) (int, error)
+
+	// CountVersions returns the number of versions for a plan
+	CountVersions(ctx context.Context, planID string) (int, error)
+
+	// GetPlanVersion retrieves a specific version snapshot for a plan
+	GetPlanVersion(ctx context.Context, planID string, version int) (*PlanVersion, error)
+
+	// RollbackPlan restores a plan from a snapshot, incrementing the version.
+	// Returns ErrVersionConflict if currentVersion doesn't match expectedVersion.
+	RollbackPlan(ctx context.Context, planID string, expectedVersion int, snapshot json.RawMessage) (*Plan, error)
 }
 
 // PostgresRepository implements Repository using PostgreSQL
@@ -56,23 +80,28 @@ func (r *PostgresRepository) SavePlan(ctx context.Context, plan *Plan) error {
 
 	query := `
 		INSERT INTO plans (
-			plan_id, query, domain, execution_mode,
+			plan_id, query, domain, execution_mode, version,
 			workflow_definition,
 			complexity, parallel, estimated_duration, step_count,
 			status,
 			org_id, tenant_id, user_id, client_id,
 			expires_at
 		) VALUES (
-			$1, $2, $3, $4,
-			$5,
-			$6, $7, $8, $9,
-			$10,
-			$11, $12, $13, $14,
-			$15
+			$1, $2, $3, $4, $5,
+			$6,
+			$7, $8, $9, $10,
+			$11,
+			$12, $13, $14, $15,
+			$16
 		)`
 
+	version := plan.Version
+	if version == 0 {
+		version = 1
+	}
+
 	_, err := r.db.ExecContext(ctx, query,
-		plan.PlanID, plan.Query, plan.Domain, plan.ExecutionMode,
+		plan.PlanID, plan.Query, plan.Domain, plan.ExecutionMode, version,
 		plan.WorkflowDefinition,
 		plan.Complexity, plan.Parallel, plan.EstimatedDuration, plan.StepCount,
 		string(plan.Status),
@@ -94,7 +123,7 @@ func (r *PostgresRepository) GetPlan(ctx context.Context, planID string) (*Plan,
 	}
 
 	query := `
-		SELECT plan_id, query, domain, execution_mode,
+		SELECT plan_id, query, domain, execution_mode, COALESCE(version, 1),
 			workflow_definition,
 			complexity, parallel, estimated_duration, step_count,
 			status, executed_at, execution_result, error_message,
@@ -111,7 +140,7 @@ func (r *PostgresRepository) GetPlan(ctx context.Context, planID string) (*Plan,
 	var orgID, tenantID, userID, clientID sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, planID).Scan(
-		&plan.PlanID, &plan.Query, &plan.Domain, &plan.ExecutionMode,
+		&plan.PlanID, &plan.Query, &plan.Domain, &plan.ExecutionMode, &plan.Version,
 		&plan.WorkflowDefinition,
 		&plan.Complexity, &plan.Parallel, &estimatedDuration, &plan.StepCount,
 		&status, &executedAt, &executionResult, &errorMessage,
@@ -174,7 +203,7 @@ func (r *PostgresRepository) UpdatePlanStatus(ctx context.Context, planID string
 		args = []interface{}{string(status), time.Now(), nullJSON(result), nullString(errorMsg), planID}
 	} else {
 		// Just update status
-		query = `UPDATE plans SET status = $1 WHERE plan_id = $2`
+		query = `UPDATE plans SET status = $1, updated_at = NOW() WHERE plan_id = $2`
 		args = []interface{}{string(status), planID}
 	}
 
@@ -241,6 +270,175 @@ func (r *PostgresRepository) CleanupExpiredPlans(ctx context.Context) (int, erro
 	return int(count), nil
 }
 
+// UpdatePlanWithVersion updates a plan with optimistic locking
+func (r *PostgresRepository) UpdatePlanWithVersion(ctx context.Context, planID string, expectedVersion int, updates map[string]interface{}) (*Plan, error) {
+	if planID == "" {
+		return nil, ErrInvalidPlanID
+	}
+
+	// Build dynamic SET clause from updates
+	allowedColumns := map[string]bool{"execution_mode": true, "domain": true}
+	setClauses := []string{"version = version + 1", "updated_at = NOW()"}
+	args := []interface{}{}
+	argIdx := 1
+
+	for col, val := range updates {
+		if !allowedColumns[col] {
+			return nil, fmt.Errorf("invalid update column: %s", col)
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+
+	// Add WHERE conditions
+	query := fmt.Sprintf(
+		"UPDATE plans SET %s WHERE plan_id = $%d AND version = $%d RETURNING version",
+		strings.Join(setClauses, ", "), argIdx, argIdx+1,
+	)
+	args = append(args, planID, expectedVersion)
+
+	var newVersion int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&newVersion)
+	if err == sql.ErrNoRows {
+		return nil, ErrVersionConflict
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to update plan: %w", err)
+	}
+
+	// Return the updated plan
+	return r.GetPlan(ctx, planID)
+}
+
+// SavePlanVersion saves a version snapshot
+func (r *PostgresRepository) SavePlanVersion(ctx context.Context, version *PlanVersion) error {
+	query := `
+		INSERT INTO plan_versions (plan_id, version, org_id, snapshot, changed_by, change_type, change_summary)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+
+	_, err := r.db.ExecContext(ctx, query,
+		version.PlanID, version.Version, nullString(version.OrgID), version.Snapshot,
+		nullString(version.ChangedBy), version.ChangeType, nullString(version.ChangeSummary),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save plan version: %w", err)
+	}
+	return nil
+}
+
+// GetPlanVersions retrieves all versions for a plan
+func (r *PostgresRepository) GetPlanVersions(ctx context.Context, planID string) ([]PlanVersion, error) {
+	if planID == "" {
+		return nil, ErrInvalidPlanID
+	}
+
+	query := `
+		SELECT id, plan_id, version, COALESCE(org_id, ''), snapshot, COALESCE(changed_by, ''), changed_at, change_type, COALESCE(change_summary, '')
+		FROM plan_versions
+		WHERE plan_id = $1
+		ORDER BY version DESC`
+
+	rows, err := r.db.QueryContext(ctx, query, planID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get plan versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []PlanVersion
+	for rows.Next() {
+		var v PlanVersion
+		if err := rows.Scan(&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary); err != nil {
+			return nil, fmt.Errorf("failed to scan plan version: %w", err)
+		}
+		versions = append(versions, v)
+	}
+	return versions, rows.Err()
+}
+
+// CountPlansWithVersioning returns the number of plans with version > 1 for an org
+func (r *PostgresRepository) CountPlansWithVersioning(ctx context.Context, orgID string) (int, error) {
+	query := `SELECT COUNT(*) FROM plans WHERE org_id = $1 AND version > 1`
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, orgID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count versioned plans: %w", err)
+	}
+	return count, nil
+}
+
+// CountVersions returns the number of versions for a plan
+func (r *PostgresRepository) CountVersions(ctx context.Context, planID string) (int, error) {
+	query := `SELECT COUNT(*) FROM plan_versions WHERE plan_id = $1`
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, planID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count plan versions: %w", err)
+	}
+	return count, nil
+}
+
+
+// GetPlanVersion retrieves a specific version snapshot for a plan
+func (r *PostgresRepository) GetPlanVersion(ctx context.Context, planID string, version int) (*PlanVersion, error) {
+	if planID == "" {
+		return nil, ErrInvalidPlanID
+	}
+
+	query := `
+		SELECT id, plan_id, version, COALESCE(org_id, ''), snapshot, COALESCE(changed_by, ''), changed_at, change_type, COALESCE(change_summary, '')
+		FROM plan_versions
+		WHERE plan_id = $1 AND version = $2`
+
+	var v PlanVersion
+	err := r.db.QueryRowContext(ctx, query, planID, version).Scan(
+		&v.ID, &v.PlanID, &v.Version, &v.OrgID, &v.Snapshot, &v.ChangedBy, &v.ChangedAt, &v.ChangeType, &v.ChangeSummary,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrVersionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get plan version: %w", err)
+	}
+	return &v, nil
+}
+
+// RollbackPlan restores a plan from a snapshot, incrementing the version.
+func (r *PostgresRepository) RollbackPlan(ctx context.Context, planID string, expectedVersion int, snapshot json.RawMessage) (*Plan, error) {
+	if planID == "" {
+		return nil, ErrInvalidPlanID
+	}
+
+	// Parse the snapshot to extract restorable fields
+	var snap struct {
+		ExecutionMode      string          `json:"execution_mode"`
+		Domain             string          `json:"domain"`
+		WorkflowDefinition json.RawMessage `json:"workflow_definition"`
+	}
+	if err := json.Unmarshal(snapshot, &snap); err != nil {
+		return nil, fmt.Errorf("failed to parse version snapshot: %w", err)
+	}
+
+	query := `
+		UPDATE plans
+		SET execution_mode = $1, domain = $2, workflow_definition = $3,
+			version = version + 1, updated_at = NOW()
+		WHERE plan_id = $4 AND version = $5
+		RETURNING version`
+
+	var newVersion int
+	err := r.db.QueryRowContext(ctx, query,
+		snap.ExecutionMode, snap.Domain, snap.WorkflowDefinition,
+		planID, expectedVersion,
+	).Scan(&newVersion)
+	if err == sql.ErrNoRows {
+		return nil, ErrVersionConflict
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to rollback plan: %w", err)
+	}
+
+	return r.GetPlan(ctx, planID)
+}
+
 // NoOpRepository is a no-op implementation of Repository for testing
 // This is used when database is not available
 type NoOpRepository struct{}
@@ -281,6 +479,41 @@ func (r *NoOpRepository) DeletePlan(ctx context.Context, planID string) error {
 // CleanupExpiredPlans returns 0
 func (r *NoOpRepository) CleanupExpiredPlans(ctx context.Context) (int, error) {
 	return 0, nil
+}
+
+// UpdatePlanWithVersion is a no-op
+func (r *NoOpRepository) UpdatePlanWithVersion(ctx context.Context, planID string, expectedVersion int, updates map[string]interface{}) (*Plan, error) {
+	return nil, ErrPlanNotFound
+}
+
+// SavePlanVersion is a no-op
+func (r *NoOpRepository) SavePlanVersion(ctx context.Context, version *PlanVersion) error {
+	return nil
+}
+
+// GetPlanVersions returns empty
+func (r *NoOpRepository) GetPlanVersions(ctx context.Context, planID string) ([]PlanVersion, error) {
+	return nil, nil
+}
+
+// CountPlansWithVersioning returns 0
+func (r *NoOpRepository) CountPlansWithVersioning(ctx context.Context, orgID string) (int, error) {
+	return 0, nil
+}
+
+// CountVersions returns 0
+func (r *NoOpRepository) CountVersions(ctx context.Context, planID string) (int, error) {
+	return 0, nil
+}
+
+// GetPlanVersion returns ErrVersionNotFound
+func (r *NoOpRepository) GetPlanVersion(ctx context.Context, planID string, version int) (*PlanVersion, error) {
+	return nil, ErrVersionNotFound
+}
+
+// RollbackPlan returns ErrPlanNotFound
+func (r *NoOpRepository) RollbackPlan(ctx context.Context, planID string, expectedVersion int, snapshot json.RawMessage) (*Plan, error) {
+	return nil, ErrPlanNotFound
 }
 
 // Helper functions
