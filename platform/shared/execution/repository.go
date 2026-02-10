@@ -413,6 +413,35 @@ func (r *PostgresRepository) UpdateCost(ctx context.Context, executionID string,
 	return nil
 }
 
+// CountActive returns the number of running or pending executions for a tenant.
+func (r *PostgresRepository) CountActive(ctx context.Context, tenantID string) (int, error) {
+	query := `SELECT COUNT(*) FROM execution_history WHERE tenant_id = $1 AND status IN ('running', 'pending')`
+	var count int
+	err := r.db.QueryRowContext(ctx, query, tenantID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count active executions: %w", err)
+	}
+	return count, nil
+}
+
+// PurgeOldest removes the oldest execution records beyond keepCount for a tenant.
+func (r *PostgresRepository) PurgeOldest(ctx context.Context, tenantID string, keepCount int) (int64, error) {
+	query := `
+		DELETE FROM execution_history
+		WHERE tenant_id = $1
+		AND id NOT IN (
+			SELECT id FROM execution_history
+			WHERE tenant_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2
+		)`
+	result, err := r.db.ExecContext(ctx, query, tenantID, keepCount)
+	if err != nil {
+		return 0, fmt.Errorf("failed to purge oldest executions: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // --- Helper Functions ---
 
 func nullableString(s string) sql.NullString {

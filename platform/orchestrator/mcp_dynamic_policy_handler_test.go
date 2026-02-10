@@ -21,12 +21,14 @@ func newTestEngine(policies []DynamicPolicy) *DynamicPolicyEngine {
 		policies:       policies,
 		riskCalculator: NewRiskCalculator(),
 		cache:          NewPolicyCache(5 * time.Minute),
+		stopCh:         make(chan struct{}),
 	}
 	return engine
 }
 
 func TestNewMCPDynamicPolicyHandler(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	if handler == nil {
@@ -47,6 +49,7 @@ func TestNewMCPDynamicPolicyHandler_NilEngine(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_RegisterRoutes(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -64,6 +67,7 @@ func TestMCPDynamicPolicyHandler_RegisterRoutes(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_HandleCORS(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -86,6 +90,7 @@ func TestMCPDynamicPolicyHandler_HandleCORS(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_InvalidJSON(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -109,6 +114,7 @@ func TestMCPDynamicPolicyHandler_InvalidJSON(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_MissingTenantID(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -137,6 +143,7 @@ func TestMCPDynamicPolicyHandler_MissingTenantID(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_MissingConnectorName(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -165,6 +172,7 @@ func TestMCPDynamicPolicyHandler_MissingConnectorName(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_NoPolicies(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -237,6 +245,7 @@ func TestMCPDynamicPolicyHandler_RateLimitPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -279,6 +288,7 @@ func TestMCPDynamicPolicyHandler_BudgetPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -325,6 +335,7 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Allowed(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -368,6 +379,7 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Denied(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -414,6 +426,7 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_NotIn(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -460,6 +473,7 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Equals(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -503,6 +517,7 @@ func TestMCPDynamicPolicyHandler_RoleAccessPolicy_Wildcard(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -554,6 +569,7 @@ func TestMCPDynamicPolicyHandler_ConnectorPolicy_Block(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -604,6 +620,7 @@ func TestMCPDynamicPolicyHandler_ConnectorPolicy_Allow(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -655,6 +672,7 @@ func TestMCPDynamicPolicyHandler_MCPPolicy_OperationContains(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -703,6 +721,7 @@ func TestMCPDynamicPolicyHandler_MCPPolicy_NotEquals(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -751,6 +770,7 @@ func TestMCPDynamicPolicyHandler_TenantFiltering(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -799,6 +819,7 @@ func TestMCPDynamicPolicyHandler_GlobalTenantPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -847,6 +868,7 @@ func TestMCPDynamicPolicyHandler_DisabledPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -882,6 +904,7 @@ func TestMCPDynamicPolicyHandler_UnknownPolicyType(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -933,6 +956,7 @@ func TestMCPDynamicPolicyHandler_TimeAccessPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1004,6 +1028,7 @@ func TestMCPDynamicPolicyHandler_MultiplePolicies_FirstBlock(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1054,6 +1079,7 @@ func TestMCPDynamicPolicyHandler_UnknownConditionField(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1102,6 +1128,7 @@ func TestMCPDynamicPolicyHandler_UnknownOperator(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1150,6 +1177,7 @@ func TestMCPDynamicPolicyHandler_MatchedPoliciesResponse(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1192,6 +1220,7 @@ func TestMCPDynamicPolicyHandler_GlobalHandlerFunctions(t *testing.T) {
 	}
 
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	InitMCPDynamicPolicyHandler(engine)
 
 	handler := GetMCPDynamicPolicyHandler()
@@ -1205,6 +1234,7 @@ func TestMCPDynamicPolicyHandler_GlobalHandlerFunctions(t *testing.T) {
 
 func TestMCPDynamicPolicyHandler_ProcessingTime(t *testing.T) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1256,6 +1286,7 @@ func TestMCPDynamicPolicyHandler_TenantIDCondition(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1299,6 +1330,7 @@ func TestMCPDynamicPolicyHandler_NoActionsPolicy(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1331,6 +1363,7 @@ func TestMCPDynamicPolicyHandler_NoActionsPolicy(t *testing.T) {
 
 func BenchmarkMCPDynamicPolicyHandler_NoPolicies(b *testing.B) {
 	engine := newTestEngine(nil)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1366,6 +1399,7 @@ func BenchmarkMCPDynamicPolicyHandler_WithPolicies(b *testing.B) {
 		}
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1669,6 +1703,7 @@ func TestMCPDynamicPolicyHandler_RateLimitPolicyIntegration(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1732,6 +1767,7 @@ func TestMCPDynamicPolicyHandler_BudgetPolicyIntegration(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1798,6 +1834,7 @@ func TestMCPDynamicPolicyHandler_TimeAccess_HourGreaterThan(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1847,6 +1884,7 @@ func TestMCPDynamicPolicyHandler_TimeAccess_HourLessThan(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1893,6 +1931,7 @@ func TestMCPDynamicPolicyHandler_TimeAccess_DayInList(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()
@@ -1943,6 +1982,7 @@ func TestMCPDynamicPolicyHandler_TimeAccess_AllDaysAllowed(t *testing.T) {
 		},
 	}
 	engine := newTestEngine(policies)
+	defer engine.Close()
 	handler := NewMCPDynamicPolicyHandler(engine)
 
 	router := mux.NewRouter()

@@ -28,8 +28,8 @@ func TestDefaultDynamicPolicyConfig(t *testing.T) {
 	if !config.GracefulDegradation {
 		t.Error("expected GracefulDegradation=true by default")
 	}
-	if config.MaxConnectorsInCommunity != 2 {
-		t.Errorf("expected MaxConnectorsInCommunity=2, got %d", config.MaxConnectorsInCommunity)
+	if config.MaxCustomPolicyConnectorsCommunity != 2 {
+		t.Errorf("expected MaxCustomPolicyConnectorsCommunity=2, got %d", config.MaxCustomPolicyConnectorsCommunity)
 	}
 }
 
@@ -318,12 +318,14 @@ func TestDynamicPolicyEvaluator_UpdateConfig(t *testing.T) {
 		t.Error("expected disabled initially")
 	}
 
-	evaluator.UpdateConfig(DynamicPolicyConfig{
+	if err := evaluator.UpdateConfig(DynamicPolicyConfig{
 		Enabled:              true,
 		OrchestratorEndpoint: "http://new:8081",
 		Timeout:              10 * time.Second,
 		GracefulDegradation:  true,
-	})
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	config := evaluator.GetConfig()
 	if !config.Enabled {
@@ -359,14 +361,18 @@ func TestNewDynamicPolicyEvaluatorFromEnv(t *testing.T) {
 	origTimeout := os.Getenv("MCP_DYNAMIC_POLICIES_TIMEOUT")
 	origGraceful := os.Getenv("MCP_DYNAMIC_POLICIES_GRACEFUL")
 	origConnectors := os.Getenv("MCP_DYNAMIC_POLICIES_CONNECTORS")
+	origMode := os.Getenv("DEPLOYMENT_MODE")
 
 	defer func() {
 		restoreEnv("MCP_DYNAMIC_POLICIES_ENABLED", origEnabled)
 		restoreEnv("MCP_DYNAMIC_POLICIES_TIMEOUT", origTimeout)
 		restoreEnv("MCP_DYNAMIC_POLICIES_GRACEFUL", origGraceful)
 		restoreEnv("MCP_DYNAMIC_POLICIES_CONNECTORS", origConnectors)
+		restoreEnv("DEPLOYMENT_MODE", origMode)
 	}()
 
+	// Use enterprise mode so connector limit doesn't interfere with env parsing test
+	os.Setenv("DEPLOYMENT_MODE", "enterprise")
 	os.Setenv("MCP_DYNAMIC_POLICIES_ENABLED", "true")
 	os.Setenv("MCP_DYNAMIC_POLICIES_TIMEOUT", "10s")
 	os.Setenv("MCP_DYNAMIC_POLICIES_GRACEFUL", "false")
@@ -484,7 +490,7 @@ func TestDynamicPolicyEvaluator_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		go func(n int) {
 			for j := 0; j < 5; j++ {
-				evaluator.UpdateConfig(DynamicPolicyConfig{
+				_ = evaluator.UpdateConfig(DynamicPolicyConfig{
 					Enabled:              true,
 					OrchestratorEndpoint: server.URL,
 					Timeout:              time.Duration(n+1) * time.Second,
@@ -820,4 +826,413 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestValidateCustomPolicyConnectorLimit_CommunityMode(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	tests := []struct {
+		name           string
+		deploymentMode string
+		licenseKey     string
+		connectors     []string
+		maxConnectors  int
+		maxConnectorsEval int
+		wantErr        bool
+	}{
+		{
+			name:           "community tier (no license) with 2 connectors (at limit)",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql"},
+			maxConnectors:  2,
+			wantErr:        false,
+		},
+		{
+			name:           "community tier (no license) with 3 connectors (over limit)",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql", "redis"},
+			maxConnectors:  2,
+			wantErr:        true,
+		},
+		{
+			name:           "empty deployment mode no license with 3 connectors (over community limit)",
+			deploymentMode: "",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql", "redis"},
+			maxConnectors:  2,
+			wantErr:        true,
+		},
+		{
+			name:           "enterprise deployment mode with 5 connectors (no limit)",
+			deploymentMode: "enterprise",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:  2,
+			wantErr:        false,
+		},
+		{
+			name:           "community tier (no license) with 1 connector (under limit)",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"postgres"},
+			maxConnectors:  2,
+			wantErr:        false,
+		},
+		{
+			name:           "community tier (no license) with nil connectors (no limit applied)",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     nil,
+			maxConnectors:  2,
+			wantErr:        false,
+		},
+		{
+			name:           "community tier (no license) with empty connectors list",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{},
+			maxConnectors:  2,
+			wantErr:        false,
+		},
+		{
+			name:           "evaluation tier (has license) with 5 connectors (at eval limit)",
+			deploymentMode: "community",
+			licenseKey:     "AXON-test-evaluation-key",
+			connectors:     []string{"postgres", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:  2,
+			maxConnectorsEval: 5,
+			wantErr:        false,
+		},
+		{
+			name:           "evaluation tier (has license) with 6 connectors (over eval limit)",
+			deploymentMode: "community",
+			licenseKey:     "AXON-test-evaluation-key",
+			connectors:     []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
+			maxConnectors:  2,
+			maxConnectorsEval: 5,
+			wantErr:        true,
+		},
+		{
+			name:           "evaluation tier (has license, empty mode) with 3 connectors (under eval limit)",
+			deploymentMode: "",
+			licenseKey:     "AXON-test-evaluation-key",
+			connectors:     []string{"postgres", "mysql", "redis"},
+			maxConnectors:  2,
+			maxConnectorsEval: 5,
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.deploymentMode == "" {
+				os.Unsetenv("DEPLOYMENT_MODE")
+			} else {
+				os.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
+			}
+			if tt.licenseKey == "" {
+				os.Unsetenv("AXONFLOW_LICENSE_KEY")
+			} else {
+				os.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
+			}
+
+			config := DynamicPolicyConfig{
+				EnabledConnectors:                  tt.connectors,
+				MaxCustomPolicyConnectorsCommunity:  tt.maxConnectors,
+				MaxCustomPolicyConnectorsEvaluation: tt.maxConnectorsEval,
+			}
+
+			err := ValidateCustomPolicyConnectorLimit(config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateCustomPolicyConnectorLimit() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEnforceCustomPolicyConnectorLimit(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	tests := []struct {
+		name              string
+		deploymentMode    string
+		licenseKey        string
+		connectors        []string
+		maxConnectors     int
+		maxConnectorsEval int
+		wantCount         int
+		wantConnectors    []string
+	}{
+		{
+			name:           "community tier (no license) at limit — keep all",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql"},
+			maxConnectors:  2,
+			wantCount:      2,
+			wantConnectors: []string{"postgres", "mysql"},
+		},
+		{
+			name:           "community tier (no license) over limit — truncate to 2",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"postgres", "mysql", "redis"},
+			maxConnectors:  2,
+			wantCount:      2,
+			wantConnectors: []string{"postgres", "mysql"},
+		},
+		{
+			name:           "community tier (no license) way over — truncate to 2",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     []string{"pg", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:  2,
+			wantCount:      2,
+			wantConnectors: []string{"pg", "mysql"},
+		},
+		{
+			name:           "enterprise deployment — keep all",
+			deploymentMode: "enterprise",
+			licenseKey:     "",
+			connectors:     []string{"pg", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:  2,
+			wantCount:      5,
+			wantConnectors: []string{"pg", "mysql", "redis", "mongo", "s3"},
+		},
+		{
+			name:           "empty mode no license over limit — truncate (community tier)",
+			deploymentMode: "",
+			licenseKey:     "",
+			connectors:     []string{"pg", "mysql", "redis"},
+			maxConnectors:  2,
+			wantCount:      2,
+			wantConnectors: []string{"pg", "mysql"},
+		},
+		{
+			name:           "nil connectors — return nil",
+			deploymentMode: "community",
+			licenseKey:     "",
+			connectors:     nil,
+			maxConnectors:  2,
+			wantCount:      0,
+		},
+		{
+			name:              "evaluation tier (has license) at eval limit — keep all 5",
+			deploymentMode:    "community",
+			licenseKey:        "AXON-test-evaluation-key",
+			connectors:        []string{"pg", "mysql", "redis", "mongo", "s3"},
+			maxConnectors:     2,
+			maxConnectorsEval: 5,
+			wantCount:         5,
+			wantConnectors:    []string{"pg", "mysql", "redis", "mongo", "s3"},
+		},
+		{
+			name:              "evaluation tier (has license) over eval limit — truncate to 5",
+			deploymentMode:    "",
+			licenseKey:        "AXON-test-evaluation-key",
+			connectors:        []string{"pg", "mysql", "redis", "mongo", "s3", "http", "gcs"},
+			maxConnectors:     2,
+			maxConnectorsEval: 5,
+			wantCount:         5,
+			wantConnectors:    []string{"pg", "mysql", "redis", "mongo", "s3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.deploymentMode == "" {
+				os.Unsetenv("DEPLOYMENT_MODE")
+			} else {
+				os.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
+			}
+			if tt.licenseKey == "" {
+				os.Unsetenv("AXONFLOW_LICENSE_KEY")
+			} else {
+				os.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
+			}
+
+			config := DynamicPolicyConfig{
+				EnabledConnectors:                  tt.connectors,
+				MaxCustomPolicyConnectorsCommunity:  tt.maxConnectors,
+				MaxCustomPolicyConnectorsEvaluation: tt.maxConnectorsEval,
+			}
+
+			result := EnforceCustomPolicyConnectorLimit(config)
+			if len(result) != tt.wantCount {
+				t.Errorf("EnforceCustomPolicyConnectorLimit() returned %d connectors, want %d", len(result), tt.wantCount)
+			}
+			if tt.wantConnectors != nil {
+				for i, c := range tt.wantConnectors {
+					if i < len(result) && result[i] != c {
+						t.Errorf("EnforceCustomPolicyConnectorLimit()[%d] = %s, want %s", i, result[i], c)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestResolveConnectorLimitTier(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	tests := []struct {
+		name           string
+		deploymentMode string
+		licenseKey     string
+		wantTier       string
+	}{
+		{"community mode no license", "community", "", "community"},
+		{"empty mode no license", "", "", "community"},
+		{"community mode with license", "community", "AXON-key", "evaluation"},
+		{"empty mode with license", "", "AXON-key", "evaluation"},
+		{"enterprise mode no license", "enterprise", "", "enterprise"},
+		{"enterprise mode with license", "enterprise", "AXON-key", "enterprise"},
+		{"saas mode", "saas", "", "enterprise"},
+		{"in-vpc-enterprise mode", "in-vpc-enterprise", "", "enterprise"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.deploymentMode == "" {
+				os.Unsetenv("DEPLOYMENT_MODE")
+			} else {
+				os.Setenv("DEPLOYMENT_MODE", tt.deploymentMode)
+			}
+			if tt.licenseKey == "" {
+				os.Unsetenv("AXONFLOW_LICENSE_KEY")
+			} else {
+				os.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
+			}
+
+			got := resolveConnectorLimitTier()
+			if got != tt.wantTier {
+				t.Errorf("resolveConnectorLimitTier() = %q, want %q", got, tt.wantTier)
+			}
+		})
+	}
+}
+
+func TestUpdateConfig_ConnectorLimitEnforced(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	// Community tier: no license key
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Unsetenv("AXONFLOW_LICENSE_KEY")
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled: false,
+		Timeout: 5 * time.Second,
+	})
+
+	// Should fail with 3 connectors in community tier
+	err := evaluator.UpdateConfig(DynamicPolicyConfig{
+		Enabled:                  true,
+		OrchestratorEndpoint:     "http://test:8081",
+		Timeout:                  5 * time.Second,
+		EnabledConnectors:        []string{"postgres", "mysql", "redis"},
+		MaxCustomPolicyConnectorsCommunity: 2,
+	})
+
+	if err == nil {
+		t.Error("expected error when exceeding connector limit in community tier")
+	}
+
+	// Should succeed with 2 connectors
+	err = evaluator.UpdateConfig(DynamicPolicyConfig{
+		Enabled:                  true,
+		OrchestratorEndpoint:     "http://test:8081",
+		Timeout:                  5 * time.Second,
+		EnabledConnectors:        []string{"postgres", "mysql"},
+		MaxCustomPolicyConnectorsCommunity: 2,
+	})
+
+	if err != nil {
+		t.Errorf("unexpected error with 2 connectors: %v", err)
+	}
+}
+
+func TestUpdateConfig_EvaluationTierLimit(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	// Evaluation tier: community mode + license key
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("AXONFLOW_LICENSE_KEY", "AXON-test-evaluation-key")
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled: false,
+		Timeout: 5 * time.Second,
+	})
+
+	// Should succeed with 5 connectors (evaluation limit)
+	err := evaluator.UpdateConfig(DynamicPolicyConfig{
+		Enabled:                            true,
+		OrchestratorEndpoint:               "http://test:8081",
+		Timeout:                            5 * time.Second,
+		EnabledConnectors:                  []string{"pg", "mysql", "redis", "mongo", "s3"},
+		MaxCustomPolicyConnectorsCommunity:  2,
+		MaxCustomPolicyConnectorsEvaluation: 5,
+	})
+
+	if err != nil {
+		t.Errorf("unexpected error with 5 connectors in evaluation tier: %v", err)
+	}
+
+	// Should fail with 6 connectors (over evaluation limit)
+	err = evaluator.UpdateConfig(DynamicPolicyConfig{
+		Enabled:                            true,
+		OrchestratorEndpoint:               "http://test:8081",
+		Timeout:                            5 * time.Second,
+		EnabledConnectors:                  []string{"pg", "mysql", "redis", "mongo", "s3", "http"},
+		MaxCustomPolicyConnectorsCommunity:  2,
+		MaxCustomPolicyConnectorsEvaluation: 5,
+	})
+
+	if err == nil {
+		t.Error("expected error when exceeding connector limit in evaluation tier")
+	}
+}
+
+func TestUpdateConfig_EnterpriseUnlimited(t *testing.T) {
+	origMode := os.Getenv("DEPLOYMENT_MODE")
+	origLicense := os.Getenv("AXONFLOW_LICENSE_KEY")
+	defer restoreEnv("DEPLOYMENT_MODE", origMode)
+	defer restoreEnv("AXONFLOW_LICENSE_KEY", origLicense)
+
+	os.Setenv("DEPLOYMENT_MODE", "enterprise")
+	os.Unsetenv("AXONFLOW_LICENSE_KEY")
+
+	evaluator := NewDynamicPolicyEvaluator(DynamicPolicyConfig{
+		Enabled: false,
+		Timeout: 5 * time.Second,
+	})
+
+	// Should succeed with 5 connectors in enterprise deployment
+	err := evaluator.UpdateConfig(DynamicPolicyConfig{
+		Enabled:                  true,
+		OrchestratorEndpoint:     "http://test:8081",
+		Timeout:                  5 * time.Second,
+		EnabledConnectors:        []string{"postgres", "mysql", "redis", "mongo", "s3"},
+		MaxCustomPolicyConnectorsCommunity: 2,
+	})
+
+	if err != nil {
+		t.Errorf("unexpected error in enterprise deployment: %v", err)
+	}
 }

@@ -1,0 +1,14 @@
+{
+  "name": "axonflow-webhooks-example",
+  "version": "1.0.0",
+  "description": "AxonFlow Webhook Management Example",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "npx ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^3.2.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0"
+  }
+}

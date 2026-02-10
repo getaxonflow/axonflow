@@ -49,7 +49,7 @@ func (r *CachingRouter) RouteRequest(ctx context.Context, req OrchestratorReques
     }
 
     // Cache the response
-    r.cache(req.Query, response, info)
+    r.putCache(req.Query, response, info)
     return response, info, nil
 }
 ```
@@ -112,4 +112,8 @@ AxonFlow provides these built-in implementations:
 ## See Also
 
 - [LLM Provider Routing](../../../examples/llm-routing/) - SDK-based routing examples
-- [ADR-006](../../../technical-docs/architecture-decisions/ADR-006-runtime-connector-configuration.md) - Architecture decision
+- [ADR-006: Runtime Connector Configuration](../../../technical-docs/architecture-decisions/ADR-006-runtime-connector-configuration.md) - Architecture decision
+
+---
+
+*Platform v4.1.0 · Last Updated: February 2026*

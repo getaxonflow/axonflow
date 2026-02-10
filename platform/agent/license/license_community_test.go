@@ -23,13 +23,13 @@ func TestValidateLicense(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name           string
-		licenseKey     string
-		expectedValid  bool
-		expectedTier   Tier
-		expectedOrgID  string
-		checkMessage   bool
-		expectedMsg    string
+		name          string
+		licenseKey    string
+		expectedValid bool
+		expectedTier  Tier
+		expectedOrgID string
+		checkMessage  bool
+		expectedMsg   string
 	}{
 		{
 			name:          "empty license key - Community mode",
@@ -48,8 +48,15 @@ func TestValidateLicense(t *testing.T) {
 			expectedOrgID: "community",
 		},
 		{
-			name:          "V1 format - falls back to Community",
-			licenseKey:    "AXON-V1-something",
+			name:          "V2 format - rejected, falls back to Community",
+			licenseKey:    "AXON-V2-eyJ0aWVyIjoiRU5UIn0-abc12345",
+			expectedValid: true,
+			expectedTier:  TierCommunity,
+			expectedOrgID: "community",
+		},
+		{
+			name:          "V1 format - rejected, falls back to Community",
+			licenseKey:    "AXON-ENT-testorg-20261028-abc12345",
 			expectedValid: true,
 			expectedTier:  TierCommunity,
 			expectedOrgID: "community",
@@ -89,8 +96,7 @@ func TestValidateLicense(t *testing.T) {
 }
 
 func TestValidateLicense_ValidV2License(t *testing.T) {
-	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in Community builds
+	// GenerateLicenseKey is enterprise-only in community builds
 	_, err := GenerateLicenseKey(TierEnterprise, "test-org", 365)
 	if err != nil {
 		t.Skip("GenerateLicenseKey not available in Community builds")
@@ -98,85 +104,8 @@ func TestValidateLicense_ValidV2License(t *testing.T) {
 }
 
 func TestValidateLicense_ExpiredV2License(t *testing.T) {
-	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in Community builds
+	// GenerateLicenseKey is enterprise-only in community builds
 	_, err := GenerateLicenseKey(TierProfessional, "expired-org", -30)
-	if err != nil {
-		t.Skip("GenerateLicenseKey not available in Community builds")
-	}
-}
-
-func TestParseV2License_InvalidFormat(t *testing.T) {
-	tests := []struct {
-		name       string
-		licenseKey string
-	}{
-		{
-			name:       "wrong prefix",
-			licenseKey: "AXON-V1-payload-sig",
-		},
-		{
-			name:       "not enough parts",
-			licenseKey: "AXON-V2-payload",
-		},
-		{
-			name:       "too many parts",
-			licenseKey: "AXON-V2-payload-sig-extra",
-		},
-		{
-			name:       "invalid base64",
-			licenseKey: "AXON-V2-!!!invalid!!!-sig",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := parseV2License(tt.licenseKey)
-			// Should return nil for invalid format
-			if result != nil {
-				t.Errorf("parseV2License() returned result, want nil for invalid format")
-			}
-			// Error is acceptable but not required (some cases return nil, nil)
-			_ = err
-		})
-	}
-}
-
-func TestVerifyV2Signature(t *testing.T) {
-	tests := []struct {
-		name          string
-		payloadBase64 string
-		signature     string
-		expectedValid bool
-	}{
-		{
-			name:          "empty payload and signature",
-			payloadBase64: "",
-			signature:     "",
-			expectedValid: false,
-		},
-		{
-			name:          "mismatched signature",
-			payloadBase64: "test-payload",
-			signature:     "wrongsig",
-			expectedValid: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := verifyV2Signature(tt.payloadBase64, tt.signature)
-			if result != tt.expectedValid {
-				t.Errorf("verifyV2Signature() = %v, want %v", result, tt.expectedValid)
-			}
-		})
-	}
-}
-
-func TestVerifyV2Signature_GeneratedLicense(t *testing.T) {
-	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in Community builds
-	_, err := GenerateLicenseKey(TierEnterprise, "test", 365)
 	if err != nil {
 		t.Skip("GenerateLicenseKey not available in Community builds")
 	}
@@ -250,15 +179,12 @@ func TestGetCommunityFeatures(t *testing.T) {
 		}
 	}
 
-	// Verify no extra keys
 	if len(features) != len(expectedFeatures) {
 		t.Errorf("getCommunityFeatures() has %d features, want %d", len(features), len(expectedFeatures))
 	}
 }
 
 func TestGenerateLicenseKey(t *testing.T) {
-	// This test requires GenerateLicenseKey which is enterprise-only
-	// The error behavior is tested in TestLicenseKey_GenerationNotAvailableInCommunity
 	_, err := GenerateLicenseKey(TierProfessional, "test-org", 365)
 	if err != nil {
 		t.Skip("GenerateLicenseKey not available in Community builds")
@@ -266,8 +192,6 @@ func TestGenerateLicenseKey(t *testing.T) {
 }
 
 func TestGenerateLicenseKey_RoundTrip(t *testing.T) {
-	// This test requires GenerateLicenseKey which is enterprise-only
-	// Skip in Community builds
 	_, err := GenerateLicenseKey(TierProfessional, "test-org", 365)
 	if err != nil {
 		t.Skip("GenerateLicenseKey not available in Community builds")
@@ -275,20 +199,15 @@ func TestGenerateLicenseKey_RoundTrip(t *testing.T) {
 }
 
 func TestLicenseKey_GenerationNotAvailableInCommunity(t *testing.T) {
-	// In Community builds, license generation is not available
-	// This is a security feature to prevent exposure of the license format
-
 	_, err := GenerateLicenseKey(TierEnterprise, "healthcare", 365)
 	if err == nil {
 		t.Error("GenerateLicenseKey() should return error in Community builds")
 	}
 
-	// Check for enterprise upgrade messaging (includes link to getaxonflow.com/enterprise)
 	if !strings.Contains(err.Error(), "Enterprise") {
 		t.Errorf("GenerateLicenseKey() error should mention Enterprise upgrade, got: %v", err)
 	}
 
-	// Also test GenerateServiceLicenseKey
 	_, err = GenerateServiceLicenseKey(TierEnterprise, "test", "service", "backend-service", []string{"perm"}, 365)
 	if err == nil {
 		t.Error("GenerateServiceLicenseKey() should return error in Community builds")
@@ -296,15 +215,15 @@ func TestLicenseKey_GenerationNotAvailableInCommunity(t *testing.T) {
 }
 
 func TestTierConstants(t *testing.T) {
-	// Verify tier constants are defined correctly
 	tiers := []Tier{
 		TierProfessional,
 		TierEnterprise,
 		TierEnterprisePlus,
+		TierEvaluation,
 		TierCommunity,
 	}
 
-	expectedValues := []string{"PRO", "ENT", "PLUS", "Community"}
+	expectedValues := []string{"Professional", "Enterprise", "Plus", "Evaluation", "Community"}
 
 	for i, tier := range tiers {
 		if string(tier) != expectedValues[i] {
@@ -313,12 +232,106 @@ func TestTierConstants(t *testing.T) {
 	}
 }
 
-func TestValidateLicense_UnknownTier(t *testing.T) {
-	// Test license with unknown tier - should default to Community
+func TestTierLimits(t *testing.T) {
+	if CommunityLimits.TenantPolicies != 20 {
+		t.Errorf("CommunityLimits.TenantPolicies = %d, want 20", CommunityLimits.TenantPolicies)
+	}
+	if CommunityLimits.OrgPolicies != 0 {
+		t.Errorf("CommunityLimits.OrgPolicies = %d, want 0", CommunityLimits.OrgPolicies)
+	}
+	if CommunityLimits.CustomPolicyConnectors != 2 {
+		t.Errorf("CommunityLimits.CustomPolicyConnectors = %d, want 2", CommunityLimits.CustomPolicyConnectors)
+	}
+	if CommunityLimits.AuditRetentionDays != 3 {
+		t.Errorf("CommunityLimits.AuditRetentionDays = %d, want 3", CommunityLimits.AuditRetentionDays)
+	}
+
+	if EvaluationLimits.TenantPolicies != 50 {
+		t.Errorf("EvaluationLimits.TenantPolicies = %d, want 50", EvaluationLimits.TenantPolicies)
+	}
+	if EvaluationLimits.OrgPolicies != 5 {
+		t.Errorf("EvaluationLimits.OrgPolicies = %d, want 5", EvaluationLimits.OrgPolicies)
+	}
+	if EvaluationLimits.CustomPolicyConnectors != 5 {
+		t.Errorf("EvaluationLimits.CustomPolicyConnectors = %d, want 5", EvaluationLimits.CustomPolicyConnectors)
+	}
+	if EvaluationLimits.AuditRetentionDays != 14 {
+		t.Errorf("EvaluationLimits.AuditRetentionDays = %d, want 14", EvaluationLimits.AuditRetentionDays)
+	}
+
+	if EnterpriseLimits.TenantPolicies != -1 {
+		t.Errorf("EnterpriseLimits.TenantPolicies = %d, want -1", EnterpriseLimits.TenantPolicies)
+	}
+	if EnterpriseLimits.OrgPolicies != -1 {
+		t.Errorf("EnterpriseLimits.OrgPolicies = %d, want -1", EnterpriseLimits.OrgPolicies)
+	}
+	if EnterpriseLimits.CustomPolicyConnectors != -1 {
+		t.Errorf("EnterpriseLimits.CustomPolicyConnectors = %d, want -1", EnterpriseLimits.CustomPolicyConnectors)
+	}
+}
+
+func TestGetTierLimits(t *testing.T) {
+	tests := []struct {
+		name     string
+		tier     Tier
+		expected TierLimits
+	}{
+		{"Community tier", TierCommunity, CommunityLimits},
+		{"Evaluation tier", TierEvaluation, EvaluationLimits},
+		{"Enterprise tier", TierEnterprise, EnterpriseLimits},
+		{"EnterprisePlus tier", TierEnterprisePlus, EnterpriseLimits},
+		{"Professional tier", TierProfessional, EnterpriseLimits},
+		{"Unknown tier defaults to Community", Tier("UNKNOWN"), CommunityLimits},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limits := GetTierLimits(tt.tier)
+			if limits.TenantPolicies != tt.expected.TenantPolicies {
+				t.Errorf("TenantPolicies = %d, want %d", limits.TenantPolicies, tt.expected.TenantPolicies)
+			}
+			if limits.OrgPolicies != tt.expected.OrgPolicies {
+				t.Errorf("OrgPolicies = %d, want %d", limits.OrgPolicies, tt.expected.OrgPolicies)
+			}
+			if limits.CustomPolicyConnectors != tt.expected.CustomPolicyConnectors {
+				t.Errorf("CustomPolicyConnectors = %d, want %d", limits.CustomPolicyConnectors, tt.expected.CustomPolicyConnectors)
+			}
+		})
+	}
+}
+
+func TestGetCurrentTier(t *testing.T) {
 	ctx := context.Background()
 
-	// This would require manually crafting a license with an invalid tier
-	// For now, we just verify that parsing handles unknown tiers gracefully
+	// Without license key, should return Community
+	t.Setenv("AXONFLOW_LICENSE_KEY", "")
+	tier := GetCurrentTier(ctx)
+	if tier != TierCommunity {
+		t.Errorf("GetCurrentTier() = %v, want %v", tier, TierCommunity)
+	}
+
+	// With invalid license key, should return Community
+	t.Setenv("AXONFLOW_LICENSE_KEY", "invalid-key")
+	tier = GetCurrentTier(ctx)
+	if tier != TierCommunity {
+		t.Errorf("GetCurrentTier() with invalid key = %v, want %v", tier, TierCommunity)
+	}
+}
+
+func TestGetCurrentLimits(t *testing.T) {
+	ctx := context.Background()
+
+	// Without license key, should return Community limits
+	t.Setenv("AXONFLOW_LICENSE_KEY", "")
+	limits := GetCurrentLimits(ctx)
+	if limits.TenantPolicies != CommunityLimits.TenantPolicies {
+		t.Errorf("GetCurrentLimits().TenantPolicies = %d, want %d", limits.TenantPolicies, CommunityLimits.TenantPolicies)
+	}
+}
+
+func TestValidateLicense_UnknownTier(t *testing.T) {
+	ctx := context.Background()
+
 	result, err := ValidateLicense(ctx, "")
 	if err != nil {
 		t.Errorf("ValidateLicense() error = %v, want nil", err)
@@ -332,14 +345,12 @@ func TestValidateLicense_UnknownTier(t *testing.T) {
 func TestValidationResult_CommunityMode(t *testing.T) {
 	ctx := context.Background()
 
-	// In Community mode, validating any license returns Community tier result
-	// Test with empty license key (should return Community tier result)
+	// In Community mode, validating any non-Ed25519 license returns Community tier
 	result, err := ValidateLicense(ctx, "any-license-key")
 	if err != nil {
 		t.Fatalf("ValidateLicense() error = %v", err)
 	}
 
-	// In Community mode, all licenses are valid (permissive validation)
 	if !result.Valid {
 		t.Error("ValidationResult.Valid should be true in Community mode")
 	}
@@ -372,10 +383,8 @@ func TestIsEnterpriseTier(t *testing.T) {
 		{"empty license key", "", false},
 		{"invalid license key", "invalid-key", false},
 		{"random string", "some-random-garbage", false},
-		// Valid enterprise license (tier=ENT, expires=2027-01-01)
-		{"valid enterprise license", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-5c7fa412", true},
-		// Valid professional license - should NOT be enterprise tier
-		{"valid professional license", "AXON-V2-eyJ0aWVyIjoiUFJPIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-70f8d524", false},
+		// Old V2 format licenses should be rejected in Ed25519 mode
+		{"old V2 license format", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-5c7fa412", false},
 	}
 
 	for _, tt := range tests {
@@ -386,5 +395,38 @@ func TestIsEnterpriseTier(t *testing.T) {
 				t.Errorf("IsEnterpriseTier()=%v, want %v for AXONFLOW_LICENSE_KEY=%q", IsEnterpriseTier(ctx), tt.expected, tt.licenseKey)
 			}
 		})
+	}
+}
+
+func TestGetCurrentTier_WithOldFormats(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		licenseKey string
+		expected   Tier
+	}{
+		{"empty key returns Community", "", TierCommunity},
+		{"invalid key returns Community", "invalid", TierCommunity},
+		// Old V2 format licenses should fall back to Community
+		{"old V2 basic license", "AXON-V2-eyJleHBpcmVzX2F0IjoiMjAyNzAxMDEiLCJ0ZW5hbnRfaWQiOiJ0ZXN0IiwidGllciI6IkJBU0lDIn0-33d3727d", TierCommunity},
+		{"old V2 enterprise license", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoidGVzdCIsImV4cGlyZXNfYXQiOiIyMDI3MDEwMSJ9-5c7fa412", TierCommunity},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AXONFLOW_LICENSE_KEY", tt.licenseKey)
+			tier := GetCurrentTier(ctx)
+			if tier != tt.expected {
+				t.Errorf("GetCurrentTier()=%v, want %v", tier, tt.expected)
+			}
+		})
+	}
+}
+
+func TestValidateHMACSecretAtStartup_NoOp(t *testing.T) {
+	err := ValidateHMACSecretAtStartup()
+	if err != nil {
+		t.Errorf("ValidateHMACSecretAtStartup() should be no-op, got: %v", err)
 	}
 }

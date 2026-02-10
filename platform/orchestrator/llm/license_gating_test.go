@@ -14,6 +14,8 @@ package llm
 import (
 	"context"
 	"testing"
+
+	"axonflow/platform/agent/license"
 )
 
 func TestCommunityLicenseValidator_GetCurrentTier(t *testing.T) {
@@ -21,8 +23,8 @@ func TestCommunityLicenseValidator_GetCurrentTier(t *testing.T) {
 	ctx := context.Background()
 
 	tier := v.GetCurrentTier(ctx)
-	if tier != LicenseTierCommunity {
-		t.Errorf("GetCurrentTier() = %q, want %q", tier, LicenseTierCommunity)
+	if tier != license.TierCommunity {
+		t.Errorf("GetCurrentTier() = %q, want %q", tier, license.TierCommunity)
 	}
 }
 
@@ -96,15 +98,15 @@ func TestCommunityLicenseValidator_GetFeatures(t *testing.T) {
 func TestGetTierForProvider(t *testing.T) {
 	tests := []struct {
 		providerType ProviderType
-		want         LicenseTier
+		want         license.Tier
 	}{
-		{ProviderTypeOllama, LicenseTierCommunity},
-		{ProviderTypeOpenAI, LicenseTierCommunity},
-		{ProviderTypeAnthropic, LicenseTierCommunity},
-		{ProviderTypeGemini, LicenseTierCommunity},
-		{ProviderTypeBedrock, LicenseTierProfessional},
-		{ProviderTypeCustom, LicenseTierProfessional},
-		{ProviderType("unknown"), LicenseTierProfessional}, // Unknown defaults to Professional
+		{ProviderTypeOllama, license.TierCommunity},
+		{ProviderTypeOpenAI, license.TierCommunity},
+		{ProviderTypeAnthropic, license.TierCommunity},
+		{ProviderTypeGemini, license.TierCommunity},
+		{ProviderTypeBedrock, license.TierProfessional},
+		{ProviderTypeCustom, license.TierProfessional},
+		{ProviderType("unknown"), license.TierProfessional}, // Unknown defaults to Professional
 	}
 
 	for _, tt := range tests {
@@ -197,38 +199,39 @@ func TestGetEnterpriseProviders(t *testing.T) {
 func TestTierSatisfiesRequirement(t *testing.T) {
 	tests := []struct {
 		name         string
-		currentTier  LicenseTier
-		requiredTier LicenseTier
+		currentTier  license.Tier
+		requiredTier license.Tier
 		want         bool
 	}{
 		// Same tier
-		{"Community meets Community", LicenseTierCommunity, LicenseTierCommunity, true},
-		{"PRO meets PRO", LicenseTierProfessional, LicenseTierProfessional, true},
-		{"ENT meets ENT", LicenseTierEnterprise, LicenseTierEnterprise, true},
-		{"PLUS meets PLUS", LicenseTierEnterprisePlus, LicenseTierEnterprisePlus, true},
+		{"Community meets Community", license.TierCommunity, license.TierCommunity, true},
+		{"Professional meets Professional", license.TierProfessional, license.TierProfessional, true},
+		{"Enterprise meets Enterprise", license.TierEnterprise, license.TierEnterprise, true},
+		{"Plus meets Plus", license.TierEnterprisePlus, license.TierEnterprisePlus, true},
 
 		// Higher tier meets lower requirement
-		{"PRO meets Community", LicenseTierProfessional, LicenseTierCommunity, true},
-		{"ENT meets Community", LicenseTierEnterprise, LicenseTierCommunity, true},
-		{"ENT meets PRO", LicenseTierEnterprise, LicenseTierProfessional, true},
-		{"PLUS meets all", LicenseTierEnterprisePlus, LicenseTierCommunity, true},
+		{"Professional meets Community", license.TierProfessional, license.TierCommunity, true},
+		{"Enterprise meets Community", license.TierEnterprise, license.TierCommunity, true},
+		{"Enterprise meets Professional", license.TierEnterprise, license.TierProfessional, true},
+		{"Plus meets all", license.TierEnterprisePlus, license.TierCommunity, true},
 
 		// Lower tier doesn't meet higher requirement
-		{"Community doesn't meet PRO", LicenseTierCommunity, LicenseTierProfessional, false},
-		{"Community doesn't meet ENT", LicenseTierCommunity, LicenseTierEnterprise, false},
-		{"PRO doesn't meet ENT", LicenseTierProfessional, LicenseTierEnterprise, false},
-		{"ENT doesn't meet PLUS", LicenseTierEnterprise, LicenseTierEnterprisePlus, false},
+		{"Community doesn't meet Professional", license.TierCommunity, license.TierProfessional, false},
+		{"Community doesn't meet Enterprise", license.TierCommunity, license.TierEnterprise, false},
+		{"Professional doesn't meet Enterprise", license.TierProfessional, license.TierEnterprise, false},
+		{"Enterprise doesn't meet Plus", license.TierEnterprise, license.TierEnterprisePlus, false},
 
-		// Unknown tier
-		{"Unknown current tier", LicenseTier("unknown"), LicenseTierCommunity, false},
-		{"Unknown required tier", LicenseTierCommunity, LicenseTier("unknown"), false},
+		// Unknown tier — treated as rank 0 (same as Community)
+		{"Unknown current tier meets Community", license.Tier("unknown"), license.TierCommunity, true},
+		{"Unknown required tier met by Community", license.TierCommunity, license.Tier("unknown"), true},
+		{"Unknown current tier doesn't meet Professional", license.Tier("unknown"), license.TierProfessional, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := TierSatisfiesRequirement(tt.currentTier, tt.requiredTier)
+			got := license.TierSatisfiesRequirement(tt.currentTier, tt.requiredTier)
 			if got != tt.want {
-				t.Errorf("TierSatisfiesRequirement(%q, %q) = %v, want %v",
+				t.Errorf("license.TierSatisfiesRequirement(%q, %q) = %v, want %v",
 					tt.currentTier, tt.requiredTier, got, tt.want)
 			}
 		})
@@ -239,8 +242,8 @@ func TestLicenseError_Error(t *testing.T) {
 	t.Run("with provider type", func(t *testing.T) {
 		err := &LicenseError{
 			ProviderType: ProviderTypeBedrock,
-			RequiredTier: LicenseTierProfessional,
-			CurrentTier:  LicenseTierCommunity,
+			RequiredTier: license.TierProfessional,
+			CurrentTier:  license.TierCommunity,
 			Message:      "upgrade required",
 		}
 
@@ -296,11 +299,11 @@ func TestValidateProviderAccess(t *testing.T) {
 		if licErr.ProviderType != ProviderTypeBedrock {
 			t.Errorf("ProviderType = %q, want %q", licErr.ProviderType, ProviderTypeBedrock)
 		}
-		if licErr.RequiredTier != LicenseTierProfessional {
-			t.Errorf("RequiredTier = %q, want %q", licErr.RequiredTier, LicenseTierProfessional)
+		if licErr.RequiredTier != license.TierProfessional {
+			t.Errorf("RequiredTier = %q, want %q", licErr.RequiredTier, license.TierProfessional)
 		}
-		if licErr.CurrentTier != LicenseTierCommunity {
-			t.Errorf("CurrentTier = %q, want %q", licErr.CurrentTier, LicenseTierCommunity)
+		if licErr.CurrentTier != license.TierCommunity {
+			t.Errorf("CurrentTier = %q, want %q", licErr.CurrentTier, license.TierCommunity)
 		}
 	})
 }
@@ -311,7 +314,7 @@ func TestSetDefaultValidator(t *testing.T) {
 	defer func() { DefaultValidator = originalValidator }()
 
 	// Create a mock validator
-	mockValidator := &mockLicenseValidator{tier: LicenseTierEnterprise}
+	mockValidator := &mockLicenseValidator{tier: license.TierEnterprise}
 	SetDefaultValidator(mockValidator)
 
 	if DefaultValidator != mockValidator {
@@ -321,17 +324,17 @@ func TestSetDefaultValidator(t *testing.T) {
 
 // mockLicenseValidator is a test helper
 type mockLicenseValidator struct {
-	tier     LicenseTier
+	tier     license.Tier
 	features map[string]bool
 }
 
-func (m *mockLicenseValidator) GetCurrentTier(ctx context.Context) LicenseTier {
+func (m *mockLicenseValidator) GetCurrentTier(ctx context.Context) license.Tier {
 	return m.tier
 }
 
 func (m *mockLicenseValidator) IsProviderAllowed(ctx context.Context, providerType ProviderType) bool {
 	requiredTier := GetTierForProvider(providerType)
-	return TierSatisfiesRequirement(m.tier, requiredTier)
+	return license.TierSatisfiesRequirement(m.tier, requiredTier)
 }
 
 func (m *mockLicenseValidator) ValidateLicense(ctx context.Context, licenseKey string) error {

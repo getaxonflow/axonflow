@@ -735,3 +735,13 @@ func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID string) (
 	}
 	return count, nil
 }
+
+// CountOrgPolicies counts organization-tier policies across all tenants (for Basic tier limit enforcement).
+func (r *PolicyRepository) CountOrgPolicies(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tier = 'organization' AND deleted_at IS NULL`
+	var count int
+	if err := r.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count organization policies: %w", err)
+	}
+	return count, nil
+}

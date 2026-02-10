@@ -27,15 +27,24 @@ import (
 	"axonflow/platform/orchestrator/llm/gemini"
 )
 
-// init registers all built-in provider factories.
-// These are the Community providers available without an enterprise license.
-// Note: OpenAI is registered in the llm/openai package to avoid import cycles
-// while using the LLM SDK.
+// init registers plain (non-SDK) provider factories as fallbacks.
+// The SDK-backed versions in providers/community_sdk_factories.go override these
+// when that package is imported (which is the normal production path via
+// cmd/orchestrator/imports_providers.go). These fallbacks ensure that importing
+// the llm package alone still provides working factories for tests and any code
+// that doesn't blank-import llm/providers.
 func init() {
-	RegisterFactory(ProviderTypeAnthropic, NewAnthropicProviderFactory)
-	RegisterFactory(ProviderTypeOllama, NewOllamaProviderFactory)
-	RegisterFactory(ProviderTypeGemini, NewGeminiProviderFactory)
-	RegisterFactory(ProviderTypeAzureOpenAI, NewAzureOpenAIProviderFactory)
+	registerIfAbsent(ProviderTypeAnthropic, NewAnthropicProviderFactory)
+	registerIfAbsent(ProviderTypeOllama, NewOllamaProviderFactory)
+	registerIfAbsent(ProviderTypeGemini, NewGeminiProviderFactory)
+	registerIfAbsent(ProviderTypeAzureOpenAI, NewAzureOpenAIProviderFactory)
+}
+
+// registerIfAbsent registers a factory only if no factory exists for the given type.
+func registerIfAbsent(providerType ProviderType, factory ProviderFactory) {
+	if !HasFactory(providerType) {
+		RegisterFactory(providerType, factory)
+	}
 }
 
 // NewAnthropicProviderFactory creates an Anthropic provider from configuration.

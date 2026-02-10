@@ -1,19 +1,9 @@
 -- Migration 045 Down: Revert connector_configs credentials column and connector types
+--
+-- NOTE: Migration 021 already creates the credentials column and the full connector
+-- type constraint. This down migration only needs to undo what 045 actually added
+-- (which is nothing if 021 ran first). We intentionally do NOT narrow the constraint
+-- or drop the credentials column, since 021 created them.
 
-ALTER TABLE connector_configs
-    DROP CONSTRAINT IF EXISTS check_connector_type;
-
--- Remove connector rows that are not valid under the legacy constraint.
-DELETE FROM connector_configs
-WHERE connector_type IN (
-    'http', 'mysql', 'mongodb', 'redis', 's3', 'azureblob', 'gcs',
-    'hubspot', 'jira', 'servicenow'
-);
-
-ALTER TABLE connector_configs
-    ADD CONSTRAINT check_connector_type CHECK (connector_type IN (
-        'postgres', 'cassandra', 'salesforce', 'amadeus', 'slack', 'snowflake', 'custom'
-    ));
-
-ALTER TABLE connector_configs
-    DROP COLUMN IF EXISTS credentials;
+-- No-op: 045's changes are redundant with 021. Reverting would break the schema
+-- by removing types and columns that 021 already provides.

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"axonflow/platform/agent/license"
@@ -242,39 +243,39 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, clientSecret 
 // validateViaOrganizations validates using organizations table (new customer portal path)
 func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
 	// Debug: Log client secret format detection
-	isV2Format := len(clientSecret) > 8 && clientSecret[:8] == "AXON-V2-"
-	log.Printf("[V2-DEBUG] validateViaOrganizations: clientID=%s, isV2Format=%v, secretLen=%d, secretPrefix=%s",
-		clientID, isV2Format, len(clientSecret), safePrefix(clientSecret, 20))
+	isEd25519Format := len(clientSecret) > 5 && clientSecret[:5] == "AXON-" && strings.Contains(clientSecret[5:], ".")
+	log.Printf("[LICENSE-DEBUG] validateViaOrganizations: clientID=%s, isEd25519=%v, secretLen=%d, secretPrefix=%s",
+		clientID, isEd25519Format, len(clientSecret), safePrefix(clientSecret, 20))
 
 	// First, validate the license key format cryptographically
 	validationResult, err := license.ValidateLicense(ctx, clientSecret)
 	if err != nil {
-		log.Printf("[V2-DEBUG] License validation ERROR: %v", err)
+		log.Printf("[LICENSE-DEBUG] License validation ERROR: %v", err)
 		return nil, fmt.Errorf("license validation failed: %w", err)
 	}
 
 	if !validationResult.Valid {
-		log.Printf("[V2-DEBUG] License INVALID: %s", validationResult.Error)
+		log.Printf("[LICENSE-DEBUG] License INVALID: %s", validationResult.Error)
 		return nil, fmt.Errorf("license invalid or expired: %s", validationResult.Error)
 	}
 
 	// Debug: Log validation result
-	log.Printf("[V2-DEBUG] License validation SUCCESS: ServiceName='%s', Tier='%s', OrgID='%s', Perms=%v",
+	log.Printf("[LICENSE-DEBUG] License validation SUCCESS: ServiceName='%s', Tier='%s', OrgID='%s', Perms=%v",
 		validationResult.ServiceName, validationResult.Tier, validationResult.OrgID, validationResult.Permissions)
 
 	// Extract org_id from validated license
 	orgID := validationResult.OrgID
 
-	// Detect if this is a V2 service license (format: AXON-V2-...)
-	isV2ServiceLicense := len(validationResult.ServiceName) > 0
-	log.Printf("[V2-DEBUG] V2 service license check: isV2ServiceLicense=%v (ServiceName len=%d)",
-		isV2ServiceLicense, len(validationResult.ServiceName))
+	// Detect if this is a service license (has service_name in payload)
+	isServiceLicense := len(validationResult.ServiceName) > 0
+	log.Printf("[LICENSE-DEBUG] Service license check: isServiceLicense=%v (ServiceName len=%d)",
+		isServiceLicense, len(validationResult.ServiceName))
 
-	// V2 service licenses are self-contained - the cryptographic signature validates
+	// Service licenses are self-contained - the Ed25519 signature validates
 	// all claims (tenant_id, tier, permissions, expiry). No database lookup needed.
 	// This enables stateless validation and multi-region deployments without
 	// requiring organization records in every database.
-	if isV2ServiceLicense {
+	if isServiceLicense {
 		// Map tier to rate limit from license payload
 		rateLimit := 100 // Default PRO
 		switch validationResult.Tier {
@@ -304,10 +305,10 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 		}, nil
 	}
 
-	// V1 license format is deprecated and no longer supported
-	// All licenses must use V2 format: AXON-V2-{BASE64_JSON}-{SIGNATURE}
-	// See ADR-007 for migration guide
-	return nil, fmt.Errorf("V1 license format (AXON-TIER-ORG-...) is no longer supported. Use V2 format (AXON-V2-...). See docs/reference/license-migration.md for migration instructions")
+	// Non-service licenses (no service_name) are not supported for organization auth.
+	// All licenses must be Ed25519-signed service licenses with a service_name field.
+	// See ADR-032 for format specification.
+	return nil, fmt.Errorf("license does not contain service identity (service_name). Use a service license generated via the license portal or keygen CLI")
 }
 
 // updateAPIKeyLastUsed updates the last_used_at timestamp for an API key

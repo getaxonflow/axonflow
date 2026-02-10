@@ -20,18 +20,35 @@ const (
 	PlanStatusCompleted PlanStatus = "completed"
 	PlanStatusFailed    PlanStatus = "failed"
 	PlanStatusExpired   PlanStatus = "expired"
+	PlanStatusCancelled PlanStatus = "cancelled"
 )
 
 // DefaultPlanTTL is the default time-to-live for plans (1 hour)
 const DefaultPlanTTL = 1 * time.Hour
 
+// Community plan limits
+const (
+	MaxCommunityPlans           = 25
+	MaxCommunityVersionsPerPlan = 10
+)
+
+// Evaluation plan limits
+const (
+	MaxEvaluationPlans           = 100
+	MaxEvaluationVersionsPerPlan = 25
+)
 // Common errors
 var (
 	ErrPlanNotFound    = errors.New("plan not found")
 	ErrPlanExpired     = errors.New("plan has expired")
 	ErrPlanAlreadyRun  = errors.New("plan has already been executed")
+	ErrPlanCancelled   = errors.New("plan has been cancelled")
 	ErrInvalidPlanID   = errors.New("invalid plan ID")
 	ErrInvalidWorkflow = errors.New("invalid workflow definition")
+	ErrVersionConflict = errors.New("version conflict: plan was modified by another request")
+	ErrVersionNotFound = errors.New("version not found")
+	ErrMaxPlans        = errors.New("maximum number of stored plans reached")
+	ErrMaxVersions     = errors.New("maximum number of versions per plan reached")
 )
 
 // Plan represents a stored multi-agent plan
@@ -40,6 +57,7 @@ type Plan struct {
 	Query         string `json:"query"`
 	Domain        string `json:"domain"`
 	ExecutionMode string `json:"execution_mode"`
+	Version       int    `json:"version"`
 
 	// Workflow definition (stored as JSON)
 	WorkflowDefinition json.RawMessage `json:"workflow_definition"`
@@ -130,4 +148,41 @@ type StepResult struct {
 	Result   interface{} `json:"result,omitempty"`
 	Error    string      `json:"error,omitempty"`
 	Duration string      `json:"duration,omitempty"`
+}
+
+// UpdatePlanRequest contains the data needed to update a plan with optimistic locking
+type UpdatePlanRequest struct {
+	PlanID          string          `json:"plan_id"`
+	ExpectedVersion int             `json:"version"`
+	ExecutionMode   string          `json:"execution_mode,omitempty"`
+	Domain          string          `json:"domain,omitempty"`
+	Metadata        json.RawMessage `json:"metadata,omitempty"`
+	OrgID           string          `json:"-"` // Set from auth context
+	ChangedBy       string          `json:"-"` // Set from auth context
+}
+
+// PlanVersion represents a snapshot of a plan at a specific version
+type PlanVersion struct {
+	ID            string          `json:"id"`
+	PlanID        string          `json:"plan_id"`
+	Version       int             `json:"version"`
+	OrgID         string          `json:"org_id,omitempty"`
+	Snapshot      json.RawMessage `json:"snapshot"`
+	ChangedBy     string          `json:"changed_by,omitempty"`
+	ChangedAt     time.Time       `json:"changed_at"`
+	ChangeType    string          `json:"change_type"`
+	ChangeSummary string          `json:"change_summary,omitempty"`
+}
+
+// RollbackPlanRequest contains the data needed to rollback a plan to a previous version
+type RollbackPlanRequest struct {
+	PlanID        string `json:"plan_id"`
+	TargetVersion int    `json:"target_version"`
+	OrgID         string `json:"-"` // Set from auth context
+	RolledBackBy  string `json:"-"` // Set from auth context
+}
+
+// CancelPlanRequest contains the data needed to cancel a plan
+type CancelPlanRequest struct {
+	Reason string `json:"reason,omitempty"`
 }

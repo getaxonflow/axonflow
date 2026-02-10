@@ -28,7 +28,7 @@ AxonFlow's LLM provider system is designed to be pluggable, extensible, and ente
 │  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────────┐    │
 │  │ Provider        │  │ Health          │  │ License           │    │
 │  │ Configs         │  │ Monitoring      │  │ Validator         │    │
-│  │ (name→config)   │  │ (periodic       │  │ (Community vs ENT)│    │
+│  │ (name→config)   │  │ (periodic       │  │ (Community vs Ent)│    │
 │  │                 │  │  health checks) │  │                   │    │
 │  └─────────────────┘  └─────────────────┘  └───────────────────┘    │
 │                                                                      │
@@ -44,7 +44,7 @@ AxonFlow's LLM provider system is designed to be pluggable, extensible, and ente
 │                         Providers                                    │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────┐  │
 │  │ OpenAI   │  │ Anthropic│  │ Bedrock  │  │ Ollama   │  │ Custom│  │
-│  │ (Comm)   │  │ (Comm)   │  │ (ENT)    │  │ (Comm)   │  │ (ENT) │  │
+│  │ (Comm)   │  │ (Comm)   │  │ (Ent)    │  │ (Comm)   │  │ (Ent) │  │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └───────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -355,9 +355,9 @@ type RouteInfo struct {
 | Tier | Providers | Features |
 |------|-----------|----------|
 | Community | Ollama, OpenAI, Anthropic | Basic routing, health checks |
-| PRO | + Bedrock, Gemini, Custom | Advanced routing, priority support |
-| ENT | All providers | All features, SLA guarantee |
-| PLUS | All providers | Dedicated support, custom development |
+| Professional | + Bedrock, Gemini, Custom | Advanced routing, priority support |
+| Enterprise | All providers | All features, SLA guarantee |
+| Plus | All providers | Dedicated support, custom development |
 
 ### Checking Access
 

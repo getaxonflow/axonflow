@@ -53,6 +53,15 @@ func (m *MockRepository) Create(ctx context.Context, workflow *Workflow) error {
 	return nil
 }
 
+// Delete removes a workflow by ID
+func (m *MockRepository) Delete(ctx context.Context, workflowID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.workflows, workflowID)
+	delete(m.steps, workflowID)
+	return nil
+}
+
 // GetByID retrieves a workflow by ID
 func (m *MockRepository) GetByID(ctx context.Context, workflowID string) (*Workflow, error) {
 	m.mu.RLock()

@@ -17,6 +17,7 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-hello-world-http}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-hello-world-user}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -57,7 +58,7 @@ test_query() {
         -H "X-Client-Secret: $CLIENT_SECRET" \
         -d "{
             \"query\": \"$query\",
-            \"user_token\": \"hello-world-user\",
+            \"user_token\": \"$USER_TOKEN\",
             \"client_id\": \"$CLIENT_ID\"
         }")
 

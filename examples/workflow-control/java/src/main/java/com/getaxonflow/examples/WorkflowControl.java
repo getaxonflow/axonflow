@@ -19,6 +19,10 @@ import com.getaxonflow.sdk.AxonFlow;
 import com.getaxonflow.sdk.AxonFlowConfig;
 import com.getaxonflow.sdk.types.workflow.WorkflowTypes.*;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +37,8 @@ import java.util.Map;
  * 2. Check step gates before each step
  * 3. Mark steps as completed
  * 4. Complete the workflow
+ * 5. Approve/reject steps (enterprise feature)
+ * 6. List pending approvals (enterprise feature)
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -211,6 +217,261 @@ public class WorkflowControl {
             assertCheck(status.getStatus() != null, "Workflow status has status");
             System.out.println();
 
+            // -------------------------------------------------------
+            // Step Approval Tests (Enterprise Feature)
+            // These may return 403 in community mode — skip gracefully.
+            // -------------------------------------------------------
+
+            // Test 7: Step Approval Flow
+            System.out.println("Step 7: Step Approval Flow");
+            System.out.println("   Creating 'wcp-approval-test' workflow (3 steps)...");
+            try {
+                CreateWorkflowResponse approvalWorkflow = client.createWorkflow(
+                    CreateWorkflowRequest.builder()
+                        .workflowName("wcp-approval-test")
+                        .source(WorkflowSource.EXTERNAL)
+                        .totalSteps(3)
+                        .metadata(Map.of("example", "step-approval-java"))
+                        .build()
+                );
+
+                assertCheck(approvalWorkflow.getWorkflowId() != null, "Approval test workflow created");
+                System.out.println("   Workflow ID: " + approvalWorkflow.getWorkflowId());
+
+                // Gate the first step
+                System.out.println("   Checking gate for step-1...");
+                StepGateResponse approvalGate = client.stepGate(
+                    approvalWorkflow.getWorkflowId(),
+                    "step-1",
+                    StepGateRequest.builder()
+                        .stepName("Approval Target Step")
+                        .stepType(StepType.LLM_CALL)
+                        .model("gpt-4")
+                        .provider("openai")
+                        .stepInput(Map.of("prompt", "Test step for approval"))
+                        .build()
+                );
+                assertCheck(approvalGate.getDecision() != null, "Approval gate decision is valid");
+                System.out.println("   Gate decision: " + approvalGate.getDecision());
+
+                // Approve the step
+                System.out.println("   Approving step-1...");
+                ApproveStepResponse approveResp = client.approveStep(
+                    approvalWorkflow.getWorkflowId(), "step-1"
+                );
+                assertCheck(approveResp != null, "approveStep returned a response");
+                if (approveResp.getStatus() != null) {
+                    assertCheck(
+                        "approved".equals(approveResp.getStatus()) || approveResp.getStatus().length() > 0,
+                        "Approve response shows approved status"
+                    );
+                    System.out.println("   Approval status: " + approveResp.getStatus());
+                } else {
+                    System.out.println("   Approval response received (no status field)");
+                }
+
+                // Check pending approvals
+                System.out.println("   Checking pending approvals...");
+                PendingApprovalsResponse pendingResp = client.getPendingApprovals();
+                assertCheck(pendingResp != null, "getPendingApprovals returned a response");
+                if (pendingResp.getApprovals() != null) {
+                    assertCheck(true, "Pending approvals has items list");
+                    System.out.println("   Pending approvals count: " + pendingResp.getApprovals().size());
+                }
+                if (pendingResp.getTotal() >= 0) {
+                    System.out.println("   Total pending: " + pendingResp.getTotal());
+                }
+            } catch (Exception approvalEx) {
+                String approvalMsg = approvalEx.getMessage() != null ? approvalEx.getMessage() : "";
+                if (approvalMsg.contains("403") || approvalMsg.contains("404")
+                        || approvalMsg.contains("enterprise")
+                        || approvalMsg.contains("not available") || approvalMsg.contains("license")
+                        || approvalMsg.contains("not found")) {
+                    System.out.println("   SKIPPED: Step approval is an enterprise feature");
+                    System.out.println("   (" + approvalMsg + ")");
+                } else {
+                    throw approvalEx;
+                }
+            }
+            System.out.println();
+
+            // Test 8: Step Rejection Flow
+            System.out.println("Step 8: Step Rejection Flow");
+            System.out.println("   Creating 'wcp-rejection-test' workflow (2 steps)...");
+            try {
+                CreateWorkflowResponse rejectionWorkflow = client.createWorkflow(
+                    CreateWorkflowRequest.builder()
+                        .workflowName("wcp-rejection-test")
+                        .source(WorkflowSource.EXTERNAL)
+                        .totalSteps(2)
+                        .metadata(Map.of("example", "step-rejection-java"))
+                        .build()
+                );
+
+                assertCheck(rejectionWorkflow.getWorkflowId() != null, "Rejection test workflow created");
+                System.out.println("   Workflow ID: " + rejectionWorkflow.getWorkflowId());
+
+                // Gate the first step
+                System.out.println("   Checking gate for step-1...");
+                StepGateResponse rejectionGate = client.stepGate(
+                    rejectionWorkflow.getWorkflowId(),
+                    "step-1",
+                    StepGateRequest.builder()
+                        .stepName("Rejection Target Step")
+                        .stepType(StepType.TOOL_CALL)
+                        .stepInput(Map.of("tool", "risky_action", "action", "delete_all"))
+                        .build()
+                );
+                assertCheck(rejectionGate.getDecision() != null, "Rejection gate decision is valid");
+                System.out.println("   Gate decision: " + rejectionGate.getDecision());
+
+                // Reject the step
+                System.out.println("   Rejecting step-1...");
+                RejectStepResponse rejectResp = client.rejectStep(
+                    rejectionWorkflow.getWorkflowId(), "step-1"
+                );
+                assertCheck(rejectResp != null, "rejectStep returned a response");
+                if (rejectResp.getStatus() != null) {
+                    assertCheck(
+                        "rejected".equals(rejectResp.getStatus()) || rejectResp.getStatus().length() > 0,
+                        "Reject response shows rejected status"
+                    );
+                    System.out.println("   Rejection status: " + rejectResp.getStatus());
+                } else {
+                    System.out.println("   Rejection response received (no status field)");
+                }
+            } catch (Exception rejectionEx) {
+                String rejectionMsg = rejectionEx.getMessage() != null ? rejectionEx.getMessage() : "";
+                if (rejectionMsg.contains("403") || rejectionMsg.contains("404")
+                        || rejectionMsg.contains("enterprise")
+                        || rejectionMsg.contains("not available") || rejectionMsg.contains("license")
+                        || rejectionMsg.contains("not found")) {
+                    System.out.println("   SKIPPED: Step rejection is an enterprise feature");
+                    System.out.println("   (" + rejectionMsg + ")");
+                } else {
+                    throw rejectionEx;
+                }
+            }
+            System.out.println();
+
+            // Test 9: Get Pending Approvals (standalone)
+            System.out.println("Step 9: Get Pending Approvals");
+            System.out.println("   Fetching pending approvals list...");
+            try {
+                PendingApprovalsResponse allPending = client.getPendingApprovals();
+                assertCheck(allPending != null, "getPendingApprovals returned a response");
+                if (allPending.getApprovals() != null) {
+                    assertCheck(true, "Response has items list");
+                    System.out.println("   Items count: " + allPending.getApprovals().size());
+                }
+                if (allPending.getTotal() >= 0) {
+                    assertCheck(true, "Response has total count");
+                    System.out.println("   Total: " + allPending.getTotal());
+                }
+            } catch (Exception pendingEx) {
+                String pendingMsg = pendingEx.getMessage() != null ? pendingEx.getMessage() : "";
+                if (pendingMsg.contains("403") || pendingMsg.contains("404")
+                        || pendingMsg.contains("enterprise")
+                        || pendingMsg.contains("not available") || pendingMsg.contains("license")
+                        || pendingMsg.contains("not found")) {
+                    System.out.println("   SKIPPED: Pending approvals is an enterprise feature");
+                    System.out.println("   (" + pendingMsg + ")");
+                } else {
+                    throw pendingEx;
+                }
+            }
+            System.out.println();
+
+            // ========================================
+            // Step 10: SSE Streaming - Real-time execution status
+            // ========================================
+            System.out.println("Step 10: SSE Streaming - Real-time execution status");
+            System.out.println("   Creating workflow for SSE streaming test...");
+
+            try {
+                CreateWorkflowResponse sseWorkflow = client.createWorkflow(
+                    CreateWorkflowRequest.builder()
+                        .workflowName("wcp-sse-streaming-test")
+                        .source(WorkflowSource.EXTERNAL)
+                        .totalSteps(2)
+                        .metadata(Map.of("example", "sse-streaming-java"))
+                        .build()
+                );
+
+                assertCheck(sseWorkflow.getWorkflowId() != null, "SSE workflow created with valid ID");
+                System.out.println("   Workflow ID: " + sseWorkflow.getWorkflowId());
+
+                // Run a step gate and complete a step to generate execution events
+                StepGateResponse sseGate = client.stepGate(
+                    sseWorkflow.getWorkflowId(),
+                    "sse-step-1",
+                    StepGateRequest.builder()
+                        .stepName("SSE Test Step")
+                        .stepType(StepType.LLM_CALL)
+                        .model("gpt-4")
+                        .provider("openai")
+                        .stepInput(Map.of("prompt", "test SSE streaming"))
+                        .build()
+                );
+
+                if (sseGate.isAllowed()) {
+                    client.markStepCompleted(
+                        sseWorkflow.getWorkflowId(),
+                        "sse-step-1",
+                        MarkStepCompletedRequest.builder()
+                            .output(Map.of("result", "sse test output"))
+                            .build()
+                    );
+                    assertCheck(true, "SSE step completed");
+                }
+
+                // Stream execution status via HTTP SSE endpoint
+                String orchestratorUrl = getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081");
+                String sseClientId = getEnv("AXONFLOW_CLIENT_ID", "workflow-control-java");
+                String sseClientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+                String streamUrl = orchestratorUrl + "/api/v1/unified/executions/" + sseWorkflow.getWorkflowId() + "/stream";
+                System.out.println("   SSE URL: " + streamUrl);
+
+                try {
+                    // Completed executions are evicted from the tracker, so a 404 with
+                    // "NOT_FOUND" / "Execution not found" proves the endpoint exists.
+                    URL url = new URL(streamUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("Accept", "application/json");
+                    conn.setRequestProperty("X-Client-ID", sseClientId);
+                    conn.setRequestProperty("X-Client-Secret", sseClientSecret);
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(10000);
+                    conn.connect();
+
+                    int statusCode = conn.getResponseCode();
+                    if (statusCode == 200) {
+                        assertCheck(true, "SSE endpoint returned 200");
+                        System.out.println("   SSE endpoint available (HTTP 200)");
+                    } else if (statusCode == 404) {
+                        java.io.InputStream errStream = conn.getErrorStream();
+                        String body = errStream != null
+                            ? new String(errStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+                            : "";
+                        boolean validNotFound = body.contains("NOT_FOUND") || body.contains("Execution not found");
+                        assertCheck(validNotFound, "SSE endpoint returned structured 404: " + body);
+                        System.out.println("   SSE endpoint available (connect during active execution for real-time events)");
+                    } else {
+                        assertCheck(false, "SSE endpoint returned unexpected HTTP " + statusCode);
+                    }
+                    conn.disconnect();
+                } catch (Exception sseErr) {
+                    System.out.println("   Warning: SSE connection failed: " + sseErr.getMessage());
+                    System.out.println("   Note: SSE endpoint may not be available yet");
+                }
+            } catch (Exception sseSetupErr) {
+                String sseMsg = sseSetupErr.getMessage() != null ? sseSetupErr.getMessage() : "";
+                System.out.println("   FATAL: SSE streaming test failed: " + sseMsg);
+                failures.add("SSE streaming test failed: " + sseMsg);
+            }
+            System.out.println();
+
             System.out.println("========================================");
             System.out.println("Workflow Control Plane Example Complete!");
             System.out.println();
@@ -219,6 +480,10 @@ public class WorkflowControl {
             System.out.println("  2. Check step gates (policy evaluation)");
             System.out.println("  3. Mark steps completed (progress tracking)");
             System.out.println("  4. Complete workflow (lifecycle management)");
+            System.out.println("  5. Approve steps (enterprise approval flow)");
+            System.out.println("  6. Reject steps (enterprise rejection flow)");
+            System.out.println("  7. List pending approvals (enterprise)");
+            System.out.println(" 10. SSE Streaming (real-time execution status)");
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());

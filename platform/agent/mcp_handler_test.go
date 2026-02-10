@@ -14,10 +14,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1989,24 +1987,26 @@ func TestValidateServiceLicense_EnterpriseMode_V2Key(t *testing.T) {
 func TestValidateServiceLicense_EnterpriseMode_WithServiceLicense(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
-	// Craft a valid V2 service license with proper HMAC signature
+	// Craft a valid Ed25519-signed service license
+	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
+	privKey := ed25519.NewKeyFromSeed(entSeed)
+
 	payload := map[string]interface{}{
-		"tier":         "enterprise",
+		"tier":         "Enterprise",
 		"tenant_id":    "test-tenant",
 		"service_name": "test-service",
-		"service_type": "mcp-connector",
+		"service_type": "backend-service",
 		"permissions":  []string{"mcp:postgres:query", "mcp:postgres:execute"},
+		"issued_at":    "20260209",
 		"expires_at":   "20991231",
 	}
 	payloadJSON, _ := json.Marshal(payload)
 	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	// Compute HMAC signature (same as license_community.go:verifyV2Signature)
-	h := hmac.New(sha256.New, []byte("axonflow-license-secret-2025-change-in-production"))
-	h.Write([]byte(payloadBase64))
-	signature := hex.EncodeToString(h.Sum(nil))[:8]
+	sig := ed25519.Sign(privKey, []byte(payloadBase64))
+	sigBase64 := base64.RawURLEncoding.EncodeToString(sig)
 
-	licenseKey := "AXON-V2-" + payloadBase64 + "-" + signature
+	licenseKey := "AXON-" + payloadBase64 + "." + sigBase64
 
 	w := httptest.NewRecorder()
 	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")
@@ -2032,23 +2032,26 @@ func TestValidateServiceLicense_EnterpriseMode_WithServiceLicense(t *testing.T) 
 func TestValidateServiceLicense_EnterpriseMode_ServicePermissionDenied(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
-	// Craft a valid V2 service license with permissions for a DIFFERENT connector
+	// Craft a valid Ed25519-signed service license with permissions for a DIFFERENT connector
+	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
+	privKey := ed25519.NewKeyFromSeed(entSeed)
+
 	payload := map[string]interface{}{
-		"tier":         "enterprise",
+		"tier":         "Enterprise",
 		"tenant_id":    "test-tenant",
 		"service_name": "test-service",
-		"service_type": "mcp-connector",
+		"service_type": "backend-service",
 		"permissions":  []string{"mcp:redis:query"}, // Only has redis, not postgres
+		"issued_at":    "20260209",
 		"expires_at":   "20991231",
 	}
 	payloadJSON, _ := json.Marshal(payload)
 	payloadBase64 := base64.RawURLEncoding.EncodeToString(payloadJSON)
 
-	h := hmac.New(sha256.New, []byte("axonflow-license-secret-2025-change-in-production"))
-	h.Write([]byte(payloadBase64))
-	signature := hex.EncodeToString(h.Sum(nil))[:8]
+	sig := ed25519.Sign(privKey, []byte(payloadBase64))
+	sigBase64 := base64.RawURLEncoding.EncodeToString(sig)
 
-	licenseKey := "AXON-V2-" + payloadBase64 + "-" + signature
+	licenseKey := "AXON-" + payloadBase64 + "." + sigBase64
 
 	w := httptest.NewRecorder()
 	granted, err := validateServiceLicense(context.Background(), w, licenseKey, "postgres", "query", "query")

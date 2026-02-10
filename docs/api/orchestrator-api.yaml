@@ -90,11 +90,20 @@ tags:
     description: |
       Decision & Execution Replay API for debugging, auditing, and compliance.
       Captures every step of workflow execution with full input/output snapshots and policy decisions.
+  - name: Webhooks
+    description: |
+      Webhook subscription management for real-time event notifications.
+      Subscribe to events like policy violations, workflow completions, budget alerts, etc.
   - name: Cost Controls
     description: |
       Budget management and LLM usage tracking for cost optimization.
       Supports budgets at organization, team, agent, workflow, and user scopes.
       Provides usage summaries, breakdowns, and pre-request budget checks.
+  - name: Unified Executions
+    description: |
+      Unified execution tracking and real-time streaming for MAP plans and WCP workflows.
+      SSE streaming provides real-time status updates. Community: 5 concurrent connections
+      per tenant. Enterprise: Unlimited.
 
 paths:
   /health:
@@ -333,14 +342,21 @@ paths:
 
         ## Execution Modes
         - `auto`: Automatically determines parallel/sequential (recommended)
-        - `parallel`: Force parallel execution
-        - `sequential`: Force sequential execution
+        - `parallel`: Force parallel execution of all independent steps
+        - `sequential`: Force sequential step-by-step execution
+        - `balanced`: I/O-bound connector steps parallel, LLM steps sequential
+        - `confirm`: Every step requires explicit approval (Enterprise only)
+        - `step`: First step auto-executes, subsequent require approval (Enterprise only)
 
         ## Domains
         - `travel`: Flights, hotels, itineraries
         - `healthcare`: Medical queries
         - `finance`: Financial analysis
         - `generic`: General-purpose tasks
+
+        Plan steps are automatically routed to matching connectors based on capabilities.
+        Community: Subject to connector limits (2 connectors).
+        Enterprise: Unlimited connectors with multi-connector fallback support.
 
         **Requires authentication**: Requests must come through the Agent.
       operationId: executePlan
@@ -572,6 +588,297 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - Multi-Agent Planning
+      summary: Update a pending plan
+      description: |
+        Update a plan that has not yet been executed.
+        Uses optimistic locking via the `version` field — the request must include
+        the expected current version. If the version doesn't match, returns 409.
+
+        Only plans with status `pending` can be updated.
+      operationId: updatePlan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID to update
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlanRequest'
+            example:
+              version: 1
+              execution_mode: "parallel"
+      responses:
+        '200':
+          description: Plan updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePlanResponse'
+              example:
+                success: true
+                plan_id: "plan_1705312200_abc123"
+                version: 2
+                status: "pending"
+        '404':
+          description: Plan not found
+        '409':
+          description: Version conflict (plan was modified by another request)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Version conflict: expected version 1, current version is 2"
+
+  /api/v1/plan/{id}/cancel:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Cancel a pending plan
+      description: |
+        Cancel a plan that has not yet completed execution.
+        Only plans with status `pending` or `executing` can be cancelled.
+        Returns 409 if the plan is already completed or cancelled.
+      operationId: cancelPlan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID to cancel
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Optional cancellation reason
+                  example: "User requested cancellation"
+      responses:
+        '200':
+          description: Plan cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelPlanResponse'
+              example:
+                success: true
+                plan_id: "plan_1705312200_abc123"
+                status: "cancelled"
+        '404':
+          description: Plan not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Plan cannot be cancelled (already completed or cancelled)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Plan is already completed and cannot be cancelled"
+
+  /api/v1/plan/{id}/versions:
+    get:
+      tags:
+        - Multi-Agent Planning
+      summary: Get plan version history
+      description: |
+        Retrieve the version history for a plan, showing all changes made.
+        Each version entry includes the change type, who made it, and when.
+
+        Community: Max 10 versions per plan, max 25 plans with versioning.
+        Enterprise: Unlimited.
+      operationId: getPlanVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version history retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanVersionsResponse'
+              example:
+                plan_id: "plan_1705312200_abc123"
+                versions:
+                  - version: 1
+                    changed_at: "2026-01-15T10:00:00Z"
+                    change_type: "created"
+                    change_summary: "Plan created"
+                  - version: 2
+                    changed_at: "2026-01-15T10:05:00Z"
+                    changed_by: "user-123"
+                    change_type: "updated"
+                    change_summary: "Changed execution_mode to parallel"
+        '404':
+          description: Plan not found
+
+  /api/v1/plan/{id}/resume:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Resume a paused plan (Enterprise only)
+      description: |
+        Resume execution of a plan that is paused at an approval gate.
+        Used with `confirm` and `step` execution modes.
+
+        - `confirm` mode: Every step requires explicit approval
+        - `step` mode: First step auto-executes, subsequent steps require approval
+
+        Set `approved: true` to approve and execute the next step,
+        or `approved: false` to reject and abort the plan.
+
+        **Requires:** Enterprise license.
+      operationId: resumePlan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID to resume
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved:
+                  type: boolean
+                  description: Whether to approve the pending step
+                  default: true
+            example:
+              approved: true
+      responses:
+        '200':
+          description: Plan resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumePlanResponse'
+              examples:
+                awaitingNext:
+                  summary: Step approved, waiting at next step
+                  value:
+                    plan_id: "plan_1705312200_abc123"
+                    status: "awaiting_approval"
+                    result: null
+                completed:
+                  summary: All steps complete
+                  value:
+                    plan_id: "plan_1705312200_abc123"
+                    status: "completed"
+                    result:
+                      summary: "Trip booked successfully"
+        '403':
+          description: Enterprise license required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Confirm/step execution modes require an Enterprise license"
+        '404':
+          description: Plan not found or not awaiting approval
+
+  /api/v1/plan/{id}/rollback/{version}:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Rollback plan to a previous version (Enterprise only)
+      description: |
+        Rollback a plan to a previously saved version. This creates a new version
+        that restores the plan state from the specified historical version.
+
+        Uses the plan's version history to retrieve the target version and applies
+        it as the current state. Returns 409 if a concurrent modification occurred.
+
+        **Requires:** Enterprise license.
+      operationId: rollbackPlan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Plan ID to rollback
+          schema:
+            type: string
+          example: "plan_1705312200_abc123"
+        - name: version
+          in: path
+          required: true
+          description: Target version number to rollback to
+          schema:
+            type: integer
+          example: 2
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Plan rolled back successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollbackPlanResponse'
+              example:
+                plan_id: "plan_1705312200_abc123"
+                version: 4
+                previous_version: 2
+                status: "pending"
+        '403':
+          description: Enterprise license required (community mode)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Plan rollback requires an Enterprise license"
+        '404':
+          description: Plan or version not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Plan not found: plan_nonexistent"
+        '409':
+          description: Version conflict (concurrent modification)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Version conflict: plan was modified during rollback"
 
   # ============================================================================
   # Agent Management API (MAP 0.8)
@@ -3314,6 +3621,191 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/workflow-control/{workflowId}/steps/{stepId}/approve:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Approve a pending workflow step
+      description: |
+        Approve a workflow step that is waiting for human approval.
+        This allows the workflow to proceed past the approval gate.
+      operationId: approveWorkflowStep
+      parameters:
+        - name: workflowId
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+          example: "wf_abc123"
+        - name: stepId
+          in: path
+          required: true
+          description: Step ID awaiting approval
+          schema:
+            type: string
+          example: "step-2"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+                  description: Optional approval comment
+                approved_by:
+                  type: string
+                  description: User ID of the approver
+            example:
+              comment: "Approved after reviewing output"
+              approved_by: "user-456"
+      responses:
+        '200':
+          description: Step approved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+              example:
+                workflow_id: "wf_abc123"
+                step_id: "step-2"
+                decision: "approved"
+                decided_by: "user-456"
+                decided_at: "2026-01-17T10:05:00Z"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Step is not in a pending approval state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Step step-2 is not awaiting approval"
+
+  /api/v1/workflow-control/{workflowId}/steps/{stepId}/reject:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Reject a pending workflow step
+      description: |
+        Reject a workflow step that is waiting for human approval.
+        This blocks the step and may abort the workflow depending on configuration.
+      operationId: rejectWorkflowStep
+      parameters:
+        - name: workflowId
+          in: path
+          required: true
+          description: Workflow ID
+          schema:
+            type: string
+          example: "wf_abc123"
+        - name: stepId
+          in: path
+          required: true
+          description: Step ID awaiting approval
+          schema:
+            type: string
+          example: "step-2"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for rejection
+                rejected_by:
+                  type: string
+                  description: User ID of the rejector
+            example:
+              reason: "Output contains PII that was not redacted"
+              rejected_by: "user-456"
+      responses:
+        '200':
+          description: Step rejected successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+              example:
+                workflow_id: "wf_abc123"
+                step_id: "step-2"
+                decision: "rejected"
+                reason: "Output contains PII that was not redacted"
+                decided_by: "user-456"
+                decided_at: "2026-01-17T10:05:00Z"
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Step is not in a pending approval state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Step step-2 is not awaiting approval"
+
+  /api/v1/workflow-control/pending-approvals:
+    get:
+      tags:
+        - Workflow Control Plane
+      summary: List pending approvals
+      description: |
+        List all workflow steps that are currently awaiting human approval.
+        Returns steps across all active workflows for the current tenant.
+      operationId: listPendingApprovals
+      parameters:
+        - name: workflow_id
+          in: query
+          description: Filter by workflow ID
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: Number of results to skip
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of pending approvals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingApprovalsResponse'
+              example:
+                approvals:
+                  - workflow_id: "wf_abc123"
+                    workflow_name: "code-review-pipeline"
+                    step_id: "step-2"
+                    step_name: "Deploy to Production"
+                    step_type: "action"
+                    requested_at: "2026-01-17T10:00:00Z"
+                    reason: "Human approval required for deployment steps"
+                  - workflow_id: "wf_def456"
+                    workflow_name: "data-processing"
+                    step_id: "step-1"
+                    step_name: "Export Customer Data"
+                    step_type: "connector_call"
+                    requested_at: "2026-01-17T09:45:00Z"
+                    reason: "Customer data export requires approval"
+                total: 2
+
   /api/v1/connectors:
     get:
       tags:
@@ -3930,6 +4422,8 @@ paths:
       description: |
         Create a new budget with spending limits. Budgets can be scoped to
         organization, team, agent, workflow, or user level.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: createBudget
       parameters:
         - name: X-Org-ID
@@ -3971,7 +4465,10 @@ paths:
       tags:
         - Cost Controls
       summary: List budgets
-      description: List all budgets for the organization
+      description: |
+        List all budgets for the organization.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: listBudgets
       parameters:
         - name: X-Org-ID
@@ -4011,7 +4508,10 @@ paths:
       tags:
         - Cost Controls
       summary: Get a budget
-      description: Get a specific budget by ID
+      description: |
+        Get a specific budget by ID.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: getBudget
       parameters:
         - name: id
@@ -4033,7 +4533,10 @@ paths:
       tags:
         - Cost Controls
       summary: Update a budget
-      description: Update an existing budget configuration
+      description: |
+        Update an existing budget configuration.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: updateBudget
       parameters:
         - name: id
@@ -4063,7 +4566,10 @@ paths:
       tags:
         - Cost Controls
       summary: Delete a budget
-      description: Delete a budget by ID
+      description: |
+        Delete a budget by ID.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: deleteBudget
       parameters:
         - name: id
@@ -4086,6 +4592,8 @@ paths:
       description: |
         Get real-time status of a budget including current usage,
         remaining amount, and whether the budget is exceeded.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: getBudgetStatus
       parameters:
         - name: id
@@ -4122,7 +4630,10 @@ paths:
       tags:
         - Cost Controls
       summary: Get budget alerts
-      description: Get alerts triggered for a specific budget
+      description: |
+        Get alerts triggered for a specific budget.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: getBudgetAlerts
       parameters:
         - name: id
@@ -4155,6 +4666,8 @@ paths:
       description: |
         Check if a request should be allowed based on budget constraints.
         Returns whether the request is allowed and the applicable budget status.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: checkBudget
       requestBody:
         required: true
@@ -4195,7 +4708,10 @@ paths:
       tags:
         - Cost Controls
       summary: Get usage summary
-      description: Get aggregated LLM usage for the current period
+      description: |
+        Get aggregated LLM usage for the current period.
+
+        Available in both Community and Enterprise editions. Basic usage overview.
       operationId: getUsageSummary
       parameters:
         - name: X-Org-ID
@@ -4230,7 +4746,10 @@ paths:
       tags:
         - Cost Controls
       summary: Get usage breakdown
-      description: Get usage broken down by a specific dimension
+      description: |
+        Get usage broken down by a specific dimension.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: getUsageBreakdown
       parameters:
         - name: X-Org-ID
@@ -4284,7 +4803,10 @@ paths:
       tags:
         - Cost Controls
       summary: List usage records
-      description: List individual usage records with filtering
+      description: |
+        List individual usage records with filtering.
+
+        Enterprise only. Returns 403 Forbidden in Community edition.
       operationId: listUsageRecords
       parameters:
         - name: X-Org-ID
@@ -4345,7 +4867,10 @@ paths:
       tags:
         - Cost Controls
       summary: Get model pricing
-      description: Get pricing information for LLM models
+      description: |
+        Get pricing information for LLM models.
+
+        Available in both Community and Enterprise editions.
       operationId: getPricing
       parameters:
         - name: provider
@@ -4391,6 +4916,201 @@ paths:
                         gpt-4o:
                           input_per_1k: 0.0025
                           output_per_1k: 0.01
+
+  # ============================================================================
+  # Webhook Subscriptions
+  # ============================================================================
+
+  /api/v1/webhooks:
+    post:
+      tags:
+        - Webhooks
+      summary: Create webhook subscription
+      description: |
+        Create a new webhook subscription to receive real-time event notifications.
+        Events are delivered as HTTP POST requests to the specified URL with HMAC-SHA256
+        signatures when a secret is provided.
+      operationId: createWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookRequest'
+            example:
+              url: "https://example.com/webhooks/axonflow"
+              events:
+                - "policy.violation"
+                - "workflow.completed"
+                - "budget.exceeded"
+              secret: "whsec_abc123secretkey"
+              active: true
+      responses:
+        '201':
+          description: Webhook subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+              example:
+                id: "wh_abc123"
+                url: "https://example.com/webhooks/axonflow"
+                events:
+                  - "policy.violation"
+                  - "workflow.completed"
+                  - "budget.exceeded"
+                active: true
+                tenant_id: "tenant-1"
+                org_id: "org-1"
+                secret: "whsec_abc123secretkey"
+                created_at: "2026-01-17T10:00:00Z"
+                updated_at: "2026-01-17T10:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    get:
+      tags:
+        - Webhooks
+      summary: List webhook subscriptions
+      description: List all webhook subscriptions for the current tenant
+      operationId: listWebhooks
+      responses:
+        '200':
+          description: List of webhook subscriptions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWebhookSubscriptionsResponse'
+              example:
+                subscriptions:
+                  - id: "wh_abc123"
+                    url: "https://example.com/webhooks/axonflow"
+                    events:
+                      - "policy.violation"
+                      - "workflow.completed"
+                    active: true
+                    tenant_id: "tenant-1"
+                    org_id: "org-1"
+                    created_at: "2026-01-17T10:00:00Z"
+                    updated_at: "2026-01-17T10:00:00Z"
+                total: 1
+
+  /api/v1/webhooks/{id}:
+    get:
+      tags:
+        - Webhooks
+      summary: Get webhook subscription
+      description: Retrieve a specific webhook subscription by ID
+      operationId: getWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Webhook subscription ID
+          schema:
+            type: string
+          example: "wh_abc123"
+      responses:
+        '200':
+          description: Webhook subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+        - Webhooks
+      summary: Update webhook subscription
+      description: Update an existing webhook subscription
+      operationId: updateWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Webhook subscription ID
+          schema:
+            type: string
+          example: "wh_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookRequest'
+            example:
+              url: "https://example.com/webhooks/axonflow-v2"
+              events:
+                - "policy.violation"
+                - "workflow.completed"
+                - "workflow.failed"
+              active: true
+      responses:
+        '200':
+          description: Webhook subscription updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+        - Webhooks
+      summary: Delete webhook subscription
+      description: Delete a webhook subscription. Events will no longer be delivered to this URL.
+      operationId: deleteWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Webhook subscription ID
+          schema:
+            type: string
+          example: "wh_abc123"
+      responses:
+        '204':
+          description: Webhook subscription deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Real-time Streaming (SSE)
+  # ============================================================================
+
+  /api/v1/unified/executions/{id}/stream:
+    get:
+      tags:
+        - Unified Executions
+      summary: Stream execution status via SSE
+      description: |
+        Server-Sent Events stream for real-time execution status updates.
+        Streams events for both MAP plan executions and WCP workflow executions.
+        Community: Limited to 5 concurrent connections per tenant.
+        Enterprise: Unlimited concurrent connections.
+      operationId: streamExecutionStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE stream of execution events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '429':
+          description: Too many concurrent connections (Community edition limit)
 
 components:
   schemas:
@@ -4452,7 +5172,7 @@ components:
           example: "plan_xyz789"
         status:
           type: string
-          enum: [pending, executing, completed, failed, expired, cancelled, aborted]
+          enum: [pending, executing, completed, failed, expired, cancelled, aborted, awaiting_approval]
           description: Current execution status
           example: "executing"
         query:
@@ -4810,9 +5530,16 @@ components:
           description: Task domain for specialized handling
         execution_mode:
           type: string
-          enum: [auto, parallel, sequential]
+          enum: [auto, parallel, sequential, balanced, confirm, step]
           default: auto
-          description: How to execute sub-tasks
+          description: |
+            How to execute sub-tasks.
+            - `auto`: Automatically determines parallel/sequential (recommended)
+            - `parallel`: Force parallel execution of all independent steps
+            - `sequential`: Force sequential step-by-step execution
+            - `balanced`: I/O-bound connector steps parallel, LLM steps sequential
+            - `confirm`: Every step requires explicit approval before execution (Enterprise only)
+            - `step`: First step auto-executes, subsequent steps require approval (Enterprise only)
         user:
           $ref: '#/components/schemas/UserContext'
         client:
@@ -4829,6 +5556,22 @@ components:
           type: boolean
         plan_id:
           type: string
+        version:
+          type: integer
+          description: Plan version number (for optimistic locking)
+          example: 1
+        steps:
+          type: array
+          description: Generated plan steps
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              description:
+                type: string
         workflow_execution_id:
           type: string
         result:
@@ -4858,6 +5601,116 @@ components:
         policy_info:
           description: Policy evaluation result for the plan execution (Issue #1020)
           $ref: '#/components/schemas/PolicyEvaluationResult'
+
+    CancelPlanResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum: [cancelled]
+
+    UpdatePlanRequest:
+      type: object
+      required:
+        - version
+      properties:
+        version:
+          type: integer
+          description: Expected current version (for optimistic locking)
+          example: 1
+        execution_mode:
+          type: string
+          enum: [auto, parallel, sequential, balanced, confirm, step]
+          description: New execution mode
+        domain:
+          type: string
+          description: New domain
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata to set
+
+    UpdatePlanResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        plan_id:
+          type: string
+        version:
+          type: integer
+          description: New version number after update
+        status:
+          type: string
+
+    PlanVersionEntry:
+      type: object
+      properties:
+        version:
+          type: integer
+        changed_at:
+          type: string
+          format: date-time
+        changed_by:
+          type: string
+        change_type:
+          type: string
+          enum: [created, updated, rollback]
+        change_summary:
+          type: string
+
+    PlanVersionsResponse:
+      type: object
+      properties:
+        plan_id:
+          type: string
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlanVersionEntry'
+
+    ResumePlanResponse:
+      type: object
+      properties:
+        plan_id:
+          type: string
+        status:
+          type: string
+          enum: [awaiting_approval, completed, failed]
+          description: Status after resuming
+        result:
+          description: Final result if plan completed
+
+    RollbackPlanResponse:
+      type: object
+      description: Response after rolling back a plan to a previous version
+      required:
+        - plan_id
+        - version
+        - previous_version
+        - status
+      properties:
+        plan_id:
+          type: string
+          description: Plan identifier
+          example: "plan_1705312200_abc123"
+        version:
+          type: integer
+          description: New version number after rollback
+          example: 4
+        previous_version:
+          type: integer
+          description: The version that was restored
+          example: 2
+        status:
+          type: string
+          description: Plan status after rollback
+          enum: [pending, executing]
+          example: "pending"
 
     ProviderStatusResponse:
       type: object
@@ -5410,6 +6263,192 @@ components:
           type: integer
         offset:
           type: integer
+
+    # WCP Approval Schemas
+    ApprovalResponse:
+      type: object
+      description: Response after approving or rejecting a workflow step
+      properties:
+        workflow_id:
+          type: string
+          description: Workflow identifier
+          example: "wf_abc123"
+        step_id:
+          type: string
+          description: Step that was approved or rejected
+          example: "step-2"
+        decision:
+          type: string
+          enum: [approved, rejected]
+          description: The approval decision
+          example: "approved"
+        reason:
+          type: string
+          description: Reason for the decision (primarily for rejections)
+        decided_by:
+          type: string
+          description: User ID who made the decision
+          example: "user-456"
+        decided_at:
+          type: string
+          format: date-time
+          description: When the decision was made
+
+    PendingApproval:
+      type: object
+      description: A workflow step awaiting human approval
+      properties:
+        workflow_id:
+          type: string
+          description: Workflow identifier
+          example: "wf_abc123"
+        workflow_name:
+          type: string
+          description: Human-readable workflow name
+          example: "code-review-pipeline"
+        step_id:
+          type: string
+          description: Step awaiting approval
+          example: "step-2"
+        step_name:
+          type: string
+          description: Human-readable step name
+          example: "Deploy to Production"
+        step_type:
+          type: string
+          enum: [llm_call, tool_call, connector_call, human_task, synthesis, action, gate]
+          description: Type of step operation
+          example: "action"
+        requested_at:
+          type: string
+          format: date-time
+          description: When approval was requested
+        reason:
+          type: string
+          description: Why approval is required
+          example: "Human approval required for deployment steps"
+
+    PendingApprovalsResponse:
+      type: object
+      description: List of pending approvals across workflows
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingApproval'
+        total:
+          type: integer
+          description: Total number of pending approvals
+
+    # Webhook Schemas
+    CreateWebhookRequest:
+      type: object
+      required:
+        - url
+        - events
+      properties:
+        url:
+          type: string
+          format: uri
+          description: URL to receive webhook event payloads
+          example: "https://example.com/webhooks/axonflow"
+        events:
+          type: array
+          items:
+            type: string
+          description: |
+            List of event types to subscribe to. Available events:
+            - `policy.violation` — Policy violation detected
+            - `policy.created` / `policy.updated` / `policy.deleted` — Policy lifecycle
+            - `workflow.completed` / `workflow.failed` / `workflow.aborted` — Workflow lifecycle
+            - `workflow.approval_required` — Step requires human approval
+            - `budget.threshold_reached` / `budget.exceeded` / `budget.blocked` — Budget alerts
+            - `plan.completed` / `plan.failed` — Plan lifecycle
+          example:
+            - "policy.violation"
+            - "workflow.completed"
+        secret:
+          type: string
+          description: Secret key for HMAC-SHA256 signature verification of webhook payloads
+          example: "whsec_abc123secretkey"
+        active:
+          type: boolean
+          default: true
+          description: Whether the subscription is active
+
+    UpdateWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Updated URL to receive webhook event payloads
+        events:
+          type: array
+          items:
+            type: string
+          description: Updated list of event types to subscribe to
+        active:
+          type: boolean
+          description: Whether the subscription is active
+
+    WebhookSubscription:
+      type: object
+      description: A webhook subscription for receiving event notifications
+      properties:
+        id:
+          type: string
+          description: Unique subscription identifier
+          example: "wh_abc123"
+        url:
+          type: string
+          format: uri
+          description: URL that receives webhook event payloads
+          example: "https://example.com/webhooks/axonflow"
+        events:
+          type: array
+          items:
+            type: string
+          description: Event types this subscription listens for
+          example:
+            - "policy.violation"
+            - "workflow.completed"
+        active:
+          type: boolean
+          description: Whether the subscription is currently active
+          example: true
+        tenant_id:
+          type: string
+          description: Tenant ID that owns this subscription
+          example: "tenant-1"
+        org_id:
+          type: string
+          description: Organization ID that owns this subscription
+          example: "org-1"
+        secret:
+          type: string
+          description: Secret key for HMAC-SHA256 signature verification
+          example: "whsec_abc123secretkey"
+        created_at:
+          type: string
+          format: date-time
+          description: When the subscription was created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the subscription was last updated
+
+    ListWebhookSubscriptionsResponse:
+      type: object
+      description: List of webhook subscriptions
+      properties:
+        subscriptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookSubscription'
+        total:
+          type: integer
+          description: Total number of subscriptions
 
     PolicyMatch:
       type: object
@@ -7205,6 +8244,16 @@ components:
             error:
               code: "UNAUTHORIZED"
               message: "missing tenant ID"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Resource not found"
 
     InternalError:
       description: Internal server error

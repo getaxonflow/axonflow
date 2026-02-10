@@ -1787,9 +1787,7 @@ func stringPtr(s string) *string {
 	return &s
 }
 
-func intPtr(i int) *int {
-	return &i
-}
+// intPtr is defined in map_wcp_execution.go (same package)
 
 func TestPolicyService_ValidateUpdateRequest(t *testing.T) {
 	service := &PolicyService{}

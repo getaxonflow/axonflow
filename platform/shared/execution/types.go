@@ -311,6 +311,11 @@ type ListExecutionsRequest struct {
 	Offset        int                   `json:"offset,omitempty"`
 }
 
+// CancelExecutionRequest is the request to cancel an execution.
+type CancelExecutionRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // ListExecutionsResponse is the paginated response for listing executions.
 type ListExecutionsResponse struct {
 	Executions []ExecutionStatus `json:"executions"`
