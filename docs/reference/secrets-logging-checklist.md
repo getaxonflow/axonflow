@@ -4,7 +4,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.1.0
+**Platform Version:** v4.2.0
 
 **Purpose:** Pre-deployment validation checklist for AWS Secrets Manager secrets
 
@@ -451,5 +451,5 @@ aws iam put-role-policy \
 
 - **Date:** February 2026
 - **Verified By:** AxonFlow Team
-- **Platform Version:** v4.1.0
+- **Platform Version:** v4.2.0
 - **Status:** All active regions validated (us-east-1 production, ap-south-1 production, eu-central-1 staging). Credential encryption (AES-256-GCM) verified operational.

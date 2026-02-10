@@ -116,4 +116,4 @@ AxonFlow provides these built-in implementations:
 
 ---
 
-*Platform v4.1.0 · Last Updated: February 2026*
+*Platform v4.2.0 · Last Updated: February 2026*
