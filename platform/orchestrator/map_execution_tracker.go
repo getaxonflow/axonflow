@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -108,12 +109,15 @@ func (t *MAPExecutionTracker) GetPlanStatus(ctx context.Context, planID string) 
 
 	// If no unified execution found, fall back to plan service and create a status response
 	if t.planService == nil {
-		return nil, fmt.Errorf("plan not found: %s (no plan service available)", planID)
+		return nil, fmt.Errorf("plan %s: %w", planID, execution.ErrExecutionNotFound)
 	}
 
 	plan, err := t.planService.GetPlan(ctx, planID)
 	if err != nil {
-		return nil, fmt.Errorf("plan not found: %w", err)
+		if errors.Is(err, planning.ErrPlanNotFound) {
+			return nil, fmt.Errorf("plan %s: %w", planID, execution.ErrExecutionNotFound)
+		}
+		return nil, fmt.Errorf("plan %s lookup failed: %w", planID, err)
 	}
 
 	// Convert plan to ExecutionStatus for backward compatibility

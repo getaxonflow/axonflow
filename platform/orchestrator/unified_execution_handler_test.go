@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -682,6 +683,117 @@ func TestUnifiedHandler_StreamExecutionStatus_CrossTenantBlocked(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d (cross-tenant stream should return 404)", rr.Code, http.StatusNotFound)
+	}
+}
+
+// --- Mock repo that returns a backend error (not ErrExecutionNotFound) ---
+
+type failingRepo struct {
+	mockRepo
+	getErr error
+}
+
+func (f *failingRepo) Get(_ context.Context, _ string) (*execution.ExecutionStatus, error) {
+	return nil, f.getErr
+}
+
+func TestUnifiedHandler_GetExecutionStatus_BackendError_Returns500(t *testing.T) {
+	dbErr := errors.New("connection refused")
+	repo := &failingRepo{
+		mockRepo: *newMockRepo(),
+		getErr:   dbErr,
+	}
+	handler := NewUnifiedExecutionHandler(repo, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
+
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d (backend error should be 500, not 404)", rr.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestUnifiedHandler_CancelExecution_BackendError_Returns500(t *testing.T) {
+	dbErr := errors.New("connection refused")
+	repo := &failingRepo{
+		mockRepo: *newMockRepo(),
+		getErr:   dbErr,
+	}
+	handler := NewUnifiedExecutionHandler(repo, nil, nil, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
+
+	body := `{"reason":"testing"}`
+	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-1/cancel", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d (backend error should be 500, not 404)", rr.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestUnifiedHandler_StreamExecution_BackendError_Returns500(t *testing.T) {
+	dbErr := errors.New("connection refused")
+	repo := &failingRepo{
+		mockRepo: *newMockRepo(),
+		getErr:   dbErr,
+	}
+	hub := execution.NewEventHub()
+	handler := NewUnifiedExecutionHandler(repo, nil, nil, hub, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
+
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1/stream", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d (backend error should be 500, not 404)", rr.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestUnifiedHandler_GetExecutionStatus_NotFoundStillReturns404(t *testing.T) {
+	// Verify that genuine not-found still returns 404 (regression check)
+	repo := newMockRepo()
+	handler := newTestHandler(repo)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
+
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/nonexistent", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d (genuine not-found should still be 404)", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestUnifiedHandler_GetExecutionStatus_NotFoundWithTrackersReturns404(t *testing.T) {
+	// Regression test: with WCP and MAP trackers enabled (normal runtime),
+	// a genuinely missing execution ID must return 404, not 500.
+	// The trackers return their own not-found errors which must be classified correctly.
+	repo := newMockRepo()
+	wcpTracker := NewWCPExecutionTracker(repo, nil)
+	handler := NewUnifiedExecutionHandler(repo, nil, wcpTracker, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
+
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_nonexistent", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d (not-found with trackers should be 404, not 500)", rr.Code, http.StatusNotFound)
 	}
 }
 

@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -145,6 +146,16 @@ func (h *UnifiedExecutionHandler) ListExecutions(w http.ResponseWriter, r *http.
 // 3. Plan ID lookup for MAP plans (checks metadata)
 // 4. Fallback metadata search across both WCP and MAP
 func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executionID string) (*execution.ExecutionStatus, error) {
+	// Track the first non-not-found error so we can propagate backend failures
+	// instead of masking them as 404.
+	var firstErr error
+
+	captureErr := func(err error) {
+		if err != nil && !errors.Is(err, execution.ErrExecutionNotFound) && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	// Strategy 1: Direct lookup by execution ID
 	exec, err := h.repo.Get(ctx, executionID)
 	if err == nil {
@@ -152,6 +163,7 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 		exec.Duration = exec.CalculateDuration()
 		return exec, nil
 	}
+	captureErr(err)
 
 	// Strategy 2: Check if it's a WCP workflow ID
 	if h.wcpTracker != nil && (strings.HasPrefix(executionID, "wf_") || strings.HasPrefix(executionID, "wcp_")) {
@@ -159,6 +171,7 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 		if err == nil {
 			return exec, nil
 		}
+		captureErr(err)
 	}
 
 	// Strategy 3: Check if it's a MAP plan ID
@@ -167,6 +180,7 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 		if err == nil {
 			return exec, nil
 		}
+		captureErr(err)
 	}
 
 	// Strategy 4: Search by workflow_id or plan_id in metadata
@@ -175,14 +189,21 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 		if err == nil {
 			return exec, nil
 		}
+		captureErr(err)
 	}
 	if h.mapTracker != nil {
 		exec, err = h.mapTracker.GetPlanStatus(ctx, executionID)
 		if err == nil {
 			return exec, nil
 		}
+		captureErr(err)
 	}
 
+	// If any strategy returned a non-not-found error (e.g. DB connection failure),
+	// propagate it so callers can return 500 instead of 404.
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return nil, execution.ErrExecutionNotFound
 }
 
@@ -201,7 +222,12 @@ func (h *UnifiedExecutionHandler) GetExecutionStatus(w http.ResponseWriter, r *h
 
 	exec, err := h.resolveExecution(r.Context(), executionID)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+			return
+		}
+		h.logger.Printf("[UnifiedExecution] GetExecutionStatus error for %s: %v", executionID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
 
@@ -240,7 +266,12 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 	// Resolve execution using multi-strategy lookup
 	exec, err := h.resolveExecution(ctx, executionID)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+			return
+		}
+		h.logger.Printf("[UnifiedExecution] CancelExecution lookup error for %s: %v", executionID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
 
@@ -334,7 +365,12 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 	// Resolve execution using multi-strategy lookup
 	exec, err := h.resolveExecution(r.Context(), executionID)
 	if err != nil {
-		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+			return
+		}
+		h.logger.Printf("[UnifiedExecution] StreamExecutionStatus error for %s: %v", executionID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
 
