@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -195,8 +196,60 @@ func main() {
 	}
 	fmt.Println()
 
-	// Step 8: Test CancelExecution (create workflow, then cancel)
-	fmt.Println("Step 8: Test CancelExecution")
+	// Step 8: Live SSE Streaming
+	fmt.Println("Step 8: SSE Streaming (Live)")
+	fmt.Println("----------------------------")
+	sseWF, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
+		WorkflowName: "sse-streaming-demo",
+		Source:       axonflow.WorkflowSourceExternal,
+		TotalSteps:   2,
+	})
+	if err != nil {
+		fmt.Printf("   Error creating SSE workflow: %v\n", err)
+		assertCheck(false, "CreateWorkflow for SSE test succeeded")
+	} else {
+		fmt.Printf("   Workflow ID: %s\n", sseWF.WorkflowID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		statusCh, errCh, sseErr := client.StreamExecutionStatus(ctx, sseWF.WorkflowID)
+		if sseErr != nil {
+			fmt.Printf("   Note: SSE stream returned error: %v\n", sseErr)
+			fmt.Println("   (SSE streaming may not be supported in this mode)")
+		} else {
+			// Execute steps in background to generate SSE events
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				for i := 1; i <= 2; i++ {
+					stepID := fmt.Sprintf("step-%d", i)
+					client.StepGate(sseWF.WorkflowID, stepID, axonflow.StepGateRequest{
+						StepName: fmt.Sprintf("SSE Step %d", i),
+						StepType: axonflow.StepTypeLLMCall,
+					})
+					client.MarkStepCompleted(sseWF.WorkflowID, stepID, &axonflow.MarkStepCompletedRequest{
+						Output: map[string]interface{}{"result": fmt.Sprintf("sse-step-%d-done", i)},
+					})
+				}
+				client.CompleteWorkflow(sseWF.WorkflowID)
+			}()
+
+			eventCount := 0
+			for status := range statusCh {
+				eventCount++
+				fmt.Printf("   SSE event %d: status=%s, progress=%.0f%%\n",
+					eventCount, status.Status, status.ProgressPercent)
+			}
+			if sseErr := <-errCh; sseErr != nil {
+				fmt.Printf("   SSE stream error: %v\n", sseErr)
+			}
+			assertCheck(eventCount > 0, fmt.Sprintf("Received %d SSE events", eventCount))
+		}
+	}
+	fmt.Println()
+
+	// Step 9: Test CancelExecution (create workflow, then cancel)
+	fmt.Println("Step 9: Test CancelExecution")
 	fmt.Println("----------------------------")
 	cancelTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "cancel-test-demo",
@@ -227,7 +280,7 @@ func main() {
 	}
 	fmt.Println()
 
-	// Step 9: Demonstrate ResumeWorkflow (by aborting then resuming)
+	// Step 10: Demonstrate ResumeWorkflow (by aborting then resuming)
 	fmt.Println("Testing ResumeWorkflow...")
 	// Create a new workflow to test resume
 	resumeTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
@@ -282,7 +335,7 @@ func main() {
 	fmt.Println("    - ListUnifiedExecutions()")
 	fmt.Println("    - CancelExecution()")
 	fmt.Println("  SSE Streaming:")
-	fmt.Println("    - GET /api/v1/unified/executions/{id}/stream")
+	fmt.Println("    - StreamExecutionStatus()")
 	fmt.Println("  Helper Types:")
 	fmt.Println("    - ExecutionType (map_plan, wcp_workflow)")
 	fmt.Println("    - ExecutionStatusValue with IsTerminal()")

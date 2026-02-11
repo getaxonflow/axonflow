@@ -175,20 +175,89 @@ fi
 echo ""
 
 # =============================================
-# Part 4: SSE Streaming (example curl command)
+# Part 4: SSE Streaming (live demo)
 # =============================================
 echo -e "\033[1;34m=== Part 4: SSE Streaming ===\033[0m"
 echo ""
-echo "SSE streaming endpoint:"
-echo "   GET /api/v1/unified/executions/{id}/stream"
-echo ""
-echo "Example curl command (use with a running execution):"
-echo "   curl -N '${ORCHESTRATOR_URL}/api/v1/unified/executions/EXECUTION_ID/stream' \\"
-echo "     -H '$AUTH_HEADER'"
-echo ""
-echo "Events: execution.started, execution.completed, execution.failed,"
-echo "        execution.cancelled, step.started, step.completed,"
-echo "        step.failed, step.decision"
+
+# Create a workflow to stream
+echo "Creating workflow for SSE streaming demo..."
+SSE_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+  -H "Content-Type: application/json" \
+  -H "$AUTH_HEADER" \
+  -d '{
+    "workflow_name": "sse-streaming-demo",
+    "source": "external",
+    "total_steps": 2,
+    "metadata": {"example": "sse-streaming"}
+  }')
+
+SSE_WF_ID=$(echo "$SSE_WF_RESPONSE" | jq -r '.workflow_id // empty')
+if [ -z "$SSE_WF_ID" ]; then
+  echo "   Note: Could not create workflow for SSE test"
+  echo "$SSE_WF_RESPONSE" | jq .
+else
+  echo -e "   \033[0;32mWorkflow created!\033[0m  ID: $SSE_WF_ID"
+
+  # Start SSE listener in the background
+  SSE_OUTPUT=$(mktemp /tmp/axonflow-sse-XXXXXX)
+  curl -s -N "${ORCHESTRATOR_URL}/api/v1/unified/executions/${SSE_WF_ID}/stream" \
+    -H "$AUTH_HEADER" > "$SSE_OUTPUT" 2>&1 &
+  SSE_PID=$!
+
+  # Give the SSE connection time to establish
+  sleep 1
+
+  # Execute steps to generate SSE events
+  echo "   Executing steps (SSE listener attached in background)..."
+  for SSE_STEP in 1 2; do
+    SSE_STEP_ID="step-${SSE_STEP}"
+
+    curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/gate" \
+      -H "Content-Type: application/json" \
+      -H "$AUTH_HEADER" \
+      -d "{
+        \"step_name\": \"SSE Step ${SSE_STEP}\",
+        \"step_type\": \"action\",
+        \"step_input\": {\"action\": \"sse-process-${SSE_STEP}\"}
+      }" > /dev/null
+
+    curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/complete" \
+      -H "Content-Type: application/json" \
+      -H "$AUTH_HEADER" \
+      -d "{\"output\": {\"result\": \"sse-step-${SSE_STEP}-done\"}}" > /dev/null
+
+    echo -e "   Step ${SSE_STEP}: \033[0;32mcompleted\033[0m"
+  done
+
+  # Complete the workflow
+  curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/complete" \
+    -H "Content-Type: application/json" \
+    -H "$AUTH_HEADER" > /dev/null
+
+  # Allow time for final SSE events to arrive
+  sleep 1
+
+  # Stop the SSE listener
+  kill $SSE_PID 2>/dev/null || true
+  wait $SSE_PID 2>/dev/null || true
+
+  # Display captured SSE events
+  echo ""
+  if [ -s "$SSE_OUTPUT" ]; then
+    EVENT_COUNT=$(grep -c "^event:" "$SSE_OUTPUT" 2>/dev/null || echo "0")
+    echo -e "   \033[0;32mCaptured ${EVENT_COUNT} SSE event(s):\033[0m"
+    echo ""
+    # Show each event type and data
+    while IFS= read -r line; do
+      echo "   $line"
+    done < "$SSE_OUTPUT"
+  else
+    echo "   No SSE events captured (endpoint may not support streaming in this mode)"
+  fi
+
+  rm -f "$SSE_OUTPUT"
+fi
 echo ""
 
 # =============================================

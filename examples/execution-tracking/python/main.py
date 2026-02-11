@@ -13,6 +13,8 @@ Prerequisites: docker compose up -d
 
 import os
 import sys
+import threading
+import time
 
 from axonflow import (
     AxonFlow,
@@ -191,8 +193,56 @@ def main() -> int:
             print("   (This is expected if backend unified handler not yet wired)")
         print()
 
-        # Test 10: CancelExecution (create workflow, then cancel)
-        print("10. CancelExecution - Unified cancel API...")
+        # Test 10: Live SSE Streaming
+        print("10. StreamExecutionStatus - Live SSE Streaming...")
+        try:
+            sse_wf = client.create_workflow(CreateWorkflowRequest(
+                workflow_name="sse-streaming-demo",
+                source=WorkflowSource.EXTERNAL,
+                total_steps=2,
+            ))
+            print(f"   Created workflow: {sse_wf.workflow_id}")
+
+            # Helper client for background step execution
+            bg_client = AxonFlow.sync(
+                endpoint=endpoint,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+
+            def execute_steps():
+                time.sleep(0.5)
+                for i in range(1, 3):
+                    step_id = f"step-{i}"
+                    bg_client.step_gate(
+                        sse_wf.workflow_id,
+                        step_id,
+                        StepGateRequest(step_name=f"SSE Step {i}", step_type=StepType.LLM_CALL),
+                    )
+                    bg_client.mark_step_completed(
+                        sse_wf.workflow_id,
+                        step_id,
+                        MarkStepCompletedRequest(output={"result": f"sse-step-{i}-done"}),
+                    )
+                bg_client.complete_workflow(sse_wf.workflow_id)
+                bg_client.close()
+
+            worker = threading.Thread(target=execute_steps, daemon=True)
+            worker.start()
+
+            event_count = 0
+            for status in client.stream_execution_status(sse_wf.workflow_id, timeout=10.0):
+                event_count += 1
+                print(f"   SSE event {event_count}: status={status.status.value}, progress={status.progress_percent:.0f}%")
+            worker.join(timeout=5)
+            assert_check(event_count > 0, f"Received {event_count} SSE events")
+        except Exception as e:
+            print(f"   Note: SSE streaming returned error: {e}")
+            print("   (SSE streaming may not be supported in this mode)")
+        print()
+
+        # Test 11: CancelExecution (create workflow, then cancel)
+        print("11. CancelExecution - Unified cancel API...")
         try:
             cancel_wf = client.create_workflow(CreateWorkflowRequest(
                 workflow_name="cancel-test-demo",
@@ -236,7 +286,7 @@ def main() -> int:
         print("    - list_unified_executions()")
         print("    - cancel_execution()")
         print("  SSE Streaming:")
-        print("    - GET /api/v1/unified/executions/{id}/stream")
+        print("    - stream_execution_status()")
         print("  Type Constants:")
         print("    - ExecutionType (map_plan, wcp_workflow)")
         print("    - ExecutionStatusValue with is_terminal()")
