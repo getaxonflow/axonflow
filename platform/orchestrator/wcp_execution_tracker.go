@@ -11,6 +11,11 @@ import (
 	"axonflow/platform/shared/execution"
 )
 
+// isWCPNotFoundError returns true if err represents a workflow-not-found condition.
+func isWCPNotFoundError(err error) bool {
+	return workflow_control.IsNotFoundError(err)
+}
+
 // WCPExecutionTracker adapts WCP workflow operations to the unified ExecutionTracker interface.
 // This enables consistent status tracking across MAP plans and WCP workflows.
 type WCPExecutionTracker struct {
@@ -108,12 +113,15 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 
 	// If no unified execution found, fall back to WCP service and create a status response
 	if t.wcpService == nil {
-		return nil, fmt.Errorf("workflow not found: %s (no WCP service available)", workflowID)
+		return nil, fmt.Errorf("workflow %s: %w", workflowID, execution.ErrExecutionNotFound)
 	}
 
 	workflow, err := t.wcpService.GetWorkflow(ctx, workflowID)
 	if err != nil {
-		return nil, fmt.Errorf("workflow not found: %w", err)
+		if isWCPNotFoundError(err) {
+			return nil, fmt.Errorf("workflow %s: %w", workflowID, execution.ErrExecutionNotFound)
+		}
+		return nil, fmt.Errorf("workflow %s lookup failed: %w", workflowID, err)
 	}
 
 	// Convert workflow to ExecutionStatus for backward compatibility

@@ -69,7 +69,7 @@ func (m *MockRepository) GetByID(ctx context.Context, workflowID string) (*Workf
 
 	workflow, ok := m.workflows[workflowID]
 	if !ok {
-		return nil, fmt.Errorf("workflow not found: %s", workflowID)
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	// Deep copy to avoid race conditions

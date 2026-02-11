@@ -139,7 +139,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("workflow not found: %s", workflowID)
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 	if err != nil {
 		return nil, err

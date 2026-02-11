@@ -777,6 +777,26 @@ func TestUnifiedHandler_GetExecutionStatus_NotFoundStillReturns404(t *testing.T)
 	}
 }
 
+func TestUnifiedHandler_GetExecutionStatus_NotFoundWithTrackersReturns404(t *testing.T) {
+	// Regression test: with WCP and MAP trackers enabled (normal runtime),
+	// a genuinely missing execution ID must return 404, not 500.
+	// The trackers return their own not-found errors which must be classified correctly.
+	repo := newMockRepo()
+	wcpTracker := NewWCPExecutionTracker(repo, nil)
+	handler := NewUnifiedExecutionHandler(repo, nil, wcpTracker, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
+
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_nonexistent", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d (not-found with trackers should be 404, not 500)", rr.Code, http.StatusNotFound)
+	}
+}
+
 func TestUnifiedExecutionHandler_ListExecutions_WithHistoryCap(t *testing.T) {
 	repo := newMockRepo()
 	handler := newTestHandler(repo)
