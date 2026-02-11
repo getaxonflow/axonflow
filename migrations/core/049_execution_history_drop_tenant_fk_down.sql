@@ -1,0 +1,4 @@
+-- Rollback: 049_execution_history_drop_tenant_fk_down.sql
+-- No-op: Re-adding the FK constraint would fail if execution_history contains
+-- tenant_id values that don't exist in organizations (expected in community mode).
+-- The FK removal is intentionally permanent.

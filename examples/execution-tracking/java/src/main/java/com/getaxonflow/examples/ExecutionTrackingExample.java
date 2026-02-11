@@ -18,6 +18,7 @@ import com.getaxonflow.sdk.types.workflow.WorkflowTypes.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class ExecutionTrackingExample {
 
@@ -199,7 +200,60 @@ public class ExecutionTrackingExample {
             }
             System.out.println();
 
-            // Step 8: Test cancelExecution (create workflow, then cancel)
+            // Step 8: Live SSE Streaming
+            System.out.println("Testing streamExecutionStatus (Live SSE)...");
+            try {
+                CreateWorkflowRequest sseRequest = CreateWorkflowRequest.builder()
+                    .workflowName("sse-streaming-demo")
+                    .source(WorkflowSource.EXTERNAL)
+                    .totalSteps(2)
+                    .build();
+                CreateWorkflowResponse sseWf = client.createWorkflow(sseRequest);
+                System.out.println("  Created workflow: " + sseWf.getWorkflowId());
+
+                final String sseWfId = sseWf.getWorkflowId();
+                AtomicInteger eventCount = new AtomicInteger(0);
+
+                // Execute steps in background to generate SSE events
+                Thread stepThread = new Thread(() -> {
+                    try {
+                        Thread.sleep(500);
+                        for (int i = 1; i <= 2; i++) {
+                            String stepId = "step-" + i;
+                            client.stepGate(sseWfId, stepId, StepGateRequest.builder()
+                                .stepName("SSE Step " + i)
+                                .stepType(StepType.LLM_CALL)
+                                .build());
+                            client.markStepCompleted(sseWfId, stepId, MarkStepCompletedRequest.builder()
+                                .output(java.util.Map.of("result", "sse-step-" + i + "-done"))
+                                .build());
+                        }
+                        client.completeWorkflow(sseWfId);
+                    } catch (Exception e) {
+                        System.out.println("  Background step error: " + e.getMessage());
+                    }
+                });
+                stepThread.setDaemon(true);
+                stepThread.start();
+
+                try {
+                    client.streamExecutionStatus(sseWfId, status -> {
+                        int n = eventCount.incrementAndGet();
+                        System.out.printf("  SSE event %d: status=%s, progress=%.0f%%%n",
+                            n, status.getStatus().getValue(), status.getProgressPercent());
+                    });
+                } catch (Exception e) {
+                    System.out.println("  Note: SSE stream error: " + e.getMessage());
+                }
+                stepThread.join(5000);
+                assertCheck(eventCount.get() > 0, "Received " + eventCount.get() + " SSE events");
+            } catch (Exception e) {
+                System.out.println("  Note: SSE streaming returned error: " + e.getMessage());
+                System.out.println("  (SSE streaming may not be supported in this mode)");
+            }
+            System.out.println();
+
+            // Step 9: Test cancelExecution (create workflow, then cancel)
             System.out.println("Testing cancelExecution...");
             try {
                 CreateWorkflowRequest cancelRequest = CreateWorkflowRequest.builder()
@@ -228,7 +282,7 @@ public class ExecutionTrackingExample {
             }
             System.out.println();
 
-            // Step 9: Demonstrate resumeWorkflow (by aborting then resuming)
+            // Step 10: Demonstrate resumeWorkflow (by aborting then resuming)
             System.out.println("Testing resumeWorkflow...");
             try {
                 CreateWorkflowRequest resumeRequest = CreateWorkflowRequest.builder()
@@ -273,7 +327,7 @@ public class ExecutionTrackingExample {
             System.out.println("    - listUnifiedExecutions()");
             System.out.println("    - cancelExecution()");
             System.out.println("  SSE Streaming:");
-            System.out.println("    - GET /api/v1/unified/executions/{id}/stream");
+            System.out.println("    - streamExecutionStatus()");
             System.out.println("  Helper Types:");
             System.out.println("    - ExecutionType (map_plan, wcp_workflow)");
             System.out.println("    - ExecutionStatusValue with isTerminal()");

@@ -201,7 +201,57 @@ async function main(): Promise<void> {
   }
   console.log();
 
-  // Step 8: Test cancelExecution (create workflow, then cancel)
+  // Step 8: Live SSE Streaming
+  console.log('Testing streamExecutionStatus (Live SSE)...');
+  try {
+    const sseWf = await client.createWorkflow({
+      workflow_name: 'sse-streaming-demo',
+      source: 'external',
+      total_steps: 2,
+    });
+    console.log(`  Created workflow: ${sseWf.workflow_id}`);
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10000);
+
+    // Execute steps after a short delay to generate SSE events
+    const stepPromise = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      for (let i = 1; i <= 2; i++) {
+        const stepId = `step-${i}`;
+        await client.stepGate(sseWf.workflow_id, stepId, {
+          step_name: `SSE Step ${i}`,
+          step_type: 'llm_call',
+        });
+        await client.markStepCompleted(sseWf.workflow_id, stepId, {
+          output: { result: `sse-step-${i}-done` },
+        });
+      }
+      await client.completeWorkflow(sseWf.workflow_id);
+    })();
+
+    let eventCount = 0;
+    try {
+      await client.streamExecutionStatus(sseWf.workflow_id, (status) => {
+        eventCount++;
+        console.log(`  SSE event ${eventCount}: status=${status.status}, progress=${status.progress_percent?.toFixed(0)}%`);
+      }, { signal: controller.signal });
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // Expected when stream ends
+      } else {
+        throw err;
+      }
+    }
+    await stepPromise;
+    assertCheck(eventCount > 0, `Received ${eventCount} SSE events`);
+  } catch (err) {
+    console.log(`  Note: SSE streaming returned error: ${err}`);
+    console.log('  (SSE streaming may not be supported in this mode)');
+  }
+  console.log();
+
+  // Step 9: Test cancelExecution (create workflow, then cancel)
   console.log('Testing cancelExecution...');
   try {
     const cancelTest = await client.createWorkflow({
@@ -228,7 +278,7 @@ async function main(): Promise<void> {
   }
   console.log();
 
-  // Step 9: Demonstrate resumeWorkflow (by aborting then resuming)
+  // Step 10: Demonstrate resumeWorkflow (by aborting then resuming)
   console.log('Testing resumeWorkflow...');
   try {
     const resumeTest = await client.createWorkflow({
@@ -270,7 +320,7 @@ async function main(): Promise<void> {
   console.log('    - listUnifiedExecutions()');
   console.log('    - cancelExecution()');
   console.log('  SSE Streaming:');
-  console.log('    - GET /api/v1/unified/executions/{id}/stream');
+  console.log('    - streamExecutionStatus()');
   console.log('  Helper Types:');
   console.log('    - ExecutionType (map_plan, wcp_workflow)');
   console.log('    - ExecutionStatusValue with isTerminal()');
