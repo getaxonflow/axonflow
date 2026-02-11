@@ -209,7 +209,7 @@ All 4 SDKs should have identical method coverage:
 |-----|---------|---------|--------|
 | Go | v3.3.0 | ~36 | ✅ |
 | Python | v3.3.0 | ~36 | ✅ |
-| TypeScript | v3.3.0 (source), npm 2.3.0 | ~37 | ✅ (+protect) |
+| TypeScript | v3.3.0 | ~37 | ✅ (+protect) |
 | Java | v3.3.0 | ~36 | ✅ |
 
 ---

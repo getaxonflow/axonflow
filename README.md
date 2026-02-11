@@ -351,8 +351,6 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 </dependency>
 ```
 
-> **TypeScript SDK:** npm version (2.3.0) may lag behind source (3.3.0) during registry issues. [Install from source](https://github.com/getaxonflow/axonflow-sdk-typescript#install-from-source) for latest features.
-
 ### Python
 
 ```python
