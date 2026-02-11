@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 const (
@@ -129,7 +131,7 @@ func (s *Service) Create(ctx context.Context, req *CreateSubscriptionRequest, te
 		return nil, fmt.Errorf("failed to create webhook subscription: %w", err)
 	}
 
-	s.logger.Printf("[Webhooks] Created subscription %s for events %v (url=%s)", sub.ID, sub.Events, sub.URL)
+	s.logger.Printf("[Webhooks] Created subscription %s for events %v (url=%s)", sub.ID, sub.Events, logutil.Sanitize(sub.URL))
 	return sub, nil
 }
 
@@ -177,7 +179,7 @@ func (s *Service) Update(ctx context.Context, id string, req *UpdateSubscription
 		return nil, fmt.Errorf("failed to update webhook subscription: %w", err)
 	}
 
-	s.logger.Printf("[Webhooks] Updated subscription %s", id)
+	s.logger.Printf("[Webhooks] Updated subscription %s", logutil.Sanitize(id))
 	return sub, nil
 }
 
@@ -190,7 +192,7 @@ func (s *Service) Delete(ctx context.Context, id, tenantID, orgID string) error 
 	if err := s.repo.DeleteSubscription(ctx, id, tenantID, orgID); err != nil {
 		return fmt.Errorf("failed to delete webhook subscription: %w", err)
 	}
-	s.logger.Printf("[Webhooks] Deleted subscription %s", id)
+	s.logger.Printf("[Webhooks] Deleted subscription %s", logutil.Sanitize(id))
 	return nil
 }
 

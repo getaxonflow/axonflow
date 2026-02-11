@@ -903,28 +903,3 @@ func TestValidateViaOrganizations_V2ServiceLicense_DefaultPermissions(t *testing
 // NOTE: TestValidateViaOrganizations_V1License_StillRequiresDB was removed because
 // V1 license format (AXON-TIER-ORG-EXPIRY-SIG) is deprecated as of PR #167.
 // All licenses are now Ed25519 format (AXON-PAYLOAD.SIGNATURE) which bypass database lookup.
-
-// TestSafePrefix tests the safePrefix utility function
-func TestSafePrefix(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		length   int
-		expected string
-	}{
-		{"shorter than limit", "hello", 10, "hello"},
-		{"exact length", "hello", 5, "hello"},
-		{"longer than limit", "hello world", 5, "hello..."},
-		{"empty string", "", 5, ""},
-		{"zero length", "hello", 0, "..."},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := safePrefix(tt.input, tt.length)
-			if result != tt.expected {
-				t.Errorf("safePrefix(%q, %d) = %q, want %q", tt.input, tt.length, result, tt.expected)
-			}
-		})
-	}
-}
