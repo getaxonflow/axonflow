@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // Handler handles HTTP requests for the Workflow Control Plane
@@ -332,7 +334,7 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusConflict, "WORKFLOW_TERMINAL", err.Error())
 			return
 		}
-		h.logger.Printf("[WorkflowControl] FailWorkflow error for %s: %v", workflowID, err)
+		h.logger.Printf("[WorkflowControl] FailWorkflow error for %s: %v", workflowID, logutil.Sanitize(err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fail workflow")
 		return
 	}

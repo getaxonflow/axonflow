@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // PolicyEvaluator interface for evaluating step policies
@@ -388,7 +390,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	}
 
 	s.logger.Printf("[WorkflowControl] Step gate: workflow=%s step=%s decision=%s reason=%s",
-		workflowID, stepID, evaluation.Decision, evaluation.Reason)
+		workflowID, stepID, evaluation.Decision, logutil.Sanitize(evaluation.Reason))
 
 	// Audit log: step gate decision
 	s.logAudit(ctx, &WorkflowAuditEntry{
@@ -451,7 +453,7 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 	}
 
 	s.logger.Printf("[WorkflowControl] Step approved: workflow=%s step=%s by=%s",
-		workflowID, stepID, approvedBy)
+		workflowID, stepID, logutil.Sanitize(approvedBy))
 
 	// Webhook notification (best-effort — get workflow for tenant context)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
@@ -491,7 +493,7 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rej
 	}
 
 	s.logger.Printf("[WorkflowControl] Step rejected: workflow=%s step=%s by=%s",
-		workflowID, stepID, rejectedBy)
+		workflowID, stepID, logutil.Sanitize(rejectedBy))
 
 	// Webhook notification (best-effort)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
@@ -646,7 +648,7 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID string, reason st
 		return fmt.Errorf("failed to fail workflow: %w", err)
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", workflowID, reason)
+	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", workflowID, logutil.Sanitize(reason))
 
 	// Audit log: workflow failed
 	s.logAudit(ctx, &WorkflowAuditEntry{

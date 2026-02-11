@@ -48,6 +48,7 @@ import (
 	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
+	logutil "axonflow/platform/shared/logger"
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -2473,7 +2474,7 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if req.ExecutionMode == "" {
 		if execMode, ok := req.Context["execution_mode"].(string); ok && execMode != "" {
 			req.ExecutionMode = execMode
-			log.Printf("[GeneratePlan] ExecutionMode extracted from context: %s", execMode)
+			log.Printf("[GeneratePlan] ExecutionMode extracted from context: %s", logutil.Sanitize(execMode))
 		} else {
 			req.ExecutionMode = "auto"
 		}
@@ -3331,10 +3332,10 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[ResumePlan] Searching workflows: source=map, tenantID=%s, orgID=%s", r.Header.Get("X-Tenant-ID"), orgID)
+	log.Printf("[ResumePlan] Searching workflows: source=map, tenantID=%s, orgID=%s", logutil.Sanitize(r.Header.Get("X-Tenant-ID")), logutil.Sanitize(orgID))
 	log.Printf("[ResumePlan] Found %d workflows", len(listResp.Workflows))
 	for i, wf := range listResp.Workflows {
-		log.Printf("[ResumePlan] Workflow[%d]: id=%s name=%s status=%s steps=%d", i, wf.WorkflowID, wf.WorkflowName, wf.Status, len(wf.Steps))
+		log.Printf("[ResumePlan] Workflow[%d]: id=%s name=%s status=%s steps=%d", i, wf.WorkflowID, logutil.Sanitize(wf.WorkflowName), wf.Status, len(wf.Steps))
 	}
 
 	// Find the active workflow for this plan by matching workflow name
@@ -3359,7 +3360,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle rejection: abort workflow + fail plan
 	if !approved {
-		log.Printf("[ResumePlan] Plan %s step rejected, aborting workflow %s", planID, targetWorkflowID)
+		log.Printf("[ResumePlan] Plan %s step rejected, aborting workflow %s", logutil.Sanitize(planID), targetWorkflowID)
 		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user")
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
 
@@ -3374,7 +3375,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle approval: find pending step, approve it, execute it
-	log.Printf("[ResumePlan] Plan %s step approved, executing next step in workflow %s", planID, targetWorkflowID)
+	log.Printf("[ResumePlan] Plan %s step approved, executing next step in workflow %s", logutil.Sanitize(planID), targetWorkflowID)
 
 	// Find the pending step from the workflow status response steps
 	var pendingStepID string
@@ -3516,7 +3517,7 @@ func rollbackPlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	plan, err := planService.RollbackPlan(r.Context(), req)
 	if err != nil {
-		log.Printf("[RollbackPlan] Failed to rollback plan %s: %v", planID, err)
+		log.Printf("[RollbackPlan] Failed to rollback plan %s: %v", logutil.Sanitize(planID), logutil.Sanitize(err.Error()))
 		if errors.Is(err, planning.ErrVersionConflict) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -3543,7 +3544,7 @@ func rollbackPlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[RollbackPlan] Plan %s rolled back to version %d (now v%d)", planID, targetVersion, plan.Version)
+	log.Printf("[RollbackPlan] Plan %s rolled back to version %d (now v%d)", logutil.Sanitize(planID), targetVersion, plan.Version)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

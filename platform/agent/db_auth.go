@@ -23,15 +23,8 @@ import (
 	"time"
 
 	"axonflow/platform/agent/license"
+	logutil "axonflow/platform/shared/logger"
 )
-
-// safePrefix returns up to n characters from s for safe logging
-func safePrefix(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
 
 // ============================================================
 // Database-Backed Authentication (Option 3)
@@ -245,7 +238,7 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 	// Debug: Log client secret format detection
 	isEd25519Format := len(clientSecret) > 5 && clientSecret[:5] == "AXON-" && strings.Contains(clientSecret[5:], ".")
 	log.Printf("[LICENSE-DEBUG] validateViaOrganizations: clientID=%s, isEd25519=%v, secretLen=%d, secretPrefix=%s",
-		clientID, isEd25519Format, len(clientSecret), safePrefix(clientSecret, 20))
+		logutil.Sanitize(clientID), isEd25519Format, len(clientSecret), logutil.MaskSecret(clientSecret, 10))
 
 	// First, validate the license key format cryptographically
 	validationResult, err := license.ValidateLicense(ctx, clientSecret)
