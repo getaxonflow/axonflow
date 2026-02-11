@@ -4,8 +4,8 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -139,11 +139,54 @@ func (h *UnifiedExecutionHandler) ListExecutions(w http.ResponseWriter, r *http.
 	h.writeJSON(w, http.StatusOK, resp)
 }
 
-// GetExecutionStatus handles GET /api/v1/unified/executions/{id}
-// It attempts to find the execution by:
+// resolveExecution resolves an execution by trying multiple strategies:
 // 1. Direct execution ID lookup in the unified execution_history table
 // 2. Workflow ID lookup for WCP workflows (checks metadata)
 // 3. Plan ID lookup for MAP plans (checks metadata)
+// 4. Fallback metadata search across both WCP and MAP
+func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executionID string) (*execution.ExecutionStatus, error) {
+	// Strategy 1: Direct lookup by execution ID
+	exec, err := h.repo.Get(ctx, executionID)
+	if err == nil {
+		exec.ProgressPercent = exec.CalculateProgress()
+		exec.Duration = exec.CalculateDuration()
+		return exec, nil
+	}
+
+	// Strategy 2: Check if it's a WCP workflow ID
+	if h.wcpTracker != nil && (strings.HasPrefix(executionID, "wf_") || strings.HasPrefix(executionID, "wcp_")) {
+		exec, err = h.wcpTracker.GetWorkflowStatus(ctx, executionID)
+		if err == nil {
+			return exec, nil
+		}
+	}
+
+	// Strategy 3: Check if it's a MAP plan ID
+	if h.mapTracker != nil && strings.HasPrefix(executionID, "plan_") {
+		exec, err = h.mapTracker.GetPlanStatus(ctx, executionID)
+		if err == nil {
+			return exec, nil
+		}
+	}
+
+	// Strategy 4: Search by workflow_id or plan_id in metadata
+	if h.wcpTracker != nil {
+		exec, err = h.wcpTracker.GetWorkflowStatus(ctx, executionID)
+		if err == nil {
+			return exec, nil
+		}
+	}
+	if h.mapTracker != nil {
+		exec, err = h.mapTracker.GetPlanStatus(ctx, executionID)
+		if err == nil {
+			return exec, nil
+		}
+	}
+
+	return nil, execution.ErrExecutionNotFound
+}
+
+// GetExecutionStatus handles GET /api/v1/unified/executions/{id}
 func (h *UnifiedExecutionHandler) GetExecutionStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
@@ -156,78 +199,17 @@ func (h *UnifiedExecutionHandler) GetExecutionStatus(w http.ResponseWriter, r *h
 		return
 	}
 
-	ctx := r.Context()
-
-	// Strategy 1: Direct lookup by execution ID
-	exec, err := h.repo.Get(ctx, executionID)
-	if err == nil {
-		if !h.checkTenantOwnership(w, r, exec) {
-			return
-		}
-		// Found directly - calculate progress and return
-		exec.ProgressPercent = exec.CalculateProgress()
-		exec.Duration = exec.CalculateDuration()
-		h.writeJSON(w, http.StatusOK, exec)
-		return
-	}
-
-	// Strategy 2: Check if it's a WCP workflow ID
-	if h.wcpTracker != nil && (strings.HasPrefix(executionID, "wf_") || strings.HasPrefix(executionID, "wcp_")) {
-		exec, err = h.wcpTracker.GetWorkflowStatus(ctx, executionID)
-		if err == nil {
-			if !h.checkTenantOwnership(w, r, exec) {
-				return
-			}
-			h.writeJSON(w, http.StatusOK, exec)
-			return
-		}
-	}
-
-	// Strategy 3: Check if it's a MAP plan ID
-	if h.mapTracker != nil && strings.HasPrefix(executionID, "plan_") {
-		exec, err = h.mapTracker.GetPlanStatus(ctx, executionID)
-		if err == nil {
-			if !h.checkTenantOwnership(w, r, exec) {
-				return
-			}
-			h.writeJSON(w, http.StatusOK, exec)
-			return
-		}
-	}
-
-	// Strategy 4: Search by workflow_id or plan_id in metadata
-	// Try WCP first
-	if h.wcpTracker != nil {
-		exec, err = h.wcpTracker.GetWorkflowStatus(ctx, executionID)
-		if err == nil {
-			if !h.checkTenantOwnership(w, r, exec) {
-				return
-			}
-			h.writeJSON(w, http.StatusOK, exec)
-			return
-		}
-	}
-
-	// Try MAP
-	if h.mapTracker != nil {
-		exec, err = h.mapTracker.GetPlanStatus(ctx, executionID)
-		if err == nil {
-			if !h.checkTenantOwnership(w, r, exec) {
-				return
-			}
-			h.writeJSON(w, http.StatusOK, exec)
-			return
-		}
-	}
-
-	// Not found anywhere
-	if errors.Is(err, execution.ErrExecutionNotFound) {
+	exec, err := h.resolveExecution(r.Context(), executionID)
+	if err != nil {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 		return
 	}
 
-	h.logger.Printf("[UnifiedExecution] GetExecutionStatus error for %s: %v", executionID, err)
-	h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
+	if !h.checkTenantOwnership(w, r, exec) {
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, exec)
 }
 
 // CancelExecution handles POST /api/v1/unified/executions/{id}/cancel
@@ -255,15 +237,10 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 
 	ctx := r.Context()
 
-	// Look up the execution
-	exec, err := h.repo.Get(ctx, executionID)
+	// Resolve execution using multi-strategy lookup
+	exec, err := h.resolveExecution(ctx, executionID)
 	if err != nil {
-		if errors.Is(err, execution.ErrExecutionNotFound) {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
-			return
-		}
-		h.logger.Printf("[UnifiedExecution] CancelExecution lookup error for %s: %v", executionID, err)
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up execution")
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 		return
 	}
 
@@ -327,18 +304,16 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 	}
 
 	// Return updated status
-	updated, err := h.repo.Get(ctx, executionID)
+	updated, err := h.resolveExecution(ctx, executionID)
 	if err != nil {
 		// Cancel succeeded but couldn't fetch updated status — return a generic success
 		h.writeJSON(w, http.StatusOK, map[string]interface{}{
-			"execution_id": executionID,
+			"execution_id": exec.ExecutionID,
 			"status":       "cancelled",
 			"message":      "Execution cancelled successfully",
 		})
 		return
 	}
-	updated.ProgressPercent = updated.CalculateProgress()
-	updated.Duration = updated.CalculateDuration()
 	h.writeJSON(w, http.StatusOK, updated)
 }
 
@@ -356,16 +331,15 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 		return
 	}
 
-	// Verify execution exists
-	exec, err := h.repo.Get(r.Context(), executionID)
+	// Resolve execution using multi-strategy lookup
+	exec, err := h.resolveExecution(r.Context(), executionID)
 	if err != nil {
-		if errors.Is(err, execution.ErrExecutionNotFound) {
-			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
-			return
-		}
-		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to look up execution")
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 		return
 	}
+
+	// Use the resolved execution ID for SSE subscription
+	resolvedID := exec.ExecutionID
 
 	// Verify tenant ownership
 	if !h.checkTenantOwnership(w, r, exec) {
@@ -415,9 +389,9 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 		return
 	}
 
-	// Subscribe to events
-	ch := h.eventHub.Subscribe(executionID)
-	defer h.eventHub.Unsubscribe(executionID, ch)
+	// Subscribe to events using the resolved execution ID
+	ch := h.eventHub.Subscribe(resolvedID)
+	defer h.eventHub.Unsubscribe(resolvedID, ch)
 
 	// Heartbeat ticker to prevent proxy idle timeouts
 	ticker := time.NewTicker(15 * time.Second)

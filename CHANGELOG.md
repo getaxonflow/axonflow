@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.2.2] - 2026-02-11
+
+### Community
+
+#### Fixed
+
+- Unified execution `CancelExecution` and `StreamExecutionStatus` endpoints returned 404 when given a WCP workflow ID or MAP plan ID — now uses the same multi-strategy resolution as `GetExecutionStatus` (direct ID → WCP tracker → MAP tracker → metadata fallback)
+- Execution history FK constraint on `tenant_id` prevented record creation in community mode when SDK sends a default client ID — dropped FK constraint in favor of RLS policy for tenant isolation (migration 049)
+
 ## [4.2.1] - 2026-02-10
 
 ### Community
