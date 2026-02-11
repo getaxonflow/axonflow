@@ -304,7 +304,7 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 	}
 
 	// Return updated status
-	updated, err := h.resolveExecution(ctx, executionID)
+	updated, err := h.resolveExecution(ctx, exec.ExecutionID)
 	if err != nil {
 		// Cancel succeeded but couldn't fetch updated status — return a generic success
 		h.writeJSON(w, http.StatusOK, map[string]interface{}{

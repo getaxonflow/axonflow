@@ -317,6 +317,87 @@ func TestUnifiedHandler_GetExecutionStatus_EmptyID(t *testing.T) {
 	}
 }
 
+// --- Tests for resolveExecution multi-strategy resolution ---
+
+func TestUnifiedHandler_ResolveExecution_ByWorkflowID(t *testing.T) {
+	repo := newMockRepo()
+	// Seed execution with a unified ID, but with workflow_id in metadata
+	seedExecution(repo, "wf_unified_abc", execution.ExecutionTypeWCP, execution.StatusCompleted,
+		map[string]interface{}{"workflow_id": "wf_short_123"})
+	// Create a WCP tracker with the same repo (nil wcpService is fine for GetWorkflowStatus)
+	wcpTracker := NewWCPExecutionTracker(repo, nil)
+	handler := NewUnifiedExecutionHandler(repo, nil, wcpTracker, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
+
+	// Look up by the short workflow ID — should resolve via Strategy 2/4
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_short_123", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var exec execution.ExecutionStatus
+	if err := json.Unmarshal(rr.Body.Bytes(), &exec); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+	if exec.ExecutionID != "wf_unified_abc" {
+		t.Errorf("ExecutionID = %q, want %q (should resolve to unified ID)", exec.ExecutionID, "wf_unified_abc")
+	}
+}
+
+func TestUnifiedHandler_CancelExecution_ByWorkflowID(t *testing.T) {
+	repo := newMockRepo()
+	// Seed execution with unified ID and workflow_id in metadata
+	seedExecution(repo, "wf_unified_cancel", execution.ExecutionTypeWCP, execution.StatusRunning,
+		map[string]interface{}{"workflow_id": "wf_cancel_short"})
+	wcpTracker := NewWCPExecutionTracker(repo, nil)
+	handler := NewUnifiedExecutionHandler(repo, nil, wcpTracker, nil, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
+
+	// Cancel by short workflow ID — resolveExecution should find it
+	body := `{"reason":"testing"}`
+	req := httptest.NewRequest("POST", "/api/v1/unified/executions/wf_cancel_short/cancel", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	// Should resolve the execution (will return 500 because wcpService is nil, not 404)
+	if rr.Code == http.StatusNotFound {
+		t.Errorf("Status = %d, should NOT be 404 — resolveExecution should find it via WCP tracker", rr.Code)
+	}
+}
+
+func TestUnifiedHandler_StreamExecution_ByWorkflowID(t *testing.T) {
+	repo := newMockRepo()
+	// Seed a completed execution so SSE returns immediately
+	seedExecution(repo, "wf_unified_stream", execution.ExecutionTypeWCP, execution.StatusCompleted,
+		map[string]interface{}{"workflow_id": "wf_stream_short"})
+	wcpTracker := NewWCPExecutionTracker(repo, nil)
+	hub := execution.NewEventHub()
+	handler := NewUnifiedExecutionHandler(repo, nil, wcpTracker, hub, nil)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
+
+	// Stream by short workflow ID
+	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_stream_short/stream", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d (should resolve via WCP tracker)", rr.Code, http.StatusOK)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want %q", ct, "text/event-stream")
+	}
+}
+
 func TestUnifiedHandler_CancelExecution_NotFound(t *testing.T) {
 	repo := newMockRepo()
 	handler := newTestHandler(repo)
