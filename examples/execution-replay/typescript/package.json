@@ -9,7 +9,7 @@
     "dev": "ts-node src/index.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^3.0.0"
+    "@axonflow/sdk": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

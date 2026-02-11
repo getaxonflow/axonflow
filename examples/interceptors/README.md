@@ -17,7 +17,7 @@ providing transparent policy enforcement without changing your existing code pat
 | Go | [go/](./go/) | v3.3.0 |
 | Python | [python/](./python/) | v3.3.0 |
 | Java | [java/](./java/) | v3.3.0 |
-| TypeScript | [typescript/](./typescript/) | v3.1.0 (source build while npm is blocked) |
+| TypeScript | [typescript/](./typescript/) | v3.3.0 |
 
 ## Quick Start
 

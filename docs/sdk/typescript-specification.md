@@ -412,8 +412,6 @@ try {
 | Node.js | 18+ |
 | TypeScript | 4.7+ (optional; JavaScript is also supported) |
 
-> **Note on npm version:** The published npm package (`@axonflow/sdk`) is at v2.3.0 due to an ongoing npm publishing issue. The SDK source is at v3.3.0. To use v3.3.0 features, build from source and use `npm link`. See the [Architecture](typescript-architecture.md#npm-version-note) doc for instructions.
-
 ## Exports
 
 The SDK exports from `@axonflow/sdk`:

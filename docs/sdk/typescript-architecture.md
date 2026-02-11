@@ -256,20 +256,6 @@ Application
 
 > **Note:** The SDK is designed for Node.js server-side use. It relies on `Buffer` and native `fetch` (Node.js 18+). Browser usage is not supported.
 
-## npm Version Note
-
-The published npm version of `@axonflow/sdk` is v2.3.0 due to an ongoing npm publishing issue. The source code is at v3.3.0. To use the latest features, build the SDK from source:
-
-```bash
-git clone https://github.com/getaxonflow/axonflow-sdk-typescript.git
-cd axonflow-sdk-typescript
-npm install && npm run build
-npm link
-
-# In your project:
-npm link @axonflow/sdk
-```
-
 ---
 
 *This document describes the architecture of the AxonFlow TypeScript SDK v3.3.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
