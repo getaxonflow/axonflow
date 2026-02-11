@@ -18,16 +18,6 @@
 npm install @axonflow/sdk
 ```
 
-> **Note:** The published npm version is v2.3.0. The SDK source is at v3.3.0. To use v3.3.0 features (dynamic policy tiers, unified execution, etc.), build from source:
->
-> ```bash
-> git clone https://github.com/getaxonflow/axonflow-sdk-typescript.git
-> cd axonflow-sdk-typescript
-> npm install && npm run build && npm link
-> # Then in your project:
-> npm link @axonflow/sdk
-> ```
-
 ## 2. Configure the Client
 
 ```typescript
