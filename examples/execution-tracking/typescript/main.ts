@@ -266,8 +266,8 @@ async function main(): Promise<void> {
       // Verify status
       const cancelStatus = await client.getWorkflow(cancelTest.workflow_id);
       assertCheck(
-        cancelStatus.status === 'aborted' || cancelStatus.status === 'cancelled',
-        `Workflow is aborted/cancelled after cancelExecution (got: ${cancelStatus.status})`,
+        cancelStatus.status === 'aborted',
+        `Workflow is aborted after cancelExecution (got: ${cancelStatus.status})`,
       );
     } catch (err) {
       console.log(`  Note: cancelExecution returned error: ${err}`);
