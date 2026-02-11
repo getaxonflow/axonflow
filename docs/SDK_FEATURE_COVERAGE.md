@@ -66,7 +66,7 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 #### SSE Streaming
 | Method | Description | Status |
 |--------|-------------|--------|
-| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.3.0) |
+| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.3.1) |
 
 #### Webhook Management
 | Method | Description | Status |
@@ -207,10 +207,10 @@ All 4 SDKs should have identical method coverage:
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v3.3.0 | ~36 | ✅ |
-| Python | v3.3.0 | ~36 | ✅ |
-| TypeScript | v3.3.0 | ~37 | ✅ (+protect) |
-| Java | v3.3.0 | ~36 | ✅ |
+| Go | v3.3.1 | ~36 | ✅ |
+| Python | v3.3.1 | ~36 | ✅ |
+| TypeScript | v3.3.1 | ~37 | ✅ (+protect) |
+| Java | v3.3.1 | ~36 | ✅ |
 
 ---
 
