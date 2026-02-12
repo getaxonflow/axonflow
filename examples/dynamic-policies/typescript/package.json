@@ -6,6 +6,6 @@
     "start": "npx tsx index.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^3.3.0"
+    "@axonflow/sdk": "^3.3.1"
   }
 }

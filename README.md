@@ -347,7 +347,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.3.0</version>
+    <version>3.3.1</version>
 </dependency>
 ```
 

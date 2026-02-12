@@ -30,7 +30,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.2.0 | **SDK Version:** v3.3.0
+**Platform Version:** v4.2.0 | **SDK Version:** v3.3.1
 
 ## Overview
 

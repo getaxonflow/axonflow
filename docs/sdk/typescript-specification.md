@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.3.0 | **Platform Version:** v4.2.0
+**SDK Version:** v3.3.1 | **Platform Version:** v4.2.0
 
 **Status:** Production Ready
 
@@ -417,7 +417,7 @@ try {
 The SDK exports from `@axonflow/sdk`:
 
 - **`AxonFlow`** -- The client class (also available as `default` export).
-- **`VERSION`** -- SDK version string (`'3.3.0'`).
+- **`VERSION`** -- SDK version string (`'3.3.1'`).
 - **`wasRedacted()`** -- Utility to check if a connector response was redacted.
 - **`WorkflowHelpers`** -- Helper utilities for workflow operations.
 - **`ExecutionHelpers`** -- Helper utilities for unified execution operations.
@@ -426,4 +426,4 @@ The SDK exports from `@axonflow/sdk`:
 
 ---
 
-*This specification describes the AxonFlow TypeScript SDK v3.3.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
+*This specification describes the AxonFlow TypeScript SDK v3.3.1 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
