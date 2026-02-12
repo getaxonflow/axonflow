@@ -140,6 +140,45 @@ func TestStepModeEvaluator_Reset(t *testing.T) {
 	}
 }
 
+func TestStepModeEvaluator_Idempotent(t *testing.T) {
+	evaluator := &StepModeEvaluator{}
+	ctx := context.Background()
+
+	step1 := &workflow_control.StepGateContext{WorkflowID: "wf_1", StepID: "step-a"}
+	step2 := &workflow_control.StepGateContext{WorkflowID: "wf_1", StepID: "step-b"}
+
+	// First step (step-a) should be allowed
+	result1 := evaluator.EvaluateStepGate(ctx, step1)
+	if result1.Decision != workflow_control.GateDecisionAllow {
+		t.Errorf("step-a first call: expected allow, got %q", result1.Decision)
+	}
+
+	// Second step (step-b) should require approval
+	result2 := evaluator.EvaluateStepGate(ctx, step2)
+	if result2.Decision != workflow_control.GateDecisionRequireApproval {
+		t.Errorf("step-b first call: expected require_approval, got %q", result2.Decision)
+	}
+
+	// Retry step-a — should return cached allow (not advance counter)
+	result1retry := evaluator.EvaluateStepGate(ctx, step1)
+	if result1retry.Decision != workflow_control.GateDecisionAllow {
+		t.Errorf("step-a retry: expected cached allow, got %q", result1retry.Decision)
+	}
+
+	// Retry step-b — should return cached require_approval
+	result2retry := evaluator.EvaluateStepGate(ctx, step2)
+	if result2retry.Decision != workflow_control.GateDecisionRequireApproval {
+		t.Errorf("step-b retry: expected cached require_approval, got %q", result2retry.Decision)
+	}
+
+	// New step (step-c) should still require approval (counter didn't advance from retries)
+	step3 := &workflow_control.StepGateContext{WorkflowID: "wf_1", StepID: "step-c"}
+	result3 := evaluator.EvaluateStepGate(ctx, step3)
+	if result3.Decision != workflow_control.GateDecisionRequireApproval {
+		t.Errorf("step-c: expected require_approval, got %q", result3.Decision)
+	}
+}
+
 func TestStepModeEvaluator_MultipleSteps(t *testing.T) {
 	evaluator := &StepModeEvaluator{}
 	ctx := context.Background()

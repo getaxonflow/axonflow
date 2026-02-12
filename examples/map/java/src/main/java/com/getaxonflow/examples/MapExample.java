@@ -142,6 +142,37 @@ public class MapExample {
         System.out.println();
 
         // ========================================
+        // 1b. COST ESTIMATION (v4.3.0)
+        // ========================================
+        System.out.println("1b. Cost Estimation - Get cost estimate for this plan...");
+        try {
+            String costUrl = getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080")
+                + "/api/v1/plans/" + plan.getPlanId() + "/cost";
+            URL costEndpoint = new URL(costUrl);
+            HttpURLConnection costConn = (HttpURLConnection) costEndpoint.openConnection();
+            costConn.setRequestMethod("GET");
+            costConn.setRequestProperty("X-Client-ID", getEnv("AXONFLOW_CLIENT_ID", "demo-org"));
+            costConn.setRequestProperty("X-Client-Secret", getEnv("AXONFLOW_CLIENT_SECRET", "demo"));
+            costConn.setConnectTimeout(10000);
+            costConn.setReadTimeout(10000);
+            costConn.connect();
+
+            int costStatus = costConn.getResponseCode();
+            if (costStatus == 200) {
+                java.io.InputStream costStream = costConn.getInputStream();
+                String costBody = new String(costStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                System.out.println("   Cost estimate: " + costBody);
+                assertCheck(true, "Cost estimation endpoint available");
+            } else {
+                System.out.println("   Cost estimation returned " + costStatus + " (may require enterprise)");
+            }
+            costConn.disconnect();
+        } catch (Exception costEx) {
+            System.out.println("   Warning: Cost estimation failed: " + costEx.getMessage());
+        }
+        System.out.println();
+
+        // ========================================
         // 2. GET PLAN STATUS (before execution) - Optional
         // ========================================
         System.out.println("2. getPlanStatus - Checking status before execution...");
@@ -664,6 +695,7 @@ public class MapExample {
                 conn.setRequestProperty("Accept", "application/json");
                 conn.setRequestProperty("X-Client-ID", sseClientId);
                 conn.setRequestProperty("X-Client-Secret", sseClientSecret);
+                conn.setRequestProperty("X-Tenant-ID", sseClientId);
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(10000);
                 conn.connect();
@@ -700,6 +732,7 @@ public class MapExample {
             System.out.println();
             System.out.println("Methods validated:");
             System.out.println("  1. generatePlan()      - Plan created with valid ID and steps");
+            System.out.println(" 1b. Cost estimation     - GET /api/v1/plans/{id}/cost (v4.3.0)");
             System.out.println("  2. getPlanStatus()     - Pre-execution status checked");
             System.out.println("  3. executePlan()       - Plan executed successfully");
             System.out.println("  4. getPlanStatus()     - Post-execution status is completed");

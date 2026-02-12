@@ -1143,3 +1143,400 @@ func TestHITLWorkflowEngine_ExecuteStep_ProcessorError(t *testing.T) {
 		t.Error("Expected non-empty error message")
 	}
 }
+
+// =============================================================================
+// AbortExecution Coverage Tests
+// =============================================================================
+
+func TestHITLWorkflowEngine_AbortExecution_WithApprovalService(t *testing.T) {
+	// Test aborting a paused execution that has an approval service and a non-nil approval ID.
+	// This covers the branch where approvalService != nil && exec.ApprovalID != uuid.Nil.
+	approval := NewMockApprovalService()
+	approvalID := uuid.New()
+	approval.approvals[approvalID] = &HITLApprovalResponse{
+		ApprovalID: approvalID,
+		Status:     "rejected",
+	}
+
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, approval)
+
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-with-approval",
+			Status: StatusPaused,
+		},
+		ApprovalID:   approvalID,
+		PausedAtStep: 1,
+	}
+
+	ctx := context.Background()
+
+	abortedExec, err := hitlEngine.AbortExecution(ctx, exec, "Reviewer rejected the request")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if abortedExec.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got '%s'", abortedExec.Status)
+	}
+	if abortedExec.EndTime == nil {
+		t.Error("Expected EndTime to be set")
+	}
+	if abortedExec.Error != "Execution aborted: Reviewer rejected the request" {
+		t.Errorf("Unexpected error message: %s", abortedExec.Error)
+	}
+	// The approval status should be synced from the approval service
+	if abortedExec.ApprovalStatus != "rejected" {
+		t.Errorf("Expected approval status 'rejected', got '%s'", abortedExec.ApprovalStatus)
+	}
+}
+
+func TestHITLWorkflowEngine_AbortExecution_ApprovalServiceGetError(t *testing.T) {
+	// Test aborting when the approval service returns an error on GetApproval.
+	// The code uses `approval, _ := ...` so the error is ignored and approval is nil.
+	// This covers the branch where approval is nil after GetApproval.
+	approval := NewMockApprovalService()
+	approval.getErr = context.DeadlineExceeded // Force GetApproval to fail
+
+	approvalID := uuid.New()
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, approval)
+
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-get-error",
+			Status: StatusPaused,
+		},
+		ApprovalID:   approvalID,
+		PausedAtStep: 0,
+	}
+
+	ctx := context.Background()
+
+	abortedExec, err := hitlEngine.AbortExecution(ctx, exec, "Timeout abort")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if abortedExec.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got '%s'", abortedExec.Status)
+	}
+	// ApprovalStatus should remain empty since GetApproval returned an error
+	if abortedExec.ApprovalStatus != "" {
+		t.Errorf("Expected empty approval status, got '%s'", abortedExec.ApprovalStatus)
+	}
+}
+
+func TestHITLWorkflowEngine_AbortExecution_NilApprovalID(t *testing.T) {
+	// Test aborting when the approval service exists but the execution has
+	// a nil (uuid.Nil) approval ID. This skips the GetApproval call.
+	approval := NewMockApprovalService()
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, approval)
+
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-nil-approval-id",
+			Status: StatusPaused,
+		},
+		ApprovalID:   uuid.Nil, // Nil approval ID
+		PausedAtStep: 0,
+	}
+
+	ctx := context.Background()
+
+	abortedExec, err := hitlEngine.AbortExecution(ctx, exec, "Admin abort")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if abortedExec.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got '%s'", abortedExec.Status)
+	}
+	if abortedExec.ApprovalStatus != "" {
+		t.Errorf("Expected empty approval status (skipped), got '%s'", abortedExec.ApprovalStatus)
+	}
+}
+
+func TestHITLWorkflowEngine_AbortExecution_RunningStatus(t *testing.T) {
+	// Test aborting an execution with "running" status (not paused).
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, nil)
+
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-running",
+			Status: "running",
+		},
+	}
+
+	ctx := context.Background()
+	_, err := hitlEngine.AbortExecution(ctx, exec, "test")
+	if err == nil {
+		t.Fatal("Expected error when aborting a running (non-paused) execution")
+	}
+	if err.Error() != "execution is not paused, status: running" {
+		t.Errorf("Unexpected error message: %s", err.Error())
+	}
+}
+
+func TestHITLWorkflowEngine_AbortExecution_FailedStatus(t *testing.T) {
+	// Test aborting an execution with "failed" status (not paused).
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, nil)
+
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-failed",
+			Status: "failed",
+		},
+	}
+
+	ctx := context.Background()
+	_, err := hitlEngine.AbortExecution(ctx, exec, "test")
+	if err == nil {
+		t.Fatal("Expected error when aborting a failed execution")
+	}
+}
+
+func TestHITLWorkflowEngine_AbortExecution_ApprovalGetReturnsNil(t *testing.T) {
+	// Test aborting when GetApproval succeeds but returns nil response.
+	// The MockApprovalService.GetApproval returns nil for unknown IDs (no error).
+	approval := NewMockApprovalService()
+	hitlEngine := NewHITLWorkflowEngine(nil, nil, approval)
+
+	unknownApprovalID := uuid.New()
+	// Do NOT add this ID to approval.approvals, so GetApproval returns nil, nil.
+	exec := &HITLWorkflowExecution{
+		WorkflowExecution: &WorkflowExecution{
+			ID:     "test-abort-nil-response",
+			Status: StatusPaused,
+		},
+		ApprovalID:   unknownApprovalID,
+		PausedAtStep: 0,
+	}
+
+	ctx := context.Background()
+
+	abortedExec, err := hitlEngine.AbortExecution(ctx, exec, "Unknown approval")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if abortedExec.Status != "aborted" {
+		t.Errorf("Expected status 'aborted', got '%s'", abortedExec.Status)
+	}
+	// Approval is nil, so ApprovalStatus should NOT be updated
+	if abortedExec.ApprovalStatus != "" {
+		t.Errorf("Expected empty approval status when approval response is nil, got '%s'", abortedExec.ApprovalStatus)
+	}
+}
+
+// =============================================================================
+// pauseForApproval Coverage Tests
+// =============================================================================
+
+func TestHITLWorkflowEngine_PauseForApproval_NilApprovalService(t *testing.T) {
+	// Test pauseForApproval when the approval service is nil.
+	// The execution should still be paused but no approval ID is set.
+	engine := &WorkflowEngine{
+		stepProcessors: make(map[string]StepProcessor),
+		storage:        NewInMemoryWorkflowStorage(),
+	}
+
+	checker := NewMockPolicyChecker()
+	checker.SetResult("step1", &PolicyCheckResult{
+		Allowed:    false,
+		Action:     "require_approval",
+		PolicyID:   "policy-nil-svc",
+		PolicyName: "Nil Service Policy",
+		Reason:     "Tests nil approval service path",
+		Severity:   "medium",
+	})
+
+	// Create engine without approval service (nil)
+	hitlEngine := NewHITLWorkflowEngine(engine, checker, nil)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "nil-approval-svc-workflow"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "llm-call"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	user := UserContext{TenantID: "tenant-nil"}
+
+	exec, err := hitlEngine.ExecuteWithHITL(ctx, workflow, make(map[string]interface{}), user)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if exec == nil {
+		t.Fatal("Expected non-nil execution")
+	}
+	if exec.Status != StatusPaused {
+		t.Errorf("Expected status 'paused', got '%s'", exec.Status)
+	}
+	// ApprovalID should be uuid.Nil since no approval service was used
+	if exec.ApprovalID != uuid.Nil {
+		t.Errorf("Expected nil approval ID, got %v", exec.ApprovalID)
+	}
+	// PausedReason should still be set
+	if exec.PausedReason == "" {
+		t.Error("Expected non-empty paused reason")
+	}
+	if exec.ApprovalStatus != "" {
+		t.Errorf("Expected empty approval status, got '%s'", exec.ApprovalStatus)
+	}
+}
+
+func TestHITLWorkflowEngine_PauseForApproval_CreateApprovalError(t *testing.T) {
+	// Test pauseForApproval when CreateApproval returns an error.
+	engine := &WorkflowEngine{
+		stepProcessors: make(map[string]StepProcessor),
+		storage:        NewInMemoryWorkflowStorage(),
+	}
+
+	checker := NewMockPolicyChecker()
+	checker.SetResult("step1", &PolicyCheckResult{
+		Allowed:    false,
+		Action:     "require_approval",
+		PolicyID:   "policy-create-err",
+		PolicyName: "Create Error Policy",
+		Reason:     "Tests create approval error path",
+		Severity:   "high",
+	})
+
+	approval := NewMockApprovalService()
+	approval.createErr = context.DeadlineExceeded // Force CreateApproval to fail
+
+	hitlEngine := NewHITLWorkflowEngine(engine, checker, approval)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "create-error-workflow"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "llm-call"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	user := UserContext{TenantID: "tenant-err", ID: 42}
+
+	exec, err := hitlEngine.ExecuteWithHITL(ctx, workflow, make(map[string]interface{}), user)
+	if err == nil {
+		t.Fatal("Expected error when CreateApproval fails")
+	}
+	if exec == nil {
+		t.Fatal("Expected non-nil execution even on error")
+	}
+	// Status should be paused (set before CreateApproval call)
+	if exec.Status != StatusPaused {
+		t.Errorf("Expected status 'paused', got '%s'", exec.Status)
+	}
+	// Error should mention the failure
+	if exec.Error == "" {
+		t.Error("Expected non-empty error message")
+	}
+	// ApprovalID should be uuid.Nil since CreateApproval failed
+	if exec.ApprovalID != uuid.Nil {
+		t.Errorf("Expected nil approval ID on create error, got %v", exec.ApprovalID)
+	}
+}
+
+func TestHITLWorkflowEngine_PauseForApproval_PausedReasonFormat(t *testing.T) {
+	// Verify the paused reason format includes the policy name and reason.
+	engine := &WorkflowEngine{
+		stepProcessors: make(map[string]StepProcessor),
+		storage:        NewInMemoryWorkflowStorage(),
+	}
+
+	checker := NewMockPolicyChecker()
+	checker.SetResult("step1", &PolicyCheckResult{
+		Allowed:    false,
+		Action:     "require_approval",
+		PolicyID:   "policy-reason-fmt",
+		PolicyName: "Budget Limit",
+		Reason:     "Exceeds $1000 threshold",
+		Severity:   "high",
+	})
+
+	approval := NewMockApprovalService()
+	hitlEngine := NewHITLWorkflowEngine(engine, checker, approval)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "reason-format-workflow"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "llm-call"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	user := UserContext{TenantID: "tenant-fmt", ID: 7}
+
+	exec, err := hitlEngine.ExecuteWithHITL(ctx, workflow, make(map[string]interface{}), user)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	expectedReason := "Policy Budget Limit requires human approval: Exceeds $1000 threshold"
+	if exec.PausedReason != expectedReason {
+		t.Errorf("PausedReason = %q, want %q", exec.PausedReason, expectedReason)
+	}
+	if exec.PausedAtStep != 0 {
+		t.Errorf("PausedAtStep = %d, want 0", exec.PausedAtStep)
+	}
+}
+
+func TestHITLWorkflowEngine_PauseForApproval_MultiStepPauseAtSecond(t *testing.T) {
+	// Test that pausing at the second step correctly records PausedAtStep = 1.
+	mockProcessor := &MockStepProcessor{
+		output: map[string]interface{}{"result": "success"},
+	}
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"test-step": mockProcessor,
+		},
+		storage: NewInMemoryWorkflowStorage(),
+	}
+
+	checker := NewMockPolicyChecker()
+	// Only the second step requires approval
+	checker.SetResult("step2", &PolicyCheckResult{
+		Allowed:    false,
+		Action:     "require_approval",
+		PolicyID:   "policy-step2",
+		PolicyName: "Step2 Policy",
+		Reason:     "Second step needs approval",
+		Severity:   "medium",
+	})
+
+	approval := NewMockApprovalService()
+	hitlEngine := NewHITLWorkflowEngine(engine, checker, approval)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "multi-step-pause"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "test-step"},
+				{Name: "step2", Type: "test-step"},
+				{Name: "step3", Type: "test-step"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	user := UserContext{TenantID: "tenant-multi"}
+
+	exec, err := hitlEngine.ExecuteWithHITL(ctx, workflow, make(map[string]interface{}), user)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if exec.Status != StatusPaused {
+		t.Errorf("Expected status 'paused', got '%s'", exec.Status)
+	}
+	if exec.PausedAtStep != 1 {
+		t.Errorf("Expected paused at step 1, got %d", exec.PausedAtStep)
+	}
+	// Step 1 should have been executed before pause
+	if len(exec.Steps) != 1 {
+		t.Errorf("Expected 1 step executed before pause, got %d", len(exec.Steps))
+	}
+}

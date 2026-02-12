@@ -461,6 +461,14 @@ func Run() {
 	r.HandleFunc("/api/v1/plan/{id}/resume", resumePlanHandler).Methods("POST")     // ResumePlan (MAP v1.0, Enterprise)
 	r.HandleFunc("/api/v1/plan/{id}/rollback/{version:[0-9]+}", rollbackPlanHandler).Methods("POST") // RollbackPlan (MAP v1.0, Enterprise)
 
+	// MAP step approval endpoints (v4.3.0, Enterprise — #1076)
+	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
+	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/reject", mapStepRejectHandler).Methods("POST")
+
+	// Cost Estimation endpoints (v4.3.0)
+	r.HandleFunc("/api/v1/plans/estimate", estimatePlanCostHandler).Methods("POST")  // EstimatePlanCost
+	r.HandleFunc("/api/v1/plans/{id}/cost", getPlanCostHandler).Methods("GET")       // GetPlanCost
+
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/connectors/{id}", getConnectorDetailsHandler).Methods("GET")
@@ -956,9 +964,15 @@ func initializeComponents() {
 		hitlEnabled = os.Getenv("AXONFLOW_HITL_ENABLED") == "true"
 		if hitlEnabled {
 			log.Println("Initializing HITL Workflow Engine (require_approval support)...")
-			// Create HITL engine with workflow engine and no-op services for now
-			// Enterprise mode will inject real HITLPolicyChecker and HITLApprovalService
-			hitlWorkflowEngine = NewHITLWorkflowEngine(workflowEngine, nil, nil)
+			var policyChecker HITLPolicyChecker
+			var approvalService HITLApprovalService
+			if !isCommunityMode() {
+				// Enterprise mode: wire real policy checker and approval adapter
+				policyChecker = &MAPHITLPolicyChecker{}
+				approvalService = &MAPHITLApprovalAdapter{}
+				log.Println("HITL Enterprise adapters initialized (policy checker + approval service)")
+			}
+			hitlWorkflowEngine = NewHITLWorkflowEngine(workflowEngine, policyChecker, approvalService)
 			log.Println("HITL Workflow Engine initialized ✅")
 		} else {
 			log.Println("HITL mode disabled (set AXONFLOW_HITL_ENABLED=true to enable)")
@@ -2779,6 +2793,55 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	execContext["_policy_result"] = policyResult
 
 	// Determine execution strategy based on plan's execution mode (MAP v1.0)
+	// If HITL is enabled and the mode is not confirm/step (which has its own WCP flow),
+	// use the HITL-aware engine for policy-driven pause/resume (#1076)
+	if hitlEnabled && hitlWorkflowEngine != nil && plan.ExecutionMode != "confirm" && plan.ExecutionMode != "step" {
+		hitlExec, hitlErr := hitlWorkflowEngine.ExecuteWithHITL(ctx, workflow, execContext, req.User)
+		if hitlErr != nil {
+			if hitlExec != nil && hitlExec.Status == StatusPaused {
+				// Store execution for later resume via /plans/{id}/steps/{step_id}/approve
+				hitlWorkflowEngine.SaveExecution(hitlExec)
+				log.Printf("[ExecutePlan] Plan %s paused for HITL approval at step %d", planID, hitlExec.PausedAtStep)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"plan_id":        planID,
+					"execution_id":   hitlExec.ID,
+					"status":         "paused",
+					"paused_at_step": hitlExec.PausedAtStep,
+					"paused_reason":  hitlExec.PausedReason,
+					"approval_id":    hitlExec.ApprovalID.String(),
+				})
+				return
+			}
+			log.Printf("[ExecutePlan] HITL execution failed for plan %s: %v", planID, hitlErr)
+			_ = planService.MarkPlanFailed(r.Context(), planID, hitlErr.Error())
+			if mapExecutionTracker != nil && unifiedExecID != "" {
+				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, hitlErr.Error())
+			}
+			sendErrorResponse(w, "Execution failed: "+hitlErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// HITL execution completed without pause — convert to standard WorkflowExecution
+		if hitlExec != nil && hitlExec.WorkflowExecution != nil {
+			execution := hitlExec.WorkflowExecution
+			log.Printf("[ExecutePlan] HITL execution completed for plan %s: ExecutionID=%s", planID, execution.ID)
+			var finalResult interface{} = execution.Output
+			if execution.Output != nil {
+				if result, ok := execution.Output["final_result"]; ok {
+					finalResult = result
+				}
+			}
+			_ = planService.MarkPlanCompleted(r.Context(), planID, finalResult)
+			if mapExecutionTracker != nil && unifiedExecID != "" {
+				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execution)
+			return
+		}
+	}
+
 	var execution *WorkflowExecution
 	switch plan.ExecutionMode {
 	case "sequential":

@@ -140,6 +140,8 @@ func main() {
 	fmt.Printf("    - Completed: %s\n", axonflow.ExecutionStatusCompleted)
 	fmt.Printf("    - Failed: %s\n", axonflow.ExecutionStatusFailed)
 	fmt.Printf("    - Cancelled: %s\n", axonflow.ExecutionStatusCancelled)
+	// v4.3.0: "expired" is now a valid execution status
+	fmt.Printf("    - Expired: %s\n", axonflow.ExecutionStatusExpired)
 	fmt.Println()
 	fmt.Println("  StepStatusValue helpers:")
 	fmt.Printf("    - IsTerminal(completed): %v\n", axonflow.StepStatusCompleted.IsTerminal())

@@ -92,7 +92,7 @@ func (m *MockRepository) UpdateStatus(ctx context.Context, workflowID string, st
 
 	workflow, ok := m.workflows[workflowID]
 	if !ok {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	workflow.Status = status
@@ -108,7 +108,7 @@ func (m *MockRepository) Complete(ctx context.Context, workflowID string) error 
 
 	workflow, ok := m.workflows[workflowID]
 	if !ok {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	now := time.Now()
@@ -126,7 +126,7 @@ func (m *MockRepository) Abort(ctx context.Context, workflowID string, reason st
 
 	workflow, ok := m.workflows[workflowID]
 	if !ok {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	now := time.Now()
@@ -144,7 +144,7 @@ func (m *MockRepository) Fail(ctx context.Context, workflowID string, reason str
 
 	workflow, ok := m.workflows[workflowID]
 	if !ok {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	now := time.Now()

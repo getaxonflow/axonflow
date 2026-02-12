@@ -59,6 +59,16 @@ type ExecutionRepository interface {
 	UpdateSteps(ctx context.Context, executionID string, steps []StepStatus) error
 	UpdateCost(ctx context.Context, executionID string, estimatedCost, actualCost *float64) error
 
+	// GetByPlanID looks up a single execution by plan_id in metadata.
+	// Uses the expression index on metadata->>'plan_id' for efficient lookup.
+	GetByPlanID(ctx context.Context, planID string) (*ExecutionStatus, error)
+
+	// GetByMetadata looks up a single execution by a metadata key-value pair.
+	GetByMetadata(ctx context.Context, key, value string) (*ExecutionStatus, error)
+
+	// ExpireExecution marks an execution as expired (MAP-specific: plan expired before execution).
+	ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error
+
 	// CountActive returns the number of executions with running/pending status for a tenant.
 	CountActive(ctx context.Context, tenantID string) (int, error)
 
@@ -102,6 +112,11 @@ func NewBaseExecutionTrackerWithClock(repo ExecutionRepository, clock Clock) *Ba
 		repo:  repo,
 		clock: clock,
 	}
+}
+
+// GetRepo returns the underlying repository.
+func (t *BaseExecutionTracker) GetRepo() ExecutionRepository {
+	return t.repo
 }
 
 // SetEventHub sets the event hub for publishing execution state changes.

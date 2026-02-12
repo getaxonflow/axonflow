@@ -413,6 +413,130 @@ func (r *PostgresRepository) UpdateCost(ctx context.Context, executionID string,
 	return nil
 }
 
+// GetByPlanID looks up a single execution by plan_id in metadata.
+// Uses the expression index on metadata->>'plan_id' for efficient lookup.
+func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*ExecutionStatus, error) {
+	return r.getByMetadataHardcoded(ctx, "plan_id", planID)
+}
+
+// GetByMetadata looks up a single execution by a metadata key-value pair.
+// Note: Uses parameterized key, so expression indexes may not be used.
+// Prefer GetByPlanID for plan_id lookups.
+func (r *PostgresRepository) GetByMetadata(ctx context.Context, key, value string) (*ExecutionStatus, error) {
+	return r.getByMetadataHardcoded(ctx, key, value)
+}
+
+func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, value string) (*ExecutionStatus, error) {
+	// Use hardcoded key in query for plan_id to enable expression index usage
+	var query string
+	if key == "plan_id" {
+		query = `
+			SELECT
+				id, execution_type, name, source,
+				tenant_id, org_id, user_id, client_id,
+				status, current_step_index, total_steps,
+				started_at, completed_at, estimated_cost_usd, actual_cost_usd,
+				steps, error_message, metadata, created_at, updated_at
+			FROM execution_history
+			WHERE metadata->>'plan_id' = $1
+			LIMIT 1
+		`
+	} else {
+		query = `
+			SELECT
+				id, execution_type, name, source,
+				tenant_id, org_id, user_id, client_id,
+				status, current_step_index, total_steps,
+				started_at, completed_at, estimated_cost_usd, actual_cost_usd,
+				steps, error_message, metadata, created_at, updated_at
+			FROM execution_history
+			WHERE metadata->>$1 = $2
+			LIMIT 1
+		`
+	}
+
+	var exec ExecutionStatus
+	var tenantID, orgID, userID, clientID sql.NullString
+	var completedAt sql.NullTime
+	var estimatedCost, actualCost sql.NullFloat64
+	var stepsJSON, metadataJSON []byte
+	var errorMsg sql.NullString
+
+	var row *sql.Row
+	if key == "plan_id" {
+		row = r.db.QueryRowContext(ctx, query, value)
+	} else {
+		row = r.db.QueryRowContext(ctx, query, key, value)
+	}
+	err := row.Scan(
+		&exec.ExecutionID, &exec.ExecutionType, &exec.Name, &exec.Source,
+		&tenantID, &orgID, &userID, &clientID,
+		&exec.Status, &exec.CurrentStepIndex, &exec.TotalSteps,
+		&exec.StartedAt, &completedAt, &estimatedCost, &actualCost,
+		&stepsJSON, &errorMsg, &metadataJSON, &exec.CreatedAt, &exec.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrExecutionNotFound
+		}
+		return nil, fmt.Errorf("failed to get execution by metadata: %w", err)
+	}
+
+	exec.TenantID = tenantID.String
+	exec.OrgID = orgID.String
+	exec.UserID = userID.String
+	exec.ClientID = clientID.String
+	if completedAt.Valid {
+		exec.CompletedAt = &completedAt.Time
+	}
+	if estimatedCost.Valid {
+		exec.EstimatedCostUSD = &estimatedCost.Float64
+	}
+	if actualCost.Valid {
+		exec.ActualCostUSD = &actualCost.Float64
+	}
+	if errorMsg.Valid {
+		exec.Error = errorMsg.String
+	}
+
+	if len(stepsJSON) > 0 {
+		if err := json.Unmarshal(stepsJSON, &exec.Steps); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal steps: %w", err)
+		}
+	}
+	if len(metadataJSON) > 0 {
+		if err := json.Unmarshal(metadataJSON, &exec.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+	}
+
+	return &exec, nil
+}
+
+// ExpireExecution marks an execution as expired.
+func (r *PostgresRepository) ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error {
+	now := time.Now()
+	query := `
+		UPDATE execution_history SET
+			status = 'expired',
+			completed_at = $2,
+			updated_at = $3
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query, executionID, now, now)
+	if err != nil {
+		return fmt.Errorf("failed to expire execution: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrExecutionNotFound
+	}
+
+	return nil
+}
+
 // CountActive returns the number of running or pending executions for a tenant.
 func (r *PostgresRepository) CountActive(ctx context.Context, tenantID string) (int, error) {
 	query := `SELECT COUNT(*) FROM execution_history WHERE tenant_id = $1 AND status IN ('running', 'pending')`

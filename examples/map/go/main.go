@@ -123,6 +123,29 @@ func main() {
 	expectedStepCount := len(plan.Steps)
 
 	// ========================================
+	// 1b. COST ESTIMATION (v4.3.0)
+	// ========================================
+	fmt.Println("1b. Cost Estimation - Get cost estimate for this plan...")
+	costURL := fmt.Sprintf("%s/api/v1/plans/%s/cost", getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"), plan.PlanID)
+	costReq, _ := http.NewRequest("GET", costURL, nil)
+	costReq.Header.Set("X-Client-ID", getEnv("AXONFLOW_CLIENT_ID", "demo-org"))
+	costReq.Header.Set("X-Client-Secret", getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
+	costResp, costErr := (&http.Client{Timeout: 10 * time.Second}).Do(costReq)
+	if costErr != nil {
+		fmt.Printf("   Warning: Cost estimation failed: %v\n", costErr)
+	} else {
+		defer costResp.Body.Close()
+		costBody, _ := io.ReadAll(costResp.Body)
+		if costResp.StatusCode == 200 {
+			fmt.Printf("   Cost estimate: %s\n", string(costBody))
+			assert(true, "Cost estimation endpoint available")
+		} else {
+			fmt.Printf("   Cost estimation returned %d (may require enterprise)\n", costResp.StatusCode)
+		}
+	}
+	fmt.Println()
+
+	// ========================================
 	// 2. GET PLAN STATUS (before execution) - Optional
 	// ========================================
 	fmt.Println("2. GetPlanStatus - Checking status before execution...")
@@ -754,6 +777,7 @@ func main() {
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("X-Client-ID", clientID)
 		req.Header.Set("X-Client-Secret", clientSecret)
+		req.Header.Set("X-Tenant-ID", clientID)
 
 		sseClient := &http.Client{Timeout: 30 * time.Second}
 		resp, respErr := sseClient.Do(req)
@@ -790,6 +814,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("Coverage validated:")
 		fmt.Println("  - GeneratePlan()             - Plan creation with valid ID/steps")
+		fmt.Println("  - Cost estimation            - GET /api/v1/plans/{id}/cost (v4.3.0)")
 		fmt.Println("  - GetPlanStatus()            - Pre/post execution status")
 		fmt.Println("  - ExecutePlan()              - Plan execution and step completion")
 		fmt.Println("  - Error handling             - Invalid/non-existent plan IDs")

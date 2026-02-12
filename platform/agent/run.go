@@ -901,6 +901,21 @@ func Run() {
 	hitlHandler.RegisterRoutes(globalRouter)
 	// Note: In community edition, RegisterRoutes is a no-op (HITL is an enterprise feature)
 
+	// Start HITL expiration background job (1-hour ticker)
+	// Enterprise: expires stale pending approval requests. Community: no-op.
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			count, err := hitlService.ExpireStaleRequests(context.Background())
+			if err != nil {
+				log.Printf("[HITL] Expiration error: %v", err)
+			} else if count > 0 {
+				log.Printf("[HITL] Expired %d stale approval requests", count)
+			}
+		}
+	}()
+
 	// Register Circuit Breaker API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Emergency stop/interrupt capability for AI operations
 	cbRepo := circuitbreaker.NewRepository(usageDB)

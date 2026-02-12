@@ -64,6 +64,14 @@ type LicenseChecker interface {
 	// MaxSSEConnections returns the maximum concurrent SSE connections per tenant.
 	// Returns -1 for unlimited (Enterprise).
 	MaxSSEConnections() int
+
+	// MaxCostEstimatesPerDay returns the maximum number of cost estimates per day.
+	// Returns -1 for unlimited (Enterprise).
+	MaxCostEstimatesPerDay() int
+
+	// MaxPendingApprovals returns the maximum number of concurrent pending approvals per tenant.
+	// Returns -1 for unlimited (Enterprise).
+	MaxPendingApprovals() int
 }
 
 // DefaultLicenseChecker is a default implementation that returns Community mode.
@@ -127,6 +135,16 @@ func (d *DefaultLicenseChecker) MaxVersionsPerPlan() int {
 // MaxSSEConnections returns 5 for Community.
 func (d *DefaultLicenseChecker) MaxSSEConnections() int {
 	return license.CommunityLimits.MaxSSEConnections
+}
+
+// MaxCostEstimatesPerDay returns 10 for Community.
+func (d *DefaultLicenseChecker) MaxCostEstimatesPerDay() int {
+	return license.CommunityLimits.MaxCostEstimatesPerDay
+}
+
+// MaxPendingApprovals returns 5 for Community.
+func (d *DefaultLicenseChecker) MaxPendingApprovals() int {
+	return license.CommunityLimits.MaxPendingApprovals
 }
 
 // EnvLicenseChecker validates the license via AXONFLOW_LICENSE_KEY environment variable.
@@ -209,6 +227,18 @@ func (e *EnvLicenseChecker) MaxSSEConnections() int {
 	return limits.MaxSSEConnections
 }
 
+// MaxCostEstimatesPerDay returns the maximum number of cost estimates per day.
+func (e *EnvLicenseChecker) MaxCostEstimatesPerDay() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxCostEstimatesPerDay
+}
+
+// MaxPendingApprovals returns the maximum number of concurrent pending approvals per tenant.
+func (e *EnvLicenseChecker) MaxPendingApprovals() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxPendingApprovals
+}
+
 // TierValidationError represents a tier-related validation failure.
 type TierValidationError struct {
 	Message string
@@ -236,11 +266,13 @@ func NewTierValidationError(message, code string) *TierValidationError {
 
 // Tier error codes
 const (
-	ErrCodeSystemTierImmutable   = "SYSTEM_TIER_IMMUTABLE"
-	ErrCodeOrgTierEnterprise     = "ORG_TIER_REQUIRES_ENTERPRISE"
-	ErrCodeOrgTierEvaluationOrHigher = "ORG_TIER_REQUIRES_EVALUATION_OR_HIGHER"
-	ErrCodePolicyLimitExceeded       = "POLICY_LIMIT_EXCEEDED"
-	ErrCodeOrgPolicyLimitExceeded = "ORG_POLICY_LIMIT_EXCEEDED"
-	ErrCodeConnectorLimitExceeded = "CONNECTOR_LIMIT_EXCEEDED"
-	ErrCodeLicenseExpired        = "LICENSE_EXPIRED"
+	ErrCodeSystemTierImmutable           = "SYSTEM_TIER_IMMUTABLE"
+	ErrCodeOrgTierEnterprise             = "ORG_TIER_REQUIRES_ENTERPRISE"
+	ErrCodeOrgTierEvaluationOrHigher     = "ORG_TIER_REQUIRES_EVALUATION_OR_HIGHER"
+	ErrCodePolicyLimitExceeded           = "POLICY_LIMIT_EXCEEDED"
+	ErrCodeOrgPolicyLimitExceeded        = "ORG_POLICY_LIMIT_EXCEEDED"
+	ErrCodeConnectorLimitExceeded        = "CONNECTOR_LIMIT_EXCEEDED"
+	ErrCodeLicenseExpired                = "LICENSE_EXPIRED"
+	ErrCodeCostEstimateLimitExceeded     = "COST_ESTIMATE_LIMIT_EXCEEDED"
+	ErrCodePendingApprovalLimitExceeded  = "PENDING_APPROVAL_LIMIT_EXCEEDED"
 )

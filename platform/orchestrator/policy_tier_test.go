@@ -77,6 +77,8 @@ type mockLicenseChecker struct {
 	maxPlans                int
 	maxVersionsPerPlan      int
 	maxSSEConnections       int
+	maxCostEstimatesPerDay  int
+	maxPendingApprovals     int
 }
 
 // newMockLicenseChecker creates a mock license checker with sensible defaults.
@@ -93,6 +95,8 @@ func newMockLicenseChecker(tier license.Tier) *mockLicenseChecker {
 	m.maxPlans = limits.MaxPlans
 	m.maxVersionsPerPlan = limits.MaxVersionsPerPlan
 	m.maxSSEConnections = limits.MaxSSEConnections
+	m.maxCostEstimatesPerDay = limits.MaxCostEstimatesPerDay
+	m.maxPendingApprovals = limits.MaxPendingApprovals
 	return m
 }
 
@@ -142,6 +146,14 @@ func (m *mockLicenseChecker) MaxVersionsPerPlan() int {
 
 func (m *mockLicenseChecker) MaxSSEConnections() int {
 	return m.maxSSEConnections
+}
+
+func (m *mockLicenseChecker) MaxCostEstimatesPerDay() int {
+	return m.maxCostEstimatesPerDay
+}
+
+func (m *mockLicenseChecker) MaxPendingApprovals() int {
+	return m.maxPendingApprovals
 }
 
 func TestTierValidationError_Error(t *testing.T) {

@@ -142,6 +142,11 @@ def main() -> int:
             ExecutionStatusValue.COMPLETED.value == "completed",
             "COMPLETED value correct"
         )
+        # v4.3.0: "expired" is now a valid execution status
+        assert_check(
+            ExecutionStatusValue.EXPIRED.value == "expired",
+            "EXPIRED value correct (v4.3.0)"
+        )
         assert_check(
             StepStatusValue.COMPLETED.is_terminal() is True,
             "is_terminal(completed) returns True"

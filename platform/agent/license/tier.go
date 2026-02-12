@@ -95,6 +95,8 @@ type TierLimits struct {
 	MaxPlans               int `json:"max_plans"`
 	MaxVersionsPerPlan     int `json:"max_versions_per_plan"`
 	MaxSSEConnections      int `json:"max_sse_connections"`
+	MaxCostEstimatesPerDay int `json:"max_cost_estimates_per_day"`
+	MaxPendingApprovals    int `json:"max_pending_approvals"`
 }
 
 // Default tier limits
@@ -110,6 +112,8 @@ var (
 		MaxPlans:               25,
 		MaxVersionsPerPlan:     10,
 		MaxSSEConnections:      5,
+		MaxCostEstimatesPerDay: 10,
+		MaxPendingApprovals:    5,
 	}
 	EvaluationLimits = TierLimits{
 		TenantPolicies:         50,
@@ -122,6 +126,8 @@ var (
 		MaxPlans:               100,
 		MaxVersionsPerPlan:     25,
 		MaxSSEConnections:      25,
+		MaxCostEstimatesPerDay: 100,
+		MaxPendingApprovals:    25,
 	}
 	EnterpriseLimits = TierLimits{
 		TenantPolicies:         -1,   // Unlimited
@@ -134,6 +140,8 @@ var (
 		MaxPlans:               -1,   // Unlimited
 		MaxVersionsPerPlan:     -1,   // Unlimited
 		MaxSSEConnections:      -1,   // Unlimited
+		MaxCostEstimatesPerDay: -1,   // Unlimited
+		MaxPendingApprovals:    -1,   // Unlimited
 	}
 )
 

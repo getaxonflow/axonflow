@@ -1,0 +1,17 @@
+{
+  "name": "workflow-fail-typescript",
+  "version": "1.0.0",
+  "description": "AxonFlow Workflow Fail example - TypeScript",
+  "main": "index.ts",
+  "scripts": {
+    "start": "npx tsx index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^3.3.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

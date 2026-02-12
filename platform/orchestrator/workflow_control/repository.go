@@ -176,7 +176,7 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, workflowID string
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	return nil
@@ -196,7 +196,7 @@ func (r *PostgresRepository) Complete(ctx context.Context, workflowID string) er
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	return nil
@@ -214,7 +214,10 @@ func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reaso
 			metadata = metadata || $4::jsonb
 		WHERE workflow_id = $5
 	`
-	reasonJSON, _ := json.Marshal(map[string]string{"abort_reason": reason})
+	reasonJSON, jsonErr := json.Marshal(map[string]string{"abort_reason": reason})
+	if jsonErr != nil {
+		return fmt.Errorf("marshal abort reason: %w", jsonErr)
+	}
 	result, err := r.db.ExecContext(ctx, query, WorkflowStatusAborted, now, now, string(reasonJSON), workflowID)
 	if err != nil {
 		return err
@@ -225,7 +228,7 @@ func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reaso
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	return nil
@@ -242,7 +245,10 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 			metadata = metadata || $4::jsonb
 		WHERE workflow_id = $5
 	`
-	reasonJSON, _ := json.Marshal(map[string]string{"failure_reason": reason})
+	reasonJSON, jsonErr := json.Marshal(map[string]string{"failure_reason": reason})
+	if jsonErr != nil {
+		return fmt.Errorf("marshal failure reason: %w", jsonErr)
+	}
 	result, err := r.db.ExecContext(ctx, query, WorkflowStatusFailed, now, now, string(reasonJSON), workflowID)
 	if err != nil {
 		return err
@@ -253,7 +259,7 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 		return err
 	}
 	if rows == 0 {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	return nil
@@ -372,6 +378,9 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		workflow.Steps = steps
 
 		workflows = append(workflows, workflow)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate workflow rows: %w", err)
 	}
 
 	return workflows, total, nil
@@ -615,6 +624,9 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 
 		steps = append(steps, step)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate step rows: %w", err)
+	}
 
 	return steps, nil
 }
@@ -674,6 +686,9 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 		}
 
 		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending approval rows: %w", err)
 	}
 
 	return steps, nil

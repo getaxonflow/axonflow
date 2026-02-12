@@ -81,6 +81,10 @@ func getMigrationPaths(basePath string) []string {
 		// Community only runs core migrations
 		log.Println("📦 DEPLOYMENT_MODE=community: Running core migrations only")
 
+	case "evaluation":
+		// Evaluation runs core migrations only (community binary with evaluation license)
+		log.Println("📦 DEPLOYMENT_MODE=evaluation: Running core migrations only (evaluation tier)")
+
 	case "saas":
 		// SaaS runs everything
 		paths = append(paths, filepath.Join(basePath, "enterprise"))

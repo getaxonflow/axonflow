@@ -90,21 +90,13 @@ func (t *MAPExecutionTracker) StartPlanExecution(ctx context.Context, plan *plan
 // GetPlanStatus retrieves the unified execution status for a plan.
 // It combines plan metadata with step-level execution details.
 func (t *MAPExecutionTracker) GetPlanStatus(ctx context.Context, planID string) (*execution.ExecutionStatus, error) {
-	// First, try to find execution by plan_id in metadata
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeMAP),
-		Limit:         100, // Search through recent executions
+	// Direct lookup by plan_id metadata using indexed query (Bug C fix)
+	exec, err := t.BaseExecutionTracker.GetRepo().GetByPlanID(ctx, planID)
+	if err == nil {
+		return t.GetStatus(ctx, exec.ExecutionID)
 	}
-	resp, err := t.ListExecutions(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Search for execution with matching plan_id
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["plan_id"].(string); ok && metadata == planID {
-			return t.GetStatus(ctx, exec.ExecutionID)
-		}
+	if !errors.Is(err, execution.ErrExecutionNotFound) {
+		return nil, fmt.Errorf("plan %s lookup failed: %w", planID, err)
 	}
 
 	// If no unified execution found, fall back to plan service and create a status response
@@ -127,28 +119,17 @@ func (t *MAPExecutionTracker) GetPlanStatus(ctx context.Context, planID string) 
 // SyncPlanStatus updates the unified execution tracker based on plan status changes.
 // This is called when plan status changes through the planning service.
 func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string, planStatus planning.PlanStatus, errorMsg string) error {
-	// Find the execution for this plan
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeMAP),
-		Limit:         100,
-	}
-	resp, err := t.ListExecutions(ctx, req)
+	// Direct lookup by plan_id metadata using indexed query (Bug C fix)
+	exec, err := t.BaseExecutionTracker.GetRepo().GetByPlanID(ctx, planID)
 	if err != nil {
-		return err
-	}
-
-	var executionID string
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["plan_id"].(string); ok && metadata == planID {
-			executionID = exec.ExecutionID
-			break
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			// No unified execution exists for this plan - this is fine for legacy plans
+			return nil
 		}
+		return fmt.Errorf("sync plan %s: %w", planID, err)
 	}
 
-	if executionID == "" {
-		// No unified execution exists for this plan - this is fine for legacy plans
-		return nil
-	}
+	executionID := exec.ExecutionID
 
 	// Update status based on plan status
 	switch planStatus {
@@ -157,9 +138,8 @@ func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string,
 	case planning.PlanStatusFailed:
 		return t.FailExecution(ctx, executionID, fmt.Errorf("%s", errorMsg))
 	case planning.PlanStatusExpired:
-		// Note: We use CompleteExecution but the status is determined by the repo
-		// This could be enhanced to support StatusExpired directly
-		return t.CompleteExecution(ctx, executionID, nil)
+		// Bug D fix: expired plans get "expired" status, not "completed"
+		return t.BaseExecutionTracker.GetRepo().ExpireExecution(ctx, executionID, nil)
 	case planning.PlanStatusCancelled:
 		reason := errorMsg
 		if reason == "" {

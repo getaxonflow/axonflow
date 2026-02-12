@@ -139,6 +139,8 @@ async function main(): Promise<void> {
   console.log(`    - Running: running`);
   console.log(`    - Completed: completed`);
   console.log(`    - Failed: failed`);
+  // v4.3.0: "expired" is now a valid execution status
+  console.log(`    - Expired: expired`);
   console.log();
   console.log('  ExecutionHelpers methods:');
   const isTerminalCompleted = ExecutionHelpers.isTerminal('completed');

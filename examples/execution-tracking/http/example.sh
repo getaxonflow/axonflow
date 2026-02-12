@@ -202,7 +202,8 @@ else
   # Start SSE listener in the background
   SSE_OUTPUT=$(mktemp /tmp/axonflow-sse-XXXXXX)
   curl -s -N "${ORCHESTRATOR_URL}/api/v1/unified/executions/${SSE_WF_ID}/stream" \
-    -H "$AUTH_HEADER" > "$SSE_OUTPUT" 2>&1 &
+    -H "$AUTH_HEADER" \
+    -H "X-Tenant-ID: $CLIENT_ID" > "$SSE_OUTPUT" 2>&1 &
   SSE_PID=$!
 
   # Give the SSE connection time to establish

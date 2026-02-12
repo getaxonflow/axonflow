@@ -6,6 +6,7 @@ package workflow_control
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"testing"
@@ -1512,6 +1513,43 @@ func TestFailWorkflow_NoWebhookWithoutNotifier(t *testing.T) {
 	err := svc.FailWorkflow(ctx, workflow.WorkflowID, "test failure")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// === Bug A: Sentinel Error Wrapping Tests ===
+
+func TestMockRepository_SentinelErrors(t *testing.T) {
+	repo := NewMockRepository()
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{"UpdateStatus", func() error {
+			return repo.UpdateStatus(ctx, "non-existent", WorkflowStatusCompleted)
+		}},
+		{"Complete", func() error {
+			return repo.Complete(ctx, "non-existent")
+		}},
+		{"Abort", func() error {
+			return repo.Abort(ctx, "non-existent", "reason")
+		}},
+		{"Fail", func() error {
+			return repo.Fail(ctx, "non-existent", "reason")
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.fn()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !errors.Is(err, ErrWorkflowNotFound) {
+				t.Errorf("errors.Is(err, ErrWorkflowNotFound) = false, want true; err = %v", err)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.3.0] - 2026-02-13
+
+### Community
+
+#### Fixed
+
+- **WCP error sentinel consistency (Bugs A, I)**: All repository methods (`CompleteWorkflow`, `AbortWorkflow`, `FailWorkflow`, `ResumeWorkflow`) now wrap `ErrWorkflowNotFound` with `%w` instead of creating new errors — `errors.Is(err, ErrWorkflowNotFound)` works correctly across all WCP operations. Added missing `rows.Err()` checks in `List()`, `GetStepsForWorkflow()`, `GetPendingApprovals()`.
+- **MAP execution tracking accuracy (Bugs C, D)**: `SyncPlanStatus` replaced O(n) `ListExecutions` scan with direct `GetExecutionByPlanID()` lookup using new GIN index on `metadata->>'plan_id'`. Expired plans now tracked as `expired` status instead of incorrectly mapping to `completed`.
+- **StepModeEvaluator idempotency (Bug J)**: Step gate evaluation keyed on `(planID, stepIndex)` via `sync.Map` instead of a plain counter — retries return the cached decision instead of advancing the counter.
+- **Connection tracker tenant validation (Bug K)**: SSE connections with missing `X-Tenant-ID` header now return `400 Bad Request` instead of silently falling back to a shared `"default"` bucket.
+- **SyncPlanStatus error visibility (Bug L)**: `SyncPlanStatus` errors logged as warnings instead of silently discarded via `_ =`.
+- **json.Marshal error handling (Bug B)**: Abort and fail reason marshaling errors in WCP repository now propagated instead of suppressed with `_ :=`.
+
+#### Added
+
+- **Cost Estimation Endpoints** (#1072): Pre-execution cost analysis for MAP plans
+  - `POST /api/v1/plans/estimate` — Estimate cost from provider/model/steps specification
+  - `GET /api/v1/plans/{id}/cost` — Get cost estimate for an existing plan
+  - Tiered response: community gets aggregate total only (10/day), evaluation gets per-step breakdown (100/day), enterprise unlimited
+- **WCP Community Approve/Reject**: Basic approval flow via step gates with HITL status endpoint (`GET /api/v1/hitl/status`)
+  - Tiered limits: community max 5 pending approvals, evaluation max 25, enterprise unlimited
+- **Direct Metadata Lookup**: `GetExecutionByPlanID()` and `GetExecutionByMetadata()` methods for efficient execution lookups
+- **Expired Execution Status**: `ExecutionStatusExpired` constant and `ExpireExecution()` method for proper lifecycle tracking
+- **Migration 050**: GIN index on `execution_history.metadata->>'plan_id'`, `expired` enum value for `execution_status`
+- **New examples**: `workflow-fail/`, `cost-estimation/`, `hitl-queue/` across Go, Python, TypeScript, Java, and HTTP
+
+### Enterprise
+
+#### Added
+
+- **MAP-HITL Integration** (#1076): Enterprise HITL approval workflow for MAP plan steps
+  - `POST /api/v1/plans/{id}/steps/{step_id}/approve` and `reject` endpoints
+  - `HITLWorkflowEngine` wired when enterprise license present
+  - Community mode returns 403 for HITL endpoints
+- **HITL Expiration Background Job**: Automatic expiration of stale approval requests
+  - 1-hour ticker interval with configurable schedule
+  - `ExpireRequests()` method in service and repository layers
+  - Graceful shutdown via stop channel
+- **HITL Queue API in SDKs**: All 4 SDKs now include HITL queue methods (list, get, approve, reject, stats)
+- **New enterprise examples**: `ee/examples/hitl-queue/`, `ee/examples/hitl-expiration/`, `ee/examples/map-hitl/`, `ee/examples/cost-estimation-enterprise/`, `ee/examples/tier-limits/`
+
+---
+
 ## [4.2.2] - 2026-02-12
 
 ### Community

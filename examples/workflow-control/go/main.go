@@ -453,25 +453,13 @@ func main() {
 	assert(failWorkflow.WorkflowID != "", "Fail-test workflow created with valid ID")
 	fmt.Printf("   Workflow ID: %s\n", failWorkflow.WorkflowID)
 
-	// Use raw HTTP to call /fail endpoint (SDK method not yet available)
-	failURL := fmt.Sprintf("%s/api/v1/workflows/%s/fail",
-		getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"), failWorkflow.WorkflowID)
-	failReq, _ := http.NewRequest("POST", failURL, strings.NewReader(`{"reason":"LLM provider timeout"}`))
-	failReq.Header.Set("Content-Type", "application/json")
-	failReq.Header.Set("X-Client-ID", getEnv("AXONFLOW_CLIENT_ID", "demo-org"))
-	failReq.Header.Set("X-Client-Secret", getEnv("AXONFLOW_CLIENT_SECRET", ""))
-
-	failResp, failErr := (&http.Client{Timeout: 10 * time.Second}).Do(failReq)
-	if failErr != nil {
-		fmt.Printf("   ERROR: FailWorkflow HTTP request failed: %v\n", failErr)
+	// v4.3.0: Use native SDK FailWorkflow() method
+	err = client.FailWorkflow(failWorkflow.WorkflowID, "LLM provider timeout")
+	if err != nil {
+		fmt.Printf("   ERROR: FailWorkflow failed: %v\n", err)
 		failCount++
 	} else {
-		defer failResp.Body.Close()
-		failBody, _ := io.ReadAll(failResp.Body)
-		assert(failResp.StatusCode == http.StatusOK, fmt.Sprintf("FailWorkflow returns HTTP 200 (got %d)", failResp.StatusCode))
-		assert(strings.Contains(string(failBody), `"failed"`), "FailWorkflow response contains 'failed' status")
-		fmt.Printf("   Status: %d\n", failResp.StatusCode)
-		fmt.Printf("   Body: %s\n", string(failBody))
+		assert(true, "FailWorkflow succeeded")
 	}
 
 	// Verify workflow status is now failed
@@ -558,6 +546,7 @@ func main() {
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-Client-ID", clientID)
 	req.Header.Set("X-Client-Secret", clientSecret)
+	req.Header.Set("X-Tenant-ID", clientID)
 
 	sseClient := &http.Client{Timeout: 30 * time.Second}
 	resp, respErr := sseClient.Do(req)

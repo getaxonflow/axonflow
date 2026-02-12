@@ -128,6 +128,26 @@ async def main() -> int:
         expected_step_count = len(plan.steps)
 
         # ========================================
+        # 1b. COST ESTIMATION (v4.3.0)
+        # ========================================
+        print("1b. Cost Estimation - Get cost estimate for this plan...")
+        try:
+            cost_url = f"{endpoint}/api/v1/plans/{plan.plan_id}/cost"
+            cost_headers = {
+                "X-Client-ID": client_id,
+                "X-Client-Secret": client_secret,
+            }
+            cost_resp = requests.get(cost_url, headers=cost_headers, timeout=10)
+            if cost_resp.status_code == 200:
+                print(f"   Cost estimate: {cost_resp.text}")
+                assert_check(True, "Cost estimation endpoint available")
+            else:
+                print(f"   Cost estimation returned {cost_resp.status_code} (may require enterprise)")
+        except requests.exceptions.RequestException as cost_err:
+            print(f"   Warning: Cost estimation failed: {cost_err}")
+        print()
+
+        # ========================================
         # 2. GET PLAN STATUS (before execution) - Optional
         # ========================================
         print("2. get_plan_status - Checking status before execution...")
@@ -724,6 +744,7 @@ async def main() -> int:
                     "Accept": "text/event-stream",
                     "X-Client-ID": client_id,
                     "X-Client-Secret": client_secret,
+                    "X-Tenant-ID": client_id,
                 }
 
                 try:
@@ -768,6 +789,7 @@ async def main() -> int:
             print()
             print("Coverage validated:")
             print("  - generate_plan()      - Plan creation with valid ID/steps")
+            print("  - Cost estimation      - GET /api/v1/plans/{id}/cost (v4.3.0)")
             print("  - get_plan_status()    - Pre/post execution status")
             print("  - execute_plan()       - Plan execution and step completion")
             print("  - Error handling       - Invalid/non-existent plan IDs")

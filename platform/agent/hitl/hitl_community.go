@@ -15,7 +15,10 @@
 package hitl
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"net/http"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -32,10 +35,21 @@ func NewHandler(service *Service) *Handler {
 }
 
 // RegisterRoutes registers HITL routes with a mux router.
-// Community Edition: Does not register any routes (feature not available).
+// Community Edition: Registers only the status endpoint.
 func (h *Handler) RegisterRoutes(r *mux.Router) {
-	// HITL queue is an Enterprise feature
-	// Routes are registered in enterprise builds
+	r.HandleFunc("/api/v1/hitl/status", h.getStatus).Methods("GET")
+}
+
+// getStatus returns the HITL feature status for community edition.
+func (h *Handler) getStatus(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"enabled": false,
+		"mode":    "community",
+		"message": "HITL queue is an Enterprise feature. Upgrade at https://getaxonflow.com/enterprise",
+	}); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 // Service provides business logic for HITL queue operations.
@@ -57,6 +71,12 @@ func NewService(repo *Repository, config ServiceConfig) *Service {
 // Repository provides data access for HITL approval requests.
 // Community Edition: No-op implementation.
 type Repository struct{}
+
+// ExpireStaleRequests expires stale pending approval requests.
+// Community Edition: No-op, returns 0.
+func (s *Service) ExpireStaleRequests(ctx context.Context) (int, error) {
+	return 0, nil
+}
 
 // NewRepository creates a new HITL repository.
 // Community Edition: Returns a no-op repository.
