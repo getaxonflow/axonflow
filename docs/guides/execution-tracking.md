@@ -103,6 +103,33 @@ The response uses the same unified schema, making it easy to build monitoring da
 | `blocked` | Step was blocked by policy |
 | `approval` | Step is waiting for human approval |
 
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "Execution Lifecycle" as exec {
+        [*] --> pending
+        pending --> running
+        running --> completed
+        running --> failed
+        running --> cancelled
+        running --> aborted
+        running --> expired
+    }
+
+    state "Step Lifecycle" as steps {
+        [*] --> step_pending
+        step_pending --> step_running
+        step_pending --> approval
+        step_running --> step_completed
+        step_running --> step_failed
+        step_running --> step_blocked
+        step_running --> step_skipped
+        approval --> step_running : approved
+        approval --> step_blocked : rejected
+    }
+```
+
 ## Step Types
 
 | Type | Description |
