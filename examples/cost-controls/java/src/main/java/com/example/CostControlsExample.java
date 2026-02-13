@@ -49,8 +49,6 @@ public class CostControlsExample {
         String budgetId = "demo-budget-java-" + Instant.now().getEpochSecond();
         Budget createdBudget = null;
 
-        boolean budgetsAvailable = true;
-
         try {
             // ========================================
             // BUDGET MANAGEMENT
@@ -74,135 +72,124 @@ public class CostControlsExample {
                 assertCheck(createdBudget != null, "Budget created successfully");
                 assertCheck(createdBudget.getId() != null, "Created budget has ID");
             } catch (Exception e) {
-                String msg = e.getMessage() != null ? e.getMessage() : e.toString();
-                if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
-                    System.out.println("   Budget management requires Enterprise license (endpoint returned 404)");
-                    budgetsAvailable = false;
-                } else {
-                    System.out.printf("   ERROR: %s%n", msg);
-                    assertCheck(false, "createBudget failed: " + msg);
-                    return;
-                }
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "createBudget failed: " + e.getMessage());
+                return;
             }
             System.out.println();
 
-            if (budgetsAvailable) {
-                // 2. getBudget
-                System.out.println("2. getBudget - Retrieving budget by ID...");
-                try {
-                    Budget retrievedBudget = client.getBudget(budgetId);
-                    System.out.printf("   Retrieved: %s (scope: %s, period: %s)%n",
-                        retrievedBudget.getId(), retrievedBudget.getScope(), retrievedBudget.getPeriod());
-                    assertCheck(retrievedBudget != null, "getBudget returned a budget");
-                    assertCheck(budgetId.equals(retrievedBudget.getId()), "Retrieved budget ID matches");
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                    assertCheck(false, "getBudget failed: " + e.getMessage());
-                }
-                System.out.println();
-
-                // 3. listBudgets
-                System.out.println("3. listBudgets - Listing all budgets...");
-                try {
-                    BudgetsResponse budgetList = client.listBudgets(ListBudgetsOptions.builder().limit(10).build());
-                    System.out.printf("   Found %d budgets (total: %d)%n", budgetList.getBudgets().size(), budgetList.getTotal());
-                    assertCheck(budgetList != null, "listBudgets returned response");
-                    assertCheck(budgetList.getBudgets() != null, "listBudgets has budgets list");
-                    int count = 0;
-                    for (Budget b : budgetList.getBudgets()) {
-                        if (count++ >= 3) {
-                            System.out.printf("   ... and %d more%n", budgetList.getBudgets().size() - 3);
-                            break;
-                        }
-                        System.out.printf("   - %s: $%.2f/%s%n", b.getId(), b.getLimitUsd(), b.getPeriod());
-                    }
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                    assertCheck(false, "listBudgets failed: " + e.getMessage());
-                }
-                System.out.println();
-
-                // 4. updateBudget
-                System.out.println("4. updateBudget - Updating budget limit...");
-                try {
-                    UpdateBudgetRequest updateRequest = UpdateBudgetRequest.builder()
-                        .name("Demo Budget (Java SDK) - Updated")
-                        .limitUsd(150.0)
-                        .build();
-                    Budget updatedBudget = client.updateBudget(budgetId, updateRequest);
-                    System.out.printf("   Updated: %s (new limit: $%.2f)%n", updatedBudget.getId(), updatedBudget.getLimitUsd());
-                    assertCheck(updatedBudget != null, "updateBudget returned updated budget");
-                    assertCheck(updatedBudget.getLimitUsd() == 150.0, "Budget limit updated to $150");
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                    assertCheck(false, "updateBudget failed: " + e.getMessage());
-                }
-                System.out.println();
-
-                // ========================================
-                // BUDGET STATUS & ALERTS
-                // ========================================
-
-                // 5. getBudgetStatus
-                System.out.println("5. getBudgetStatus - Checking current budget status...");
-                try {
-                    BudgetStatus status = client.getBudgetStatus(budgetId);
-                    System.out.printf("   Used: $%.2f / $%.2f (%.1f%%)%n",
-                        status.getUsedUsd(), status.getBudget().getLimitUsd(), status.getPercentage());
-                    System.out.printf("   Remaining: $%.2f%n", status.getRemainingUsd());
-                    System.out.printf("   Exceeded: %s, Blocked: %s%n", status.isExceeded(), status.isBlocked());
-                    assertCheck(status != null, "getBudgetStatus returned status");
-                    assertCheck(status.getBudget() != null, "Budget status contains budget details");
-                    assertCheck(status.getPercentage() >= 0, "Budget percentage is non-negative");
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                    assertCheck(false, "getBudgetStatus failed: " + e.getMessage());
-                }
-                System.out.println();
-
-                // 6. getBudgetAlerts
-                System.out.println("6. getBudgetAlerts - Getting alerts for budget...");
-                try {
-                    BudgetAlertsResponse alertsResponse = client.getBudgetAlerts(budgetId);
-                    System.out.printf("   Found %d alerts%n", alertsResponse.getCount());
-                    if (alertsResponse.getAlerts() != null) {
-                        for (BudgetAlert a : alertsResponse.getAlerts()) {
-                            System.out.printf("   - [%s] %s (%.1f%% at $%.2f)%n",
-                                a.getAlertType(), a.getMessage(), a.getPercentageReached(), a.getAmountUsd());
-                        }
-                    }
-                    if (alertsResponse.getCount() == 0) {
-                        System.out.println("   (no alerts yet)");
-                    }
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                }
-                System.out.println();
-
-                // 7. checkBudget
-                System.out.println("7. checkBudget - Pre-flight budget check...");
-                try {
-                    BudgetCheckRequest checkRequest = BudgetCheckRequest.builder()
-                        .orgId("demo-org")
-                        .build();
-                    BudgetDecision decision = client.checkBudget(checkRequest);
-                    System.out.printf("   Allowed: %s%n", decision.isAllowed());
-                    if (decision.getAction() != null) {
-                        System.out.printf("   Action: %s%n", decision.getAction());
-                    }
-                    if (decision.getMessage() != null) {
-                        System.out.printf("   Message: %s%n", decision.getMessage());
-                    }
-                    assertCheck(decision != null, "checkBudget returned decision");
-                } catch (Exception e) {
-                    System.out.printf("   ERROR: %s%n", e.getMessage());
-                    assertCheck(false, "checkBudget failed: " + e.getMessage());
-                }
-                System.out.println();
-            } else {
-                System.out.println("2-7. Skipping budget operations (requires Enterprise license)");
-                System.out.println();
+            // 2. getBudget
+            System.out.println("2. getBudget - Retrieving budget by ID...");
+            try {
+                Budget retrievedBudget = client.getBudget(budgetId);
+                System.out.printf("   Retrieved: %s (scope: %s, period: %s)%n",
+                    retrievedBudget.getId(), retrievedBudget.getScope(), retrievedBudget.getPeriod());
+                assertCheck(retrievedBudget != null, "getBudget returned a budget");
+                assertCheck(budgetId.equals(retrievedBudget.getId()), "Retrieved budget ID matches");
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "getBudget failed: " + e.getMessage());
             }
+            System.out.println();
+
+            // 3. listBudgets
+            System.out.println("3. listBudgets - Listing all budgets...");
+            try {
+                BudgetsResponse budgetList = client.listBudgets(ListBudgetsOptions.builder().limit(10).build());
+                System.out.printf("   Found %d budgets (total: %d)%n", budgetList.getBudgets().size(), budgetList.getTotal());
+                assertCheck(budgetList != null, "listBudgets returned response");
+                assertCheck(budgetList.getBudgets() != null, "listBudgets has budgets list");
+                int count = 0;
+                for (Budget b : budgetList.getBudgets()) {
+                    if (count++ >= 3) {
+                        System.out.printf("   ... and %d more%n", budgetList.getBudgets().size() - 3);
+                        break;
+                    }
+                    System.out.printf("   - %s: $%.2f/%s%n", b.getId(), b.getLimitUsd(), b.getPeriod());
+                }
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "listBudgets failed: " + e.getMessage());
+            }
+            System.out.println();
+
+            // 4. updateBudget
+            System.out.println("4. updateBudget - Updating budget limit...");
+            try {
+                UpdateBudgetRequest updateRequest = UpdateBudgetRequest.builder()
+                    .name("Demo Budget (Java SDK) - Updated")
+                    .limitUsd(150.0)
+                    .build();
+                Budget updatedBudget = client.updateBudget(budgetId, updateRequest);
+                System.out.printf("   Updated: %s (new limit: $%.2f)%n", updatedBudget.getId(), updatedBudget.getLimitUsd());
+                assertCheck(updatedBudget != null, "updateBudget returned updated budget");
+                assertCheck(updatedBudget.getLimitUsd() == 150.0, "Budget limit updated to $150");
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "updateBudget failed: " + e.getMessage());
+            }
+            System.out.println();
+
+            // ========================================
+            // BUDGET STATUS & ALERTS
+            // ========================================
+
+            // 5. getBudgetStatus
+            System.out.println("5. getBudgetStatus - Checking current budget status...");
+            try {
+                BudgetStatus status = client.getBudgetStatus(budgetId);
+                System.out.printf("   Used: $%.2f / $%.2f (%.1f%%)%n",
+                    status.getUsedUsd(), status.getBudget().getLimitUsd(), status.getPercentage());
+                System.out.printf("   Remaining: $%.2f%n", status.getRemainingUsd());
+                System.out.printf("   Exceeded: %s, Blocked: %s%n", status.isExceeded(), status.isBlocked());
+                assertCheck(status != null, "getBudgetStatus returned status");
+                assertCheck(status.getBudget() != null, "Budget status contains budget details");
+                assertCheck(status.getPercentage() >= 0, "Budget percentage is non-negative");
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "getBudgetStatus failed: " + e.getMessage());
+            }
+            System.out.println();
+
+            // 6. getBudgetAlerts
+            System.out.println("6. getBudgetAlerts - Getting alerts for budget...");
+            try {
+                BudgetAlertsResponse alertsResponse = client.getBudgetAlerts(budgetId);
+                System.out.printf("   Found %d alerts%n", alertsResponse.getCount());
+                if (alertsResponse.getAlerts() != null) {
+                    for (BudgetAlert a : alertsResponse.getAlerts()) {
+                        System.out.printf("   - [%s] %s (%.1f%% at $%.2f)%n",
+                            a.getAlertType(), a.getMessage(), a.getPercentageReached(), a.getAmountUsd());
+                    }
+                }
+                if (alertsResponse.getCount() == 0) {
+                    System.out.println("   (no alerts yet)");
+                }
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+            }
+            System.out.println();
+
+            // 7. checkBudget
+            System.out.println("7. checkBudget - Pre-flight budget check...");
+            try {
+                BudgetCheckRequest checkRequest = BudgetCheckRequest.builder()
+                    .orgId("demo-org")
+                    .build();
+                BudgetDecision decision = client.checkBudget(checkRequest);
+                System.out.printf("   Allowed: %s%n", decision.isAllowed());
+                if (decision.getAction() != null) {
+                    System.out.printf("   Action: %s%n", decision.getAction());
+                }
+                if (decision.getMessage() != null) {
+                    System.out.printf("   Message: %s%n", decision.getMessage());
+                }
+                assertCheck(decision != null, "checkBudget returned decision");
+            } catch (Exception e) {
+                System.out.printf("   ERROR: %s%n", e.getMessage());
+                assertCheck(false, "checkBudget failed: " + e.getMessage());
+            }
+            System.out.println();
 
             // ========================================
             // USAGE TRACKING
@@ -239,12 +226,7 @@ public class CostControlsExample {
                     System.out.println("   (no usage data yet)");
                 }
             } catch (Exception e) {
-                String msg = e.getMessage() != null ? e.getMessage() : e.toString();
-                if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
-                    System.out.println("   Usage breakdown requires Enterprise license (endpoint returned 404)");
-                } else {
-                    System.out.printf("   ERROR: %s%n", msg);
-                }
+                System.out.printf("   ERROR: %s%n", e.getMessage());
             }
             System.out.println();
 
@@ -264,12 +246,7 @@ public class CostControlsExample {
                     System.out.println("   (no usage records yet)");
                 }
             } catch (Exception e) {
-                String msg = e.getMessage() != null ? e.getMessage() : e.toString();
-                if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
-                    System.out.println("   Usage records requires Enterprise license (endpoint returned 404)");
-                } else {
-                    System.out.printf("   ERROR: %s%n", msg);
-                }
+                System.out.printf("   ERROR: %s%n", e.getMessage());
             }
             System.out.println();
 
@@ -299,15 +276,11 @@ public class CostControlsExample {
 
             // 12. deleteBudget
             System.out.println("12. deleteBudget - Cleaning up...");
-            if (budgetsAvailable) {
-                try {
-                    client.deleteBudget(budgetId);
-                    System.out.printf("   Deleted budget: %s%n", budgetId);
-                } catch (Exception e) {
-                    System.out.printf("   WARNING: Failed to delete budget: %s%n", e.getMessage());
-                }
-            } else {
-                System.out.println("   Skipped (budget was not created)");
+            try {
+                client.deleteBudget(budgetId);
+                System.out.printf("   Deleted budget: %s%n", budgetId);
+            } catch (Exception e) {
+                System.out.printf("   WARNING: Failed to delete budget: %s%n", e.getMessage());
             }
             System.out.println();
 

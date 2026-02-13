@@ -208,9 +208,7 @@ async function main() {
     });
     const hasMore = paginatedLogs.total > paginatedLogs.offset + paginatedLogs.entries.length;
     console.log(`   Found ${paginatedLogs.entries.length} entries (hasMore: ${hasMore})`);
-    // Note: The audit API may return more results than the requested limit;
-    // the limit parameter is advisory and not strictly enforced server-side.
-    assertCheck(paginatedLogs.entries.length > 0, "Pagination returns audit entries");
+    assertCheck(paginatedLogs.entries.length <= 5, "Pagination respects limit parameter");
     assertCheck(typeof paginatedLogs.total === "number", "Pagination response includes total count");
   } catch (error) {
     console.log(`   Error: ${error instanceof Error ? error.message : error}`);

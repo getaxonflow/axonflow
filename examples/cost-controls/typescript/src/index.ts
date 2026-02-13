@@ -57,7 +57,6 @@ async function main() {
   // 1. createBudget
   console.log("1. createBudget - Creating a monthly budget...");
   let createdBudget: Budget | null = null;
-  let budgetsAvailable = true;
   try {
     const request: CreateBudgetRequest = {
       id: budgetId,
@@ -75,131 +74,120 @@ async function main() {
     assertCheck(createdBudget.period === "monthly", `Budget period is monthly (got: ${createdBudget.period})`);
     assertCheck(createdBudget.scope === "organization", `Budget scope is organization (got: ${createdBudget.scope})`);
   } catch (error) {
-    const errStr = String(error);
-    if (errStr.includes("404") || errStr.toLowerCase().includes("not found")) {
-      console.log("   Budget management requires Enterprise license (endpoint returned 404)");
-      budgetsAvailable = false;
-    } else {
-      console.log(`   ERROR: ${error}`);
-      failures.push("createBudget failed");
-      return;
-    }
+    console.log(`   ERROR: ${error}`);
+    failures.push("createBudget failed");
+    return;
   }
   console.log();
 
-  if (budgetsAvailable) {
-    // 2. getBudget
-    console.log("2. getBudget - Retrieving budget by ID...");
-    try {
-      const retrievedBudget = await client.getBudget(budgetId);
-      console.log(`   Retrieved: ${retrievedBudget.id} (scope: ${retrievedBudget.scope}, period: ${retrievedBudget.period})`);
-      assertCheck(retrievedBudget.id === budgetId, `Retrieved budget ID matches (expected: ${budgetId})`);
-      assertCheck(retrievedBudget.name === "Demo Budget (TypeScript SDK)", "Retrieved budget name matches");
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-      failures.push("getBudget failed");
-    }
-    console.log();
-
-    // 3. listBudgets
-    console.log("3. listBudgets - Listing all budgets...");
-    try {
-      const options: ListBudgetsOptions = { limit: 10 };
-      const budgetList = await client.listBudgets(options);
-      console.log(`   Found ${budgetList.budgets.length} budgets (total: ${budgetList.total})`);
-      budgetList.budgets.slice(0, 3).forEach((b) => {
-        console.log(`   - ${b.id}: $${b.limitUsd.toFixed(2)}/${b.period}`);
-      });
-      if (budgetList.budgets.length > 3) {
-        console.log(`   ... and ${budgetList.budgets.length - 3} more`);
-      }
-      assertCheck(Array.isArray(budgetList.budgets), "Budgets response is an array");
-      assertCheck(budgetList.budgets.length >= 1, `At least 1 budget exists (got ${budgetList.budgets.length})`);
-      const ourBudget = budgetList.budgets.find((b) => b.id === budgetId);
-      assertCheck(ourBudget !== undefined, `Created budget ${budgetId} is in the list`);
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-      failures.push("listBudgets failed");
-    }
-    console.log();
-
-    // 4. updateBudget
-    console.log("4. updateBudget - Updating budget limit...");
-    try {
-      const updateRequest: UpdateBudgetRequest = {
-        name: "Demo Budget (TypeScript SDK) - Updated",
-        limitUsd: 150.0,
-      };
-      const updatedBudget = await client.updateBudget(budgetId, updateRequest);
-      console.log(`   Updated: ${updatedBudget.id} (new limit: $${updatedBudget.limitUsd.toFixed(2)})`);
-      assertCheck(updatedBudget.limitUsd === 150.0, `Updated limit is $150.00 (got: ${updatedBudget.limitUsd})`);
-      assertCheck(updatedBudget.name === "Demo Budget (TypeScript SDK) - Updated", "Updated name matches");
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-      failures.push("updateBudget failed");
-    }
-    console.log();
-
-    // ========================================
-    // BUDGET STATUS & ALERTS
-    // ========================================
-
-    // 5. getBudgetStatus
-    console.log("5. getBudgetStatus - Checking current budget status...");
-    try {
-      const status = await client.getBudgetStatus(budgetId);
-      console.log(`   Used: $${status.usedUsd.toFixed(2)} / $${status.budget.limitUsd.toFixed(2)} (${status.percentage.toFixed(1)}%)`);
-      console.log(`   Remaining: $${status.remainingUsd.toFixed(2)}`);
-      console.log(`   Exceeded: ${status.isExceeded}, Blocked: ${status.isBlocked}`);
-      assertCheck(status.budget !== undefined, "Budget status contains budget object");
-      assertCheck(status.budget.limitUsd === 150.0, `Budget limit is $150.00 (got: ${status.budget.limitUsd})`);
-      assertCheck(typeof status.usedUsd === "number", "usedUsd is a number");
-      assertCheck(typeof status.percentage === "number", "percentage is a number");
-      assertCheck(status.remainingUsd >= 0, `remainingUsd is non-negative (got: ${status.remainingUsd})`);
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-      failures.push("getBudgetStatus failed");
-    }
-    console.log();
-
-    // 6. getBudgetAlerts
-    console.log("6. getBudgetAlerts - Getting alerts for budget...");
-    try {
-      const alertsResponse = await client.getBudgetAlerts(budgetId);
-      console.log(`   Found ${alertsResponse.count} alerts`);
-      alertsResponse.alerts.forEach((a) => {
-        console.log(`   - [${a.alertType}] ${a.message} (${a.percentageReached.toFixed(1)}% at $${a.amountUsd.toFixed(2)})`);
-      });
-      if (alertsResponse.count === 0) {
-        console.log("   (no alerts yet)");
-      }
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-    }
-    console.log();
-
-    // 7. checkBudget
-    console.log("7. checkBudget - Pre-flight budget check...");
-    try {
-      const checkRequest: BudgetCheckRequest = { orgId: "demo-org" };
-      const decision = await client.checkBudget(checkRequest);
-      console.log(`   Allowed: ${decision.allowed}`);
-      if (decision.action) {
-        console.log(`   Action: ${decision.action}`);
-      }
-      if (decision.message) {
-        console.log(`   Message: ${decision.message}`);
-      }
-      assertCheck(typeof decision.allowed === "boolean", "checkBudget returns allowed boolean");
-    } catch (error) {
-      console.log(`   ERROR: ${error}`);
-      failures.push("checkBudget failed");
-    }
-    console.log();
-  } else {
-    console.log("2-7. Skipping budget operations (requires Enterprise license)");
-    console.log();
+  // 2. getBudget
+  console.log("2. getBudget - Retrieving budget by ID...");
+  try {
+    const retrievedBudget = await client.getBudget(budgetId);
+    console.log(`   Retrieved: ${retrievedBudget.id} (scope: ${retrievedBudget.scope}, period: ${retrievedBudget.period})`);
+    assertCheck(retrievedBudget.id === budgetId, `Retrieved budget ID matches (expected: ${budgetId})`);
+    assertCheck(retrievedBudget.name === "Demo Budget (TypeScript SDK)", "Retrieved budget name matches");
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+    failures.push("getBudget failed");
   }
+  console.log();
+
+  // 3. listBudgets
+  console.log("3. listBudgets - Listing all budgets...");
+  try {
+    const options: ListBudgetsOptions = { limit: 10 };
+    const budgetList = await client.listBudgets(options);
+    console.log(`   Found ${budgetList.budgets.length} budgets (total: ${budgetList.total})`);
+    budgetList.budgets.slice(0, 3).forEach((b) => {
+      console.log(`   - ${b.id}: $${b.limitUsd.toFixed(2)}/${b.period}`);
+    });
+    if (budgetList.budgets.length > 3) {
+      console.log(`   ... and ${budgetList.budgets.length - 3} more`);
+    }
+    assertCheck(Array.isArray(budgetList.budgets), "Budgets response is an array");
+    assertCheck(budgetList.budgets.length >= 1, `At least 1 budget exists (got ${budgetList.budgets.length})`);
+    const ourBudget = budgetList.budgets.find((b) => b.id === budgetId);
+    assertCheck(ourBudget !== undefined, `Created budget ${budgetId} is in the list`);
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+    failures.push("listBudgets failed");
+  }
+  console.log();
+
+  // 4. updateBudget
+  console.log("4. updateBudget - Updating budget limit...");
+  try {
+    const updateRequest: UpdateBudgetRequest = {
+      name: "Demo Budget (TypeScript SDK) - Updated",
+      limitUsd: 150.0,
+    };
+    const updatedBudget = await client.updateBudget(budgetId, updateRequest);
+    console.log(`   Updated: ${updatedBudget.id} (new limit: $${updatedBudget.limitUsd.toFixed(2)})`);
+    assertCheck(updatedBudget.limitUsd === 150.0, `Updated limit is $150.00 (got: ${updatedBudget.limitUsd})`);
+    assertCheck(updatedBudget.name === "Demo Budget (TypeScript SDK) - Updated", "Updated name matches");
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+    failures.push("updateBudget failed");
+  }
+  console.log();
+
+  // ========================================
+  // BUDGET STATUS & ALERTS
+  // ========================================
+
+  // 5. getBudgetStatus
+  console.log("5. getBudgetStatus - Checking current budget status...");
+  try {
+    const status = await client.getBudgetStatus(budgetId);
+    console.log(`   Used: $${status.usedUsd.toFixed(2)} / $${status.budget.limitUsd.toFixed(2)} (${status.percentage.toFixed(1)}%)`);
+    console.log(`   Remaining: $${status.remainingUsd.toFixed(2)}`);
+    console.log(`   Exceeded: ${status.isExceeded}, Blocked: ${status.isBlocked}`);
+    assertCheck(status.budget !== undefined, "Budget status contains budget object");
+    assertCheck(status.budget.limitUsd === 150.0, `Budget limit is $150.00 (got: ${status.budget.limitUsd})`);
+    assertCheck(typeof status.usedUsd === "number", "usedUsd is a number");
+    assertCheck(typeof status.percentage === "number", "percentage is a number");
+    assertCheck(status.remainingUsd >= 0, `remainingUsd is non-negative (got: ${status.remainingUsd})`);
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+    failures.push("getBudgetStatus failed");
+  }
+  console.log();
+
+  // 6. getBudgetAlerts
+  console.log("6. getBudgetAlerts - Getting alerts for budget...");
+  try {
+    const alertsResponse = await client.getBudgetAlerts(budgetId);
+    console.log(`   Found ${alertsResponse.count} alerts`);
+    alertsResponse.alerts.forEach((a) => {
+      console.log(`   - [${a.alertType}] ${a.message} (${a.percentageReached.toFixed(1)}% at $${a.amountUsd.toFixed(2)})`);
+    });
+    if (alertsResponse.count === 0) {
+      console.log("   (no alerts yet)");
+    }
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+  }
+  console.log();
+
+  // 7. checkBudget
+  console.log("7. checkBudget - Pre-flight budget check...");
+  try {
+    const checkRequest: BudgetCheckRequest = { orgId: "demo-org" };
+    const decision = await client.checkBudget(checkRequest);
+    console.log(`   Allowed: ${decision.allowed}`);
+    if (decision.action) {
+      console.log(`   Action: ${decision.action}`);
+    }
+    if (decision.message) {
+      console.log(`   Message: ${decision.message}`);
+    }
+    assertCheck(typeof decision.allowed === "boolean", "checkBudget returns allowed boolean");
+  } catch (error) {
+    console.log(`   ERROR: ${error}`);
+    failures.push("checkBudget failed");
+  }
+  console.log();
 
   // ========================================
   // USAGE TRACKING
@@ -238,13 +226,8 @@ async function main() {
     assertCheck(Array.isArray(breakdown.items), "Breakdown items is an array");
     assertCheck(typeof breakdown.totalCostUsd === "number", "totalCostUsd is a number");
   } catch (error) {
-    const errMsg = String(error);
-    if (errMsg.includes("404") || errMsg.toLowerCase().includes("not found")) {
-      console.log("   Usage breakdown requires Enterprise license (endpoint returned 404)");
-    } else {
-      console.log(`   ERROR: ${error}`);
-      failures.push("getUsageBreakdown failed");
-    }
+    console.log(`   ERROR: ${error}`);
+    failures.push("getUsageBreakdown failed");
   }
   console.log();
 
@@ -263,13 +246,8 @@ async function main() {
     assertCheck(Array.isArray(recordsResponse.records), "Records response is an array");
     assertCheck(typeof recordsResponse.total === "number", "Total is a number");
   } catch (error) {
-    const errMsg = String(error);
-    if (errMsg.includes("404") || errMsg.toLowerCase().includes("not found")) {
-      console.log("   Usage records requires Enterprise license (endpoint returned 404)");
-    } else {
-      console.log(`   ERROR: ${error}`);
-      failures.push("listUsageRecords failed");
-    }
+    console.log(`   ERROR: ${error}`);
+    failures.push("listUsageRecords failed");
   }
   console.log();
 
@@ -299,23 +277,19 @@ async function main() {
 
   // 12. deleteBudget
   console.log("12. deleteBudget - Cleaning up...");
-  if (budgetsAvailable) {
+  try {
+    await client.deleteBudget(budgetId);
+    console.log(`   Deleted budget: ${budgetId}`);
+    // Verify deletion
     try {
-      await client.deleteBudget(budgetId);
-      console.log(`   Deleted budget: ${budgetId}`);
-      // Verify deletion
-      try {
-        await client.getBudget(budgetId);
-        failures.push("deleteBudget: Budget still exists after deletion");
-      } catch {
-        assertCheck(true, "Budget successfully deleted (not found on lookup)");
-      }
-    } catch (error) {
-      console.log(`   WARNING: Failed to delete budget: ${error}`);
-      failures.push("deleteBudget failed");
+      await client.getBudget(budgetId);
+      failures.push("deleteBudget: Budget still exists after deletion");
+    } catch {
+      assertCheck(true, "Budget successfully deleted (not found on lookup)");
     }
-  } else {
-    console.log("   Skipped (budget was not created)");
+  } catch (error) {
+    console.log(`   WARNING: Failed to delete budget: ${error}`);
+    failures.push("deleteBudget failed");
   }
   console.log();
 

@@ -88,7 +88,7 @@ def main() -> int:
         assert_check(False, "SQL injection should be blocked")
     except PolicyViolationError as e:
         assert_check(True, "SQL injection was blocked")
-        assert_check("sql" in str(e).lower() or "blocked" in str(e).lower() or "drop" in str(e).lower(), "Block reason mentions SQL/blocked/drop")
+        assert_check("sql" in str(e).lower() or "blocked" in str(e).lower(), "Block reason mentions SQL/blocked")
     except Exception as e:
         if "api_key" in str(e).lower():
             # Interceptor didn't block, but API failed - that's OK for this test

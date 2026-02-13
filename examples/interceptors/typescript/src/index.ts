@@ -161,36 +161,6 @@ async function runTest(
   console.log();
 }
 
-async function runPIITest(
-  governedClient: GovernedOpenAI,
-  query: string,
-  description: string
-): Promise<void> {
-  console.log(`${description}`);
-  console.log("-".repeat(40));
-  console.log(`Query: ${query}`);
-
-  try {
-    const response = await governedClient.createChatCompletion([
-      { role: "user", content: query },
-    ]);
-
-    console.log("Status: APPROVED");
-    console.log(`Response: ${response.choices[0]?.message?.content}`);
-    assertCheck(true, `${description} - Processed (approved with redaction)`);
-  } catch (error) {
-    if (error instanceof PolicyViolationError) {
-      console.log("Status: BLOCKED");
-      console.log(`Reason: ${error.message}`);
-      assertCheck(true, `${description} - Processed (blocked)`);
-    } else {
-      console.log(`Error: ${error instanceof Error ? error.message : error}`);
-      console.log("   Note: This may be an environment/connectivity issue");
-    }
-  }
-  console.log();
-}
-
 async function main() {
   console.log("AxonFlow LLM Interceptor Example - TypeScript");
   console.log("=".repeat(60));
@@ -211,13 +181,12 @@ async function main() {
     false // expectBlocked
   );
 
-  // Example 2: Query with PII (may be blocked OR approved with redaction)
-  // Default policies use PII_ACTION=redact, so the query may be approved
-  // with PII redacted rather than blocked outright
-  await runPIITest(
+  // Example 2: Query with PII (should be blocked)
+  await runTest(
     governedClient,
     "Process refund for SSN 123-45-6789",
-    "Example 2: Query with PII"
+    "Example 2: Query with PII",
+    true // expectBlocked
   );
 
   // Example 3: SQL injection attempt (should be blocked)
@@ -234,7 +203,7 @@ async function main() {
     console.log();
     console.log("LLM Interceptor validated:");
     console.log("  - Safe queries: APPROVED");
-    console.log("  - PII in queries: BLOCKED or APPROVED (with redaction)");
+    console.log("  - PII in queries: BLOCKED");
     console.log("  - SQL injection: BLOCKED");
   } else {
     console.log(`${failures.length} TEST(S) FAILED:`);
