@@ -76,7 +76,7 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 #### SSE Streaming
 | Method | Description | Status |
 |--------|-------------|--------|
-| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.3.1) |
+| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.4.0) |
 
 #### Webhook Management
 | Method | Description | Status |

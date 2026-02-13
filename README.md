@@ -190,7 +190,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
 
-> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
+> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
 
 **Workflow Control Plane (WCP)** — Govern long-running, multi-step AI workflows with step-level gate checks, a durable step ledger, cancellation, and SSE streaming. WCP works with any orchestration framework — your code controls execution, AxonFlow controls governance and visibility.
 
@@ -293,7 +293,9 @@ AxonFlow offers three tiers. Evaluation and Community use the same core features
 | Concurrent executions | 5 | 25 | Unlimited |
 | Pending execution approvals | 5 | 25 | Unlimited |
 
-Also includes higher limits for LLM providers and MAP planning. Full matrix in docs.
+Concurrent executions applies to MAP and WCP executions per tenant. Pending execution approvals applies to MAP confirm/step mode and WCP approval queues.
+
+[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)
 
 ### Stay on Community if:
 - Single team prototyping AI features
@@ -327,7 +329,7 @@ Also includes higher limits for LLM providers and MAP planning. Full matrix in d
 - Priority support with SLA
 - Customer Portal UI for runtime management
 
-See the full **[Community vs Evaluation vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise)**
+See the full **[Community vs Evaluation vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
 *(designed for security reviews, procurement, and platform evaluations)*
 
 **Enterprise:** [AWS Marketplace](https://aws.amazon.com/marketplace) or [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
@@ -347,7 +349,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.3.1</version>
+    <version>3.4.0</version>
 </dependency>
 ```
 
