@@ -291,7 +291,7 @@ AxonFlow offers three tiers. Evaluation and Community use the same core features
 | Org-wide policies | 0 | 5 | Unlimited |
 | Audit retention | 3 days | 14 days | 3650 days |
 | Concurrent executions | 5 | 25 | Unlimited |
-| Execution history | 50 | 500 | Unlimited |
+| Pending execution approvals | 5 | 25 | Unlimited |
 
 Also includes higher limits for LLM providers and MAP planning. Full matrix in docs.
 
