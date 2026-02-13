@@ -7,7 +7,7 @@
     "test": "npx ts-node test_tier_limits.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^3.3.1"
+    "@axonflow/sdk": "^3.4.0"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",

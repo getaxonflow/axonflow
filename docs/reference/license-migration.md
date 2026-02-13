@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.2.0
+**Platform Version:** v4.3.0
 
 This guide explains how to migrate from the removed V1 license format to the current V2 format.
 
@@ -172,7 +172,7 @@ Contact us for a V2 license:
 | Professional | 10 | Unlimited | 500,000 | $20,000/month |
 | Enterprise | Unlimited | Unlimited | Unlimited | Contact Sales |
 
-> **Note:** The Pilot tier has been replaced by the Evaluation tier as of Platform v4.2.0. Existing Pilot and Basic licenses are automatically mapped to Evaluation tier during V2 migration. The Community Edition (source-available under BSL 1.1) is free for non-production use.
+> **Note:** The Pilot tier has been replaced by the Evaluation tier as of Platform v4.3.0. Existing Pilot and Basic licenses are automatically mapped to Evaluation tier during V2 migration. The Community Edition (source-available under BSL 1.1) is free for non-production use.
 
 ## FAQ
 
