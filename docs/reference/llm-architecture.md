@@ -49,6 +49,30 @@ AxonFlow's LLM provider system is designed to be pluggable, extensible, and ente
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+```mermaid
+flowchart TD
+    A[Request]:::entry --> B[Router]
+    B --> C[Weighted Load Balancer\n+ Metrics Tracking]
+    C --> D[Registry]
+    D --> E{Provider\nAvailable?}
+    E -->|Yes| F{License\nCheck}
+    E -->|No| G[Failover to\nNext Provider]:::warning
+    F -->|Community| H[OpenAI / Anthropic\n/ Gemini / Ollama]:::success
+    F -->|Enterprise| I[Bedrock / Custom]:::pending
+    F -->|License\nRequired| J[License Error\n402]:::reject
+    H --> K{Health\nCheck}
+    I --> K
+    K -->|Healthy| L[Route Request]:::success
+    K -->|Unhealthy| G
+    G --> E
+
+    classDef entry fill:#e1f5fe,stroke:#0288d1
+    classDef success fill:#c8e6c9,stroke:#388e3c
+    classDef reject fill:#ffcdd2,stroke:#d32f2f
+    classDef warning fill:#ffe0b2,stroke:#ef6c00
+    classDef pending fill:#fff9c4,stroke:#f9a825
+```
+
 ## Bootstrap System
 
 The bootstrap system initializes LLM providers from environment variables at startup, ensuring backward compatibility with existing deployments.
