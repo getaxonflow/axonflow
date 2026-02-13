@@ -14,10 +14,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
 )
+
+func isNotFoundError(err error) bool {
+	return strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found")
+}
 
 var failures []string
 
@@ -52,6 +57,7 @@ func main() {
 
 	// 1. CreateBudget
 	fmt.Println("1. CreateBudget - Creating a monthly budget...")
+	budgetsAvailable := true
 	createdBudget, err := client.CreateBudget(ctx, axonflow.CreateBudgetRequest{
 		ID:              budgetID,
 		Name:            "Demo Budget (Go SDK)",
@@ -62,114 +68,126 @@ func main() {
 		AlertThresholds: []int{50, 80, 100},
 	})
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "CreateBudget succeeded")
-		return
-	}
-	assertCheck(createdBudget != nil, "Budget created successfully")
-	assertCheck(createdBudget.ID == budgetID, "Budget ID matches requested ID")
-	assertCheck(createdBudget.LimitUSD == 100.0, "Budget limit is correct")
-	fmt.Printf("   Created: %s (limit: $%.2f/month)\n\n", createdBudget.ID, createdBudget.LimitUSD)
-
-	// 2. GetBudget
-	fmt.Println("2. GetBudget - Retrieving budget by ID...")
-	retrievedBudget, err := client.GetBudget(ctx, budgetID)
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "GetBudget succeeded")
+		if isNotFoundError(err) {
+			fmt.Println("   Budget management requires Enterprise license (endpoint returned 404)")
+			budgetsAvailable = false
+		} else {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "CreateBudget succeeded")
+			return
+		}
 	} else {
-		assertCheck(retrievedBudget.ID == budgetID, "Retrieved budget ID matches")
-		assertCheck(retrievedBudget.Scope == "organization", "Retrieved budget scope is correct")
-		fmt.Printf("   Retrieved: %s (scope: %s, period: %s)\n\n", retrievedBudget.ID, retrievedBudget.Scope, retrievedBudget.Period)
+		assertCheck(createdBudget != nil, "Budget created successfully")
+		assertCheck(createdBudget.ID == budgetID, "Budget ID matches requested ID")
+		assertCheck(createdBudget.LimitUSD == 100.0, "Budget limit is correct")
+		fmt.Printf("   Created: %s (limit: $%.2f/month)\n", createdBudget.ID, createdBudget.LimitUSD)
 	}
+	fmt.Println()
 
-	// 3. ListBudgets
-	fmt.Println("3. ListBudgets - Listing all budgets...")
-	budgetList, err := client.ListBudgets(ctx, axonflow.ListBudgetsOptions{
-		Limit: 10,
-	})
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "ListBudgets succeeded")
-	} else {
-		assertCheck(budgetList.Total >= 1, "At least one budget exists")
-		fmt.Printf("   Found %d budgets (total: %d)\n", len(budgetList.Budgets), budgetList.Total)
-		for i, b := range budgetList.Budgets {
-			if i >= 3 {
-				fmt.Printf("   ... and %d more\n", len(budgetList.Budgets)-3)
-				break
+	if budgetsAvailable {
+		// 2. GetBudget
+		fmt.Println("2. GetBudget - Retrieving budget by ID...")
+		retrievedBudget, err := client.GetBudget(ctx, budgetID)
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "GetBudget succeeded")
+		} else {
+			assertCheck(retrievedBudget.ID == budgetID, "Retrieved budget ID matches")
+			assertCheck(retrievedBudget.Scope == "organization", "Retrieved budget scope is correct")
+			fmt.Printf("   Retrieved: %s (scope: %s, period: %s)\n\n", retrievedBudget.ID, retrievedBudget.Scope, retrievedBudget.Period)
+		}
+
+		// 3. ListBudgets
+		fmt.Println("3. ListBudgets - Listing all budgets...")
+		budgetList, err := client.ListBudgets(ctx, axonflow.ListBudgetsOptions{
+			Limit: 10,
+		})
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "ListBudgets succeeded")
+		} else {
+			assertCheck(budgetList.Total >= 1, "At least one budget exists")
+			fmt.Printf("   Found %d budgets (total: %d)\n", len(budgetList.Budgets), budgetList.Total)
+			for i, b := range budgetList.Budgets {
+				if i >= 3 {
+					fmt.Printf("   ... and %d more\n", len(budgetList.Budgets)-3)
+					break
+				}
+				fmt.Printf("   - %s: $%.2f/%s\n", b.ID, b.LimitUSD, b.Period)
 			}
-			fmt.Printf("   - %s: $%.2f/%s\n", b.ID, b.LimitUSD, b.Period)
+			fmt.Println()
 		}
-		fmt.Println()
-	}
 
-	// 4. UpdateBudget
-	fmt.Println("4. UpdateBudget - Updating budget limit...")
-	retrievedBudget.LimitUSD = 150.0
-	retrievedBudget.Name = "Demo Budget (Go SDK) - Updated"
-	updatedBudget, err := client.UpdateBudget(ctx, retrievedBudget)
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "UpdateBudget succeeded")
+		// 4. UpdateBudget
+		fmt.Println("4. UpdateBudget - Updating budget limit...")
+		retrievedBudget.LimitUSD = 150.0
+		retrievedBudget.Name = "Demo Budget (Go SDK) - Updated"
+		updatedBudget, err := client.UpdateBudget(ctx, retrievedBudget)
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "UpdateBudget succeeded")
+		} else {
+			assertCheck(updatedBudget.LimitUSD == 150.0, "Budget limit updated correctly")
+			fmt.Printf("   Updated: %s (new limit: $%.2f)\n\n", updatedBudget.ID, updatedBudget.LimitUSD)
+		}
+
+		// ========================================
+		// BUDGET STATUS & ALERTS
+		// ========================================
+
+		// 5. GetBudgetStatus
+		fmt.Println("5. GetBudgetStatus - Checking current budget status...")
+		status, err := client.GetBudgetStatus(ctx, budgetID)
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "GetBudgetStatus succeeded")
+		} else {
+			assertCheck(status.Budget.ID != "", "BudgetStatus includes budget details")
+			assertCheck(status.Percentage >= 0, "BudgetStatus percentage is valid")
+			fmt.Printf("   Used: $%.2f / $%.2f (%.1f%%)\n", status.UsedUSD, status.Budget.LimitUSD, status.Percentage)
+			fmt.Printf("   Remaining: $%.2f\n", status.RemainingUSD)
+			fmt.Printf("   Exceeded: %v, Blocked: %v\n\n", status.IsExceeded, status.IsBlocked)
+		}
+
+		// 6. GetBudgetAlerts
+		fmt.Println("6. GetBudgetAlerts - Getting alerts for budget...")
+		alerts, err := client.GetBudgetAlerts(ctx, budgetID, 10)
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "GetBudgetAlerts succeeded")
+		} else {
+			assertCheck(true, "GetBudgetAlerts returned successfully")
+			fmt.Printf("   Found %d alerts\n", alerts.Count)
+			for _, a := range alerts.Alerts {
+				fmt.Printf("   - [%s] %s (%.1f%% at $%.2f)\n", a.AlertType, a.Message, a.PercentageReached, a.AmountUSD)
+			}
+			if alerts.Count == 0 {
+				fmt.Println("   (no alerts yet)")
+			}
+			fmt.Println()
+		}
+
+		// 7. CheckBudget
+		fmt.Println("7. CheckBudget - Pre-flight budget check...")
+		decision, err := client.CheckBudget(ctx, axonflow.CheckBudgetRequest{
+			OrgID: "demo-org",
+		})
+		if err != nil {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "CheckBudget succeeded")
+		} else {
+			assertCheck(true, "CheckBudget returned decision")
+			fmt.Printf("   Allowed: %v\n", decision.Allowed)
+			if decision.Action != "" {
+				fmt.Printf("   Action: %s\n", decision.Action)
+			}
+			if decision.Message != "" {
+				fmt.Printf("   Message: %s\n", decision.Message)
+			}
+			fmt.Println()
+		}
 	} else {
-		assertCheck(updatedBudget.LimitUSD == 150.0, "Budget limit updated correctly")
-		fmt.Printf("   Updated: %s (new limit: $%.2f)\n\n", updatedBudget.ID, updatedBudget.LimitUSD)
-	}
-
-	// ========================================
-	// BUDGET STATUS & ALERTS
-	// ========================================
-
-	// 5. GetBudgetStatus
-	fmt.Println("5. GetBudgetStatus - Checking current budget status...")
-	status, err := client.GetBudgetStatus(ctx, budgetID)
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "GetBudgetStatus succeeded")
-	} else {
-		assertCheck(status.Budget.ID != "", "BudgetStatus includes budget details")
-		assertCheck(status.Percentage >= 0, "BudgetStatus percentage is valid")
-		fmt.Printf("   Used: $%.2f / $%.2f (%.1f%%)\n", status.UsedUSD, status.Budget.LimitUSD, status.Percentage)
-		fmt.Printf("   Remaining: $%.2f\n", status.RemainingUSD)
-		fmt.Printf("   Exceeded: %v, Blocked: %v\n\n", status.IsExceeded, status.IsBlocked)
-	}
-
-	// 6. GetBudgetAlerts
-	fmt.Println("6. GetBudgetAlerts - Getting alerts for budget...")
-	alerts, err := client.GetBudgetAlerts(ctx, budgetID, 10)
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "GetBudgetAlerts succeeded")
-	} else {
-		assertCheck(true, "GetBudgetAlerts returned successfully")
-		fmt.Printf("   Found %d alerts\n", alerts.Count)
-		for _, a := range alerts.Alerts {
-			fmt.Printf("   - [%s] %s (%.1f%% at $%.2f)\n", a.AlertType, a.Message, a.PercentageReached, a.AmountUSD)
-		}
-		if alerts.Count == 0 {
-			fmt.Println("   (no alerts yet)")
-		}
-		fmt.Println()
-	}
-
-	// 7. CheckBudget
-	fmt.Println("7. CheckBudget - Pre-flight budget check...")
-	decision, err := client.CheckBudget(ctx, axonflow.CheckBudgetRequest{
-		OrgID: "demo-org",
-	})
-	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "CheckBudget succeeded")
-	} else {
-		assertCheck(true, "CheckBudget returned decision")
-		fmt.Printf("   Allowed: %v\n", decision.Allowed)
-		if decision.Action != "" {
-			fmt.Printf("   Action: %s\n", decision.Action)
-		}
-		if decision.Message != "" {
-			fmt.Printf("   Message: %s\n", decision.Message)
-		}
+		fmt.Println("2-7. Skipping budget operations (requires Enterprise license)")
 		fmt.Println()
 	}
 
@@ -199,8 +217,12 @@ func main() {
 		Period: "monthly",
 	})
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "GetUsageBreakdown succeeded")
+		if isNotFoundError(err) {
+			fmt.Println("   Usage breakdown requires Enterprise license (endpoint returned 404)")
+		} else {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "GetUsageBreakdown succeeded")
+		}
 	} else {
 		assertCheck(breakdown.GroupBy == "provider", "Breakdown groupBy is correct")
 		fmt.Printf("   Breakdown by: %s (total: $%.6f)\n", breakdown.GroupBy, breakdown.TotalCostUSD)
@@ -210,8 +232,8 @@ func main() {
 		if len(breakdown.Items) == 0 {
 			fmt.Println("   (no usage data yet)")
 		}
-		fmt.Println()
 	}
+	fmt.Println()
 
 	// 10. ListUsageRecords
 	fmt.Println("10. ListUsageRecords - Listing recent usage records...")
@@ -219,8 +241,12 @@ func main() {
 		Limit: 5,
 	})
 	if err != nil {
-		fmt.Printf("   ERROR: %v\n\n", err)
-		assertCheck(false, "ListUsageRecords succeeded")
+		if isNotFoundError(err) {
+			fmt.Println("   Usage records requires Enterprise license (endpoint returned 404)")
+		} else {
+			fmt.Printf("   ERROR: %v\n\n", err)
+			assertCheck(false, "ListUsageRecords succeeded")
+		}
 	} else {
 		assertCheck(true, "ListUsageRecords returned data")
 		fmt.Printf("   Found %d records (showing up to 5)\n", records.Total)
@@ -230,8 +256,8 @@ func main() {
 		if len(records.Records) == 0 {
 			fmt.Println("   (no usage records yet)")
 		}
-		fmt.Println()
 	}
+	fmt.Println()
 
 	// ========================================
 	// PRICING
@@ -258,13 +284,18 @@ func main() {
 
 	// 12. DeleteBudget
 	fmt.Println("12. DeleteBudget - Cleaning up...")
-	err = client.DeleteBudget(ctx, budgetID)
-	if err != nil {
-		fmt.Printf("   WARNING: Failed to delete budget: %v\n\n", err)
-		assertCheck(false, "DeleteBudget succeeded")
+	if budgetsAvailable {
+		err = client.DeleteBudget(ctx, budgetID)
+		if err != nil {
+			fmt.Printf("   WARNING: Failed to delete budget: %v\n\n", err)
+			assertCheck(false, "DeleteBudget succeeded")
+		} else {
+			assertCheck(true, "Budget deleted successfully")
+			fmt.Printf("   Deleted budget: %s\n\n", budgetID)
+		}
 	} else {
-		assertCheck(true, "Budget deleted successfully")
-		fmt.Printf("   Deleted budget: %s\n\n", budgetID)
+		fmt.Println("   Skipped (budget was not created)")
+		fmt.Println()
 	}
 
 	fmt.Println("================================================")

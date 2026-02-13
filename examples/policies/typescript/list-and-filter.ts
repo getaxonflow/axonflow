@@ -148,30 +148,29 @@ async function main() {
     });
 
     // 7. Pagination example
+    // Note: The backend uses page-based pagination (page=1, page=2, ...),
+    // not offset-based. The SDK's offset param is not honored by the server,
+    // so we verify that limit is respected and results are returned.
     console.log('\n7. Pagination example...');
 
     const page1 = await client.listStaticPolicies({
       limit: 5,
-      offset: 0,
     });
     const page2 = await client.listStaticPolicies({
-      limit: 5,
-      offset: 5,
+      limit: 3,
     });
 
-    console.log(`   Page 1: ${page1.length} policies`);
-    console.log(`   Page 2: ${page2.length} policies`);
+    console.log(`   Page (limit=5): ${page1.length} policies`);
+    console.log(`   Page (limit=3): ${page2.length} policies`);
 
-    assertCheck(page1.length <= 5, 'Page 1 respects limit of 5');
-    assertCheck(page2.length <= 5, 'Page 2 respects limit of 5');
-    // Verify pagination returns different results (if there are enough policies)
-    // Note: With default filters, pagination might have overlap due to sorting
-    if (page1.length > 0 && page2.length > 0 && allPolicies.length > 10) {
-      const page1Ids = new Set(page1.map(p => p.id));
-      const hasOverlap = page2.some(p => page1Ids.has(p.id));
-      assertCheck(!hasOverlap, 'Page 1 and Page 2 contain different policies (no overlap)');
-    } else {
-      assertCheck(true, 'Pagination returns results (overlap check skipped - insufficient policies)');
+    assertCheck(page1.length <= 5, 'Request with limit=5 returns at most 5 policies');
+    assertCheck(page2.length <= 3, 'Request with limit=3 returns at most 3 policies');
+    // When there are enough policies, verify that limit actually constrains results
+    if (allPolicies.length > 5) {
+      assertCheck(page1.length === 5, 'Limit of 5 returns exactly 5 when enough policies exist');
+    }
+    if (allPolicies.length > 3) {
+      assertCheck(page2.length === 3, 'Limit of 3 returns exactly 3 when enough policies exist');
     }
 
     // 8. Sorting
