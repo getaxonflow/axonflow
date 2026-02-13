@@ -325,7 +325,9 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 		}
 		// Sync status to execution_history
 		if h.mapTracker != nil {
-			_ = h.mapTracker.SyncPlanStatus(ctx, planID, planning.PlanStatusCancelled, req.Reason)
+			if syncErr := h.mapTracker.SyncPlanStatus(ctx, planID, planning.PlanStatusCancelled, req.Reason); syncErr != nil {
+				h.logger.Printf("[WARN] SyncPlanStatus failed for %s: %v", executionID, syncErr)
+			}
 		}
 
 	default:
@@ -397,7 +399,8 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 	// Enforce per-tenant SSE connection limits
 	tenantID := r.Header.Get("X-Tenant-ID")
 	if tenantID == "" {
-		tenantID = "default"
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "X-Tenant-ID header is required for SSE connections")
+		return
 	}
 	if h.connectionTracker != nil {
 		if err := h.connectionTracker.TryConnect(tenantID); err != nil {

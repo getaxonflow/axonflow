@@ -5,11 +5,24 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/orchestrator/workflow_control"
 )
+
+// mockStepProcessor is a configurable mock for the StepProcessor interface.
+type mockStepProcessor struct {
+	output map[string]interface{}
+	err    error
+	called bool
+}
+
+func (m *mockStepProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
+	m.called = true
+	return m.output, m.err
+}
 
 func TestIntPtr(t *testing.T) {
 	tests := []struct {
@@ -478,5 +491,398 @@ func TestStepExecutionResult_Fields(t *testing.T) {
 	}
 	if failedResult.Error != "connection timeout" {
 		t.Errorf("Error = %q, want %q", failedResult.Error, "connection timeout")
+	}
+}
+
+// TestExecuteSingleStep_MissingProcessor tests that ExecuteSingleStep returns a
+// failed StepExecutionResult (not an error) when no processor exists for the step type.
+func TestExecuteSingleStep_MissingProcessor(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-missing-proc"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "custom-step", Type: "nonexistent-type"},
+			},
+		},
+	}
+
+	// Engine with no processors registered for "nonexistent-type"
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{},
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 0, nil, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected error (missing processor should not return error): %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Status != "failed" {
+		t.Errorf("Status = %q, want %q", result.Status, "failed")
+	}
+	if result.Error == "" {
+		t.Error("expected non-empty error message")
+	}
+	if result.StepIndex != 0 {
+		t.Errorf("StepIndex = %d, want 0", result.StepIndex)
+	}
+	if result.StepName != "custom-step" {
+		t.Errorf("StepName = %q, want %q", result.StepName, "custom-step")
+	}
+}
+
+// TestExecuteSingleStep_SuccessfulExecution tests successful step execution
+// with a mock StepProcessor that returns output.
+func TestExecuteSingleStep_SuccessfulExecution(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-success-exec"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "fetch-data", Type: "connector-call"},
+				{Name: "analyze", Type: "llm-call"},
+				{Name: "synthesize", Type: "llm-call"},
+			},
+		},
+	}
+
+	mockProc := &mockStepProcessor{
+		output: map[string]interface{}{
+			"response": "analysis complete",
+			"tokens":   150,
+		},
+	}
+
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"llm-call": mockProc,
+		},
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 1, nil, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !mockProc.called {
+		t.Error("expected processor to be called")
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want %q", result.Status, "completed")
+	}
+	if result.StepIndex != 1 {
+		t.Errorf("StepIndex = %d, want 1", result.StepIndex)
+	}
+	if result.StepName != "analyze" {
+		t.Errorf("StepName = %q, want %q", result.StepName, "analyze")
+	}
+
+	// Verify output is passed through
+	outputMap, ok := result.Output.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Output type = %T, want map[string]interface{}", result.Output)
+	}
+	if outputMap["response"] != "analysis complete" {
+		t.Errorf("Output[response] = %v, want %q", outputMap["response"], "analysis complete")
+	}
+	if result.Error != "" {
+		t.Errorf("Error should be empty, got %q", result.Error)
+	}
+}
+
+// TestExecuteSingleStep_ProcessorReturnsError tests that a processor error
+// results in a failed StepExecutionResult (returned without a Go-level error).
+func TestExecuteSingleStep_ProcessorReturnsError(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-proc-error"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "failing-step", Type: "connector-call"},
+			},
+		},
+	}
+
+	mockProc := &mockStepProcessor{
+		output: nil,
+		err:    fmt.Errorf("connection refused: database unavailable"),
+	}
+
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"connector-call": mockProc,
+		},
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 0, nil, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected Go-level error (should be nil): %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !mockProc.called {
+		t.Error("expected processor to be called")
+	}
+	if result.Status != "failed" {
+		t.Errorf("Status = %q, want %q", result.Status, "failed")
+	}
+	if result.Error != "connection refused: database unavailable" {
+		t.Errorf("Error = %q, want %q", result.Error, "connection refused: database unavailable")
+	}
+	if result.StepIndex != 0 {
+		t.Errorf("StepIndex = %d, want 0", result.StepIndex)
+	}
+	if result.StepName != "failing-step" {
+		t.Errorf("StepName = %q, want %q", result.StepName, "failing-step")
+	}
+	if result.Output != nil {
+		t.Errorf("Output should be nil for failed step, got %v", result.Output)
+	}
+}
+
+// TestExecuteSingleStep_WithExecContext tests that execution context is
+// correctly passed to the step processor as input.
+func TestExecuteSingleStep_WithExecContext(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-context-pass"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "contextual-step", Type: "llm-call"},
+			},
+		},
+	}
+
+	var receivedInput map[string]interface{}
+	mockProc := &mockStepProcessor{
+		output: map[string]interface{}{"result": "ok"},
+	}
+
+	// Override ExecuteStep to capture input
+	captureProc := &inputCapturingProcessor{
+		output:     map[string]interface{}{"result": "ok"},
+		capturedFn: func(input map[string]interface{}) { receivedInput = input },
+	}
+
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"llm-call": captureProc,
+		},
+	}
+
+	execContext := map[string]interface{}{
+		"previous_output": "flight data",
+		"step_count":      3,
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 0, execContext, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want %q", result.Status, "completed")
+	}
+	_ = mockProc // suppress unused warning
+
+	// Verify the exec context was passed through
+	if receivedInput == nil {
+		t.Fatal("expected input to be captured by processor")
+	}
+	if receivedInput["previous_output"] != "flight data" {
+		t.Errorf("input[previous_output] = %v, want %q", receivedInput["previous_output"], "flight data")
+	}
+	if receivedInput["step_count"] != 3 {
+		t.Errorf("input[step_count] = %v, want 3", receivedInput["step_count"])
+	}
+}
+
+// inputCapturingProcessor captures the input passed to ExecuteStep for verification.
+type inputCapturingProcessor struct {
+	output     map[string]interface{}
+	err        error
+	capturedFn func(map[string]interface{})
+}
+
+func (p *inputCapturingProcessor) ExecuteStep(ctx context.Context, step WorkflowStep, input map[string]interface{}, execution *WorkflowExecution) (map[string]interface{}, error) {
+	if p.capturedFn != nil {
+		p.capturedFn(input)
+	}
+	return p.output, p.err
+}
+
+// TestExecuteSingleStep_NilExecContext tests that nil execContext doesn't cause panic.
+func TestExecuteSingleStep_NilExecContext(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-nil-context"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "simple-step", Type: "function-call"},
+			},
+		},
+	}
+
+	mockProc := &mockStepProcessor{
+		output: map[string]interface{}{"status": "done"},
+	}
+
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"function-call": mockProc,
+		},
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 0, nil, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want %q", result.Status, "completed")
+	}
+}
+
+// TestExecuteSingleStep_LastStepIndex tests executing the last step in a multi-step workflow.
+func TestExecuteSingleStep_LastStepIndex(t *testing.T) {
+	executor := NewMAPWCPExecutor(nil, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "test-last-step"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step-0", Type: "connector-call"},
+				{Name: "step-1", Type: "llm-call"},
+				{Name: "step-2", Type: "llm-call"},
+			},
+		},
+	}
+
+	mockProc := &mockStepProcessor{
+		output: map[string]interface{}{"final": true},
+	}
+
+	engine := &WorkflowEngine{
+		stepProcessors: map[string]StepProcessor{
+			"llm-call": mockProc,
+		},
+	}
+
+	result, err := executor.ExecuteSingleStep(ctx, plan, workflow, 2, nil, "user", engine)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StepIndex != 2 {
+		t.Errorf("StepIndex = %d, want 2", result.StepIndex)
+	}
+	if result.StepName != "step-2" {
+		t.Errorf("StepName = %q, want %q", result.StepName, "step-2")
+	}
+	if result.Status != "completed" {
+		t.Errorf("Status = %q, want %q", result.Status, "completed")
+	}
+}
+
+// TestExecuteWithConfirm_EmptySteps tests that ExecuteWithConfirm returns error for empty steps.
+func TestExecuteWithConfirm_EmptySteps(t *testing.T) {
+	mockRepo := workflow_control.NewMockRepository()
+	wcpSvc := workflow_control.NewService(mockRepo, nil, nil)
+
+	executor := NewMAPWCPExecutor(wcpSvc, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "empty-confirm"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{},
+		},
+	}
+
+	_, err := executor.ExecuteWithConfirm(ctx, plan, workflow, "t", "o", "u", "c")
+	if err == nil {
+		t.Fatal("expected error for empty steps")
+	}
+	if err.Error() != "workflow has no steps" {
+		t.Errorf("error = %q, want %q", err.Error(), "workflow has no steps")
+	}
+}
+
+// TestExecuteWithStep_EmptySteps tests that ExecuteWithStep returns error for empty steps.
+func TestExecuteWithStep_EmptySteps(t *testing.T) {
+	mockRepo := workflow_control.NewMockRepository()
+	wcpSvc := workflow_control.NewService(mockRepo, nil, nil)
+
+	executor := NewMAPWCPExecutor(wcpSvc, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{PlanID: "empty-step"}
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{},
+		},
+	}
+
+	_, err := executor.ExecuteWithStep(ctx, plan, workflow, "t", "o", "u", "c")
+	if err == nil {
+		t.Fatal("expected error for empty steps")
+	}
+	if err.Error() != "workflow has no steps" {
+		t.Errorf("error = %q, want %q", err.Error(), "workflow has no steps")
+	}
+}
+
+// TestExecuteWithStep_TwoSteps tests step mode with exactly two steps.
+func TestExecuteWithStep_TwoSteps(t *testing.T) {
+	mockRepo := workflow_control.NewMockRepository()
+	wcpSvc := workflow_control.NewService(mockRepo, nil, nil)
+
+	executor := NewMAPWCPExecutor(wcpSvc, nil)
+	ctx := context.Background()
+
+	plan := &planning.Plan{
+		PlanID: "step-two-1",
+		Domain: "test",
+		Query:  "two steps",
+	}
+
+	workflow := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "first", Type: "connector-call"},
+				{Name: "second", Type: "llm-call"},
+			},
+		},
+	}
+
+	result, err := executor.ExecuteWithStep(ctx, plan, workflow, "t1", "o1", "u1", "c1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Status != "awaiting_approval" {
+		t.Errorf("Status = %q, want %q", result.Status, "awaiting_approval")
+	}
+	if result.CurrentStep != 1 {
+		t.Errorf("CurrentStep = %d, want 1", result.CurrentStep)
+	}
+	if result.StepName != "second" {
+		t.Errorf("StepName = %q, want %q", result.StepName, "second")
+	}
+	if result.TotalSteps != 2 {
+		t.Errorf("TotalSteps = %d, want 2", result.TotalSteps)
 	}
 }

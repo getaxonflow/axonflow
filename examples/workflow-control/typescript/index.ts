@@ -168,9 +168,9 @@ async function main() {
     assertCheck(true, "Workflow completed successfully");
     console.log();
 
-    // Step 5b: Fail Workflow (raw HTTP — SDK method not yet available)
+    // Step 5b: Fail Workflow (v4.3.0: native SDK method)
     console.log("Step 5b: Fail Workflow");
-    console.log("   Testing /fail endpoint...");
+    console.log("   Testing failWorkflow() SDK method...");
     try {
       const failWorkflow = await axonflow.createWorkflow({
         workflow_name: "wcp-fail-test",
@@ -181,23 +181,9 @@ async function main() {
       assertCheck(!!failWorkflow.workflow_id, "Fail-test workflow created with valid ID");
       console.log(`   Workflow ID: ${failWorkflow.workflow_id}`);
 
-      // Call /fail endpoint via raw HTTP (SDK method not yet available)
-      const agentUrl = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
-      const failUrl = `${agentUrl}/api/v1/workflows/${failWorkflow.workflow_id}/fail`;
-      const failResp = await fetch(failUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Client-ID": process.env.AXONFLOW_CLIENT_ID || "workflow-control-ts",
-          "X-Client-Secret": process.env.AXONFLOW_CLIENT_SECRET || "",
-        },
-        body: JSON.stringify({ reason: "LLM provider timeout" }),
-      });
-      assertCheck(failResp.status === 200, `FailWorkflow returns HTTP 200 (got ${failResp.status})`);
-      const failBody = await failResp.json() as Record<string, unknown>;
-      assertCheck(failBody.status === "failed", `FailWorkflow status is 'failed' (got: ${failBody.status})`);
-      console.log(`   Status: ${failBody.status}`);
-      console.log(`   Reason: ${failBody.reason}`);
+      // v4.3.0: Use native SDK failWorkflow() method
+      await axonflow.failWorkflow(failWorkflow.workflow_id, "LLM provider timeout");
+      assertCheck(true, "failWorkflow succeeded");
 
       // Verify via SDK
       const failedStatus = await axonflow.getWorkflow(failWorkflow.workflow_id);
@@ -424,6 +410,7 @@ async function main() {
             "Accept": "application/json",
             "X-Client-ID": sseClientId,
             "X-Client-Secret": sseClientSecret,
+            "X-Tenant-ID": sseClientId,
           },
         });
 
@@ -458,7 +445,7 @@ async function main() {
       console.log("  2. Check step gates (policy evaluation)");
       console.log("  3. Mark steps completed (progress tracking)");
       console.log("  4. Complete workflow (lifecycle management)");
-      console.log("  5b. Fail workflow (via /fail endpoint)");
+      console.log("  5b. Fail workflow (failWorkflow SDK method)");
       console.log("  5. Approve steps (enterprise approval flow)");
       console.log("  6. Reject steps (enterprise rejection flow)");
       console.log("  7. List pending approvals (enterprise)");

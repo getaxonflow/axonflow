@@ -355,6 +355,7 @@ Create policies with `scope: workflow` to control step execution:
 | POST | `/api/v1/workflows/{id}/steps/{step_id}/complete` | Mark step completed |
 | POST | `/api/v1/workflows/{id}/complete` | Complete workflow |
 | POST | `/api/v1/workflows/{id}/abort` | Abort workflow |
+| POST | `/api/v1/workflows/{id}/fail` | Fail workflow with error |
 | POST | `/api/v1/workflows/{id}/resume` | Resume workflow |
 | GET | `/api/v1/workflows` | List workflows |
 
@@ -385,6 +386,20 @@ if gate.is_blocked():
     await client.abort_workflow(workflow_id, gate.reason)
     return
 ```
+
+### Fail vs Abort
+
+Use `failWorkflow()` when an error condition occurs (e.g., a step throws an exception, an LLM call returns invalid output). Use `abortWorkflow()` when manually cancelling a workflow that hasn't errored.
+
+```python
+# Abort: manual cancellation
+await client.abort_workflow(workflow_id, "No longer needed")
+
+# Fail: error condition
+await client.fail_workflow(workflow_id, "Step 3 timed out after 60s")
+```
+
+After failing, the workflow status becomes `failed` and cannot be resumed.
 
 ### 3. Use Context Manager for Cleanup
 

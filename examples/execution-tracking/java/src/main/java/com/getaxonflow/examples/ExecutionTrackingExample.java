@@ -133,6 +133,8 @@ public class ExecutionTrackingExample {
             System.out.println("    - Running: " + ExecutionStatusValue.RUNNING.getValue());
             System.out.println("    - Completed: " + ExecutionStatusValue.COMPLETED.getValue());
             System.out.println("    - Failed: " + ExecutionStatusValue.FAILED.getValue());
+            // v4.3.0: "expired" is now a valid execution status
+            System.out.println("    - Expired: " + ExecutionStatusValue.EXPIRED.getValue());
             System.out.println();
             System.out.println("  StepStatusValue helpers:");
             System.out.println("    - IsTerminal(completed): " + StepStatusValue.COMPLETED.isTerminal());

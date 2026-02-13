@@ -217,6 +217,39 @@ func (m *MockRepository) PurgeOldest(ctx context.Context, tenantID string, keepC
 	return 0, nil
 }
 
+func (m *MockRepository) GetByPlanID(ctx context.Context, planID string) (*ExecutionStatus, error) {
+	return m.GetByMetadata(ctx, "plan_id", planID)
+}
+
+func (m *MockRepository) GetByMetadata(ctx context.Context, key, value string) (*ExecutionStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, exec := range m.executions {
+		if exec.Metadata != nil {
+			if v, ok := exec.Metadata[key].(string); ok && v == value {
+				copy := *exec
+				copy.Steps = append([]StepStatus{}, exec.Steps...)
+				return &copy, nil
+			}
+		}
+	}
+	return nil, ErrExecutionNotFound
+}
+
+func (m *MockRepository) ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	exec, ok := m.executions[executionID]
+	if !ok {
+		return ErrExecutionNotFound
+	}
+	exec.Status = StatusExpired
+	now := time.Now()
+	exec.CompletedAt = &now
+	exec.UpdatedAt = now
+	return nil
+}
+
 func (m *MockRepository) SetCreateError(err error)  { m.createErr = err }
 func (m *MockRepository) SetGetError(err error)     { m.getErr = err }
 func (m *MockRepository) SetUpdateError(err error)  { m.updateErr = err }

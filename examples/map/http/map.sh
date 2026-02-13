@@ -105,6 +105,29 @@ if [ -z "$PLAN_ID" ]; then
     exit 0
 fi
 
+# 1b. Cost Estimation (v4.3.0)
+echo "1b. CostEstimation - Get cost estimate for this plan..."
+echo "----------------------------------------------"
+
+COST_RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+  -H "X-Client-ID: $CLIENT_ID" \
+  -H "X-Client-Secret: $CLIENT_SECRET")
+
+COST_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+  -H "X-Client-ID: $CLIENT_ID" \
+  -H "X-Client-Secret: $CLIENT_SECRET")
+
+if [ "$COST_HTTP_CODE" = "200" ]; then
+    echo "Cost estimate:"
+    echo "$COST_RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$COST_RESPONSE"
+    check_result "Cost estimation endpoint available" "true"
+else
+    echo "   Cost estimation returned $COST_HTTP_CODE (may require enterprise)"
+fi
+echo ""
+
 # 2. Get Plan Status (before execution)
 echo "2. GetPlanStatus - Checking status before execution..."
 echo "----------------------------------------------"
@@ -615,6 +638,7 @@ echo "   SSE URL: $SSE_URL"
 SSE_HTTP_CODE=$(curl -s -o /tmp/sse_body.txt -w "%{http_code}" --max-time 10 \
   -H "X-Client-ID: $CLIENT_ID" \
   -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "X-Tenant-ID: $CLIENT_ID" \
   "$SSE_URL" 2>/dev/null || echo "000")
 SSE_BODY=$(cat /tmp/sse_body.txt 2>/dev/null || echo "")
 
@@ -636,7 +660,7 @@ else
     check_result "SSE endpoint available (expected 200 or JSON 404, got $SSE_HTTP_CODE)" "false"
 fi
 echo "   Tip: For real-time SSE events, connect DURING plan execution:"
-echo "     curl -N -H 'Accept: text/event-stream' $SSE_URL"
+echo "     curl -N -H 'Accept: text/event-stream' -H 'X-Tenant-ID: $CLIENT_ID' $SSE_URL"
 echo ""
 
 # Summary
@@ -651,6 +675,7 @@ echo "=============================================="
 echo ""
 echo "API Summary:"
 echo "  POST /api/request (request_type=multi-agent-plan) - Generate a plan"
+echo "  GET  /api/v1/plans/{id}/cost                      - Get cost estimate (v4.3.0)"
 echo "  GET  /api/v1/plan/{id}                            - Get plan status"
 echo "  POST /api/request (request_type=execute-plan)     - Execute a plan"
 echo "  POST /api/v1/plan/{id}/cancel                     - Cancel a plan"

@@ -104,6 +104,30 @@ async function main(): Promise<void> {
   const expectedStepCount = plan.steps?.length || 0;
 
   // ========================================
+  // 1b. COST ESTIMATION (v4.3.0)
+  // ========================================
+  console.log('1b. Cost Estimation - Get cost estimate for this plan...');
+  try {
+    const costUrl = `${getEnv('AXONFLOW_ENDPOINT', 'http://localhost:8080')}/api/v1/plans/${plan.planId}/cost`;
+    const costResp = await fetch(costUrl, {
+      headers: {
+        'X-Client-ID': getEnv('AXONFLOW_CLIENT_ID', 'demo-org'),
+        'X-Client-Secret': getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
+      },
+    });
+    if (costResp.status === 200) {
+      const costBody = await costResp.text();
+      console.log(`   Cost estimate: ${costBody}`);
+      assert(true, 'Cost estimation endpoint available');
+    } else {
+      console.log(`   Cost estimation returned ${costResp.status} (may require enterprise)`);
+    }
+  } catch (costErr) {
+    console.log(`   Warning: Cost estimation failed: ${costErr}`);
+  }
+  console.log();
+
+  // ========================================
   // 2. GET PLAN STATUS (before execution) - Optional
   // ========================================
   console.log('2. getPlanStatus - Checking status before execution...');
@@ -542,6 +566,7 @@ async function main(): Promise<void> {
           'Accept': 'application/json',
           'X-Client-ID': clientId,
           'X-Client-Secret': clientSecret,
+          'X-Tenant-ID': clientId,
         },
       });
 
@@ -572,6 +597,7 @@ async function main(): Promise<void> {
     console.log();
     console.log('Methods validated:');
     console.log('  1. generatePlan()     - Plan created with valid ID and steps');
+    console.log(' 1b. Cost estimation    - GET /api/v1/plans/{id}/cost (v4.3.0)');
     console.log('  2. getPlanStatus()    - Pre-execution status checked');
     console.log('  3. executePlan()      - Plan executed successfully');
     console.log('  4. getPlanStatus()    - Post-execution status checked');

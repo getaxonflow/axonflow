@@ -1,6 +1,6 @@
 # SDK Feature Coverage
 
-**Last Updated:** 2026-02-07
+**Last Updated:** 2026-02-12
 **Reference:** ADR-022 SDK Method Inclusion Criteria
 
 This document defines what features AxonFlow SDKs cover and explicitly exclude.
@@ -56,12 +56,22 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 | `resumePlan()` | Resume paused plan (Enterprise) | ✅ All SDKs |
 | `rollbackPlan()` | Rollback plan to previous version | ✅ All SDKs |
 
-#### WCP Step Approval
+#### WCP Workflow Lifecycle
 | Method | Description | Status |
 |--------|-------------|--------|
+| `failWorkflow()` | Fail a workflow with optional reason | ✅ All SDKs (v3.4.0) |
 | `approveStep()` | Approve a pending WCP step | ✅ All SDKs |
 | `rejectStep()` | Reject a pending WCP step | ✅ All SDKs |
 | `getPendingApprovals()` | List steps awaiting approval | ✅ All SDKs |
+
+#### HITL Queue (Enterprise)
+| Method | Description | Status |
+|--------|-------------|--------|
+| `listHITLQueue()` | List pending approval requests | ✅ All SDKs (v3.4.0) |
+| `getHITLRequest()` | Get approval request details | ✅ All SDKs (v3.4.0) |
+| `approveHITLRequest()` | Approve a HITL request | ✅ All SDKs (v3.4.0) |
+| `rejectHITLRequest()` | Reject a HITL request | ✅ All SDKs (v3.4.0) |
+| `getHITLStats()` | Get HITL queue statistics | ✅ All SDKs (v3.4.0) |
 
 #### SSE Streaming
 | Method | Description | Status |
@@ -161,12 +171,13 @@ These APIs are intentionally NOT in SDKs. Use HTTP/curl for these operations.
 | `POST /api/v1/circuit-breaker/deactivate` | Emergency admin action |
 | `GET /api/v1/circuit-breaker/status` | Monitoring dashboard |
 
-### HITL (Human-in-the-Loop) Decisions
+### HITL (Human-in-the-Loop) Legacy Decisions
 | Endpoint | Reason for Exclusion |
 |----------|---------------------|
-| `GET /api/v1/hitl/decisions` | Portal/dashboard use |
-| `POST /api/v1/hitl/decisions/{id}/approve` | Human action via Portal |
-| `POST /api/v1/hitl/decisions/{id}/reject` | Human action via Portal |
+| `GET /api/v1/hitl/decisions` | Portal/dashboard use (legacy endpoint) |
+
+> **Note:** HITL Queue API is now available in all SDKs (v3.4.0) via `/api/v1/hitl/queue` endpoints:
+> `listHITLQueue()`, `getHITLRequest()`, `approveHITLRequest()`, `rejectHITLRequest()`, `getHITLStats()`
 
 ### Accuracy & Bias Monitoring
 | Endpoint | Reason for Exclusion |
@@ -207,10 +218,10 @@ All 4 SDKs should have identical method coverage:
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v3.3.1 | ~36 | ✅ |
-| Python | v3.3.1 | ~36 | ✅ |
-| TypeScript | v3.3.1 | ~37 | ✅ (+protect) |
-| Java | v3.3.1 | ~36 | ✅ |
+| Go | v3.4.0 | ~42 | ✅ |
+| Python | v3.4.0 | ~42 | ✅ |
+| TypeScript | v3.4.0 | ~43 | ✅ (+protect) |
+| Java | v3.4.0 | ~42 | ✅ |
 
 ---
 
@@ -218,6 +229,7 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
+| 2026-02-12 | Added failWorkflow() to all SDKs; Added HITL Queue API (listHITLQueue, getHITLRequest, approveHITLRequest, rejectHITLRequest, getHITLStats) to all SDKs; Moved HITL from exclusions to Tier 2 |
 | 2026-02-07 | Added SSE streaming (streamExecutionStatus) for real-time MAP/WCP execution monitoring |
 | 2026-02-07 | Added WCP step approval (approveStep, rejectStep, getPendingApprovals), rollbackPlan, webhook management (createWebhook, getWebhook, updateWebhook, deleteWebhook, listWebhooks) |
 | 2026-02-06 | Added MAP v1.0 methods: cancelPlan, updatePlan, getPlanVersions, resumePlan, generatePlanWithOptions |

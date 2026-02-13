@@ -1028,3 +1028,25 @@ func TestOnStepCompleted_ThenOnWorkflowCompleted(t *testing.T) {
 	}
 	t.Error("lifecycle_step_1 not found in execution steps")
 }
+
+func TestIsWCPNotFoundError(t *testing.T) {
+	t.Run("workflow not found error returns true", func(t *testing.T) {
+		err := workflow_control.ErrWorkflowNotFound
+		if !isWCPNotFoundError(err) {
+			t.Error("expected isWCPNotFoundError to return true for ErrWorkflowNotFound")
+		}
+	})
+
+	t.Run("generic error returns false", func(t *testing.T) {
+		err := context.DeadlineExceeded
+		if isWCPNotFoundError(err) {
+			t.Error("expected isWCPNotFoundError to return false for generic error")
+		}
+	})
+
+	t.Run("nil error returns false", func(t *testing.T) {
+		if isWCPNotFoundError(nil) {
+			t.Error("expected isWCPNotFoundError to return false for nil error")
+		}
+	})
+}

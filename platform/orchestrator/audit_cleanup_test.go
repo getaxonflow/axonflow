@@ -308,6 +308,15 @@ func (m *mockPurgeRepo) UpdateSteps(_ context.Context, _ string, _ []execution.S
 }
 func (m *mockPurgeRepo) UpdateCost(_ context.Context, _ string, _, _ *float64) error { return nil }
 func (m *mockPurgeRepo) CountActive(_ context.Context, _ string) (int, error)        { return 0, nil }
+func (m *mockPurgeRepo) GetByPlanID(_ context.Context, _ string) (*execution.ExecutionStatus, error) {
+	return nil, execution.ErrExecutionNotFound
+}
+func (m *mockPurgeRepo) GetByMetadata(_ context.Context, _, _ string) (*execution.ExecutionStatus, error) {
+	return nil, execution.ErrExecutionNotFound
+}
+func (m *mockPurgeRepo) ExpireExecution(_ context.Context, _ string, _ map[string]interface{}) error {
+	return nil
+}
 func (m *mockPurgeRepo) PurgeOldest(_ context.Context, _ string, _ int) (int64, error) {
 	return 0, nil
 }

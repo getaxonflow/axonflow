@@ -1089,22 +1089,45 @@ func (e *PlanningEngine) applyBalancedMode(workflow *Workflow) {
 	}
 }
 
+// StepCostEstimate represents the cost estimate for a single workflow step.
+type StepCostEstimate struct {
+	StepName           string  `json:"step_name"`
+	Provider           string  `json:"provider"`
+	Model              string  `json:"model"`
+	EstimatedTokensIn  int     `json:"estimated_tokens_in"`
+	EstimatedTokensOut int     `json:"estimated_tokens_out"`
+	EstimatedCostUSD   float64 `json:"estimated_cost_usd"`
+}
+
+// CostEstimateResult represents the full cost estimation for a workflow.
+type CostEstimateResult struct {
+	EstimatedCostUSD float64            `json:"estimated_cost_usd"`
+	Currency         string             `json:"currency"`
+	Breakdown        []StepCostEstimate `json:"breakdown,omitempty"`
+}
+
 // estimatePlanCost calculates an estimated cost for all LLM steps in the workflow.
 // Connector-call steps are treated as zero cost (no LLM tokens consumed).
 // Returns 0 if no pricing config is set.
 func (e *PlanningEngine) estimatePlanCost(workflow *Workflow) float64 {
-	if e.pricingConfig == nil || workflow == nil {
-		return 0
-	}
+	result := e.EstimatePlanCost(workflow)
+	return result.EstimatedCostUSD
+}
 
-	var totalCost float64
+// EstimatePlanCost calculates a detailed cost estimate with per-step breakdown.
+// Connector-call steps are treated as zero cost (no LLM tokens consumed).
+func (e *PlanningEngine) EstimatePlanCost(workflow *Workflow) *CostEstimateResult {
+	result := &CostEstimateResult{Currency: "USD"}
+
+	if e.pricingConfig == nil || workflow == nil {
+		return result
+	}
 
 	// Default token estimates per step when not specified
 	const defaultTokensIn = 1000
 	const defaultTokensOut = 500
 
 	// Determine the default provider from LLM router status.
-	// The model defaults to a common model; per-step overrides take precedence.
 	defaultProvider := "openai"
 	defaultModel := "gpt-4o"
 	if e.llmRouter != nil {
@@ -1119,11 +1142,9 @@ func (e *PlanningEngine) estimatePlanCost(workflow *Workflow) float64 {
 
 	for _, step := range workflow.Spec.Steps {
 		if step.Type == "connector-call" {
-			// Connector calls don't consume LLM tokens
 			continue
 		}
 
-		// Use step-level provider/model if set, otherwise defaults
 		provider := step.Provider
 		if provider == "" {
 			provider = defaultProvider
@@ -1134,10 +1155,18 @@ func (e *PlanningEngine) estimatePlanCost(workflow *Workflow) float64 {
 		}
 
 		stepCost := e.pricingConfig.EstimateCost(provider, model, defaultTokensIn, defaultTokensOut)
-		totalCost += stepCost
+		result.EstimatedCostUSD += stepCost
+		result.Breakdown = append(result.Breakdown, StepCostEstimate{
+			StepName:           step.Name,
+			Provider:           provider,
+			Model:              model,
+			EstimatedTokensIn:  defaultTokensIn,
+			EstimatedTokensOut: defaultTokensOut,
+			EstimatedCostUSD:   stepCost,
+		})
 	}
 
-	return totalCost
+	return result
 }
 
 // IsHealthy checks if planning engine is operational

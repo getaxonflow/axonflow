@@ -595,6 +595,68 @@ X-RateLimit-Reset: 1705312200
 
 ---
 
+### Cost Estimate Limit Exceeded
+
+```json
+{
+  "error": {
+    "code": "COST_ESTIMATE_LIMIT_EXCEEDED",
+    "message": "Cost estimate limit reached (10/day). Upgrade to Evaluation tier for 100 estimates/day.",
+    "current_count": 10,
+    "limit": 10,
+    "tier": "community",
+    "upgrade_path": "evaluation"
+  }
+}
+```
+
+**Cause:** You've exceeded the daily cost estimation limit for your tier.
+
+**Tier Limits:**
+| Tier | Cost Estimates/Day | Response Detail |
+|------|-------------------|-----------------|
+| Community | 10 | Aggregate total only |
+| Evaluation | 100 | Full per-step breakdown |
+| Enterprise | Unlimited | Full breakdown |
+
+**Solution:**
+- Wait until the next day for the limit to reset
+- Upgrade to Evaluation tier (free) for 100 estimates/day with per-step breakdown
+- Upgrade to Enterprise for unlimited estimates
+
+---
+
+### Pending Approval Limit Exceeded
+
+```json
+{
+  "error": {
+    "code": "PENDING_APPROVAL_LIMIT_EXCEEDED",
+    "message": "Pending approval limit reached (5). Resolve existing approvals or upgrade to Evaluation tier.",
+    "current_count": 5,
+    "limit": 5,
+    "tier": "community",
+    "upgrade_path": "evaluation"
+  }
+}
+```
+
+**Cause:** You've reached the maximum number of concurrent pending approvals for your tier.
+
+**Tier Limits:**
+| Tier | Max Pending Approvals |
+|------|-----------------------|
+| Community | 5 |
+| Evaluation | 25 |
+| Enterprise | Unlimited |
+
+**Solution:**
+- Approve or reject existing pending approvals to free up quota
+- Upgrade to Evaluation tier (free) for 25 concurrent pending approvals
+- Upgrade to Enterprise for unlimited pending approvals
+
+---
+
 ## Policy-Specific Errors
 
 ### PII Detection (Default: Redact)

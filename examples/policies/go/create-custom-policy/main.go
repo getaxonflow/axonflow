@@ -68,7 +68,7 @@ func main() {
 
 	assertCheck(policy.ID != "", "Policy created with ID")
 	assertCheck(policy.Name == "Custom Email Pattern", "Policy name matches")
-	assertCheck(policy.Category == string(axonflow.CategoryPIIGlobal), "Policy category matches")
+	assertCheck(policy.Category == axonflow.CategoryPIIGlobal, "Policy category matches")
 	fmt.Printf("   Created policy: %s\n", policy.ID)
 	fmt.Printf("   Name: %s\n", policy.Name)
 	fmt.Printf("   Tier: %s\n", policy.Tier) // Will be 'tenant' for custom policies

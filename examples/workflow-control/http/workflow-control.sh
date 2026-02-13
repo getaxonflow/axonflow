@@ -521,10 +521,16 @@ else
     echo "   SSE URL: $SSE_URL"
     echo "   Verifying SSE endpoint is registered..."
 
-    SSE_HTTP_CODE=$(curl -s -o /tmp/sse_body.txt -w "%{http_code}" --max-time 10 \
+    # Use --max-time 3 for SSE (streaming endpoint never closes).
+    # Curl exits with code 28 (timeout) even after a successful 200 response.
+    # The || true prevents set -e from killing the script.
+    SSE_HTTP_CODE=$(curl -s -o /tmp/sse_body.txt -w "%{http_code}" --max-time 3 \
       -H "X-Client-ID: $CLIENT_ID" \
       -H "X-Client-Secret: $CLIENT_SECRET" \
-      "$SSE_URL" 2>/dev/null || echo "000")
+      -H "X-Tenant-ID: $CLIENT_ID" \
+      -H "Accept: text/event-stream" \
+      "$SSE_URL" 2>/dev/null || true)
+    SSE_HTTP_CODE=${SSE_HTTP_CODE:-000}
     SSE_BODY=$(cat /tmp/sse_body.txt 2>/dev/null || echo "")
 
     if [ "$SSE_HTTP_CODE" = "200" ]; then

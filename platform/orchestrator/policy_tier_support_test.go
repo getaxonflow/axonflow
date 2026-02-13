@@ -48,6 +48,12 @@ func TestDefaultLicenseChecker(t *testing.T) {
 	if v := checker.MaxSSEConnections(); v != 5 {
 		t.Errorf("DefaultLicenseChecker.MaxSSEConnections() = %d, want 5", v)
 	}
+	if v := checker.MaxCostEstimatesPerDay(); v != 10 {
+		t.Errorf("DefaultLicenseChecker.MaxCostEstimatesPerDay() = %d, want 10", v)
+	}
+	if v := checker.MaxPendingApprovals(); v != 5 {
+		t.Errorf("DefaultLicenseChecker.MaxPendingApprovals() = %d, want 5", v)
+	}
 }
 
 func TestEnvLicenseChecker_Community(t *testing.T) {
@@ -91,6 +97,12 @@ func TestEnvLicenseChecker_Community(t *testing.T) {
 	}
 	if v := checker.MaxSSEConnections(); v != 5 {
 		t.Errorf("EnvLicenseChecker.MaxSSEConnections() = %d, want 5", v)
+	}
+	if v := checker.MaxCostEstimatesPerDay(); v != 10 {
+		t.Errorf("EnvLicenseChecker.MaxCostEstimatesPerDay() = %d, want 10", v)
+	}
+	if v := checker.MaxPendingApprovals(); v != 5 {
+		t.Errorf("EnvLicenseChecker.MaxPendingApprovals() = %d, want 5", v)
 	}
 }
 
