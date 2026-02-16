@@ -232,9 +232,27 @@ func (r *Router) RouteRequest(ctx context.Context, req CompletionRequest, opts .
 		TokensUsed:     response.Usage.TotalTokens,
 	}
 
-	// Add cost estimate if available
+	// Add cost estimate if available, preferring actual tokens over pre-execution estimates
 	if estimate := provider.EstimateCost(req); estimate != nil {
-		routeInfo.EstimatedCost = estimate.TotalEstimate
+		if response.Usage.PromptTokens > 0 || response.Usage.CompletionTokens > 0 {
+			routeInfo.EstimatedCost = CalculateCost(
+				response.Usage.PromptTokens,
+				response.Usage.CompletionTokens,
+				estimate.InputCostPer1K,
+				estimate.OutputCostPer1K,
+			)
+		} else if response.Usage.TotalTokens > 0 {
+			// Provider reported total but not split — approximate 50/50
+			half := response.Usage.TotalTokens / 2
+			routeInfo.EstimatedCost = CalculateCost(
+				half,
+				response.Usage.TotalTokens-half,
+				estimate.InputCostPer1K,
+				estimate.OutputCostPer1K,
+			)
+		} else {
+			routeInfo.EstimatedCost = estimate.TotalEstimate
+		}
 	}
 
 	return response, routeInfo, nil

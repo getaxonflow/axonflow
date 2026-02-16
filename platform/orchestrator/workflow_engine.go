@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,8 @@ type PolicyEventInput struct {
 type WorkflowEngine struct {
 	stepProcessors map[string]StepProcessor
 	storage        WorkflowStorage
-	replayRecorder ReplayRecorder // Execution replay recorder (#763)
+	replayRecorder ReplayRecorder    // Execution replay recorder (#763)
+	pricingConfig  PlanCostEstimator // Cost calculation for step snapshots
 }
 
 // Workflow represents a workflow definition
@@ -630,6 +632,11 @@ func (e *WorkflowEngine) SetReplayRecorder(recorder ReplayRecorder) {
 	e.replayRecorder = recorder
 }
 
+// SetPricingConfig sets the pricing configuration for step cost calculation
+func (e *WorkflowEngine) SetPricingConfig(config PlanCostEstimator) {
+	e.pricingConfig = config
+}
+
 // Execute a workflow
 func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
 	// Create execution instance
@@ -787,10 +794,31 @@ func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID strin
 		if m, ok := output["model"].(string); ok {
 			model = m
 		}
-		if t, ok := output["tokens_used"].(int); ok {
-			tokensIn = t / 2  // Approximate split
-			tokensOut = t / 2
+		switch t := output["tokens_used"].(type) {
+		case int:
+			tokensIn = t / 2 // Approximate split
+			tokensOut = t - tokensIn
+		case float64:
+			total := int(t)
+			tokensIn = total / 2
+			tokensOut = total - tokensIn
+		case json.Number:
+			if total, err := t.Int64(); err == nil {
+				tokensIn = int(total) / 2
+				tokensOut = int(total) - tokensIn
+			}
+		case string:
+			if total, err := strconv.Atoi(t); err == nil {
+				tokensIn = total / 2
+				tokensOut = total - tokensIn
+			}
 		}
+	}
+
+	// Calculate cost from tokens using pricing config
+	var costUSD float64
+	if e.pricingConfig != nil && tokensIn+tokensOut > 0 {
+		costUSD = e.pricingConfig.EstimateCost(provider, model, tokensIn, tokensOut)
 	}
 
 	// Extract policy info from input context (Issue #1020)
@@ -828,6 +856,7 @@ func (e *WorkflowEngine) recordStepSnapshot(ctx context.Context, requestID strin
 		Model:             model,
 		TokensIn:          tokensIn,
 		TokensOut:         tokensOut,
+		CostUSD:           costUSD,
 		Error:             errMsg,
 		PoliciesChecked:   policiesChecked,
 		PoliciesTriggered: policiesTriggered,

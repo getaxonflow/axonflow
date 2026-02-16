@@ -93,7 +93,7 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if strings.Contains(err.Error(), "concurrent execution limit reached") {
 			h.writeError(w, http.StatusTooManyRequests, "CONCURRENT_EXECUTION_LIMIT",
-				"Maximum concurrent executions reached. Upgrade your license for higher limits: https://docs.getaxonflow.com/evaluation-license")
+				"Maximum concurrent executions reached. Upgrade your license for higher limits: https://getaxonflow.com/evaluation-license")
 			return
 		}
 		h.logger.Printf("[WorkflowControl] CreateWorkflow error: %v", err)

@@ -7,15 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.3.1] - 2026-02-16
+
+### Community
+
+#### Fixed
+
+- **Execution cost always $0.0000**: `recordStepSnapshot()` now calculates actual cost from tokens using pricing config instead of leaving `CostUSD` as zero. Costs visible in Execution Viewer UI and API responses
+- **Router cost used pre-execution estimates**: LLM router now uses actual response token counts for cost calculation instead of pre-execution estimates, with fallback for providers that only report total tokens
+
+---
+
 ## [4.3.0] - 2026-02-13
 
 ### Community
 
 #### Fixed
 
-- **WCP error sentinel consistency (Bugs A, I)**: All repository methods (`CompleteWorkflow`, `AbortWorkflow`, `FailWorkflow`, `ResumeWorkflow`) now wrap `ErrWorkflowNotFound` with `%w` instead of creating new errors — `errors.Is(err, ErrWorkflowNotFound)` works correctly across all WCP operations. Added missing `rows.Err()` checks in `List()`, `GetStepsForWorkflow()`, `GetPendingApprovals()`.
+- **WCP error sentinel consistency (Bugs A, I)**: All repository methods (`CompleteWorkflow`, `AbortWorkflow`, `FailWorkflow`, `ResumeWorkflow`) now wrap `ErrWorkflowNotFound` with `%w` instead of creating new errors. `errors.Is(err, ErrWorkflowNotFound)` works correctly across all WCP operations. Added missing `rows.Err()` checks in `List()`, `GetStepsForWorkflow()`, `GetPendingApprovals()`.
 - **MAP execution tracking accuracy (Bugs C, D)**: `SyncPlanStatus` replaced O(n) `ListExecutions` scan with direct `GetExecutionByPlanID()` lookup using new GIN index on `metadata->>'plan_id'`. Expired plans now tracked as `expired` status instead of incorrectly mapping to `completed`.
-- **StepModeEvaluator idempotency (Bug J)**: Step gate evaluation keyed on `(planID, stepIndex)` via `sync.Map` instead of a plain counter — retries return the cached decision instead of advancing the counter.
+- **StepModeEvaluator idempotency (Bug J)**: Step gate evaluation keyed on `(planID, stepIndex)` via `sync.Map` instead of a plain counter. Retries return the cached decision instead of advancing the counter.
 - **Connection tracker tenant validation (Bug K)**: SSE connections with missing `X-Tenant-ID` header now return `400 Bad Request` instead of silently falling back to a shared `"default"` bucket.
 - **SyncPlanStatus error visibility (Bug L)**: `SyncPlanStatus` errors logged as warnings instead of silently discarded via `_ =`.
 - **json.Marshal error handling (Bug B)**: Abort and fail reason marshaling errors in WCP repository now propagated instead of suppressed with `_ :=`.
@@ -23,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 
 - **Cost Estimation Endpoints** (#1072): Pre-execution cost analysis for MAP plans
-  - `POST /api/v1/plans/estimate` — Estimate cost from provider/model/steps specification
-  - `GET /api/v1/plans/{id}/cost` — Get cost estimate for an existing plan
+  - `POST /api/v1/plans/estimate`: Estimate cost from provider/model/steps specification
+  - `GET /api/v1/plans/{id}/cost`: Get cost estimate for an existing plan
   - Tiered response: community gets aggregate total only (10/day), evaluation gets per-step breakdown (100/day), enterprise unlimited
 - **WCP Community Approve/Reject**: Basic approval flow via step gates with HITL status endpoint (`GET /api/v1/hitl/status`)
   - Tiered limits: community max 5 pending approvals, evaluation max 25, enterprise unlimited
@@ -56,8 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 
-- Unified execution `CancelExecution` and `StreamExecutionStatus` endpoints returned 404 when given a WCP workflow ID or MAP plan ID — now uses the same multi-strategy resolution as `GetExecutionStatus` (direct ID → WCP tracker → MAP tracker → metadata fallback)
-- Execution history FK constraint on `tenant_id` prevented record creation in community mode when SDK sends a default client ID — dropped FK constraint in favor of RLS policy for tenant isolation (migration 049)
+- Unified execution `CancelExecution` and `StreamExecutionStatus` endpoints returned 404 when given a WCP workflow ID or MAP plan ID. Now uses the same multi-strategy resolution as `GetExecutionStatus` (direct ID → WCP tracker → MAP tracker → metadata fallback)
+- Execution history FK constraint on `tenant_id` prevented record creation in community mode when SDK sends a default client ID. Dropped FK constraint in favor of RLS policy for tenant isolation (migration 049)
 
 ## [4.2.1] - 2026-02-10
 
@@ -83,29 +94,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Evaluation Tier Licensing**: Free 90-day license with elevated limits for production proof-of-concepts
   - Request at [getaxonflow.com/evaluation-license](https://getaxonflow.com/evaluation-license)
   - Limits: 50 tenant policies, 5 org policies, 5 connectors with custom policies, 3 LLM providers, 14-day audit retention, 100 plans, 25 versions/plan
-  - Graceful degradation to Community tier on expiry — no downtime, no data loss
+  - Graceful degradation to Community tier on expiry. No downtime, no data loss
 - **Ed25519 License Signing**: Asymmetric cryptographic signatures replace HMAC-SHA256
   - Public keys embedded in binary; private keys stay in infrastructure (AWS Secrets Manager)
-  - Format: `AXON-{PAYLOAD}.{SIGNATURE}` — old V2 (`AXON-V2-...`) and V1 formats rejected with clear upgrade message
-  - Two keypairs: evaluation (for free licenses) and enterprise (for paid licenses) — blast radius isolation
+  - Format: `AXON-{PAYLOAD}.{SIGNATURE}`. Old V2 (`AXON-V2-...`) and V1 formats rejected with clear upgrade message
+  - Two keypairs: evaluation (for free licenses) and enterprise (for paid licenses). Blast radius isolation
 - **Feature Limits Boundary Testing**: `examples/feature-limits/http/test_feature_limits.sh` validates all tier limits across Community, Evaluation, and Enterprise modes
 - **E2E Setup Script**: `scripts/setup-e2e-testing.sh` now supports `evaluation` mode alongside `community` and `enterprise`
 - **Workflow Control Plane v1** (#834): Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
-  - `POST /api/v1/workflows` — Register workflow with name, source, total_steps, metadata
-  - `GET /api/v1/workflows` — List workflows with status/source filters
-  - `GET /api/v1/workflows/{id}` — Get workflow status and step history
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/gate` — Policy-based step gate (allow/block/require_approval)
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/complete` — Mark step completed with output data
-  - `POST /api/v1/workflows/{id}/complete` — Mark workflow completed
-  - `POST /api/v1/workflows/{id}/abort` — Abort workflow with reason
-  - `POST /api/v1/workflows/{id}/resume` — Resume after approval
+  - `POST /api/v1/workflows`: Register workflow with name, source, total_steps, metadata
+  - `GET /api/v1/workflows`: List workflows with status/source filters
+  - `GET /api/v1/workflows/{id}`: Get workflow status and step history
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/gate`: Policy-based step gate (allow/block/require_approval)
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/complete`: Mark step completed with output data
+  - `POST /api/v1/workflows/{id}/complete`: Mark workflow completed
+  - `POST /api/v1/workflows/{id}/abort`: Abort workflow with reason
+  - `POST /api/v1/workflows/{id}/resume`: Resume after approval
   - Step gate responses include `policies_evaluated` and `policies_matched` for policy transparency
   - Audit logging: `workflow_created`, `workflow_step_gate`, `workflow_completed`, `workflow_aborted`
 - **MAP Plan Versioning & Rollback** (#1072): Full plan lifecycle management with optimistic locking
-  - `UpdatePlan()` — Update plan with version conflict detection (`ErrVersionConflict` on mismatch)
-  - `GetPlanVersions()` — Retrieve full version history with change tracking (changed_by, change_type, change_summary)
-  - `RollbackPlan()` — Restore to a previous version snapshot (creates pre-rollback snapshot first)
-  - `CleanupExpiredPlans()` — Background worker removes expired plans (configurable interval, default 15min)
+  - `UpdatePlan()`: Update plan with version conflict detection (`ErrVersionConflict` on mismatch)
+  - `GetPlanVersions()`: Retrieve full version history with change tracking (changed_by, change_type, change_summary)
+  - `RollbackPlan()`: Restore to a previous version snapshot (creates pre-rollback snapshot first)
+  - `CleanupExpiredPlans()`: Background worker removes expired plans (configurable interval, default 15min)
   - Community limits: max 25 plans with versioning, max 10 versions per plan
   - Migration `047_plan_versioning.sql`: adds `version` column to plans, creates `plan_versions` table
 - **MAP Confirm & Step Execution Modes** (#1072): HITL execution modes via WCP infrastructure
@@ -115,9 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Maps plan steps to WCP step types (llm-call, tool-call, connector-call, etc.)
 - **MAP Plan Cancellation** (#1074): `PlanStatusCancelled` constant and `CancelPlan()` method in planning service
 - **Unified Execution Tracking** (#1074, #1075): Consistent status tracking across MAP plans and WCP workflows
-  - `GET /api/v1/unified/executions` — List executions with type/status filters
-  - `GET /api/v1/unified/executions/{id}` — Get status by execution ID, workflow ID, or plan ID
-  - `POST /api/v1/unified/executions/{id}/cancel` — Cancel execution (propagates to MAP or WCP)
+  - `GET /api/v1/unified/executions`: List executions with type/status filters
+  - `GET /api/v1/unified/executions/{id}`: Get status by execution ID, workflow ID, or plan ID
+  - `POST /api/v1/unified/executions/{id}/cancel`: Cancel execution (propagates to MAP or WCP)
   - MAPExecutionTracker: adapts planning service to unified format, syncs plan state changes
   - WCPExecutionTracker: adapts WCP service to unified format, maps step decisions to unified status
   - Lookup by execution ID, `wf_*`/`wcp_*` prefix, `plan_*` prefix, or metadata search
@@ -138,7 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Fixed
 
 - **Tenant ownership check on unified execution endpoints**: Execution list/get/cancel now validates tenant ownership, preventing cross-tenant data access
-- **Agent gateway always returned `success: true`**: Orchestrator errors (409 cancelled, 410 expired, 403 blocked) were buried in nested response data — agent never propagated them to `ClientResponse`. SDKs never raised exceptions for failed operations. Also fixed metrics counting errors as successes and usage recorder status codes.
+- **Agent gateway always returned `success: true`**: Orchestrator errors (409 cancelled, 410 expired, 403 blocked) were buried in nested response data. Agent never propagated them to `ClientResponse`. SDKs never raised exceptions for failed operations. Also fixed metrics counting errors as successes and usage recorder status codes.
 - **MAP confirm mode not enforced**: `ConfirmModeEvaluator` was defined but never wired into WCP `StepGate()`. Policy engine always returned "allow" instead of "require_approval". Fixed by adding `GateOverride` to `StepGateRequest`, used by `ExecuteWithConfirm` and `resumePlanHandler`.
 - **MAP execution timeout too tight**: Hardcoded 60s timeout caused `context deadline exceeded` on multi-step balanced mode plans. Now scales to 30s per step with 60s minimum floor.
 - **Examples hardcoded user tokens**: All examples now read `AXONFLOW_USER_TOKEN` env var with safe community defaults
@@ -148,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Changed
 
 - **License format migration**: All licenses must use Ed25519 format (`AXON-{PAYLOAD}.{SIGNATURE}`). Old V2 HMAC format (`AXON-V2-...`) returns Community tier with upgrade guidance. No action needed for users without a license (Community mode unchanged).
-- **HMAC startup check removed**: `ValidateHMACSecretAtStartup()` is now a no-op — no HMAC secret environment variable required at startup
+- **HMAC startup check removed**: `ValidateHMACSecretAtStartup()` is now a no-op. No HMAC secret environment variable required at startup
 - **BaseExecutionTracker**: Now publishes events via EventHub after every state change (start, complete, fail, cancel, step transitions)
 - **UnifiedExecutionHandler**: Accepts EventHub and PlanService; registers cancel, stream, and list/get routes
 - **ADR-030**: Updated with SSE streaming, cancellation, and versioning architecture patterns
@@ -163,16 +174,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 
 - **WCP HITL Approval Gates** (#1169): Human-in-the-loop approval for workflow steps
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/approve` — Approve a pending step (requires approval_id from gate)
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/reject` — Reject step with optional reason
-  - `GET /api/v1/workflows/approvals/pending` — List all workflows awaiting human approval
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/approve`: Approve a pending step (requires approval_id from gate)
+  - `POST /api/v1/workflows/{id}/steps/{step_id}/reject`: Reject step with optional reason
+  - `GET /api/v1/workflows/approvals/pending`: List all workflows awaiting human approval
   - Approval URLs generated for notification links
 - **Webhook Notification System** (#1169): Event-driven notifications for workflow and approval events
-  - `POST /api/v1/webhooks` — Create webhook subscription
-  - `GET /api/v1/webhooks` — List subscriptions
-  - `GET /api/v1/webhooks/{id}` — Get subscription details
-  - `PUT /api/v1/webhooks/{id}` — Update subscription
-  - `DELETE /api/v1/webhooks/{id}` — Delete subscription
+  - `POST /api/v1/webhooks`: Create webhook subscription
+  - `GET /api/v1/webhooks`: List subscriptions
+  - `GET /api/v1/webhooks/{id}`: Get subscription details
+  - `PUT /api/v1/webhooks/{id}`: Update subscription
+  - `DELETE /api/v1/webhooks/{id}`: Delete subscription
   - 7 event types: `step.approval_required`, `step.approved`, `step.rejected`, `step.completed`, `workflow.completed`, `workflow.aborted`, `workflow.failed`
   - HMAC-SHA256 request signing when secret configured; secret never exposed in API responses
   - SSRF protection: blocks private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8)
@@ -188,7 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 
 - **AES-256-GCM Connector Credential Encryption** (#1157): Credentials encrypted at rest via `CONNECTOR_ENCRYPTION_KEY` env var
-  - Credentials stored separately from connection URLs — no secrets in `connection_url` column
+  - Credentials stored separately from connection URLs. No secrets in `connection_url` column
   - Supports encrypted, JSON-quoted encrypted, and plain JSON formats (backward compatible)
 - **Connector SDK Runtime Wiring** (#1140): Connector installs persist to `connector_configs` table; Agent reads runtime configs from DB with static fallback
   - All SDK-backed connectors (Postgres, MySQL, MongoDB, Redis, Cassandra, HTTP) migrated to `connectors/sdk.BaseConnector`
@@ -234,10 +245,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Added
 
 - **Configurable System Policy Architecture** (#1121): Per-mode policy control for MCP and Gateway modes
-  - `MCP_STATIC_POLICIES_ENABLED` / `GATEWAY_STATIC_POLICIES_ENABLED` — enable/disable static policies per mode
-  - `MCP_PII_ACTION` / `GATEWAY_PII_ACTION` — override PII action per mode (block/redact/warn/log)
-  - `MCP_SQLI_ACTION` / `GATEWAY_SQLI_ACTION` — override SQLi action per mode
-  - `MCP_STATIC_POLICIES_SKIP_CATEGORIES` / `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES` — skip specific categories
+  - `MCP_STATIC_POLICIES_ENABLED` / `GATEWAY_STATIC_POLICIES_ENABLED`: enable/disable static policies per mode
+  - `MCP_PII_ACTION` / `GATEWAY_PII_ACTION`: override PII action per mode (block/redact/warn/log)
+  - `MCP_SQLI_ACTION` / `GATEWAY_SQLI_ACTION`: override SQLi action per mode
+  - `MCP_STATIC_POLICIES_SKIP_CATEGORIES` / `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES`: skip specific categories
   - Env var precedence: mode-specific → global (`PII_ACTION`) → engine defaults
 - **Policy Engine Consolidation** (#1122): Single evaluation path across all modes
   - Proxy, Gateway, and MCP all use `UnifiedPolicyEngine` as primary path (was three separate engines)
@@ -245,8 +256,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Admin role handling via `SkipCategories` instead of engine-level role checks
 - **MCP Execute Policy Responses** (#969): `policy_info`, `redacted`, `redacted_fields` in MCP execute responses
 - **Execution Replay CLI + Embedded Execution Viewer UI** (#1120):
-  - `axonctl executions list/get/replay/export` — CLI commands for inspecting workflow executions from the terminal
-  - Browser-based execution viewer at `/ui/executions/` via Go `embed.FS` — filterable execution list, step timeline visualization, JSON export
+  - `axonctl executions list/get/replay/export`: CLI commands for inspecting workflow executions from the terminal
+  - Browser-based execution viewer at `/ui/executions/` via Go `embed.FS`. Filterable execution list, step timeline visualization, JSON export
   - Supports both MAP (Multi-Agent Planning) and WCP (Workflow Control Plane) executions
 - **HMAC-Signed Internal Service Tokens** (#627, #1114): HMAC-SHA256 signed tokens replace plain shared-secret for orchestrator-to-agent auth. 5-minute replay protection. Backward-compatible with deprecation warning.
 - **Singapore PII patterns documentation** (#1076, #1118): SDK feature coverage docs updated with NRIC, FIN, UEN patterns
@@ -264,7 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Changed
 
-- **SDKs v3.0.0** — All four SDKs bumped to v3.0.0 (Python skips v2.0.0 for cross-SDK version consistency):
+- **SDKs v3.0.0**: All four SDKs bumped to v3.0.0 (Python skips v2.0.0 for cross-SDK version consistency):
   - **Removed `executeQuery()`** (deprecated since v2.5): Use `proxyLLMCall()` for proxy mode or MCP connector queries
   - **TypeScript**: Removed 5 deprecated LLM interceptors, added `wasRedacted()` helper
   - **Python**: Skipped v2.0.0 → v3.0.0 for consistency. Added `was_redacted()`, fixed internal MCP call serialization, fixed null `policies_evaluated` validation
@@ -290,7 +301,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP Community Auth** (#1109): MCP query/execute endpoints incorrectly required license validation in community mode, returning HTTP 401
   - Replaced raw environment variable check with canonical `isCommunityMode()` helper
   - Extracted duplicated license validation into shared `validateServiceLicense()` helper
-- **MAP Replay Recording** (#1108): Parallel execution path was missing replay recording — MAP executions left no trace in `execution_snapshots`
+- **MAP Replay Recording** (#1108): Parallel execution path was missing replay recording. MAP executions left no trace in `execution_snapshots`
   - Added `StartExecution`, `recordStepSnapshot`, `CompleteExecution`/`FailExecution` calls to parallel path
 - **MAP Parallel Data Race** (#1108): Input map shared across parallel goroutines without protection
 - **MAP Silent Error Swallowing** (#1108): `FailExecution` errors silently discarded in 4 call sites

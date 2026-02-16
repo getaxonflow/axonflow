@@ -35,6 +35,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
 
+	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/orchestrator/cost"    // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
@@ -1101,6 +1102,12 @@ func initializeComponents() {
 		if planningEngine != nil && pricing != nil {
 			planningEngine.SetPricingConfig(pricing)
 			log.Println("Cost estimation wired to Planning Engine ✅")
+		}
+
+		// Wire cost estimation into workflow engine for step snapshot costs
+		if workflowEngine != nil && pricing != nil {
+			workflowEngine.SetPricingConfig(pricing)
+			log.Println("Cost estimation wired to Workflow Engine ✅")
 		}
 
 		// Initialize MAP Two-Step Execution (#925)
@@ -2669,15 +2676,19 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if errors.Is(err, execution.ErrConcurrentExecutionLimit) {
 				limit := 5 // Community default
+				upgradeURL := "https://getaxonflow.com/evaluation-license"
 				if tierChecker != nil {
 					limit = tierChecker.MaxConcurrentExecutions()
+					if license.IsEvaluationOrHigher(tierChecker.Tier()) {
+						upgradeURL = "https://getaxonflow.com/enterprise"
+					}
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
 					"error": map[string]interface{}{
 						"code":    "CONCURRENT_EXECUTION_LIMIT",
-						"message": fmt.Sprintf("Maximum concurrent executions (%d) reached. Upgrade your license for higher limits: https://docs.getaxonflow.com/evaluation-license", limit),
+						"message": fmt.Sprintf("Maximum concurrent executions (%d) reached. Upgrade your license for higher limits: %s", limit, upgradeURL),
 					},
 				})
 				return
@@ -2686,6 +2697,13 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			unifiedExecID = execStatus.ExecutionID
 			log.Printf("[ExecutePlan] Started unified execution tracking: %s", unifiedExecID)
+
+			// Add 80% tier warning header if approaching concurrent execution limit
+			if tierChecker != nil && execStatus.TenantID != "" {
+				if activeCount, err := executionRepo.CountActive(r.Context(), execStatus.TenantID); err == nil {
+					addTierWarningIfNeeded(w, "concurrent_executions", activeCount, tierChecker.MaxConcurrentExecutions())
+				}
+			}
 		}
 	}
 

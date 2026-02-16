@@ -2,149 +2,177 @@
 #
 # AxonFlow Execution Replay API - HTTP Examples
 #
-# This script demonstrates how to use the Execution Replay API via curl.
+# Validates the Execution Replay API endpoints via curl with assertions.
 # The Execution Replay feature captures every step of workflow execution
 # for debugging, auditing, and compliance purposes.
 #
+# Tested endpoints:
+#   GET /api/v1/executions                 - List executions
+#   GET /api/v1/executions/{id}            - Get execution details
+#   GET /api/v1/executions/{id}/steps      - Get all execution steps
+#   GET /api/v1/executions/{id}/steps/{n}  - Get specific step
+#   GET /api/v1/executions/{id}/timeline   - Get execution timeline
+#   GET /api/v1/executions/{id}/export     - Export execution for compliance
+#
 # Usage: ./examples.sh
 #
+# Environment:
+#   AXONFLOW_ORCHESTRATOR_URL - Orchestrator URL (default: http://localhost:8081)
 
 set -e
 
 ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 
+echo "=============================================="
 echo "AxonFlow Execution Replay API - HTTP Examples"
-echo "=========================================="
-echo ""
+echo "=============================================="
 echo "Base URL: $ORCHESTRATOR_URL"
 echo ""
 
-# 1. List executions
-echo "1. List Executions"
-echo "-------------------"
-echo "GET ${ORCHESTRATOR_URL}/api/v1/executions?limit=10"
-echo ""
-echo "Response:"
-curl -s "${ORCHESTRATOR_URL}/api/v1/executions?limit=10" | jq .
-echo ""
+PASS=0
+FAIL=0
 
-# 2. List executions with filters
-echo "2. List Executions with Filters"
-echo "--------------------------------"
-echo "Filter by status:"
-echo "  GET ${ORCHESTRATOR_URL}/api/v1/executions?status=completed"
-echo ""
-echo "Filter by workflow:"
-echo "  GET ${ORCHESTRATOR_URL}/api/v1/executions?workflow_id=my-workflow"
-echo ""
-echo "Filter by time range:"
-echo "  GET ${ORCHESTRATOR_URL}/api/v1/executions?start_time=2025-01-01T00:00:00Z&end_time=2025-12-31T23:59:59Z"
-echo ""
-echo "Pagination:"
-echo "  GET ${ORCHESTRATOR_URL}/api/v1/executions?limit=20&offset=0"
-echo ""
-echo "With tenant/org headers:"
-echo '  curl -H "X-Tenant-ID: my-tenant" -H "X-Org-ID: my-org" ${ORCHESTRATOR_URL}/api/v1/executions'
+check_result() {
+    local test_name="$1"
+    local condition="$2"
+    if [ "$condition" = "true" ]; then
+        echo "   PASS: $test_name"
+        PASS=$((PASS + 1))
+    else
+        echo "   FAIL: $test_name"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# ========================================
+# 1. List executions
+# ========================================
+echo "1. List Executions"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions?limit=10"
+
+LIST_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions?limit=10" 2>/dev/null || echo '{}')
+LIST_VALID=$(echo "$LIST_RESPONSE" | jq 'has("executions")' 2>/dev/null || echo "false")
+check_result "List executions returns valid JSON with 'executions' field" "$LIST_VALID"
 echo ""
 
 # Get first execution ID if available
-EXECUTION_ID=$(curl -s "${ORCHESTRATOR_URL}/api/v1/executions?limit=1" | jq -r '.executions[0].request_id // empty')
+EXECUTION_ID=$(echo "$LIST_RESPONSE" | jq -r '.executions[0].request_id // empty' 2>/dev/null || echo "")
 
-if [ -n "$EXECUTION_ID" ]; then
-    echo "Found execution: $EXECUTION_ID"
+if [ -z "$EXECUTION_ID" ]; then
+    echo "No executions found. Run a workflow first to generate execution data."
     echo ""
-
-    # 3. Get execution details
-    echo "3. Get Execution Details"
-    echo "-------------------------"
-    echo "GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}"
+    echo "=============================================="
+    echo "Execution Replay Examples - Summary"
+    echo "=============================================="
+    echo "Passed: $PASS"
+    echo "Failed: $FAIL"
     echo ""
-    echo "Response:"
-    curl -s "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}" | jq .
-    echo ""
-
-    # 4. Get execution steps
-    echo "4. Get Execution Steps"
-    echo "----------------------"
-    echo "GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps"
-    echo ""
-    echo "Response:"
-    curl -s "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps" | jq .
-    echo ""
-
-    # 5. Get specific step
-    echo "5. Get Specific Step"
-    echo "--------------------"
-    echo "GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0"
-    echo ""
-    echo "Response:"
-    curl -s "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0" | jq .
-    echo ""
-
-    # 6. Get execution timeline
-    echo "6. Get Execution Timeline"
-    echo "--------------------------"
-    echo "GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline"
-    echo ""
-    echo "Response:"
-    curl -s "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline" | jq .
-    echo ""
-
-    # 7. Export execution
-    echo "7. Export Execution"
-    echo "-------------------"
-    echo "GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export"
-    echo ""
-    echo "With options:"
-    echo "  ?format=json"
-    echo "  ?include_input=true"
-    echo "  ?include_output=true"
-    echo "  ?include_policies=true"
-    echo ""
-    echo "Response (truncated):"
-    curl -s "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true" | jq . | head -30
-    echo "  ... (truncated)"
-    echo ""
-
-    # 8. Delete execution (commented out to prevent accidental deletion)
-    echo "8. Delete Execution"
-    echo "-------------------"
-    echo "DELETE ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}"
-    echo ""
-    echo "# Uncomment to delete:"
-    echo "# curl -X DELETE ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}"
-    echo ""
-
-else
-    echo "No executions found. Run a workflow to generate execution data."
-    echo ""
-    echo "Example API calls (replace {id} with actual execution ID):"
-    echo ""
-    echo "# Get execution details"
-    echo "curl ${ORCHESTRATOR_URL}/api/v1/executions/{id}"
-    echo ""
-    echo "# Get execution steps"
-    echo "curl ${ORCHESTRATOR_URL}/api/v1/executions/{id}/steps"
-    echo ""
-    echo "# Get execution timeline"
-    echo "curl ${ORCHESTRATOR_URL}/api/v1/executions/{id}/timeline"
-    echo ""
-    echo "# Export execution"
-    echo "curl ${ORCHESTRATOR_URL}/api/v1/executions/{id}/export"
-    echo ""
-    echo "# Delete execution"
-    echo "curl -X DELETE ${ORCHESTRATOR_URL}/api/v1/executions/{id}"
-    echo ""
+    if [ "$FAIL" -gt 0 ]; then
+        echo "$FAIL assertion(s) FAILED"
+        exit 1
+    else
+        echo "All assertions passed! (limited — no executions available)"
+        exit 0
+    fi
 fi
 
-echo "=========================================="
-echo "Execution Replay API Examples Complete!"
+echo "   Found execution: $EXECUTION_ID"
 echo ""
-echo "API Summary:"
-echo "  GET    /api/v1/executions                 - List executions"
-echo "  GET    /api/v1/executions/{id}            - Get execution details"
-echo "  GET    /api/v1/executions/{id}/steps      - Get all execution steps"
-echo "  GET    /api/v1/executions/{id}/steps/{n}  - Get specific step"
-echo "  GET    /api/v1/executions/{id}/timeline   - Get execution timeline"
-echo "  GET    /api/v1/executions/{id}/export     - Export execution for compliance"
-echo "  DELETE /api/v1/executions/{id}            - Delete execution"
+
+# ========================================
+# 2. Get execution details
+# ========================================
+echo "2. Get Execution Details"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}"
+
+DETAIL_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}" 2>/dev/null || echo '{}')
+# Detail response is {"summary": {...}, "steps": [...]}
+DETAIL_HAS_ID=$(echo "$DETAIL_RESPONSE" | jq 'has("request_id") or (.summary | has("request_id"))' 2>/dev/null || echo "false")
+check_result "Execution detail returns request_id" "$DETAIL_HAS_ID"
+
+# Validate cost fields exist
+DETAIL_HAS_COST=$(echo "$DETAIL_RESPONSE" | jq 'has("total_cost_usd") or (.summary | has("total_cost_usd"))' 2>/dev/null || echo "false")
+check_result "Execution detail contains total_cost_usd field" "$DETAIL_HAS_COST"
+
+DETAIL_HAS_STATUS=$(echo "$DETAIL_RESPONSE" | jq 'has("status") or (.summary | has("status"))' 2>/dev/null || echo "false")
+check_result "Execution detail contains status field" "$DETAIL_HAS_STATUS"
+echo ""
+
+# ========================================
+# 3. Get execution steps
+# ========================================
+echo "3. Get Execution Steps"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps"
+
+STEPS_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps" 2>/dev/null || echo '[]')
+# Steps endpoint returns a JSON array directly (not wrapped in {"steps": [...]})
+STEPS_IS_ARRAY=$(echo "$STEPS_RESPONSE" | jq 'type == "array"' 2>/dev/null || echo "false")
+check_result "Steps endpoint returns JSON array" "$STEPS_IS_ARRAY"
+
+STEPS_COUNT=$(echo "$STEPS_RESPONSE" | jq 'length' 2>/dev/null || echo "0")
+check_result "Steps array is non-empty (got $STEPS_COUNT)" "$([ "$STEPS_COUNT" -gt 0 ] && echo true || echo false)"
+
+# Validate step-level cost_usd field exists on first step
+STEP_HAS_COST=$(echo "$STEPS_RESPONSE" | jq '.[0] | has("cost_usd")' 2>/dev/null || echo "false")
+check_result "Step contains cost_usd field" "$STEP_HAS_COST"
+echo ""
+
+# ========================================
+# 4. Get specific step
+# ========================================
+echo "4. Get Specific Step"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0"
+
+STEP0_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0" 2>/dev/null || echo '{}')
+STEP0_HAS_NAME=$(echo "$STEP0_RESPONSE" | jq 'has("step_name") or has("name")' 2>/dev/null || echo "false")
+check_result "Specific step returns step name" "$STEP0_HAS_NAME"
+echo ""
+
+# ========================================
+# 5. Get execution timeline
+# ========================================
+echo "5. Get Execution Timeline"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline"
+
+TIMELINE_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline" 2>/dev/null || echo '[]')
+TIMELINE_VALID=$(echo "$TIMELINE_RESPONSE" | jq 'type == "array" or has("timeline") or has("events")' 2>/dev/null || echo "false")
+check_result "Timeline returns valid JSON response" "$TIMELINE_VALID"
+echo ""
+
+# ========================================
+# 6. Export execution
+# ========================================
+echo "6. Export Execution"
+echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true"
+
+EXPORT_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true" 2>/dev/null || echo '{}')
+EXPORT_VALID=$(echo "$EXPORT_RESPONSE" | jq 'type == "object"' 2>/dev/null || echo "false")
+check_result "Export returns valid JSON object" "$EXPORT_VALID"
+echo ""
+
+# ========================================
+# SUMMARY
+# ========================================
+echo "=============================================="
+echo "Execution Replay Examples - Summary"
+echo "=============================================="
+echo ""
+echo "API Endpoints Tested:"
+echo "  GET /api/v1/executions                 - List executions"
+echo "  GET /api/v1/executions/{id}            - Get execution details"
+echo "  GET /api/v1/executions/{id}/steps      - Get all execution steps"
+echo "  GET /api/v1/executions/{id}/steps/{n}  - Get specific step"
+echo "  GET /api/v1/executions/{id}/timeline   - Get execution timeline"
+echo "  GET /api/v1/executions/{id}/export     - Export execution"
+echo ""
+echo "Passed: $PASS"
+echo "Failed: $FAIL"
+echo ""
+
+if [ "$FAIL" -gt 0 ]; then
+    echo "$FAIL assertion(s) FAILED"
+    exit 1
+else
+    echo "All assertions passed!"
+    exit 0
+fi

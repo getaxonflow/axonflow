@@ -5,11 +5,60 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/agent/license"
 )
+
+// costEstimateRateLimiter tracks daily cost estimation usage per tenant.
+// NOTE: This is per-process in-memory state. In multi-replica deployments,
+// each replica enforces its own limit independently.
+type costEstimateRateLimiter struct {
+	mu      sync.Mutex
+	counts  map[string]int // tenant → count
+	resetAt time.Time      // when to reset (start of next UTC day)
+}
+
+var costRateLimiter = &costEstimateRateLimiter{
+	counts:  make(map[string]int),
+	resetAt: nextUTCMidnight(),
+}
+
+func nextUTCMidnight() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// tryConsume returns true if the request is within the daily limit for the given tenant.
+// Returns false and the current count if the limit is exceeded.
+func (rl *costEstimateRateLimiter) tryConsume(tenantID string, limit int) (bool, int) {
+	if limit <= 0 { // unlimited
+		return true, 0
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// Reset if past midnight
+	if time.Now().UTC().After(rl.resetAt) {
+		rl.counts = make(map[string]int)
+		rl.resetAt = nextUTCMidnight()
+	}
+
+	current := rl.counts[tenantID]
+	if current >= limit {
+		return false, current
+	}
+
+	rl.counts[tenantID]++
+	return true, current + 1
+}
 
 // CostEstimateRequest is the request body for POST /api/v1/plans/estimate.
 type CostEstimateRequest struct {
@@ -37,6 +86,7 @@ func estimatePlanCostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate request body before consuming rate limit quota
 	var req CostEstimateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendErrorResponse(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
@@ -46,6 +96,33 @@ func estimatePlanCostHandler(w http.ResponseWriter, r *http.Request) {
 	if len(req.Steps) == 0 {
 		sendErrorResponse(w, "At least one step is required", http.StatusBadRequest)
 		return
+	}
+
+	// Enforce daily rate limit per tenant (after validation)
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "_default"
+	}
+	if tierChecker != nil {
+		limit := tierChecker.MaxCostEstimatesPerDay()
+		if ok, count := costRateLimiter.tryConsume(tenantID, limit); !ok {
+			upgradeURL := "https://getaxonflow.com/evaluation-license"
+			if license.IsEvaluationOrHigher(tierChecker.Tier()) {
+				upgradeURL = "https://getaxonflow.com/enterprise"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"code":    "COST_ESTIMATE_LIMIT_EXCEEDED",
+					"message": fmt.Sprintf("Daily cost estimation limit (%d) reached (%d used). Upgrade your license for higher limits: %s", limit, count, upgradeURL),
+				},
+			})
+			return
+		} else {
+			// Add 80% warning header if approaching daily limit
+			addTierWarningIfNeeded(w, "cost_estimates_per_day", count, limit)
+		}
 	}
 
 	// Build a workflow from the request
@@ -75,7 +152,7 @@ func estimatePlanCostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include breakdown only for Evaluation tier and above
-	if tierChecker != nil && tierChecker.MaxCostEstimatesPerDay() > 10 || tierChecker.MaxCostEstimatesPerDay() == -1 {
+	if tierChecker != nil && license.IsEvaluationOrHigher(tierChecker.Tier()) {
 		resp.Breakdown = result.Breakdown
 	}
 
@@ -104,6 +181,32 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 	if planID == "" {
 		sendErrorResponse(w, "Plan ID is required", http.StatusBadRequest)
 		return
+	}
+
+	// Enforce daily rate limit per tenant (after input validation)
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "_default"
+	}
+	if tierChecker != nil {
+		limit := tierChecker.MaxCostEstimatesPerDay()
+		if ok, count := costRateLimiter.tryConsume(tenantID, limit); !ok {
+			upgradeURL := "https://getaxonflow.com/evaluation-license"
+			if license.IsEvaluationOrHigher(tierChecker.Tier()) {
+				upgradeURL = "https://getaxonflow.com/enterprise"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{
+					"code":    "COST_ESTIMATE_LIMIT_EXCEEDED",
+					"message": fmt.Sprintf("Daily cost estimation limit (%d) reached (%d used). Upgrade your license for higher limits: %s", limit, count, upgradeURL),
+				},
+			})
+			return
+		} else {
+			addTierWarningIfNeeded(w, "cost_estimates_per_day", count, limit)
+		}
 	}
 
 	orgID := r.Header.Get("X-Org-ID")
@@ -138,7 +241,7 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include breakdown only for Evaluation tier and above
-	if tierChecker != nil && tierChecker.MaxCostEstimatesPerDay() > 10 || tierChecker.MaxCostEstimatesPerDay() == -1 {
+	if tierChecker != nil && license.IsEvaluationOrHigher(tierChecker.Tier()) {
 		resp.Breakdown = result.Breakdown
 	}
 
