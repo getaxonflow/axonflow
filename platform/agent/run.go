@@ -896,7 +896,11 @@ func Run() {
 	// Register HITL (Human-in-the-Loop) API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Human oversight queue for high-risk AI decisions
 	hitlRepo := hitl.NewRepository(usageDB)
-	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{})
+	// Read pending approval limit from license tier
+	hitlLimits := license.GetCurrentLimits(context.Background())
+	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{
+		MaxPendingApprovals: hitlLimits.MaxPendingApprovals,
+	})
 	hitlHandler := hitl.NewHandler(hitlService)
 	hitlHandler.RegisterRoutes(globalRouter)
 	// Note: In community edition, RegisterRoutes is a no-op (HITL is an enterprise feature)

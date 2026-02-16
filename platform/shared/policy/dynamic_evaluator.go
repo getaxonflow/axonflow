@@ -296,8 +296,12 @@ func ValidateCustomPolicyConnectorLimit(config DynamicPolicyConfig) error {
 	}
 
 	if limit > 0 && len(config.EnabledConnectors) > limit {
-		return fmt.Errorf("%s tier supports custom policies on a maximum of %d connectors, got %d. Register unlimited connectors, but connectors with custom policies (rate limiting, budgets, time/role access) are limited to %d; upgrade to Enterprise for unlimited connectors with custom policies",
-			tier, limit, len(config.EnabledConnectors), limit)
+		upgradeHint := "get a free Evaluation license for 5 connectors at https://getaxonflow.com/evaluation-license"
+		if tier == "evaluation" {
+			upgradeHint = "upgrade to Enterprise for unlimited connectors at https://getaxonflow.com/enterprise"
+		}
+		return fmt.Errorf("%s tier supports custom policies on a maximum of %d connectors, got %d. Register unlimited connectors, but connectors with custom policies (rate limiting, budgets, time/role access) are limited to %d; %s",
+			tier, limit, len(config.EnabledConnectors), limit, upgradeHint)
 	}
 	return nil
 }
@@ -321,8 +325,12 @@ func EnforceCustomPolicyConnectorLimit(config DynamicPolicyConfig) []string {
 	if limit > 0 && len(config.EnabledConnectors) > limit {
 		rejected := config.EnabledConnectors[limit:]
 		kept := config.EnabledConnectors[:limit]
-		log.Printf("[DynamicPolicyEvaluator] %s tier: custom policies limited to %d connectors. Enabled: %v. Rejected (over limit): %v. Order is based on config; reorder MCP_DYNAMIC_POLICIES_CONNECTORS to change priority. Upgrade to Enterprise for unlimited.",
-			tier, limit, kept, rejected)
+		upgradeHint := "Get a free Evaluation license for 5 connectors at https://getaxonflow.com/evaluation-license"
+		if tier == "evaluation" {
+			upgradeHint = "Upgrade to Enterprise for unlimited connectors at https://getaxonflow.com/enterprise"
+		}
+		log.Printf("[DynamicPolicyEvaluator] %s tier: custom policies limited to %d connectors. Enabled: %v. Rejected (over limit): %v. Order is based on config; reorder MCP_DYNAMIC_POLICIES_CONNECTORS to change priority. %s",
+			tier, limit, kept, rejected, upgradeHint)
 		return kept
 	}
 	return config.EnabledConnectors

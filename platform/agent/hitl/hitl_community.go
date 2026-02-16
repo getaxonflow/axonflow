@@ -58,8 +58,9 @@ type Service struct{}
 
 // ServiceConfig contains configuration for the HITL service.
 type ServiceConfig struct {
-	DefaultExpiry time.Duration
-	MaxExpiry     time.Duration
+	DefaultExpiry       time.Duration
+	MaxExpiry           time.Duration
+	MaxPendingApprovals int // Ignored in Community edition
 }
 
 // NewService creates a new HITL service.

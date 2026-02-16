@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent/license"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/shared/execution"
 )
@@ -404,8 +405,12 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 	}
 	if h.connectionTracker != nil {
 		if err := h.connectionTracker.TryConnect(tenantID); err != nil {
+			upgradeURL := "https://getaxonflow.com/evaluation-license"
+			if tierChecker != nil && license.IsEvaluationOrHigher(tierChecker.Tier()) {
+				upgradeURL = "https://getaxonflow.com/enterprise"
+			}
 			h.writeError(w, http.StatusTooManyRequests, "TOO_MANY_REQUESTS",
-				fmt.Sprintf("SSE connection limit reached for tenant %s (max %d)", tenantID, h.connectionTracker.MaxConnections()))
+				fmt.Sprintf("SSE connection limit reached for tenant %s (max %d). Upgrade your license for higher limits: %s", tenantID, h.connectionTracker.MaxConnections(), upgradeURL))
 			return
 		}
 		defer h.connectionTracker.Disconnect(tenantID)
