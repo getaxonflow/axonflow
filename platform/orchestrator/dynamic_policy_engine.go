@@ -381,6 +381,15 @@ func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorReques
 			return req.Context[parts[1]]
 		}
 		return req.Context
+	case "media":
+		// Media governance fields — resolved from context["media_analysis"]
+		// These are populated by the media analysis pipeline before policy evaluation.
+		if len(parts) > 1 && req.Context != nil {
+			if analysis, ok := req.Context["media_analysis"].(map[string]interface{}); ok {
+				return analysis[parts[1]]
+			}
+		}
+		return nil
 	default:
 		return nil
 	}

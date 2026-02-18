@@ -1398,6 +1398,59 @@ func TestGetFieldValue_AdditionalCases(t *testing.T) {
 	}
 }
 
+// TestGetFieldValue_MediaFields tests media governance field extraction from context
+func TestGetFieldValue_MediaFields(t *testing.T) {
+	engine := &DynamicPolicyEngine{}
+
+	req := OrchestratorRequest{
+		Context: map[string]interface{}{
+			"media_analysis": map[string]interface{}{
+				"has_pii":               true,
+				"pii_types":             []string{"email", "phone"},
+				"content_safe":          true,
+				"has_extracted_text":     true,
+				"extracted_text_length":  42,
+			},
+		},
+	}
+
+	result := &PolicyEvaluationResult{}
+
+	tests := []struct {
+		name     string
+		field    string
+		expected interface{}
+	}{
+		{"media.has_pii", "media.has_pii", true},
+		{"media.content_safe", "media.content_safe", true},
+		{"media.has_extracted_text", "media.has_extracted_text", true},
+		{"media.extracted_text_length", "media.extracted_text_length", 42},
+		{"media.nonexistent", "media.nonexistent", nil},
+		{"media alone", "media", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := engine.getFieldValue(tt.field, req, result)
+			if got != tt.expected {
+				t.Errorf("getFieldValue(%s) = %v, want %v", tt.field, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetFieldValue_MediaFieldsWithoutAnalysis tests media field when no analysis present
+func TestGetFieldValue_MediaFieldsWithoutAnalysis(t *testing.T) {
+	engine := &DynamicPolicyEngine{}
+	req := OrchestratorRequest{Context: map[string]interface{}{}}
+	result := &PolicyEvaluationResult{}
+
+	got := engine.getFieldValue("media.has_pii", req, result)
+	if got != nil {
+		t.Errorf("expected nil for media field without analysis, got %v", got)
+	}
+}
+
 // TestEvaluateCondition_AdditionalOperators tests additional condition evaluation operators
 func TestEvaluateCondition_AdditionalOperators(t *testing.T) {
 	engine := &DynamicPolicyEngine{}

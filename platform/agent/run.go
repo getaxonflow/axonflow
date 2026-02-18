@@ -219,20 +219,30 @@ type ClientRequest struct {
 	SkipLLM     bool                   `json:"skip_llm,omitempty"` // Skip LLM calls for hourly tests
 	Context     map[string]interface{} `json:"context"`
 	PlanID      string                 `json:"plan_id,omitempty"`  // For execute-plan requests
+	Media       []MediaContentRequest  `json:"media,omitempty"`    // Optional media (images) for multimodal governance
+}
+
+// MediaContentRequest represents a media item in the client API request.
+type MediaContentRequest struct {
+	Source     string `json:"source"`               // "base64" or "url"
+	Base64Data string `json:"base64_data,omitempty"` // Base64-encoded image data
+	URL        string `json:"url,omitempty"`         // Image URL
+	MIMEType   string `json:"mime_type"`             // e.g., "image/jpeg"
 }
 
 type ClientResponse struct {
-	Success     bool                   `json:"success"`
-	Data        interface{}            `json:"data,omitempty"`
-	Result      string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
-	PlanID      string                 `json:"plan_id,omitempty"`  // For multi-agent planning
-	Steps       []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
-	Metadata    map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
-	Error       string                 `json:"error,omitempty"`
-	Blocked     bool                   `json:"blocked"`
-	BlockReason string                 `json:"block_reason,omitempty"`
-	PolicyInfo  *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
-	BudgetInfo  *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget enforcement status
+	Success        bool                   `json:"success"`
+	Data           interface{}            `json:"data,omitempty"`
+	Result         string                 `json:"result,omitempty"`          // For multi-agent planning - MUST match SDK type
+	PlanID         string                 `json:"plan_id,omitempty"`         // For multi-agent planning
+	Steps          []interface{}          `json:"steps,omitempty"`           // For multi-agent planning - workflow steps
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`        // For multi-agent planning - MUST match SDK type
+	Error          string                 `json:"error,omitempty"`
+	Blocked        bool                   `json:"blocked"`
+	BlockReason    string                 `json:"block_reason,omitempty"`
+	PolicyInfo     *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
+	BudgetInfo     *BudgetInfo            `json:"budget_info,omitempty"`     // Issue #1082: Budget enforcement status
+	MediaAnalysis  interface{}            `json:"media_analysis,omitempty"`  // Media governance analysis results
 }
 
 type PolicyEvaluationInfo struct {
@@ -1463,6 +1473,13 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		BudgetInfo: budgetInfo, // Issue #1082: Include budget status in response
 	}
 
+	// Extract media_analysis from orchestrator response (media governance results)
+	if orchMap != nil {
+		if mediaAnalysis, exists := orchMap["media_analysis"]; exists && mediaAnalysis != nil {
+			response.MediaAnalysis = mediaAnalysis
+		}
+	}
+
 	// For multi-agent planning requests (GeneratePlan and ExecutePlan), flatten orchestrator response fields to top level
 	// This allows client SDKs to access plan_id, result, metadata directly
 	if req.RequestType == "multi-agent-plan" || req.RequestType == "execute-plan" {
@@ -1669,6 +1686,11 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		"skip_llm":     req.SkipLLM,
 		"context":      context,
 		"request_id":   fmt.Sprintf("req_%d", time.Now().UnixNano()),
+	}
+
+	// Forward media items (images) to orchestrator for media governance analysis
+	if len(req.Media) > 0 {
+		orchestratorReq["media"] = req.Media
 	}
 
 	jsonData, err := json.Marshal(orchestratorReq)

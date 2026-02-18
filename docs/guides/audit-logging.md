@@ -159,6 +159,15 @@ CREATE TABLE orchestrator_audit_logs (
 );
 ```
 
+### 4. Media Audit Records
+
+When media (images) are included in LLM requests, AxonFlow records media-specific audit fields alongside the standard audit entry:
+
+- **All tiers:** SHA-256 hash per image, MIME type, file size, PII flags from OCR, content safety result, warnings
+- **Enterprise:** Biometric detection flags, NSFW/violence scores, document classification (ID cards, passports, bank statements, medical records), per-analyzer metadata
+
+Media audit records are stored within the existing audit tables (e.g., `orchestrator_audit_logs` for Proxy Mode) as JSONB metadata. See [Media Governance](./media-governance.md) for full details on the analysis pipeline.
+
 ## Audit Modes
 
 AxonFlow supports two audit modes, configured via the `AUDIT_MODE` environment variable:

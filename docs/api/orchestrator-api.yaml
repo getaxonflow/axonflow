@@ -104,6 +104,12 @@ tags:
       Unified execution tracking and real-time streaming for MAP plans and WCP workflows.
       SSE streaming provides real-time status updates. Community: 5 concurrent connections
       per tenant. Enterprise: Unlimited.
+  - name: Media Governance
+    description: |
+      Multimodal image governance for LLM requests.
+      Analyzes images for PII (via OCR), content safety, face/biometric detection, and document classification.
+      Community tier provides fail-open governance with audit trail.
+      Enterprise tier adds configurable enforcement and cloud analyzers.
 
 paths:
   /health:
@@ -5112,6 +5118,107 @@ paths:
         '429':
           description: Too many concurrent connections (Community edition limit)
 
+  # ============================================================================
+  # Media Governance (Enterprise)
+  # ============================================================================
+
+  /api/v1/media/analyzers:
+    get:
+      summary: List registered media analyzers
+      description: Returns all registered media analyzers and their status. Enterprise only.
+      operationId: listMediaAnalyzers
+      tags:
+        - Media Governance
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of analyzers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  analyzers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MediaAnalyzerInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/media/analyzers/{name}/health:
+    get:
+      summary: Check analyzer health
+      description: Returns health status for a specific media analyzer. Enterprise only.
+      operationId: checkMediaAnalyzerHealth
+      tags:
+        - Media Governance
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Analyzer name
+      responses:
+        '200':
+          description: Analyzer health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  healthy:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          description: Analyzer not found
+
+  /api/v1/media/analyze:
+    post:
+      summary: Standalone media analysis
+      description: |
+        Analyze media content without routing to an LLM provider.
+        Useful for pre-screening images before sending to LLM workflows.
+        Enterprise only.
+      operationId: analyzeMedia
+      tags:
+        - Media Governance
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - media
+              properties:
+                media:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/MediaContentRequest'
+                  maxItems: 10
+      responses:
+        '200':
+          description: Media analysis results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaAnalysisResponse'
+        '400':
+          description: Invalid media content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
 components:
   schemas:
     HealthResponse:
@@ -5406,6 +5513,12 @@ components:
         timestamp:
           type: string
           format: date-time
+        media:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaContentRequest'
+          maxItems: 10
+          description: Optional media content (images) for multimodal governance analysis
 
     UserContext:
       type: object
@@ -5458,6 +5571,9 @@ components:
           $ref: '#/components/schemas/ProviderInfo'
         processing_time:
           type: string
+        media_analysis:
+          $ref: '#/components/schemas/MediaAnalysisResponse'
+          description: Media governance analysis results (present when media was submitted)
 
     PolicyEvaluationResult:
       type: object
@@ -8223,6 +8339,138 @@ components:
             additionalProperties:
               $ref: '#/components/schemas/ModelPricing'
 
+    MediaAnalyzerInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Analyzer name
+        type:
+          type: string
+          enum: [local-ocr, aws-rekognition, google-vision, azure-vision, custom]
+          description: Analyzer type
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [ocr, face_detection, content_safety, document_classification, label_detection, pii_detection]
+        healthy:
+          type: boolean
+          description: Whether the analyzer is currently healthy
+
+    MediaAnalysisItemResponse:
+      type: object
+      properties:
+        media_index:
+          type: integer
+          description: Index of the media item in the request
+        sha256_hash:
+          type: string
+          description: SHA-256 hash of the image data
+        has_faces:
+          type: boolean
+          description: Whether faces were detected
+        face_count:
+          type: integer
+          description: Number of faces detected
+        has_biometric_data:
+          type: boolean
+          description: Whether biometric data was detected (GDPR Art. 9)
+        nsfw_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: NSFW content score (0.0-1.0)
+        violence_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Violence content score (0.0-1.0)
+        content_safe:
+          type: boolean
+          description: Aggregated content safety flag
+        document_type:
+          type: string
+          description: Classified document type (e.g., id_card, passport, bank_statement)
+        is_sensitive_document:
+          type: boolean
+          description: Whether the document is classified as sensitive
+        has_pii:
+          type: boolean
+          description: Whether PII was detected in image text (via OCR)
+        pii_types:
+          type: array
+          items:
+            type: string
+          description: Types of PII detected (e.g., credit_card, ssn, email)
+        has_extracted_text:
+          type: boolean
+          description: Whether text was extracted from the image via OCR
+        extracted_text_length:
+          type: integer
+          description: Length of extracted text in characters (0 if none)
+        estimated_cost_usd:
+          type: number
+          format: double
+          description: Estimated analysis cost for this media item
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Governance warnings for this media item
+        structured_warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                description: Warning code identifier
+              message:
+                type: string
+                description: Human-readable warning message
+          description: Structured governance warnings with codes
+
+    MediaAnalysisResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaAnalysisItemResponse'
+        total_cost_usd:
+          type: number
+          format: double
+          description: Total cost of media analysis across all items
+        analysis_time_ms:
+          type: integer
+          format: int64
+          description: Total analysis time in milliseconds
+
+    MediaContentRequest:
+      type: object
+      required:
+        - source
+        - mime_type
+      properties:
+        source:
+          type: string
+          enum: [base64, url]
+          description: How the media is provided
+        base64_data:
+          type: string
+          description: Base64-encoded image data (required when source=base64)
+        url:
+          type: string
+          format: uri
+          description: URL to image (required when source=url)
+        mime_type:
+          type: string
+          enum: [image/jpeg, image/png, image/gif, image/webp]
+          description: Media content type
+
   responses:
     BadRequest:
       description: Invalid request
@@ -8255,6 +8503,16 @@ components:
             success: false
             error: "Resource not found"
 
+    Forbidden:
+      description: Forbidden - insufficient permissions or enterprise license required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Enterprise license required"
+
     InternalError:
       description: Internal server error
       content:
@@ -8264,3 +8522,10 @@ components:
           example:
             success: false
             error: "Internal server error"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Enterprise JWT token (see /scripts/generate-jwt.sh)

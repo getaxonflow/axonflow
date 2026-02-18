@@ -235,6 +235,19 @@ var ValidPolicyFields = []string{
 	"request_type",
 	"connector",
 	"cost_estimate",
+	// Media governance fields (multimodal image governance)
+	"media.has_faces",
+	"media.face_count",
+	"media.has_biometric_data",
+	"media.nsfw_score",
+	"media.violence_score",
+	"media.content_safe",
+	"media.document_type",
+	"media.is_sensitive_document",
+	"media.has_pii",
+	"media.pii_types",
+	"media.has_extracted_text",
+	"media.extracted_text_length",
 }
 
 // Valid action types

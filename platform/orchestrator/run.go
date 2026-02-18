@@ -40,6 +40,7 @@ import (
 	"axonflow/platform/orchestrator/cost"    // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
+	"axonflow/platform/orchestrator/media"   // Media governance analysis pipeline
 	"axonflow/platform/orchestrator/masfeat"          // MAS FEAT module - Community stub or EE impl
 	"axonflow/platform/orchestrator/planning"         // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/rbi"              // RBI FREE-AI module - Community stub or EE impl
@@ -120,6 +121,9 @@ var (
 
 	// Unified Execution Tracking (#1075)
 	unifiedExecutionHandler *UnifiedExecutionHandler // Unified execution status API
+
+	// Media Governance Pipeline
+	mediaPipeline *media.Pipeline // Media analysis pipeline (image governance)
 
 	// Tier enforcement
 	tierChecker         LicenseChecker       // Global tier-aware license checker
@@ -238,7 +242,16 @@ type OrchestratorRequest struct {
 	User        UserContext            `json:"user"`
 	Client      ClientContext          `json:"client"`
 	Context     map[string]interface{} `json:"context"`
+	Media       []MediaContentRequest  `json:"media,omitempty"` // Optional media (images) for multimodal requests
 	Timestamp   time.Time              `json:"timestamp"`
+}
+
+// MediaContentRequest represents a media item in the API request.
+type MediaContentRequest struct {
+	Source     string `json:"source"`               // "base64" or "url"
+	Base64Data string `json:"base64_data,omitempty"` // Base64-encoded image data
+	URL        string `json:"url,omitempty"`         // Image URL
+	MIMEType   string `json:"mime_type"`             // e.g., "image/jpeg"
 }
 
 type UserContext struct {
@@ -266,7 +279,36 @@ type OrchestratorResponse struct {
 	RedactedFields []string                `json:"redacted_fields,omitempty"`
 	PolicyInfo     *PolicyEvaluationResult `json:"policy_info"`
 	ProviderInfo   *ProviderInfo           `json:"provider_info"`
+	MediaAnalysis  *MediaAnalysisResponse  `json:"media_analysis,omitempty"` // Results of media governance analysis
 	ProcessingTime string                  `json:"processing_time"`
+}
+
+// MediaAnalysisResponse contains aggregated media analysis results in the API response.
+type MediaAnalysisResponse struct {
+	Results          []MediaAnalysisItemResponse `json:"results"`
+	TotalCostUSD     float64                     `json:"total_cost_usd"`
+	AnalysisTimeMs   int64                       `json:"analysis_time_ms"`
+}
+
+// MediaAnalysisItemResponse contains analysis results for a single media item.
+type MediaAnalysisItemResponse struct {
+	MediaIndex          int                  `json:"media_index"`
+	SHA256Hash          string               `json:"sha256_hash"`
+	HasFaces            bool                 `json:"has_faces"`
+	FaceCount           int                  `json:"face_count"`
+	HasBiometricData    bool                 `json:"has_biometric_data"`
+	NSFWScore           float64              `json:"nsfw_score"`
+	ViolenceScore       float64              `json:"violence_score"`
+	ContentSafe         bool                 `json:"content_safe"`
+	DocumentType        string               `json:"document_type,omitempty"`
+	IsSensitiveDocument bool                 `json:"is_sensitive_document"`
+	HasPII              bool                 `json:"has_pii"`
+	PIITypes            []string             `json:"pii_types,omitempty"`
+	HasExtractedText    bool                 `json:"has_extracted_text"`
+	ExtractedTextLength int                  `json:"extracted_text_length"`
+	EstimatedCostUSD    float64              `json:"estimated_cost_usd"`
+	Warnings            []string             `json:"warnings,omitempty"`
+	StructuredWarnings  []media.MediaWarning `json:"structured_warnings,omitempty"`
 }
 
 type PolicyEvaluationResult struct {
@@ -927,6 +969,24 @@ func initializeComponents() {
 	auditLogger = NewAuditLogger(dbURL)
 	log.Println("Audit Logger initialized")
 
+	// Initialize Media Governance Pipeline
+	log.Println("Initializing Media Governance Pipeline...")
+	mediaResult, mediaErr := media.BootstrapFromEnv(nil)
+	if mediaErr != nil {
+		log.Printf("⚠️  Media bootstrap error: %v (media governance will be unavailable)", mediaErr)
+	} else {
+		mediaPipeline = media.NewPipeline(
+			media.WithPipelineRegistry(mediaResult.Registry),
+			media.WithPipelineAuditLogger(media.NewAuditLogger()),
+		)
+		if len(mediaResult.AnalyzersBootstrapped) > 0 {
+			log.Printf("✅ Media Governance Pipeline initialized with %d analyzer(s): %v",
+				len(mediaResult.AnalyzersBootstrapped), mediaResult.AnalyzersBootstrapped)
+		} else {
+			log.Println("ℹ️  Media Governance Pipeline initialized (no analyzers configured — governance signals will be empty)")
+		}
+	}
+
 	// Initialize Audit Cleanup Service (tier-aware retention enforcement)
 	// tierChecker already initialized above (before LLM registry creation)
 	if usageDB != nil {
@@ -1102,12 +1162,6 @@ func initializeComponents() {
 		if planningEngine != nil && pricing != nil {
 			planningEngine.SetPricingConfig(pricing)
 			log.Println("Cost estimation wired to Planning Engine ✅")
-		}
-
-		// Wire cost estimation into workflow engine for step snapshot costs
-		if workflowEngine != nil && pricing != nil {
-			workflowEngine.SetPricingConfig(pricing)
-			log.Println("Cost estimation wired to Workflow Engine ✅")
 		}
 
 		// Initialize MAP Two-Step Execution (#925)
@@ -1347,6 +1401,99 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyUser, req.User)
 	ctx = context.WithValue(ctx, ctxKeyClient, req.Client)
 
+	// 0. Run media governance analysis (before policy evaluation so media.* fields are available)
+	var mediaAnalysisResp *MediaAnalysisResponse
+	if len(req.Media) > 0 && mediaPipeline != nil {
+		mediaItems := convertMediaRequestsToMediaContent(req.Media)
+		mediaStart := time.Now()
+		results, mediaErr := mediaPipeline.AnalyzeMedia(ctx, req.RequestID, mediaItems)
+		if mediaErr != nil {
+			log.Printf("[MEDIA] Analysis failed for request %s: %v", req.RequestID, mediaErr)
+			if mediaPipeline.GetEnforcementStrategy(ctx) == media.EnforcementFailClosed {
+				sendErrorResponse(w, fmt.Sprintf("media analysis failed: %v", mediaErr), http.StatusForbidden)
+				return
+			}
+		} else if len(results) > 0 {
+			mediaAnalysisResp = buildMediaAnalysisResponse(results)
+			if mediaAnalysisResp != nil {
+				mediaAnalysisResp.AnalysisTimeMs = time.Since(mediaStart).Milliseconds()
+			}
+
+			// Inject media analysis into request context for dynamic policy engine
+			// This enables media.* policy conditions (e.g., media.has_faces, media.nsfw_score)
+			if req.Context == nil {
+				req.Context = make(map[string]interface{})
+			}
+			// Flatten first result's signals for policy engine (covers single-image case)
+			// For multi-image, policies can use the aggregated worst-case signals
+			mediaCtx := map[string]interface{}{
+				"has_faces":             false,
+				"face_count":            0,
+				"has_biometric_data":    false,
+				"nsfw_score":            0.0,
+				"violence_score":        0.0,
+				"content_safe":          true,
+				"has_pii":               false,
+				"is_sensitive_document": false,
+				"has_extracted_text":    false,
+				"extracted_text_length": 0,
+				"document_type":         "",
+				"pii_types":             []string{},
+			}
+			// Aggregate worst-case signals across all media items
+			for _, r := range results {
+				if r.HasFaces {
+					mediaCtx["has_faces"] = true
+				}
+				mediaCtx["face_count"] = mediaCtx["face_count"].(int) + r.FaceCount
+				if r.HasBiometricData {
+					mediaCtx["has_biometric_data"] = true
+				}
+				if r.NSFWScore > mediaCtx["nsfw_score"].(float64) {
+					mediaCtx["nsfw_score"] = r.NSFWScore
+				}
+				if r.ViolenceScore > mediaCtx["violence_score"].(float64) {
+					mediaCtx["violence_score"] = r.ViolenceScore
+				}
+				if !r.ContentSafe {
+					mediaCtx["content_safe"] = false
+				}
+				if r.HasPII {
+					mediaCtx["has_pii"] = true
+				}
+				if r.IsSensitiveDocument {
+					mediaCtx["is_sensitive_document"] = true
+				}
+				if r.DocumentType != "" {
+					mediaCtx["document_type"] = r.DocumentType
+				}
+				if len(r.PIITypes) > 0 {
+					piiSet, _ := mediaCtx["_pii_set"].(map[string]bool)
+					if piiSet == nil {
+						piiSet = make(map[string]bool)
+					}
+					for _, pt := range r.PIITypes {
+						piiSet[pt] = true
+					}
+					mediaCtx["_pii_set"] = piiSet
+					piiTypes := make([]string, 0, len(piiSet))
+					for pt := range piiSet {
+						piiTypes = append(piiTypes, pt)
+					}
+					sort.Strings(piiTypes)
+					mediaCtx["pii_types"] = piiTypes
+				}
+				if r.ExtractedText != "" {
+					mediaCtx["has_extracted_text"] = true
+					mediaCtx["extracted_text_length"] = mediaCtx["extracted_text_length"].(int) + len(r.ExtractedText)
+				}
+			}
+			delete(mediaCtx, "_pii_set") // Remove temporary dedup set
+			req.Context["media_analysis"] = mediaCtx
+			log.Printf("[MEDIA] Analysis complete for request %s: %d item(s) analyzed", req.RequestID, len(results))
+		}
+	}
+
 	// 1. Evaluate dynamic policies
 	policyStartTime := time.Now()
 	policyResult := dynamicPolicyEngine.EvaluateDynamicPolicies(ctx, req)
@@ -1563,6 +1710,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 		RedactedFields: redactionInfo.RedactedFields,
 		PolicyInfo:     policyResult,
 		ProviderInfo:   providerInfo,
+		MediaAnalysis:  mediaAnalysisResp,
 		ProcessingTime: time.Since(startTime).String(),
 	}
 
@@ -2101,6 +2249,57 @@ func tenantWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Utility functions
+// convertMediaRequestsToMediaContent converts API media requests to pipeline media types.
+func convertMediaRequestsToMediaContent(requests []MediaContentRequest) []media.MediaContent {
+	items := make([]media.MediaContent, len(requests))
+	for i, r := range requests {
+		items[i] = media.MediaContent{
+			Source:     media.MediaSourceType(r.Source),
+			Base64Data: r.Base64Data,
+			URL:        r.URL,
+			MIMEType:   r.MIMEType,
+		}
+	}
+	return items
+}
+
+// buildMediaAnalysisResponse converts pipeline results to API response format.
+func buildMediaAnalysisResponse(results []*media.AggregatedMediaResult) *MediaAnalysisResponse {
+	if len(results) == 0 {
+		return nil
+	}
+
+	resp := &MediaAnalysisResponse{}
+	var totalCost float64
+
+	for _, r := range results {
+		item := MediaAnalysisItemResponse{
+			MediaIndex:          r.MediaIndex,
+			SHA256Hash:          r.SHA256Hash,
+			HasFaces:            r.HasFaces,
+			FaceCount:           r.FaceCount,
+			HasBiometricData:    r.HasBiometricData,
+			NSFWScore:           r.NSFWScore,
+			ViolenceScore:       r.ViolenceScore,
+			ContentSafe:         r.ContentSafe,
+			DocumentType:        r.DocumentType,
+			IsSensitiveDocument: r.IsSensitiveDocument,
+			HasPII:              r.HasPII,
+			PIITypes:            r.PIITypes,
+			HasExtractedText:    r.ExtractedText != "",
+			ExtractedTextLength: len(r.ExtractedText),
+			EstimatedCostUSD:    r.EstimatedCostUSD,
+			Warnings:            r.Warnings,
+			StructuredWarnings:  r.StructuredWarnings,
+		}
+		resp.Results = append(resp.Results, item)
+		totalCost += r.EstimatedCostUSD
+	}
+
+	resp.TotalCostUSD = totalCost
+	return resp
+}
+
 func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	response := OrchestratorResponse{
 		Success: false,
