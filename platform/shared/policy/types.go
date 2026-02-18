@@ -80,6 +80,12 @@ const (
 	CategoryComplianceSEBI    PolicyCategory = "compliance-sebi"
 	CategoryComplianceEUAIAct PolicyCategory = "compliance-euaiact" // Issue #1081 - EU AI Act
 	CategoryComplianceMASFEAT PolicyCategory = "compliance-masfeat" // Issue #1081 - MAS FEAT Singapore
+
+	// Media governance categories
+	CategoryMediaSafety    PolicyCategory = "media-safety"    // NSFW, violence content detection
+	CategoryMediaBiometric PolicyCategory = "media-biometric" // Face/biometric data detection (GDPR Art. 9)
+	CategoryMediaDocument  PolicyCategory = "media-document"  // Sensitive document classification
+	CategoryMediaPII       PolicyCategory = "media-pii"       // PII detected in images via OCR
 )
 
 // Severity levels for policies.

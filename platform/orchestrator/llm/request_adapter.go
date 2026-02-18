@@ -64,6 +64,10 @@ type RequestContext struct {
 	// Metadata contains additional request-specific data
 	Metadata map[string]any
 
+	// Media contains image content for multimodal requests.
+	// These are passed through to the LLM provider after media governance analysis.
+	Media []MediaInput
+
 	// Policy-based routing overrides (Issue #883 - strict provider enforcement)
 	// PolicyPreferredProvider is the preferred provider from dynamic policy evaluation
 	PolicyPreferredProvider string
@@ -110,6 +114,7 @@ func RequestContextToCompletionRequest(ctx RequestContext) CompletionRequest {
 		MaxTokens:    ctx.MaxTokens,
 		Temperature:  ctx.Temperature,
 		Model:        ctx.Model,
+		Media:        ctx.Media,
 		Metadata: map[string]any{
 			"request_type": ctx.RequestType,
 			"user_role":    ctx.UserRole,

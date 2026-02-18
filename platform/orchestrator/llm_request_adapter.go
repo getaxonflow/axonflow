@@ -190,6 +190,17 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		}
 	}
 
+	// Convert media items to LLM media input format
+	var mediaInputs []llm.MediaInput
+	for _, m := range req.Media {
+		mediaInputs = append(mediaInputs, llm.MediaInput{
+			Source:     m.Source,
+			Base64Data: m.Base64Data,
+			URL:        m.URL,
+			MIMEType:   m.MIMEType,
+		})
+	}
+
 	return llm.RequestContext{
 		Query:                   req.Query,
 		RequestType:             req.RequestType,
@@ -205,6 +216,7 @@ func OrchestratorRequestToLLMContext(req OrchestratorRequest) llm.RequestContext
 		Temperature:             temperature,
 		SystemPrompt:            systemPrompt,
 		AllowLocal:              true, // Allow local/ollama by default
+		Media:                   mediaInputs,
 		Metadata:                req.Context,
 		PolicyPreferredProvider: policyPreferredProvider,
 		PolicyAllowedProviders:  policyAllowedProviders,

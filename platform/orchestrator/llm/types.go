@@ -85,9 +85,29 @@ type CompletionRequest struct {
 	// When true, use CompleteStream instead of Complete.
 	Stream bool `json:"stream,omitempty"`
 
+	// Media contains image content for multimodal requests.
+	// Providers that support CapabilityVision will build content arrays with image blocks.
+	Media []MediaInput `json:"media,omitempty"`
+
 	// Metadata contains provider-specific options.
 	// Use this for features not covered by standard fields.
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// MediaInput represents a media item passed to the LLM provider.
+// This is the post-governance representation — media analysis has already been performed.
+type MediaInput struct {
+	// Source indicates how the media is provided: "base64" or "url".
+	Source string `json:"source"`
+
+	// Base64Data contains the base64-encoded image data.
+	Base64Data string `json:"base64_data,omitempty"`
+
+	// URL contains the image URL.
+	URL string `json:"url,omitempty"`
+
+	// MIMEType is the media content type (e.g., "image/jpeg").
+	MIMEType string `json:"mime_type"`
 }
 
 // CompletionResponse contains the result of an LLM completion.
@@ -210,6 +230,12 @@ const (
 
 	// CapabilityLongContext indicates support for >32K context windows.
 	CapabilityLongContext Capability = "long_context"
+
+	// CapabilityMultimodal indicates support for multiple input modalities (text + images).
+	CapabilityMultimodal Capability = "multimodal"
+
+	// CapabilityAudio indicates support for audio input.
+	CapabilityAudio Capability = "audio"
 )
 
 // ProviderInfo contains metadata about a registered provider.
@@ -252,6 +278,10 @@ type CostEstimate struct {
 
 	// TotalEstimate is the total estimated cost.
 	TotalEstimate float64 `json:"total_estimate"`
+
+	// MediaCostUSD is the estimated cost for media analysis (images).
+	// This is an aggregate across all analyzers and all media items.
+	MediaCostUSD float64 `json:"media_cost_usd,omitempty"`
 
 	// Currency is the currency for costs (default: "USD").
 	Currency string `json:"currency"`

@@ -83,6 +83,7 @@ RUN --mount=type=bind,source=.,target=/src \
       fi && \
       echo "=== Downloading enterprise dependencies ===" && \
       go get github.com/aws/aws-sdk-go-v2/service/marketplacemetering@latest && \
+      go get github.com/aws/aws-sdk-go-v2/service/bedrockruntime@latest && \
       go get github.com/snowflakedb/gosnowflake@latest && \
       echo "Enterprise dependencies downloaded"; \
     elif [ "$EDITION" = "enterprise" ]; then \

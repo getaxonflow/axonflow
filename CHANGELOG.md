@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.4.0] - 2026-02-18
+
+### Community
+
+#### Added
+
+- **Multimodal Image Governance Pipeline** (#1214): Images are governed the same way as prompts — analyzed before routing, policies can block, and everything is audited.
+  - `platform/orchestrator/media/` package: registry, factory, pipeline, audit, cost tracking, and license gating
+  - Pluggable `MediaAnalyzer` interface with Name(), Type(), Analyze(), HealthCheck(), Capabilities()
+  - Local OCR analyzer via Tesseract (`exec.CommandContext`, stdin/stdout, no temp files)
+  - PII detection via composition — OCR text feeds existing `PIIDetectorFunc`, no drift
+  - Pipeline runs analyzers in parallel per image, aggregates worst-case signals
+  - Community default: fail-open (warn and audit), never blocks
+  - 11 policy fields: `media.has_pii`, `media.has_faces`, `media.nsfw_score`, `media.violence_score`, `media.content_safe`, `media.has_biometric_data`, `media.is_sensitive_document`, `media.document_type`, `media.face_count`, `media.has_extracted_text`, `media.extracted_text_length`
+  - API: `media` array on request, `media_analysis` object on response with per-image results
+  - SHA-256 hashing for base64 and URL-sourced images (URL download with 30s timeout, 20MB limit, cached)
+  - Validation: MIME type allowlist, max 20MB per image, max 8192px per dimension, max 10 images per request
+  - Audit logging: hash, MIME type, file size, PII detection, content safety, timing (Enterprise adds biometric, safety scores, per-analyzer details)
+  - New examples in 5 languages (HTTP/curl, Go, Python, TypeScript, Java) with strict field validation
+- **SDK Media Types**: All 4 SDKs updated with `MediaContent`, `MediaAnalysisResult`, `MediaAnalysisResponse`
+  - Go: `ProxyLLMCallWithMedia()` method
+  - Python: `proxy_llm_call_with_media()` async + sync, caching disabled for media requests
+  - TypeScript: media support in `proxyLLMCall()` options
+  - Java: media in `ClientRequest.Builder`
+
+### Enterprise
+
+#### Added
+
+- **Cloud Media Analyzers** (build tag `enterprise`): AWS Rekognition, Google Cloud Vision, Azure Computer Vision
+- **Biometric and NSFW detection**: Face detection with count, NSFW and violence scoring, biometric data detection
+- **Document classification**: Sensitive document detection (tax forms, medical records, bank statements, etc.)
+- **Rich audit fields**: Per-analyzer details, biometric data, safety scores, document classification (gated behind `isEnterprise`)
+- **Fail-closed enforcement**: Configurable to block requests when media analysis fails (Enterprise only)
+
+#### Changed (Hardening)
+
+- **Structured warning codes**: All media warnings now include a `code` + `message` (e.g., `WarnMediaAnalyzerError`). Both `warnings` (string array, backward-compatible) and `structured_warnings` (code/message objects) are returned in API responses.
+- **Pre-decode base64 size check**: Oversized base64 payloads rejected before decode (avoids memory allocation).
+- **Base64 decoded bytes cache**: Decoded bytes from `Validate()` are reused by `ComputeSHA256()` and `GetRawData()`, eliminating redundant base64 decoding.
+- **Decompression bomb guard**: Images exceeding 100M pixels are rejected via `image.DecodeConfig` header check (fail-open for unparseable formats). New error code `ErrMediaDecompressionBomb`.
+- **Analyzer concurrency cap**: Default max 10 concurrent analyzers per image via semaphore (configurable via `WithMaxConcurrentAnalyzers`).
+- **Context cancellation**: Pipeline respects `ctx.Done()` during result collection; fail-open returns partial results with `WarnMediaPartialResults`, fail-closed returns error.
+- **Deterministic analyzer result ordering**: `AnalyzerResults` sorted by `AnalyzerName`.
+- **Fail-closed when no analyzers**: If enforcement is fail-closed and no analyzers are registered, pipeline returns error instead of empty results.
+- **Orchestrator fail-closed handler**: When media analysis fails in fail-closed mode, orchestrator responds `403 Forbidden`.
+- **Audit redaction**: Enterprise audit records redact `ExtractedText` to `[redacted: N chars]` and `PIIFinding.Value` to `[redacted]`.
+- **SDK cache skip for media**: Go and Java SDKs skip response caching when media is present (binary content makes cache keys unreliable).
+
+#### Breaking
+
+- **`extracted_text` removed from API responses and policy context.** Replaced by `has_extracted_text` (bool) and `extracted_text_length` (int). Existing policies referencing `media.extracted_text` must be updated to use `media.has_extracted_text` or `media.extracted_text_length`.
+
+---
+
 ## [4.3.1] - 2026-02-16
 
 ### Community

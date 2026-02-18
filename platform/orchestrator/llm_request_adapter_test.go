@@ -1180,3 +1180,134 @@ func TestUnifiedRouterWrapper_Concurrency(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestStrictProviderDefaultFromEnv(t *testing.T) {
+	original, had := os.LookupEnv("LLM_STRICT_PROVIDER_DEFAULT")
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("LLM_STRICT_PROVIDER_DEFAULT", original)
+		} else {
+			_ = os.Unsetenv("LLM_STRICT_PROVIDER_DEFAULT")
+		}
+	})
+
+	tests := []struct {
+		name     string
+		envVal   string
+		unset    bool
+		expected bool
+	}{
+		{"unset returns false", "", true, false},
+		{"empty string returns false", "", false, false},
+		{"1 returns true", "1", false, true},
+		{"true returns true", "true", false, true},
+		{"yes returns true", "yes", false, true},
+		{"on returns true", "on", false, true},
+		{"0 returns false", "0", false, false},
+		{"false returns false", "false", false, false},
+		{"no returns false", "no", false, false},
+		{"off returns false", "off", false, false},
+		{"TRUE uppercased returns true", "TRUE", false, true},
+		{"invalid returns false", "maybe", false, false},
+		{"whitespace trimmed", "  true  ", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.unset {
+				_ = os.Unsetenv("LLM_STRICT_PROVIDER_DEFAULT")
+			} else {
+				_ = os.Setenv("LLM_STRICT_PROVIDER_DEFAULT", tt.envVal)
+			}
+			got := strictProviderDefaultFromEnv()
+			if got != tt.expected {
+				t.Errorf("strictProviderDefaultFromEnv() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseStrictProviderFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		ctx       map[string]interface{}
+		wantVal   bool
+		wantFound bool
+	}{
+		{"nil context", nil, false, false},
+		{"missing key", map[string]interface{}{"other": "val"}, false, false},
+		{"bool true", map[string]interface{}{"strict_provider": true}, true, true},
+		{"bool false", map[string]interface{}{"strict_provider": false}, false, true},
+		{"string true", map[string]interface{}{"strict_provider": "true"}, true, true},
+		{"string yes", map[string]interface{}{"strict_provider": "yes"}, true, true},
+		{"string on", map[string]interface{}{"strict_provider": "on"}, true, true},
+		{"string 1", map[string]interface{}{"strict_provider": "1"}, true, true},
+		{"string false", map[string]interface{}{"strict_provider": "false"}, false, true},
+		{"string no", map[string]interface{}{"strict_provider": "no"}, false, true},
+		{"string off", map[string]interface{}{"strict_provider": "off"}, false, true},
+		{"string 0", map[string]interface{}{"strict_provider": "0"}, false, true},
+		{"string invalid", map[string]interface{}{"strict_provider": "maybe"}, false, false},
+		{"int type", map[string]interface{}{"strict_provider": 42}, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			val, found := parseStrictProviderFlag(tt.ctx)
+			if val != tt.wantVal {
+				t.Errorf("parseStrictProviderFlag() val = %v, want %v", val, tt.wantVal)
+			}
+			if found != tt.wantFound {
+				t.Errorf("parseStrictProviderFlag() found = %v, want %v", found, tt.wantFound)
+			}
+		})
+	}
+}
+
+func TestOrchestratorRequestToLLMContext_MediaConversion(t *testing.T) {
+	req := OrchestratorRequest{
+		Query:       "What's in this image?",
+		RequestType: "chat",
+		Media: []MediaContentRequest{
+			{Source: "base64", Base64Data: "dGVzdA==", MIMEType: "image/jpeg"},
+			{Source: "url", URL: "https://example.com/img.png", MIMEType: "image/png"},
+		},
+		User:    UserContext{Role: "user"},
+		Context: map[string]interface{}{},
+	}
+
+	ctx := OrchestratorRequestToLLMContext(req)
+
+	if len(ctx.Media) != 2 {
+		t.Fatalf("expected 2 media items, got %d", len(ctx.Media))
+	}
+	if ctx.Media[0].Source != "base64" {
+		t.Errorf("Media[0].Source = %s, want base64", ctx.Media[0].Source)
+	}
+	if ctx.Media[0].Base64Data != "dGVzdA==" {
+		t.Errorf("Media[0].Base64Data = %s, want dGVzdA==", ctx.Media[0].Base64Data)
+	}
+	if ctx.Media[0].MIMEType != "image/jpeg" {
+		t.Errorf("Media[0].MIMEType = %s, want image/jpeg", ctx.Media[0].MIMEType)
+	}
+	if ctx.Media[1].Source != "url" {
+		t.Errorf("Media[1].Source = %s, want url", ctx.Media[1].Source)
+	}
+	if ctx.Media[1].URL != "https://example.com/img.png" {
+		t.Errorf("Media[1].URL mismatch")
+	}
+}
+
+func TestOrchestratorRequestToLLMContext_NoMedia(t *testing.T) {
+	req := OrchestratorRequest{
+		Query:       "Hello",
+		RequestType: "chat",
+		User:        UserContext{Role: "user"},
+		Context:     map[string]interface{}{},
+	}
+
+	ctx := OrchestratorRequestToLLMContext(req)
+
+	if len(ctx.Media) != 0 {
+		t.Errorf("expected 0 media items, got %d", len(ctx.Media))
+	}
+}
