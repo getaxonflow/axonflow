@@ -1,6 +1,6 @@
 # EU AI Act Compliance Guide
 
-*Last updated: February 2026 | AxonFlow Platform v4.3.0 | SDKs v3.4.0*
+*Last updated: February 2026 | AxonFlow Platform v4.3.0 | SDKs v3.5.0*
 
 AxonFlow provides comprehensive support for EU AI Act compliance. This guide covers the key features and APIs available for organizations operating AI systems in the European Union.
 

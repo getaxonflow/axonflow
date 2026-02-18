@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.3.0 | **SDKs:** v3.4.0
+**Platform Version:** v4.3.0 | **SDKs:** v3.5.0
 
 AxonFlow supports Google's Gemini models for LLM routing and orchestration. This guide covers configuration, supported models, and usage.
 

@@ -2,4 +2,4 @@ module github.com/getaxonflow/axonflow/examples/llm-providers/azure-openai/proxy
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v3 v3.4.0
+require github.com/getaxonflow/axonflow-sdk-go/v3 v3.5.0

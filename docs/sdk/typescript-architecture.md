@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.4.0 | **Platform Version:** v4.3.0
+**SDK Version:** v3.5.0 | **Platform Version:** v4.3.0
 
 ---
 
@@ -258,4 +258,4 @@ Application
 
 ---
 
-*This document describes the architecture of the AxonFlow TypeScript SDK v3.4.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
+*This document describes the architecture of the AxonFlow TypeScript SDK v3.5.0. For quick-start instructions, see [TypeScript Quickstart](typescript-quickstart.md). For the full API specification, see [TypeScript Specification](typescript-specification.md).*
