@@ -99,7 +99,7 @@ chmod +x cost-controls.sh
 |-----|---------|---------|
 | Go | v3.2.0+ | `github.com/getaxonflow/axonflow-sdk-go/v3` |
 | Python | 3.2.0+ | `axonflow` |
-| TypeScript | 3.4.0+ | `@axonflow/sdk` |
+| TypeScript | 3.5.0+ | `@axonflow/sdk` |
 | Java | 3.2.0+ | `com.getaxonflow:axonflow-sdk` |
 
 ## Budget Configuration
