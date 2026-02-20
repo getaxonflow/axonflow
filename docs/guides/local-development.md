@@ -120,9 +120,9 @@ EOF
 docker compose -f docker-compose.ollama.yaml up -d
 
 # 3. Pull models (choose one or more)
-docker exec axonflow-ollama ollama pull llama3.1       # 8B, general purpose
+docker exec axonflow-ollama ollama pull llama3.3       # 8B, general purpose
 docker exec axonflow-ollama ollama pull mistral        # 7B, efficient
-docker exec axonflow-ollama ollama pull codellama      # 7B, code generation
+docker exec axonflow-ollama ollama pull qwen2.5-coder:32b      # 7B, code generation
 
 # 4. Verify Ollama is running
 curl http://localhost:11434/api/version
@@ -130,7 +130,7 @@ curl http://localhost:11434/api/version
 # 5. Configure AxonFlow to use Ollama
 # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
 export OLLAMA_ENDPOINT=http://ollama:11434
-export OLLAMA_MODEL=llama3.1
+export OLLAMA_MODEL=llama3.3
 
 # 6. Restart orchestrator
 docker compose restart orchestrator
@@ -174,7 +174,7 @@ services:
     environment:
       # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
       - OLLAMA_ENDPOINT=http://ollama:11434
-      - OLLAMA_MODEL=llama3.1
+      - OLLAMA_MODEL=llama3.3
       - OLLAMA_TIMEOUT_SECONDS=60
     depends_on:
       - ollama
@@ -187,7 +187,7 @@ services:
 curl -X POST http://localhost:11434/api/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama3.1",
+    "model": "llama3.3",
     "prompt": "What is the capital of France?",
     "stream": false
   }'
@@ -208,13 +208,13 @@ curl -X POST http://localhost:8080/api/v1/complete \
 docker exec axonflow-ollama ollama list
 
 # Pull additional models
-docker exec axonflow-ollama ollama pull llama3.1:70b  # Larger model (requires 80GB RAM)
+docker exec axonflow-ollama ollama pull llama3.3:70b  # Larger model (requires 80GB RAM)
 
 # Remove model to free space
 docker exec axonflow-ollama ollama rm mistral
 
 # Show model details
-docker exec axonflow-ollama ollama show llama3.1
+docker exec axonflow-ollama ollama show llama3.3
 ```
 
 #### Benefits for Local Development
@@ -229,12 +229,12 @@ docker exec axonflow-ollama ollama show llama3.1
 
 | Model | Size | RAM | Speed (CPU) | Speed (GPU) |
 |-------|------|-----|-------------|-------------|
-| **llama3.1** (8B) | 4.7 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
+| **llama3.3** (8B) | 4.7 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
 | **mistral** (7B) | 4.1 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
-| **codellama** (7B) | 4.1 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
-| **llama3.1:70b** (70B) | 40 GB | 80 GB | 1-3 tokens/s | 10-30 tokens/s |
+| **qwen2.5-coder:32b** (7B) | 4.1 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
+| **llama3.3:70b** (70B) | 40 GB | 80 GB | 1-3 tokens/s | 10-30 tokens/s |
 
-**Recommendation for laptops**: Use 7-8B models (llama3.1, mistral, codellama)
+**Recommendation for laptops**: Use 7-8B models (llama3.3, mistral, qwen2.5-coder:32b)
 
 #### Troubleshooting Ollama
 
@@ -253,7 +253,7 @@ docker restart axonflow-ollama
 **Issue: Model not found**
 ```bash
 # Pull the model
-docker exec axonflow-ollama ollama pull llama3.1
+docker exec axonflow-ollama ollama pull llama3.3
 
 # Verify model installed
 docker exec axonflow-ollama ollama list

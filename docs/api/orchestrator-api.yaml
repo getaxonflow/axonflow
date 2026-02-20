@@ -568,7 +568,7 @@ paths:
                         status: "completed"
                         duration: "20s"
                         cost_usd: 0.04
-                        model: "claude-3-sonnet"
+                        model: "claude-sonnet-4"
                         provider: "anthropic"
         '404':
           description: Plan not found
@@ -982,7 +982,7 @@ paths:
                     type: "llm-call"
                     llm:
                       provider: "anthropic"
-                      model: "claude-3-sonnet"
+                      model: "claude-sonnet-4"
                 routing:
                   - pattern: "flight|fly"
                     agent: "flight-search"
@@ -1335,8 +1335,8 @@ paths:
                     available: true
                     models:
                       - "gpt-4"
-                      - "gpt-4-turbo"
-                      - "gpt-3.5-turbo"
+                      - "gpt-4o"
+                      - "gpt-4o-mini"
                     weight: 0.4
                     avg_latency_ms: 1200
                   - name: "bedrock"
@@ -1349,7 +1349,7 @@ paths:
                   - name: "ollama"
                     available: true
                     models:
-                      - "llama2"
+                      - "llama3.3"
                       - "mistral"
                     weight: 0.2
                     avg_latency_ms: 500
@@ -1438,7 +1438,7 @@ paths:
                 provider_types:
                   - type: openai
                     name: OpenAI
-                    description: "OpenAI GPT models (gpt-4, gpt-3.5-turbo)"
+                    description: "OpenAI GPT models (gpt-4, gpt-4o-mini)"
                     supports_streaming: true
                     requires_api_key: true
                   - type: anthropic

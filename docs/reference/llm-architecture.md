@@ -88,15 +88,15 @@ export OPENAI_MODEL=gpt-4
 
 # Anthropic configuration (auto-enabled when ANTHROPIC_API_KEY is set)
 export ANTHROPIC_API_KEY=sk-ant-...
-export ANTHROPIC_MODEL=claude-3-sonnet-20240229
+export ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 # AWS Bedrock configuration (auto-enabled when BEDROCK_REGION is set)
 export BEDROCK_REGION=us-east-1
-export BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
+export BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # Ollama configuration (auto-enabled when OLLAMA_ENDPOINT is set)
 export OLLAMA_ENDPOINT=http://localhost:11434
-export OLLAMA_MODEL=llama3
+export OLLAMA_MODEL=llama3.3
 ```
 
 ### Bootstrap Process
@@ -731,7 +731,7 @@ GET /api/v1/llm-providers
     {
       "name": "my-anthropic",
       "type": "anthropic",
-      "model": "claude-3-sonnet-20240229",
+      "model": "claude-sonnet-4-20250514",
       "enabled": true,
       "priority": 1,
       "weight": 100,
@@ -765,7 +765,7 @@ GET /api/v1/llm-providers/{name}
     "name": "my-anthropic",
     "type": "anthropic",
     "endpoint": "https://api.anthropic.com",
-    "model": "claude-3-sonnet-20240229",
+    "model": "claude-sonnet-4-20250514",
     "enabled": true,
     "priority": 1,
     "weight": 100,
@@ -795,7 +795,7 @@ POST /api/v1/llm-providers
   "name": "my-anthropic",
   "type": "anthropic",
   "api_key": "sk-ant-...",
-  "model": "claude-3-sonnet-20240229",
+  "model": "claude-sonnet-4-20250514",
   "enabled": true,
   "priority": 1,
   "weight": 100,
@@ -812,7 +812,7 @@ POST /api/v1/llm-providers
   "type": "bedrock",
   "api_key_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789:secret:llm/bedrock",
   "region": "us-east-1",
-  "model": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+  "model": "anthropic.claude-sonnet-4-20250514-v1:0",
   "enabled": true,
   "priority": 1
 }
