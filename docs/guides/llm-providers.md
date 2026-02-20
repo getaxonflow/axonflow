@@ -213,8 +213,8 @@ volumes:
 ```
 
 **Supported Models**:
-- **Llama 3.3**: `llama3.3` (70B, general purpose)
-- **Llama 3.3 70B**: `llama3.3:70b` (high accuracy)
+- **Llama 3.3**: `llama3.3` (default tag pulls latest, general purpose)
+- **Llama 3.3 70B**: `llama3.3:70b` (70B, high accuracy)
 - **Mistral**: `mistral` (efficient, multilingual)
 - **Qwen 2.5 Coder**: `qwen2.5-coder:32b` (code generation)
 
