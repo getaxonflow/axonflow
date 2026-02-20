@@ -1,5 +1,5 @@
 # Multi-stage build for AxonFlow Orchestrator
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # Build argument for edition (community or enterprise)
 # Default to community - enterprise builds must explicitly set EDITION=enterprise
