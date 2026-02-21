@@ -75,13 +75,13 @@ LLM_OPENAI_MODEL: gpt-4
 export LLM_PROVIDER=openai
 export LLM_OPENAI_ENABLED=true
 export LLM_OPENAI_API_KEY=sk-proj-...
-export LLM_OPENAI_MODEL=gpt-4  # or gpt-4-turbo, gpt-3.5-turbo
+export LLM_OPENAI_MODEL=gpt-4  # or gpt-4o, gpt-4o-mini
 ```
 
 **Supported Models**:
 - `gpt-4` - Highest quality, most capable
-- `gpt-4-turbo` - Faster, cost-effective
-- `gpt-3.5-turbo` - Budget-friendly, fast
+- `gpt-4o` - Faster, cost-effective
+- `gpt-4o-mini` - Budget-friendly, fast
 
 **Documentation**: [OpenAI API Docs](https://platform.openai.com/docs)
 
@@ -102,7 +102,7 @@ export LLM_OPENAI_MODEL=gpt-4  # or gpt-4-turbo, gpt-3.5-turbo
 LLM_PROVIDER: bedrock
 LLM_BEDROCK_ENABLED: true
 LLM_BEDROCK_REGION: us-east-1
-LLM_BEDROCK_MODEL: anthropic.claude-3-5-sonnet-20240620-v1:0
+LLM_BEDROCK_MODEL: anthropic.claude-sonnet-4-20250514-v1:0
 ```
 
 **Environment Variables**:
@@ -111,7 +111,7 @@ LLM_BEDROCK_MODEL: anthropic.claude-3-5-sonnet-20240620-v1:0
 export LLM_PROVIDER=bedrock
 export LLM_BEDROCK_ENABLED=true
 export LLM_BEDROCK_REGION=us-east-1
-export LLM_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
+export LLM_BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # AWS credentials (IAM role preferred)
 export AWS_REGION=us-east-1
@@ -119,7 +119,7 @@ export AWS_REGION=us-east-1
 ```
 
 **Supported Model Families**:
-- **Anthropic Claude**: `anthropic.claude-3-5-sonnet-20240620-v1:0` (recommended)
+- **Anthropic Claude**: `anthropic.claude-sonnet-4-20250514-v1:0` (recommended)
 - **Meta Llama**: `meta.llama3-70b-instruct-v1:0`
 - **Amazon Titan**: `amazon.titan-text-express-v1`
 - **Mistral AI**: `mistral.mistral-large-2402-v1:0`
@@ -167,7 +167,7 @@ export AWS_REGION=us-east-1
 # config/environments/airgap.yaml
 # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
 OLLAMA_ENDPOINT: http://ollama.internal.axonflow.com:11434
-OLLAMA_MODEL: llama3.1
+OLLAMA_MODEL: llama3.3
 OLLAMA_TIMEOUT_SECONDS: 120
 ```
 
@@ -176,7 +176,7 @@ OLLAMA_TIMEOUT_SECONDS: 120
 ```bash
 # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
 export OLLAMA_ENDPOINT=http://localhost:11434  # or http://ollama-server:11434
-export OLLAMA_MODEL=llama3.1  # or mistral, codellama, etc.
+export OLLAMA_MODEL=llama3.3  # or mistral, qwen2.5-coder:32b, etc.
 export OLLAMA_TIMEOUT_SECONDS=60
 ```
 
@@ -206,26 +206,25 @@ services:
     environment:
       # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
       - OLLAMA_ENDPOINT=http://ollama:11434
-      - OLLAMA_MODEL=llama3.1
+      - OLLAMA_MODEL=llama3.3
 
 volumes:
   ollama-data:
 ```
 
 **Supported Models**:
-- **Llama 3.1**: `llama3.1` (8B, general purpose)
-- **Llama 3.1 70B**: `llama3.1:70b` (high accuracy)
+- **Llama 3.3**: `llama3.3` (default tag pulls latest, general purpose)
+- **Llama 3.3 70B**: `llama3.3:70b` (70B, high accuracy)
 - **Mistral**: `mistral` (efficient, multilingual)
-- **Code Llama**: `codellama` (code generation)
-- **Neural Chat**: `neural-chat` (conversational)
+- **Qwen 2.5 Coder**: `qwen2.5-coder:32b` (code generation)
 
 **Pull Models**:
 
 ```bash
 # Pull models to Ollama server
-docker exec ollama ollama pull llama3.1
+docker exec ollama ollama pull llama3.3
 docker exec ollama ollama pull mistral
-docker exec ollama ollama pull llama3.1:70b
+docker exec ollama ollama pull llama3.3:70b
 
 # List installed models
 docker exec ollama ollama list
@@ -376,20 +375,20 @@ AWS Bedrock provides serverless access to foundation models from Anthropic, Meta
 ```yaml
 # config/environments/healthcare.yaml
 BedrockRegion: us-east-1
-BedrockModel: anthropic.claude-3-5-sonnet-20240620-v1:0
+BedrockModel: anthropic.claude-sonnet-4-20250514-v1:0
 ```
 
 **Environment Variables:**
 ```bash
 export LLM_BEDROCK_ENABLED=true
 export LLM_BEDROCK_REGION=us-east-1
-export LLM_BEDROCK_MODEL=anthropic.claude-3-5-sonnet-20240620-v1:0
+export LLM_BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 ```
 
 **Supported Models:**
-- `anthropic.claude-3-5-sonnet-20240620-v1:0` (recommended)
-- `anthropic.claude-3-haiku-20240307-v1:0` (cost-effective)
-- `anthropic.claude-3-opus-20240229-v1:0` (highest accuracy)
+- `anthropic.claude-sonnet-4-20250514-v1:0` (recommended)
+- `anthropic.claude-haiku-4-5-20251001-v1:0` (cost-effective)
+- `anthropic.claude-opus-4-20250514-v1:0` (highest accuracy)
 - `meta.llama3-70b-instruct-v1:0` (open-weight)
 - `amazon.titan-text-express-v1` (AWS native)
 - `mistral.mistral-large-2402-v1:0` (multilingual)
@@ -432,9 +431,9 @@ export OPENAI_API_KEY=sk-xxxxx
 ```
 
 **Supported Models:**
-- `gpt-4-turbo` (general purpose)
+- `gpt-4o` (general purpose)
 - `gpt-4` (complex reasoning)
-- `gpt-3.5-turbo` (fast, cost-effective)
+- `gpt-4o-mini` (fast, cost-effective)
 
 ### Anthropic
 
@@ -454,9 +453,9 @@ export ANTHROPIC_API_KEY=sk-ant-xxxxx
 ```
 
 **Supported Models:**
-- `claude-3-opus-20240229` (highest intelligence)
-- `claude-3-sonnet-20240229` (balanced)
-- `claude-3-haiku-20240307` (fast)
+- `claude-opus-4-20250514` (highest intelligence)
+- `claude-sonnet-4-20250514` (balanced)
+- `claude-haiku-4-5-20251001` (fast)
 
 ---
 
@@ -504,7 +503,7 @@ export OPENAI_API_KEY=sk-...
 # Shadow provider (testing)
 export LLM_SHADOW_PROVIDER=bedrock
 export BEDROCK_REGION=us-east-1
-export BEDROCK_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
+export BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # Sample rate (0.0-1.0)
 export LLM_SHADOW_SAMPLE_RATE=0.10  # Shadow 10% of requests
@@ -639,12 +638,12 @@ llm:
     bedrock:
       enabled: true
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
       cost: 0.01
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
       cost: 0.0
 ```
 
@@ -675,13 +674,13 @@ llm:
     bedrock:
       enabled: true
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
       weight: 30  # 30% of traffic
       cost: 0.01
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
       weight: 20  # 20% of traffic
       cost: 0.0
 ```
@@ -723,12 +722,12 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
       cost: 0.0  # Free (self-hosted)
     bedrock:
       enabled: true
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
       cost: 0.01  # $0.01 per 1K tokens
     openai:
       enabled: true
@@ -876,7 +875,7 @@ llm:
     bedrock:
       enabled: true
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
       vpc_endpoint: true  # Required for HIPAA
       weight: 100
       cost: 0.01
@@ -910,7 +909,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama.internal:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
       gpu_enabled: true
       weight: 100
       cost: 0.0
@@ -953,7 +952,7 @@ llm:
     bedrock:
       enabled: true
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
       weight: 30  # 30% of traffic
       cost: 0.01
 
@@ -961,7 +960,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
       weight: 20  # 20% of traffic
       cost: 0.0
 
@@ -1007,7 +1006,7 @@ export OPENAI_MODEL=gpt-4
 
 # Shadow provider config
 export BEDROCK_REGION=us-east-1
-export BEDROCK_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
+export BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # Start orchestrator
 ./orchestrator
@@ -1036,7 +1035,7 @@ export OPENAI_MODEL=gpt-4
 
 # Shadow provider config (self-hosted)
 export OLLAMA_ENDPOINT=http://ollama-server:11434
-export OLLAMA_MODEL=llama3.1:70b
+export OLLAMA_MODEL=llama3.3:70b
 
 # Start orchestrator
 ./orchestrator
@@ -1051,7 +1050,7 @@ export LLM_PRIMARY_PROVIDER=bedrock  # Now using Bedrock as primary
 
 # No shadow configuration needed
 export BEDROCK_REGION=us-east-1
-export BEDROCK_MODEL=anthropic.claude-3-sonnet-20240229-v1:0
+export BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # Start orchestrator
 ./orchestrator
@@ -1165,7 +1164,7 @@ curl -X POST http://localhost:8081/api/v1/llm-providers \
     "name": "my-anthropic",
     "type": "anthropic",
     "api_key": "sk-ant-...",
-    "model": "claude-3-sonnet-20240229",
+    "model": "claude-sonnet-4-20250514",
     "enabled": true,
     "priority": 1
   }'

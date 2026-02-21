@@ -56,9 +56,7 @@ Both use `Authorization: Bearer <key>` authentication.
 |-------|-----------------|----------|
 | GPT-4o | `gpt-4o` | Latest, multimodal |
 | GPT-4o Mini | `gpt-4o-mini` | Cost-effective |
-| GPT-4 Turbo | `gpt-4-turbo` | Fast GPT-4 |
 | GPT-4 | `gpt-4` | Standard GPT-4 |
-| GPT-3.5 Turbo | `gpt-35-turbo` | Budget-friendly |
 
 ## Integration Modes
 

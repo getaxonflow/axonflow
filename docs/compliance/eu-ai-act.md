@@ -43,7 +43,7 @@ All AI responses include transparency headers:
 ```http
 X-AI-Decision-ID: dec-20260207-12345
 X-AI-Trace-ID: trace-abc123
-X-AI-Model: claude-3-5-sonnet-20241022
+X-AI-Model: claude-sonnet-4-20250514
 X-AI-Processing-Time-Ms: 1234
 X-AI-Confidence: 0.95
 X-AI-Human-Oversight: none
@@ -71,7 +71,7 @@ Decision chains are stored in a structured format:
   },
   "model": {
     "provider": "anthropic",
-    "model_id": "claude-3-5-sonnet-20241022"
+    "model_id": "claude-sonnet-4-20250514"
   },
   "human_oversight": {
     "required": false,

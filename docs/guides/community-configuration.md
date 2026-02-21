@@ -44,7 +44,7 @@ llm_providers:
     enabled: true
     config:
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
     priority: 10
 ```
 
@@ -227,7 +227,7 @@ llm_providers:
     enabled: true
     config:
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
     priority: 10
     weight: 1.0
 ```
@@ -240,7 +240,7 @@ llm_providers:
     enabled: true
     config:
       endpoint: http://localhost:11434
-      model: llama3.1:70b
+      model: llama3.3:70b
     priority: 5
     weight: 0.5
 ```
@@ -252,7 +252,7 @@ llm_providers:
   openai:
     enabled: true
     config:
-      model: gpt-4-turbo
+      model: gpt-4o
       max_tokens: 4096
     credentials:
       api_key: ${OPENAI_API_KEY}

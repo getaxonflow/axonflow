@@ -568,7 +568,7 @@ paths:
                         status: "completed"
                         duration: "20s"
                         cost_usd: 0.04
-                        model: "claude-3-sonnet"
+                        model: "claude-sonnet-4"
                         provider: "anthropic"
         '404':
           description: Plan not found
@@ -982,7 +982,7 @@ paths:
                     type: "llm-call"
                     llm:
                       provider: "anthropic"
-                      model: "claude-3-sonnet"
+                      model: "claude-sonnet-4"
                 routing:
                   - pattern: "flight|fly"
                     agent: "flight-search"
@@ -1335,8 +1335,8 @@ paths:
                     available: true
                     models:
                       - "gpt-4"
-                      - "gpt-4-turbo"
-                      - "gpt-3.5-turbo"
+                      - "gpt-4o"
+                      - "gpt-4o-mini"
                     weight: 0.4
                     avg_latency_ms: 1200
                   - name: "bedrock"
@@ -1349,7 +1349,7 @@ paths:
                   - name: "ollama"
                     available: true
                     models:
-                      - "llama2"
+                      - "llama3.3"
                       - "mistral"
                     weight: 0.2
                     avg_latency_ms: 500
@@ -1438,7 +1438,7 @@ paths:
                 provider_types:
                   - type: openai
                     name: OpenAI
-                    description: "OpenAI GPT models (gpt-4, gpt-3.5-turbo)"
+                    description: "OpenAI GPT models (gpt-4, gpt-4o-mini)"
                     supports_streaming: true
                     requires_api_key: true
                   - type: anthropic
@@ -5219,6 +5219,82 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ============================================================================
+  # Media Governance Configuration
+  # ============================================================================
+
+  /api/v1/media-governance/config:
+    get:
+      tags: [Media Governance]
+      summary: Get media governance configuration
+      description: Returns the media governance configuration for the current tenant.
+      operationId: getMediaGovernanceConfig
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Media governance configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaGovernanceConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Media Governance]
+      summary: Update media governance configuration
+      description: |
+        Updates media governance configuration. Enterprise tier only.
+        Community and Evaluation tiers receive a 403 TIER_RESTRICTED response.
+        To toggle system media policies on/off (available to all tiers), use the
+        Dynamic Policy API (/api/v1/dynamic-policies) instead.
+      operationId: updateMediaGovernanceConfig
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaGovernanceConfigUpdate'
+      responses:
+        '200':
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaGovernanceConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/media-governance/status:
+    get:
+      tags: [Media Governance]
+      summary: Get media governance feature status
+      description: Returns the media governance feature availability for the current license tier.
+      operationId: getMediaGovernanceStatus
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Media governance status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaGovernanceStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   schemas:
     HealthResponse:
@@ -8470,6 +8546,56 @@ components:
           type: string
           enum: [image/jpeg, image/png, image/gif, image/webp]
           description: Media content type
+
+    MediaGovernanceConfig:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          description: Tenant identifier
+        enabled:
+          type: boolean
+          description: Whether media governance is enabled for this tenant
+        allowed_analyzers:
+          type: array
+          items:
+            type: string
+          description: List of allowed analyzer types (empty means all available)
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        updated_by:
+          type: string
+          description: User who last updated the configuration
+
+    MediaGovernanceConfigUpdate:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Enable or disable media governance
+        allowed_analyzers:
+          type: array
+          items:
+            type: string
+          description: Restrict to specific analyzer types
+
+    MediaGovernanceStatus:
+      type: object
+      properties:
+        available:
+          type: boolean
+          description: Whether media governance is available for the current tier
+        enabled_by_default:
+          type: boolean
+          description: Whether media governance is enabled by default for the current tier
+        per_tenant_control:
+          type: boolean
+          description: Whether per-tenant configuration is available
+        tier:
+          type: string
+          description: Current license tier
 
   responses:
     BadRequest:

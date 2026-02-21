@@ -23,8 +23,8 @@ AxonFlow provides governance for images sent to multimodal LLMs (GPT-4o, Claude,
 1. Client sends images (base64 or URL) alongside the query
 2. AxonFlow validates format, size, and dimensions
 3. Configured analyzers run (OCR, content safety, face detection, document classification)
-4. Results are aggregated and evaluated against media policies
-5. Request proceeds (Community: fail-open with warnings) or is blocked (Enterprise: configurable)
+4. Results are aggregated and evaluated against media policies (including system media policies)
+5. Request proceeds, is warned, or is blocked depending on policy actions and tier configuration
 
 ## Community Features
 
@@ -34,7 +34,9 @@ All tiers include:
 - PII detection on extracted text (reuses existing PII pipeline)
 - SHA-256 hash stored in audit trail
 - Aggregate cost estimation
-- Fail-open enforcement (warnings logged, never blocks)
+- 5 system media policies seeded by default (NSFW blocking, violence warning, biometric audit, PII blocking, sensitive document detection)
+- Toggle system media policies on/off
+- Media governance disabled by default on Community (opt-in via `MEDIA_GOVERNANCE_ENABLED=true`)
 
 ## Enterprise Features
 
@@ -47,6 +49,102 @@ Enterprise tier adds:
 - Configurable enforcement (fail-closed mode)
 - Full media audit trail with per-analyzer metadata
 - Batch and async analysis pipelines
+- Per-tenant media governance configuration (enable/disable, restrict analyzers)
+- Modify actions and priority on system media policies
+- Media governance audit export for compliance reporting
+
+## System Media Policies
+
+AxonFlow seeds 5 system media policies by default when media governance is enabled. These policies provide baseline governance out of the box and can be toggled on/off at any tier.
+
+| Policy Name | Condition | Action | Priority | Category |
+|-------------|-----------|--------|----------|----------|
+| `sys_media_nsfw_block` | `media.nsfw_score > 0.8` | Block | 1000 | `media-safety` |
+| `sys_media_violence_warn` | `media.violence_score > 0.7` | Alert + Log | 950 | `media-safety` |
+| `sys_media_biometric_log` | `media.has_biometric_data == true` | Log | 900 | `media-biometric` |
+| `sys_media_pii_block` | `media.has_pii == true` | Block | 950 | `media-pii` |
+| `sys_media_sensitive_doc_warn` | `media.is_sensitive_document == true` | Alert + Log | 900 | `media-document` |
+
+System media policies live in the same `dynamic_policies` table as all other dynamic policies. They use the same `DynamicPolicyEngine` evaluation, same CRUD API (`/api/v1/dynamic-policies`), and same audit trail.
+
+### Media Policy Categories
+
+- `media-safety` -- Content safety signals (NSFW, violence)
+- `media-biometric` -- Biometric data detection (GDPR Article 9, BIPA)
+- `media-pii` -- PII detected via OCR in images
+- `media-document` -- Sensitive document classification
+
+### Modifying System Media Policies
+
+What can be changed depends on the license tier (see Tier Capabilities below). At a minimum, all tiers can toggle system media policies enabled/disabled. No tier can modify the condition expression, name, description, or type of a system media policy.
+
+## Per-Tenant Configuration
+
+Enterprise deployments can configure media governance on a per-tenant basis using the media governance config API.
+
+### Get Configuration
+
+```bash
+curl -X GET https://orchestrator.getaxonflow.com/api/v1/media-governance/config \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "tenant_id": "tenant-123",
+  "enabled": true,
+  "allowed_analyzers": [],
+  "updated_at": "2026-02-19T10:00:00Z",
+  "updated_by": "admin@example.com"
+}
+```
+
+An empty `allowed_analyzers` array means all registered analyzers are available.
+
+### Update Configuration
+
+```bash
+curl -X PUT https://orchestrator.getaxonflow.com/api/v1/media-governance/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true,
+    "allowed_analyzers": ["local-ocr", "aws-rekognition"]
+  }'
+```
+
+### Check Feature Status
+
+```bash
+curl -X GET https://orchestrator.getaxonflow.com/api/v1/media-governance/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "available": true,
+  "enabled_by_default": true,
+  "per_tenant_control": true,
+  "tier": "enterprise"
+}
+```
+
+## Tier Capabilities
+
+| Capability | Community | Evaluation | Enterprise |
+|------------|-----------|------------|------------|
+| Media governance enabled by default | No (opt-in via `MEDIA_GOVERNANCE_ENABLED=true`) | Yes | Yes |
+| System media policies seeded | Yes (when enabled) | Yes | Yes |
+| Toggle system media policies on/off | Yes | Yes | Yes |
+| Modify actions/priority on system media policies | No | No | Yes |
+| Modify conditions/name/description/type | No | No | No |
+| Per-tenant config API | No | No | Yes |
+| Restrict allowed analyzers per tenant | No | No | Yes |
+| Media governance audit export | No | No | Yes |
 
 ## SDK Usage
 

@@ -4606,7 +4606,7 @@ components:
         Specific model version used. EU AI Act Article 13 model traceability.
       schema:
         type: string
-      example: "claude-3-opus"
+      example: "claude-opus-4"
 
     X-AI-Policies-Applied:
       description: |

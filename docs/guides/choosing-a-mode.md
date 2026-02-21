@@ -272,7 +272,7 @@ flowchart LR
 app.post('/api/chat', async (req, res) => {
   const response = await axonflow.protect(async () => {
     return openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: req.body.prompt }]
     });
   });
