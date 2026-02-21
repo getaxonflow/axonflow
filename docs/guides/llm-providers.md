@@ -167,7 +167,7 @@ export AWS_REGION=us-east-1
 # config/environments/airgap.yaml
 # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
 OLLAMA_ENDPOINT: http://ollama.internal.axonflow.com:11434
-OLLAMA_MODEL: llama3.3
+OLLAMA_MODEL: llama3.2
 OLLAMA_TIMEOUT_SECONDS: 120
 ```
 
@@ -176,7 +176,7 @@ OLLAMA_TIMEOUT_SECONDS: 120
 ```bash
 # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
 export OLLAMA_ENDPOINT=http://localhost:11434  # or http://ollama-server:11434
-export OLLAMA_MODEL=llama3.3  # or mistral, qwen2.5-coder:32b, etc.
+export OLLAMA_MODEL=llama3.2  # or mistral, qwen2.5-coder:32b, etc.
 export OLLAMA_TIMEOUT_SECONDS=60
 ```
 
@@ -206,15 +206,15 @@ services:
     environment:
       # Ollama is auto-enabled when OLLAMA_ENDPOINT is set
       - OLLAMA_ENDPOINT=http://ollama:11434
-      - OLLAMA_MODEL=llama3.3
+      - OLLAMA_MODEL=llama3.2
 
 volumes:
   ollama-data:
 ```
 
 **Supported Models**:
-- **Llama 3.3**: `llama3.3` (default tag pulls latest, general purpose)
-- **Llama 3.3 70B**: `llama3.3:70b` (70B, high accuracy)
+- **Llama 3.3**: `llama3.2` (default tag pulls latest, general purpose)
+- **Llama 3.3 70B**: `llama3.2:70b` (70B, high accuracy)
 - **Mistral**: `mistral` (efficient, multilingual)
 - **Qwen 2.5 Coder**: `qwen2.5-coder:32b` (code generation)
 
@@ -222,9 +222,9 @@ volumes:
 
 ```bash
 # Pull models to Ollama server
-docker exec ollama ollama pull llama3.3
+docker exec ollama ollama pull llama3.2
 docker exec ollama ollama pull mistral
-docker exec ollama ollama pull llama3.3:70b
+docker exec ollama ollama pull llama3.2:70b
 
 # List installed models
 docker exec ollama ollama list
@@ -643,7 +643,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.3:70b
+      model: llama3.2:70b
       cost: 0.0
 ```
 
@@ -680,7 +680,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.3:70b
+      model: llama3.2:70b
       weight: 20  # 20% of traffic
       cost: 0.0
 ```
@@ -722,7 +722,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.3:70b
+      model: llama3.2:70b
       cost: 0.0  # Free (self-hosted)
     bedrock:
       enabled: true
@@ -909,7 +909,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama.internal:11434
-      model: llama3.3:70b
+      model: llama3.2:70b
       gpu_enabled: true
       weight: 100
       cost: 0.0
@@ -960,7 +960,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.3:70b
+      model: llama3.2:70b
       weight: 20  # 20% of traffic
       cost: 0.0
 
@@ -1035,7 +1035,7 @@ export OPENAI_MODEL=gpt-4
 
 # Shadow provider config (self-hosted)
 export OLLAMA_ENDPOINT=http://ollama-server:11434
-export OLLAMA_MODEL=llama3.3:70b
+export OLLAMA_MODEL=llama3.2:70b
 
 # Start orchestrator
 ./orchestrator

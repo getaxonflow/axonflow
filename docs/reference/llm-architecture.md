@@ -96,7 +96,7 @@ export BEDROCK_MODEL=anthropic.claude-sonnet-4-20250514-v1:0
 
 # Ollama configuration (auto-enabled when OLLAMA_ENDPOINT is set)
 export OLLAMA_ENDPOINT=http://localhost:11434
-export OLLAMA_MODEL=llama3.3
+export OLLAMA_MODEL=llama3.2
 ```
 
 ### Bootstrap Process

@@ -115,7 +115,7 @@ func main() {
             Name:    "ollama-local",
             Type:    llm.ProviderTypeOllama,
             BaseURL: "http://localhost:11434",
-            Model:   "llama3.3",
+            Model:   "llama3.2",
             Enabled: true,
         },
     }
@@ -228,7 +228,7 @@ config := &llm.ProviderConfig{
     Name:    "ollama",
     Type:    llm.ProviderTypeOllama,
     BaseURL: "http://localhost:11434",
-    Model:   "llama3.3",
+    Model:   "llama3.2",
     // No API key needed for local Ollama
 }
 ```
