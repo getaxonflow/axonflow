@@ -108,14 +108,14 @@ func main() {
             Name:    "anthropic-prod",
             Type:    llm.ProviderTypeAnthropic,
             APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
-            Model:   "claude-3-5-sonnet-20241022",
+            Model:   "claude-sonnet-4-20250514",
             Enabled: true,
         },
         {
             Name:    "ollama-local",
             Type:    llm.ProviderTypeOllama,
             BaseURL: "http://localhost:11434",
-            Model:   "llama3.1",
+            Model:   "llama3.3",
             Enabled: true,
         },
     }
@@ -191,7 +191,7 @@ config := &llm.ProviderConfig{
     Name:   "openai",
     Type:   llm.ProviderTypeOpenAI,
     APIKey: os.Getenv("OPENAI_API_KEY"),
-    Model:  "gpt-4-turbo", // or gpt-4, gpt-3.5-turbo
+    Model:  "gpt-4o", // or gpt-4, gpt-4o-mini
     Settings: map[string]any{
         "organization": "org-xxx", // Optional org ID
     },
@@ -205,7 +205,7 @@ config := &llm.ProviderConfig{
     Name:   "anthropic",
     Type:   llm.ProviderTypeAnthropic,
     APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-    Model:  "claude-3-5-sonnet-20241022",
+    Model:  "claude-sonnet-4-20250514",
 }
 ```
 
@@ -216,7 +216,7 @@ config := &llm.ProviderConfig{
     Name:   "bedrock",
     Type:   llm.ProviderTypeBedrock,
     Region: "us-east-1",
-    Model:  "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    Model:  "anthropic.claude-sonnet-4-20250514-v1:0",
     // Authentication via IAM role (no API key needed)
 }
 ```
@@ -228,7 +228,7 @@ config := &llm.ProviderConfig{
     Name:    "ollama",
     Type:    llm.ProviderTypeOllama,
     BaseURL: "http://localhost:11434",
-    Model:   "llama3.1",
+    Model:   "llama3.3",
     // No API key needed for local Ollama
 }
 ```

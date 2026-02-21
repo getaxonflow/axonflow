@@ -607,7 +607,7 @@ rate_limits:
 response:
   max_tokens: 500
   temperature: 0.7
-  model: gpt-4-turbo
+  model: gpt-4o
 ```
 
 Load your agent:

@@ -74,7 +74,6 @@ Azure OpenAI supports various OpenAI models. Common deployments include:
 
 - `gpt-4o` - Latest GPT-4 Omni model
 - `gpt-4o-mini` - Cost-effective GPT-4o variant
-- `gpt-4-turbo` - GPT-4 Turbo with vision
 - `gpt-4` - Standard GPT-4
 
 > **Note:** In Azure OpenAI, the "model" is your deployment name, which can be any string you choose when deploying.

@@ -170,7 +170,7 @@ interface AuditOptions {
   contextId: string;            // From getPolicyApprovedContext()
   responseSummary: string;
   provider: string;             // e.g., "openai", "anthropic"
-  model: string;                // e.g., "gpt-4", "claude-3-opus"
+  model: string;                // e.g., "gpt-4", "claude-opus-4"
   tokenUsage: TokenUsage;
   latencyMs: number;
   metadata?: Record<string, unknown>;

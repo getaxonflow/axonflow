@@ -47,7 +47,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.3
       prompt_template: |
         Search for flights: {{.query}}
@@ -100,7 +100,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.3
         max_tokens: 2500
       prompt_template: |
@@ -155,7 +155,7 @@ agents:
     type: llm-call
     llm:
       provider: anthropic      # anthropic, openai, bedrock
-      model: claude-3-sonnet   # Model identifier
+      model: claude-sonnet-4   # Model identifier
       temperature: 0.3         # 0.0-2.0, lower = more deterministic
       max_tokens: 2500         # Max response tokens
     prompt_template: |
