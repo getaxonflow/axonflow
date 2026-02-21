@@ -1349,7 +1349,7 @@ paths:
                   - name: "ollama"
                     available: true
                     models:
-                      - "llama3.3"
+                      - "llama3.2"
                       - "mistral"
                     weight: 0.2
                     avg_latency_ms: 500
