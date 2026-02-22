@@ -3525,7 +3525,7 @@ paths:
       tags:
         - Workflow Control Plane
       summary: Mark step completed
-      description: Mark a workflow step as completed after successful execution
+      description: Mark a workflow step as completed after successful execution. Request body is optional.
       operationId: markStepCompleted
       parameters:
         - name: workflow_id
@@ -6350,31 +6350,21 @@ components:
         decision:
           type: string
           enum: [allow, block, require_approval]
-        reason:
-          type: string
-        policy_ids:
-          type: array
-          items:
-            type: string
         approval_status:
           type: string
           enum: [pending, approved, rejected]
         gate_checked_at:
           type: string
           format: date-time
-        step_completed_at:
-          type: string
-          format: date-time
 
     StepGateRequest:
       type: object
       required:
-        - step_name
         - step_type
       properties:
         step_name:
           type: string
-          description: Human-readable step name
+          description: Human-readable step name (optional)
           example: "Generate Code"
         step_type:
           type: string
@@ -6393,6 +6383,19 @@ components:
           type: string
           description: LLM provider being used
           example: "openai"
+        tokens_in:
+          type: integer
+          description: Estimated input tokens for the step (used at gate time)
+          example: 150
+        tokens_out:
+          type: integer
+          description: Estimated output tokens for the step (used at gate time)
+          example: 45
+        cost_usd:
+          type: number
+          format: double
+          description: Estimated cost in USD for the step (used at gate time)
+          example: 0.0023
 
     StepGateResponse:
       type: object

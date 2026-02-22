@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.3.0
+**Platform Version:** v4.5.0
 
 Configure Multi-Agent Planning (MAP) agents using YAML files instead of hardcoded templates.
 
