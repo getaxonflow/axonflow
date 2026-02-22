@@ -186,7 +186,7 @@ func TestReplayServiceAdapter_RecordStep_TypeConversion(t *testing.T) {
 		Input:       json.RawMessage(`{"key": "input_value"}`),
 		Output:      json.RawMessage(`{"key": "output_value"}`),
 		Provider:    "anthropic",
-		Model:       "claude-3-5-sonnet",
+		Model:       "claude-sonnet-4",
 		TokensIn:    200,
 		TokensOut:   100,
 		CostUSD:     0.01,
@@ -231,7 +231,7 @@ func TestReplayServiceAdapter_RecordStep_TypeConversion(t *testing.T) {
 	if saved.Provider != "anthropic" {
 		t.Error("Provider mismatch")
 	}
-	if saved.Model != "claude-3-5-sonnet" {
+	if saved.Model != "claude-sonnet-4" {
 		t.Error("Model mismatch")
 	}
 	if saved.TokensIn != 200 {

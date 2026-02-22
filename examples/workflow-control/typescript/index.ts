@@ -70,8 +70,8 @@ async function main() {
     const gate1 = await axonflow.stepGate(workflow.workflow_id, "step-1", {
       step_name: "Generate Code",
       step_type: "llm_call",
-      model: "gpt-4",
-      provider: "openai",
+      model: "gemini-1.5-flash",
+      provider: "gemini",
       step_input: { prompt: "Write a Python function to sort a list" },
     });
 
@@ -108,6 +108,9 @@ async function main() {
     if (gate1.decision === "allow") {
       await axonflow.markStepCompleted(workflow.workflow_id, "step-1", {
         output: { code: "def sort_list(items): return sorted(items)" },
+        tokens_in: 150,
+        tokens_out: 45,
+        cost_usd: 0.0023,
       } as MarkStepCompletedRequest);
       assertCheck(true, "Step 1 marked completed");
     }
@@ -134,6 +137,9 @@ async function main() {
     if (gate2.decision === "allow") {
       await axonflow.markStepCompleted(workflow.workflow_id, "step-2", {
         output: { review: "LGTM" },
+        tokens_in: 150,
+        tokens_out: 45,
+        cost_usd: 0.0023,
       } as MarkStepCompletedRequest);
       assertCheck(true, "Step 2 marked completed");
     }
@@ -157,6 +163,9 @@ async function main() {
     if (gate3.decision === "allow") {
       await axonflow.markStepCompleted(workflow.workflow_id, "step-3", {
         output: { pr_url: "https://github.com/example/pr/123" },
+        tokens_in: 150,
+        tokens_out: 45,
+        cost_usd: 0.0023,
       } as MarkStepCompletedRequest);
       assertCheck(true, "Step 3 marked completed");
     }
@@ -228,8 +237,8 @@ async function main() {
       const approvalGate = await axonflow.stepGate(approvalWorkflow.workflow_id, "step-1", {
         step_name: "Approval Target Step",
         step_type: "llm_call",
-        model: "gpt-4",
-        provider: "openai",
+        model: "gemini-1.5-flash",
+        provider: "gemini",
         step_input: { prompt: "Test step for approval" },
       });
       assertCheck(
@@ -383,14 +392,17 @@ async function main() {
       const sseGate = await axonflow.stepGate(sseWorkflow.workflow_id, "sse-step-1", {
         step_name: "SSE Test Step",
         step_type: "llm_call",
-        model: "gpt-4",
-        provider: "openai",
+        model: "gemini-1.5-flash",
+        provider: "gemini",
         step_input: { prompt: "test SSE streaming" },
       });
 
       if (sseGate.decision === "allow") {
         await axonflow.markStepCompleted(sseWorkflow.workflow_id, "sse-step-1", {
           output: { result: "sse test output" },
+          tokens_in: 150,
+          tokens_out: 45,
+          cost_usd: 0.0023,
         } as MarkStepCompletedRequest);
         assertCheck(true, "SSE step completed");
       }

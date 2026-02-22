@@ -72,6 +72,10 @@ type LicenseChecker interface {
 	// MaxPendingApprovals returns the maximum number of concurrent pending approvals per tenant.
 	// Returns -1 for unlimited (Enterprise).
 	MaxPendingApprovals() int
+
+	// MediaGovernanceEnabled returns true if media governance is enabled for the current tier.
+	// Community: false by default (opt-in via env var), Evaluation/Enterprise: true.
+	MediaGovernanceEnabled() bool
 }
 
 // DefaultLicenseChecker is a default implementation that returns Community mode.
@@ -145,6 +149,11 @@ func (d *DefaultLicenseChecker) MaxCostEstimatesPerDay() int {
 // MaxPendingApprovals returns 5 for Community.
 func (d *DefaultLicenseChecker) MaxPendingApprovals() int {
 	return license.CommunityLimits.MaxPendingApprovals
+}
+
+// MediaGovernanceEnabled returns false for Community (opt-in via env var).
+func (d *DefaultLicenseChecker) MediaGovernanceEnabled() bool {
+	return license.CommunityLimits.MediaGovernanceEnabled
 }
 
 // EnvLicenseChecker validates the license via AXONFLOW_LICENSE_KEY environment variable.
@@ -237,6 +246,12 @@ func (e *EnvLicenseChecker) MaxCostEstimatesPerDay() int {
 func (e *EnvLicenseChecker) MaxPendingApprovals() int {
 	limits := license.GetCurrentLimits(context.Background())
 	return limits.MaxPendingApprovals
+}
+
+// MediaGovernanceEnabled returns true if the current tier has media governance enabled.
+func (e *EnvLicenseChecker) MediaGovernanceEnabled() bool {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MediaGovernanceEnabled
 }
 
 // TierValidationError represents a tier-related validation failure.

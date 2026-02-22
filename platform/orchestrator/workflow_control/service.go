@@ -79,7 +79,7 @@ type WorkflowExecutionTracker interface {
 	// OnStepGate is called when a step gate check is performed
 	OnStepGate(ctx context.Context, workflowID string, step *WorkflowStep) error
 	// OnStepCompleted is called when a step execution completes
-	OnStepCompleted(ctx context.Context, workflowID string, stepID string) error
+	OnStepCompleted(ctx context.Context, workflowID string, stepID string, metrics *StepCompleteRequest) error
 	// OnWorkflowCompleted is called when a workflow completes successfully
 	OnWorkflowCompleted(ctx context.Context, workflowID string) error
 	// OnWorkflowFailed is called when a workflow fails
@@ -366,6 +366,9 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		StepInput:         stepInputJSON,
 		Model:             req.Model,
 		Provider:          req.Provider,
+		TokensIn:          req.TokensIn,
+		TokensOut:         req.TokensOut,
+		CostUSD:           req.CostUSD,
 	}
 
 	if err := s.repo.AddStep(ctx, step); err != nil {
@@ -710,15 +713,16 @@ func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limi
 	return s.repo.GetPendingApprovals(ctx, tenantID, limit)
 }
 
-// MarkStepCompleted marks a step as completed after the external orchestrator executes it
-func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string) error {
+// MarkStepCompleted marks a step as completed after the external orchestrator executes it.
+// The optional req carries post-execution metrics (tokens, cost, output) from the SDK.
+func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error {
 	// Get workflow for audit logging
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow: %w", err)
 	}
 
-	if err := s.repo.MarkStepCompleted(ctx, workflowID, stepID); err != nil {
+	if err := s.repo.MarkStepCompleted(ctx, workflowID, stepID, req); err != nil {
 		return fmt.Errorf("failed to mark step completed: %w", err)
 	}
 
@@ -745,7 +749,7 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 
 	// Unified execution tracking
 	s.trackExecution(ctx, "step_completed", func() error {
-		return s.executionTracker.OnStepCompleted(ctx, workflowID, stepID)
+		return s.executionTracker.OnStepCompleted(ctx, workflowID, stepID, req)
 	})
 
 	return nil

@@ -1602,6 +1602,153 @@ func TestPlanningEngine_ApplyConnectorMatch_HotelOperation(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Tests for estimateStepTokens and prompt-aware cost estimation
+// =============================================================================
+
+func TestEstimateStepTokens_WithPrompt(t *testing.T) {
+	// 400-char prompt → ~100 tokens + 50 overhead = ~150, NOT 1000
+	prompt := strings.Repeat("a", 400)
+	step := WorkflowStep{
+		Name:   "analyze",
+		Type:   "llm-call",
+		Prompt: prompt,
+	}
+
+	tokensIn, tokensOut := estimateStepTokens(step)
+
+	expectedIn := len(prompt)/4 + 50 // 100 + 50 = 150
+	if tokensIn != expectedIn {
+		t.Errorf("Expected tokensIn=%d, got %d", expectedIn, tokensIn)
+	}
+	if tokensIn >= 1000 {
+		t.Errorf("With a 400-char prompt, tokensIn should be well below default 1000, got %d", tokensIn)
+	}
+
+	// No MaxTokens set → should fall back to 500
+	if tokensOut != 500 {
+		t.Errorf("Expected default tokensOut=500, got %d", tokensOut)
+	}
+}
+
+func TestEstimateStepTokens_WithMaxTokens(t *testing.T) {
+	step := WorkflowStep{
+		Name:      "summarize",
+		Type:      "llm-call",
+		Prompt:    "Summarize the results.",
+		MaxTokens: 2000,
+	}
+
+	_, tokensOut := estimateStepTokens(step)
+
+	if tokensOut != 2000 {
+		t.Errorf("Expected tokensOut=2000 (from MaxTokens), got %d", tokensOut)
+	}
+}
+
+func TestEstimateStepTokens_EmptyPrompt(t *testing.T) {
+	step := WorkflowStep{
+		Name: "generic-step",
+		Type: "llm-call",
+		// No prompt, no max_tokens
+	}
+
+	tokensIn, tokensOut := estimateStepTokens(step)
+
+	if tokensIn != 1000 {
+		t.Errorf("Expected default tokensIn=1000 for empty prompt, got %d", tokensIn)
+	}
+	if tokensOut != 500 {
+		t.Errorf("Expected default tokensOut=500 for no MaxTokens, got %d", tokensOut)
+	}
+}
+
+func TestEstimateStepTokens_MultibyteCJK(t *testing.T) {
+	// 100 CJK characters = 300 bytes in UTF-8.
+	// With len() (bytes): 300/4 + 50 = 125
+	// With RuneCount (chars): 100/4 + 50 = 75
+	// Must use rune count so CJK isn't overestimated.
+	cjkPrompt := strings.Repeat("漢", 100) // 100 CJK characters, 300 UTF-8 bytes
+	step := WorkflowStep{
+		Name:   "analyze-cjk",
+		Type:   "llm-call",
+		Prompt: cjkPrompt,
+	}
+
+	tokensIn, _ := estimateStepTokens(step)
+
+	expectedIn := 100/4 + 50 // 25 + 50 = 75 (rune-based)
+	wrongByteIn := 300/4 + 50 // 75 + 50 = 125 (byte-based, wrong)
+
+	if tokensIn != expectedIn {
+		t.Errorf("Expected tokensIn=%d (rune-based), got %d", expectedIn, tokensIn)
+	}
+	if tokensIn == wrongByteIn {
+		t.Errorf("tokensIn=%d matches byte-based calculation — len() is being used instead of RuneCount", tokensIn)
+	}
+}
+
+func TestEstimateStepTokens_WithOutputSchema(t *testing.T) {
+	step := WorkflowStep{
+		Name:   "structured-output",
+		Type:   "llm-call",
+		Prompt: "Analyze this data.",
+		Output: map[string]interface{}{
+			"summary":         "string",
+			"confidence_score": "float",
+			"categories":      []string{"a", "b", "c"},
+		},
+	}
+
+	tokensIn, _ := estimateStepTokens(step)
+
+	// Should be prompt-based tokens + output schema tokens
+	promptOnly := len(step.Prompt)/4 + 50
+	if tokensIn <= promptOnly {
+		t.Errorf("Expected tokensIn > %d (prompt-only) when Output schema is present, got %d", promptOnly, tokensIn)
+	}
+}
+
+func TestEstimatePlanCost_VariesByPromptLength(t *testing.T) {
+	router := NewMockLLMRouter()
+	engine := NewPlanningEngine(router)
+	engine.SetPricingConfig(&mockPlanCostEstimator{})
+
+	shortPrompt := "Summarize."
+	longPrompt := strings.Repeat("Analyze the comprehensive dataset with detailed instructions. ", 20)
+
+	workflowShort := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step-1", Type: "llm-call", Prompt: shortPrompt, MaxTokens: 500},
+			},
+		},
+	}
+
+	workflowLong := &Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step-1", Type: "llm-call", Prompt: longPrompt, MaxTokens: 500},
+			},
+		},
+	}
+
+	resultShort := engine.EstimatePlanCost(workflowShort)
+	resultLong := engine.EstimatePlanCost(workflowLong)
+
+	if len(resultShort.Breakdown) != 1 || len(resultLong.Breakdown) != 1 {
+		t.Fatal("Expected exactly 1 breakdown entry per workflow")
+	}
+
+	shortTokensIn := resultShort.Breakdown[0].EstimatedTokensIn
+	longTokensIn := resultLong.Breakdown[0].EstimatedTokensIn
+
+	if longTokensIn <= shortTokensIn {
+		t.Errorf("Long prompt should produce more estimated input tokens than short prompt: long=%d, short=%d",
+			longTokensIn, shortTokensIn)
+	}
+}
+
 func TestPlanningEngine_ApplyConnectorMatch_GenericOperation(t *testing.T) {
 	router := NewMockLLMRouter()
 	engine := NewPlanningEngine(router)

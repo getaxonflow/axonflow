@@ -62,7 +62,8 @@ type DynamicPolicy struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
-	Type        string            `json:"type"` // "content", "user", "risk", "cost"
+	Type        string            `json:"type"` // "content", "user", "risk", "cost", "media"
+	Category    string            `json:"category,omitempty"`
 	Conditions  []PolicyCondition `json:"conditions"`
 	Actions     []PolicyAction    `json:"actions"`
 	Priority    int               `json:"priority"`
@@ -524,6 +525,7 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 	query := `
 		SELECT
 			id::text, policy_id, name, description, policy_type,
+			COALESCE(category, '') as category,
 			conditions, actions, priority, enabled, tenant_id,
 			created_at, updated_at
 		FROM dynamic_policies
@@ -553,6 +555,7 @@ func (e *DynamicPolicyEngine) loadPoliciesFromDB() error {
 			&policy.Name,
 			&policy.Description,
 			&policy.Type,
+			&policy.Category,
 			&conditionsJSON,
 			&actionsJSON,
 			&policy.Priority,

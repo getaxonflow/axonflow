@@ -106,7 +106,7 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 		       COALESCE(created_by, ''), COALESCE(updated_by, ''),
 		       created_at, updated_at
 		FROM dynamic_policies
-		WHERE policy_id = $1 AND tenant_id = $2
+		WHERE policy_id = $1 AND (tenant_id = $2 OR tenant_id = 'global')
 	`
 
 	policy := &PolicyResource{}
@@ -148,13 +148,24 @@ func (r *PolicyRepository) GetByID(ctx context.Context, tenantID, policyID strin
 // List retrieves policies with filtering and pagination
 func (r *PolicyRepository) List(ctx context.Context, tenantID string, params ListPoliciesParams) ([]PolicyResource, int, error) {
 	// Build dynamic query
-	whereConditions := []string{"tenant_id = $1"}
+	// Include both tenant-specific and system/global policies
+	whereConditions := []string{"(tenant_id = $1 OR tenant_id = 'global')"}
 	args := []interface{}{tenantID}
 	argIndex := 2
 
 	if params.Type != "" {
 		whereConditions = append(whereConditions, fmt.Sprintf("policy_type = $%d", argIndex))
 		args = append(args, params.Type)
+		argIndex++
+	}
+
+	if params.Category != "" {
+		if strings.Contains(params.Category, "%") {
+			whereConditions = append(whereConditions, fmt.Sprintf("category LIKE $%d", argIndex))
+		} else {
+			whereConditions = append(whereConditions, fmt.Sprintf("category = $%d", argIndex))
+		}
+		args = append(args, params.Category)
 		argIndex++
 	}
 

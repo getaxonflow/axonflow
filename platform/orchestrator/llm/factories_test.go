@@ -427,7 +427,7 @@ func TestOllamaProvider(t *testing.T) {
 
 			// Send response
 			resp := map[string]any{
-				"model":                "llama3.1:latest",
+				"model":                "llama3.2:latest",
 				"response":             "Hello! I'm Ollama.",
 				"done":                 true,
 				"total_duration":       1000000000,
@@ -469,8 +469,8 @@ func TestOllamaProvider(t *testing.T) {
 			t.Errorf("expected content 'Hello! I'm Ollama.', got %q", resp.Content)
 		}
 
-		if resp.Model != "llama3.1:latest" {
-			t.Errorf("expected model 'llama3.1:latest', got %q", resp.Model)
+		if resp.Model != "llama3.2:latest" {
+			t.Errorf("expected model 'llama3.2:latest', got %q", resp.Model)
 		}
 
 		if resp.Usage.PromptTokens != 5 {
@@ -514,7 +514,7 @@ func TestOllamaProvider(t *testing.T) {
 			if r.URL.Path == "/api/tags" {
 				resp := map[string]any{
 					"models": []map[string]any{
-						{"name": "llama3.1:latest"},
+						{"name": "llama3.2:latest"},
 					},
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -649,9 +649,9 @@ func TestOllamaProvider_CompleteStream(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 
 			chunks := []string{
-				`{"model":"llama3.1","response":"Hello","done":false}`,
-				`{"model":"llama3.1","response":" World","done":false}`,
-				`{"model":"llama3.1","response":"","done":true,"prompt_eval_count":5,"eval_count":2}`,
+				`{"model":"llama3.2","response":"Hello","done":false}`,
+				`{"model":"llama3.2","response":" World","done":false}`,
+				`{"model":"llama3.2","response":"","done":true,"prompt_eval_count":5,"eval_count":2}`,
 			}
 			for _, chunk := range chunks {
 				w.Write([]byte(chunk + "\n"))

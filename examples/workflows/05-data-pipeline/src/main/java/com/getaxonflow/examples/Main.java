@@ -62,7 +62,7 @@ public class Main {
                             .userToken("user-123")
                             .query("Extract customer purchase data from the last 30 days. Include customer ID, purchase amount, product categories, and timestamps. Simulate 500 customer transactions.")
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "data-pipeline-extract"))
                             .build()
@@ -90,7 +90,7 @@ public class Main {
                                     "4. Validate all amounts are positive numbers\n" +
                                     "5. Flag any anomalies (unusually high amounts)")
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "data-pipeline-clean"))
                             .build()
@@ -116,7 +116,7 @@ public class Main {
                                     "3. Identify top-spending product categories per segment\n" +
                                     "4. Calculate average order value per segment")
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "data-pipeline-enrich"))
                             .build()
@@ -143,7 +143,7 @@ public class Main {
                                     "4. Customer churn risk indicators\n" +
                                     "5. Recommended actions for each segment")
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "data-pipeline-aggregate"))
                             .build()
@@ -170,7 +170,7 @@ public class Main {
                                     "4. Risk alerts (if any)\n" +
                                     "Format as a concise business report.")
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "data-pipeline-report"))
                             .build()

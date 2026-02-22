@@ -73,7 +73,7 @@ func TestLoadLLMConfigFromService_WithService(t *testing.T) {
 
 	// Use t.Setenv for automatic cleanup
 	t.Setenv("BEDROCK_REGION", "us-west-2")
-	t.Setenv("BEDROCK_MODEL", "anthropic.claude-3-opus-20240229-v1:0")
+	t.Setenv("BEDROCK_MODEL", "anthropic.claude-opus-4-20250514-v1:0")
 
 	ctx := context.Background()
 	config := LoadLLMConfigFromService(ctx, "test-tenant")
@@ -83,8 +83,8 @@ func TestLoadLLMConfigFromService_WithService(t *testing.T) {
 		t.Errorf("Expected BedrockRegion 'us-west-2', got '%s'", config.BedrockRegion)
 	}
 
-	if config.BedrockModel != "anthropic.claude-3-opus-20240229-v1:0" {
-		t.Errorf("Expected BedrockModel 'anthropic.claude-3-opus-20240229-v1:0', got '%s'", config.BedrockModel)
+	if config.BedrockModel != "anthropic.claude-opus-4-20250514-v1:0" {
+		t.Errorf("Expected BedrockModel 'anthropic.claude-opus-4-20250514-v1:0', got '%s'", config.BedrockModel)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestLoadLLMConfigFromService_AllProviders(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "openai-key-test")
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key-test")
 	t.Setenv("BEDROCK_REGION", "eu-west-1")
-	t.Setenv("BEDROCK_MODEL", "claude-3-5-sonnet")
+	t.Setenv("BEDROCK_MODEL", "claude-sonnet-4")
 	t.Setenv("OLLAMA_ENDPOINT", "http://localhost:11434")
 	t.Setenv("OLLAMA_MODEL", "llama3:70b")
 	t.Setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
@@ -163,8 +163,8 @@ func TestLoadLLMConfigFromService_AllProviders(t *testing.T) {
 	if config.BedrockRegion != "eu-west-1" {
 		t.Errorf("Expected BedrockRegion 'eu-west-1', got '%s'", config.BedrockRegion)
 	}
-	if config.BedrockModel != "claude-3-5-sonnet" {
-		t.Errorf("Expected BedrockModel 'claude-3-5-sonnet', got '%s'", config.BedrockModel)
+	if config.BedrockModel != "claude-sonnet-4" {
+		t.Errorf("Expected BedrockModel 'claude-sonnet-4', got '%s'", config.BedrockModel)
 	}
 	if config.OllamaEndpoint != "http://localhost:11434" {
 		t.Errorf("Expected OllamaEndpoint 'http://localhost:11434', got '%s'", config.OllamaEndpoint)
@@ -327,9 +327,9 @@ func TestApplyLLMConfigToEnv(t *testing.T) {
 		GeminiKey:                 "gemini-key",
 		GeminiModel:               "gemini-2.0-flash",
 		BedrockRegion:             "us-east-1",
-		BedrockModel:              "anthropic.claude-3-haiku-20240307-v1:0",
+		BedrockModel:              "anthropic.claude-haiku-4-5-20251001-v1:0",
 		OllamaEndpoint:            "http://localhost:11434",
-		OllamaModel:               "llama3.1:latest",
+		OllamaModel:               "llama3.2:latest",
 		AzureOpenAIEndpoint:       "https://example.openai.azure.com",
 		AzureOpenAIAPIKey:         "azure-key",
 		AzureOpenAIDeploymentName: "gpt-4o-mini",
@@ -348,9 +348,9 @@ func TestApplyLLMConfigToEnv(t *testing.T) {
 	assertEnv("GOOGLE_API_KEY", "gemini-key")
 	assertEnv("GOOGLE_MODEL", "gemini-2.0-flash")
 	assertEnv("BEDROCK_REGION", "us-east-1")
-	assertEnv("BEDROCK_MODEL", "anthropic.claude-3-haiku-20240307-v1:0")
+	assertEnv("BEDROCK_MODEL", "anthropic.claude-haiku-4-5-20251001-v1:0")
 	assertEnv("OLLAMA_ENDPOINT", "http://localhost:11434")
-	assertEnv("OLLAMA_MODEL", "llama3.1:latest")
+	assertEnv("OLLAMA_MODEL", "llama3.2:latest")
 	assertEnv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
 	assertEnv("AZURE_OPENAI_API_KEY", "azure-key")
 	assertEnv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini")
@@ -465,7 +465,7 @@ llm_providers:
     enabled: true
     config:
       region: us-west-2
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0`)
+      model: anthropic.claude-sonnet-4-20240620-v1:0`)
 	t.Setenv("AXONFLOW_CONFIG_FILE", "")
 	t.Setenv("AXONFLOW_LLM_CONFIG_FILE", tmpFile)
 
@@ -561,12 +561,12 @@ llm_providers:
     enabled: true
     config:
       region: eu-central-1
-      model: anthropic.claude-3-opus-20240229-v1:0
+      model: anthropic.claude-opus-4-20250514-v1:0
   ollama:
     enabled: true
     config:
       endpoint: http://ollama.local:11434
-      model: llama3.1:70b`)
+      model: llama3.2:latest`)
 	t.Setenv("AXONFLOW_CONFIG_FILE", tmpFile)
 	SetConfigFileLoaderFromEnv()
 
@@ -582,14 +582,14 @@ llm_providers:
 	if config.BedrockRegion != "eu-central-1" {
 		t.Errorf("Expected BedrockRegion 'eu-central-1', got '%s'", config.BedrockRegion)
 	}
-	if config.BedrockModel != "anthropic.claude-3-opus-20240229-v1:0" {
-		t.Errorf("Expected BedrockModel 'anthropic.claude-3-opus-20240229-v1:0', got '%s'", config.BedrockModel)
+	if config.BedrockModel != "anthropic.claude-opus-4-20250514-v1:0" {
+		t.Errorf("Expected BedrockModel 'anthropic.claude-opus-4-20250514-v1:0', got '%s'", config.BedrockModel)
 	}
 	if config.OllamaEndpoint != "http://ollama.local:11434" {
 		t.Errorf("Expected OllamaEndpoint 'http://ollama.local:11434', got '%s'", config.OllamaEndpoint)
 	}
-	if config.OllamaModel != "llama3.1:70b" {
-		t.Errorf("Expected OllamaModel 'llama3.1:70b', got '%s'", config.OllamaModel)
+	if config.OllamaModel != "llama3.2:latest" {
+		t.Errorf("Expected OllamaModel 'llama3.2:latest', got '%s'", config.OllamaModel)
 	}
 }
 

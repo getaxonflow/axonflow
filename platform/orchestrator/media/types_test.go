@@ -5,6 +5,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -856,7 +857,7 @@ func TestFetchURLData_BlocksLoopback(t *testing.T) {
 		URL:      "http://127.0.0.1:8080/evil.jpg",
 	}
 
-	_, err := m.fetchURLData()
+	_, err := m.fetchURLData(context.Background())
 	if err == nil {
 		t.Fatal("expected SSRF protection to block loopback URL")
 	}
@@ -872,7 +873,7 @@ func TestFetchURLData_BlocksPrivateIP(t *testing.T) {
 		URL:      "http://10.0.0.1:8080/internal.jpg",
 	}
 
-	_, err := m.fetchURLData()
+	_, err := m.fetchURLData(context.Background())
 	if err == nil {
 		t.Fatal("expected SSRF protection to block private IP")
 	}

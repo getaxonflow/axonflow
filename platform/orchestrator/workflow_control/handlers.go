@@ -253,7 +253,20 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID); err != nil {
+	// Parse optional request body with post-execution metrics.
+	// Empty body is allowed for backward compatibility (the previous contract).
+	// Non-empty body that fails JSON decoding returns 400.
+	var req *StepCompleteRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		var parsed StepCompleteRequest
+		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
+			h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body: "+err.Error())
+			return
+		}
+		req = &parsed
+	}
+
+	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return

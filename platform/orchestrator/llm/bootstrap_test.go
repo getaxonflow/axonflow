@@ -75,7 +75,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 
 		// Set Anthropic config
 		env.Set(EnvAnthropicAPIKey, "test-anthropic-key")
-		env.Set(EnvAnthropicModel, "claude-3-5-sonnet-20241022")
+		env.Set(EnvAnthropicModel, "claude-sonnet-4-20250514")
 
 		result, err := BootstrapFromEnv(&BootstrapConfig{
 			SkipHealthCheck: true,
@@ -139,7 +139,7 @@ func TestBootstrapFromEnv(t *testing.T) {
 
 		// Set Ollama config
 		env.Set(EnvOllamaEndpoint, "http://localhost:11434")
-		env.Set(EnvOllamaModel, "llama3.1:latest")
+		env.Set(EnvOllamaModel, "llama3.2:latest")
 
 		result, err := BootstrapFromEnv(&BootstrapConfig{
 			SkipHealthCheck: true,
@@ -623,7 +623,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 		defer env.Restore()
 
 		env.Set(EnvAnthropicAPIKey, "sk-ant-test12345678")
-		env.Set(EnvAnthropicModel, "claude-3-5-sonnet")
+		env.Set(EnvAnthropicModel, "claude-sonnet-4")
 		env.Set(EnvAnthropicEndpoint, "https://custom.anthropic.com")
 		env.Set(EnvAnthropicTimeout, "120")
 
@@ -634,7 +634,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 			t.Error("expected API key to be masked")
 		}
 
-		if vars[EnvAnthropicModel] != "claude-3-5-sonnet" {
+		if vars[EnvAnthropicModel] != "claude-sonnet-4" {
 			t.Errorf("expected model value, got %q", vars[EnvAnthropicModel])
 		}
 
@@ -670,7 +670,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 		defer env.Restore()
 
 		env.Set(EnvOllamaEndpoint, "http://localhost:11434")
-		env.Set(EnvOllamaModel, "llama3.1:latest")
+		env.Set(EnvOllamaModel, "llama3.2:latest")
 
 		vars := GetProviderEnvVars(ProviderTypeOllama)
 
@@ -678,7 +678,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 			t.Errorf("expected endpoint value, got %q", vars[EnvOllamaEndpoint])
 		}
 
-		if vars[EnvOllamaModel] != "llama3.1:latest" {
+		if vars[EnvOllamaModel] != "llama3.2:latest" {
 			t.Errorf("expected model value, got %q", vars[EnvOllamaModel])
 		}
 	})
@@ -688,7 +688,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 		defer env.Restore()
 
 		env.Set(EnvBedrockRegion, "us-east-1")
-		env.Set(EnvBedrockModel, "anthropic.claude-3-5-sonnet")
+		env.Set(EnvBedrockModel, "anthropic.claude-sonnet-4")
 
 		vars := GetProviderEnvVars(ProviderTypeBedrock)
 
@@ -696,7 +696,7 @@ func TestGetProviderEnvVars(t *testing.T) {
 			t.Errorf("expected region value, got %q", vars[EnvBedrockRegion])
 		}
 
-		if vars[EnvBedrockModel] != "anthropic.claude-3-5-sonnet" {
+		if vars[EnvBedrockModel] != "anthropic.claude-sonnet-4" {
 			t.Errorf("expected model value, got %q", vars[EnvBedrockModel])
 		}
 	})
@@ -754,7 +754,7 @@ func TestValidateEnvironment(t *testing.T) {
 		env.Unset(EnvOpenAIAPIKey)
 		env.Unset(EnvBedrockRegion)
 		env.Unset(EnvOllamaEndpoint)
-		env.Set(EnvOllamaModel, "llama3.1:latest")
+		env.Set(EnvOllamaModel, "llama3.2:latest")
 
 		errors := ValidateEnvironment()
 

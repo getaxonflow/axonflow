@@ -157,6 +157,10 @@ type StepStatus struct {
 	// Cost tracking per step
 	CostUSD *float64 `json:"cost_usd,omitempty"`
 
+	// Token tracking per step
+	TokensIn  *int `json:"tokens_in,omitempty"`
+	TokensOut *int `json:"tokens_out,omitempty"`
+
 	// Input/Output (optional, can be large)
 	Input  json.RawMessage `json:"input,omitempty"`
 	Output json.RawMessage `json:"output,omitempty"`

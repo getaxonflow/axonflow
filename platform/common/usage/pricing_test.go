@@ -27,28 +27,28 @@ func TestCalculateCost(t *testing.T) {
 			expectedCents:    (100 * 3000 / 1000) + (200 * 6000 / 1000), // 300 + 1200 = 1500 cents
 		},
 		{
-			name:             "OpenAI GPT-3.5 Turbo",
+			name:             "OpenAI GPT-4o Mini",
 			provider:         "openai",
-			model:            "gpt-3.5-turbo",
+			model:            "gpt-4o-mini",
 			promptTokens:     1000,
 			completionTokens: 500,
-			expectedCents:    (1000 * 50 / 1000) + (500 * 150 / 1000), // 50 + 75 = 125 cents
+			expectedCents:    (1000 * 15 / 1000) + (500 * 60 / 1000), // 15 + 30 = 45 cents
 		},
 		{
-			name:             "Anthropic Claude 3 Sonnet",
+			name:             "Anthropic Claude Sonnet 4",
 			provider:         "anthropic",
-			model:            "claude-3-sonnet",
+			model:            "claude-sonnet-4",
 			promptTokens:     500,
 			completionTokens: 300,
 			expectedCents:    (500 * 300 / 1000) + (300 * 1500 / 1000), // 150 + 450 = 600 cents
 		},
 		{
-			name:             "Anthropic Claude 3 Haiku",
+			name:             "Anthropic Claude Haiku 4.5",
 			provider:         "anthropic",
-			model:            "claude-3-haiku",
+			model:            "claude-haiku-4.5",
 			promptTokens:     1000,
 			completionTokens: 1000,
-			expectedCents:    (1000 * 25 / 1000) + (1000 * 125 / 1000), // 25 + 125 = 150 cents
+			expectedCents:    (1000 * 80 / 1000) + (1000 * 400 / 1000), // 80 + 400 = 480 cents
 		},
 		{
 			name:             "Unknown provider defaults to fallback pricing",
@@ -86,7 +86,7 @@ func TestGetProviderPricing(t *testing.T) {
 		wantOk   bool
 	}{
 		{"OpenAI GPT-4", "openai", "gpt-4", true},
-		{"Anthropic Claude 3 Opus", "anthropic", "claude-3-opus", true},
+		{"Anthropic Claude Opus 4", "anthropic", "claude-opus-4", true},
 		{"Unknown provider", "unknown", "model", false},
 	}
 

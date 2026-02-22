@@ -104,9 +104,9 @@ func (m *mockDynamicPolicyService) ExportPolicies(ctx context.Context, tenantID 
 func TestDynamicPolicyAPI_ListDynamicPolicies(t *testing.T) {
 	mockService := &mockDynamicPolicyService{
 		listFunc: func(ctx context.Context, tenantID string, params ListPoliciesParams) (*PoliciesListResponse, error) {
-			// Verify category filter is applied
-			if params.Category != "dynamic-%" {
-				t.Errorf("Expected category filter 'dynamic-%%', got '%s'", params.Category)
+			// Default: no category filter (returns all dynamic + media policies)
+			if params.Category != "" {
+				t.Errorf("Expected empty category filter (no filter), got '%s'", params.Category)
 			}
 			return &PoliciesListResponse{
 				Policies: []PolicyResource{

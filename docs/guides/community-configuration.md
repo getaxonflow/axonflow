@@ -240,7 +240,7 @@ llm_providers:
     enabled: true
     config:
       endpoint: http://localhost:11434
-      model: llama3.2:70b
+      model: llama3.2:latest
     priority: 5
     weight: 0.5
 ```

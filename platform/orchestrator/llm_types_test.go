@@ -72,9 +72,9 @@ func TestLLMRouterConfigFields(t *testing.T) {
 		AzureOpenAIDeploymentName: "gpt-4o-mini",
 		AzureOpenAIAPIVersion:     "2024-08-01-preview",
 		BedrockRegion:             "us-east-1",
-		BedrockModel:              "anthropic.claude-3-sonnet",
+		BedrockModel:              "anthropic.claude-sonnet-4",
 		OllamaEndpoint:            "http://localhost:11434",
-		OllamaModel:               "llama2",
+		OllamaModel:               "llama3.2",
 		LocalEndpoint:             "http://localhost:11434", // deprecated
 		RoutingStrategy:           RoutingStrategyWeighted,
 		ProviderWeights:           map[string]float64{"openai": 0.5, "anthropic": 0.5},

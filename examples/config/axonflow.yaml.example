@@ -194,10 +194,10 @@ llm_providers:
 
     config:
       region: ${AWS_REGION:-us-east-1}
-      model: ${BEDROCK_MODEL:-anthropic.claude-3-5-sonnet-20240620-v1:0}
+      model: ${BEDROCK_MODEL:-anthropic.claude-sonnet-4-20250514-v1:0}
       # Available models:
-      # - anthropic.claude-3-5-sonnet-20240620-v1:0 (recommended)
-      # - anthropic.claude-3-haiku-20240307-v1:0 (faster, cheaper)
+      # - anthropic.claude-sonnet-4-20250514-v1:0 (recommended)
+      # - anthropic.claude-haiku-4-5-20251001-v1:0 (faster, cheaper)
       # - meta.llama3-70b-instruct-v1:0
 
     # Routing configuration
@@ -214,11 +214,11 @@ llm_providers:
 
     config:
       endpoint: ${OLLAMA_ENDPOINT:-http://localhost:11434}
-      model: ${OLLAMA_MODEL:-llama3.1:70b}
+      model: ${OLLAMA_MODEL:-llama3.2:latest}
       # Available models depend on what you've pulled:
-      # - llama3.1:70b (best quality, requires ~40GB RAM)
-      # - llama3.1:8b (good balance)
-      # - codellama:34b (code-focused)
+      # - llama3.2:latest (best quality, requires ~40GB RAM)
+      # - llama3.2:latest (good balance)
+      # - qwen2.5-coder:32b (code-focused)
 
     priority: 5                    # Failover priority
     weight: 0.2                    # 20% of traffic
@@ -231,7 +231,7 @@ llm_providers:
     display_name: "OpenAI"
 
     config:
-      model: ${OPENAI_MODEL:-gpt-4-turbo}
+      model: ${OPENAI_MODEL:-gpt-4o}
       max_tokens: 4096
       temperature: 0.7
 

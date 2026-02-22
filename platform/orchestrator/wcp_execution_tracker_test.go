@@ -640,8 +640,8 @@ func TestSyncStepCompleted(t *testing.T) {
 		t.Fatalf("StartWorkflowExecution() error = %v", err)
 	}
 
-	// Call syncStepCompleted (via OnStepCompleted)
-	err = tracker.OnStepCompleted(ctx, "wf_step_completed", "step_1")
+	// Call syncStepCompleted (via OnStepCompleted) with nil metrics
+	err = tracker.OnStepCompleted(ctx, "wf_step_completed", "step_1", nil)
 	if err != nil {
 		t.Fatalf("OnStepCompleted() error = %v", err)
 	}
@@ -674,7 +674,7 @@ func TestSyncStepCompleted_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Call syncStepCompleted for a workflow that has no unified execution
-	err := tracker.syncStepCompleted(ctx, "wf_nonexistent", "step_1")
+	err := tracker.syncStepCompleted(ctx, "wf_nonexistent", "step_1", nil)
 	if err != nil {
 		t.Errorf("syncStepCompleted() for missing execution should return nil, got: %v", err)
 	}
@@ -995,8 +995,8 @@ func TestOnStepCompleted_ThenOnWorkflowCompleted(t *testing.T) {
 		t.Fatalf("StartWorkflowExecution() error = %v", err)
 	}
 
-	// Complete the step
-	err = tracker.OnStepCompleted(ctx, "wf_full_lifecycle", "lifecycle_step_1")
+	// Complete the step (nil metrics)
+	err = tracker.OnStepCompleted(ctx, "wf_full_lifecycle", "lifecycle_step_1", nil)
 	if err != nil {
 		t.Fatalf("OnStepCompleted() error = %v", err)
 	}
@@ -1027,6 +1027,89 @@ func TestOnStepCompleted_ThenOnWorkflowCompleted(t *testing.T) {
 		}
 	}
 	t.Error("lifecycle_step_1 not found in execution steps")
+}
+
+func TestOnStepCompletedWithMetrics(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewWCPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	now := time.Now()
+
+	// Create a workflow with one step
+	totalSteps := 1
+	workflow := &workflow_control.Workflow{
+		WorkflowID:   "wf_metrics_test",
+		WorkflowName: "Metrics Test",
+		Source:       workflow_control.WorkflowSourceLangGraph,
+		Status:       workflow_control.WorkflowStatusInProgress,
+		TotalSteps:   &totalSteps,
+		StartedAt:    now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Steps: []workflow_control.WorkflowStep{
+			{
+				StepID:        "step_m1",
+				StepIndex:     0,
+				StepName:      "generate",
+				StepType:      workflow_control.StepTypeLLMCall,
+				Decision:      workflow_control.GateDecisionAllow,
+				GateCheckedAt: now,
+				Model:         "gpt-4o",
+				Provider:      "openai",
+			},
+		},
+	}
+
+	_, err := tracker.StartWorkflowExecution(ctx, workflow)
+	if err != nil {
+		t.Fatalf("StartWorkflowExecution() error = %v", err)
+	}
+
+	// Complete the step with post-execution metrics
+	tokensIn := 200
+	tokensOut := 75
+	costUSD := 0.005
+	metrics := &workflow_control.StepCompleteRequest{
+		TokensIn:  &tokensIn,
+		TokensOut: &tokensOut,
+		CostUSD:   &costUSD,
+		Output:    map[string]interface{}{"result": "success"},
+	}
+
+	err = tracker.OnStepCompleted(ctx, "wf_metrics_test", "step_m1", metrics)
+	if err != nil {
+		t.Fatalf("OnStepCompleted() error = %v", err)
+	}
+
+	// Verify the step is completed with metrics
+	status, err := tracker.GetWorkflowStatus(ctx, "wf_metrics_test")
+	if err != nil {
+		t.Fatalf("GetWorkflowStatus() error = %v", err)
+	}
+
+	found := false
+	for _, s := range status.Steps {
+		if s.StepID == "step_m1" {
+			found = true
+			if s.Status != execution.StepStatusCompleted {
+				t.Errorf("Step status = %s, want %s", s.Status, execution.StepStatusCompleted)
+			}
+			if s.TokensIn == nil || *s.TokensIn != 200 {
+				t.Errorf("TokensIn = %v, want 200", s.TokensIn)
+			}
+			if s.TokensOut == nil || *s.TokensOut != 75 {
+				t.Errorf("TokensOut = %v, want 75", s.TokensOut)
+			}
+			if s.CostUSD == nil || *s.CostUSD != 0.005 {
+				t.Errorf("CostUSD = %v, want 0.005", s.CostUSD)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("step_m1 not found in execution steps")
+	}
 }
 
 func TestIsWCPNotFoundError(t *testing.T) {

@@ -622,7 +622,7 @@ func TestProvider_CompleteStream_Success(t *testing.T) {
 
 	// Create SSE stream response
 	streamData := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_stream","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":10}}}
+data: {"type":"message_start","message":{"id":"msg_stream","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10}}}
 
 event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}

@@ -116,7 +116,7 @@ async def main() -> int:
                     user_token=user_token,
                     query="Process transaction amount $5000000 to offshore account",
                     request_type="chat",
-                    context={"provider": "openai"},
+                    context={"provider": "gemini"},
                 )
                 if matching_response.blocked:
                     # Enterprise mode: policy enforcement blocks the request
@@ -144,7 +144,7 @@ async def main() -> int:
                     user_token=user_token,
                     query="What is the weather today?",
                     request_type="chat",
-                    context={"provider": "openai"},
+                    context={"provider": "gemini"},
                 )
                 assert_check(not safe_response.blocked, "Safe query was NOT blocked by HITL policy")
             except Exception as e:

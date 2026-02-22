@@ -224,6 +224,12 @@ func (t *BaseExecutionTracker) ListExecutions(ctx context.Context, req ListExecu
 	for i := range executions {
 		executions[i].ProgressPercent = executions[i].CalculateProgress()
 		executions[i].Duration = executions[i].CalculateDuration()
+		if executions[i].ActualCostUSD == nil {
+			cost := executions[i].TotalCost()
+			if cost > 0 {
+				executions[i].ActualCostUSD = &cost
+			}
+		}
 	}
 
 	return &ListExecutionsResponse{
@@ -276,7 +282,9 @@ func (t *BaseExecutionTracker) AddStep(ctx context.Context, executionID string, 
 		return err
 	}
 
-	step.Status = StepStatusPending
+	if step.Status == "" {
+		step.Status = StepStatusPending
+	}
 	exec.Steps = append(exec.Steps, step)
 	exec.TotalSteps = len(exec.Steps)
 	exec.UpdatedAt = t.clock.Now()
@@ -315,6 +323,8 @@ func (t *BaseExecutionTracker) StartStep(ctx context.Context, executionID, stepI
 }
 
 // CompleteStep marks a step as completed.
+// If result is a map[string]interface{} containing tokens_in, tokens_out, or cost_usd,
+// those values override the step's existing metrics (set at gate time).
 func (t *BaseExecutionTracker) CompleteStep(ctx context.Context, executionID, stepID string, result interface{}) error {
 	exec, err := t.repo.Get(ctx, executionID)
 	if err != nil {
@@ -327,6 +337,19 @@ func (t *BaseExecutionTracker) CompleteStep(ctx context.Context, executionID, st
 			exec.Steps[i].Status = StepStatusCompleted
 			exec.Steps[i].EndedAt = &now
 			exec.Steps[i].Duration = exec.Steps[i].CalculateDuration()
+
+			// Apply post-execution metrics from result if provided
+			if m, ok := result.(map[string]interface{}); ok {
+				if v, ok := m["tokens_in"].(int); ok {
+					exec.Steps[i].TokensIn = &v
+				}
+				if v, ok := m["tokens_out"].(int); ok {
+					exec.Steps[i].TokensOut = &v
+				}
+				if v, ok := m["cost_usd"].(float64); ok {
+					exec.Steps[i].CostUSD = &v
+				}
+			}
 			break
 		}
 	}

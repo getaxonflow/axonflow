@@ -162,6 +162,12 @@ func (h *UnifiedExecutionHandler) resolveExecution(ctx context.Context, executio
 	if err == nil {
 		exec.ProgressPercent = exec.CalculateProgress()
 		exec.Duration = exec.CalculateDuration()
+		if exec.ActualCostUSD == nil {
+			cost := exec.TotalCost()
+			if cost > 0 {
+				exec.ActualCostUSD = &cost
+			}
+		}
 		return exec, nil
 	}
 	captureErr(err)

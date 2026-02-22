@@ -114,7 +114,7 @@ func TestFromAgentConfigFile_IDUsesMetadataName(t *testing.T) {
 					Type: "llm-call",
 					LLM: &LLMAgentConfig{
 						Provider: "anthropic",
-						Model:    "claude-3-sonnet",
+						Model:    "claude-sonnet-4",
 					},
 				},
 			},

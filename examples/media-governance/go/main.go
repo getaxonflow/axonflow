@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v3"
 )
@@ -247,6 +248,36 @@ func main() {
 	fmt.Println()
 
 	// ========================================
+	// Test 5: Verify policy_info present for media requests
+	// ========================================
+	fmt.Println("Test 5: Verify policy_info present for media requests")
+	fmt.Println("  Checking policy_info from Test 1 response (media request)")
+
+	if resp.PolicyInfo != nil {
+		assert(resp.PolicyInfo.TenantID != "", "policy_info.tenant_id is non-empty (got "+resp.PolicyInfo.TenantID+")")
+		assert(resp.PolicyInfo.ProcessingTime != "", "policy_info.processing_time is non-empty")
+
+		hasMediaPolicy := false
+		for _, p := range resp.PolicyInfo.PoliciesEvaluated {
+			if strings.HasPrefix(p, "sys_media_") {
+				hasMediaPolicy = true
+				break
+			}
+		}
+		if hasMediaPolicy {
+			fmt.Println("   PASS: system media policies found in policies_evaluated")
+		} else {
+			fmt.Println("   INFO: no sys_media_* policies in policies_evaluated (dynamic policies may be tracked separately)")
+		}
+		fmt.Printf("   Policies evaluated: %v\n", resp.PolicyInfo.PoliciesEvaluated)
+	} else if pipelineActive {
+		fmt.Println("   WARNING: policy_info absent despite media analysis being active")
+	} else {
+		fmt.Println("   SKIP: policy_info not available (media governance pipeline not active)")
+	}
+	fmt.Println()
+
+	// ========================================
 	// Summary
 	// ========================================
 	fmt.Println("===================================")
@@ -266,6 +297,7 @@ func main() {
 		fmt.Println("  - Multiple image analysis (with SHA-256 dedup check)")
 		fmt.Println("  - URL-sourced image analysis")
 		fmt.Println("  - Non-media baseline request")
+		fmt.Println("  - Policy evaluation metadata for media requests")
 	} else {
 		fmt.Printf("%d TEST(S) FAILED:\n", len(failures))
 		for _, f := range failures {

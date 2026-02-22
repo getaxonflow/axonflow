@@ -73,8 +73,8 @@ async function main() {
     const gate = await axonflow.stepGate(workflow.workflow_id, "step-1", {
       step_name: "Data Processing",
       step_type: "llm_call",
-      model: "gpt-4",
-      provider: "openai",
+      model: "claude-haiku-4-5-20251001",
+      provider: "anthropic",
       step_input: { prompt: "Process incoming data batch" },
     });
 

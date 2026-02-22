@@ -332,6 +332,57 @@ func TestHandlerMarkStepCompleted(t *testing.T) {
 	}
 }
 
+func TestHandlerMarkStepCompletedWithMetrics(t *testing.T) {
+	handler, svc, repo := setupTestHandler()
+	ctx := context.Background()
+
+	// Create a workflow and step
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Create step via gate
+	gateReq := &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Send step complete with metrics body
+	metricsBody := StepCompleteRequest{
+		Output:    map[string]interface{}{"code": "def hello(): pass"},
+		TokensIn:  intPtr(150),
+		TokensOut: intPtr(45),
+		CostUSD:   float64Ptr(0.0023),
+	}
+	body, _ := json.Marshal(metricsBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/complete", bytes.NewReader(body))
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.MarkStepCompleted(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+
+	// Verify metrics were stored
+	step, _ := repo.GetStep(ctx, workflow.WorkflowID, "step-1")
+	if step.TokensIn == nil || *step.TokensIn != 150 {
+		t.Errorf("tokens_in = %v, want 150", step.TokensIn)
+	}
+	if step.TokensOut == nil || *step.TokensOut != 45 {
+		t.Errorf("tokens_out = %v, want 45", step.TokensOut)
+	}
+	if step.CostUSD == nil || *step.CostUSD != 0.0023 {
+		t.Errorf("cost_usd = %v, want 0.0023", step.CostUSD)
+	}
+}
+
+func float64Ptr(f float64) *float64 { return &f }
+
 func TestHandlerApproveStep(t *testing.T) {
 	// Setup with approval policy evaluator
 	repo := NewMockRepository()
@@ -802,6 +853,34 @@ func TestHandlerMarkStepCompletedNotFound(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandlerMarkStepCompletedMalformedBody(t *testing.T) {
+	handler, svc, _ := setupTestHandler()
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	gateReq := &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Send malformed JSON body
+	body := bytes.NewReader([]byte(`{invalid json`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/complete", body)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.MarkStepCompleted(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d for malformed body", rr.Code, http.StatusBadRequest)
 	}
 }
 

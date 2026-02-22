@@ -77,8 +77,8 @@ async def main() -> int:
                 gate_result = await adapter.check_gate(
                     step_name="generate_code",
                     step_type="llm_call",
-                    model="gpt-4",
-                    provider="openai",
+                    model="claude-haiku-4-5-20251001",
+                    provider="anthropic",
                     step_input={"prompt": "Write a Python function"},
                 )
 

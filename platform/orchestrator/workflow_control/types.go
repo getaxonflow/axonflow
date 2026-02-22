@@ -100,6 +100,10 @@ type WorkflowStep struct {
 	StepInput         json.RawMessage `json:"step_input,omitempty" db:"step_input"`
 	Model             string          `json:"model,omitempty" db:"model"`
 	Provider          string          `json:"provider,omitempty" db:"provider"`
+	TokensIn          *int            `json:"tokens_in,omitempty" db:"tokens_in"`
+	TokensOut         *int            `json:"tokens_out,omitempty" db:"tokens_out"`
+	CostUSD           *float64        `json:"cost_usd,omitempty" db:"cost_usd"`
+	StepOutput        json.RawMessage `json:"step_output,omitempty" db:"step_output"`
 	GateCheckedAt     time.Time       `json:"gate_checked_at" db:"gate_checked_at"`
 	StepCompletedAt   *time.Time      `json:"step_completed_at,omitempty" db:"step_completed_at"`
 }
@@ -130,9 +134,21 @@ type StepGateRequest struct {
 	StepInput map[string]interface{} `json:"step_input,omitempty"`
 	Model     string                 `json:"model,omitempty"`
 	Provider  string                 `json:"provider,omitempty"`
+	TokensIn  *int                   `json:"tokens_in,omitempty"`
+	TokensOut *int                   `json:"tokens_out,omitempty"`
+	CostUSD   *float64              `json:"cost_usd,omitempty"`
 	// GateOverride bypasses the policy evaluator and forces a specific decision.
 	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
 	GateOverride *GateDecision `json:"-"`
+}
+
+// StepCompleteRequest is the optional request body for marking a step as completed.
+// SDKs send post-execution metrics (tokens, cost, output) that were unavailable at gate time.
+type StepCompleteRequest struct {
+	Output    map[string]interface{} `json:"output,omitempty"`
+	TokensIn  *int                   `json:"tokens_in,omitempty"`
+	TokensOut *int                   `json:"tokens_out,omitempty"`
+	CostUSD   *float64               `json:"cost_usd,omitempty"`
 }
 
 // StepGateResponse is the response for a step gate check

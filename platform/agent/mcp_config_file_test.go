@@ -281,7 +281,7 @@ llm_providers:
     display_name: "Amazon Bedrock"
     config:
       region: us-east-1
-      model: anthropic.claude-3-5-sonnet-20240620-v1:0
+      model: anthropic.claude-sonnet-4-20250514-v1:0
     priority: 10
     weight: 0.7
 
@@ -290,7 +290,7 @@ llm_providers:
     display_name: "Ollama Local"
     config:
       endpoint: http://localhost:11434
-      model: llama3.1:70b
+      model: llama3.2:latest
     priority: 5
     weight: 0.3
 `

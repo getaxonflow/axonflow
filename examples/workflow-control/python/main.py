@@ -87,8 +87,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Generate Code",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "Write a Python function to sort a list"},
                     ),
                 )
@@ -116,7 +116,10 @@ async def main() -> int:
                         workflow_id=workflow.workflow_id,
                         step_id="step-1",
                         request=MarkStepCompletedRequest(
-                            output={"code": "def sort_list(items): return sorted(items)"}
+                            output={"code": "def sort_list(items): return sorted(items)"},
+                            tokens_in=150,
+                            tokens_out=45,
+                            cost_usd=0.0023,
                         ),
                     )
                     assert_check(True, "Step 1 marked completed")
@@ -146,7 +149,12 @@ async def main() -> int:
                     await client.mark_step_completed(
                         workflow_id=workflow.workflow_id,
                         step_id="step-2",
-                        request=MarkStepCompletedRequest(output={"review": "LGTM"}),
+                        request=MarkStepCompletedRequest(
+                            output={"review": "LGTM"},
+                            tokens_in=150,
+                            tokens_out=45,
+                            cost_usd=0.0023,
+                        ),
                     )
                     assert_check(True, "Step 2 marked completed")
             except Exception as e:
@@ -173,7 +181,10 @@ async def main() -> int:
                         workflow_id=workflow.workflow_id,
                         step_id="step-3",
                         request=MarkStepCompletedRequest(
-                            output={"pr_url": "https://github.com/example/pr/123"}
+                            output={"pr_url": "https://github.com/example/pr/123"},
+                            tokens_in=150,
+                            tokens_out=45,
+                            cost_usd=0.0023,
                         ),
                     )
                     assert_check(True, "Step 3 marked completed")
@@ -258,8 +269,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Approval Gate Step",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "test approval flow"},
                     ),
                 )
@@ -342,8 +353,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Rejection Gate Step",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "test rejection flow"},
                     ),
                 )
@@ -450,8 +461,8 @@ async def main() -> int:
                 request=StepGateRequest(
                     step_name="SSE Test Step",
                     step_type=StepType.LLM_CALL,
-                    model="gpt-4",
-                    provider="openai",
+                    model="claude-haiku-4-5-20251001",
+                    provider="anthropic",
                     step_input={"prompt": "test SSE streaming"},
                 ),
             )
@@ -461,7 +472,10 @@ async def main() -> int:
                     workflow_id=sse_wf.workflow_id,
                     step_id="sse-step-1",
                     request=MarkStepCompletedRequest(
-                        output={"result": "sse test output"}
+                        output={"result": "sse test output"},
+                        tokens_in=150,
+                        tokens_out=45,
+                        cost_usd=0.0023,
                     ),
                 )
                 assert_check(True, "SSE step completed")

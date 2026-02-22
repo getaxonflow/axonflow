@@ -19,7 +19,7 @@ import (
 
 // TestOpenAIProvider_GetName verifies OpenAI provider returns correct name
 func TestOpenAIProvider_GetName(t *testing.T) {
-	p := &OpenAIProvider{APIKey: "test-key", Model: "gpt-3.5-turbo"}
+	p := &OpenAIProvider{APIKey: "test-key", Model: "gpt-4o-mini"}
 	if name := p.GetName(); name != "openai" {
 		t.Errorf("GetName() = %s, want openai", name)
 	}
@@ -48,7 +48,7 @@ func TestOpenAIProvider_IsAvailable(t *testing.T) {
 
 // TestAnthropicProvider_GetName verifies Anthropic provider returns correct name
 func TestAnthropicProvider_GetName(t *testing.T) {
-	p := &AnthropicProvider{APIKey: "test-key", Model: "claude-3-5-sonnet-20241022"}
+	p := &AnthropicProvider{APIKey: "test-key", Model: "claude-sonnet-4-20250514"}
 	if name := p.GetName(); name != "anthropic" {
 		t.Errorf("GetName() = %s, want anthropic", name)
 	}
@@ -530,11 +530,11 @@ func createTestRouter() *LLMRouter {
 	providers := map[string]LLMProvider{
 		"openai": &OpenAIProvider{
 			APIKey: "test-key",
-			Model:  "gpt-3.5-turbo",
+			Model:  "gpt-4o-mini",
 		},
 		"anthropic": &AnthropicProvider{
 			APIKey: "test-key",
-			Model:  "claude-3-5-sonnet-20241022",
+			Model:  "claude-sonnet-4-20250514",
 		},
 		"local": &LocalProvider{
 			ModelPath: "/models/local",

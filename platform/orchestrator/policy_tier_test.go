@@ -79,6 +79,7 @@ type mockLicenseChecker struct {
 	maxSSEConnections       int
 	maxCostEstimatesPerDay  int
 	maxPendingApprovals     int
+	mediaGovernanceEnabled  bool
 }
 
 // newMockLicenseChecker creates a mock license checker with sensible defaults.
@@ -97,6 +98,7 @@ func newMockLicenseChecker(tier license.Tier) *mockLicenseChecker {
 	m.maxSSEConnections = limits.MaxSSEConnections
 	m.maxCostEstimatesPerDay = limits.MaxCostEstimatesPerDay
 	m.maxPendingApprovals = limits.MaxPendingApprovals
+	m.mediaGovernanceEnabled = limits.MediaGovernanceEnabled
 	return m
 }
 
@@ -154,6 +156,10 @@ func (m *mockLicenseChecker) MaxCostEstimatesPerDay() int {
 
 func (m *mockLicenseChecker) MaxPendingApprovals() int {
 	return m.maxPendingApprovals
+}
+
+func (m *mockLicenseChecker) MediaGovernanceEnabled() bool {
+	return m.mediaGovernanceEnabled
 }
 
 func TestTierValidationError_Error(t *testing.T) {

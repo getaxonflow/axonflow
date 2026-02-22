@@ -3548,10 +3548,11 @@ paths:
             example:
               output:
                 code: "def sort_list(items): return sorted(items)"
-              metadata:
-                execution_time_ms: 1234
+              tokens_in: 150
+              tokens_out: 45
+              cost_usd: 0.0023
       responses:
-        '200':
+        '204':
           description: Step marked completed
         '404':
           $ref: '#/components/responses/NotFound'
@@ -6436,10 +6437,19 @@ components:
           type: object
           description: Output data from the step
           additionalProperties: true
-        metadata:
-          type: object
-          description: Additional metadata
-          additionalProperties: true
+        tokens_in:
+          type: integer
+          description: Actual input tokens consumed by the step (overrides gate-time estimate)
+          example: 150
+        tokens_out:
+          type: integer
+          description: Actual output tokens produced by the step (overrides gate-time estimate)
+          example: 45
+        cost_usd:
+          type: number
+          format: double
+          description: Actual cost in USD for the step (overrides gate-time estimate)
+          example: 0.0023
 
     ListWorkflowsResponse:
       type: object

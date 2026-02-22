@@ -31,7 +31,7 @@ type LLMRequestEvent struct {
 	InstanceID       string
 	InstanceType     string // Usually "orchestrator"
 	LLMProvider      string // "openai", "anthropic", etc.
-	LLMModel         string // "gpt-4", "claude-3-sonnet", etc.
+	LLMModel         string // "gpt-4o", "claude-sonnet-4", etc.
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int

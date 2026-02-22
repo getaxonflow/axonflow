@@ -603,7 +603,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if region := os.Getenv("BEDROCK_REGION"); region != "" {
 		model := os.Getenv("BEDROCK_MODEL")
 		if model == "" {
-			model = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+			model = "anthropic.claude-sonnet-4-20250514-v1:0"
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "bedrock",
@@ -623,7 +623,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if endpoint := os.Getenv("OLLAMA_ENDPOINT"); endpoint != "" {
 		model := os.Getenv("OLLAMA_MODEL")
 		if model == "" {
-			model = "llama3.1:70b"
+			model = "llama3.2:latest"
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "ollama",
@@ -643,7 +643,7 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
 		model := os.Getenv("OPENAI_MODEL")
 		if model == "" {
-			model = "gpt-4-turbo"
+			model = "gpt-4o"
 		}
 		configs = append(configs, &LLMProviderConfig{
 			ProviderName: "openai",
