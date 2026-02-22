@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/llm/anthropic"
@@ -56,9 +57,9 @@ func buildSDKRateLimiter(rateLimitPerMinute int) *llmsdk.RateLimiter {
 }
 
 func estimateTokens(req llm.CompletionRequest) (inputTokens, outputTokens int) {
-	inputTokens = len(req.Prompt) / 4
+	inputTokens = utf8.RuneCountInString(req.Prompt) / 4
 	if req.SystemPrompt != "" {
-		inputTokens += len(req.SystemPrompt) / 4
+		inputTokens += utf8.RuneCountInString(req.SystemPrompt) / 4
 	}
 	if inputTokens == 0 {
 		inputTokens = 1
@@ -671,7 +672,7 @@ var (
 
 const (
 	ollamaDefaultEndpoint = "http://localhost:11434"
-	ollamaDefaultModel    = "llama3.1:latest"
+	ollamaDefaultModel    = "llama3.2:latest"
 	ollamaDefaultTimeout  = 300 * time.Second
 )
 

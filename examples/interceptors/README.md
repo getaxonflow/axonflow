@@ -43,7 +43,7 @@ async function governedCall(query: string) {
 
   // Step 2: Make LLM call
   const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
+    model: 'gpt-4o-mini',
     messages: [{ role: 'user', content: query }],
   });
 
@@ -52,7 +52,7 @@ async function governedCall(query: string) {
     contextId: ctx.contextId,
     responseSummary: response.choices[0]?.message?.content?.substring(0, 100),
     provider: 'openai',
-    model: 'gpt-3.5-turbo',
+    model: 'gpt-4o-mini',
     tokenUsage: {
       promptTokens: response.usage?.prompt_tokens || 0,
       completionTokens: response.usage?.completion_tokens || 0,
@@ -78,7 +78,7 @@ governed_client = wrap_openai_client(openai_client, axonflow, user_token="user-1
 
 # All calls through governed_client are policy-checked
 response = governed_client.chat.completions.create(
-    model="gpt-3.5-turbo",
+    model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Hello!"}]
 )
 ```

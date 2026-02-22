@@ -387,7 +387,7 @@ func TestProviderInfo_Capabilities(t *testing.T) {
 		Name:         "anthropic-primary",
 		Type:         ProviderTypeAnthropic,
 		Capabilities: []Capability{CapabilityChat, CapabilityStreaming, CapabilityVision},
-		DefaultModel: "claude-3-5-sonnet-20241022",
+		DefaultModel: "claude-sonnet-4-20250514",
 	}
 
 	// Check capabilities

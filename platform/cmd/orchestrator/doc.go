@@ -44,11 +44,11 @@ available providers based on which API keys are set:
 
 	# AWS Bedrock
 	export BEDROCK_REGION="us-east-1"
-	export BEDROCK_MODEL="anthropic.claude-3-sonnet-20240229-v1:0"
+	export BEDROCK_MODEL="anthropic.claude-sonnet-4-20250514-v1:0"
 
 	# Ollama (self-hosted)
 	export OLLAMA_ENDPOINT="http://localhost:11434"
-	export OLLAMA_MODEL="llama2"
+	export OLLAMA_MODEL="llama3.2"
 
 # Example
 

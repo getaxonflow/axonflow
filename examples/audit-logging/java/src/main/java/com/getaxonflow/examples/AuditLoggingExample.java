@@ -119,7 +119,7 @@ public class AuditLoggingExample {
                     .contextId(precheck.getContextId())
                     .clientId(clientId)
                     .provider("openai")
-                    .model("gpt-3.5-turbo")
+                    .model("gpt-4o-mini")
                     .tokenUsage(TokenUsage.of(promptTokens, completionTokens))
                     .latencyMs((int) llmLatency)
                     .success(true)

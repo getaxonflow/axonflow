@@ -62,7 +62,7 @@ public class Main {
                             .userToken("user-123")
                             .query(query)
                             .clientId(clientId)
-                            .model("gpt-3.5-turbo")
+                            .model("gpt-4o-mini")
                             .llmProvider("openai")
                             .context(Map.of("workflow", "simple-sequential"))
                             .build()

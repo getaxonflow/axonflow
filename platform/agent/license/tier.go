@@ -96,7 +96,8 @@ type TierLimits struct {
 	MaxVersionsPerPlan     int `json:"max_versions_per_plan"`
 	MaxSSEConnections      int `json:"max_sse_connections"`
 	MaxCostEstimatesPerDay int `json:"max_cost_estimates_per_day"`
-	MaxPendingApprovals    int `json:"max_pending_approvals"`
+	MaxPendingApprovals    int  `json:"max_pending_approvals"`
+	MediaGovernanceEnabled bool `json:"media_governance_enabled"`
 }
 
 // Default tier limits
@@ -114,6 +115,7 @@ var (
 		MaxSSEConnections:      5,
 		MaxCostEstimatesPerDay: 10,
 		MaxPendingApprovals:    5,
+		MediaGovernanceEnabled: false, // Opt-in via MEDIA_GOVERNANCE_ENABLED=true
 	}
 	EvaluationLimits = TierLimits{
 		TenantPolicies:         50,
@@ -128,6 +130,7 @@ var (
 		MaxSSEConnections:      25,
 		MaxCostEstimatesPerDay: 100,
 		MaxPendingApprovals:    25,
+		MediaGovernanceEnabled: true,
 	}
 	EnterpriseLimits = TierLimits{
 		TenantPolicies:         -1,   // Unlimited
@@ -142,6 +145,7 @@ var (
 		MaxSSEConnections:      -1,   // Unlimited
 		MaxCostEstimatesPerDay: -1,   // Unlimited
 		MaxPendingApprovals:    -1,   // Unlimited
+		MediaGovernanceEnabled: true,
 	}
 )
 

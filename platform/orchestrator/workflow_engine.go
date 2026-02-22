@@ -637,6 +637,11 @@ func (e *WorkflowEngine) SetPricingConfig(config PlanCostEstimator) {
 	e.pricingConfig = config
 }
 
+// GetCostEstimator returns the pricing configuration for external step cost calculation.
+func (e *WorkflowEngine) GetCostEstimator() PlanCostEstimator {
+	return e.pricingConfig
+}
+
 // Execute a workflow
 func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow, input map[string]interface{}, user UserContext) (*WorkflowExecution, error) {
 	// Create execution instance

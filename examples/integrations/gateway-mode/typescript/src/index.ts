@@ -176,7 +176,7 @@ async function main() {
     const startLLM = Date.now();
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -216,7 +216,7 @@ async function main() {
       contextId: preCheckResult.contextId,
       responseSummary: response.substring(0, 100),
       provider: "openai",
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o-mini",
       tokenUsage: {
         promptTokens: tokenUsage?.prompt_tokens || 0,
         completionTokens: tokenUsage?.completion_tokens || 0,

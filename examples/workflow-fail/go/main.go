@@ -100,8 +100,8 @@ func main() {
 	gate, err := client.StepGate(workflow.WorkflowID, "step-1", axonflow.StepGateRequest{
 		StepName: "Data Processing",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "gemini-1.5-flash",
+		Provider: "gemini",
 		StepInput: map[string]interface{}{
 			"prompt": "Process incoming data batch",
 		},

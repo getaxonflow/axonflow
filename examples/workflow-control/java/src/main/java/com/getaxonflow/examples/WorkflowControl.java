@@ -127,6 +127,9 @@ public class WorkflowControl {
                     "step-1",
                     MarkStepCompletedRequest.builder()
                         .output(Map.of("code", "def sort_list(items): return sorted(items)"))
+                        .tokensIn(150)
+                        .tokensOut(45)
+                        .costUsd(0.0023)
                         .build()
                 );
                 System.out.println("   Step completed!");
@@ -159,6 +162,9 @@ public class WorkflowControl {
                     "step-2",
                     MarkStepCompletedRequest.builder()
                         .output(Map.of("review", "LGTM"))
+                        .tokensIn(150)
+                        .tokensOut(45)
+                        .costUsd(0.0023)
                         .build()
                 );
                 System.out.println("   Step completed!");
@@ -191,6 +197,9 @@ public class WorkflowControl {
                     "step-3",
                     MarkStepCompletedRequest.builder()
                         .output(Map.of("pr_url", "https://github.com/example/pr/123"))
+                        .tokensIn(150)
+                        .tokensOut(45)
+                        .costUsd(0.0023)
                         .build()
                 );
                 System.out.println("   Step completed!");
@@ -446,6 +455,9 @@ public class WorkflowControl {
                         "sse-step-1",
                         MarkStepCompletedRequest.builder()
                             .output(Map.of("result", "sse test output"))
+                            .tokensIn(150)
+                            .tokensOut(45)
+                            .costUsd(0.0023)
                             .build()
                     );
                     assertCheck(true, "SSE step completed");

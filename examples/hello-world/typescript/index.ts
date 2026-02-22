@@ -64,7 +64,7 @@ async function main() {
       console.log("Step 2: Calling OpenAI...");
       const startTime = Date.now();
       const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
         messages: [{ role: "user", content: query }],
         max_tokens: 100,
       });
@@ -80,7 +80,7 @@ async function main() {
         contextId: preCheck.contextId,
         responseSummary: response.substring(0, 100),
         provider: "openai",
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
         tokenUsage: {
           promptTokens: completion.usage?.prompt_tokens || 0,
           completionTokens: completion.usage?.completion_tokens || 0,

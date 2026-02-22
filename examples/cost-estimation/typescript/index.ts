@@ -116,6 +116,17 @@ async function main(): Promise<void> {
   // ========================================
   console.log("2. POST /api/v1/plans/estimate - Estimate cost before execution...");
 
+  // Use real WorkflowStep fields: prompt and max_tokens.
+  // Short prompt (~50 chars) vs long prompt (~600 chars) should produce different estimates.
+  const shortPrompt = "Summarize the key findings from the analysis.";
+  const longPrompt =
+    "You are a senior data analyst. Given the following customer feedback dataset " +
+    "containing 500 reviews across 12 product categories spanning the last fiscal quarter, " +
+    "perform a comprehensive sentiment analysis. Break down sentiment by category, identify " +
+    "emerging trends, flag critical issues that require immediate attention, and provide " +
+    "actionable recommendations for each product team. Include statistical confidence intervals " +
+    "for your sentiment scores and highlight any anomalies or outliers in the data distribution.";
+
   const estimatePayload = JSON.stringify({
     provider: "openai",
     model: "gpt-4",
@@ -123,14 +134,14 @@ async function main(): Promise<void> {
       {
         name: "analyze",
         type: "llm_call",
-        estimated_tokens_in: 1000,
-        estimated_tokens_out: 500,
+        prompt: longPrompt,
+        max_tokens: 2000,
       },
       {
         name: "summarize",
         type: "llm_call",
-        estimated_tokens_in: 500,
-        estimated_tokens_out: 200,
+        prompt: shortPrompt,
+        max_tokens: 200,
       },
     ],
   });
@@ -174,9 +185,36 @@ async function main(): Promise<void> {
           );
         }
 
-        // Check breakdown (may be absent in community mode)
-        if ("breakdown" in estimate) {
-          console.log(`   Breakdown available: ${JSON.stringify(estimate.breakdown)}`);
+        // Check breakdown and verify prompt-aware estimation
+        if ("breakdown" in estimate && Array.isArray(estimate.breakdown)) {
+          const breakdown = estimate.breakdown as Array<Record<string, unknown>>;
+          console.log(`   Breakdown: ${JSON.stringify(breakdown)}`);
+
+          // Verify per-step token estimates differ (long prompt > short prompt)
+          if (breakdown.length >= 2) {
+            const analyzeTokensIn = breakdown[0].estimated_tokens_in as number;
+            const summarizeTokensIn = breakdown[1].estimated_tokens_in as number;
+            console.log(`   Analyze step tokens_in: ${analyzeTokensIn}`);
+            console.log(`   Summarize step tokens_in: ${summarizeTokensIn}`);
+            assertCheck(
+              analyzeTokensIn > summarizeTokensIn,
+              "Long-prompt step has more estimated input tokens than short-prompt step"
+            );
+
+            // Verify max_tokens is respected for output estimates
+            const analyzeTokensOut = breakdown[0].estimated_tokens_out as number;
+            const summarizeTokensOut = breakdown[1].estimated_tokens_out as number;
+            console.log(`   Analyze step tokens_out: ${analyzeTokensOut} (expected: 2000)`);
+            console.log(`   Summarize step tokens_out: ${summarizeTokensOut} (expected: 200)`);
+            assertCheck(
+              analyzeTokensOut === 2000,
+              `Analyze step respects max_tokens=2000 for output estimate (got ${analyzeTokensOut})`
+            );
+            assertCheck(
+              summarizeTokensOut === 200,
+              `Summarize step respects max_tokens=200 for output estimate (got ${summarizeTokensOut})`
+            );
+          }
         } else {
           console.log("   Note: 'breakdown' not present (community mode returns aggregate only)");
         }

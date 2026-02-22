@@ -60,6 +60,8 @@ Each example sends image data through AxonFlow's Proxy Mode and validates the re
 1. **Single image** - Sends a base64-encoded image and validates that media analysis results are returned with expected fields (SHA-256 hash, content safety, PII detection, face detection)
 2. **Multiple images** - Sends two images in a single request and validates that each receives individual analysis results
 3. **URL-sourced image** - Sends an image by URL reference and validates the response structure
+4. **Non-media baseline** - Sends a text-only request and confirms no media analysis is returned
+5. **Policy evaluation metadata** - Verifies that `policy_info` is present when media is analyzed, confirming system media policies were evaluated
 
 ## How It Works
 

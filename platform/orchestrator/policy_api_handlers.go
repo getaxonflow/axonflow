@@ -17,8 +17,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
@@ -93,8 +91,8 @@ func (h *PolicyAPIHandler) handlePolicyByID(w http.ResponseWriter, r *http.Reque
 
 	policyID := parts[0]
 
-	// Validate policy ID is a valid UUID format
-	if _, err := uuid.Parse(policyID); err != nil {
+	// Validate policy ID format (UUID or system policy prefix)
+	if !isValidPolicyID(policyID) {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid policy ID format")
 		return
 	}

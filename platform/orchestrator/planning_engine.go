@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // PlanningEngine generates workflows from natural language queries
@@ -1114,6 +1115,39 @@ func (e *PlanningEngine) estimatePlanCost(workflow *Workflow) float64 {
 	return result.EstimatedCostUSD
 }
 
+// estimateStepTokens calculates per-step token estimates using available step data.
+// If the step has a Prompt, input tokens are estimated as charCount/4 + overhead,
+// where charCount is the Unicode character (rune) count, not the byte length.
+// If the step has an Output schema, its serialized JSON size is added to input tokens.
+// If the step has MaxTokens set, that value is used for output tokens.
+// Falls back to 1000/500 when no data is available.
+func estimateStepTokens(step WorkflowStep) (tokensIn, tokensOut int) {
+	const defaultTokensIn = 1000
+	const defaultTokensOut = 500
+	const overhead = 50
+
+	if step.Prompt != "" {
+		tokensIn = utf8.RuneCountInString(step.Prompt)/4 + overhead
+	} else {
+		tokensIn = defaultTokensIn
+	}
+
+	if step.Output != nil {
+		outputJSON, err := json.Marshal(step.Output)
+		if err == nil {
+			tokensIn += len(outputJSON) / 4
+		}
+	}
+
+	if step.MaxTokens > 0 {
+		tokensOut = step.MaxTokens
+	} else {
+		tokensOut = defaultTokensOut
+	}
+
+	return tokensIn, tokensOut
+}
+
 // EstimatePlanCost calculates a detailed cost estimate with per-step breakdown.
 // Connector-call steps are treated as zero cost (no LLM tokens consumed).
 func (e *PlanningEngine) EstimatePlanCost(workflow *Workflow) *CostEstimateResult {
@@ -1122,10 +1156,6 @@ func (e *PlanningEngine) EstimatePlanCost(workflow *Workflow) *CostEstimateResul
 	if e.pricingConfig == nil || workflow == nil {
 		return result
 	}
-
-	// Default token estimates per step when not specified
-	const defaultTokensIn = 1000
-	const defaultTokensOut = 500
 
 	// Determine the default provider from LLM router status.
 	defaultProvider := "openai"
@@ -1154,14 +1184,15 @@ func (e *PlanningEngine) EstimatePlanCost(workflow *Workflow) *CostEstimateResul
 			model = defaultModel
 		}
 
-		stepCost := e.pricingConfig.EstimateCost(provider, model, defaultTokensIn, defaultTokensOut)
+		tokensIn, tokensOut := estimateStepTokens(step)
+		stepCost := e.pricingConfig.EstimateCost(provider, model, tokensIn, tokensOut)
 		result.EstimatedCostUSD += stepCost
 		result.Breakdown = append(result.Breakdown, StepCostEstimate{
 			StepName:           step.Name,
 			Provider:           provider,
 			Model:              model,
-			EstimatedTokensIn:  defaultTokensIn,
-			EstimatedTokensOut: defaultTokensOut,
+			EstimatedTokensIn:  tokensIn,
+			EstimatedTokensOut: tokensOut,
 			EstimatedCostUSD:   stepCost,
 		})
 	}

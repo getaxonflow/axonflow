@@ -653,7 +653,7 @@ func TestRegistry_GetConfig(t *testing.T) {
 	config := &ProviderConfig{
 		Name:   "test-provider",
 		Type:   ProviderTypeOllama,
-		Model:  "llama3.1",
+		Model:  "llama3.2",
 		Weight: 50,
 	}
 	_ = r.Register(ctx, config)

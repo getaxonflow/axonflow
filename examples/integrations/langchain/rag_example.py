@@ -135,7 +135,7 @@ async def run_governance_test() -> int:
                 context_id=ctx.context_id,
                 response_summary=f"RAG answer for: {question[:50]}",
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=100,
                     completion_tokens=150,
@@ -190,7 +190,7 @@ async def main() -> int:
 
     # Full RAG test with LangChain
     llm = ChatOpenAI(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         temperature=0,
         openai_api_key=openai_key,
     )
@@ -273,7 +273,7 @@ Context:
                 context_id=ctx.context_id,
                 response_summary=result[:100],
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=0,
                     completion_tokens=0,

@@ -146,9 +146,9 @@ func TestLoadLLMConfig(t *testing.T) {
 		os.Setenv("OPENAI_API_KEY", "test-openai-key-1234567890")
 		os.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key-1234567890")
 		os.Setenv("BEDROCK_REGION", "us-east-1")
-		os.Setenv("BEDROCK_MODEL", "claude-3")
+		os.Setenv("BEDROCK_MODEL", "claude-sonnet-4")
 		os.Setenv("OLLAMA_ENDPOINT", "http://localhost:11434")
-		os.Setenv("OLLAMA_MODEL", "llama2")
+		os.Setenv("OLLAMA_MODEL", "llama3.2")
 		os.Setenv("GOOGLE_API_KEY", "test-google-key-1234567890")
 		os.Setenv("GOOGLE_MODEL", "gemini-pro")
 

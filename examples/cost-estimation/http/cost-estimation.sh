@@ -69,24 +69,32 @@ echo ""
 # ========================================
 echo "2. POST /api/v1/plans/estimate - Estimate cost before execution..."
 
-ESTIMATE_BODY='{
+# Build a request with actual WorkflowStep fields: prompt and max_tokens.
+# Short prompt (~60 chars) vs long prompt (~600 chars) should produce different estimates.
+SHORT_PROMPT="Summarize the key findings from the analysis."
+LONG_PROMPT="You are a senior data analyst. Given the following customer feedback dataset containing 500 reviews across 12 product categories spanning the last fiscal quarter, perform a comprehensive sentiment analysis. Break down sentiment by category, identify emerging trends, flag critical issues that require immediate attention, and provide actionable recommendations for each product team. Include statistical confidence intervals for your sentiment scores and highlight any anomalies or outliers in the data distribution."
+
+ESTIMATE_BODY=$(cat <<ENDOFBODY
+{
     "provider": "openai",
     "model": "gpt-4",
     "steps": [
         {
             "name": "analyze",
             "type": "llm_call",
-            "estimated_tokens_in": 1000,
-            "estimated_tokens_out": 500
+            "prompt": "${LONG_PROMPT}",
+            "max_tokens": 2000
         },
         {
             "name": "summarize",
             "type": "llm_call",
-            "estimated_tokens_in": 500,
-            "estimated_tokens_out": 200
+            "prompt": "${SHORT_PROMPT}",
+            "max_tokens": 200
         }
     ]
-}'
+}
+ENDOFBODY
+)
 
 ESTIMATE_HTTP_CODE=$(curl -s -o /tmp/axonflow_estimate_response.json -w "%{http_code}" \
     --max-time 15 \
@@ -123,11 +131,29 @@ elif [ "$ESTIMATE_HTTP_CODE" = "200" ]; then
     check_result "Response contains 'currency' field" "$([ -n "$CURRENCY" ] && echo true || echo false)"
     check_result "currency is 'USD' (got '$CURRENCY')" "$([ "$CURRENCY" = "USD" ] && echo true || echo false)"
 
-    # Check breakdown (may be absent in community mode)
+    # Check breakdown and verify prompt-aware estimation
     HAS_BREAKDOWN=$(echo "$ESTIMATE_RESPONSE" | jq 'has("breakdown")' 2>/dev/null || echo "false")
     if [ "$HAS_BREAKDOWN" = "true" ]; then
         BREAKDOWN=$(echo "$ESTIMATE_RESPONSE" | jq '.breakdown' 2>/dev/null)
-        echo "   Breakdown available: $BREAKDOWN"
+        echo "   Breakdown: $BREAKDOWN"
+
+        # Verify per-step token estimates differ (long prompt > short prompt)
+        ANALYZE_TOKENS_IN=$(echo "$ESTIMATE_RESPONSE" | jq '.breakdown[0].estimated_tokens_in // 0' 2>/dev/null || echo "0")
+        SUMMARIZE_TOKENS_IN=$(echo "$ESTIMATE_RESPONSE" | jq '.breakdown[1].estimated_tokens_in // 0' 2>/dev/null || echo "0")
+        echo "   Analyze step tokens_in: $ANALYZE_TOKENS_IN"
+        echo "   Summarize step tokens_in: $SUMMARIZE_TOKENS_IN"
+
+        TOKENS_DIFFER=$(echo "$ANALYZE_TOKENS_IN $SUMMARIZE_TOKENS_IN" | awk '{print ($1 > $2) ? "true" : "false"}')
+        check_result "Long-prompt step has more estimated input tokens than short-prompt step" "$TOKENS_DIFFER"
+
+        # Verify max_tokens is respected for output estimates
+        ANALYZE_TOKENS_OUT=$(echo "$ESTIMATE_RESPONSE" | jq '.breakdown[0].estimated_tokens_out // 0' 2>/dev/null || echo "0")
+        SUMMARIZE_TOKENS_OUT=$(echo "$ESTIMATE_RESPONSE" | jq '.breakdown[1].estimated_tokens_out // 0' 2>/dev/null || echo "0")
+        echo "   Analyze step tokens_out: $ANALYZE_TOKENS_OUT (expected: 2000)"
+        echo "   Summarize step tokens_out: $SUMMARIZE_TOKENS_OUT (expected: 200)"
+
+        check_result "Analyze step respects max_tokens=2000 for output estimate" "$([ "$ANALYZE_TOKENS_OUT" = "2000" ] && echo true || echo false)"
+        check_result "Summarize step respects max_tokens=200 for output estimate" "$([ "$SUMMARIZE_TOKENS_OUT" = "200" ] && echo true || echo false)"
     else
         echo "   Note: 'breakdown' not present (community mode returns aggregate only)"
     fi

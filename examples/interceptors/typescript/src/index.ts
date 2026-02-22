@@ -78,7 +78,7 @@ class GovernedOpenAI {
     const preCheck = await this.axonflow.getPolicyApprovedContext({
       userToken: this.userToken,
       query,
-      context: { provider: "openai", model: options?.model || "gpt-3.5-turbo" },
+      context: { provider: "openai", model: options?.model || "gpt-4o-mini" },
     });
 
     if (!preCheck.approved) {
@@ -91,7 +91,7 @@ class GovernedOpenAI {
     // Step 2: Make the LLM call
     const startTime = Date.now();
     const completion = await this.openai.chat.completions.create({
-      model: options?.model || "gpt-3.5-turbo",
+      model: options?.model || "gpt-4o-mini",
       messages,
       max_tokens: options?.max_tokens || 100,
       ...options,
@@ -104,7 +104,7 @@ class GovernedOpenAI {
       contextId: preCheck.contextId,
       responseSummary: response.substring(0, 100),
       provider: "openai",
-      model: options?.model || "gpt-3.5-turbo",
+      model: options?.model || "gpt-4o-mini",
       tokenUsage: {
         promptTokens: completion.usage?.prompt_tokens || 0,
         completionTokens: completion.usage?.completion_tokens || 0,

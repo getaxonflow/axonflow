@@ -54,6 +54,9 @@ func TestDefaultLicenseChecker(t *testing.T) {
 	if v := checker.MaxPendingApprovals(); v != 5 {
 		t.Errorf("DefaultLicenseChecker.MaxPendingApprovals() = %d, want 5", v)
 	}
+	if v := checker.MediaGovernanceEnabled(); v != false {
+		t.Errorf("DefaultLicenseChecker.MediaGovernanceEnabled() = %v, want false", v)
+	}
 }
 
 func TestEnvLicenseChecker_Community(t *testing.T) {
@@ -103,6 +106,9 @@ func TestEnvLicenseChecker_Community(t *testing.T) {
 	}
 	if v := checker.MaxPendingApprovals(); v != 5 {
 		t.Errorf("EnvLicenseChecker.MaxPendingApprovals() = %d, want 5", v)
+	}
+	if v := checker.MediaGovernanceEnabled(); v != false {
+		t.Errorf("EnvLicenseChecker.MediaGovernanceEnabled() = %v, want false", v)
 	}
 }
 

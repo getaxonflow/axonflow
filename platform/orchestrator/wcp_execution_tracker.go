@@ -5,7 +5,10 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"axonflow/platform/orchestrator/workflow_control"
 	"axonflow/platform/shared/execution"
@@ -20,7 +23,8 @@ func isWCPNotFoundError(err error) bool {
 // This enables consistent status tracking across MAP plans and WCP workflows.
 type WCPExecutionTracker struct {
 	*execution.BaseExecutionTracker
-	wcpService *workflow_control.Service
+	wcpService    *workflow_control.Service
+	costEstimator PlanCostEstimator
 }
 
 // NewWCPExecutionTracker creates a new WCP-specific execution tracker.
@@ -31,6 +35,11 @@ func NewWCPExecutionTracker(repo execution.ExecutionRepository, wcpService *work
 	}
 }
 
+// SetCostEstimator sets the pricing config for per-step cost estimation.
+func (t *WCPExecutionTracker) SetCostEstimator(ce PlanCostEstimator) {
+	t.costEstimator = ce
+}
+
 // StartWorkflowExecution creates a unified execution record from a WCP workflow.
 // This is called when a workflow is created via the WCP API.
 func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workflow *workflow_control.Workflow) (*execution.ExecutionStatus, error) {
@@ -38,13 +47,21 @@ func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workfl
 	steps := make([]execution.StepStatus, len(workflow.Steps))
 	for i, step := range workflow.Steps {
 		steps[i] = execution.StepStatus{
-			StepID:    step.StepID,
-			StepIndex: step.StepIndex,
-			StepName:  step.StepName,
-			StepType:  mapWCPStepType(step.StepType),
-			Status:    mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus),
-			Model:     step.Model,
-			Provider:  step.Provider,
+			StepID:          step.StepID,
+			StepIndex:       step.StepIndex,
+			StepName:        step.StepName,
+			StepType:        mapWCPStepType(step.StepType),
+			Status:          mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus),
+			Decision:        mapWCPGateDecision(step.Decision),
+			DecisionReason:  step.DecisionReason,
+			PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
+			ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
+			ApprovedBy:      step.ApprovedBy,
+			Model:           step.Model,
+			Provider:        step.Provider,
+			TokensIn:        step.TokensIn,
+			TokensOut:       step.TokensOut,
+			CostUSD:         step.CostUSD,
 		}
 		if !step.GateCheckedAt.IsZero() {
 			t := step.GateCheckedAt
@@ -94,21 +111,13 @@ func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workfl
 // GetWorkflowStatus retrieves the unified execution status for a WCP workflow.
 // It combines workflow metadata with step-level execution details.
 func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID string) (*execution.ExecutionStatus, error) {
-	// First, try to find execution by workflow_id in metadata
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeWCP),
-		Limit:         100, // Search through recent executions
+	// Look up execution by workflow_id metadata (indexed lookup)
+	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
+	if err == nil {
+		return t.GetStatus(ctx, exec.ExecutionID)
 	}
-	resp, err := t.ListExecutions(ctx, req)
-	if err != nil {
+	if !errors.Is(err, execution.ErrExecutionNotFound) {
 		return nil, err
-	}
-
-	// Search for execution with matching workflow_id
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["workflow_id"].(string); ok && metadata == workflowID {
-			return t.GetStatus(ctx, exec.ExecutionID)
-		}
 	}
 
 	// If no unified execution found, fall back to WCP service and create a status response
@@ -131,32 +140,38 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 // SyncWorkflowStatus updates the unified execution tracker based on workflow status changes.
 // This is called when workflow status changes through the WCP service.
 func (t *WCPExecutionTracker) SyncWorkflowStatus(ctx context.Context, workflowID string, workflowStatus workflow_control.WorkflowStatus, errorMsg string) error {
-	// Find the execution for this workflow
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeWCP),
-		Limit:         100,
-	}
-	resp, err := t.ListExecutions(ctx, req)
+	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
 	if err != nil {
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			// No unified execution exists for this workflow - fine for legacy workflows
+			return nil
+		}
 		return err
 	}
 
-	var executionID string
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["workflow_id"].(string); ok && metadata == workflowID {
-			executionID = exec.ExecutionID
-			break
-		}
-	}
-
-	if executionID == "" {
-		// No unified execution exists for this workflow - this is fine for legacy workflows
-		return nil
-	}
+	executionID := exec.ExecutionID
 
 	// Update status based on workflow status
 	switch workflowStatus {
 	case workflow_control.WorkflowStatusCompleted:
+		// Before completing execution, finalize any steps still in "running" state.
+		// CompleteExecution only sets the overall status — it doesn't touch step records.
+		status, getErr := t.GetStatus(ctx, executionID)
+		if getErr == nil && len(status.Steps) > 0 {
+			now := time.Now()
+			changed := false
+			for i := range status.Steps {
+				if status.Steps[i].Status == execution.StepStatusRunning {
+					status.Steps[i].Status = execution.StepStatusCompleted
+					status.Steps[i].EndedAt = &now
+					status.Steps[i].Duration = status.Steps[i].CalculateDuration()
+					changed = true
+				}
+			}
+			if changed {
+				_ = t.GetRepo().UpdateSteps(ctx, executionID, status.Steps)
+			}
+		}
 		return t.CompleteExecution(ctx, executionID, nil)
 	case workflow_control.WorkflowStatusFailed:
 		return t.FailExecution(ctx, executionID, fmt.Errorf("%s", errorMsg))
@@ -182,8 +197,8 @@ func (t *WCPExecutionTracker) OnStepGate(ctx context.Context, workflowID string,
 }
 
 // OnStepCompleted implements WorkflowExecutionTracker.OnStepCompleted
-func (t *WCPExecutionTracker) OnStepCompleted(ctx context.Context, workflowID string, stepID string) error {
-	return t.syncStepCompleted(ctx, workflowID, stepID)
+func (t *WCPExecutionTracker) OnStepCompleted(ctx context.Context, workflowID string, stepID string, metrics *workflow_control.StepCompleteRequest) error {
+	return t.syncStepCompleted(ctx, workflowID, stepID, metrics)
 }
 
 // OnWorkflowCompleted implements WorkflowExecutionTracker.OnWorkflowCompleted
@@ -202,75 +217,96 @@ func (t *WCPExecutionTracker) OnWorkflowAborted(ctx context.Context, workflowID 
 }
 
 // syncStepCompleted updates the step status when a step is marked completed.
-func (t *WCPExecutionTracker) syncStepCompleted(ctx context.Context, workflowID string, stepID string) error {
-	// Find the execution for this workflow
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeWCP),
-		Limit:         100,
-	}
-	resp, err := t.ListExecutions(ctx, req)
+func (t *WCPExecutionTracker) syncStepCompleted(ctx context.Context, workflowID string, stepID string, metrics *workflow_control.StepCompleteRequest) error {
+	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
 	if err != nil {
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			return nil
+		}
 		return err
 	}
 
-	var executionID string
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["workflow_id"].(string); ok && metadata == workflowID {
-			executionID = exec.ExecutionID
-			break
+	// Build result map from metrics for the base tracker
+	var result map[string]interface{}
+	if metrics != nil {
+		result = make(map[string]interface{})
+		if metrics.TokensIn != nil {
+			result["tokens_in"] = *metrics.TokensIn
+		}
+		if metrics.TokensOut != nil {
+			result["tokens_out"] = *metrics.TokensOut
+		}
+		if metrics.CostUSD != nil {
+			result["cost_usd"] = *metrics.CostUSD
+		}
+		if metrics.Output != nil {
+			result["output"] = metrics.Output
 		}
 	}
 
-	if executionID == "" {
-		// No unified execution exists
-		return nil
-	}
-
-	// Complete the step
-	return t.CompleteStep(ctx, executionID, stepID, nil)
+	return t.CompleteStep(ctx, exec.ExecutionID, stepID, result)
 }
 
 // SyncStepGate updates the unified execution tracker when a step gate is checked.
 func (t *WCPExecutionTracker) SyncStepGate(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {
-	// Find the execution for this workflow
-	req := execution.ListExecutionsRequest{
-		ExecutionType: ptrExecutionType(execution.ExecutionTypeWCP),
-		Limit:         100,
-	}
-	resp, err := t.ListExecutions(ctx, req)
+	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
 	if err != nil {
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			return nil
+		}
 		return err
 	}
 
-	var executionID string
-	for _, exec := range resp.Executions {
-		if metadata, ok := exec.Metadata["workflow_id"].(string); ok && metadata == workflowID {
-			executionID = exec.ExecutionID
-			break
-		}
-	}
-
-	if executionID == "" {
-		// No unified execution exists
-		return nil
-	}
+	executionID := exec.ExecutionID
 
 	// Add the step to the execution
 	stepStatus := execution.StepStatus{
-		StepID:    step.StepID,
-		StepIndex: step.StepIndex,
-		StepName:  step.StepName,
-		StepType:  mapWCPStepType(step.StepType),
-		Status:    mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus),
-		Model:     step.Model,
-		Provider:  step.Provider,
+		StepID:          step.StepID,
+		StepIndex:       step.StepIndex,
+		StepName:        step.StepName,
+		StepType:        mapWCPStepType(step.StepType),
+		Status:          mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus),
+		Decision:        mapWCPGateDecision(step.Decision),
+		DecisionReason:  step.DecisionReason,
+		PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
+		ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
+		ApprovedBy:      step.ApprovedBy,
+		Model:           step.Model,
+		Provider:        step.Provider,
+		TokensIn:        step.TokensIn,
+		TokensOut:       step.TokensOut,
+		CostUSD:         step.CostUSD,
 	}
+
+	// Estimate cost from tokens + pricing config when cost is not provided by the client
+	if stepStatus.CostUSD == nil && t.costEstimator != nil && step.Provider != "" && step.Model != "" {
+		tokensIn, tokensOut := 0, 0
+		if step.TokensIn != nil {
+			tokensIn = *step.TokensIn
+		}
+		if step.TokensOut != nil {
+			tokensOut = *step.TokensOut
+		}
+		if tokensIn > 0 || tokensOut > 0 {
+			cost := t.costEstimator.EstimateCost(step.Provider, step.Model, tokensIn, tokensOut)
+			if cost > 0 {
+				stepStatus.CostUSD = &cost
+			}
+		}
+	}
+
 	if !step.GateCheckedAt.IsZero() {
 		t := step.GateCheckedAt
 		stepStatus.StartedAt = &t
 	}
 
 	return t.AddStep(ctx, executionID, stepStatus)
+}
+
+// findExecutionByWorkflowID looks up a unified execution record by workflow_id metadata.
+// Returns ErrExecutionNotFound if no execution exists for this workflow.
+func (t *WCPExecutionTracker) findExecutionByWorkflowID(ctx context.Context, workflowID string) (*execution.ExecutionStatus, error) {
+	return t.GetRepo().GetByMetadata(ctx, "workflow_id", workflowID)
 }
 
 // --- Helper Functions ---
@@ -313,6 +349,65 @@ func mapWCPStepDecisionToStatus(decision workflow_control.GateDecision, approval
 	default:
 		return execution.StepStatusPending
 	}
+}
+
+// extractPolicyNames extracts policy name strings from WCP's json.RawMessage policies_matched.
+// WCP stores policies as []PolicyMatch objects; the unified schema uses []string.
+func extractPolicyNames(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var policies []workflow_control.PolicyMatch
+	if err := json.Unmarshal(raw, &policies); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(policies))
+	for _, p := range policies {
+		name := p.PolicyName
+		if name == "" {
+			name = p.PolicyID
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// mapWCPGateDecision converts a WCP gate decision string to the unified GateDecision type.
+func mapWCPGateDecision(d workflow_control.GateDecision) execution.GateDecision {
+	switch d {
+	case workflow_control.GateDecisionAllow:
+		return execution.GateDecisionAllow
+	case workflow_control.GateDecisionBlock:
+		return execution.GateDecisionBlock
+	case workflow_control.GateDecisionRequireApproval:
+		return execution.GateDecisionRequireApproval
+	default:
+		return ""
+	}
+}
+
+// mapWCPApprovalStatus converts a WCP approval status to the unified ApprovalStatus type.
+func mapWCPApprovalStatus(s *workflow_control.ApprovalStatus) *execution.ApprovalStatus {
+	if s == nil {
+		return nil
+	}
+	var mapped execution.ApprovalStatus
+	switch *s {
+	case workflow_control.ApprovalStatusPending:
+		mapped = execution.ApprovalStatusPending
+	case workflow_control.ApprovalStatusApproved:
+		mapped = execution.ApprovalStatusApproved
+	case workflow_control.ApprovalStatusRejected:
+		mapped = execution.ApprovalStatusRejected
+	default:
+		return nil
+	}
+	return &mapped
 }
 
 // mapWCPStatus converts WCP workflow status to unified execution status.
@@ -362,13 +457,21 @@ func workflowToExecutionStatus(workflow *workflow_control.Workflow) *execution.E
 		}
 
 		steps[i] = execution.StepStatus{
-			StepID:    step.StepID,
-			StepIndex: step.StepIndex,
-			StepName:  step.StepName,
-			StepType:  mapWCPStepType(step.StepType),
-			Status:    stepStatus,
-			Model:     step.Model,
-			Provider:  step.Provider,
+			StepID:          step.StepID,
+			StepIndex:       step.StepIndex,
+			StepName:        step.StepName,
+			StepType:        mapWCPStepType(step.StepType),
+			Status:          stepStatus,
+			Decision:        mapWCPGateDecision(step.Decision),
+			DecisionReason:  step.DecisionReason,
+			PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
+			ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
+			ApprovedBy:      step.ApprovedBy,
+			Model:           step.Model,
+			Provider:        step.Provider,
+			TokensIn:        step.TokensIn,
+			TokensOut:       step.TokensOut,
+			CostUSD:         step.CostUSD,
 		}
 		if !step.GateCheckedAt.IsZero() {
 			t := step.GateCheckedAt

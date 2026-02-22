@@ -160,7 +160,7 @@ func TestMockProvider_Complete(t *testing.T) {
 		provider := NewMockProvider("test", ProviderTypeAnthropic)
 		provider.completeResp = &CompletionResponse{
 			Content: "Custom response",
-			Model:   "claude-3-5-sonnet",
+			Model:   "claude-sonnet-4",
 			Usage: UsageStats{
 				PromptTokens:     100,
 				CompletionTokens: 200,
@@ -328,7 +328,7 @@ func TestProviderConfig_Fields(t *testing.T) {
 		Type:           ProviderTypeAnthropic,
 		APIKey:         "sk-test-key",
 		Endpoint:       "https://api.anthropic.com",
-		Model:          "claude-3-5-sonnet-20241022",
+		Model:          "claude-sonnet-4-20250514",
 		Enabled:        true,
 		Priority:       100,
 		Weight:         50,

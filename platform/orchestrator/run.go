@@ -123,7 +123,10 @@ var (
 	unifiedExecutionHandler *UnifiedExecutionHandler // Unified execution status API
 
 	// Media Governance Pipeline
-	mediaPipeline *media.Pipeline // Media analysis pipeline (image governance)
+	mediaPipeline      *media.Pipeline              // Media analysis pipeline (image governance)
+	mediaGovConfigStore *MediaGovernanceConfigStore  // Per-tenant media governance config
+	mediaGovHandler    *MediaGovernanceHandler       // Media governance API handler
+	mediaAuditHandler  *MediaGovernanceAuditHandler  // Media audit export handler (Enterprise)
 
 	// Tier enforcement
 	tierChecker         LicenseChecker       // Global tier-aware license checker
@@ -582,6 +585,16 @@ func Run() {
 		log.Println("MAS FEAT Compliance API routes registered (/api/v1/masfeat/...)")
 	}
 
+	// Media Governance Config API (#1222)
+	if mediaGovHandler != nil {
+		mediaGovHandler.RegisterRoutes(r)
+		log.Println("Media Governance Config API routes registered (/api/v1/media-governance/...)")
+	}
+	if mediaAuditHandler != nil {
+		mediaAuditHandler.RegisterRoutes(r)
+		log.Println("Media Governance Audit Export API registered (/api/v1/media-governance/audit/...)")
+	}
+
 	// Execution Replay/Debug Mode (#763)
 	if replayHandler != nil {
 		replayHandler.RegisterRoutes(r)
@@ -987,6 +1000,27 @@ func initializeComponents() {
 		}
 	}
 
+	// Initialize Media Governance Config Store (per-tenant config)
+	if usageDB != nil {
+		var configErr error
+		mediaGovConfigStore, configErr = NewMediaGovernanceConfigStore(usageDB)
+		if configErr != nil {
+			log.Printf("⚠️  Failed to initialize media governance config store: %v", configErr)
+		} else {
+			mediaGovHandler = NewMediaGovernanceHandler(mediaGovConfigStore, tierChecker)
+			mediaAuditHandler = NewMediaGovernanceAuditHandler(usageDB, tierChecker)
+			log.Println("Media Governance Config Store initialized ✅")
+		}
+	}
+
+	// Log media governance status for Community deployments
+	if tierChecker != nil && !tierChecker.MediaGovernanceEnabled() {
+		envVal := os.Getenv("MEDIA_GOVERNANCE_ENABLED")
+		if envVal != "true" && envVal != "1" {
+			log.Println("Media governance disabled. Set MEDIA_GOVERNANCE_ENABLED=true to activate.")
+		}
+	}
+
 	// Initialize Audit Cleanup Service (tier-aware retention enforcement)
 	// tierChecker already initialized above (before LLM registry creation)
 	if usageDB != nil {
@@ -1164,6 +1198,12 @@ func initializeComponents() {
 			log.Println("Cost estimation wired to Planning Engine ✅")
 		}
 
+		// Wire cost estimation into workflow engine for per-step cost tracking
+		if workflowEngine != nil && pricing != nil {
+			workflowEngine.SetPricingConfig(pricing)
+			log.Println("Cost estimation wired to Workflow Engine ✅")
+		}
+
 		// Initialize MAP Two-Step Execution (#925)
 		log.Println("Initializing Planning Service for MAP two-step execution...")
 		planRepo := planning.NewPostgresRepository(usageDB)
@@ -1230,6 +1270,9 @@ func initializeComponents() {
 		// Wire unified execution tracking for WCP (#1075)
 		wcpExecutionTracker := NewWCPExecutionTracker(executionRepo, workflowControlService)
 		wcpExecutionTracker.MaxConcurrentExecutions = tierChecker.MaxConcurrentExecutions()
+		if pricing != nil {
+			wcpExecutionTracker.SetCostEstimator(pricing)
+		}
 		workflowControlService.SetExecutionTracker(wcpExecutionTracker)
 
 		// Create EventHub for SSE streaming (#1074)
@@ -1403,7 +1446,11 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 0. Run media governance analysis (before policy evaluation so media.* fields are available)
 	var mediaAnalysisResp *MediaAnalysisResponse
-	if len(req.Media) > 0 && mediaPipeline != nil {
+	if len(req.Media) > 0 && mediaPipeline != nil && isMediaGovernanceEnabled(&req) {
+		// Check per-tenant analyzer restrictions (enforcement pending pipeline support)
+		if allowed := getAllowedAnalyzers(&req); allowed != nil {
+			log.Printf("[MEDIA] Tenant analyzer restriction in effect: %v (pipeline filtering pending)", allowed)
+		}
 		mediaItems := convertMediaRequestsToMediaContent(req.Media)
 		mediaStart := time.Now()
 		results, mediaErr := mediaPipeline.AnalyzeMedia(ctx, req.RequestID, mediaItems)
@@ -2334,6 +2381,45 @@ func isCommunityMode() bool {
 	return mode == "community" || mode == ""
 }
 
+// isMediaGovernanceEnabled resolves whether media governance is active for a request.
+// Resolution order: per-tenant override (Enterprise) → tier default → env var.
+func isMediaGovernanceEnabled(req *OrchestratorRequest) bool {
+	// 1. Per-tenant override (Enterprise only)
+	tenantID := req.Client.TenantID
+	if tenantID == "" {
+		tenantID = req.User.TenantID
+	}
+	if mediaGovConfigStore != nil && tenantID != "" {
+		if cfg := mediaGovConfigStore.Get(tenantID); cfg != nil {
+			return cfg.Enabled
+		}
+	}
+
+	// 2. Tier default from license checker
+	if tierChecker != nil && tierChecker.MediaGovernanceEnabled() {
+		return true
+	}
+
+	// 3. Env var opt-in (Community)
+	envVal := os.Getenv("MEDIA_GOVERNANCE_ENABLED")
+	return envVal == "true" || envVal == "1"
+}
+
+// getAllowedAnalyzers returns the per-tenant allowed analyzer list from config.
+// Returns nil if no per-tenant config exists (meaning all analyzers are allowed).
+func getAllowedAnalyzers(req *OrchestratorRequest) []string {
+	tenantID := req.Client.TenantID
+	if tenantID == "" {
+		tenantID = req.User.TenantID
+	}
+	if mediaGovConfigStore != nil && tenantID != "" {
+		if cfg := mediaGovConfigStore.Get(tenantID); cfg != nil && len(cfg.AllowedAnalyzers) > 0 {
+			return cfg.AllowedAnalyzers
+		}
+	}
+	return nil
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -3051,6 +3137,9 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = planService.MarkPlanCompleted(r.Context(), planID, finalResult)
 			if mapExecutionTracker != nil && unifiedExecID != "" {
+				if err := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); err != nil {
+					log.Printf("[ExecutePlan] Warning: failed to sync HITL step results: %v", err)
+				}
 				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "")
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -3114,6 +3203,12 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", planID, err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
+		// Sync partial step results on failure (steps may have partial data)
+		if mapExecutionTracker != nil && unifiedExecID != "" && execution != nil {
+			if syncErr := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); syncErr != nil {
+				log.Printf("[ExecutePlan] Warning: failed to sync partial step results: %v", syncErr)
+			}
+		}
 		// Sync unified tracking on failure (#1075)
 		if mapExecutionTracker != nil && unifiedExecID != "" {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, err.Error())
@@ -3142,6 +3237,13 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 5: Mark plan as completed
 	if err := planService.MarkPlanCompleted(r.Context(), planID, finalResult); err != nil {
 		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", planID, err)
+	}
+
+	// Sync step-level results to unified tracker (provider, model, tokens, cost, status)
+	if mapExecutionTracker != nil && unifiedExecID != "" {
+		if err := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); err != nil {
+			log.Printf("[ExecutePlan] Warning: failed to sync step results: %v", err)
+		}
 	}
 
 	// Sync unified tracking on success (#1075)
@@ -3368,6 +3470,12 @@ func buildUnifiedStatusResponse(exec *execution.ExecutionStatus) map[string]inte
 			}
 			if step.Provider != "" {
 				stepData["provider"] = step.Provider
+			}
+			if step.TokensIn != nil {
+				stepData["tokens_in"] = *step.TokensIn
+			}
+			if step.TokensOut != nil {
+				stepData["tokens_out"] = *step.TokensOut
 			}
 			steps[i] = stepData
 		}
@@ -3714,7 +3822,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Mark step as completed in WCP
 	stepID := fmt.Sprintf("step_%d_%s", stepIndex, workflow.Spec.Steps[stepIndex].Name)
-	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID)
+	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID, nil)
 
 	// Check if there are more steps
 	nextStepIndex := stepIndex + 1

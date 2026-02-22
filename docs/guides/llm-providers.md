@@ -213,8 +213,8 @@ volumes:
 ```
 
 **Supported Models**:
-- **Llama 3.3**: `llama3.2` (default tag pulls latest, general purpose)
-- **Llama 3.3 70B**: `llama3.2:70b` (70B, high accuracy)
+- **Llama 3.2**: `llama3.2` (3B, general purpose)
+- **Llama 3.3 70B**: `llama3.3:70b` (70B, high accuracy — requires 48GB+ RAM)
 - **Mistral**: `mistral` (efficient, multilingual)
 - **Qwen 2.5 Coder**: `qwen2.5-coder:32b` (code generation)
 
@@ -224,7 +224,7 @@ volumes:
 # Pull models to Ollama server
 docker exec ollama ollama pull llama3.2
 docker exec ollama ollama pull mistral
-docker exec ollama ollama pull llama3.2:70b
+docker exec ollama ollama pull llama3.3:70b
 
 # List installed models
 docker exec ollama ollama list
@@ -643,7 +643,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.2:70b
+      model: llama3.2
       cost: 0.0
 ```
 
@@ -680,7 +680,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.2:70b
+      model: llama3.2
       weight: 20  # 20% of traffic
       cost: 0.0
 ```
@@ -722,7 +722,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.2:70b
+      model: llama3.2
       cost: 0.0  # Free (self-hosted)
     bedrock:
       enabled: true
@@ -909,7 +909,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama.internal:11434
-      model: llama3.2:70b
+      model: llama3.2
       gpu_enabled: true
       weight: 100
       cost: 0.0
@@ -960,7 +960,7 @@ llm:
     ollama:
       enabled: true
       endpoint: http://ollama:11434
-      model: llama3.2:70b
+      model: llama3.2
       weight: 20  # 20% of traffic
       cost: 0.0
 
@@ -1035,7 +1035,7 @@ export OPENAI_MODEL=gpt-4
 
 # Shadow provider config (self-hosted)
 export OLLAMA_ENDPOINT=http://ollama-server:11434
-export OLLAMA_MODEL=llama3.2:70b
+export OLLAMA_MODEL=llama3.2
 
 # Start orchestrator
 ./orchestrator

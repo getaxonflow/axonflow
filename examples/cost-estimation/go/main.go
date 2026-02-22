@@ -133,24 +133,34 @@ func main() {
 	// ========================================
 	fmt.Println("2. POST /api/v1/plans/estimate - Estimate cost before execution...")
 
-	estimateBody := `{
+	// Use real WorkflowStep fields: prompt and max_tokens.
+	// Short prompt (~50 chars) vs long prompt (~600 chars) should produce different estimates.
+	shortPrompt := "Summarize the key findings from the analysis."
+	longPrompt := "You are a senior data analyst. Given the following customer feedback dataset " +
+		"containing 500 reviews across 12 product categories spanning the last fiscal quarter, " +
+		"perform a comprehensive sentiment analysis. Break down sentiment by category, identify " +
+		"emerging trends, flag critical issues that require immediate attention, and provide " +
+		"actionable recommendations for each product team. Include statistical confidence intervals " +
+		"for your sentiment scores and highlight any anomalies or outliers in the data distribution."
+
+	estimateBody := fmt.Sprintf(`{
 		"provider": "openai",
 		"model": "gpt-4",
 		"steps": [
 			{
 				"name": "analyze",
 				"type": "llm_call",
-				"estimated_tokens_in": 1000,
-				"estimated_tokens_out": 500
+				"prompt": %q,
+				"max_tokens": 2000
 			},
 			{
 				"name": "summarize",
 				"type": "llm_call",
-				"estimated_tokens_in": 500,
-				"estimated_tokens_out": 200
+				"prompt": %q,
+				"max_tokens": 200
 			}
 		]
-	}`
+	}`, longPrompt, shortPrompt)
 
 	status, estimateData, err := doRequest("POST", endpoint+"/api/v1/plans/estimate", estimateBody, headers)
 	if err != nil {
@@ -186,9 +196,31 @@ func main() {
 				assertCheck(ok && currency == "USD", fmt.Sprintf("currency is 'USD' (got '%v')", currencyVal))
 			}
 
-			// Check breakdown (may be absent in community mode)
+			// Check breakdown and verify prompt-aware estimation
 			if breakdown, hasBreakdown := estimateData["breakdown"]; hasBreakdown {
-				fmt.Printf("   Breakdown available: %v\n", breakdown)
+				fmt.Printf("   Breakdown: %v\n", breakdown)
+
+				// Verify per-step token estimates differ (long prompt > short prompt)
+				if steps, ok := breakdown.([]interface{}); ok && len(steps) >= 2 {
+					step0, _ := steps[0].(map[string]interface{})
+					step1, _ := steps[1].(map[string]interface{})
+					analyzeTokensIn, _ := step0["estimated_tokens_in"].(float64)
+					summarizeTokensIn, _ := step1["estimated_tokens_in"].(float64)
+					fmt.Printf("   Analyze step tokens_in: %.0f\n", analyzeTokensIn)
+					fmt.Printf("   Summarize step tokens_in: %.0f\n", summarizeTokensIn)
+					assertCheck(analyzeTokensIn > summarizeTokensIn,
+						"Long-prompt step has more estimated input tokens than short-prompt step")
+
+					// Verify max_tokens is respected for output estimates
+					analyzeTokensOut, _ := step0["estimated_tokens_out"].(float64)
+					summarizeTokensOut, _ := step1["estimated_tokens_out"].(float64)
+					fmt.Printf("   Analyze step tokens_out: %.0f (expected: 2000)\n", analyzeTokensOut)
+					fmt.Printf("   Summarize step tokens_out: %.0f (expected: 200)\n", summarizeTokensOut)
+					assertCheck(analyzeTokensOut == 2000,
+						fmt.Sprintf("Analyze step respects max_tokens=2000 for output estimate (got %.0f)", analyzeTokensOut))
+					assertCheck(summarizeTokensOut == 200,
+						fmt.Sprintf("Summarize step respects max_tokens=200 for output estimate (got %.0f)", summarizeTokensOut))
+				}
 			} else {
 				fmt.Println("   Note: 'breakdown' not present (community mode returns aggregate only)")
 			}

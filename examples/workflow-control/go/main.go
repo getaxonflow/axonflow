@@ -118,8 +118,8 @@ func main() {
 	gate1, err := client.StepGate(workflow.WorkflowID, "step-1", axonflow.StepGateRequest{
 		StepName: "Generate Code",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "Write a Python function to sort a list",
 		},
@@ -143,10 +143,16 @@ func main() {
 
 	// Mark step 1 completed if allowed
 	if gate1.IsAllowed() {
+		tokensIn1 := 150
+		tokensOut1 := 45
+		costUsd1 := 0.0023
 		err = client.MarkStepCompleted(workflow.WorkflowID, "step-1", &axonflow.MarkStepCompletedRequest{
 			Output: map[string]interface{}{
 				"code": "def sort_list(items): return sorted(items)",
 			},
+			TokensIn:  &tokensIn1,
+			TokensOut: &tokensOut1,
+			CostUSD:   &costUsd1,
 		})
 		assert(err == nil, "MarkStepCompleted succeeds for step-1")
 	}
@@ -178,8 +184,14 @@ func main() {
 
 	// Mark step 2 completed if allowed
 	if gate2.IsAllowed() {
+		tokensIn2 := 150
+		tokensOut2 := 45
+		costUsd2 := 0.0023
 		err = client.MarkStepCompleted(workflow.WorkflowID, "step-2", &axonflow.MarkStepCompletedRequest{
-			Output: map[string]interface{}{"review": "LGTM"},
+			Output:    map[string]interface{}{"review": "LGTM"},
+			TokensIn:  &tokensIn2,
+			TokensOut: &tokensOut2,
+			CostUSD:   &costUsd2,
 		})
 		assert(err == nil, "MarkStepCompleted succeeds for step-2")
 	}
@@ -211,8 +223,14 @@ func main() {
 
 	// Mark step 3 completed if allowed
 	if gate3.IsAllowed() {
+		tokensIn3 := 150
+		tokensOut3 := 45
+		costUsd3 := 0.0023
 		err = client.MarkStepCompleted(workflow.WorkflowID, "step-3", &axonflow.MarkStepCompletedRequest{
-			Output: map[string]interface{}{"pr_url": "https://github.com/example/pr/123"},
+			Output:    map[string]interface{}{"pr_url": "https://github.com/example/pr/123"},
+			TokensIn:  &tokensIn3,
+			TokensOut: &tokensOut3,
+			CostUSD:   &costUsd3,
 		})
 		assert(err == nil, "MarkStepCompleted succeeds for step-3")
 	}
@@ -284,8 +302,8 @@ func main() {
 	approvalGate, err := client.StepGate(approvalWorkflow.WorkflowID, "approval-step-1", axonflow.StepGateRequest{
 		StepName: "Approval Gate Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test approval flow",
 		},
@@ -353,8 +371,8 @@ func main() {
 	_, err = client.StepGate(rejectWorkflow.WorkflowID, "reject-step-1", axonflow.StepGateRequest{
 		StepName: "Rejection Gate Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test rejection flow",
 		},
@@ -512,8 +530,8 @@ func main() {
 	sseGate, err := client.StepGate(sseWorkflow.WorkflowID, "sse-step-1", axonflow.StepGateRequest{
 		StepName: "SSE Test Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test SSE streaming",
 		},
@@ -525,8 +543,14 @@ func main() {
 	}
 
 	if sseGate.IsAllowed() {
+		sseTokensIn := 150
+		sseTokensOut := 45
+		sseCostUsd := 0.0023
 		err = client.MarkStepCompleted(sseWorkflow.WorkflowID, "sse-step-1", &axonflow.MarkStepCompletedRequest{
-			Output: map[string]interface{}{"result": "sse test output"},
+			Output:    map[string]interface{}{"result": "sse test output"},
+			TokensIn:  &sseTokensIn,
+			TokensOut: &sseTokensOut,
+			CostUSD:   &sseCostUsd,
 		})
 		assert(err == nil, "MarkStepCompleted for SSE step succeeded")
 	}

@@ -138,6 +138,11 @@ func (e *DatabaseDynamicPolicyEngine) initializeSchema() error {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
+	// Seed system media policies (idempotent — ON CONFLICT DO NOTHING)
+	if err := e.seedSystemMediaPolicies(); err != nil {
+		log.Printf("Warning: Failed to seed system media policies: %v", err)
+	}
+
 	// Insert sample policies if table is empty
 	var count int
 	err = e.db.QueryRow("SELECT COUNT(*) FROM dynamic_policies").Scan(&count)
@@ -149,6 +154,86 @@ func (e *DatabaseDynamicPolicyEngine) initializeSchema() error {
 		return e.insertSamplePolicies()
 	}
 
+	return nil
+}
+
+// seedSystemMediaPolicies seeds the 5 default system media governance policies.
+// Uses ON CONFLICT DO NOTHING for idempotent upgrades — existing policies are never overwritten.
+func (e *DatabaseDynamicPolicyEngine) seedSystemMediaPolicies() error {
+	type systemMediaPolicy struct {
+		policyID    string
+		name        string
+		description string
+		category    string
+		conditions  string
+		actions     string
+		priority    int
+	}
+
+	policies := []systemMediaPolicy{
+		{
+			policyID:    "sys_media_nsfw_block",
+			name:        "NSFW Content Blocking",
+			description: "Blocks media with high NSFW confidence scores",
+			category:    "media-safety",
+			conditions:  `[{"field":"media.nsfw_score","operator":"greater_than","value":0.8}]`,
+			actions:     `[{"type":"block","config":{"reason":"Media blocked: NSFW content detected (score > 0.8)"}}]`,
+			priority:    1000,
+		},
+		{
+			policyID:    "sys_media_violence_warn",
+			name:        "Violence Content Warning",
+			description: "Alerts on media with high violence scores",
+			category:    "media-safety",
+			conditions:  `[{"field":"media.violence_score","operator":"greater_than","value":0.7}]`,
+			actions:     `[{"type":"alert","config":{"message":"Violence detected in media (score > 0.7)"}},{"type":"log","config":{}}]`,
+			priority:    950,
+		},
+		{
+			policyID:    "sys_media_biometric_log",
+			name:        "Biometric Data Audit",
+			description: "Logs media containing biometric data for compliance audit",
+			category:    "media-biometric",
+			conditions:  `[{"field":"media.has_biometric_data","operator":"equals","value":true}]`,
+			actions:     `[{"type":"log","config":{"message":"Biometric data detected in media"}}]`,
+			priority:    900,
+		},
+		{
+			policyID:    "sys_media_pii_block",
+			name:        "Image PII Blocking",
+			description: "Blocks media containing personally identifiable information",
+			category:    "media-pii",
+			conditions:  `[{"field":"media.has_pii","operator":"equals","value":true}]`,
+			actions:     `[{"type":"block","config":{"reason":"Media blocked: PII detected in image content"}}]`,
+			priority:    950,
+		},
+		{
+			policyID:    "sys_media_sensitive_doc_warn",
+			name:        "Sensitive Document Detection",
+			description: "Alerts when sensitive documents are detected in media",
+			category:    "media-document",
+			conditions:  `[{"field":"media.is_sensitive_document","operator":"equals","value":true}]`,
+			actions:     `[{"type":"alert","config":{"message":"Sensitive document detected in media"}},{"type":"log","config":{}}]`,
+			priority:    900,
+		},
+	}
+
+	for _, p := range policies {
+		_, err := e.db.Exec(`
+			INSERT INTO dynamic_policies (
+				policy_id, name, description, policy_type, category, tier,
+				conditions, actions, tenant_id, priority, enabled,
+				version, created_by, updated_by, created_at, updated_at
+			) VALUES ($1, $2, $3, 'media', $4, 'system', $5::jsonb, $6::jsonb, 'global', $7, true, 1, 'system', 'system', NOW(), NOW())
+			ON CONFLICT (policy_id) DO NOTHING
+		`, p.policyID, p.name, p.description, p.category, p.conditions, p.actions, p.priority)
+
+		if err != nil {
+			return fmt.Errorf("failed to seed system media policy %s: %w", p.policyID, err)
+		}
+	}
+
+	log.Println("System media policies seeded (5 policies, idempotent)")
 	return nil
 }
 
@@ -189,7 +274,7 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 					"cache_enabled": true,
 					"cache_ttl": 300,
 					"max_parallel_requests": 5,
-					"fallback_model": "gpt-3.5-turbo",
+					"fallback_model": "gpt-4o-mini",
 					"cost_optimization": true,
 					"rate_limit": {
 						"requests_per_minute": 500,
@@ -243,7 +328,9 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 
 func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	query := `
-		SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE(policy_type, 'content') as policy_type
+		SELECT name, conditions, actions, tenant_id, priority, policy_id,
+		       COALESCE(policy_type, 'content') as policy_type,
+		       COALESCE(category, '') as category
 		FROM dynamic_policies
 		WHERE enabled = true
 		ORDER BY priority DESC, created_at DESC
@@ -258,11 +345,11 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	newPolicies := make(map[string]interface{})
 
 	for rows.Next() {
-		var name, conditionsJSON, actionsJSON, policyID, policyType string
+		var name, conditionsJSON, actionsJSON, policyID, policyType, category string
 		var tenantID sql.NullString
 		var priority int
 
-		err := rows.Scan(&name, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType)
+		err := rows.Scan(&name, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category)
 		if err != nil {
 			log.Printf("Error scanning policy row: %v", err)
 			continue
@@ -279,6 +366,7 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 			"policy_id":  policyID,
 			"name":       name,
 			"type":       policyType,
+			"category":   category,
 			"conditions": json.RawMessage(conditionsJSON),
 			"actions":    json.RawMessage(actionsJSON),
 			"tenant_id":  tenantIDStr,
@@ -446,7 +534,7 @@ func (e *DatabaseDynamicPolicyEngine) loadDefaultPolicies() {
 			"rules": map[string]interface{}{
 				"max_tokens":            2000,
 				"temperature":           0.7,
-				"allowed_models":        []string{"gpt-3.5-turbo"},
+				"allowed_models":        []string{"gpt-4o-mini"},
 				"rate_limit_per_minute": 60,
 			},
 		},
@@ -859,6 +947,15 @@ func (e *DatabaseDynamicPolicyEngine) getFieldValue(field string, req Orchestrat
 		return 0.0
 
 	default:
+		// Media governance fields — resolved from context["media_analysis"]
+		if strings.HasPrefix(field, "media.") && req.Context != nil {
+			mediaField := field[len("media."):]
+			if analysis, ok := req.Context["media_analysis"].(map[string]interface{}); ok {
+				return analysis[mediaField]
+			}
+			return nil
+		}
+
 		// Try to get from context map for custom fields
 		if req.Context != nil {
 			// Handle dotted notation like "context.step_input.query"
@@ -953,6 +1050,11 @@ func (e *DatabaseDynamicPolicyEngine) ListActivePolicies() []DynamicPolicy {
 		// Extract type
 		if pType, ok := policyMap["type"].(string); ok {
 			dp.Type = pType
+		}
+
+		// Extract category
+		if cat, ok := policyMap["category"].(string); ok {
+			dp.Category = cat
 		}
 
 		policies = append(policies, dp)

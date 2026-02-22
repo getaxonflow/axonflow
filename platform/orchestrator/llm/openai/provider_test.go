@@ -76,7 +76,7 @@ func TestProviderFactory(t *testing.T) {
 			Name:   "openai-test",
 			Type:   llm.ProviderTypeOpenAI,
 			APIKey: "test-api-key",
-			Model:  "gpt-4-turbo",
+			Model:  "gpt-4o",
 		}
 
 		provider, err := NewProviderFactory(config)
@@ -89,8 +89,8 @@ func TestProviderFactory(t *testing.T) {
 			t.Fatalf("expected *Provider, got %T", provider)
 		}
 
-		if openaiProvider.Model() != "gpt-4-turbo" {
-			t.Errorf("expected model 'gpt-4-turbo', got %q", openaiProvider.Model())
+		if openaiProvider.Model() != "gpt-4o" {
+			t.Errorf("expected model 'gpt-4o', got %q", openaiProvider.Model())
 		}
 	})
 

@@ -1185,6 +1185,404 @@ func TestMAPExecutionTracker_GetPlanStatus_FallbackToPlanService_ZeroStepCount(t
 	}
 }
 
+// =============================================================================
+// SyncStepResults Tests
+// =============================================================================
+
+// mockCostEstimator implements PlanCostEstimator for testing
+type mockCostEstimator struct {
+	costPerCall float64
+}
+
+func (m *mockCostEstimator) EstimateCost(provider, model string, tokensIn, tokensOut int) float64 {
+	return m.costPerCall
+}
+
+func TestSyncStepResults_CompletedSteps(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewMAPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	// Create a plan with 3 steps
+	workflow := Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "greet", Type: "llm-call"},
+				{Name: "analyze", Type: "llm-call"},
+				{Name: "summarize", Type: "llm-call"},
+			},
+		},
+	}
+	workflowJSON, _ := json.Marshal(workflow)
+
+	plan := &planning.Plan{
+		PlanID:             "plan_sync_steps",
+		Query:              "Sync step results test",
+		StepCount:          3,
+		WorkflowDefinition: workflowJSON,
+		TenantID:           "tenant-1",
+	}
+
+	_, err := tracker.StartPlanExecution(ctx, plan)
+	if err != nil {
+		t.Fatalf("StartPlanExecution() error = %v", err)
+	}
+
+	// Simulate workflow execution results
+	now := time.Now()
+	end1 := now.Add(2 * time.Second)
+	end2 := now.Add(5 * time.Second)
+	end3 := now.Add(8 * time.Second)
+
+	stepResults := []StepExecution{
+		{
+			Name:      "greet",
+			Status:    "completed",
+			StartTime: now,
+			EndTime:   &end1,
+			Output: map[string]interface{}{
+				"provider":    "openai",
+				"model":       "gpt-4o-mini",
+				"tokens_used": float64(500),
+			},
+		},
+		{
+			Name:      "analyze",
+			Status:    "completed",
+			StartTime: now.Add(2 * time.Second),
+			EndTime:   &end2,
+			Output: map[string]interface{}{
+				"provider":    "anthropic",
+				"model":       "claude-sonnet-4-20250514",
+				"tokens_used": float64(1200),
+			},
+		},
+		{
+			Name:      "summarize",
+			Status:    "completed",
+			StartTime: now.Add(5 * time.Second),
+			EndTime:   &end3,
+			Output: map[string]interface{}{
+				"provider":    "google",
+				"model":       "gemini-2.0-flash",
+				"tokens_used": float64(800),
+			},
+		},
+	}
+
+	costEstimator := &mockCostEstimator{costPerCall: 0.005}
+
+	err = tracker.SyncStepResults(ctx, "plan_sync_steps", stepResults, costEstimator)
+	if err != nil {
+		t.Fatalf("SyncStepResults() error = %v", err)
+	}
+
+	// Verify step data
+	status, err := tracker.GetPlanStatus(ctx, "plan_sync_steps")
+	if err != nil {
+		t.Fatalf("GetPlanStatus() error = %v", err)
+	}
+
+	if len(status.Steps) != 3 {
+		t.Fatalf("len(Steps) = %v, want 3", len(status.Steps))
+	}
+
+	// Step 0
+	if status.Steps[0].Status != execution.StepStatusCompleted {
+		t.Errorf("Steps[0].Status = %v, want completed", status.Steps[0].Status)
+	}
+	if status.Steps[0].Provider != "openai" {
+		t.Errorf("Steps[0].Provider = %v, want openai", status.Steps[0].Provider)
+	}
+	if status.Steps[0].Model != "gpt-4o-mini" {
+		t.Errorf("Steps[0].Model = %v, want gpt-4o-mini", status.Steps[0].Model)
+	}
+	if status.Steps[0].TokensIn == nil || *status.Steps[0].TokensIn != 250 {
+		t.Errorf("Steps[0].TokensIn = %v, want 250", status.Steps[0].TokensIn)
+	}
+	if status.Steps[0].TokensOut == nil || *status.Steps[0].TokensOut != 250 {
+		t.Errorf("Steps[0].TokensOut = %v, want 250", status.Steps[0].TokensOut)
+	}
+	if status.Steps[0].CostUSD == nil || *status.Steps[0].CostUSD != 0.005 {
+		t.Errorf("Steps[0].CostUSD = %v, want 0.005", status.Steps[0].CostUSD)
+	}
+	if status.Steps[0].StartedAt == nil {
+		t.Error("Steps[0].StartedAt should be set")
+	}
+	if status.Steps[0].EndedAt == nil {
+		t.Error("Steps[0].EndedAt should be set")
+	}
+
+	// Step 1
+	if status.Steps[1].Provider != "anthropic" {
+		t.Errorf("Steps[1].Provider = %v, want anthropic", status.Steps[1].Provider)
+	}
+	if status.Steps[1].Model != "claude-sonnet-4-20250514" {
+		t.Errorf("Steps[1].Model = %v, want claude-sonnet-4-20250514", status.Steps[1].Model)
+	}
+
+	// Step 2
+	if status.Steps[2].Provider != "google" {
+		t.Errorf("Steps[2].Provider = %v, want google", status.Steps[2].Provider)
+	}
+
+	// Verify actual cost was updated (3 steps * 0.005 = 0.015)
+	if status.ActualCostUSD == nil || *status.ActualCostUSD != 0.015 {
+		t.Errorf("ActualCostUSD = %v, want 0.015", status.ActualCostUSD)
+	}
+}
+
+func TestSyncStepResults_OutOfOrder(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewMAPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	workflow := Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "greet", Type: "llm-call"},
+				{Name: "analyze", Type: "llm-call"},
+				{Name: "summarize", Type: "llm-call"},
+			},
+		},
+	}
+	workflowJSON, _ := json.Marshal(workflow)
+
+	plan := &planning.Plan{
+		PlanID:             "plan_sync_steps_out_of_order",
+		Query:              "Out of order step results test",
+		StepCount:          3,
+		WorkflowDefinition: workflowJSON,
+		TenantID:           "tenant-1",
+	}
+
+	_, err := tracker.StartPlanExecution(ctx, plan)
+	if err != nil {
+		t.Fatalf("StartPlanExecution() error = %v", err)
+	}
+
+	now := time.Now()
+	end1 := now.Add(2 * time.Second)
+	end2 := now.Add(4 * time.Second)
+	end3 := now.Add(6 * time.Second)
+
+	stepResults := []StepExecution{
+		{
+			Name:      "summarize",
+			Status:    "completed",
+			StartTime: now,
+			EndTime:   &end1,
+			Output: map[string]interface{}{
+				"provider":    "google",
+				"model":       "gemini-2.0-flash",
+				"tokens_used": float64(300),
+			},
+		},
+		{
+			Name:      "greet",
+			Status:    "completed",
+			StartTime: now.Add(1 * time.Second),
+			EndTime:   &end2,
+			Output: map[string]interface{}{
+				"provider":    "openai",
+				"model":       "gpt-4o-mini",
+				"tokens_used": float64(100),
+			},
+		},
+		{
+			Name:      "analyze",
+			Status:    "completed",
+			StartTime: now.Add(2 * time.Second),
+			EndTime:   &end3,
+			Output: map[string]interface{}{
+				"provider":    "anthropic",
+				"model":       "claude-sonnet-4-20250514",
+				"tokens_used": float64(200),
+			},
+		},
+	}
+
+	err = tracker.SyncStepResults(ctx, "plan_sync_steps_out_of_order", stepResults, nil)
+	if err != nil {
+		t.Fatalf("SyncStepResults() error = %v", err)
+	}
+
+	status, err := tracker.GetPlanStatus(ctx, "plan_sync_steps_out_of_order")
+	if err != nil {
+		t.Fatalf("GetPlanStatus() error = %v", err)
+	}
+
+	if status.Steps[0].Provider != "openai" {
+		t.Errorf("Steps[0].Provider = %v, want openai", status.Steps[0].Provider)
+	}
+	if status.Steps[1].Provider != "anthropic" {
+		t.Errorf("Steps[1].Provider = %v, want anthropic", status.Steps[1].Provider)
+	}
+	if status.Steps[2].Provider != "google" {
+		t.Errorf("Steps[2].Provider = %v, want google", status.Steps[2].Provider)
+	}
+
+	if status.Steps[0].TokensIn == nil || *status.Steps[0].TokensIn != 50 {
+		t.Errorf("Steps[0].TokensIn = %v, want 50", status.Steps[0].TokensIn)
+	}
+	if status.Steps[1].TokensIn == nil || *status.Steps[1].TokensIn != 100 {
+		t.Errorf("Steps[1].TokensIn = %v, want 100", status.Steps[1].TokensIn)
+	}
+	if status.Steps[2].TokensIn == nil || *status.Steps[2].TokensIn != 150 {
+		t.Errorf("Steps[2].TokensIn = %v, want 150", status.Steps[2].TokensIn)
+	}
+}
+
+func TestSyncStepResults_FailedStep(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewMAPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	workflow := Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "llm-call"},
+				{Name: "step2", Type: "llm-call"},
+			},
+		},
+	}
+	workflowJSON, _ := json.Marshal(workflow)
+
+	plan := &planning.Plan{
+		PlanID:             "plan_fail_step",
+		Query:              "Failed step test",
+		StepCount:          2,
+		WorkflowDefinition: workflowJSON,
+		TenantID:           "tenant-1",
+	}
+
+	_, err := tracker.StartPlanExecution(ctx, plan)
+	if err != nil {
+		t.Fatalf("StartPlanExecution() error = %v", err)
+	}
+
+	now := time.Now()
+	end1 := now.Add(1 * time.Second)
+	end2 := now.Add(3 * time.Second)
+
+	stepResults := []StepExecution{
+		{
+			Name:      "step1",
+			Status:    "completed",
+			StartTime: now,
+			EndTime:   &end1,
+			Output: map[string]interface{}{
+				"provider":    "openai",
+				"model":       "gpt-4o-mini",
+				"tokens_used": float64(100),
+			},
+		},
+		{
+			Name:      "step2",
+			Status:    "failed",
+			StartTime: now.Add(1 * time.Second),
+			EndTime:   &end2,
+			Error:     "LLM provider returned 429: rate limited",
+			Output:    map[string]interface{}{},
+		},
+	}
+
+	err = tracker.SyncStepResults(ctx, "plan_fail_step", stepResults, nil)
+	if err != nil {
+		t.Fatalf("SyncStepResults() error = %v", err)
+	}
+
+	status, _ := tracker.GetPlanStatus(ctx, "plan_fail_step")
+
+	if status.Steps[0].Status != execution.StepStatusCompleted {
+		t.Errorf("Steps[0].Status = %v, want completed", status.Steps[0].Status)
+	}
+	if status.Steps[1].Status != execution.StepStatusFailed {
+		t.Errorf("Steps[1].Status = %v, want failed", status.Steps[1].Status)
+	}
+	if status.Steps[1].Error != "LLM provider returned 429: rate limited" {
+		t.Errorf("Steps[1].Error = %v, want rate limited error", status.Steps[1].Error)
+	}
+}
+
+func TestSyncStepResults_NoCostEstimator(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewMAPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	workflow := Workflow{
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "llm-call"},
+			},
+		},
+	}
+	workflowJSON, _ := json.Marshal(workflow)
+
+	plan := &planning.Plan{
+		PlanID:             "plan_no_cost",
+		Query:              "No cost estimator test",
+		StepCount:          1,
+		WorkflowDefinition: workflowJSON,
+		TenantID:           "tenant-1",
+	}
+
+	_, err := tracker.StartPlanExecution(ctx, plan)
+	if err != nil {
+		t.Fatalf("StartPlanExecution() error = %v", err)
+	}
+
+	now := time.Now()
+	end := now.Add(1 * time.Second)
+
+	stepResults := []StepExecution{
+		{
+			Name:      "step1",
+			Status:    "completed",
+			StartTime: now,
+			EndTime:   &end,
+			Output: map[string]interface{}{
+				"provider":    "openai",
+				"model":       "gpt-4o-mini",
+				"tokens_used": float64(600),
+			},
+		},
+	}
+
+	// Pass nil cost estimator — should still work, tokens set but cost nil
+	err = tracker.SyncStepResults(ctx, "plan_no_cost", stepResults, nil)
+	if err != nil {
+		t.Fatalf("SyncStepResults() error = %v", err)
+	}
+
+	status, _ := tracker.GetPlanStatus(ctx, "plan_no_cost")
+
+	if status.Steps[0].TokensIn == nil || *status.Steps[0].TokensIn != 300 {
+		t.Errorf("Steps[0].TokensIn = %v, want 300", status.Steps[0].TokensIn)
+	}
+	if status.Steps[0].TokensOut == nil || *status.Steps[0].TokensOut != 300 {
+		t.Errorf("Steps[0].TokensOut = %v, want 300", status.Steps[0].TokensOut)
+	}
+	if status.Steps[0].CostUSD != nil {
+		t.Errorf("Steps[0].CostUSD = %v, want nil (no cost estimator)", status.Steps[0].CostUSD)
+	}
+}
+
+func TestSyncStepResults_NoExecution(t *testing.T) {
+	repo := NewMockMAPRepository()
+	tracker := NewMAPExecutionTracker(repo, nil)
+	ctx := context.Background()
+
+	// No unified execution exists for this plan — should return nil (not error)
+	err := tracker.SyncStepResults(ctx, "nonexistent_plan", []StepExecution{
+		{Name: "step1", Status: "completed"},
+	}, nil)
+
+	if err != nil {
+		t.Errorf("SyncStepResults() should return nil for missing execution, got: %v", err)
+	}
+}
+
 // mapTrackerContains checks if s contains substr (helper for error message assertions).
 func mapTrackerContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

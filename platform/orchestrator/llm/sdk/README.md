@@ -312,7 +312,7 @@ llm_providers:
     display_name: "Ollama (Local)"
     config:
       endpoint: ${OLLAMA_ENDPOINT:-http://localhost:11434}
-      model: ${OLLAMA_MODEL:-llama3.1:70b}
+      model: ${OLLAMA_MODEL:-llama3.2:latest}
     priority: 5
     weight: 0.3
 ```

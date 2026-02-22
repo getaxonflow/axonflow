@@ -263,7 +263,7 @@ func main() {
 		preCheckResult.ContextID,
 		responseSummary,
 		"openai",       // provider
-		"gpt-3.5-turbo", // model
+		"gpt-4o-mini", // model
 		axonflow.TokenUsage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,

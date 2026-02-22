@@ -87,6 +87,18 @@ async def main() -> int:
     # ========================================
     print("2. POST /api/v1/plans/estimate - Estimate cost before execution...")
 
+    # Use real WorkflowStep fields: prompt and max_tokens.
+    # Short prompt (~50 chars) vs long prompt (~600 chars) should produce different estimates.
+    short_prompt = "Summarize the key findings from the analysis."
+    long_prompt = (
+        "You are a senior data analyst. Given the following customer feedback dataset "
+        "containing 500 reviews across 12 product categories spanning the last fiscal quarter, "
+        "perform a comprehensive sentiment analysis. Break down sentiment by category, identify "
+        "emerging trends, flag critical issues that require immediate attention, and provide "
+        "actionable recommendations for each product team. Include statistical confidence intervals "
+        "for your sentiment scores and highlight any anomalies or outliers in the data distribution."
+    )
+
     estimate_payload = {
         "provider": "openai",
         "model": "gpt-4",
@@ -94,14 +106,14 @@ async def main() -> int:
             {
                 "name": "analyze",
                 "type": "llm_call",
-                "estimated_tokens_in": 1000,
-                "estimated_tokens_out": 500,
+                "prompt": long_prompt,
+                "max_tokens": 2000,
             },
             {
                 "name": "summarize",
                 "type": "llm_call",
-                "estimated_tokens_in": 500,
-                "estimated_tokens_out": 200,
+                "prompt": short_prompt,
+                "max_tokens": 200,
             },
         ],
     }
@@ -149,9 +161,35 @@ async def main() -> int:
                         f"currency is 'USD' (got '{data['currency']}')",
                     )
 
-                # Check breakdown (may be absent in community mode)
+                # Check breakdown and verify prompt-aware estimation
                 if "breakdown" in data:
-                    print(f"   Breakdown available: {data['breakdown']}")
+                    breakdown = data["breakdown"]
+                    print(f"   Breakdown: {breakdown}")
+
+                    # Verify per-step token estimates differ (long prompt > short prompt)
+                    if len(breakdown) >= 2:
+                        analyze_tokens_in = breakdown[0].get("estimated_tokens_in", 0)
+                        summarize_tokens_in = breakdown[1].get("estimated_tokens_in", 0)
+                        print(f"   Analyze step tokens_in: {analyze_tokens_in}")
+                        print(f"   Summarize step tokens_in: {summarize_tokens_in}")
+                        assert_check(
+                            analyze_tokens_in > summarize_tokens_in,
+                            "Long-prompt step has more estimated input tokens than short-prompt step",
+                        )
+
+                        # Verify max_tokens is respected for output estimates
+                        analyze_tokens_out = breakdown[0].get("estimated_tokens_out", 0)
+                        summarize_tokens_out = breakdown[1].get("estimated_tokens_out", 0)
+                        print(f"   Analyze step tokens_out: {analyze_tokens_out} (expected: 2000)")
+                        print(f"   Summarize step tokens_out: {summarize_tokens_out} (expected: 200)")
+                        assert_check(
+                            analyze_tokens_out == 2000,
+                            f"Analyze step respects max_tokens=2000 for output estimate (got {analyze_tokens_out})",
+                        )
+                        assert_check(
+                            summarize_tokens_out == 200,
+                            f"Summarize step respects max_tokens=200 for output estimate (got {summarize_tokens_out})",
+                        )
                 else:
                     print("   Note: 'breakdown' not present (community mode returns aggregate only)")
 

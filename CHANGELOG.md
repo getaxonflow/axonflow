@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.5.0] - 2026-02-22
+
+### Community
+
+#### Added
+
+- **Media Governance Policy Engine** (#1224): Tiered media governance with system-managed policies
+  - 5 default media governance rules seeded automatically: NSFW blocking, violence warning, biometric audit, PII blocking, sensitive document detection
+  - Media governance enable/disable: Community deployments opt-in via `MEDIA_GOVERNANCE_ENABLED=true` environment variable
+  - Media governance status API: `GET /api/v1/media-governance/status` returns feature availability per tier
+  - Media policy categories: `media-safety`, `media-biometric`, `media-pii`, `media-document`
+  - System media policy toggle: All tiers can enable/disable system media policies
+  - New examples: `media-governance-policies/` demonstrating policy CRUD and governance outcomes (HTTP, Go, Python, TypeScript, Java)
+- **Per-Step Token Tracking** (#1223): `tokens_in`/`tokens_out` fields through the full WCP step execution pipeline — types, migration 051, repository, service, and all 3 tracker mapping paths
+- **Per-Step Cost Tracking** (#1229): `cost_usd` field through the full WCP step execution pipeline — types, migration 052, repository, service, and tracker. MAP workflows already had cost tracking; WCP now has parity
+- **MAP/WCP Step Result Sync** (#1232): `SyncStepResults()` syncs step-level data (status, provider, model, tokens, cost) from `WorkflowExecution` to the unified execution tracker. Called from `executePlanHandler` before `SyncPlanStatus` in all 3 code paths
+- **Prompt-Aware Cost Estimation** (#1230): `EstimatePlanCost` now uses actual step prompt length (`len(prompt)/4 + 50` input tokens) and `max_tokens` for output estimates, instead of hardcoded 1000/500. Output schema overhead calculated via `json.Marshal`. 5 new unit tests added
+- **Stale Model ID CI Guardrail** (#1233, #1235): CI workflow scans docs and technical-docs markdown files on PRs for deprecated LLM model IDs. Fails CI when stale Anthropic, OpenAI, Ollama, or Bedrock model identifiers are introduced. Hardened with `fetch-depth: 0`, `rg` availability check, and runtime error handling
+
+#### Fixed
+
+- **StepComplete ignores post-execution metrics**: `MarkStepCompleted` handler silently dropped request body — `tokens_in`, `tokens_out`, `cost_usd` were only set at gate time, never updated at completion. Now accepts `StepCompleteRequest` with actual post-execution values that override gate-time estimates via COALESCE. Also stores `step_output` (migration 054). All 4 SDKs updated on v3.6.0 branches
+- **Execution viewer token/cost rendering** (#1228): Token display showed "undefined" when value was `0` (used `!= null` check and `?? 0` nullish coalescing). Cost display skipped legitimate `$0.0000` values. Policy events rendered blank rows due to type mismatch between `[]string` and expected objects
+- **WCP gate decisions invisible in unified execution** (#1228): `Decision`, `DecisionReason`, `PoliciesMatched`, `ApprovalStatus`, `ApprovedBy` were never mapped into unified `StepStatus`. Added conversion helpers: `extractPolicyNames`, `mapWCPGateDecision`, `mapWCPApprovalStatus`
+- **Step status clobbering** (#1228): `BaseExecutionTracker.AddStep` unconditionally overwrote step status to `pending`, discarding WCP-computed status. Now preserves pre-set status
+- **Execution cost null in API** (#1232): `actual_cost_usd` always null in API responses. Added `TotalCost()` calculation in `resolveExecution` and `ListExecutions`
+- **WCP steps stuck at "running"** (#1232): Steps remained in running state when workflow completed. Replaced O(n) `ListExecutions` scan with O(1) indexed `GetByMetadata` lookup
+- **Cost estimation used hardcoded tokens** (#1230): `EstimatePlanCost` ignored `Prompt` and `MaxTokens` fields on `WorkflowStep`, always using 1000/500. All 5 cost-estimation examples sent non-existent `estimated_tokens_in`/`estimated_tokens_out` fields silently dropped by JSON unmarshaling
+
+#### Changed
+
+- **LLM Model ID Sweep** (#1236): ~200 files updated across code defaults, pricing tables, tests, examples, infrastructure, and technical docs. Migration 053 updates COALESCE default for Bedrock model in `llm_provider_configs`
+  - Anthropic: `claude-3-*`/`claude-3-5-*` → `claude-opus-4-20250514`/`claude-sonnet-4-20250514`/`claude-haiku-4-5-20251001`
+  - Bedrock: Updated to region-prefixed inference profile IDs (`us.anthropic.claude-sonnet-4-20250514-v1:0` etc.)
+  - OpenAI: `gpt-3.5-turbo` → `gpt-4o-mini`, `gpt-4-turbo` → `gpt-4o`
+  - Ollama: `llama3.1` → `llama3.2`, `codellama` → `qwen2.5-coder:32b`, `mistral:7b` → `mistral:latest`, `mixtral:8x7b` → `mixtral:latest`
+- **LLM provider diversity in examples** (#1223): 20 WCP and HITL example files updated from hardcoded `openai/gpt-4` to a mix of providers (ollama, anthropic, gemini, bedrock, azure) demonstrating provider-agnostic governance
+- **Execution viewer UI** (#1223): Wired to unified execution API (`/api/v1/unified/executions`) with correct field mappings, gate decision/approval display, and step_index handling
+- Media governance disabled by default on Community tier — previously ran globally if analyzers were registered (#1224)
+- Dynamic policy API (`/api/v1/dynamic-policies`) now accepts `media-*` category prefixes alongside `dynamic-*` (#1224)
+- Dynamic policy listing now includes system/global policies alongside tenant policies (#1224)
+- Documentation: All LLM model references updated to current versions across docs and technical-docs (#1231)
+- SDK version references bumped to v3.5.0 (#1221)
+- Docker base images: Go 1.25-alpine → 1.26-alpine for agent and orchestrator (#1189, #1190)
+- CI dependencies: `actions/github-script` 7→8, `docker/build-push-action` 5→6, `actions/upload-artifact` 4→6, `aws-actions/configure-aws-credentials` 4→6, `actions/download-artifact` 4→7 (#1197-#1201)
+
+### Enterprise
+
+#### Added
+
+- **Per-Tenant Media Governance Configuration** (#1224): `GET/PUT /api/v1/media-governance/config` for enable/disable and analyzer restriction per tenant
+- **System Media Policy Modification** (#1224): Enterprise tier can modify actions and priority on system media policies
+- **Media Governance Audit Export** (#1224): `GET /api/v1/media-governance/audit/export` for compliance reporting (CSV/JSON)
+
+#### Fixed
+
+- **Customer portal Docker build failure** (#1226): `go.mod` in `ee/platform/customer-portal/` pinned `golang.org/x/crypto v0.45.0` while platform bumped to `v0.47.0` during v4.4.0 merge
+
+### Breaking
+
+- Community deployments that previously had media governance running globally must now set `MEDIA_GOVERNANCE_ENABLED=true` to opt back in
+
+---
+
 ## [4.4.0] - 2026-02-18
 
 ### Community

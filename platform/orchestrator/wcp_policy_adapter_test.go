@@ -189,7 +189,7 @@ func TestWCPPolicyAdapter_ConvertStepInput(t *testing.T) {
 		StepID:       "step_input",
 		StepName:     "test_step",
 		StepType:     workflow_control.StepTypeLLMCall,
-		Model:        "claude-3",
+		Model:        "claude-sonnet-4",
 		Provider:     "anthropic",
 		StepInput: map[string]interface{}{
 			"query":       "What is PII?",
@@ -209,8 +209,8 @@ func TestWCPPolicyAdapter_ConvertStepInput(t *testing.T) {
 		t.Errorf("Expected workflow_name='input-test-workflow', got %v", ctx["workflow_name"])
 	}
 
-	if ctx["model"] != "claude-3" {
-		t.Errorf("Expected model='claude-3', got %v", ctx["model"])
+	if ctx["model"] != "claude-sonnet-4" {
+		t.Errorf("Expected model='claude-sonnet-4', got %v", ctx["model"])
 	}
 }
 

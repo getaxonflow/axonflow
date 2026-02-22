@@ -87,7 +87,7 @@ async def main() -> int:
             llm_start = time.time()
             if openai_client:
                 completion = await openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     messages=[{"role": "user", "content": query}],
                     max_tokens=50,
                 )
@@ -109,7 +109,7 @@ async def main() -> int:
                 context_id=precheck.context_id,
                 response_summary=response[:100] if response else "",
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,

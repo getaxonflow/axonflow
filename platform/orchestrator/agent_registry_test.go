@@ -39,7 +39,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.3
       prompt_template: "Search for flights"
     - name: hotel_search
@@ -79,7 +79,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.2
       prompt_template: "Analyze symptoms"
   routing:

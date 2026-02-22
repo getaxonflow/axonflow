@@ -127,7 +127,7 @@ ClientResponse audit = axonflow.auditLLMCall(
     AuditRequest.builder()
         .requestId(preCheck.getRequestId())  // Link to pre-check
         .llmResponse(response)
-        .model("gpt-3.5-turbo")
+        .model("gpt-4o-mini")
         .tokenUsage(TokenUsage.builder()
             .promptTokens(promptTokens)
             .completionTokens(completionTokens)
