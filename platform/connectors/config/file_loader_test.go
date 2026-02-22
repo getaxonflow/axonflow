@@ -439,7 +439,7 @@ llm_providers:
     display_name: "AWS Bedrock"
     config:
       region: us-east-1
-      model: claude-3
+      model: claude-sonnet-4
     credentials:
       aws_access_key: key
     priority: 10

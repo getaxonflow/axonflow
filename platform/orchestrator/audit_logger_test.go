@@ -488,7 +488,7 @@ func TestBatchWriter_Write(t *testing.T) {
 					PolicyDecision: "allowed",
 					PolicyDetails:  map[string]interface{}{"risk_score": 0.3},
 					Provider:       "anthropic",
-					Model:          "claude-3",
+					Model:          "claude-sonnet-4",
 					ResponseTime:   200,
 					TokensUsed:     150,
 					Cost:           0.008,
@@ -714,13 +714,13 @@ func TestSearchAuditLogs(t *testing.T) {
 					AddRow(
 						"audit_002", "req_002", time.Now(), 2, "admin@example.com", "admin",
 						"client_002", "tenant_002", "mutation", "update query", "allowed",
-						[]byte(`{"risk_score": 0.3}`), "anthropic", "claude-3", 200, 150,
+						[]byte(`{"risk_score": 0.3}`), "anthropic", "claude-sonnet-4", 200, 150,
 						0.008, []byte(`["email"]`), "", []byte(`[]`),
 					).
 					AddRow(
 						"audit_003", "req_003", time.Now(), 2, "admin@example.com", "admin",
 						"client_002", "tenant_002", "mutation", "delete query", "blocked",
-						[]byte(`{"risk_score": 0.8}`), "anthropic", "claude-3", 180, 120,
+						[]byte(`{"risk_score": 0.8}`), "anthropic", "claude-sonnet-4", 180, 120,
 						0.006, []byte(`[]`), "", []byte(`["sox_relevant"]`),
 					)
 				mock.ExpectQuery("SELECT (.+) FROM audit_logs WHERE (.+) user_email = (.+) client_id = (.+) request_type = (.+) ORDER BY timestamp DESC LIMIT").

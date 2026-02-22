@@ -133,7 +133,7 @@ The pre-check validates:
 
 ```typescript
 const completion = await openai.chat.completions.create({
-  model: "gpt-3.5-turbo",
+  model: "gpt-4o-mini",
   messages: [{ role: "user", content: query }],
 });
 ```
@@ -150,7 +150,7 @@ You make the LLM call directly - full control over:
 await axonflow.auditLLMCall({
   contextId: preCheckResult.contextId,
   response: response,
-  model: "gpt-3.5-turbo",
+  model: "gpt-4o-mini",
   provider: "openai",
   tokenUsage: { ... },
   latencyMs: llmLatency,

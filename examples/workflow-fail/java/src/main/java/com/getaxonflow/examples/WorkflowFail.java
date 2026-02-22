@@ -99,8 +99,8 @@ public class WorkflowFail {
                 StepGateRequest.builder()
                     .stepName("Data Processing")
                     .stepType(StepType.LLM_CALL)
-                    .model("gpt-4")
-                    .provider("openai")
+                    .model("anthropic.claude-haiku-4-5-20251001-v1:0")
+                    .provider("bedrock")
                     .stepInput(Map.of("prompt", "Process incoming data batch"))
                     .build()
             );

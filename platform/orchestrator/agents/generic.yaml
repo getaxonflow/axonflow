@@ -23,7 +23,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.5
         max_tokens: 2500
       prompt_template: |
@@ -41,7 +41,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.3
         max_tokens: 2500
       prompt_template: |
@@ -59,7 +59,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.4
         max_tokens: 3000
       prompt_template: |
@@ -78,7 +78,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-haiku
+        model: claude-haiku-4.5
         temperature: 0.2
         max_tokens: 1500
       prompt_template: |

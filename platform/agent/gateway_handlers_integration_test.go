@@ -612,7 +612,7 @@ func TestLLMCostCalculation(t *testing.T) {
 		{
 			name:     "Anthropic Claude 3 Sonnet",
 			provider: "anthropic",
-			model:    "claude-3-sonnet",
+			model:    "claude-sonnet-4",
 			tokens: TokenUsage{
 				TotalTokens: 1000,
 			},
@@ -621,7 +621,7 @@ func TestLLMCostCalculation(t *testing.T) {
 		{
 			name:     "Ollama local (free)",
 			provider: "ollama",
-			model:    "llama2",
+			model:    "llama3.2",
 			tokens: TokenUsage{
 				TotalTokens: 1000,
 			},

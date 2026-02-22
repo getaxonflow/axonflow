@@ -37,6 +37,10 @@ const (
 	CategoryDynamicSecurity   DynamicPolicyCategory = "dynamic-security"
 	CategoryDynamicCost       DynamicPolicyCategory = "dynamic-cost"
 	CategoryDynamicAccess     DynamicPolicyCategory = "dynamic-access"
+	CategoryMediaSafety       DynamicPolicyCategory = "media-safety"
+	CategoryMediaBiometric    DynamicPolicyCategory = "media-biometric"
+	CategoryMediaDocument     DynamicPolicyCategory = "media-document"
+	CategoryMediaPII          DynamicPolicyCategory = "media-pii"
 )
 
 // PolicyResource represents a policy for the API (extends DynamicPolicy with API-specific fields)
@@ -205,6 +209,7 @@ type PolicyFieldError struct {
 // are used by the MCP Dynamic Policy Handler for connector-level policy enforcement.
 var ValidPolicyTypes = []string{
 	"content", "user", "risk", "cost",        // Standard policy types
+	"media",                                   // Media governance policies
 	"rate-limit", "budget", "time-access",    // MCP rate/budget controls
 	"role-access", "mcp", "connector",        // MCP access controls
 }

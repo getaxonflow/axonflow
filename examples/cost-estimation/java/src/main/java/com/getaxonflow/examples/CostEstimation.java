@@ -166,14 +166,26 @@ public class CostEstimation {
         // ========================================
         System.out.println("2. POST /api/v1/plans/estimate - Estimate cost before execution...");
 
+        // Use real WorkflowStep fields: prompt and max_tokens.
+        // Short prompt (~50 chars) vs long prompt (~600 chars) should produce different estimates.
+        String shortPrompt = "Summarize the key findings from the analysis.";
+        String longPrompt = "You are a senior data analyst. Given the following customer feedback dataset "
+                + "containing 500 reviews across 12 product categories spanning the last fiscal quarter, "
+                + "perform a comprehensive sentiment analysis. Break down sentiment by category, identify "
+                + "emerging trends, flag critical issues that require immediate attention, and provide "
+                + "actionable recommendations for each product team. Include statistical confidence intervals "
+                + "for your sentiment scores and highlight any anomalies or outliers in the data distribution.";
+
         String estimateBody = "{"
                 + "\"provider\":\"openai\","
                 + "\"model\":\"gpt-4\","
                 + "\"steps\":["
                 + "{\"name\":\"analyze\",\"type\":\"llm_call\","
-                + "\"estimated_tokens_in\":1000,\"estimated_tokens_out\":500},"
+                + "\"prompt\":\"" + longPrompt.replace("\"", "\\\"") + "\","
+                + "\"max_tokens\":2000},"
                 + "{\"name\":\"summarize\",\"type\":\"llm_call\","
-                + "\"estimated_tokens_in\":500,\"estimated_tokens_out\":200}"
+                + "\"prompt\":\"" + shortPrompt.replace("\"", "\\\"") + "\","
+                + "\"max_tokens\":200}"
                 + "]"
                 + "}";
 
@@ -213,10 +225,30 @@ public class CostEstimation {
                                 "currency is 'USD' (got '" + currency + "')");
                     }
 
-                    // Check breakdown (may be absent in community mode)
-                    if (estimate.data.has("breakdown")) {
-                        System.out.println("   Breakdown available: "
-                                + estimate.data.get("breakdown").toString());
+                    // Check breakdown and verify prompt-aware estimation
+                    if (estimate.data.has("breakdown") && estimate.data.get("breakdown").isArray()) {
+                        JsonNode breakdown = estimate.data.get("breakdown");
+                        System.out.println("   Breakdown: " + breakdown.toString());
+
+                        // Verify per-step token estimates differ (long prompt > short prompt)
+                        if (breakdown.size() >= 2) {
+                            int analyzeTokensIn = breakdown.get(0).path("estimated_tokens_in").asInt(0);
+                            int summarizeTokensIn = breakdown.get(1).path("estimated_tokens_in").asInt(0);
+                            System.out.println("   Analyze step tokens_in: " + analyzeTokensIn);
+                            System.out.println("   Summarize step tokens_in: " + summarizeTokensIn);
+                            assertCheck(analyzeTokensIn > summarizeTokensIn,
+                                    "Long-prompt step has more estimated input tokens than short-prompt step");
+
+                            // Verify max_tokens is respected for output estimates
+                            int analyzeTokensOut = breakdown.get(0).path("estimated_tokens_out").asInt(0);
+                            int summarizeTokensOut = breakdown.get(1).path("estimated_tokens_out").asInt(0);
+                            System.out.println("   Analyze step tokens_out: " + analyzeTokensOut + " (expected: 2000)");
+                            System.out.println("   Summarize step tokens_out: " + summarizeTokensOut + " (expected: 200)");
+                            assertCheck(analyzeTokensOut == 2000,
+                                    "Analyze step respects max_tokens=2000 for output estimate (got " + analyzeTokensOut + ")");
+                            assertCheck(summarizeTokensOut == 200,
+                                    "Summarize step respects max_tokens=200 for output estimate (got " + summarizeTokensOut + ")");
+                        }
                     } else {
                         System.out.println("   Note: 'breakdown' not present "
                                 + "(community mode returns aggregate only)");

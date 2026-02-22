@@ -280,17 +280,17 @@ func TestCalculateLLMCost(t *testing.T) {
 			maxCost:  0.04,
 		},
 		{
-			name:     "OpenAI GPT-3.5",
+			name:     "OpenAI GPT-4o-mini",
 			provider: "openai",
-			model:    "gpt-3.5-turbo",
+			model:    "gpt-4o-mini",
 			tokens:   1000,
-			minCost:  0.0004,
-			maxCost:  0.001,
+			minCost:  0.0001,
+			maxCost:  0.0002,
 		},
 		{
 			name:     "Anthropic Claude Sonnet",
 			provider: "anthropic",
-			model:    "claude-3-sonnet",
+			model:    "claude-sonnet-4",
 			tokens:   1000,
 			minCost:  0.002,
 			maxCost:  0.005,
@@ -623,15 +623,14 @@ func TestCalculateLLMCost_AllProviders(t *testing.T) {
 		maxCost  float64
 	}{
 		{"openai", "gpt-4", 1000, 0.029, 0.031},
-		{"openai", "gpt-4-turbo", 1000, 0.009, 0.011},
 		{"openai", "gpt-4o", 1000, 0.004, 0.006},
-		{"openai", "gpt-3.5-turbo", 1000, 0.0004, 0.0006},
-		{"anthropic", "claude-3-opus", 1000, 0.014, 0.016},
-		{"anthropic", "claude-3-sonnet", 1000, 0.002, 0.004},
-		{"anthropic", "claude-3-haiku", 1000, 0.00024, 0.00026},
+		{"openai", "gpt-4o-mini", 1000, 0.0001, 0.0002},
+		{"anthropic", "claude-opus-4", 1000, 0.014, 0.016},
+		{"anthropic", "claude-sonnet-4", 1000, 0.002, 0.004},
+		{"anthropic", "claude-haiku-4.5", 1000, 0.0007, 0.0009},
 		{"bedrock", "anthropic.claude-v2", 1000, 0.007, 0.009},
 		{"bedrock", "amazon.titan-text", 1000, 0.0007, 0.0009},
-		{"ollama", "llama2", 1000, 0.0, 0.0},
+		{"ollama", "llama3.2", 1000, 0.0, 0.0},
 		{"ollama", "default", 1000, 0.0, 0.0},
 		{"unknown", "unknown", 1000, 0.009, 0.011}, // Conservative default
 	}
@@ -1112,7 +1111,7 @@ func TestAuditHandler_WithMetadata(t *testing.T) {
 		ClientID:        "test-client",
 		ResponseSummary: "The answer is 42",
 		Provider:        "anthropic",
-		Model:           "claude-3-sonnet",
+		Model:           "claude-sonnet-4",
 		TokenUsage: TokenUsage{
 			PromptTokens:     200,
 			CompletionTokens: 100,
@@ -2136,15 +2135,15 @@ func TestCalculateLLMCost_KnownProviders(t *testing.T) {
 			usage:    TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 		},
 		{
-			name:     "OpenAI GPT-3.5",
+			name:     "OpenAI GPT-4o-mini",
 			provider: "openai",
-			model:    "gpt-3.5-turbo",
+			model:    "gpt-4o-mini",
 			usage:    TokenUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
 		},
 		{
 			name:     "Anthropic Claude",
 			provider: "anthropic",
-			model:    "claude-3-opus",
+			model:    "claude-opus-4",
 			usage:    TokenUsage{PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300},
 		},
 		{

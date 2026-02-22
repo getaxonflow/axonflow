@@ -85,8 +85,8 @@ async def main() -> int:
                 request=StepGateRequest(
                     step_name="Analyze Data",
                     step_type=StepType.LLM_CALL,
-                    model="gpt-4",
-                    provider="openai",
+                    model="gemini-1.5-pro",
+                    provider="gemini",
                     step_input={"prompt": "Analyze customer sentiment"},
                 ),
             )

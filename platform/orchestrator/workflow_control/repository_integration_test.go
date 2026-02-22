@@ -79,6 +79,10 @@ func workflowControlSchema() string {
 			step_input JSONB,
 			model VARCHAR(100),
 			provider VARCHAR(100),
+			tokens_in INTEGER,
+			tokens_out INTEGER,
+			cost_usd DOUBLE PRECISION,
+			step_output JSONB,
 			gate_checked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			step_completed_at TIMESTAMP WITH TIME ZONE,
 			UNIQUE(workflow_id, step_id)
@@ -562,7 +566,7 @@ func TestPostgresRepository_Integration_Steps(t *testing.T) {
 	})
 
 	t.Run("mark step completed", func(t *testing.T) {
-		err := repo.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1")
+		err := repo.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", nil)
 		if err != nil {
 			t.Fatalf("MarkStepCompleted() error = %v", err)
 		}

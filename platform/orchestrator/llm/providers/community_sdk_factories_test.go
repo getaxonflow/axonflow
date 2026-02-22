@@ -61,7 +61,7 @@ func TestSDKFactories_CreateOllamaProvider(t *testing.T) {
 		Name:     "ollama-sdk",
 		Type:     llm.ProviderTypeOllama,
 		Endpoint: "http://localhost:11434",
-		Model:    "llama3.1:latest",
+		Model:    "llama3.2:latest",
 	})
 	if err != nil {
 		t.Fatalf("NewOllamaProviderFactory() error = %v", err)

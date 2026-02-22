@@ -96,6 +96,8 @@ for STEP_NUM in 1 2 3; do
     -d "{
       \"step_name\": \"Step ${STEP_NUM}\",
       \"step_type\": \"action\",
+      \"tokens_in\": $((100 + STEP_NUM * 50)),
+      \"tokens_out\": $((80 + STEP_NUM * 30)),
       \"step_input\": {\"action\": \"process-${STEP_NUM}\"}
     }")
 
@@ -220,6 +222,8 @@ else
       -d "{
         \"step_name\": \"SSE Step ${SSE_STEP}\",
         \"step_type\": \"action\",
+        \"tokens_in\": $((75 + SSE_STEP * 25)),
+        \"tokens_out\": $((60 + SSE_STEP * 20)),
         \"step_input\": {\"action\": \"sse-process-${SSE_STEP}\"}
       }" > /dev/null
 

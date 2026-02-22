@@ -83,8 +83,10 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Generate Code",
         "step_type": "llm_call",
-        "model": "gpt-4",
-        "provider": "openai",
+        "model": "llama3.2",
+        "provider": "ollama",
+        "tokens_in": 200,
+        "tokens_out": 450,
         "step_input": {
             "prompt": "Write a Python function to sort a list"
         }
@@ -134,7 +136,10 @@ if [ "$decision" = "allow" ]; then
         -d '{
             "output": {
                 "code": "def sort_list(items): return sorted(items)"
-            }
+            },
+            "tokens_in": 320,
+            "tokens_out": 85,
+            "cost_usd": 0.0048
         }' > /dev/null
     echo -e "   ${GREEN}Step completed!${NC}"
     echo ""
@@ -151,6 +156,8 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Review Code",
         "step_type": "tool_call",
+        "tokens_in": 120,
+        "tokens_out": 85,
         "step_input": {
             "tool": "code_reviewer",
             "code": "def sort_list(items): return sorted(items)"
@@ -164,7 +171,7 @@ case "$decision" in
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-2/complete" \
             -H "Content-Type: application/json" \
             -H "X-Client-ID: $CLIENT_ID" \
-            -d '{"output": {"review": "LGTM"}}' > /dev/null
+            -d '{"output": {"review": "LGTM"}, "tokens_in": 480, "tokens_out": 120, "cost_usd": 0.0071}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
         ;;
     "block")
@@ -188,6 +195,8 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Deploy to Production",
         "step_type": "connector_call",
+        "tokens_in": 50,
+        "tokens_out": 30,
         "step_input": {
             "connector": "github",
             "action": "create_pr"
@@ -201,7 +210,7 @@ case "$decision" in
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-3/complete" \
             -H "Content-Type: application/json" \
             -H "X-Client-ID: $CLIENT_ID" \
-            -d '{"output": {"pr_url": "https://github.com/example/pr/123"}}' > /dev/null
+            -d '{"output": {"pr_url": "https://github.com/example/pr/123"}, "tokens_in": 95, "tokens_out": 30, "cost_usd": 0.0015}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
         ;;
     "block")
@@ -326,8 +335,10 @@ else
         -d '{
             "step_name": "Approval Target Step",
             "step_type": "llm_call",
-            "model": "gpt-4",
-            "provider": "openai",
+            "model": "llama3.2",
+            "provider": "ollama",
+            "tokens_in": 180,
+            "tokens_out": 290,
             "step_input": {
                 "prompt": "Test step for approval"
             }
@@ -412,6 +423,8 @@ else
         -d '{
             "step_name": "Rejection Target Step",
             "step_type": "tool_call",
+            "tokens_in": 95,
+            "tokens_out": 40,
             "step_input": {
                 "tool": "risky_action",
                 "action": "delete_all"
@@ -497,8 +510,10 @@ else
         -d '{
             "step_name": "SSE Test Step",
             "step_type": "llm_call",
-            "model": "gpt-4",
-            "provider": "openai",
+            "model": "llama3.2",
+            "provider": "ollama",
+            "tokens_in": 65,
+            "tokens_out": 110,
             "step_input": {
                 "prompt": "test SSE streaming"
             }
@@ -512,7 +527,7 @@ else
             -H "Content-Type: application/json" \
             -H "X-Client-ID: $CLIENT_ID" \
             -H "X-Client-Secret: $CLIENT_SECRET" \
-            -d '{"output": {"result": "sse test output"}}' > /dev/null
+            -d '{"output": {"result": "sse test output"}, "tokens_in": 200, "tokens_out": 60, "cost_usd": 0.0031}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
     fi
 

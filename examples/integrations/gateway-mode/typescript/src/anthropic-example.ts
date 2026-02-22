@@ -98,7 +98,7 @@ async function main() {
     const startLLM = Date.now();
 
     const message = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 200,
       messages: [
         {
@@ -134,7 +134,7 @@ async function main() {
       contextId: preCheckResult.contextId,
       responseSummary: response.substring(0, 100),
       provider: "anthropic",
-      model: "claude-3-haiku-20240307",
+      model: "claude-haiku-4-5-20251001",
       tokenUsage: {
         promptTokens: message.usage.input_tokens,
         completionTokens: message.usage.output_tokens,

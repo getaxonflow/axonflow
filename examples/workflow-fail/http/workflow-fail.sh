@@ -102,8 +102,10 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Data Processing",
         "step_type": "llm_call",
-        "model": "gpt-4",
-        "provider": "openai",
+        "model": "claude-sonnet-4-20250514",
+        "provider": "anthropic",
+        "tokens_in": 175,
+        "tokens_out": 380,
         "step_input": {
             "prompt": "Process incoming data batch"
         }

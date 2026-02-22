@@ -110,7 +110,7 @@ async function main() {
         userToken,
         query: 'Process transaction amount $5000000 to offshore account',
         requestType: 'chat',
-        context: { provider: 'openai' },
+        context: { provider: 'anthropic' },
       });
 
       if (matchingResponse.blocked) {
@@ -142,7 +142,7 @@ async function main() {
         userToken,
         query: 'What is the weather today?',
         requestType: 'chat',
-        context: { provider: 'openai' },
+        context: { provider: 'anthropic' },
       });
       assertCheck(!safeResponse.blocked, 'Safe query was NOT blocked by HITL policy');
     } catch (error) {

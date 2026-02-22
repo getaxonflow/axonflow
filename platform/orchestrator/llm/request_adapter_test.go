@@ -188,7 +188,7 @@ func TestLegacyResponseToCompletionResponse(t *testing.T) {
 			name: "response with metadata tokens",
 			resp: &LegacyLLMResponse{
 				Content:      "Test response",
-				Model:        "claude-3",
+				Model:        "claude-sonnet-4",
 				TokensUsed:   100,
 				ResponseTime: 50 * time.Millisecond,
 				Metadata: map[string]any{
@@ -199,7 +199,7 @@ func TestLegacyResponseToCompletionResponse(t *testing.T) {
 			},
 			want: &CompletionResponse{
 				Content:      "Test response",
-				Model:        "claude-3",
+				Model:        "claude-sonnet-4",
 				FinishReason: "max_tokens",
 				Usage: UsageStats{
 					PromptTokens:     30,
@@ -347,7 +347,7 @@ func TestLegacyProviderInfoToRouteInfo(t *testing.T) {
 			name: "anthropic provider",
 			info: &LegacyProviderInfo{
 				Provider:       "anthropic",
-				Model:          "claude-3-5-sonnet",
+				Model:          "claude-sonnet-4",
 				ResponseTimeMs: 200,
 				TokensUsed:     150,
 				Cost:           0.03,
@@ -356,7 +356,7 @@ func TestLegacyProviderInfoToRouteInfo(t *testing.T) {
 			want: &RouteInfo{
 				ProviderName:   "anthropic",
 				ProviderType:   ProviderTypeAnthropic,
-				Model:          "claude-3-5-sonnet",
+				Model:          "claude-sonnet-4",
 				ResponseTimeMs: 200,
 				TokensUsed:     150,
 				EstimatedCost:  0.03,

@@ -258,7 +258,7 @@ public class GatewayModeExample {
         long llmStart = System.currentTimeMillis();
 
         ChatCompletionRequest chatRequest = ChatCompletionRequest.builder()
-            .model("gpt-3.5-turbo")
+            .model("gpt-4o-mini")
             .messages(Arrays.asList(
                 new ChatMessage(ChatMessageRole.SYSTEM.value(),
                     "You are a helpful AI expert. Be concise."),
@@ -308,7 +308,7 @@ public class GatewayModeExample {
                     .clientId(CLIENT_ID)
                     .responseSummary(responseSummary)
                     .provider("openai")
-                    .model("gpt-3.5-turbo")
+                    .model("gpt-4o-mini")
                     .tokenUsage(TokenUsage.of(promptTokens, completionTokens))
                     .latencyMs(llmLatency)
                     .build()

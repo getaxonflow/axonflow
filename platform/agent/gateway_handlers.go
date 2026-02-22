@@ -231,19 +231,28 @@ type AuditLLMCallResponse struct {
 // LLM pricing per 1K tokens (in USD) - used for cost estimation
 var llmPricing = map[string]map[string]float64{
 	"openai": {
-		"gpt-4":         0.03,   // $0.03 per 1K input tokens
-		"gpt-4-turbo":   0.01,
 		"gpt-4o":        0.005,
-		"gpt-3.5-turbo": 0.0005,
+		"gpt-4o-mini":   0.00015,
+		"gpt-4":         0.03,
+		"gpt-4-turbo":   0.01,    // legacy, kept for backward compat
+		"gpt-3.5-turbo": 0.0005,  // legacy, kept for backward compat
 	},
 	"anthropic": {
-		"claude-3-opus":   0.015,
-		"claude-3-sonnet": 0.003,
-		"claude-3-haiku":  0.00025,
+		"claude-opus-4":      0.015,
+		"claude-sonnet-4":    0.003,
+		"claude-haiku-4.5":   0.0008,
+		"claude-3-opus":      0.015,  // legacy, kept for backward compat
+		"claude-3-sonnet":    0.003,  // legacy, kept for backward compat
+		"claude-3-haiku":     0.001,  // legacy, kept for backward compat
+		"claude-3-5-sonnet":  0.003,  // legacy, kept for backward compat
+		"claude-3-5-haiku":   0.001,  // legacy, kept for backward compat
 	},
 	"bedrock": {
-		"anthropic.claude-v2": 0.008,
-		"amazon.titan-text":   0.0008,
+		"anthropic.claude-sonnet-4-20250514-v1:0":  0.003,
+		"anthropic.claude-opus-4-20250514-v1:0":    0.015,
+		"anthropic.claude-haiku-4-5-20251001-v1:0": 0.0008,
+		"anthropic.claude-v2":                      0.008,
+		"amazon.titan-text":                        0.0008,
 	},
 	"ollama": {
 		"default": 0.0, // Local, no cost

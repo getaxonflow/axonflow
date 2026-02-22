@@ -107,7 +107,7 @@ func TestLLMConfigToProviderConfigs_GeminiWithoutModel(t *testing.T) {
 func TestLLMConfigToProviderConfigs_OllamaWithModel(t *testing.T) {
 	cfg := LLMRouterConfig{
 		OllamaEndpoint: "http://localhost:11434",
-		OllamaModel:    "llama3.1:70b",
+		OllamaModel:    "llama3.2:latest",
 	}
 	configs := LLMConfigToProviderConfigs(cfg)
 
@@ -123,8 +123,8 @@ func TestLLMConfigToProviderConfigs_OllamaWithModel(t *testing.T) {
 	if configs[0].Endpoint != "http://localhost:11434" {
 		t.Errorf("Expected endpoint 'http://localhost:11434', got %q", configs[0].Endpoint)
 	}
-	if configs[0].Model != "llama3.1:70b" {
-		t.Errorf("Expected model 'llama3.1:70b', got %q", configs[0].Model)
+	if configs[0].Model != "llama3.2:latest" {
+		t.Errorf("Expected model 'llama3.2:latest', got %q", configs[0].Model)
 	}
 }
 
@@ -249,7 +249,7 @@ func TestLLMConfigToProviderConfigs_AzureOpenAI_WithoutAPIVersion(t *testing.T) 
 func TestLLMConfigToProviderConfigs_Bedrock(t *testing.T) {
 	cfg := LLMRouterConfig{
 		BedrockRegion: "us-east-1",
-		BedrockModel:  "anthropic.claude-3-haiku-20240307-v1:0",
+		BedrockModel:  "anthropic.claude-haiku-4-5-20251001-v1:0",
 	}
 	configs := LLMConfigToProviderConfigs(cfg)
 
@@ -266,7 +266,7 @@ func TestLLMConfigToProviderConfigs_Bedrock(t *testing.T) {
 	if c.Region != "us-east-1" {
 		t.Errorf("Expected region 'us-east-1', got %q", c.Region)
 	}
-	if c.Model != "anthropic.claude-3-haiku-20240307-v1:0" {
+	if c.Model != "anthropic.claude-haiku-4-5-20251001-v1:0" {
 		t.Errorf("Expected model, got %q", c.Model)
 	}
 }
@@ -307,13 +307,13 @@ func TestLLMConfigToProviderConfigs_AllProviders(t *testing.T) {
 		GeminiKey:                 "gemini-key",
 		GeminiModel:               "gemini-2.0-flash",
 		OllamaEndpoint:            "http://localhost:11434",
-		OllamaModel:               "llama3.1:latest",
+		OllamaModel:               "llama3.2:latest",
 		AzureOpenAIEndpoint:       "https://example.openai.azure.com",
 		AzureOpenAIAPIKey:         "azure-key",
 		AzureOpenAIDeploymentName: "gpt-4o-mini",
 		AzureOpenAIAPIVersion:     "2024-08-01-preview",
 		BedrockRegion:             "us-east-1",
-		BedrockModel:              "anthropic.claude-3-haiku-20240307-v1:0",
+		BedrockModel:              "anthropic.claude-haiku-4-5-20251001-v1:0",
 	}
 	configs := LLMConfigToProviderConfigs(cfg)
 

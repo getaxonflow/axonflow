@@ -140,7 +140,7 @@ class GovernedCrew:
                     context_id=context_id,
                     response_summary=f"Task {task_index} completed: {task.expected_output[:50]}...",
                     provider="openai",
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     token_usage=TokenUsage(
                         prompt_tokens=0,
                         completion_tokens=0,
@@ -218,7 +218,7 @@ async def run_governance_test() -> int:
             context_id=ctx1.context_id,
             response_summary="Task completed: Analysis of AI governance benefits",
             provider="openai",
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             token_usage=TokenUsage(
                 prompt_tokens=100,
                 completion_tokens=200,
@@ -286,7 +286,7 @@ async def main() -> int:
     print("=" * 60)
 
     llm = ChatOpenAI(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         temperature=0.7,
         openai_api_key=openai_key,
     )

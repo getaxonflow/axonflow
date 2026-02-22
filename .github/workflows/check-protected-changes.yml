@@ -41,7 +41,7 @@ jobs:
 
       - name: Add warning comment
         if: steps.check.outputs.threshold_changed == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const body = `## ⚠️ Coverage Threshold Change Detected
@@ -80,7 +80,7 @@ jobs:
       - name: Check for approval
         if: steps.check.outputs.threshold_changed == 'true'
         id: approval
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const approvedMaintainers = ['saurabhjain1592'];

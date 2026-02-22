@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"axonflow/platform/orchestrator/llm/anthropic"
 	"axonflow/platform/orchestrator/llm/azure"
@@ -207,7 +208,7 @@ func (a *AnthropicProviderAdapter) EstimateCost(req CompletionRequest) *CostEsti
 // Verify interface compliance at compile time.
 var _ Provider = (*AnthropicProviderAdapter)(nil)
 
-// Anthropic pricing constants per 1K tokens (Claude 3.5 Sonnet).
+// Anthropic pricing constants per 1K tokens (Claude Sonnet 4).
 const (
 	anthropicInputCostPer1K  = 0.003 // $3/1M input
 	anthropicOutputCostPer1K = 0.015 // $15/1M output
@@ -219,7 +220,7 @@ const (
 const OllamaDefaultEndpoint = "http://localhost:11434"
 
 // OllamaDefaultModel is the default Ollama model.
-const OllamaDefaultModel = "llama3.1:latest"
+const OllamaDefaultModel = "llama3.2:latest"
 
 // OllamaDefaultTimeout is the default timeout for Ollama requests.
 const OllamaDefaultTimeout = 300 * time.Second
@@ -656,11 +657,12 @@ var _ StreamingProvider = (*OllamaProvider)(nil)
 
 // estimateTokens provides rough token estimates for a completion request.
 // This is a simple approximation; for accurate counts use a proper tokenizer.
+// Uses rune count (not byte length) to avoid overestimating multibyte/CJK text.
 func estimateTokens(req CompletionRequest) (inputTokens, outputTokens int) {
 	// Rough estimate: ~4 characters per token for English text
-	inputTokens = len(req.Prompt) / 4
+	inputTokens = utf8.RuneCountInString(req.Prompt) / 4
 	if req.SystemPrompt != "" {
-		inputTokens += len(req.SystemPrompt) / 4
+		inputTokens += utf8.RuneCountInString(req.SystemPrompt) / 4
 	}
 	if inputTokens == 0 {
 		inputTokens = 1

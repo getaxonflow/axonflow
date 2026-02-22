@@ -210,13 +210,13 @@ func TestTransparencyContextSetProcessingDuration(t *testing.T) {
 func TestTransparencyContextSetModel(t *testing.T) {
 	tc := NewTransparencyContext()
 
-	tc.SetModel("anthropic", "claude-3-opus")
+	tc.SetModel("anthropic", "claude-opus-4")
 
 	if tc.ModelProvider != "anthropic" {
 		t.Errorf("ModelProvider should be 'anthropic', got %s", tc.ModelProvider)
 	}
-	if tc.ModelID != "claude-3-opus" {
-		t.Errorf("ModelID should be 'claude-3-opus', got %s", tc.ModelID)
+	if tc.ModelID != "claude-opus-4" {
+		t.Errorf("ModelID should be 'claude-opus-4', got %s", tc.ModelID)
 	}
 	if tc.ProcessingType != "hybrid" {
 		t.Errorf("ProcessingType should be 'hybrid' after SetModel, got %s", tc.ProcessingType)

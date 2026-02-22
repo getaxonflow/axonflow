@@ -5,6 +5,7 @@ package workflow_control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -262,8 +263,8 @@ func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, ste
 	return fmt.Errorf("step not found: %s/%s", workflowID, stepID)
 }
 
-// MarkStepCompleted marks a step as completed
-func (m *MockRepository) MarkStepCompleted(ctx context.Context, workflowID, stepID string) error {
+// MarkStepCompleted marks a step as completed, optionally applying post-execution metrics
+func (m *MockRepository) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -271,6 +272,21 @@ func (m *MockRepository) MarkStepCompleted(ctx context.Context, workflowID, step
 		if step, ok := steps[stepID]; ok {
 			now := time.Now()
 			step.StepCompletedAt = &now
+			if req != nil {
+				if req.TokensIn != nil {
+					step.TokensIn = req.TokensIn
+				}
+				if req.TokensOut != nil {
+					step.TokensOut = req.TokensOut
+				}
+				if req.CostUSD != nil {
+					step.CostUSD = req.CostUSD
+				}
+				if req.Output != nil {
+					data, _ := json.Marshal(req.Output)
+					step.StepOutput = data
+				}
+			}
 			return nil
 		}
 	}

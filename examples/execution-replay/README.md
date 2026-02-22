@@ -168,7 +168,7 @@ The SDK methods correspond to these REST API endpoints:
   "completed_at": "2025-01-01T10:00:01Z",
   "duration_ms": 1000,
   "provider": "anthropic",
-  "model": "claude-3-5-sonnet",
+  "model": "claude-sonnet-4-20250514",
   "tokens_in": 100,
   "tokens_out": 50,
   "cost_usd": 0.001,

@@ -112,7 +112,7 @@ public class AIAssistantService {
 
         try {
             ChatCompletionRequest request = ChatCompletionRequest.builder()
-                .model("gpt-3.5-turbo")
+                .model("gpt-4o-mini")
                 .messages(Arrays.asList(
                     new ChatMessage(ChatMessageRole.SYSTEM.value(),
                         "You are a helpful assistant. Be concise and accurate."),
@@ -145,7 +145,7 @@ public class AIAssistantService {
                     .clientId(CLIENT_ID)
                     .responseSummary(truncate(response, 500))
                     .provider("openai")
-                    .model("gpt-3.5-turbo")
+                    .model("gpt-4o-mini")
                     .tokenUsage(TokenUsage.of(promptTokens, completionTokens))
                     .latencyMs(llmLatency)
                     .build()

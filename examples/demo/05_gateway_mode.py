@@ -89,7 +89,7 @@ async def gateway_mode_demo():
             llm_start = time.time()
 
             response = openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful support assistant."},
                     {"role": "user", "content": query},
@@ -127,7 +127,7 @@ async def gateway_mode_demo():
             context_id=ctx.context_id,
             response_summary=llm_response[:100],
             provider="openai" if HAS_OPENAI else "simulated",
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             token_usage=TokenUsage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

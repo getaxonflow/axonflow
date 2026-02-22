@@ -107,7 +107,7 @@ func runTest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, que
 	fmt.Printf("Query: %s\n", query)
 
 	req := interceptors.ChatCompletionRequest{
-		Model: "gpt-3.5-turbo",
+		Model: "gpt-4o-mini",
 		Messages: []interceptors.ChatMessage{
 			{Role: "user", Content: query},
 		},
@@ -143,7 +143,7 @@ func runPIITest(ctx context.Context, wrappedCall interceptors.OpenAICreateFunc, 
 	fmt.Printf("Query: %s\n", query)
 
 	req := interceptors.ChatCompletionRequest{
-		Model: "gpt-3.5-turbo",
+		Model: "gpt-4o-mini",
 		Messages: []interceptors.ChatMessage{
 			{Role: "user", Content: query},
 		},

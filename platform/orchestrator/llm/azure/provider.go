@@ -41,12 +41,12 @@ const (
 
 	// GPT-4 models
 	ModelGPT4       = "gpt-4"
-	ModelGPT4Turbo  = "gpt-4-turbo"
+	ModelGPT4Turbo  = "gpt-4o"
 	ModelGPT432K    = "gpt-4-32k"
 
-	// GPT-3.5 models
-	ModelGPT35Turbo    = "gpt-35-turbo"
-	ModelGPT35Turbo16K = "gpt-35-turbo-16k"
+	// GPT-4o Mini models (replaces GPT-3.5)
+	ModelGPT35Turbo    = "gpt-4o-mini"
+	ModelGPT35Turbo16K = "gpt-4o-mini"
 
 	// Default model
 	DefaultModel = ModelGPT4oMini

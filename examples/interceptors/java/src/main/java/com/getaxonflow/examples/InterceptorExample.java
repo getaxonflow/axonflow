@@ -155,7 +155,7 @@ public class InterceptorExample {
         System.out.printf("Query: %s%n", query);
 
         ChatCompletionRequest request = ChatCompletionRequest.builder()
-            .model("gpt-3.5-turbo")
+            .model("gpt-4o-mini")
             .addUserMessage(query)
             .maxTokens(100)
             .build();

@@ -377,14 +377,14 @@ func TestMarkStepCompleted(t *testing.T) {
 	}
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
-	// Mark step completed
-	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1")
+	// Mark step completed (nil request — backward compatible)
+	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", nil)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Try to mark non-existent step completed
-	err = svc.MarkStepCompleted(ctx, workflow.WorkflowID, "non-existent")
+	err = svc.MarkStepCompleted(ctx, workflow.WorkflowID, "non-existent", nil)
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -1550,6 +1550,110 @@ func TestMockRepository_SentinelErrors(t *testing.T) {
 				t.Errorf("errors.Is(err, ErrWorkflowNotFound) = false, want true; err = %v", err)
 			}
 		})
+	}
+}
+
+func TestMarkStepCompletedWithMetrics(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	// Create a workflow and add a step
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "metrics-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Gate check (creates the step)
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "generate-code",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Mark step completed with post-execution metrics
+	tokensIn := 150
+	tokensOut := 45
+	costUSD := 0.0023
+	req := &StepCompleteRequest{
+		Output:    map[string]interface{}{"code": "def sort(items): return sorted(items)"},
+		TokensIn:  &tokensIn,
+		TokensOut: &tokensOut,
+		CostUSD:   &costUSD,
+	}
+
+	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify metrics were applied
+	step, err := repo.GetStep(ctx, workflow.WorkflowID, "step-1")
+	if err != nil {
+		t.Fatalf("failed to get step: %v", err)
+	}
+	if step.TokensIn == nil || *step.TokensIn != 150 {
+		t.Errorf("tokens_in = %v, want 150", step.TokensIn)
+	}
+	if step.TokensOut == nil || *step.TokensOut != 45 {
+		t.Errorf("tokens_out = %v, want 45", step.TokensOut)
+	}
+	if step.CostUSD == nil || *step.CostUSD != 0.0023 {
+		t.Errorf("cost_usd = %v, want 0.0023", step.CostUSD)
+	}
+	if step.StepCompletedAt == nil {
+		t.Error("step_completed_at should not be nil")
+	}
+	// Verify output was stored
+	if step.StepOutput == nil {
+		t.Fatal("step_output should not be nil")
+	}
+	if string(step.StepOutput) != `{"code":"def sort(items): return sorted(items)"}` {
+		t.Errorf("step_output = %s, want JSON with code field", string(step.StepOutput))
+	}
+}
+
+func TestMarkStepCompletedOverridesGateMetrics(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	// Create a workflow
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "override-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Gate check with estimated tokens
+	gateTokensIn := 100
+	gateTokensOut := 30
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName:  "generate",
+		StepType:  StepTypeLLMCall,
+		TokensIn:  &gateTokensIn,
+		TokensOut: &gateTokensOut,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Mark step completed with actual (different) metrics
+	actualTokensIn := 200
+	actualTokensOut := 60
+	actualCost := 0.005
+	err := svc.MarkStepCompleted(ctx, workflow.WorkflowID, "step-1", &StepCompleteRequest{
+		TokensIn:  &actualTokensIn,
+		TokensOut: &actualTokensOut,
+		CostUSD:   &actualCost,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify completion-time values override gate-time values
+	step, _ := repo.GetStep(ctx, workflow.WorkflowID, "step-1")
+	if step.TokensIn == nil || *step.TokensIn != 200 {
+		t.Errorf("tokens_in = %v, want 200 (should override gate value of 100)", step.TokensIn)
+	}
+	if step.TokensOut == nil || *step.TokensOut != 60 {
+		t.Errorf("tokens_out = %v, want 60 (should override gate value of 30)", step.TokensOut)
+	}
+	if step.CostUSD == nil || *step.CostUSD != 0.005 {
+		t.Errorf("cost_usd = %v, want 0.005", step.CostUSD)
 	}
 }
 

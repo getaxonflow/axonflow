@@ -733,7 +733,7 @@ func TestCreateProviderIntegration(t *testing.T) {
 			Name:   "anthropic-primary",
 			Type:   ProviderTypeAnthropic,
 			APIKey: "sk-ant-test",
-			Model:  "claude-3-5-sonnet-20241022",
+			Model:  "claude-sonnet-4-20250514",
 		}
 
 		provider, err := CreateProvider(config)
@@ -750,7 +750,7 @@ func TestCreateProviderIntegration(t *testing.T) {
 			Name:     "ollama-local",
 			Type:     ProviderTypeOllama,
 			Endpoint: "http://localhost:11434",
-			Model:    "llama3.1",
+			Model:    "llama3.2",
 		}
 
 		provider, err := CreateProvider(config)

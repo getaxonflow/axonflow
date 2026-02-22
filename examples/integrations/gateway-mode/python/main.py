@@ -155,7 +155,7 @@ async def main() -> int:
             try:
                 llm_start = time.time()
                 completion = openai_client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": "You are a helpful AI expert. Be concise."},
                         {"role": "user", "content": query},
@@ -192,7 +192,7 @@ async def main() -> int:
                 context_id=pre_check_result.context_id,
                 response_summary="AI deployment best practices response",
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,

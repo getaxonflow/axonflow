@@ -915,12 +915,12 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
-					"conditions", "actions", "priority", "enabled", "tenant_id",
-					"created_at", "updated_at",
+					"category", "conditions", "actions", "priority", "enabled",
+					"tenant_id", "created_at", "updated_at",
 				}).
 					AddRow(
 						"1", "policy_001", "Block SQL Injection", "Blocks SQL injection attempts",
-						"security",
+						"security", "dynamic-security",
 						[]byte(`[{"field": "risk_score", "operator": "greater_than", "value": 0.8}]`),
 						[]byte(`[{"type": "block", "config": {"reason": "SQL injection detected"}}]`),
 						100, true, sql.NullString{String: "tenant1", Valid: true},
@@ -928,7 +928,7 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 					).
 					AddRow(
 						"2", "policy_002", "Redact PII", "Redacts personally identifiable information",
-						"privacy",
+						"privacy", "dynamic-privacy",
 						[]byte(`[{"field": "query", "operator": "contains", "value": "email"}]`),
 						[]byte(`[{"type": "redact", "config": {"fields": ["email", "ssn"]}}]`),
 						90, true, sql.NullString{Valid: false},
@@ -960,8 +960,8 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
-					"conditions", "actions", "priority", "enabled", "tenant_id",
-					"created_at", "updated_at",
+					"category", "conditions", "actions", "priority", "enabled",
+					"tenant_id", "created_at", "updated_at",
 				})
 
 				mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
@@ -975,12 +975,12 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				rows := sqlmock.NewRows([]string{
 					"id", "policy_id", "name", "description", "policy_type",
-					"conditions", "actions", "priority", "enabled", "tenant_id",
-					"created_at", "updated_at",
+					"category", "conditions", "actions", "priority", "enabled",
+					"tenant_id", "created_at", "updated_at",
 				}).
 					AddRow(
 						"3", "policy_003", "Bad Policy", "Has invalid JSON",
-						"security",
+						"security", "dynamic-security",
 						[]byte(`{invalid json}`),
 						[]byte(`{"action": "block"}`),
 						50, true, sql.NullString{Valid: false},

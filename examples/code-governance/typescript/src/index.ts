@@ -86,7 +86,7 @@ async function main(): Promise<void> {
       requestType: "chat",
       context: {
         provider: "openai",
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
       },
     });
 
@@ -173,7 +173,7 @@ async function main(): Promise<void> {
       requestType: "chat",
       context: {
         provider: "openai",
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
       },
     });
 

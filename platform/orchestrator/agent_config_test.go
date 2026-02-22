@@ -38,7 +38,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.3
         max_tokens: 2000
       prompt_template: "Search for flights from {{.origin}} to {{.destination}} on {{.date}}"
@@ -1066,7 +1066,7 @@ spec:
       type: llm-call
       llm:
         provider: anthropic
-        model: claude-3-sonnet
+        model: claude-sonnet-4
         temperature: 0.2
         max_tokens: 3000
       prompt_template: |
@@ -1135,7 +1135,7 @@ spec:
       type: llm-call
       llm:
         provider: openai
-        model: gpt-4-turbo
+        model: gpt-4o
         temperature: 0.1
       prompt_template: "Analyze sentiment: {{.news}}"
   routing:

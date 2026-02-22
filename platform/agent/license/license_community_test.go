@@ -169,6 +169,7 @@ func TestGetCommunityFeatures(t *testing.T) {
 		"audit_logging":     true,
 		"basic_support":     false,
 		"community_mode":    true,
+		"media_governance":  false,
 	}
 
 	for key, expectedValue := range expectedFeatures {

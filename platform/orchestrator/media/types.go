@@ -201,7 +201,7 @@ func (m *MediaContent) ComputeSHA256() (string, error) {
 			}
 		}
 	case MediaSourceURL:
-		data, err = m.fetchURLData()
+		data, err = m.fetchURLData(context.Background())
 		if err != nil {
 			return "", fmt.Errorf("failed to fetch URL: %w", err)
 		}
@@ -232,7 +232,7 @@ func (m *MediaContent) GetRawData() ([]byte, error) {
 		}
 		return base64.StdEncoding.DecodeString(m.Base64Data)
 	case MediaSourceURL:
-		return m.fetchURLData()
+		return m.fetchURLData(context.Background())
 	default:
 		return nil, &MediaError{Code: ErrMediaInvalidContent, Message: "unsupported media source type"}
 	}
@@ -258,8 +258,19 @@ func newSSRFSafeClient() *http.Client {
 			if err != nil {
 				return err
 			}
+			// Strip IPv6 zone ID (e.g. "%eth0") before parsing
+			if idx := strings.Index(host, "%"); idx != -1 {
+				host = host[:idx]
+			}
 			ip := net.ParseIP(host)
-			if ip != nil && isPrivateIP(ip) {
+			if ip == nil {
+				// If we can't parse the IP at all, block it (fail closed)
+				return &MediaError{
+					Code:    ErrMediaDownloadFailed,
+					Message: fmt.Sprintf("could not parse resolved address %q; request blocked for security", address),
+				}
+			}
+			if isPrivateIP(ip) {
 				return &MediaError{
 					Code:    ErrMediaDownloadFailed,
 					Message: fmt.Sprintf("URL resolves to private/internal IP %s; request blocked for security", ip),
@@ -277,7 +288,8 @@ func newSSRFSafeClient() *http.Client {
 }
 
 // fetchURLData downloads URL content with caching. Subsequent calls return cached data.
-func (m *MediaContent) fetchURLData() ([]byte, error) {
+// The provided context is used for request cancellation and deadline propagation.
+func (m *MediaContent) fetchURLData(ctx context.Context) ([]byte, error) {
 	if m.rawData != nil {
 		return m.rawData, nil
 	}
@@ -286,7 +298,7 @@ func (m *MediaContent) fetchURLData() ([]byte, error) {
 		return nil, &MediaError{Code: ErrMediaInvalidContent, Message: "URL is empty"}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URL, nil)

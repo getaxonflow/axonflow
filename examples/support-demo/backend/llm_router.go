@@ -426,11 +426,11 @@ func NewLLMRouter() *LLMRouter {
 	providers := map[string]LLMProvider{
 		"openai": &OpenAIProvider{
 			APIKey: openaiKey,
-			Model:  "gpt-3.5-turbo",
+			Model:  "gpt-4o-mini",
 		},
 		"anthropic": &AnthropicProvider{
 			APIKey: anthropicKey,
-			Model:  "claude-3-5-sonnet-20241022",
+			Model:  "claude-sonnet-4-20250514",
 		},
 		"local": &LocalProvider{
 			ModelPath: "/models/local-llm",

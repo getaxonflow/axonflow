@@ -66,8 +66,8 @@ async function main() {
   const gate = await client.stepGate(workflow.workflow_id, "step-1", {
     step_name: "Analyze Data",
     step_type: "llm_call",
-    model: "gpt-4",
-    provider: "openai",
+    model: "llama3.2",
+    provider: "ollama",
     step_input: { prompt: "Analyze customer sentiment" },
   });
 

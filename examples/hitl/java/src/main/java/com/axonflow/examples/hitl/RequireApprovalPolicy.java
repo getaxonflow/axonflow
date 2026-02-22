@@ -133,8 +133,8 @@ public class RequireApprovalPolicy {
                         .query("Process transaction amount $5000000 to offshore account")
                         .userToken(userToken)
                         .clientId(clientId)
-                        .model("gpt-3.5-turbo")
-                        .llmProvider("openai")
+                        .model("llama3.2")
+                        .llmProvider("ollama")
                         .context(Map.of("source", "hitl-enforcement-test"))
                         .build()
                 );
@@ -171,8 +171,8 @@ public class RequireApprovalPolicy {
                         .query("What is the weather today?")
                         .userToken(userToken)
                         .clientId(clientId)
-                        .model("gpt-3.5-turbo")
-                        .llmProvider("openai")
+                        .model("llama3.2")
+                        .llmProvider("ollama")
                         .context(Map.of("source", "hitl-enforcement-test"))
                         .build()
                 );

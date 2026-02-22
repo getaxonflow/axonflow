@@ -121,7 +121,9 @@ GATE_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW
     "step_name": "Generate Analysis",
     "step_type": "llm_call",
     "model": "gpt-4",
-    "provider": "openai",
+    "provider": "azure",
+    "tokens_in": 150,
+    "tokens_out": 320,
     "step_input": {
       "prompt": "Analyze this customer feedback: Great product!"
     }
@@ -155,6 +157,8 @@ GATE_RESPONSE_2=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFL
   -d '{
     "step_name": "Process Data",
     "step_type": "tool_call",
+    "tokens_in": 85,
+    "tokens_out": 42,
     "step_input": {
       "query": "SELECT * FROM users WHERE id = 1"
     }

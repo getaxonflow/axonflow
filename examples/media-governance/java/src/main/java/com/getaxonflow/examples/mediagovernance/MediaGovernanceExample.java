@@ -22,6 +22,7 @@ import com.getaxonflow.sdk.types.ClientResponse;
 import com.getaxonflow.sdk.types.MediaAnalysisResponse;
 import com.getaxonflow.sdk.types.MediaAnalysisResult;
 import com.getaxonflow.sdk.types.MediaContent;
+import com.getaxonflow.sdk.types.PolicyInfo;
 import com.getaxonflow.sdk.types.RequestType;
 
 import java.util.ArrayList;
@@ -315,6 +316,45 @@ public class MediaGovernanceExample {
         System.out.println();
 
         // ========================================
+        // Test 5: Verify policy_info present for media requests
+        // ========================================
+        System.out.println("Test 5: Verify policy_info present for media requests");
+        System.out.println("  Checking policy_info from Test 1 response (media request)");
+
+        PolicyInfo respPolicyInfo = resp.getPolicyInfo();
+        if (respPolicyInfo != null) {
+            assertCheck(
+                respPolicyInfo.getTenantId() != null && !respPolicyInfo.getTenantId().isEmpty(),
+                "policy_info.tenant_id is non-empty (got " + respPolicyInfo.getTenantId() + ")"
+            );
+            assertCheck(
+                respPolicyInfo.getProcessingTime() != null && !respPolicyInfo.getProcessingTime().isEmpty(),
+                "policy_info.processing_time is non-empty"
+            );
+
+            boolean hasMediaPolicy = false;
+            if (respPolicyInfo.getPoliciesEvaluated() != null) {
+                for (String p : respPolicyInfo.getPoliciesEvaluated()) {
+                    if (p.startsWith("sys_media_")) {
+                        hasMediaPolicy = true;
+                        break;
+                    }
+                }
+            }
+            if (hasMediaPolicy) {
+                System.out.println("   PASS: system media policies found in policies_evaluated");
+            } else {
+                System.out.println("   INFO: no sys_media_* policies in policies_evaluated (dynamic policies may be tracked separately)");
+            }
+            System.out.println("   Policies evaluated: " + respPolicyInfo.getPoliciesEvaluated());
+        } else if (pipelineActive) {
+            System.out.println("   WARNING: policy_info absent despite media analysis being active");
+        } else {
+            System.out.println("   SKIP: policy_info not available (media governance pipeline not active)");
+        }
+        System.out.println();
+
+        // ========================================
         // Summary
         // ========================================
         System.out.println("=====================================");
@@ -333,6 +373,7 @@ public class MediaGovernanceExample {
             System.out.println("  - Multiple image analysis with SHA-256 hash consistency");
             System.out.println("  - URL-sourced image analysis");
             System.out.println("  - Request without media (no media analysis returned)");
+            System.out.println("  - Policy evaluation metadata for media requests");
         } else {
             System.out.println("\u274C " + failures.size() + " TEST(S) FAILED:");
             for (String f : failures) {

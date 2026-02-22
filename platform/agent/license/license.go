@@ -187,6 +187,7 @@ func getFeatures(tier Tier) map[string]bool {
 	case TierEvaluation:
 		features["audit_logging"] = true
 		features["basic_support"] = true
+		features["media_governance"] = true
 
 	case TierProfessional:
 		features["multi_tenant"] = false
@@ -194,6 +195,7 @@ func getFeatures(tier Tier) map[string]bool {
 		features["sla_guarantee"] = false
 		features["audit_logging"] = true
 		features["basic_support"] = true
+		features["media_governance"] = true
 
 	case TierEnterprise:
 		features["multi_tenant"] = true
@@ -202,6 +204,8 @@ func getFeatures(tier Tier) map[string]bool {
 		features["audit_logging"] = true
 		features["priority_support"] = true
 		features["custom_connectors"] = true
+		features["media_governance"] = true
+		features["media_governance_per_tenant"] = true
 
 	case TierEnterprisePlus:
 		features["multi_tenant"] = true
@@ -212,6 +216,8 @@ func getFeatures(tier Tier) map[string]bool {
 		features["custom_connectors"] = true
 		features["dedicated_sa"] = true
 		features["unlimited_nodes"] = true
+		features["media_governance"] = true
+		features["media_governance_per_tenant"] = true
 
 	default:
 		return getCommunityFeatures()
@@ -229,6 +235,7 @@ func getCommunityFeatures() map[string]bool {
 		"audit_logging":     true,
 		"basic_support":     false,
 		"community_mode":    true,
+		"media_governance":  false,
 	}
 }
 
