@@ -117,13 +117,13 @@ func TestExecutionSnapshot_MarkRunning(t *testing.T) {
 func TestExecutionSnapshot_SetLLMDetails(t *testing.T) {
 	snapshot := NewExecutionSnapshot("req-123", "step-1", 0)
 
-	snapshot.SetLLMDetails("anthropic", "claude-3-5-sonnet", 100, 50, 0.001)
+	snapshot.SetLLMDetails("anthropic", "claude-sonnet-4", 100, 50, 0.001)
 
 	if snapshot.Provider != "anthropic" {
 		t.Errorf("expected provider 'anthropic', got '%s'", snapshot.Provider)
 	}
-	if snapshot.Model != "claude-3-5-sonnet" {
-		t.Errorf("expected model 'claude-3-5-sonnet', got '%s'", snapshot.Model)
+	if snapshot.Model != "claude-sonnet-4" {
+		t.Errorf("expected model 'claude-sonnet-4', got '%s'", snapshot.Model)
 	}
 	if snapshot.TokensIn != 100 {
 		t.Errorf("expected tokens_in 100, got %d", snapshot.TokensIn)

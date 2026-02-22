@@ -254,6 +254,43 @@ assert_pass "$([ "$HAS_MEDIA_ANALYSIS4" != "true" ] && echo true || echo false)"
 echo ""
 
 # ========================================
+# Test 5: Verify policy_info present for media requests
+# ========================================
+echo -e "${YELLOW}Test 5: Verify policy_info present for media requests${NC}"
+echo "  Checking policy_info from Test 1 response (media request)"
+
+HAS_POLICY_INFO=$(echo "$BODY" | jq 'has("policy_info") and .policy_info != null')
+if [ "$HAS_POLICY_INFO" = "true" ]; then
+    TENANT_ID=$(echo "$BODY" | jq -r '.policy_info.tenant_id // ""')
+    assert_pass "$([ -n "$TENANT_ID" ] && echo true || echo false)" \
+        "policy_info.tenant_id is non-empty (got: $TENANT_ID)"
+
+    PROCESSING_TIME=$(echo "$BODY" | jq -r '.policy_info.processing_time // ""')
+    assert_pass "$([ -n "$PROCESSING_TIME" ] && echo true || echo false)" \
+        "policy_info.processing_time is non-empty"
+
+    POLICIES_RAW=$(echo "$BODY" | jq -r '.policy_info.policies_evaluated // empty')
+    if [ -n "$POLICIES_RAW" ] && [ "$POLICIES_RAW" != "null" ]; then
+        HAS_MEDIA_POLICY=$(echo "$BODY" | jq '[.policy_info.policies_evaluated[] | select(startswith("sys_media_"))] | length > 0')
+        if [ "$HAS_MEDIA_POLICY" = "true" ]; then
+            echo -e "   ${GREEN}PASS:${NC} system media policies found in policies_evaluated"
+        else
+            echo "   INFO: no sys_media_* policies in policies_evaluated (dynamic policies may be tracked separately)"
+        fi
+    else
+        echo "   INFO: policies_evaluated is null (system media policies exist but are evaluated in the governance pipeline)"
+    fi
+
+    POLICIES=$(echo "$BODY" | jq -r '.policy_info.policies_evaluated // "null"')
+    echo "   Policies evaluated: $POLICIES"
+elif [ "$PIPELINE_ACTIVE" = true ]; then
+    echo -e "   ${YELLOW}WARNING: policy_info absent despite media analysis being active${NC}"
+else
+    echo "   SKIP: policy_info not available (media governance pipeline not active)"
+fi
+echo ""
+
+# ========================================
 # Summary
 # ========================================
 echo "========================================"
@@ -271,6 +308,7 @@ if [ "$FAILURES" -eq 0 ]; then
     echo "  - Multiple image analysis"
     echo "  - URL-sourced image analysis"
     echo "  - Baseline request without media"
+    echo "  - Policy evaluation metadata for media requests"
 else
     echo -e "${RED}$FAILURES TEST(S) FAILED${NC}"
     exit 1

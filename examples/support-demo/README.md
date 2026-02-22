@@ -35,7 +35,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 
 # Local Ollama (run: ollama serve)
 OLLAMA_ENDPOINT=http://host.docker.internal:11434
-OLLAMA_MODEL=llama3.1:latest
+OLLAMA_MODEL=llama3.2:latest
 ```
 
 > **Policy Routing Demo**: To test LLM routing policies (e.g., "agents can't use OpenAI"),

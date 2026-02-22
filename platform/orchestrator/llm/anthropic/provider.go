@@ -10,7 +10,7 @@
 // limitations under the License.
 
 // Package anthropic provides an LLM provider implementation for Anthropic's Claude models.
-// It supports Claude 3.5 Sonnet, Claude 3 Opus, Claude 4, and other Claude models
+// It supports Claude Opus 4, Claude Sonnet 4, Claude Haiku 4.5, and other Claude models
 // with both streaming and non-streaming completion modes.
 package anthropic
 
@@ -46,19 +46,19 @@ const (
 
 // Model constants for supported Claude models
 const (
-	// Claude 4 models (Opus 4 and Sonnet 4)
+	// Claude 4 / 4.5 models (current generation)
 	ModelClaude4Opus   = "claude-opus-4-20250514"
 	ModelClaude4Sonnet = "claude-sonnet-4-20250514"
+	ModelClaudeHaiku45 = "claude-haiku-4-5-20251001"
 
-	// Claude 3.5 models
-	ModelClaude35Sonnet    = "claude-3-5-sonnet-20241022"
-	ModelClaude35SonnetOld = "claude-3-5-sonnet-20240620"
-	ModelClaude35Haiku     = "claude-3-5-haiku-20241022"
-
-	// Claude 3 models
-	ModelClaude3Opus   = "claude-3-opus-20240229"
-	ModelClaude3Sonnet = "claude-3-sonnet-20240229"
-	ModelClaude3Haiku  = "claude-3-haiku-20240307"
+	// Legacy aliases — point to current-generation models for backward compatibility.
+	// Code referencing these constants will automatically use the latest model.
+	ModelClaude35Sonnet    = ModelClaude4Sonnet  // was claude-3-5-sonnet-20241022
+	ModelClaude35SonnetOld = ModelClaude4Sonnet  // was claude-3-5-sonnet-20240620
+	ModelClaude35Haiku     = ModelClaudeHaiku45  // was claude-3-5-haiku-20241022
+	ModelClaude3Opus       = ModelClaude4Opus    // was claude-3-opus-20240229
+	ModelClaude3Sonnet     = ModelClaude4Sonnet  // was claude-3-sonnet-20240229
+	ModelClaude3Haiku      = ModelClaudeHaiku45  // was claude-3-haiku-20240307
 
 	// Default model
 	DefaultModel = ModelClaude4Sonnet
@@ -200,7 +200,7 @@ func (p *Provider) setHealthy(healthy bool) {
 }
 
 // EstimateCost estimates the cost for a given number of tokens
-// Pricing based on Claude 3.5 Sonnet: $3/1M input, $15/1M output
+// Pricing based on Claude Sonnet 4: $3/1M input, $15/1M output
 // Using average estimate: $0.000009 per token
 func (p *Provider) EstimateCost(tokens int) float64 {
 	return float64(tokens) * 0.000009
@@ -619,12 +619,7 @@ func GetSupportedModels() []string {
 	return []string{
 		ModelClaude4Opus,
 		ModelClaude4Sonnet,
-		ModelClaude35Sonnet,
-		ModelClaude35SonnetOld,
-		ModelClaude35Haiku,
-		ModelClaude3Opus,
-		ModelClaude3Sonnet,
-		ModelClaude3Haiku,
+		ModelClaudeHaiku45,
 	}
 }
 

@@ -79,6 +79,8 @@ func workflowControlSchema() string {
 			step_input JSONB,
 			model VARCHAR(100),
 			provider VARCHAR(100),
+			tokens_in INTEGER,
+			tokens_out INTEGER,
 			gate_checked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			step_completed_at TIMESTAMP WITH TIME ZONE,
 			UNIQUE(workflow_id, step_id)

@@ -23,13 +23,13 @@ PROVIDERS = [
     {
         "name": "OpenAI",
         "provider": "openai",
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-4o-mini",
         "env_key": "OPENAI_API_KEY",
     },
     {
         "name": "Anthropic",
         "provider": "anthropic",
-        "model": "claude-3-haiku-20240307",
+        "model": "claude-haiku-4-5-20251001",
         "env_key": "ANTHROPIC_API_KEY",
     },
 ]

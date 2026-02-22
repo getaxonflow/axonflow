@@ -219,8 +219,8 @@ func TestRuntimeConfigService_GetLLMProviders_FromDatabase(t *testing.T) {
 	_, err := db.Exec(`
 		INSERT INTO llm_provider_configs (tenant_id, provider_name, display_name, config, priority, weight, enabled)
 		VALUES
-			($1, 'bedrock', 'Amazon Bedrock', '{"region": "us-east-1", "model": "anthropic.claude-3-sonnet"}', 10, 0.70, true),
-			($1, 'openai', 'OpenAI', '{"model": "gpt-4-turbo"}', 5, 0.30, true),
+			($1, 'bedrock', 'Amazon Bedrock', '{"region": "us-east-1", "model": "anthropic.claude-sonnet-4"}', 10, 0.70, true),
+			($1, 'openai', 'OpenAI', '{"model": "gpt-4o"}', 5, 0.30, true),
 			($1, 'ollama', 'Ollama (disabled)', '{"endpoint": "http://ollama:11434"}', 1, 0.50, false)
 	`, tenantID)
 	if err != nil {
@@ -731,7 +731,7 @@ llm_providers:
     display_name: "Amazon Bedrock"
     config:
       region: "us-west-2"
-      model: "anthropic.claude-3-sonnet"
+      model: "anthropic.claude-sonnet-4"
     priority: 10
     weight: 1.0
 `

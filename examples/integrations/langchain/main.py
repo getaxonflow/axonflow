@@ -97,7 +97,7 @@ async def main() -> int:
         if openai_key:
             try:
                 llm = ChatOpenAI(
-                    model="gpt-3.5-turbo",
+                    model="gpt-4o-mini",
                     temperature=0.7,
                     openai_api_key=openai_key,
                 )
@@ -139,7 +139,7 @@ async def main() -> int:
                 context_id=ctx.context_id,
                 response_summary="AI ethics response",
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,

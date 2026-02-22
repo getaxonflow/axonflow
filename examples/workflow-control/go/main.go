@@ -118,8 +118,8 @@ func main() {
 	gate1, err := client.StepGate(workflow.WorkflowID, "step-1", axonflow.StepGateRequest{
 		StepName: "Generate Code",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "Write a Python function to sort a list",
 		},
@@ -284,8 +284,8 @@ func main() {
 	approvalGate, err := client.StepGate(approvalWorkflow.WorkflowID, "approval-step-1", axonflow.StepGateRequest{
 		StepName: "Approval Gate Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test approval flow",
 		},
@@ -353,8 +353,8 @@ func main() {
 	_, err = client.StepGate(rejectWorkflow.WorkflowID, "reject-step-1", axonflow.StepGateRequest{
 		StepName: "Rejection Gate Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test rejection flow",
 		},
@@ -512,8 +512,8 @@ func main() {
 	sseGate, err := client.StepGate(sseWorkflow.WorkflowID, "sse-step-1", axonflow.StepGateRequest{
 		StepName: "SSE Test Step",
 		StepType: axonflow.StepTypeLLMCall,
-		Model:    "gpt-4",
-		Provider: "openai",
+		Model:    "llama3.2",
+		Provider: "ollama",
 		StepInput: map[string]interface{}{
 			"prompt": "test SSE streaming",
 		},

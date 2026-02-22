@@ -100,7 +100,7 @@ ClientResponse response = client.proxyLLMCall(
     ClientRequest.builder()
         .userPrompt("What are best practices for code review?")
         .userId("user-123")
-        .model("gpt-3.5-turbo")  // Optional: specify model
+        .model("gpt-4o-mini")  // Optional: specify model
         .build()
 );
 

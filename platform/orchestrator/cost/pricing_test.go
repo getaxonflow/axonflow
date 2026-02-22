@@ -117,7 +117,7 @@ func TestGetModelPricing(t *testing.T) {
 		{
 			name:     "wildcard fallback",
 			provider: "anthropic",
-			model:    "claude-3-opus-20240229-variant",
+			model:    "claude-opus-4-20250514-variant",
 			wantOK:   true, // Should fallback to wildcard
 		},
 		{

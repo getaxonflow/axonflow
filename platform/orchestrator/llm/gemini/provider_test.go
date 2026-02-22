@@ -792,7 +792,7 @@ func TestIsValidModel(t *testing.T) {
 		{ModelGemini2Flash, true},
 		{"gemini-custom-model", true}, // Custom models starting with gemini-
 		{"gpt-4", false},
-		{"claude-3", false},
+		{"claude-sonnet-4", false},
 		{"", false},
 	}
 

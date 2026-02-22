@@ -984,7 +984,7 @@ func TestGetChainFromDB(t *testing.T) {
 			"id-2", "chain-get-test", "req-2", "", 2,
 			"org-1", "tenant-1", "client-1", "user-1",
 			"llm_generation", "modified",
-			"test-system/1.0.0", "anthropic", "claude-3",
+			"test-system/1.0.0", "anthropic", "claude-sonnet-4",
 			pq.Array([]string{"policy-2", "policy-3"}), "policy-3",
 			"high", true,
 			int64(150),

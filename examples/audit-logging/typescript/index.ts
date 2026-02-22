@@ -103,7 +103,7 @@ async function main() {
 
     if (openai) {
       const completion = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
         messages: [{ role: "user", content: q.query }],
         max_tokens: 150,
       });
@@ -136,7 +136,7 @@ async function main() {
         contextId: precheck.contextId,
         responseSummary,
         provider: "openai",
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini",
         tokenUsage: {
           promptTokens,
           completionTokens,

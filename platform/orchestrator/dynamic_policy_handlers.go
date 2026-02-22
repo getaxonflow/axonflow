@@ -22,6 +22,12 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// isValidDynamicPolicyCategory returns true if the category is valid for the
+// /api/v1/dynamic-policies endpoint. Accepts both "dynamic-*" and "media-*" prefixes.
+func isValidDynamicPolicyCategory(category string) bool {
+	return strings.HasPrefix(category, "dynamic-") || strings.HasPrefix(category, "media-")
+}
+
 // DynamicPolicyAPIHandler handles HTTP requests for dynamic policy management.
 // This provides the /api/v1/dynamic-policies endpoints for ADR-026 Single Entry Point.
 // It delegates to the existing PolicyAPIHandler service but filters for dynamic policies.
@@ -90,18 +96,17 @@ func (h *DynamicPolicyAPIHandler) listDynamicPolicies(w http.ResponseWriter, r *
 		PageSize: 20,
 	}
 
-	// Always filter by dynamic category
-	// If category is provided in query, validate it starts with "dynamic-"
+	// Filter by category — accepts both "dynamic-*" and "media-*" prefixes
 	category := r.URL.Query().Get("category")
 	if category != "" {
-		if !strings.HasPrefix(category, "dynamic-") {
-			h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-' for this endpoint")
+		if !isValidDynamicPolicyCategory(category) {
+			h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-' or 'media-' for this endpoint")
 			return
 		}
 		params.Category = category
-	} else {
-		// Default: return all dynamic categories
-		params.Category = "dynamic-%" // Service should handle this as LIKE pattern
+	} else if params.Type == "media" {
+		// If type=media, filter to media categories
+		params.Category = "media-%"
 	}
 
 	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
@@ -148,13 +153,13 @@ func (h *DynamicPolicyAPIHandler) createDynamicPolicy(w http.ResponseWriter, r *
 		return
 	}
 
-	// Validate that category is a dynamic category
+	// Validate that category is a dynamic or media category
 	if req.Category == "" {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category is required and must start with 'dynamic-'")
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category is required and must start with 'dynamic-' or 'media-'")
 		return
 	}
-	if !strings.HasPrefix(req.Category, "dynamic-") {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-' (e.g., dynamic-risk, dynamic-cost)")
+	if !isValidDynamicPolicyCategory(req.Category) {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-' or 'media-' (e.g., dynamic-risk, media-safety)")
 		return
 	}
 
@@ -200,8 +205,8 @@ func (h *DynamicPolicyAPIHandler) handleDynamicPolicyByID(w http.ResponseWriter,
 		return
 	}
 
-	// Validate policy ID is a valid UUID format
-	if _, err := uuid.Parse(policyID); err != nil {
+	// Validate policy ID format (UUID or system policy prefix)
+	if !isValidPolicyID(policyID) {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid policy ID format")
 		return
 	}
@@ -233,7 +238,7 @@ func (h *DynamicPolicyAPIHandler) getDynamicPolicy(w http.ResponseWriter, r *htt
 	}
 
 	// Verify this is actually a dynamic policy
-	if !strings.HasPrefix(policy.Category, "dynamic-") {
+	if !isValidDynamicPolicyCategory(policy.Category) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy is not a dynamic policy")
 		return
 	}
@@ -254,7 +259,7 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
 	}
-	if !strings.HasPrefix(existingPolicy.Category, "dynamic-") {
+	if !isValidDynamicPolicyCategory(existingPolicy.Category) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy is not a dynamic policy")
 		return
 	}
@@ -268,9 +273,9 @@ func (h *DynamicPolicyAPIHandler) updateDynamicPolicy(w http.ResponseWriter, r *
 		return
 	}
 
-	// If category is being changed, validate it's still a dynamic category
-	if req.Category != nil && !strings.HasPrefix(*req.Category, "dynamic-") {
-		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-'")
+	// If category is being changed, validate it's still a valid category
+	if req.Category != nil && !isValidDynamicPolicyCategory(*req.Category) {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Category must start with 'dynamic-' or 'media-'")
 		return
 	}
 
@@ -312,7 +317,7 @@ func (h *DynamicPolicyAPIHandler) deleteDynamicPolicy(w http.ResponseWriter, r *
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
 	}
-	if !strings.HasPrefix(existingPolicy.Category, "dynamic-") {
+	if !isValidDynamicPolicyCategory(existingPolicy.Category) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy is not a dynamic policy")
 		return
 	}
@@ -348,7 +353,7 @@ func (h *DynamicPolicyAPIHandler) handleTest(w http.ResponseWriter, r *http.Requ
 	vars := mux.Vars(r)
 	policyID := vars["id"]
 
-	if _, err := uuid.Parse(policyID); err != nil {
+	if !isValidPolicyID(policyID) {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid policy ID format")
 		return
 	}
@@ -359,7 +364,7 @@ func (h *DynamicPolicyAPIHandler) handleTest(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
 	}
-	if !strings.HasPrefix(policy.Category, "dynamic-") {
+	if !isValidDynamicPolicyCategory(policy.Category) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy is not a dynamic policy")
 		return
 	}
@@ -403,7 +408,7 @@ func (h *DynamicPolicyAPIHandler) handleVersions(w http.ResponseWriter, r *http.
 	vars := mux.Vars(r)
 	policyID := vars["id"]
 
-	if _, err := uuid.Parse(policyID); err != nil {
+	if !isValidPolicyID(policyID) {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid policy ID format")
 		return
 	}
@@ -414,7 +419,7 @@ func (h *DynamicPolicyAPIHandler) handleVersions(w http.ResponseWriter, r *http.
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Dynamic policy not found")
 		return
 	}
-	if !strings.HasPrefix(policy.Category, "dynamic-") {
+	if !isValidDynamicPolicyCategory(policy.Category) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Policy is not a dynamic policy")
 		return
 	}
@@ -460,11 +465,11 @@ func (h *DynamicPolicyAPIHandler) handleImport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Validate all policies have dynamic categories
+	// Validate all policies have valid categories (dynamic-* or media-*)
 	for i, policy := range req.Policies {
-		if !strings.HasPrefix(policy.Category, "dynamic-") {
+		if !isValidDynamicPolicyCategory(policy.Category) {
 			h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR",
-				"Policy at index "+strconv.Itoa(i)+" has invalid category: must start with 'dynamic-'")
+				"Policy at index "+strconv.Itoa(i)+" has invalid category: must start with 'dynamic-' or 'media-'")
 			return
 		}
 	}
@@ -506,11 +511,11 @@ func (h *DynamicPolicyAPIHandler) handleExport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Filter to only include dynamic policies in the export
+	// Filter to only include dynamic/media policies in the export
 	if response != nil {
 		filtered := make([]PolicyResource, 0)
 		for _, p := range response.Policies {
-			if strings.HasPrefix(p.Category, "dynamic-") {
+			if isValidDynamicPolicyCategory(p.Category) {
 				filtered = append(filtered, p)
 			}
 		}
@@ -534,8 +539,8 @@ func (h *DynamicPolicyAPIHandler) handleEffective(w http.ResponseWriter, r *http
 	}
 
 	// Get effective policies (enabled, sorted by priority)
+	// Do not filter by category — return both dynamic-* and media-* policies
 	params := ListPoliciesParams{
-		Category: "dynamic-%",
 		Page:     1,
 		PageSize: 100, // Return all effective policies
 		SortBy:   "priority",
@@ -605,4 +610,12 @@ func (h *DynamicPolicyAPIHandler) handleCORS(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-User-ID, X-Org-ID")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// isValidPolicyID accepts UUIDs and system policy IDs (sys_* prefix).
+func isValidPolicyID(id string) bool {
+	if _, err := uuid.Parse(id); err == nil {
+		return true
+	}
+	return strings.HasPrefix(id, "sys_")
 }

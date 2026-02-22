@@ -144,7 +144,7 @@ public class CodeGovernanceExample {
                     .query(query)
                     .userToken(userToken)
                     .clientId(CLIENT_ID)
-                    .model("gpt-3.5-turbo")
+                    .model("gpt-4o-mini")
                     .llmProvider("openai")
                     .build()
             );

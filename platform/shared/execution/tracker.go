@@ -224,6 +224,12 @@ func (t *BaseExecutionTracker) ListExecutions(ctx context.Context, req ListExecu
 	for i := range executions {
 		executions[i].ProgressPercent = executions[i].CalculateProgress()
 		executions[i].Duration = executions[i].CalculateDuration()
+		if executions[i].ActualCostUSD == nil {
+			cost := executions[i].TotalCost()
+			if cost > 0 {
+				executions[i].ActualCostUSD = &cost
+			}
+		}
 	}
 
 	return &ListExecutionsResponse{
@@ -276,7 +282,9 @@ func (t *BaseExecutionTracker) AddStep(ctx context.Context, executionID string, 
 		return err
 	}
 
-	step.Status = StepStatusPending
+	if step.Status == "" {
+		step.Status = StepStatusPending
+	}
 	exec.Steps = append(exec.Steps, step)
 	exec.TotalSteps = len(exec.Steps)
 	exec.UpdatedAt = t.clock.Now()

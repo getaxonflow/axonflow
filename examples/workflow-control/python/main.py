@@ -87,8 +87,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Generate Code",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "Write a Python function to sort a list"},
                     ),
                 )
@@ -258,8 +258,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Approval Gate Step",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "test approval flow"},
                     ),
                 )
@@ -342,8 +342,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Rejection Gate Step",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="claude-haiku-4-5-20251001",
+                        provider="anthropic",
                         step_input={"prompt": "test rejection flow"},
                     ),
                 )
@@ -450,8 +450,8 @@ async def main() -> int:
                 request=StepGateRequest(
                     step_name="SSE Test Step",
                     step_type=StepType.LLM_CALL,
-                    model="gpt-4",
-                    provider="openai",
+                    model="claude-haiku-4-5-20251001",
+                    provider="anthropic",
                     step_input={"prompt": "test SSE streaming"},
                 ),
             )

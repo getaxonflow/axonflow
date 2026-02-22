@@ -93,8 +93,8 @@ async def main() -> int:
                     request=StepGateRequest(
                         step_name="Data Processing",
                         step_type=StepType.LLM_CALL,
-                        model="gpt-4",
-                        provider="openai",
+                        model="llama3.2",
+                        provider="ollama",
                         step_input={"prompt": "Process incoming data batch"},
                     ),
                 )

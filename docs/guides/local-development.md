@@ -120,7 +120,7 @@ EOF
 docker compose -f docker-compose.ollama.yaml up -d
 
 # 3. Pull models (choose one or more)
-docker exec axonflow-ollama ollama pull llama3.2       # 8B, general purpose
+docker exec axonflow-ollama ollama pull llama3.2       # 3B, general purpose
 docker exec axonflow-ollama ollama pull mistral        # 7B, efficient
 docker exec axonflow-ollama ollama pull qwen2.5-coder:32b      # 32B, code generation (requires 32GB RAM)
 
@@ -208,7 +208,7 @@ curl -X POST http://localhost:8080/api/v1/complete \
 docker exec axonflow-ollama ollama list
 
 # Pull additional models
-docker exec axonflow-ollama ollama pull llama3.2:70b  # Larger model (requires 80GB RAM)
+docker exec axonflow-ollama ollama pull llama3.3:70b  # 70B model (requires 48GB+ RAM)
 
 # Remove model to free space
 docker exec axonflow-ollama ollama rm mistral
@@ -229,12 +229,12 @@ docker exec axonflow-ollama ollama show llama3.2
 
 | Model | Size | RAM | Speed (CPU) | Speed (GPU) |
 |-------|------|-----|-------------|-------------|
-| **llama3.2** (8B) | 4.7 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
+| **llama3.2** (3B) | 2.0 GB | 4 GB | 15-30 tokens/s | 60-120 tokens/s |
 | **mistral** (7B) | 4.1 GB | 8 GB | 10-20 tokens/s | 50-100 tokens/s |
 | **qwen2.5-coder:32b** (32B) | 20 GB | 32 GB | 3-8 tokens/s | 20-40 tokens/s |
-| **llama3.2:70b** (70B) | 40 GB | 80 GB | 1-3 tokens/s | 10-30 tokens/s |
+| **llama3.3:70b** (70B) | 40 GB | 48 GB | 1-3 tokens/s | 10-30 tokens/s |
 
-**Recommendation for laptops**: Use 7-8B models (llama3.2, mistral) for general use. qwen2.5-coder:32b requires 32GB RAM.
+**Recommendation for laptops**: Use small models (llama3.2, mistral) for general use. qwen2.5-coder:32b requires 32GB RAM.
 
 #### Troubleshooting Ollama
 

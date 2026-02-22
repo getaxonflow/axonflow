@@ -83,8 +83,10 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Generate Code",
         "step_type": "llm_call",
-        "model": "gpt-4",
-        "provider": "openai",
+        "model": "llama3.2",
+        "provider": "ollama",
+        "tokens_in": 200,
+        "tokens_out": 450,
         "step_input": {
             "prompt": "Write a Python function to sort a list"
         }
@@ -151,6 +153,8 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Review Code",
         "step_type": "tool_call",
+        "tokens_in": 120,
+        "tokens_out": 85,
         "step_input": {
             "tool": "code_reviewer",
             "code": "def sort_list(items): return sorted(items)"
@@ -188,6 +192,8 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
     -d '{
         "step_name": "Deploy to Production",
         "step_type": "connector_call",
+        "tokens_in": 50,
+        "tokens_out": 30,
         "step_input": {
             "connector": "github",
             "action": "create_pr"
@@ -326,8 +332,10 @@ else
         -d '{
             "step_name": "Approval Target Step",
             "step_type": "llm_call",
-            "model": "gpt-4",
-            "provider": "openai",
+            "model": "llama3.2",
+            "provider": "ollama",
+            "tokens_in": 180,
+            "tokens_out": 290,
             "step_input": {
                 "prompt": "Test step for approval"
             }
@@ -412,6 +420,8 @@ else
         -d '{
             "step_name": "Rejection Target Step",
             "step_type": "tool_call",
+            "tokens_in": 95,
+            "tokens_out": 40,
             "step_input": {
                 "tool": "risky_action",
                 "action": "delete_all"
@@ -497,8 +507,10 @@ else
         -d '{
             "step_name": "SSE Test Step",
             "step_type": "llm_call",
-            "model": "gpt-4",
-            "provider": "openai",
+            "model": "llama3.2",
+            "provider": "ollama",
+            "tokens_in": 65,
+            "tokens_out": 110,
             "step_input": {
                 "prompt": "test SSE streaming"
             }

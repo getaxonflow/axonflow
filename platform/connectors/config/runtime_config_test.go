@@ -116,7 +116,7 @@ func TestRuntimeConfigService_GetConnectorConfigs_FromFileLoader(t *testing.T) {
 
 func TestRuntimeConfigService_GetLLMProviderConfigs_FromEnvVars(t *testing.T) {
 	os.Setenv("BEDROCK_REGION", "us-west-2")
-	os.Setenv("BEDROCK_MODEL", "anthropic.claude-3-sonnet-20240229-v1:0")
+	os.Setenv("BEDROCK_MODEL", "anthropic.claude-sonnet-4-20250514-v1:0")
 	defer func() {
 		os.Unsetenv("BEDROCK_REGION")
 		os.Unsetenv("BEDROCK_MODEL")

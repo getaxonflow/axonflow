@@ -366,6 +366,9 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		StepInput:         stepInputJSON,
 		Model:             req.Model,
 		Provider:          req.Provider,
+		TokensIn:          req.TokensIn,
+		TokensOut:         req.TokensOut,
+		CostUSD:           req.CostUSD,
 	}
 
 	if err := s.repo.AddStep(ctx, step); err != nil {

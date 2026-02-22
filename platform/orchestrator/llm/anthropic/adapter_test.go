@@ -185,7 +185,7 @@ func TestLLMProviderAdapter_Query(t *testing.T) {
 			"type": "message",
 			"role": "assistant",
 			"content": [{"type": "text", "text": "Hello from test!"}],
-			"model": "claude-3-opus-20240229",
+			"model": "claude-opus-4-20250514",
 			"stop_reason": "end_turn",
 			"usage": {
 				"input_tokens": 10,
@@ -208,7 +208,7 @@ func TestLLMProviderAdapter_Query(t *testing.T) {
 	options := QueryOptions{
 		MaxTokens:   100,
 		Temperature: 0.7,
-		Model:       "claude-3-opus-20240229",
+		Model:       "claude-opus-4-20250514",
 	}
 
 	resp, err := adapter.Query(ctx, "Hello", options)
@@ -224,7 +224,7 @@ func TestLLMProviderAdapter_Query(t *testing.T) {
 		t.Errorf("Unexpected content: %q", resp.Content)
 	}
 
-	if resp.Model != "claude-3-opus-20240229" {
+	if resp.Model != "claude-opus-4-20250514" {
 		t.Errorf("Unexpected model: %q", resp.Model)
 	}
 
@@ -337,7 +337,7 @@ func TestQueryOptions(t *testing.T) {
 	opts := QueryOptions{
 		MaxTokens:    1000,
 		Temperature:  0.8,
-		Model:        "claude-3-opus-20240229",
+		Model:        "claude-opus-4-20250514",
 		SystemPrompt: "You are a helpful assistant",
 	}
 
@@ -349,8 +349,8 @@ func TestQueryOptions(t *testing.T) {
 		t.Errorf("Temperature = %f, want 0.8", opts.Temperature)
 	}
 
-	if opts.Model != "claude-3-opus-20240229" {
-		t.Errorf("Model = %q, want claude-3-opus-20240229", opts.Model)
+	if opts.Model != "claude-opus-4-20250514" {
+		t.Errorf("Model = %q, want claude-opus-4-20250514", opts.Model)
 	}
 
 	if opts.SystemPrompt != "You are a helpful assistant" {
@@ -362,7 +362,7 @@ func TestQueryOptions(t *testing.T) {
 func TestLLMResponse(t *testing.T) {
 	resp := LLMResponse{
 		Content:      "Test content",
-		Model:        "claude-3-opus-20240229",
+		Model:        "claude-opus-4-20250514",
 		TokensUsed:   100,
 		ResponseTime: 500 * time.Millisecond,
 		Metadata: map[string]interface{}{

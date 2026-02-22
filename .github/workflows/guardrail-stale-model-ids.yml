@@ -1,0 +1,124 @@
+name: Guardrail Stale Model IDs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**/*.md'
+      - 'docs/**/*.mdx'
+      - 'technical-docs/**/*.md'
+      - 'technical-docs/**/*.mdx'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**/*.md'
+      - 'docs/**/*.mdx'
+      - 'technical-docs/**/*.md'
+      - 'technical-docs/**/*.mdx'
+  workflow_dispatch:
+
+jobs:
+  stale-model-id-guardrail:
+    runs-on: ubuntu-latest
+    name: Block stale model identifiers
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan changed docs for stale model IDs
+        run: |
+          set -euo pipefail
+
+          SCAN_ENGINE=""
+          if command -v rg >/dev/null 2>&1; then
+            SCAN_ENGINE="rg"
+          elif command -v grep >/dev/null 2>&1 && grep -P "x" <<< "x" >/dev/null 2>&1; then
+            SCAN_ENGINE="grep-pcre"
+          else
+            echo "::error::Neither ripgrep (rg) nor grep with PCRE (-P) is available on this runner."
+            exit 2
+          fi
+
+          scan_pattern() {
+            local pattern="$1"
+            local file="$2"
+            if [ "$SCAN_ENGINE" = "rg" ]; then
+              rg -n "$pattern" "$file"
+            else
+              grep -nH -P "$pattern" "$file"
+            fi
+          }
+          scan_dirs=()
+          [ -d docs ] && scan_dirs+=(docs)
+          [ -d technical-docs ] && scan_dirs+=(technical-docs)
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ ${#scan_dirs[@]} -eq 0 ]; then
+              echo "No docs/ or technical-docs/ directories found."
+              exit 0
+            fi
+            FILES=$(find "${scan_dirs[@]}" -type f \( -name "*.md" -o -name "*.mdx" \) | sort || true)
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only --diff-filter=ACM "${{ github.event.pull_request.base.sha }}"...HEAD | grep -E '^(docs|technical-docs)/.*\.(md|mdx)$' || true)
+          else
+            BEFORE_SHA="${{ github.event.before }}"
+            if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              if [ ${#scan_dirs[@]} -eq 0 ]; then
+                echo "No docs/ or technical-docs/ directories found."
+                exit 0
+              fi
+              FILES=$(find "${scan_dirs[@]}" -type f \( -name "*.md" -o -name "*.mdx" \) | sort || true)
+            else
+              FILES=$(git diff --name-only --diff-filter=ACM "$BEFORE_SHA"...HEAD | grep -E '^(docs|technical-docs)/.*\.(md|mdx)$' || true)
+            fi
+          fi
+
+          if [ -z "$FILES" ]; then
+            echo "No changed docs files to scan."
+            exit 0
+          fi
+
+          PATTERNS=(
+            '\b(gpt-3\.5-turbo|gpt-35-turbo|gpt-4-turbo)\b'
+            '\bclaude-instant\b'
+            '\bclaude-3(-5)?-(opus|sonnet|haiku)(-[0-9]{8})?\b'
+            '\banthropic\.claude-3(-5)?-[a-z0-9-]+\b'
+            '\b(llama2|llama3\.1|codellama|neural-chat)\b'
+            '\b(mixtral:8x7b|mistral:7b)\b'
+          )
+          BEDROCK_PATTERNS=(
+            '\bbedrock:claude-v2\b'
+            '\banthropic\.claude-v2(:1)?\b'
+            '\banthropic\.claude-3-(opus|sonnet|haiku)-[0-9]{8}-v1:0\b'
+            '\banthropic\.claude-3-5-(sonnet|haiku)-[0-9]{8}-v1:0\b'
+          )
+
+          FOUND=0
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            for pattern in "${PATTERNS[@]}"; do
+              if scan_pattern "$pattern" "$file"; then
+                FOUND=1
+              elif [ $? -gt 1 ]; then
+                echo "::error::Scan failed for file '$file' with pattern '$pattern'"
+                exit 2
+              fi
+            done
+            for pattern in "${BEDROCK_PATTERNS[@]}"; do
+              if scan_pattern "$pattern" "$file"; then
+                FOUND=1
+              elif [ $? -gt 1 ]; then
+                echo "::error::Scan failed for file '$file' with pattern '$pattern'"
+                exit 2
+              fi
+            done
+          done <<< "$FILES"
+
+          if [ $FOUND -ne 0 ]; then
+            echo "::error::Stale model identifiers found. Use current provider model IDs."
+            exit 1
+          fi
+
+          echo "✓ No stale model IDs found in changed docs."

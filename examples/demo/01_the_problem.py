@@ -72,7 +72,7 @@ def real_unprotected_call():
 
     start = time.time()
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": query}],
         max_tokens=100,
     )

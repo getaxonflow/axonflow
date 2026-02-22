@@ -177,7 +177,7 @@ func TestPostgresStorage_Integration_UpdateProvider(t *testing.T) {
 	}
 
 	// Update config
-	config.Model = "gpt-4-turbo"
+	config.Model = "gpt-4o"
 	config.Priority = 100
 	config.Settings = map[string]any{"temperature": 0.5}
 
@@ -192,8 +192,8 @@ func TestPostgresStorage_Integration_UpdateProvider(t *testing.T) {
 		t.Fatalf("GetProvider failed: %v", err)
 	}
 
-	if retrieved.Model != "gpt-4-turbo" {
-		t.Errorf("Model = %q, want %q", retrieved.Model, "gpt-4-turbo")
+	if retrieved.Model != "gpt-4o" {
+		t.Errorf("Model = %q, want %q", retrieved.Model, "gpt-4o")
 	}
 	if retrieved.Priority != 100 {
 		t.Errorf("Priority = %d, want 100", retrieved.Priority)

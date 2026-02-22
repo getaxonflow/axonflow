@@ -84,8 +84,8 @@ public class WorkflowPolicyExample {
             StepGateRequest gateReq = StepGateRequest.builder()
                     .stepName("Analyze Data")
                     .stepType(StepType.LLM_CALL)
-                    .model("gpt-4")
-                    .provider("openai")
+                    .model("llama3.2")
+                    .provider("ollama")
                     .stepInput(Map.of("prompt", "Analyze customer sentiment"))
                     .build();
 

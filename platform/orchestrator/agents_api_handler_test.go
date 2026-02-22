@@ -267,7 +267,7 @@ func TestAgentsAPIHandler_ValidateConfig_Valid(t *testing.T) {
 					Type:        "llm-call",
 					LLM: &LLMAgentConfig{
 						Provider:    "anthropic",
-						Model:       "claude-3-sonnet",
+						Model:       "claude-sonnet-4",
 						Temperature: 0.7,
 					},
 				},
@@ -326,7 +326,7 @@ func TestAgentsAPIHandler_ValidateConfig_Invalid(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -381,7 +381,7 @@ func TestAgentsAPIHandler_ValidateConfig_Invalid(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -403,7 +403,7 @@ func TestAgentsAPIHandler_ValidateConfig_Invalid(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -425,7 +425,7 @@ func TestAgentsAPIHandler_ValidateConfig_Invalid(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 						{
@@ -433,7 +433,7 @@ func TestAgentsAPIHandler_ValidateConfig_Invalid(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -754,7 +754,7 @@ func TestAgentsAPIHandler_ValidateConfig_ExecutionErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -777,7 +777,7 @@ func TestAgentsAPIHandler_ValidateConfig_ExecutionErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -800,7 +800,7 @@ func TestAgentsAPIHandler_ValidateConfig_ExecutionErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -820,7 +820,7 @@ func TestAgentsAPIHandler_ValidateConfig_ExecutionErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -1087,7 +1087,7 @@ func TestAgentsAPIHandler_ValidateConfig_LLMErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -1127,7 +1127,7 @@ func TestAgentsAPIHandler_ValidateConfig_LLMErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider:    "anthropic",
-								Model:       "claude-3-sonnet",
+								Model:       "claude-sonnet-4",
 								Temperature: 3.0,
 							},
 						},
@@ -1148,7 +1148,7 @@ func TestAgentsAPIHandler_ValidateConfig_LLMErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider:    "anthropic",
-								Model:       "claude-3-sonnet",
+								Model:       "claude-sonnet-4",
 								Temperature: -0.5,
 							},
 						},
@@ -1297,7 +1297,7 @@ func TestAgentsAPIHandler_ValidateConfig_RoutingErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},
@@ -1320,7 +1320,7 @@ func TestAgentsAPIHandler_ValidateConfig_RoutingErrors(t *testing.T) {
 							Type: "llm-call",
 							LLM: &LLMAgentConfig{
 								Provider: "anthropic",
-								Model:    "claude-3-sonnet",
+								Model:    "claude-sonnet-4",
 							},
 						},
 					},

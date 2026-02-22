@@ -122,7 +122,7 @@ func main() {
 		userToken,
 		"Process transaction amount $5000000 to offshore account",
 		"chat",
-		map[string]interface{}{"provider": "openai"},
+		map[string]interface{}{"provider": "ollama"},
 	)
 
 	if matchErr != nil {
@@ -155,7 +155,7 @@ func main() {
 		userToken,
 		"What is the weather today?",
 		"chat",
-		map[string]interface{}{"provider": "openai"},
+		map[string]interface{}{"provider": "ollama"},
 	)
 
 	if safeErr != nil {

@@ -90,7 +90,7 @@ func main() {
 
 		if openaiKey != "" {
 			completion, err := openaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-				Model: openai.GPT3Dot5Turbo,
+				Model: openai.GPT4oMini,
 				Messages: []openai.ChatCompletionMessage{
 					{Role: openai.ChatMessageRoleUser, Content: q.query},
 				},
@@ -130,7 +130,7 @@ func main() {
 			preCheck.ContextID,
 			responseSummary,
 			"openai",
-			"gpt-3.5-turbo",
+			"gpt-4o-mini",
 			axonflow.TokenUsage{
 				PromptTokens:     promptTokens,
 				CompletionTokens: completionTokens,

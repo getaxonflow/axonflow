@@ -100,7 +100,7 @@ async def main() -> int:
                 context_id=ctx1.context_id,
                 response_summary="Research task completed",
                 provider="openai",
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 token_usage=TokenUsage(
                     prompt_tokens=100,
                     completion_tokens=200,

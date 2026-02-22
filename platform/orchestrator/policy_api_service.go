@@ -163,9 +163,20 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 		return nil, err
 	}
 
-	// Tier validation: system tier policies cannot be modified
+	// Tier validation: system tier policies cannot be modified (except system media policies)
 	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
 		return nil, err
+	}
+
+	// Additional field-level validation for system media policies
+	existing, err := s.repo.GetByID(ctx, tenantID, policyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get policy for validation: %w", err)
+	}
+	if existing != nil && existing.Tier == TierSystem && isMediaPolicyCategory(existing.Category) {
+		if err := s.validateSystemMediaPolicyUpdate(existing, req); err != nil {
+			return nil, err
+		}
 	}
 
 	policy, err := s.repo.Update(ctx, tenantID, policyID, req, updatedBy)
@@ -182,9 +193,13 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 
 // DeletePolicy removes a policy
 func (s *PolicyService) DeletePolicy(ctx context.Context, tenantID, policyID string, deletedBy string) error {
-	// Tier validation: system tier policies cannot be deleted
-	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
-		return err
+	// System policies (including system media policies) cannot be deleted
+	existing, err := s.repo.GetByID(ctx, tenantID, policyID)
+	if err != nil {
+		return fmt.Errorf("failed to get policy: %w", err)
+	}
+	if existing != nil && existing.Tier == TierSystem {
+		return NewTierValidationError("System policies cannot be deleted", ErrCodeSystemTierImmutable)
 	}
 
 	if err := s.repo.Delete(ctx, tenantID, policyID, deletedBy); err != nil {
@@ -388,7 +403,7 @@ func (s *PolicyService) validateCreateRequest(req *CreatePolicyRequest) error {
 	} else if !s.isValidPolicyType(string(req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost, rate-limit, budget, time-access, role-access, mcp, connector",
+			Message: "Type must be one of: content, user, risk, cost, media, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 
@@ -459,7 +474,7 @@ func (s *PolicyService) validateUpdateRequest(req *UpdatePolicyRequest) error {
 	if req.Type != nil && !s.isValidPolicyType(string(*req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost, rate-limit, budget, time-access, role-access, mcp, connector",
+			Message: "Type must be one of: content, user, risk, cost, media, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 
@@ -731,8 +746,18 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID stri
 	return nil
 }
 
+// isMediaPolicyCategory returns true if the category is a media governance category.
+func isMediaPolicyCategory(category string) bool {
+	switch DynamicPolicyCategory(category) {
+	case CategoryMediaSafety, CategoryMediaBiometric, CategoryMediaDocument, CategoryMediaPII:
+		return true
+	}
+	return false
+}
+
 // validateTierForModify validates that a policy can be modified (updated or deleted).
-// System tier policies are immutable and cannot be modified via API.
+// System tier policies are generally immutable, except for system media policies
+// which support tiered modification per issue #1222.
 func (s *PolicyService) validateTierForModify(ctx context.Context, tenantID, policyID string) error {
 	policy, err := s.repo.GetByID(ctx, tenantID, policyID)
 	if err != nil {
@@ -743,7 +768,50 @@ func (s *PolicyService) validateTierForModify(ctx context.Context, tenantID, pol
 	}
 
 	if policy.Tier == TierSystem {
+		// System media policies allow tiered modification (toggle enabled, Enterprise: actions/priority)
+		if isMediaPolicyCategory(policy.Category) {
+			return nil // Allowed — field-level restrictions enforced in UpdatePolicy
+		}
 		return NewTierValidationError("System policies cannot be modified via API", ErrCodeSystemTierImmutable)
+	}
+
+	return nil
+}
+
+// validateSystemMediaPolicyUpdate enforces field-level restrictions on system media policy updates.
+// All tiers: toggle enabled only. Enterprise: also modify actions and priority.
+// No tier can modify conditions, name, description, or type on system media policies.
+func (s *PolicyService) validateSystemMediaPolicyUpdate(policy *PolicyResource, req *UpdatePolicyRequest) error {
+	isEnterprise := license.IsPaidTier(s.licenseChecker.Tier())
+
+	if req.Conditions != nil {
+		return NewTierValidationError("Conditions on system media policies cannot be modified", ErrCodeSystemTierImmutable)
+	}
+	if req.Name != nil {
+		return NewTierValidationError("Name on system media policies cannot be modified", ErrCodeSystemTierImmutable)
+	}
+	if req.Description != nil {
+		return NewTierValidationError("Description on system media policies cannot be modified", ErrCodeSystemTierImmutable)
+	}
+	if req.Type != nil {
+		return NewTierValidationError("Type on system media policies cannot be modified", ErrCodeSystemTierImmutable)
+	}
+	if req.Category != nil {
+		return NewTierValidationError("Category on system media policies cannot be modified", ErrCodeSystemTierImmutable)
+	}
+	if req.Actions != nil && !isEnterprise {
+		return NewTierValidationError(
+			"Modifying system media policy actions requires Enterprise license. "+
+				"Upgrade at https://getaxonflow.com/enterprise",
+			"ENTERPRISE_REQUIRED",
+		)
+	}
+	if req.Priority != nil && !isEnterprise {
+		return NewTierValidationError(
+			"Modifying system media policy priority requires Enterprise license. "+
+				"Upgrade at https://getaxonflow.com/enterprise",
+			"ENTERPRISE_REQUIRED",
+		)
 	}
 
 	return nil

@@ -320,6 +320,46 @@ async function main(): Promise<void> {
   console.log();
 
   // ========================================
+  // Test 5: Verify policyInfo present for media requests
+  // ========================================
+  console.log('Test 5: Verify policyInfo present for media requests');
+  console.log('  Checking policyInfo from Test 1 response (media request)');
+
+  if (resp.policyInfo) {
+    assertCheck(
+      resp.policyInfo.tenantId !== '',
+      `policyInfo.tenantId is non-empty (got ${resp.policyInfo.tenantId})`
+    );
+    assertCheck(
+      resp.policyInfo.processingTime !== '',
+      'policyInfo.processingTime is non-empty'
+    );
+
+    const hasMediaPolicy = resp.policyInfo.policiesEvaluated.some(
+      (p: string) => p.startsWith('sys_media_')
+    );
+    if (hasMediaPolicy) {
+      console.log('   PASS: system media policies found in policiesEvaluated');
+    } else {
+      console.log(
+        '   INFO: no sys_media_* policies in policiesEvaluated (dynamic policies may be tracked separately)'
+      );
+    }
+    console.log(
+      `   Policies evaluated: ${JSON.stringify(resp.policyInfo.policiesEvaluated)}`
+    );
+  } else if (pipelineActive) {
+    console.log(
+      '   WARNING: policyInfo absent despite media analysis being active'
+    );
+  } else {
+    console.log(
+      '   SKIP: policyInfo not available (media governance pipeline not active)'
+    );
+  }
+  console.log();
+
+  // ========================================
   // Summary
   // ========================================
   console.log('='.repeat(40));
@@ -340,6 +380,7 @@ async function main(): Promise<void> {
     console.log('  - Multiple image analysis');
     console.log('  - URL-sourced image analysis');
     console.log('  - No-media request passthrough');
+    console.log('  - Policy evaluation metadata for media requests');
   } else {
     console.log(`❌ ${failures.length} TEST(S) FAILED:`);
     failures.forEach((f) => {

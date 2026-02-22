@@ -114,7 +114,7 @@ The pre-check validates:
 
 ```python
 completion = openai_client.chat.completions.create(
-    model="gpt-3.5-turbo",
+    model="gpt-4o-mini",
     messages=[{"role": "user", "content": query}],
 )
 ```
@@ -132,7 +132,7 @@ await axonflow.audit_llm_call(
     context_id=pre_check_result.context_id,
     response_summary=response,
     provider="openai",
-    model="gpt-3.5-turbo",
+    model="gpt-4o-mini",
     token_usage=TokenUsage(...),
     latency_ms=llm_latency_ms,
 )

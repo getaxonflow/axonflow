@@ -70,8 +70,8 @@ async function main() {
     const gate1 = await axonflow.stepGate(workflow.workflow_id, "step-1", {
       step_name: "Generate Code",
       step_type: "llm_call",
-      model: "gpt-4",
-      provider: "openai",
+      model: "gemini-1.5-flash",
+      provider: "gemini",
       step_input: { prompt: "Write a Python function to sort a list" },
     });
 
@@ -228,8 +228,8 @@ async function main() {
       const approvalGate = await axonflow.stepGate(approvalWorkflow.workflow_id, "step-1", {
         step_name: "Approval Target Step",
         step_type: "llm_call",
-        model: "gpt-4",
-        provider: "openai",
+        model: "gemini-1.5-flash",
+        provider: "gemini",
         step_input: { prompt: "Test step for approval" },
       });
       assertCheck(
@@ -383,8 +383,8 @@ async function main() {
       const sseGate = await axonflow.stepGate(sseWorkflow.workflow_id, "sse-step-1", {
         step_name: "SSE Test Step",
         step_type: "llm_call",
-        model: "gpt-4",
-        provider: "openai",
+        model: "gemini-1.5-flash",
+        provider: "gemini",
         step_input: { prompt: "test SSE streaming" },
       });
 

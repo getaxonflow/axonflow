@@ -274,6 +274,40 @@ async def main() -> int:
         print()
 
         # ========================================
+        # Test 5: Verify policy_info present for media requests
+        # ========================================
+        print("Test 5: Verify policy_info present for media requests")
+        print("  Checking policy_info from Test 1 response (media request)")
+
+        if resp.policy_info is not None:
+            assert_check(
+                resp.policy_info.tenant_id != "",
+                f"policy_info.tenant_id is non-empty (got {resp.policy_info.tenant_id})",
+            )
+            assert_check(
+                resp.policy_info.processing_time != "",
+                "policy_info.processing_time is non-empty",
+            )
+
+            has_media_policy = any(
+                p.startswith("sys_media_")
+                for p in resp.policy_info.policies_evaluated
+            )
+            if has_media_policy:
+                print("   PASS: system media policies found in policies_evaluated")
+            else:
+                print(
+                    "   INFO: no sys_media_* policies in policies_evaluated"
+                    " (dynamic policies may be tracked separately)"
+                )
+            print(f"   Policies evaluated: {resp.policy_info.policies_evaluated}")
+        elif pipeline_active:
+            print("   WARNING: policy_info absent despite media analysis being active")
+        else:
+            print("   SKIP: policy_info not available (media governance pipeline not active)")
+        print()
+
+        # ========================================
         # Summary
         # ========================================
         print("=" * 40)
@@ -296,6 +330,7 @@ async def main() -> int:
             print("  - Multiple image analysis (with hash consistency)")
             print("  - URL-sourced image analysis")
             print("  - Non-media request baseline")
+            print("  - Policy evaluation metadata for media requests")
             if pipeline_active:
                 print("  - Strict field validation (sha256, scores, costs, types)")
             return 0

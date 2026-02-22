@@ -352,7 +352,7 @@ llm_providers:
     display_name: "Amazon Bedrock"
     config:
       region: ${AWS_REGION:-us-east-1}
-      model: ${BEDROCK_MODEL:-anthropic.claude-3-5-sonnet-20240620-v1:0}
+      model: ${BEDROCK_MODEL:-anthropic.claude-sonnet-4-20250514-v1:0}
     priority: 10
     weight: 0.7
 
@@ -362,7 +362,7 @@ llm_providers:
     display_name: "Ollama (Self-hosted)"
     config:
       endpoint: ${OLLAMA_ENDPOINT:-http://localhost:11434}
-      model: ${OLLAMA_MODEL:-llama3.1:70b}
+      model: ${OLLAMA_MODEL:-llama3.2:latest}
     priority: 5
     weight: 0.3
 
@@ -371,7 +371,7 @@ llm_providers:
     enabled: false  # Enable when API key is available
     display_name: "OpenAI"
     config:
-      model: ${OPENAI_MODEL:-gpt-4-turbo}
+      model: ${OPENAI_MODEL:-gpt-4o}
       max_tokens: 4096
     credentials:
       api_key: ${OPENAI_API_KEY}

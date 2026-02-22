@@ -89,7 +89,8 @@ gate = await client.step_gate(
     step_id="step-1",
     step_name="Generate Code",
     step_type="llm_call",
-    model="gpt-4"
+    model="claude-haiku-4-5-20251001",
+    provider="anthropic"
 )
 
 if gate.decision == "allow":
@@ -127,7 +128,7 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
     await adapter.start_workflow(total_steps=3)
 
     # Before each node
-    if await adapter.check_gate("generate", "llm_call", model="gpt-4"):
+    if await adapter.check_gate("generate", "llm_call", model="claude-haiku-4-5-20251001", provider="anthropic"):
         result = await generate_code(state)
         await adapter.step_completed("generate")
 

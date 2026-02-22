@@ -119,7 +119,7 @@ func TestEstimatePlanCostHandler_DefaultProviderFromRequest(t *testing.T) {
 
 	body := CostEstimateRequest{
 		Provider: "anthropic",
-		Model:    "claude-3-5-sonnet",
+		Model:    "claude-sonnet-4",
 		Steps: []WorkflowStep{
 			{Name: "step1", Type: "llm-call"},
 		},
@@ -144,8 +144,8 @@ func TestEstimatePlanCostHandler_DefaultProviderFromRequest(t *testing.T) {
 	if resp.Breakdown[0].Provider != "anthropic" {
 		t.Errorf("expected provider anthropic, got %s", resp.Breakdown[0].Provider)
 	}
-	if resp.Breakdown[0].Model != "claude-3-5-sonnet" {
-		t.Errorf("expected model claude-3-5-sonnet, got %s", resp.Breakdown[0].Model)
+	if resp.Breakdown[0].Model != "claude-sonnet-4" {
+		t.Errorf("expected model claude-sonnet-4, got %s", resp.Breakdown[0].Model)
 	}
 }
 

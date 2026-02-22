@@ -178,7 +178,7 @@ INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_rol
 ('audit_003', 'req_003', NOW() - INTERVAL '15 minutes', 1, 'agent@support.com', 'agent', 'demo-client', 'demo-tenant', 'query',
  'What is the average resolution time for billing tickets?', 'hash_003', 'allowed',
  '{"policies_checked": ["sql_injection", "pii_detection"], "all_passed": true}',
- 'anthropic', 'claude-3-sonnet', 38, 120, 0.003600, NULL, '{"gdpr": true, "ccpa": true}', NOW() - INTERVAL '15 minutes'),
+ 'anthropic', 'claude-sonnet-4', 38, 120, 0.003600, NULL, '{"gdpr": true, "ccpa": true}', NOW() - INTERVAL '15 minutes'),
 
 -- Blocked SQL injection attempts
 ('audit_004', 'req_004', NOW() - INTERVAL '20 minutes', 3, 'external@attacker.com', 'guest', 'demo-client', 'demo-tenant', 'query',
@@ -206,12 +206,12 @@ INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_rol
 ('audit_008', 'req_008', NOW() - INTERVAL '40 minutes', 4, 'manager@support.com', 'manager', 'demo-client', 'demo-tenant', 'query',
  'Generate weekly performance report for the support team', 'hash_008', 'allowed',
  '{"policies_checked": ["sql_injection", "pii_detection", "data_access"], "all_passed": true}',
- 'anthropic', 'claude-3-opus', 125, 450, 0.022500, NULL, '{"gdpr": true}', NOW() - INTERVAL '40 minutes'),
+ 'anthropic', 'claude-opus-4', 125, 450, 0.022500, NULL, '{"gdpr": true}', NOW() - INTERVAL '40 minutes'),
 
 ('audit_009', 'req_009', NOW() - INTERVAL '45 minutes', 1, 'agent@support.com', 'agent', 'demo-client', 'demo-tenant', 'query',
  'How many tickets did I resolve this week?', 'hash_009', 'allowed',
  '{"policies_checked": ["sql_injection", "pii_detection"], "all_passed": true}',
- 'openai', 'gpt-3.5-turbo', 28, 80, 0.000160, NULL, '{"gdpr": true}', NOW() - INTERVAL '45 minutes'),
+ 'openai', 'gpt-4o-mini', 28, 80, 0.000160, NULL, '{"gdpr": true}', NOW() - INTERVAL '45 minutes'),
 
 ('audit_010', 'req_010', NOW() - INTERVAL '50 minutes', 2, 'supervisor@support.com', 'supervisor', 'demo-client', 'demo-tenant', 'query',
  'List customers who have submitted more than 5 tickets this month', 'hash_010', 'allowed',
@@ -232,7 +232,7 @@ INSERT INTO audit_logs (id, request_id, timestamp, user_id, user_email, user_rol
 ('audit_013', 'req_013', NOW() - INTERVAL '4 hours', 4, 'manager@support.com', 'manager', 'demo-client', 'demo-tenant', 'query',
  'What percentage of tickets are resolved within 24 hours?', 'hash_013', 'allowed',
  '{"policies_checked": ["sql_injection", "pii_detection"], "all_passed": true}',
- 'anthropic', 'claude-3-sonnet', 42, 140, 0.004200, NULL, '{"gdpr": true}', NOW() - INTERVAL '4 hours'),
+ 'anthropic', 'claude-sonnet-4', 42, 140, 0.004200, NULL, '{"gdpr": true}', NOW() - INTERVAL '4 hours'),
 
 ('audit_014', 'req_014', NOW() - INTERVAL '5 hours', 1, 'agent@support.com', 'agent', 'demo-client', 'demo-tenant', 'query',
  'Customer Aadhaar number is 2345 6789 0123 for verification', 'hash_014', 'blocked',

@@ -151,6 +151,138 @@ func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string,
 	return nil
 }
 
+// SyncStepResults updates step-level data (status, provider, model, tokens, cost) from
+// workflow execution results. This bridges the gap where MAP executions track overall
+// plan status but never record per-step details to the unified execution tracker.
+func (t *MAPExecutionTracker) SyncStepResults(ctx context.Context, planID string, steps []StepExecution, costEstimator PlanCostEstimator) error {
+	if len(steps) == 0 {
+		return nil
+	}
+
+	// Look up unified execution by plan ID
+	exec, err := t.BaseExecutionTracker.GetRepo().GetByPlanID(ctx, planID)
+	if err != nil {
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			// No unified execution exists — legacy plan, skip silently
+			return nil
+		}
+		return fmt.Errorf("sync step results for plan %s: %w", planID, err)
+	}
+
+	// Get current execution state with steps
+	status, err := t.GetStatus(ctx, exec.ExecutionID)
+	if err != nil {
+		return fmt.Errorf("get execution status for plan %s: %w", planID, err)
+	}
+
+	// Build step name -> index map for stable matching
+	stepIndexByName := make(map[string]int, len(status.Steps))
+	for i := range status.Steps {
+		if status.Steps[i].StepName != "" {
+			stepIndexByName[status.Steps[i].StepName] = i
+		}
+	}
+
+	// Update each step from the workflow execution results
+	var totalCostUSD float64
+	for i, stepExec := range steps {
+		stepIndex := -1
+		if stepExec.Name != "" {
+			if idx, ok := stepIndexByName[stepExec.Name]; ok {
+				stepIndex = idx
+			}
+		}
+		if stepIndex == -1 {
+			if i >= len(status.Steps) {
+				break
+			}
+			stepIndex = i
+		}
+
+		// Map step status
+		switch stepExec.Status {
+		case "completed":
+			status.Steps[stepIndex].Status = execution.StepStatusCompleted
+		case "failed":
+			status.Steps[stepIndex].Status = execution.StepStatusFailed
+		case "skipped":
+			status.Steps[stepIndex].Status = execution.StepStatusSkipped
+		case "running":
+			status.Steps[stepIndex].Status = execution.StepStatusRunning
+		}
+
+		// Set timing
+		if !stepExec.StartTime.IsZero() {
+			status.Steps[stepIndex].StartedAt = &stepExec.StartTime
+		}
+		if stepExec.EndTime != nil {
+			status.Steps[stepIndex].EndedAt = stepExec.EndTime
+			if !stepExec.StartTime.IsZero() {
+				duration := stepExec.EndTime.Sub(stepExec.StartTime)
+				status.Steps[stepIndex].Duration = duration.String()
+			}
+		}
+
+		// Set error
+		if stepExec.Error != "" {
+			status.Steps[stepIndex].Error = stepExec.Error
+		}
+
+		// Extract provider, model, tokens from output (same pattern as workflow_engine.go recordStepSnapshot)
+		if stepExec.Output != nil {
+			if p, ok := stepExec.Output["provider"].(string); ok {
+				status.Steps[stepIndex].Provider = p
+			}
+			if m, ok := stepExec.Output["model"].(string); ok {
+				status.Steps[stepIndex].Model = m
+			}
+
+			var tokensIn, tokensOut int
+			switch tok := stepExec.Output["tokens_used"].(type) {
+			case int:
+				tokensIn = tok / 2
+				tokensOut = tok - tokensIn
+			case float64:
+				total := int(tok)
+				tokensIn = total / 2
+				tokensOut = total - tokensIn
+			case json.Number:
+				if total, err := tok.Int64(); err == nil {
+					tokensIn = int(total) / 2
+					tokensOut = int(total) - tokensIn
+				}
+			}
+
+			if tokensIn+tokensOut > 0 {
+				status.Steps[stepIndex].TokensIn = &tokensIn
+				status.Steps[stepIndex].TokensOut = &tokensOut
+
+				// Calculate per-step cost
+				if costEstimator != nil {
+					costUSD := costEstimator.EstimateCost(
+						status.Steps[stepIndex].Provider, status.Steps[stepIndex].Model,
+						tokensIn, tokensOut,
+					)
+					status.Steps[stepIndex].CostUSD = &costUSD
+					totalCostUSD += costUSD
+				}
+			}
+		}
+	}
+
+	// Update steps in a single DB call
+	if err := t.BaseExecutionTracker.GetRepo().UpdateSteps(ctx, exec.ExecutionID, status.Steps); err != nil {
+		return fmt.Errorf("update steps for plan %s: %w", planID, err)
+	}
+
+	// Update actual cost if we calculated any
+	if totalCostUSD > 0 {
+		_ = t.BaseExecutionTracker.GetRepo().UpdateCost(ctx, exec.ExecutionID, nil, &totalCostUSD)
+	}
+
+	return nil
+}
+
 // --- Helper Functions ---
 
 // mapStepType converts workflow step types to unified step types.

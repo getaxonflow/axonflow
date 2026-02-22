@@ -99,7 +99,7 @@ async def main() -> int:
         llm_start = time.time()
 
         message = anthropic.messages.create(
-            model="claude-3-haiku-20240307",
+            model="claude-haiku-4-5-20251001",
             max_tokens=200,
             messages=[
                 {
@@ -128,7 +128,7 @@ async def main() -> int:
             context_id=pre_check_result.context_id,
             response_summary=response[:100] if len(response) > 100 else response,
             provider="anthropic",
-            model="claude-3-haiku-20240307",
+            model="claude-haiku-4-5-20251001",
             token_usage=TokenUsage(
                 prompt_tokens=message.usage.input_tokens,
                 completion_tokens=message.usage.output_tokens,
