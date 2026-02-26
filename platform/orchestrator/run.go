@@ -37,8 +37,9 @@ import (
 
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/node_enforcement"
-	"axonflow/platform/orchestrator/cost"    // Cost controls & budget management (#764)
-	"axonflow/platform/orchestrator/euaiact" // EU AI Act compliance - Community stub or EE impl
+	"axonflow/platform/orchestrator/cloudstorage" // Cloud storage backends for audit exports (#589)
+	"axonflow/platform/orchestrator/cost"         // Cost controls & budget management (#764)
+	"axonflow/platform/orchestrator/euaiact"      // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/media"   // Media governance analysis pipeline
 	"axonflow/platform/orchestrator/masfeat"          // MAS FEAT module - Community stub or EE impl
@@ -1301,10 +1302,24 @@ func initializeComponents() {
 			log.Println("MAP WCP Executor initialized (confirm/step modes) ✅")
 		}
 
+		// Initialize cloud storage backend for audit exports (#589)
+		var auditStorageBackend cloudstorage.StorageBackend
+		storageCfg := cloudstorage.NewStorageConfigFromEnv()
+		if storageCfg.Type != "" && storageCfg.Type != cloudstorage.StorageTypeLocal {
+			backend, storageErr := cloudstorage.NewStorageBackend(context.Background(), storageCfg)
+			if storageErr != nil {
+				log.Printf("⚠️  Audit export cloud storage (%s) init failed: %v — falling back to local", storageCfg.Type, storageErr)
+			} else {
+				auditStorageBackend = backend
+				log.Printf("Audit export cloud storage initialized: %s ✅", storageCfg.Type)
+			}
+		}
+
 		// Initialize SEBI Compliance Module (Enterprise - India Regulatory)
 		log.Println("Initializing SEBI Compliance Module...")
 		sebiConfig := sebi.SEBIModuleConfig{
-			DB: usageDB,
+			DB:             usageDB,
+			StorageBackend: auditStorageBackend,
 		}
 		var sebiErr error
 		sebiModule, sebiErr = sebi.NewSEBIModule(sebiConfig)
@@ -1320,6 +1335,7 @@ func initializeComponents() {
 		log.Println("Initializing RBI FREE-AI Compliance Module...")
 		rbiConfig := rbi.DefaultConfig()
 		rbiConfig.DB = usageDB
+		rbiConfig.StorageBackend = auditStorageBackend
 		var rbiErr error
 		rbiModule, rbiErr = rbi.NewRBIModule(rbiConfig)
 		if rbiErr != nil {
@@ -1334,6 +1350,7 @@ func initializeComponents() {
 		log.Println("Initializing EU AI Act Compliance Module...")
 		euaiactConfig := euaiact.ModuleConfig{
 			DB:                   usageDB,
+			StorageBackend:       auditStorageBackend,
 			DefaultAccuracyMin:   0.80, // 80% minimum accuracy threshold
 			DefaultBiasMax:       0.10, // 10% maximum bias score
 			AlertCooldownMinutes: 15,   // 15 minutes between alerts

@@ -122,7 +122,7 @@ RUN set -e && \
       fi; \
     done && \
     if [ -d "/migrations/industry" ]; then \
-      for ind in healthcare banking; do \
+      for ind in healthcare banking travel; do \
         if [ -d "/migrations/industry/$ind" ]; then \
           count=$(find /migrations/industry/$ind -name '*.sql' ! -name '*_down.sql' 2>/dev/null | wc -l); \
           echo "industry/$ind: $count files"; \

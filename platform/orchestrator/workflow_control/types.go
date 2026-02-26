@@ -114,6 +114,9 @@ type WorkflowStep struct {
 type CreateWorkflowRequest struct {
 	WorkflowName string                 `json:"workflow_name" validate:"required"`
 	Source       WorkflowSource         `json:"source,omitempty"`
+	// Deprecated: TotalSteps no longer needs to be declared upfront.
+	// When omitted, total_steps is automatically set to the actual step count
+	// when the workflow reaches a terminal state (completed, aborted, or failed).
 	TotalSteps   *int                   `json:"total_steps,omitempty"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }

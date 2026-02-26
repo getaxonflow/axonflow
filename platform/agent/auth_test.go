@@ -33,25 +33,25 @@ func TestValidateClientCredentials(t *testing.T) {
 		{
 			name:         "valid healthcare demo client",
 			clientID:     "healthcare-demo",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f",
+			clientSecret: knownClients["healthcare-demo"].LicenseKey,
 			expectError:  false,
 		},
 		{
 			name:         "valid ecommerce demo client",
 			clientID:     "ecommerce-demo",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImVjb21tZXJjZSIsInNlcnZpY2VfbmFtZSI6ImVjb21tZXJjZS1kZW1vIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiLCJsbG0iLCJjb25uZWN0b3JzIl0sImV4cGlyZXNfYXQiOiIyMDM1MTEyNyJ9-e40f5f5d",
+			clientSecret: knownClients["ecommerce-demo"].LicenseKey,
 			expectError:  false,
 		},
 		{
 			name:         "valid loadtest client",
 			clientID:     "loadtest",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImxvYWR0ZXN0Iiwic2VydmljZV9uYW1lIjoibG9hZHRlc3QiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-8cc4ef10",
+			clientSecret: knownClients["loadtest"].LicenseKey,
 			expectError:  false,
 		},
 		{
 			name:         "missing client ID",
 			clientID:     "",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InRlc3QiLCJzZXJ2aWNlX25hbWUiOiJ0ZXN0Iiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
+			clientSecret: "AXON-invalid.invalid",
 			expectError:  true,
 			errorMsg:     "client ID required",
 		},
@@ -65,14 +65,14 @@ func TestValidateClientCredentials(t *testing.T) {
 		{
 			name:         "unknown client",
 			clientID:     "unknown-client",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6InVua25vd24iLCJzZXJ2aWNlX25hbWUiOiJ1bmtub3duIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiXSwiZXhwaXJlc19hdCI6IjIwMzUxMTI3In0-abc12345",
+			clientSecret: "AXON-invalid.invalid",
 			expectError:  true,
 			errorMsg:     "not found in whitelist",
 		},
 		{
 			name:         "invalid credentials for known client",
 			clientID:     "healthcare-demo",
-			clientSecret: "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6Indyb25nIiwic2VydmljZV9uYW1lIjoid3JvbmciLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-wrong123",
+			clientSecret: "AXON-wrong-credentials.wrong",
 			expectError:  true,
 			errorMsg:     "invalid credentials",
 		},
@@ -134,8 +134,8 @@ func TestValidateClientCredentials(t *testing.T) {
 func TestValidateClientCredentialsPermissions(t *testing.T) {
 	ctx := context.Background()
 
-	// Test healthcare demo permissions (V2 license format)
-	client, err := validateClientCredentials(ctx, "healthcare-demo", "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f")
+	// Test healthcare demo permissions
+	client, err := validateClientCredentials(ctx, "healthcare-demo", knownClients["healthcare-demo"].LicenseKey)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -145,8 +145,8 @@ func TestValidateClientCredentialsPermissions(t *testing.T) {
 		t.Error("Healthcare demo should have planning permission")
 	}
 
-	// Test legacy client (should not have planning) - V2 license format
-	client2, err := validateClientCredentials(ctx, "client_1", "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoiY2xpZW50MSIsInNlcnZpY2VfbmFtZSI6ImNsaWVudDEiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-22b4e980")
+	// Test client without planning permission
+	client2, err := validateClientCredentials(ctx, "client_1", knownClients["client_1"].LicenseKey)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

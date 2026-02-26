@@ -12,6 +12,8 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/orchestrator/cloudstorage"
 )
 
 // Module is the EU AI Act compliance module.
@@ -24,6 +26,7 @@ type Module struct {
 // Community stub: Configuration is ignored.
 type ModuleConfig struct {
 	DB                   *sql.DB
+	StorageBackend       cloudstorage.StorageBackend
 	DefaultAccuracyMin   float64
 	DefaultBiasMax       float64
 	AlertCooldownMinutes int

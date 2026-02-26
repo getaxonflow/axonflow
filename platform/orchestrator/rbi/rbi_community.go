@@ -12,6 +12,8 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/orchestrator/cloudstorage"
 )
 
 // RBIModule contains all RBI FREE-AI compliance services and handlers.
@@ -28,6 +30,9 @@ type RBIModuleConfig struct {
 
 	// Export base path for audit exports
 	ExportBasePath string
+
+	// Cloud storage backend for audit exports (unused in Community)
+	StorageBackend cloudstorage.StorageBackend
 
 	// PII detection settings (unused in Community)
 	PIIContextWindow    int

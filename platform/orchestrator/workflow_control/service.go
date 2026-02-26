@@ -602,6 +602,11 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 		}
 	}
 
+	if workflow.TotalSteps != nil && *workflow.TotalSteps != workflow.CurrentStepIndex {
+		s.logger.Printf("[WorkflowControl] WARN: workflow %s declared total_steps=%d but completed with current_step_index=%d",
+			workflowID, *workflow.TotalSteps, workflow.CurrentStepIndex)
+	}
+
 	if err := s.repo.Complete(ctx, workflowID); err != nil {
 		return fmt.Errorf("failed to complete workflow: %w", err)
 	}

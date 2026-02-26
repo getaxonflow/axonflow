@@ -2751,7 +2751,9 @@ paths:
       tags:
         - EU AI Act
       summary: Download export
-      description: Download a completed export file.
+      description: |
+        Download a completed export file. When cloud storage is configured,
+        returns a redirect (302) to a presigned URL. For local storage, streams the file.
       operationId: downloadEUAIActExport
       parameters:
         - name: export_id
@@ -2761,7 +2763,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Export file metadata
+          description: Export file metadata or streamed content
           content:
             application/json:
               schema:
@@ -2775,6 +2777,14 @@ paths:
                     type: integer
                   format:
                     type: string
+                  download_url:
+                    type: string
+                    description: Presigned URL for cloud storage downloads
+                  storage_type:
+                    type: string
+                    enum: [local, s3, gcs, azure]
+        '307':
+          description: Temporary redirect to presigned cloud storage URL
         '400':
           description: Export not yet completed
         '404':
@@ -3366,7 +3376,6 @@ paths:
             example:
               workflow_name: "code-review-pipeline"
               source: "langgraph"
-              total_steps: 3
               metadata:
                 environment: "production"
                 team: "engineering"
@@ -4153,19 +4162,139 @@ paths:
       tags:
         - RBI Compliance
       summary: List audit exports
-      description: List audit exports with 7-year retention per RBI requirements.
+      description: List audit exports with retention per RBI FREE-AI requirements.
       operationId: listAuditExports
+      parameters:
+        - $ref: '#/components/parameters/OrgIDQuery'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
       responses:
         '200':
           description: List of exports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exports:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RBIAuditExport'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
     post:
       tags:
         - RBI Compliance
       summary: Create audit export
+      description: |
+        Create a new RBI audit export. Supports full or incremental exports in JSON, CSV, or XML format.
+        When cloud storage is configured, exports are uploaded to S3/GCS/Azure and a presigned download URL is generated.
       operationId: createAuditExport
+      parameters:
+        - $ref: '#/components/parameters/OrgIDQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RBIAuditExportRequest'
+            example:
+              export_type: "full"
+              format: "json"
+              requested_by: "compliance-officer"
+              purpose: "Quarterly RBI audit"
       responses:
         '201':
-          description: Export started
+          description: Export created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export:
+                    $ref: '#/components/schemas/RBIAuditExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/rbi/audit-exports/{export_id}:
+    get:
+      tags:
+        - RBI Compliance
+      summary: Get audit export status
+      description: Get the status and details of a specific audit export.
+      operationId: getAuditExport
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrgIDQuery'
+      responses:
+        '200':
+          description: Export details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export:
+                    $ref: '#/components/schemas/RBIAuditExport'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+        - RBI Compliance
+      summary: Delete audit export
+      description: Delete an audit export and its associated cloud storage object.
+      operationId: deleteAuditExport
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrgIDQuery'
+      responses:
+        '204':
+          description: Export deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/rbi/audit-exports/{export_id}/process:
+    post:
+      tags:
+        - RBI Compliance
+      summary: Process audit export
+      description: |
+        Trigger processing of a pending audit export. Generates the export file,
+        uploads to cloud storage (if configured), and generates a presigned download URL.
+      operationId: processAuditExport
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrgIDQuery'
+      responses:
+        '200':
+          description: Export processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export:
+                    $ref: '#/components/schemas/RBIAuditExport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/v1/rbi/policies/templates:
     get:
@@ -6281,7 +6410,14 @@ components:
           default: external
         total_steps:
           type: integer
-          description: Total number of steps (if known)
+          nullable: true
+          deprecated: true
+          description: >
+            Total number of steps, if known upfront. Omit or pass null for
+            open-ended workflows (e.g. LangGraph agentic loops where the step
+            count depends on LLM decisions at runtime). When omitted or null,
+            total_steps is automatically set to the actual step count when the
+            workflow reaches a terminal state.
           example: 3
         metadata:
           type: object
@@ -7102,11 +7238,24 @@ components:
           $ref: '#/components/schemas/SEBIAuditExportSummary'
         download_url:
           type: string
-          description: URL to download the export (for async exports)
+          description: Presigned URL to download the export from cloud storage
         expires_at:
           type: string
           format: date-time
           description: When the download URL expires
+        storage_type:
+          type: string
+          enum: [local, s3, gcs, azure]
+          description: Storage backend used for this export
+        storage_key:
+          type: string
+          description: Cloud storage object key (path within bucket/container)
+        file_size_bytes:
+          type: integer
+          description: Size of the export file in bytes
+        file_checksum:
+          type: string
+          description: SHA-256 checksum of the export file
         metadata:
           $ref: '#/components/schemas/SEBIExportMetadata'
 
@@ -7169,6 +7318,206 @@ components:
         signed_by:
           type: string
           description: Signing authority (for signed exports)
+
+    # ──────────────────────────────────────────────────────────────────
+    # RBI Audit Export Schemas
+    # ──────────────────────────────────────────────────────────────────
+
+    RBIAuditExportRequest:
+      type: object
+      description: Request to create an RBI audit export
+      required:
+        - export_type
+        - format
+      properties:
+        export_type:
+          type: string
+          enum: [full, incremental]
+          description: Type of audit export
+        format:
+          type: string
+          enum: [json, csv, xml]
+          description: Export file format
+        start_date:
+          type: string
+          format: date-time
+          description: Start of date range (for incremental exports)
+        end_date:
+          type: string
+          format: date-time
+          description: End of date range (for incremental exports)
+        requested_by:
+          type: string
+          description: User or service requesting the export
+        purpose:
+          type: string
+          description: Purpose of the export (for audit trail)
+
+    RBIAuditExport:
+      type: object
+      description: RBI audit export record
+      properties:
+        id:
+          type: string
+          description: Unique export identifier
+        org_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: Export status
+        export_type:
+          type: string
+          enum: [full, incremental]
+        format:
+          type: string
+          enum: [json, csv, xml]
+        requested_by:
+          type: string
+        purpose:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        download_url:
+          type: string
+          description: Presigned URL for cloud storage downloads
+          nullable: true
+        storage_type:
+          type: string
+          enum: [local, s3, gcs, azure]
+          description: Storage backend used for this export
+        storage_key:
+          type: string
+          description: Cloud storage object key
+          nullable: true
+        file_path:
+          type: string
+          description: Local file path (when storage_type is local)
+          nullable: true
+        file_size_bytes:
+          type: integer
+          description: Size of export file in bytes
+        file_checksum:
+          type: string
+          description: SHA-256 checksum of the export file
+        record_count:
+          type: integer
+          description: Number of records in the export
+        error_message:
+          type: string
+          nullable: true
+          description: Error details if export failed
+
+    # ──────────────────────────────────────────────────────────────────
+    # EU AI Act Export Schemas
+    # ──────────────────────────────────────────────────────────────────
+
+    EUAIActExportRequest:
+      type: object
+      description: Request to create an EU AI Act compliance export
+      required:
+        - export_type
+        - format
+      properties:
+        export_type:
+          type: string
+          enum: [full_audit, conformity_evidence, hitl_summary, decision_chain, policy_violations, accuracy_metrics]
+          description: Type of compliance export
+        format:
+          type: string
+          enum: [json, xml, csv]
+          description: Export file format
+        date_from:
+          type: string
+          format: date-time
+          description: Start of date range
+        date_to:
+          type: string
+          format: date-time
+          description: End of date range
+        model_ids:
+          type: array
+          items:
+            type: string
+          description: Filter by specific model IDs (optional)
+
+    EUAIActExport:
+      type: object
+      description: EU AI Act compliance export record
+      properties:
+        id:
+          type: string
+          description: Unique export identifier
+        org_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+          description: Export processing status
+        export_type:
+          type: string
+          enum: [full_audit, conformity_evidence, hitl_summary, decision_chain, policy_violations, accuracy_metrics]
+        format:
+          type: string
+          enum: [json, xml, csv]
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        date_from:
+          type: string
+          format: date-time
+        date_to:
+          type: string
+          format: date-time
+        download_url:
+          type: string
+          description: Presigned URL for cloud storage downloads
+          nullable: true
+        storage_type:
+          type: string
+          enum: [local, s3, gcs, azure]
+          description: Storage backend used for this export
+        storage_key:
+          type: string
+          description: Cloud storage object key
+          nullable: true
+        file_path:
+          type: string
+          description: Local file path (when storage_type is local)
+          nullable: true
+        file_size:
+          type: integer
+          description: Size of export file in bytes
+        record_count:
+          type: integer
+          description: Number of records in the export
+        progress:
+          type: number
+          format: float
+          description: Processing progress (0.0 to 1.0)
+        error_message:
+          type: string
+          nullable: true
+          description: Error details if export failed
+        created_by:
+          type: string
+
+    # ──────────────────────────────────────────────────────────────────
+    # SEBI Retention Schemas
+    # ──────────────────────────────────────────────────────────────────
 
     SEBIRetentionResponse:
       type: object

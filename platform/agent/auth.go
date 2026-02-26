@@ -30,7 +30,7 @@ import (
 //
 // Fields:
 //   - ClientID: Unique identifier for the client
-//   - LicenseKey: V2 format license key (AXON-V2-...)
+//   - LicenseKey: Ed25519-signed license key (AXON-{payload}.{signature})
 //   - Name: Human-readable client name
 //   - TenantID: Tenant for multi-tenant isolation
 //   - Permissions: List of allowed operations (query, llm, connectors, planning)
@@ -55,52 +55,52 @@ type RateLimitEntry struct {
 	mu        sync.Mutex
 }
 
-// Known clients whitelist with their license keys (V2 format)
-// In production, this should be loaded from database or config file
+// Known clients whitelist with their Ed25519-signed license keys.
+// In production, this should be loaded from database or config file.
 var knownClients = map[string]*ClientAuth{
 	"healthcare-demo": {
 		ClientID:    "healthcare-demo",
-		LicenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJoZWFsdGhjYXJlLWRlbW8iLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSIsImNvbm5lY3RvcnMiLCJwbGFubmluZyJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-b9870d1f",
+		LicenseKey:  "AXON-eyJ0aWVyIjoiRW50ZXJwcmlzZSIsInRlbmFudF9pZCI6ImhlYWx0aGNhcmUiLCJzZXJ2aWNlX25hbWUiOiJwbGF0Zm9ybSIsInNlcnZpY2VfdHlwZSI6ImJhY2tlbmQtc2VydmljZSIsInBlcm1pc3Npb25zIjpbInF1ZXJ5IiwibGxtIiwiY29ubmVjdG9ycyIsInBsYW5uaW5nIl0sImlzc3VlZF9hdCI6IjIwMjYwMjI2IiwiZXhwaXJlc19hdCI6IjIwMzYwMjI0In0.cEmmt3O6bFgaGJks54nedMa4fu4qqcB0kaKuHqXGTd37Devni3TGIYkV0TBZbk2ps5vCPwuXLY1St0tXcmfJDg",
 		Name:        "Healthcare Demo",
 		TenantID:    "healthcare_tenant",
 		Permissions: []string{"query", "llm", "connectors", "planning"},
-		RateLimit:   1000, // 1000 req/min (PLUS tier)
+		RateLimit:   1000,
 		Enabled:     true,
 	},
 	"ecommerce-demo": {
 		ClientID:    "ecommerce-demo",
-		LicenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImVjb21tZXJjZSIsInNlcnZpY2VfbmFtZSI6ImVjb21tZXJjZS1kZW1vIiwic2VydmljZV90eXBlIjoiY2xpZW50LWFwcGxpY2F0aW9uIiwicGVybWlzc2lvbnMiOlsicXVlcnkiLCJsbG0iLCJjb25uZWN0b3JzIl0sImV4cGlyZXNfYXQiOiIyMDM1MTEyNyJ9-e40f5f5d",
+		LicenseKey:  "AXON-eyJ0aWVyIjoiRW50ZXJwcmlzZSIsInRlbmFudF9pZCI6ImVjb21tZXJjZSIsInNlcnZpY2VfbmFtZSI6InBsYXRmb3JtIiwic2VydmljZV90eXBlIjoiYmFja2VuZC1zZXJ2aWNlIiwicGVybWlzc2lvbnMiOlsicXVlcnkiLCJsbG0iLCJjb25uZWN0b3JzIl0sImlzc3VlZF9hdCI6IjIwMjYwMjI2IiwiZXhwaXJlc19hdCI6IjIwMzYwMjI0In0.ejI5UBXB0SwPI52x9fE8_EaJKEHjQEmvBemgBikO6DI5iEnSVUVYA-iHu5IzLWjG-B56ni8hFdTCALdP_Hz3CQ",
 		Name:        "E-commerce Demo",
 		TenantID:    "ecommerce_tenant",
 		Permissions: []string{"query", "llm", "connectors"},
-		RateLimit:   1000, // 1000 req/min (PLUS tier)
+		RateLimit:   1000,
 		Enabled:     true,
 	},
 	"client_1": {
 		ClientID:    "client_1",
-		LicenseKey:  "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoiY2xpZW50MSIsInNlcnZpY2VfbmFtZSI6ImNsaWVudDEiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-22b4e980",
-		Name:        "Client 1 (Legacy)",
+		LicenseKey:  "AXON-eyJ0aWVyIjoiRW50ZXJwcmlzZSIsInRlbmFudF9pZCI6ImNsaWVudDEiLCJzZXJ2aWNlX25hbWUiOiJwbGF0Zm9ybSIsInNlcnZpY2VfdHlwZSI6ImJhY2tlbmQtc2VydmljZSIsInBlcm1pc3Npb25zIjpbInF1ZXJ5IiwibGxtIl0sImlzc3VlZF9hdCI6IjIwMjYwMjI2IiwiZXhwaXJlc19hdCI6IjIwMzYwMjI0In0.BIXc5Q3MALK-UGuCU-fTusTTqQaZkLo43VMi67swHZeZXht5CcAISFJPZYNF6BvqtA56MiyWQs8rQHQGZ2DtAw",
+		Name:        "Client 1",
 		TenantID:    "tenant_1",
 		Permissions: []string{"query", "llm"},
-		RateLimit:   500, // 500 req/min (ENT tier)
+		RateLimit:   500,
 		Enabled:     true,
 	},
 	"client_2": {
 		ClientID:    "client_2",
-		LicenseKey:  "AXON-V2-eyJ0aWVyIjoiRU5UIiwidGVuYW50X2lkIjoiY2xpZW50MiIsInNlcnZpY2VfbmFtZSI6ImNsaWVudDIiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-2fa74e5a",
-		Name:        "Client 2 (Legacy)",
+		LicenseKey:  "AXON-eyJ0aWVyIjoiRW50ZXJwcmlzZSIsInRlbmFudF9pZCI6ImNsaWVudDIiLCJzZXJ2aWNlX25hbWUiOiJwbGF0Zm9ybSIsInNlcnZpY2VfdHlwZSI6ImJhY2tlbmQtc2VydmljZSIsInBlcm1pc3Npb25zIjpbInF1ZXJ5IiwibGxtIl0sImlzc3VlZF9hdCI6IjIwMjYwMjI2IiwiZXhwaXJlc19hdCI6IjIwMzYwMjI0In0.T-gsODveLIO8x8PV-YHnohYBXzv5XWqcsGFgSJ_hCkVVEDE3rsmC3DIdkODLIrvZE0hIvFd2gD1w4fqqdEUeCw",
+		Name:        "Client 2",
 		TenantID:    "tenant_2",
 		Permissions: []string{"query", "llm"},
-		RateLimit:   500, // 500 req/min (ENT tier)
+		RateLimit:   500,
 		Enabled:     true,
 	},
 	"loadtest": {
 		ClientID:    "loadtest",
-		LicenseKey:  "AXON-V2-eyJ0aWVyIjoiUExVUyIsInRlbmFudF9pZCI6ImxvYWR0ZXN0Iiwic2VydmljZV9uYW1lIjoibG9hZHRlc3QiLCJzZXJ2aWNlX3R5cGUiOiJjbGllbnQtYXBwbGljYXRpb24iLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJleHBpcmVzX2F0IjoiMjAzNTExMjcifQ-8cc4ef10",
+		LicenseKey:  "AXON-eyJ0aWVyIjoiRW50ZXJwcmlzZSIsInRlbmFudF9pZCI6ImxvYWR0ZXN0Iiwic2VydmljZV9uYW1lIjoicGxhdGZvcm0iLCJzZXJ2aWNlX3R5cGUiOiJiYWNrZW5kLXNlcnZpY2UiLCJwZXJtaXNzaW9ucyI6WyJxdWVyeSIsImxsbSJdLCJpc3N1ZWRfYXQiOiIyMDI2MDIyNiIsImV4cGlyZXNfYXQiOiIyMDM2MDIyNCJ9.lfjTp6yEA3XR_ag0oE90X7nydp8w98tPhzRSOzJkZ9i6Xu9gUXB1DG9hPl7epTjUIWp-B91l-W4ci_0izTVXAQ",
 		Name:        "Load Testing Client",
 		TenantID:    "loadtest_tenant",
 		Permissions: []string{"query", "llm"},
-		RateLimit:   10000, // 10000 req/min for load testing
+		RateLimit:   10000,
 		Enabled:     true,
 	},
 }
@@ -110,7 +110,7 @@ var rateLimitMap = make(map[string]*RateLimitEntry)
 var rateLimitMu sync.RWMutex
 
 // validateClientCredentials validates a client using their OAuth2 client credentials.
-// The clientSecret is the AXON-V2-xxx license key format sent via Basic auth.
+// The clientSecret is the Ed25519-signed license key sent via Basic auth.
 func validateClientCredentials(ctx context.Context, clientID, clientSecret string) (*Client, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("client ID required")

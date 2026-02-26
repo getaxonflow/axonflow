@@ -61,7 +61,6 @@ async def main() -> int:
                 # Step 1: Start the workflow
                 print("Step 1: Start Workflow")
                 workflow_id = await adapter.start_workflow(
-                    total_steps=3,
                     metadata={"example": "langgraph-adapter"},
                 )
 

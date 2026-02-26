@@ -479,6 +479,7 @@ public class WorkflowControl {
                     conn.setRequestProperty("Accept", "text/event-stream");
                     conn.setRequestProperty("X-Client-ID", sseClientId);
                     conn.setRequestProperty("X-Client-Secret", sseClientSecret);
+                    conn.setRequestProperty("X-Tenant-ID", sseClientId);
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
                     conn.connect();

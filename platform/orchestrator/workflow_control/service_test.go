@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -264,6 +265,137 @@ func TestFailWorkflow(t *testing.T) {
 	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
 	if updated.Status != WorkflowStatusFailed {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusFailed)
+	}
+}
+
+// TestCompleteWorkflow_FinalizesTotalSteps verifies that completing an open-ended workflow
+// (one where total_steps was not declared upfront) sets total_steps to the actual step count.
+func TestCompleteWorkflow_FinalizesTotalSteps(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	// Create workflow without declaring total_steps
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "open-ended-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	if workflow.TotalSteps != nil {
+		t.Fatalf("TotalSteps should be nil for open-ended workflow, got %d", *workflow.TotalSteps)
+	}
+
+	// Add 3 steps via gate checks
+	for i, name := range []string{"agent", "tools", "agent"} {
+		stepID := fmt.Sprintf("step-%d", i+1)
+		svc.StepGate(ctx, workflow.WorkflowID, stepID, &StepGateRequest{
+			StepName: name,
+			StepType: StepTypeLLMCall,
+		}, "tenant-1", "org-1", "user-1", "client-1")
+	}
+
+	// Complete the workflow
+	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID); err != nil {
+		t.Fatalf("CompleteWorkflow() error = %v", err)
+	}
+
+	// TotalSteps should now equal the number of steps that ran
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	if updated.TotalSteps == nil {
+		t.Fatal("TotalSteps should be set after completion")
+	}
+	if *updated.TotalSteps != updated.CurrentStepIndex {
+		t.Errorf("TotalSteps = %d, want %d (CurrentStepIndex)", *updated.TotalSteps, updated.CurrentStepIndex)
+	}
+}
+
+// TestCompleteWorkflow_PreservesDeclaredTotalSteps verifies that a workflow with a declared
+// total_steps is not overwritten on completion (COALESCE leaves it unchanged).
+func TestCompleteWorkflow_PreservesDeclaredTotalSteps(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	declared := 5
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "declared-steps-workflow",
+		TotalSteps:   &declared,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Add only 2 of the 5 declared steps
+	for i, name := range []string{"step-a", "step-b"} {
+		svc.StepGate(ctx, workflow.WorkflowID, fmt.Sprintf("step-%d", i+1), &StepGateRequest{
+			StepName: name,
+			StepType: StepTypeLLMCall,
+		}, "tenant-1", "org-1", "user-1", "client-1")
+	}
+
+	if err := svc.CompleteWorkflow(ctx, workflow.WorkflowID); err != nil {
+		t.Fatalf("CompleteWorkflow() error = %v", err)
+	}
+
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	if updated.TotalSteps == nil || *updated.TotalSteps != declared {
+		t.Errorf("TotalSteps = %v, want %d (declared value must not be overwritten)", updated.TotalSteps, declared)
+	}
+}
+
+// TestAbortWorkflow_FinalizesTotalSteps verifies the same finalization for aborted workflows.
+func TestAbortWorkflow_FinalizesTotalSteps(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "open-ended-aborted",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "agent",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	if err := svc.AbortWorkflow(ctx, workflow.WorkflowID, "user cancelled"); err != nil {
+		t.Fatalf("AbortWorkflow() error = %v", err)
+	}
+
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	if updated.TotalSteps == nil {
+		t.Fatal("TotalSteps should be set after abort")
+	}
+	if *updated.TotalSteps != updated.CurrentStepIndex {
+		t.Errorf("TotalSteps = %d, want %d", *updated.TotalSteps, updated.CurrentStepIndex)
+	}
+}
+
+// TestFailWorkflow_FinalizesTotalSteps verifies the same finalization for failed workflows.
+func TestFailWorkflow_FinalizesTotalSteps(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "open-ended-failed",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "agent",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+	svc.StepGate(ctx, workflow.WorkflowID, "step-2", &StepGateRequest{
+		StepName: "tools",
+		StepType: StepTypeToolCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	if err := svc.FailWorkflow(ctx, workflow.WorkflowID, "llm error"); err != nil {
+		t.Fatalf("FailWorkflow() error = %v", err)
+	}
+
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	if updated.TotalSteps == nil {
+		t.Fatal("TotalSteps should be set after failure")
+	}
+	if *updated.TotalSteps != updated.CurrentStepIndex {
+		t.Errorf("TotalSteps = %d, want %d", *updated.TotalSteps, updated.CurrentStepIndex)
 	}
 }
 

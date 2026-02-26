@@ -13,6 +13,8 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+
+	"axonflow/platform/orchestrator/cloudstorage"
 )
 
 // SEBIModule contains all SEBI compliance services and handlers.
@@ -25,6 +27,9 @@ type SEBIModule struct {
 // Community stub: Configuration is ignored.
 type SEBIModuleConfig struct {
 	DB *sql.DB
+
+	// Cloud storage backend for audit exports (unused in Community)
+	StorageBackend cloudstorage.StorageBackend
 }
 
 // NewSEBIModule creates a new SEBI compliance module.
