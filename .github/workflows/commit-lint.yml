@@ -10,12 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           # Only check PR title (which becomes the squash commit message)
           # This allows historical commits to remain unchanged
-          PR_TITLE="${{ github.event.pull_request.title }}"
-
           echo "Checking PR title: $PR_TITLE"
+
+          # Skip length enforcement for dependency bots — titles follow conventional
+          # commits format but include long path/group metadata we can't control
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ] || [ "$PR_AUTHOR" = "renovate[bot]" ]; then
+            if echo "$PR_TITLE" | grep -qE '^(feat|fix|build|chore|ci|docs|perf|refactor|style|test)(\(.+\))?: .+'; then
+              echo "✅ Bot PR title follows Conventional Commits format (length check skipped)"
+              exit 0
+            fi
+          fi
 
           # Check if PR title follows Conventional Commits format
           if ! echo "$PR_TITLE" | grep -qE '^(feat|fix|build|chore|ci|docs|perf|refactor|style|test)(\(.+\))?: .{1,72}$'; then

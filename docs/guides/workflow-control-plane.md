@@ -61,10 +61,11 @@ curl -X POST http://localhost:8080/api/v1/workflows \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_name": "code-review-pipeline",
-    "source": "langgraph",
-    "total_steps": 3
+    "source": "langgraph"
   }'
 ```
+
+> **Note:** `total_steps` is deprecated. Omit it — the server automatically sets it to the actual step count when the workflow completes, aborts, or fails.
 
 Response:
 ```json
@@ -170,7 +171,7 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
     adapter = AxonFlowLangGraphAdapter(client, "my-workflow")
 
     # Start workflow
-    await adapter.start_workflow(total_steps=3)
+    await adapter.start_workflow()
 
     # Before each LangGraph node
     if await adapter.check_gate("generate", "llm_call", model="gpt-4"):

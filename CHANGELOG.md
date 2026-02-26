@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.6.0] - 2026-02-26
+
+### Community
+
+#### Fixed
+
+- **Open-ended WCP workflows require hardcoded `total_steps`**: `total_steps` is now optional in `CreateWorkflow`. Omitting it (or passing `null`) creates an open-ended workflow — the step count is finalised automatically to `current_step_index` when the workflow reaches any terminal state (completed, aborted, or failed). Fixes LangGraph adapter use case where the graph iterates an unknown number of times. LangGraph example updated to omit `total_steps`; OpenAPI spec and guide updated
+
+### Enterprise
+
+#### Added
+
+- **Cloud Storage Backends for Audit Exports**: S3, Azure Blob Storage, and GCS implementations of `StorageBackend` for durable, compliance-grade audit log export storage
+  - S3: SSE-KMS encryption, Object Lock (WORM compliance), presigned URL downloads, configurable retention
+  - Azure Blob Storage: SAS URL generation, shared key and connection string authentication
+  - GCS: Signed URL generation, ADC / credentials file / credentials JSON authentication
+  - Factory constructor: `AUDIT_EXPORT_STORAGE_TYPE` env var selects backend (`s3` | `azure` | `gcs` | `local`)
+  - MinIO integration: Docker Compose enterprise config with MinIO for local S3-compatible testing
+- **RBI Audit Export to Cloud Storage**: `AuditExportService` uploads exports to configured cloud backend, generates presigned download URLs on-demand, and manages cloud lifecycle (delete, cleanup expired). New `download_url`, `storage_type`, `storage_key` columns on `rbi_audit_exports`. Download handler returns HTTP 307 redirect for cloud exports. Falls back to local filesystem when no backend configured
+- **SEBI Audit Export to Cloud Storage**: Large exports (>1000 records) automatically uploaded to cloud storage with presigned URL population. Small exports retain inline data response
+- **EU AI Act Export to Cloud Storage**: `ExportService` wired with `StorageBackend` for cloud uploads during async export processing. Download handler generates presigned URLs for cloud-stored exports. New `download_url`, `storage_type`, `storage_key` columns on `euaiact_exports`
+- **RBI Module Consolidation**: RBI module merged into `ee/` Go module — removed separate `go.mod`/`go.sum`, aligning with SEBI/EUAIACT/MASFEAT which already share the `ee/` module
+- **Compliance Examples**: `audit-export-cloud/` examples (HTTP, Go, Python, TypeScript, Java) demonstrating full round-trip cloud export with presigned URL download and checksum verification
+
+#### Fixed
+
+- **India PII detector test failures**: 5 pre-existing test expectations corrected — UPI positive indicator precedence, sequential bank account rejection, Verhoeff all-zeros checksum, short bank account masking, `extractContext` boundary calculation
+
+---
+
 ## [4.5.0] - 2026-02-22
 
 ### Community

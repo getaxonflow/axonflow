@@ -75,7 +75,7 @@ type PricingTierInfo struct {
 }
 
 // validateClientCredentialsDB validates a client using database lookup.
-// The clientSecret is the AXON-V2-xxx license key format sent via OAuth2 Basic auth.
+// The clientSecret is the Ed25519-signed license key sent via OAuth2 Basic auth.
 // Supports both api_keys (legacy) and organizations (new) tables.
 func validateClientCredentialsDB(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
 	if clientID == "" {

@@ -102,7 +102,8 @@ func (m *MockRepository) UpdateStatus(ctx context.Context, workflowID string, st
 	return nil
 }
 
-// Complete marks a workflow as completed
+// Complete marks a workflow as completed.
+// If TotalSteps was not declared upfront, it is finalised to CurrentStepIndex.
 func (m *MockRepository) Complete(ctx context.Context, workflowID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -116,11 +117,16 @@ func (m *MockRepository) Complete(ctx context.Context, workflowID string) error 
 	workflow.Status = WorkflowStatusCompleted
 	workflow.CompletedAt = &now
 	workflow.UpdatedAt = now
+	if workflow.TotalSteps == nil {
+		idx := workflow.CurrentStepIndex
+		workflow.TotalSteps = &idx
+	}
 
 	return nil
 }
 
-// Abort marks a workflow as aborted
+// Abort marks a workflow as aborted.
+// If TotalSteps was not declared upfront, it is finalised to CurrentStepIndex.
 func (m *MockRepository) Abort(ctx context.Context, workflowID string, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -134,11 +140,16 @@ func (m *MockRepository) Abort(ctx context.Context, workflowID string, reason st
 	workflow.Status = WorkflowStatusAborted
 	workflow.CompletedAt = &now
 	workflow.UpdatedAt = now
+	if workflow.TotalSteps == nil {
+		idx := workflow.CurrentStepIndex
+		workflow.TotalSteps = &idx
+	}
 
 	return nil
 }
 
-// Fail marks a workflow as failed
+// Fail marks a workflow as failed.
+// If TotalSteps was not declared upfront, it is finalised to CurrentStepIndex.
 func (m *MockRepository) Fail(ctx context.Context, workflowID string, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,6 +163,10 @@ func (m *MockRepository) Fail(ctx context.Context, workflowID string, reason str
 	workflow.Status = WorkflowStatusFailed
 	workflow.CompletedAt = &now
 	workflow.UpdatedAt = now
+	if workflow.TotalSteps == nil {
+		idx := workflow.CurrentStepIndex
+		workflow.TotalSteps = &idx
+	}
 
 	return nil
 }

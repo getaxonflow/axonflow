@@ -182,10 +182,16 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, workflowID string
 	return nil
 }
 
-// Complete marks a workflow as completed
+// Complete marks a workflow as completed.
+// If total_steps was not declared upfront (open-ended workflow), it is finalised to
+// current_step_index so historical queries have an accurate step count.
 func (r *PostgresRepository) Complete(ctx context.Context, workflowID string) error {
 	now := time.Now()
-	query := `UPDATE workflows SET status = $1, completed_at = $2, updated_at = $3 WHERE workflow_id = $4`
+	query := `
+		UPDATE workflows
+		SET status = $1, completed_at = $2, updated_at = $3,
+		    total_steps = COALESCE(total_steps, current_step_index)
+		WHERE workflow_id = $4`
 	result, err := r.db.ExecContext(ctx, query, WorkflowStatusCompleted, now, now, workflowID)
 	if err != nil {
 		return err
@@ -202,7 +208,8 @@ func (r *PostgresRepository) Complete(ctx context.Context, workflowID string) er
 	return nil
 }
 
-// Abort marks a workflow as aborted with reason
+// Abort marks a workflow as aborted with reason.
+// If total_steps was not declared upfront, it is finalised to current_step_index.
 func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reason string) error {
 	now := time.Now()
 	// Store abort reason in metadata
@@ -211,7 +218,8 @@ func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reaso
 		SET status = $1,
 			completed_at = $2,
 			updated_at = $3,
-			metadata = metadata || $4::jsonb
+			metadata = metadata || $4::jsonb,
+			total_steps = COALESCE(total_steps, current_step_index)
 		WHERE workflow_id = $5
 	`
 	reasonJSON, jsonErr := json.Marshal(map[string]string{"abort_reason": reason})
@@ -234,7 +242,8 @@ func (r *PostgresRepository) Abort(ctx context.Context, workflowID string, reaso
 	return nil
 }
 
-// Fail marks a workflow as failed with reason
+// Fail marks a workflow as failed with reason.
+// If total_steps was not declared upfront, it is finalised to current_step_index.
 func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason string) error {
 	now := time.Now()
 	query := `
@@ -242,7 +251,8 @@ func (r *PostgresRepository) Fail(ctx context.Context, workflowID string, reason
 		SET status = $1,
 			completed_at = $2,
 			updated_at = $3,
-			metadata = metadata || $4::jsonb
+			metadata = metadata || $4::jsonb,
+			total_steps = COALESCE(total_steps, current_step_index)
 		WHERE workflow_id = $5
 	`
 	reasonJSON, jsonErr := json.Marshal(map[string]string{"failure_reason": reason})

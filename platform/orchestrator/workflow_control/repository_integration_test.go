@@ -407,6 +407,64 @@ func TestPostgresRepository_Integration_StatusUpdates(t *testing.T) {
 		}
 	})
 
+	t.Run("complete finalises total_steps when not declared", func(t *testing.T) {
+		workflow := &Workflow{
+			WorkflowID:   fmt.Sprintf("wf_finalise_%d", time.Now().UnixNano()),
+			WorkflowName: "Finalise TotalSteps Test",
+			Source:       WorkflowSourceLangGraph,
+			Status:       WorkflowStatusInProgress,
+			TenantID:     tenantID,
+			// TotalSteps intentionally omitted
+		}
+		repo.Create(ctx, workflow)
+
+		// Add two steps so current_step_index advances
+		for i := 0; i < 2; i++ {
+			repo.AddStep(ctx, &WorkflowStep{
+				WorkflowID: workflow.WorkflowID,
+				StepID:     fmt.Sprintf("step-%d", i+1),
+				StepIndex:  i + 1,
+				StepName:   "agent",
+				StepType:   StepTypeLLMCall,
+				Decision:   GateDecisionAllow,
+			})
+		}
+
+		if err := repo.Complete(ctx, workflow.WorkflowID); err != nil {
+			t.Fatalf("Complete() error = %v", err)
+		}
+
+		retrieved, _ := repo.GetByID(ctx, workflow.WorkflowID)
+		if retrieved.TotalSteps == nil {
+			t.Fatal("TotalSteps should be set after completion of open-ended workflow")
+		}
+		if *retrieved.TotalSteps != retrieved.CurrentStepIndex {
+			t.Errorf("TotalSteps = %d, want %d (CurrentStepIndex)", *retrieved.TotalSteps, retrieved.CurrentStepIndex)
+		}
+	})
+
+	t.Run("complete preserves declared total_steps", func(t *testing.T) {
+		declared := 10
+		workflow := &Workflow{
+			WorkflowID:   fmt.Sprintf("wf_preserve_%d", time.Now().UnixNano()),
+			WorkflowName: "Preserve TotalSteps Test",
+			Source:       WorkflowSourceExternal,
+			Status:       WorkflowStatusInProgress,
+			TenantID:     tenantID,
+			TotalSteps:   &declared,
+		}
+		repo.Create(ctx, workflow)
+
+		if err := repo.Complete(ctx, workflow.WorkflowID); err != nil {
+			t.Fatalf("Complete() error = %v", err)
+		}
+
+		retrieved, _ := repo.GetByID(ctx, workflow.WorkflowID)
+		if retrieved.TotalSteps == nil || *retrieved.TotalSteps != declared {
+			t.Errorf("TotalSteps = %v, want %d (declared value must not change)", retrieved.TotalSteps, declared)
+		}
+	})
+
 	t.Run("update status directly", func(t *testing.T) {
 		workflow := &Workflow{
 			WorkflowID:   fmt.Sprintf("wf_updatestatus_%d", time.Now().UnixNano()),

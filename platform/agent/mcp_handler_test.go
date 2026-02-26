@@ -1913,9 +1913,9 @@ func TestValidateServiceLicense_CommunityMode(t *testing.T) {
 		deploymentMode string
 		licenseKey     string
 	}{
-		{"community mode with license key", "community", "AXON-V2-fake-key-12345678"},
+		{"community mode with license key", "community", "AXON-fake-key.fake-signature"},
 		{"community mode empty license", "community", ""},
-		{"unset deployment mode with license key", "", "AXON-V2-fake-key-12345678"},
+		{"unset deployment mode with license key", "", "AXON-fake-key.fake-signature"},
 		{"unset deployment mode empty license", "", ""},
 	}
 
@@ -1963,16 +1963,16 @@ func TestValidateServiceLicense_EnterpriseMode_LicenseValidated(t *testing.T) {
 	}
 }
 
-// TestValidateServiceLicense_EnterpriseMode_V2Key tests that a V2-prefixed key
+// TestValidateServiceLicense_EnterpriseMode_FakeKey tests that a fake license key
 // is processed through license validation in enterprise mode.
-func TestValidateServiceLicense_EnterpriseMode_V2Key(t *testing.T) {
+func TestValidateServiceLicense_EnterpriseMode_FakeKey(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
-	granted, err := validateServiceLicense(context.Background(), w, "AXON-V2-fake-key-12345678", "postgres", "query", "query")
+	granted, err := validateServiceLicense(context.Background(), w, "AXON-fake-key.fake-signature", "postgres", "query", "query")
 
 	// Community build: ValidateLicense returns Valid=true.
-	// V2 key parsing may fail, falling back to community result (no service name).
+	// Fake key parsing may fail, falling back to community result (no service name).
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
