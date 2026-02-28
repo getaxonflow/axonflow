@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/rbi"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/orchestrator/cost"
@@ -412,6 +413,25 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Circuit breaker check — block if circuit is open for this client/tenant/org (#1176)
+	if circuitBreakerInstance != nil {
+		cbResult, cbErr := circuitBreakerInstance.Check(ctx, circuitbreaker.CheckInput{
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			ClientID: client.ID,
+		})
+		if cbErr != nil {
+			log.Printf("⚠️ [Pre-check] Circuit breaker check error: %v", cbErr)
+		} else if !cbResult.Allowed {
+			log.Printf("🔴 [Pre-check] Request blocked by circuit breaker: scope=%s reason=%s", cbResult.Scope, cbResult.Reason)
+			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			sendGatewayError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	// RBI FREE-AI Compliance: Check for active kill switches (emergency AI disable)
 	// This allows organizations to instantly halt all AI operations per RBI guidelines
 	killSwitchResult := checkRBIKillSwitch(ctx, client.OrgID, "")
@@ -632,6 +652,15 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
+
+		// Record policy violation for auto-trip threshold tracking (#1176)
+		if circuitBreakerInstance != nil {
+			for _, policyID := range policyResult.TriggeredPolicies {
+				if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyID); err != nil {
+					log.Printf("⚠️ [Pre-check] Circuit breaker RecordPolicyViolation error: %v", err)
+				}
+			}
+		}
 	} else if requiresHITL {
 		// Issue #1081: HITL required (Enterprise only) - block with require_approval reason
 		// This enables EU AI Act Article 14, RBI, SEBI, and other compliance frameworks

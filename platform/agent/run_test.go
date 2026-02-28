@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"axonflow/platform/agent/circuitbreaker"
 )
 
 // testJWTSecret matches the default JWT_SECRET in docker-compose.yml for local testing
@@ -1251,6 +1253,67 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 	}
 }
 
+// TestClientRequestHandler_CircuitBreakerAllowed tests CB check allows requests (community stub)
+func TestClientRequestHandler_CircuitBreakerAllowed(t *testing.T) {
+	if agentMetrics == nil {
+		agentMetrics = &AgentMetrics{
+			latencies:              []int64{},
+			lastLatencies:          []int64{},
+			staticPolicyLatencies:  []int64{},
+			dynamicPolicyLatencies: []int64{},
+		}
+	}
+
+	if staticPolicyEngine == nil {
+		staticPolicyEngine = NewStaticPolicyEngine()
+	}
+
+	// Set up circuit breaker (community stub — always allows)
+	oldCB := circuitBreakerInstance
+	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(nil), circuitbreaker.Config{})
+	defer func() { circuitBreakerInstance = oldCB }()
+
+	testLicenseKey := generateTestLicenseKey("test-org", "Enterprise", "20351231")
+	knownClients["test-client-cb"] = &ClientAuth{
+		ClientID:    "test-client-cb",
+		LicenseKey:  testLicenseKey,
+		Name:        "Test Client CB",
+		TenantID:    "trip_planner_tenant",
+		Permissions: []string{"query", "llm"},
+		RateLimit:   1000,
+		Enabled:     true,
+	}
+	defer delete(knownClients, "test-client-cb")
+
+	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "result": "ok"})
+	}))
+	defer mockOrch.Close()
+
+	oldOrchURL := orchestratorURL
+	defer func() { orchestratorURL = oldOrchURL }()
+	orchestratorURL = mockOrch.URL
+
+	reqBody := ClientRequest{
+		ClientID:    "test-client-cb",
+		RequestType: "sql",
+		Query:       "SELECT id FROM products",
+		UserToken:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjox",
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/client/request", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	setOAuth2BasicAuth(req, reqBody.ClientID, testLicenseKey)
+
+	w := httptest.NewRecorder()
+	clientRequestHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestClientRequestHandler_ClientDisabled tests request with disabled client
 // TODO(#283): This test requires V2 license validation to check disabled status
 // V2 license validation currently bypasses knownClients and doesn't check Enabled field
@@ -1378,6 +1441,11 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 	if staticPolicyEngine == nil {
 		staticPolicyEngine = NewStaticPolicyEngine()
 	}
+
+	// Set up circuit breaker so RecordPolicyViolation is called on policy block (#1176)
+	oldCB := circuitBreakerInstance
+	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(nil), circuitbreaker.Config{})
+	defer func() { circuitBreakerInstance = oldCB }()
 
 	// Create mock orchestrator that returns a success response
 	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2214,7 +2282,8 @@ func TestRecordLatencyWithPolicy(t *testing.T) {
 
 	// Test recording latency with policy type
 	agentMetrics.recordLatency(100, "static")
-	agentMetrics.recordLatency(200, "database")
+	agentMetrics.recordLatency(200, "dynamic")
+	agentMetrics.recordLatency(300, "database") // unrecognized type, covers default branch
 
 	// Just verify no panic occurs
 }
@@ -2681,6 +2750,73 @@ func TestTierAwarePolicyIntegration(t *testing.T) {
 
 		if result.Matched {
 			t.Error("expected no match for normal query")
+		}
+	})
+}
+
+func TestGetOrchestratorURL(t *testing.T) {
+	t.Run("explicit ORCHESTRATOR_URL env", func(t *testing.T) {
+		old := os.Getenv("ORCHESTRATOR_URL")
+		os.Setenv("ORCHESTRATOR_URL", "http://custom:9090")
+		defer func() {
+			if old == "" {
+				os.Unsetenv("ORCHESTRATOR_URL")
+			} else {
+				os.Setenv("ORCHESTRATOR_URL", old)
+			}
+		}()
+
+		result := getOrchestratorURL()
+		if result != "http://custom:9090" {
+			t.Errorf("expected http://custom:9090, got %s", result)
+		}
+	})
+
+	t.Run("local mode without docker", func(t *testing.T) {
+		oldURL := os.Getenv("ORCHESTRATOR_URL")
+		oldHost := os.Getenv("HOSTNAME")
+		os.Unsetenv("ORCHESTRATOR_URL")
+		os.Setenv("HOSTNAME", "my-macbook")
+		defer func() {
+			if oldURL != "" {
+				os.Setenv("ORCHESTRATOR_URL", oldURL)
+			}
+			os.Setenv("HOSTNAME", oldHost)
+		}()
+
+		result := getOrchestratorURL()
+		if result != LocalOrchestratorURL {
+			t.Errorf("expected %s, got %s", LocalOrchestratorURL, result)
+		}
+	})
+}
+
+func TestCircuitBreakerRetryAfter(t *testing.T) {
+	t.Run("nil ExpiresAt returns empty string", func(t *testing.T) {
+		result := circuitBreakerRetryAfter(nil)
+		if result != "" {
+			t.Errorf("expected empty string for nil ExpiresAt, got %q", result)
+		}
+	})
+
+	t.Run("future ExpiresAt returns positive seconds", func(t *testing.T) {
+		future := time.Now().Add(5 * time.Minute)
+		result := circuitBreakerRetryAfter(&future)
+		if result == "" {
+			t.Error("expected non-empty string for future ExpiresAt")
+		}
+		seconds := 0
+		fmt.Sscanf(result, "%d", &seconds)
+		if seconds < 290 || seconds > 300 {
+			t.Errorf("expected ~300 seconds, got %d", seconds)
+		}
+	})
+
+	t.Run("past ExpiresAt returns 1", func(t *testing.T) {
+		past := time.Now().Add(-10 * time.Minute)
+		result := circuitBreakerRetryAfter(&past)
+		if result != "1" {
+			t.Errorf("expected '1' for past ExpiresAt, got %q", result)
 		}
 	})
 }

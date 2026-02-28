@@ -27,6 +27,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/registry"
 	"axonflow/platform/orchestrator/cost"
@@ -86,6 +87,48 @@ func TestPreCheckHandler_CommunityMode(t *testing.T) {
 	}
 }
 
+// TestPreCheckHandler_CircuitBreakerAllowed tests pre-check passes through CB check
+func TestPreCheckHandler_CircuitBreakerAllowed(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Set up circuit breaker (community stub — always allows)
+	oldCB := circuitBreakerInstance
+	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(nil), circuitbreaker.Config{})
+	defer func() { circuitBreakerInstance = oldCB }()
+
+	reqBody := PreCheckRequest{
+		UserToken:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxfQ.test",
+		ClientID:    "test-client",
+		Query:       "What is the weather today?",
+		DataSources: []string{},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handlePolicyPreCheck)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		return
+	}
+
+	var resp PreCheckResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+	if !resp.Approved {
+		t.Errorf("Expected approved with CB allowing, got blocked: %s", resp.BlockReason)
+	}
+}
+
 // TestPreCheckHandler_PolicyBlock tests pre-check blocking by policy
 func TestPreCheckHandler_PolicyBlock(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
@@ -94,6 +137,11 @@ func TestPreCheckHandler_PolicyBlock(t *testing.T) {
 	defer os.Unsetenv("ENVIRONMENT")
 
 	staticPolicyEngine = NewStaticPolicyEngine()
+
+	// Set up circuit breaker so RecordPolicyViolation is called on policy block (#1176)
+	oldCB := circuitBreakerInstance
+	circuitBreakerInstance = circuitbreaker.New(circuitbreaker.NewRepository(nil), circuitbreaker.Config{})
+	defer func() { circuitBreakerInstance = oldCB }()
 
 	// Create request with SQL injection attempt
 	reqBody := PreCheckRequest{

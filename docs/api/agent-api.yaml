@@ -760,6 +760,219 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /mcp/check-input:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Validate MCP input against policies
+      description: |
+        Validate an MCP request (query or command) against configured policies **without executing it**.
+
+        This endpoint enables external orchestrators (LangGraph, CrewAI, custom pipelines) to use
+        AxonFlow as a policy gate while managing MCP connector execution themselves.
+
+        ## Policy Evaluation
+
+        The following policies are evaluated in order:
+        1. **Dynamic policies** (if enabled): Rate limits, budgets, time-access, role-access via Orchestrator
+        2. **Static policies**: SQL injection detection, dangerous query blocking, PII detection
+
+        If any policy blocks the request, the response returns `allowed: false` with a `block_reason`.
+
+        ## When to Use
+
+        Use `check-input` + `check-output` when your orchestrator manages MCP execution natively.
+        Use `/mcp/resources/query` or `/mcp/tools/execute` when you want AxonFlow to handle both
+        policy enforcement and connector execution.
+
+        ## Audit Logging
+
+        All check-input evaluations are logged to the `mcp_query_audits` table with
+        `operation: "check-input"` for compliance tracking.
+      operationId: mcpCheckInput
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPCheckInputRequest'
+            examples:
+              cleanQuery:
+                summary: Clean SQL query (passes all policies)
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tenant_id: "tenant-123"
+                  connector_type: "postgres"
+                  statement: "SELECT name, email FROM users WHERE id = $1"
+                  parameters:
+                    "1": "usr-001"
+                  operation: "query"
+              sqliAttempt:
+                summary: SQL injection attempt (blocked)
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tenant_id: "tenant-123"
+                  connector_type: "postgres"
+                  statement: "SELECT * FROM users; DROP TABLE users--"
+      responses:
+        '200':
+          description: Input passed all policy checks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPCheckInputResponse'
+              example:
+                allowed: true
+                policies_evaluated: 12
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Input blocked by policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPCheckInputResponse'
+              example:
+                allowed: false
+                block_reason: "SQL injection detected in statement"
+                policies_evaluated: 3
+                policy_info:
+                  policies_evaluated: 3
+                  blocked: true
+                  block_reason: "SQL injection detected in statement"
+        '503':
+          description: Dynamic policy evaluator unavailable (only when graceful degradation is disabled)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/check-output:
+    post:
+      tags:
+        - MCP Connectors
+      summary: Validate MCP output against policies
+      description: |
+        Validate MCP response data against configured policies **without having executed the query
+        through AxonFlow**.
+
+        This endpoint enables external orchestrators to apply AxonFlow's output-side policy
+        enforcement (PII redaction, exfiltration limits, SQLi response scanning) to data they
+        fetched from MCP connectors independently.
+
+        ## Policy Evaluation
+
+        The following checks are applied in order:
+        1. **SQLi response scanning**: Detects SQL injection artifacts in response data
+        2. **Static response policies**: PII detection and redaction (SSN, credit card, Aadhaar, etc.)
+        3. **Exfiltration limits** (query-style only): Row count and byte size limits
+
+        If PII is detected, the response includes `redacted_data` with masked values.
+        If exfiltration limits are exceeded, the response returns `allowed: false`.
+
+        ## Query vs Execute Responses
+
+        - **Query responses** (`response_data`): Full policy evaluation including exfiltration checks
+        - **Execute responses** (`message`): SQLi scanning and PII checks only (no exfiltration limits)
+
+        ## Audit Logging
+
+        All check-output evaluations are logged to the `mcp_query_audits` table with
+        `operation: "check-output"` for compliance tracking.
+      operationId: mcpCheckOutput
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPCheckOutputRequest'
+            examples:
+              cleanData:
+                summary: Clean query response (passes all policies)
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tenant_id: "tenant-123"
+                  connector_type: "postgres"
+                  response_data:
+                    - id: 1
+                      name: "Alice Johnson"
+                      department: "Engineering"
+                  row_count: 1
+              piiData:
+                summary: Response containing PII (redacted)
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tenant_id: "tenant-123"
+                  connector_type: "postgres"
+                  response_data:
+                    - id: 1
+                      name: "Alice Johnson"
+                      ssn: "123-45-6789"
+                  row_count: 1
+              executeResponse:
+                summary: Execute-style response (message only)
+                value:
+                  client_id: "analytics-app"
+                  user_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  tenant_id: "tenant-123"
+                  connector_type: "postgres"
+                  message: "3 rows updated"
+                  metadata:
+                    query: "UPDATE users SET status = 'active' WHERE region = 'us'"
+      responses:
+        '200':
+          description: Output passed all policy checks (may include redacted data)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPCheckOutputResponse'
+              examples:
+                clean:
+                  summary: No issues found
+                  value:
+                    allowed: true
+                    policies_evaluated: 8
+                redacted:
+                  summary: PII detected and redacted
+                  value:
+                    allowed: true
+                    redacted_data:
+                      - id: 1
+                        name: "Alice Johnson"
+                        ssn: "XXX-XX-6789"
+                    policies_evaluated: 8
+                    policy_info:
+                      policies_evaluated: 8
+                      blocked: false
+                      redactions_applied: 1
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Output blocked by policy (exfiltration limit exceeded or SQLi detected)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPCheckOutputResponse'
+              example:
+                allowed: false
+                block_reason: "Exfiltration limit exceeded: row_count 15000 > limit 10000"
+                policies_evaluated: 3
+                exfiltration_info:
+                  exceeded: true
+                  limit_type: rows
+                  rows_returned: 15000
+                  row_limit: 10000
+                  bytes_returned: 5242880
+                  byte_limit: 10485760
+
   /mcp/health:
     get:
       tags:
@@ -3483,7 +3696,118 @@ components:
             type: string
           description: JSON paths of fields that were redacted
         policy_info:
-          $ref: '#/components/schemas/MCPPolicyInfo'
+          $ref: '#/components/schemas/PolicyInfo'
+
+    MCPCheckInputRequest:
+      type: object
+      required:
+        - connector_type
+        - statement
+      properties:
+        client_id:
+          type: string
+          description: Client identifier (required in Enterprise mode)
+        user_token:
+          type: string
+          description: JWT user token (required in Enterprise mode)
+        tenant_id:
+          type: string
+          description: Tenant identifier (required in Enterprise mode, defaults to "default" in Community)
+        user_id:
+          type: string
+          description: Optional user identifier for dynamic policy evaluation
+        user_role:
+          type: string
+          description: Optional user role for role-based access policies (e.g., "admin", "analyst")
+        connector_type:
+          type: string
+          description: MCP connector type (e.g., "postgres", "snowflake", "salesforce")
+        statement:
+          type: string
+          description: The SQL query or command to validate against policies
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Optional query parameters
+        operation:
+          type: string
+          enum: [query, execute]
+          default: query
+          description: Operation type — affects dynamic policy evaluation (rate limits may differ)
+
+    MCPCheckInputResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the input passed all policy checks
+        block_reason:
+          type: string
+          description: Human-readable reason if blocked (omitted when allowed)
+        policies_evaluated:
+          type: integer
+          description: Total number of policies evaluated
+        policy_info:
+          $ref: '#/components/schemas/PolicyInfo'
+
+    MCPCheckOutputRequest:
+      type: object
+      required:
+        - connector_type
+      anyOf:
+        - required: [response_data]
+        - required: [message]
+      properties:
+        client_id:
+          type: string
+          description: Client identifier (required in Enterprise mode)
+        user_token:
+          type: string
+          description: JWT user token (required in Enterprise mode)
+        tenant_id:
+          type: string
+          description: Tenant identifier (required in Enterprise mode, defaults to "default" in Community)
+        user_id:
+          type: string
+          description: Optional user identifier
+        connector_type:
+          type: string
+          description: MCP connector type (e.g., "postgres", "snowflake", "salesforce")
+        response_data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Query-style response rows to validate
+        message:
+          type: string
+          description: Execute-style response message (e.g., "5 rows affected")
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Connector metadata for SQLi response scanning (e.g., query echo, database name)
+        row_count:
+          type: integer
+          description: Total number of rows returned (used for exfiltration limit checks)
+
+    MCPCheckOutputResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the output passed all policy checks
+        block_reason:
+          type: string
+          description: Human-readable reason if blocked (omitted when allowed)
+        redacted_data:
+          description: Response data with PII fields masked (omitted if no redaction needed)
+        policies_evaluated:
+          type: integer
+          description: Total number of policies evaluated
+        exfiltration_info:
+          $ref: '#/components/schemas/ExfiltrationCheckInfo'
+        policy_info:
+          $ref: '#/components/schemas/PolicyInfo'
 
     ConnectorRefreshResponse:
       type: object
