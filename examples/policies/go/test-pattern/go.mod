@@ -2,6 +2,6 @@ module github.com/getaxonflow/axonflow-enterprise/examples/policies/go
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v3 v3.6.0
+require github.com/getaxonflow/axonflow-sdk-go/v3 v3.7.0
 
 
