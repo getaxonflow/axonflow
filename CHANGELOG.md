@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.7.0] - 2026-02-28
+
+### Community
+
+#### Added
+
+- **Standalone MCP Policy-Check Endpoints** (#1265): Two new endpoints for external orchestrators (LangGraph, CrewAI) to validate MCP requests and responses against AxonFlow policies without executing connector queries
+  - `POST /api/v1/mcp/check-input`: Validate SQL/commands against input policies (SQLi detection, dangerous query blocking, PII in queries, dynamic policies). Returns `allowed: true` or `403` with `block_reason`
+  - `POST /api/v1/mcp/check-output`: Validate response data against output policies (PII redaction, exfiltration limits, dynamic policies). Returns original or redacted data with `policy_info`
+  - Supports both query-style (`response_data`) and execute-style (`message` + `metadata`) output validation
+  - Full audit logging for both endpoints
+  - 1033-line test suite covering both endpoints with edge cases
+- **MCP Check Endpoint Examples** (#1267, #1268): Full examples in 6 language variants — HTTP curl scripts, Python SDK, Python-HTTP (raw requests), Go SDK, TypeScript SDK, Java SDK
+- **OpenAPI Spec for MCP Check Endpoints** (#1266): 4 new schemas (`MCPCheckInputRequest`, `MCPCheckInputResponse`, `MCPCheckOutputRequest`, `MCPCheckOutputResponse`) added to `agent-api.yaml`
+
+#### Fixed
+
+- **Python-HTTP MCP check example** (#1271): Added standalone `python-http/` variant with `requirements.txt` and virtual environment setup; refactored Python SDK example for clarity
+
+#### Security
+
+- **CVE-2026-24051**: Bumped `go.opentelemetry.io/otel/sdk` v1.38.0 → v1.40.0 in platform module (HIGH — OTel SDK resource attribute injection)
+- **GHSA-72hv-8253-57qq**: Overrode transitive `jackson-core` 2.17.0 → 2.18.6 across 69 Java example pom.xml files (HIGH — async JSON parser `maxNumberLength` bypass)
+- **OpenTelemetry BOM**: Added `opentelemetry-bom` dependency management to all Java examples for transitive CVE remediation (#1271)
+
+### Enterprise
+
+#### Added
+
+- **Circuit Breaker Pipeline Wiring** (#1176, Phase 1): Wire existing circuit breaker state machine into the Agent request pipeline — previously `Check()`, `RecordError()`, `RecordPolicyViolation()` were dead code
+  - `CB.Check()` runs before policy evaluation in both `clientRequestHandler` and `handlePolicyPreCheck` — returns HTTP 503 with dynamic `Retry-After` header when circuit is open
+  - `RecordPolicyViolation()` called on every policy block, tracking violations toward auto-trip threshold (default: 20 violations in 5 minutes)
+  - Active circuits loaded from DB on startup for restart persistence; background goroutine expires circuits every minute for auto-recovery
+  - Community stubs added (`Check`, `IsAllowed`, `RecordError`, `RecordPolicyViolation`, `LoadCircuits`, `ExpireCircuits`) — no-op, always allowed
+  - Example README updated with correct endpoint names and auto-trip documentation; shell script updated with auto-trip demonstration
+
+---
+
 ## [4.6.0] - 2026-02-26
 
 ### Community

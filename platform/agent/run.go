@@ -85,8 +85,9 @@ var (
 	staticPolicyEngine     *StaticPolicyEngine
 	dbPolicyEngine         *DatabasePolicyEngine
 	tierAwarePolicyEngine  *TierAwarePolicyEngine // New tier-aware policy engine for tenant-specific policies
-	meteringService        *marketplace.MeteringService // AWS Marketplace metering
-	costService            *cost.Service // Cost tracking and budget enforcement (Issue #1082)
+	meteringService           *marketplace.MeteringService // AWS Marketplace metering
+	costService               *cost.Service // Cost tracking and budget enforcement (Issue #1082)
+	circuitBreakerInstance    *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
 )
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
@@ -932,11 +933,35 @@ func Run() {
 
 	// Register Circuit Breaker API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Emergency stop/interrupt capability for AI operations
+	// Issue #1176: Wire circuit breaker into request pipeline with meaningful thresholds
 	cbRepo := circuitbreaker.NewRepository(usageDB)
-	cb := circuitbreaker.New(cbRepo, circuitbreaker.Config{})
-	cbHandler := circuitbreaker.NewHandler(cb)
+	circuitBreakerInstance = circuitbreaker.New(cbRepo, circuitbreaker.Config{
+		DefaultTimeout:           5 * time.Minute,
+		MaxTimeout:               1 * time.Hour,
+		ErrorThreshold:           10,
+		PolicyViolationThreshold: 20,
+		PolicyViolationWindow:    5 * time.Minute,
+		EnableAutoRecovery:       true,
+	})
+	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
 	cbHandler.RegisterRoutes(globalRouter)
 	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
+
+	// Load active circuits from DB so they survive agent restarts
+	if err := circuitBreakerInstance.LoadCircuits(context.Background(), ""); err != nil {
+		log.Printf("⚠️  Failed to load active circuits: %v", err)
+	}
+
+	// Background goroutine to expire open circuits after their timeout
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := circuitBreakerInstance.ExpireCircuits(context.Background()); err != nil {
+				log.Printf("[CircuitBreaker] Expiration error: %v", err)
+			}
+		}
+	}()
 
 	// Register Reverse Proxy routes (ADR-026: Single Entry Point Architecture)
 	// Proxies requests to Orchestrator and Portal based on path
@@ -1072,6 +1097,25 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("✅ Tenant isolation check passed")
 	log.Printf("[TIMING] Tenant isolation check: %v", tenantCheckTime)
 
+	// 3.5 Circuit breaker check — block if circuit is open for this client/tenant/org (#1176)
+	if circuitBreakerInstance != nil {
+		cbResult, cbErr := circuitBreakerInstance.Check(r.Context(), circuitbreaker.CheckInput{
+			OrgID:    client.OrgID,
+			TenantID: client.TenantID,
+			ClientID: client.ID,
+		})
+		if cbErr != nil {
+			log.Printf("⚠️ Circuit breaker check error: %v", cbErr)
+		} else if !cbResult.Allowed {
+			log.Printf("🔴 Request blocked by circuit breaker: scope=%s reason=%s", cbResult.Scope, cbResult.Reason)
+			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
+			sendErrorResponse(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable, nil)
+			return
+		}
+	}
+
 	// 4. Apply static policy enforcement
 	// Uses UnifiedPolicyEngine (shared engine) as primary path, with fallbacks.
 	// Phase 2: Tenant-specific policies via tierAwarePolicyEngine (below).
@@ -1143,6 +1187,15 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	if policyResult.Blocked {
 		log.Printf("Request blocked by static policy for user %s: %s", user.Email, policyResult.Reason)
+
+		// Record policy violation for auto-trip threshold tracking (#1176)
+		if circuitBreakerInstance != nil {
+			for _, policyID := range policyResult.TriggeredPolicies {
+				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ID, policyID); err != nil {
+					log.Printf("⚠️ Circuit breaker RecordPolicyViolation error: %v", err)
+				}
+			}
+		}
 
 		// Track blocked request metrics
 		if agentMetrics != nil {
@@ -1887,6 +1940,19 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int, po
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding error response: %v", err)
 	}
+}
+
+// circuitBreakerRetryAfter computes a Retry-After value in seconds from the circuit's ExpiresAt.
+// Returns empty string for indefinite/manual trips (no ExpiresAt) so the header is omitted.
+func circuitBreakerRetryAfter(expiresAt *time.Time) string {
+	if expiresAt == nil {
+		return ""
+	}
+	seconds := int(time.Until(*expiresAt).Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("%d", seconds)
 }
 
 func getEnv(key, defaultValue string) string {
