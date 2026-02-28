@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.5.0 | **SDK Version:** v3.6.0
+**Platform Version:** v4.5.0 | **SDK Version:** v3.7.0
 
 Proxy Mode is the simplest way to add governance to your AI applications. AxonFlow acts as a proxy between your application and LLM providers, handling policy enforcement, PII detection, rate limiting, and audit logging automatically.
 
