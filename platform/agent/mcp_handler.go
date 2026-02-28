@@ -526,6 +526,12 @@ func RegisterMCPHandlers(r *mux.Router) {
 	// Overall MCP health check
 	r.HandleFunc("/mcp/health", mcpHealthHandler).Methods("GET")
 
+	// Standalone policy-check endpoints (Issue #1258)
+	// These allow external orchestrators to use AxonFlow as a policy gate
+	// without routing MCP execution through AxonFlow.
+	r.HandleFunc("/api/v1/mcp/check-input", mcpCheckInputHandler).Methods("POST")
+	r.HandleFunc("/api/v1/mcp/check-output", mcpCheckOutputHandler).Methods("POST")
+
 	log.Println("[MCP] Registered MCP endpoint handlers")
 }
 
@@ -613,6 +619,251 @@ type MCPQueryRequest struct {
 	Parameters map[string]interface{} `json:"parameters"`  // Query parameters
 	Limit      int                    `json:"limit"`       // Result limit (optional)
 	Timeout    string                 `json:"timeout"`     // Timeout (optional, e.g., "5s")
+}
+
+// --- Policy evaluation helpers (Issue #1258) ---
+// These helpers allow the same policy logic to be reused by mcpQueryHandler,
+// mcpExecuteHandler, and the new standalone check-input / check-output handlers.
+
+// InputPolicyOutcome carries the results of dynamic + request-phase static policy evaluation.
+// It avoids mixing audit concerns with policy logic so callers retain full control.
+type InputPolicyOutcome struct {
+	// EvalUnavailable is true when the dynamic evaluator returned a transient error.
+	// Callers should respond with 503 Service Unavailable.
+	EvalUnavailable bool
+
+	// DynamicBlocked is true when the dynamic policy engine was the deciding factor.
+	// Callers should include DynamicInfo in the 403 response body.
+	DynamicBlocked bool
+
+	// DynamicBlockReason is the human-readable block reason from the dynamic policy engine.
+	DynamicBlockReason string
+
+	// DynamicInfo is the structured info returned by the dynamic evaluator.
+	// Populated whenever the dynamic evaluator ran (allowed or blocked).
+	DynamicInfo *sharedpolicy.DynamicPolicyInfo
+
+	// StaticResult is the result of request-phase static policy evaluation.
+	// Nil when the static policy engine is disabled or the connector is excluded.
+	StaticResult *sharedpolicy.RequestResult
+}
+
+// evaluateInputPolicies runs dynamic + request-phase static policy checks without
+// calling any connector. Shared by mcpQueryHandler, mcpExecuteHandler, and
+// mcpCheckInputHandler (Issue #1258).
+func evaluateInputPolicies(
+	ctx context.Context,
+	tenantID, userID, userRole, connectorName, operation, statement string,
+	parameters map[string]interface{},
+) InputPolicyOutcome {
+	var out InputPolicyOutcome
+
+	// Dynamic policy evaluation (rate limits, budgets, time/role access)
+	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(connectorName) {
+		dynamicReq := sharedpolicy.DynamicPolicyRequest{
+			TenantID:      tenantID,
+			UserID:        userID,
+			UserRole:      userRole,
+			ConnectorName: connectorName,
+			Operation:     operation,
+			Statement:     statement,
+			Parameters:    parameters,
+		}
+		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
+		out.DynamicInfo = info
+		if err != nil {
+			log.Printf("[MCP] Dynamic policy evaluation failed: %v", err)
+			out.EvalUnavailable = true
+			return out
+		}
+		if !dynamicResp.Allowed {
+			log.Printf("[MCP] Request blocked by dynamic policy: %s", dynamicResp.BlockReason)
+			out.DynamicBlocked = true
+			out.DynamicBlockReason = dynamicResp.BlockReason
+			return out
+		}
+	}
+
+	// Request-phase static policy evaluation (SQLi, PII, compliance)
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	mcpDetectionCfg := GetMCPDetectionConfig()
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
+		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
+			TenantID:      tenantID,
+			ConnectorName: connectorName,
+			UserID:        userID,
+			Categories: []sharedpolicy.PolicyCategory{
+				sharedpolicy.CategorySecuritySQLi,
+				sharedpolicy.CategorySecurityDangerous,
+				sharedpolicy.CategoryPIIGlobal,
+				sharedpolicy.CategoryPIIUS,
+				sharedpolicy.CategoryPIIIndia,
+				sharedpolicy.CategoryPIIEU,
+				sharedpolicy.CategoryPIISingapore,
+				sharedpolicy.CategoryComplianceRBI,
+				sharedpolicy.CategoryComplianceSEBI,
+				sharedpolicy.CategoryComplianceEUAIAct,
+				sharedpolicy.CategoryComplianceMASFEAT,
+			},
+			SkipCategories:  mcpDetectionCfg.SkipCategories,
+			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+		})
+		if out.StaticResult.Blocked {
+			log.Printf("[MCP] Request blocked by static policy '%s': %s",
+				out.StaticResult.BlockedBy.PolicyID, out.StaticResult.BlockReason)
+		}
+	}
+
+	return out
+}
+
+// OutputPolicyOutcome carries the results of SQLi scanning, response-phase static
+// policy evaluation, and optionally exfiltration detection.
+// It avoids mixing audit concerns with policy logic so callers retain full control.
+type OutputPolicyOutcome struct {
+	// SQLiBlocked is true when a SQL injection pattern was detected in the response.
+	SQLiBlocked bool
+
+	// SQLiPattern is the pattern that triggered the SQLi block.
+	SQLiPattern string
+
+	// StaticResult is the result of response-phase static policy evaluation (PII redaction etc).
+	// Nil when the static policy engine is disabled or the connector is excluded.
+	StaticResult *sharedpolicy.ResponseResult
+
+	// RedactedRows is non-nil when PII redaction was applied to query rows.
+	RedactedRows []map[string]interface{}
+
+	// RedactedMessage is non-empty when PII redaction was applied to a command response message.
+	RedactedMessage string
+
+	// ExfilResult is the raw exfiltration check result. Nil when checkExfiltration is false
+	// or when the exfiltration checker is disabled.
+	ExfilResult *sharedpolicy.ExfiltrationResult
+
+	// ExfilInfo is the structured exfiltration info for inclusion in PolicyInfo.
+	ExfilInfo *sharedpolicy.ExfiltrationCheckInfo
+}
+
+// evaluateOutputPolicies runs SQLi response scanning, response-phase static policy
+// evaluation (PII redaction), and optionally exfiltration detection on pre-executed
+// connector output. No connector is called.
+//
+// Pass rows for query results and an empty message; pass nil rows and a non-empty message
+// for execute results. Pass messageMetadata from CommandResult.Metadata (may be nil).
+// Set checkExfiltration true for query-style responses, false for execute responses.
+//
+// Shared by mcpQueryHandler, mcpExecuteHandler, and mcpCheckOutputHandler (Issue #1258).
+func evaluateOutputPolicies(
+	ctx context.Context,
+	tenantID, userID, connectorName string,
+	rows []map[string]interface{},
+	message string,
+	messageMetadata map[string]interface{},
+	rowCount int,
+	checkExfiltration bool,
+) OutputPolicyOutcome {
+	var out OutputPolicyOutcome
+
+	// 1. SQLi response scan
+	if rows != nil {
+		scanResult, scanErr := sqli.GetGlobalMiddleware().ScanQueryResponse(ctx, connectorName, rows)
+		if scanErr != nil {
+			log.Printf("[MCP] SQLi scan error: %v", scanErr)
+			// Continue - don't block on scan errors
+		} else if scanResult.Blocked {
+			log.Printf("[MCP] SQLi detected in response from connector '%s': pattern=%s category=%s",
+				connectorName, scanResult.Pattern, scanResult.Category)
+			out.SQLiBlocked = true
+			out.SQLiPattern = scanResult.Pattern
+			return out
+		}
+	} else if message != "" {
+		scanResult, scanErr := sqli.GetGlobalMiddleware().ScanCommandResponse(ctx, connectorName, message, messageMetadata)
+		if scanErr != nil {
+			log.Printf("[MCP] SQLi scan error: %v", scanErr)
+			// Continue - don't block on scan errors
+		} else if scanResult.Blocked {
+			log.Printf("[MCP] SQLi detected in command response from connector '%s': pattern=%s category=%s",
+				connectorName, scanResult.Pattern, scanResult.Category)
+			out.SQLiBlocked = true
+			out.SQLiPattern = scanResult.Pattern
+			return out
+		}
+	}
+
+	// 2. Response-phase static policy evaluation (PII redaction)
+	policyEngine := sharedpolicy.GetGlobalEngine()
+	mcpDetectionCfg := GetMCPDetectionConfig()
+	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
+		var responseContent []map[string]interface{}
+		if rows != nil {
+			responseContent = rows
+		} else if message != "" {
+			responseContent = []map[string]interface{}{{"message": message}}
+		}
+		if responseContent != nil {
+			out.StaticResult = policyEngine.EvaluateResponse(ctx, responseContent, sharedpolicy.EvalOptions{
+				TenantID:      tenantID,
+				ConnectorName: connectorName,
+				UserID:        userID,
+				Categories: []sharedpolicy.PolicyCategory{
+					sharedpolicy.CategoryPIIGlobal,
+					sharedpolicy.CategoryPIIUS,
+					sharedpolicy.CategoryPIIIndia,
+					sharedpolicy.CategoryPIIEU,
+					sharedpolicy.CategoryPIISingapore,
+				},
+				SkipCategories:  mcpDetectionCfg.SkipCategories,
+				ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+				MaxRedactions:   100,
+			})
+			if out.StaticResult.Blocked {
+				log.Printf("[MCP] Response blocked by policy '%s': %s",
+					out.StaticResult.BlockedBy.PolicyID, out.StaticResult.BlockReason)
+				return out
+			}
+			if out.StaticResult.Redacted {
+				if rows != nil {
+					if redactedRows, ok := out.StaticResult.Content.([]map[string]interface{}); ok {
+						out.RedactedRows = redactedRows
+					}
+				} else if message != "" {
+					if redactedRows, ok := out.StaticResult.Content.([]map[string]interface{}); ok && len(redactedRows) > 0 {
+						if msg, ok := redactedRows[0]["message"].(string); ok {
+							out.RedactedMessage = msg
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Exfiltration detection (enabled for query responses, disabled for execute)
+	if checkExfiltration {
+		exfiltrationChecker := sharedpolicy.GetGlobalExfiltrationChecker()
+		if exfiltrationChecker != nil && exfiltrationChecker.IsEnabled() {
+			// Use redacted data for accurate byte-count measurement
+			var dataForExfil interface{}
+			if rows != nil {
+				if out.RedactedRows != nil {
+					dataForExfil = out.RedactedRows
+				} else {
+					dataForExfil = rows
+				}
+			}
+			exfilResult, exfilInfo := exfiltrationChecker.CheckWithInfo(ctx, rowCount, dataForExfil)
+			out.ExfilResult = exfilResult
+			out.ExfilInfo = exfilInfo
+			if exfilResult.Exceeded {
+				log.Printf("[MCP] Exfiltration limit exceeded for connector '%s': %s (actual=%d, limit=%d)",
+					connectorName, exfilResult.LimitType, exfilResult.ActualValue, exfilResult.LimitValue)
+			}
+		}
+	}
+
+	return out
 }
 
 // mcpQueryHandler executes a query via a connector (MCP Resource pattern)
@@ -786,88 +1037,40 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Dynamic policy evaluation via Orchestrator (Issue #968)
-	// Called BEFORE static policy evaluation - can block based on rate limits, budgets, time/role access
-	var dynamicPolicyInfo *sharedpolicy.DynamicPolicyInfo
-	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(req.Connector) {
-		dynamicReq := sharedpolicy.DynamicPolicyRequest{
-			TenantID:      user.TenantID,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			UserRole:      user.Role,
-			ConnectorName: req.Connector,
-			Operation:     "query",
-			Statement:     statement,
-			Parameters:    req.Parameters,
-		}
+	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
+	inputOutcome := evaluateInputPolicies(ctx,
+		user.TenantID, fmt.Sprintf("%d", user.ID), user.Role,
+		req.Connector, "query", statement, req.Parameters)
 
-		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
-		dynamicPolicyInfo = info
-
-		if err != nil {
-			// If graceful degradation is disabled and eval failed, block
-			log.Printf("[MCP] Dynamic policy evaluation failed: %v", err)
-			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
-			return
-		}
-
-		if !dynamicResp.Allowed {
-			log.Printf("[MCP] Request blocked by dynamic policy: %s", dynamicResp.BlockReason)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":             false,
-				"error":               dynamicResp.BlockReason,
-				"dynamic_policy_info": info,
-			})
-			return
-		}
+	if inputOutcome.EvalUnavailable {
+		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+		return
 	}
 
-	// Request-phase policy evaluation (before connector.Query)
-	var requestPolicyResult *sharedpolicy.RequestResult
-	policyEngine := sharedpolicy.GetGlobalEngine()
-	mcpDetectionCfg := GetMCPDetectionConfig()
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
-		requestPolicyResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			ConnectorName: req.Connector,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				// Security categories
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				// PII categories by jurisdiction
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				// Compliance categories (Issue #1081)
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
-			SkipCategories:  mcpDetectionCfg.SkipCategories,
-			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+	if inputOutcome.DynamicBlocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = inputOutcome.DynamicBlockReason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":             false,
+			"error":               inputOutcome.DynamicBlockReason,
+			"dynamic_policy_info": inputOutcome.DynamicInfo,
 		})
+		return
+	}
 
-		// Update audit entry with request policy evaluation results
-		auditEntry.RequestPoliciesEvaluated = requestPolicyResult.PoliciesEvaluated
-		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(requestPolicyResult.MatchedPolicies)
-
-		if requestPolicyResult.Blocked {
-			log.Printf("[MCP] Request blocked by policy '%s': %s",
-				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
-
-			// Log audit entry for blocked request
+	if inputOutcome.StaticResult != nil {
+		auditEntry.RequestPoliciesEvaluated = inputOutcome.StaticResult.PoliciesEvaluated
+		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(inputOutcome.StaticResult.MatchedPolicies)
+		if inputOutcome.StaticResult.Blocked {
 			auditEntry.RequestBlocked = true
-			auditEntry.RequestBlockReason = requestPolicyResult.BlockReason
+			auditEntry.RequestBlockReason = inputOutcome.StaticResult.BlockReason
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 			logMCPQueryAudit(auditEntry)
-
-			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
+			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", inputOutcome.StaticResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
 		}
@@ -886,131 +1089,83 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Scan response for SQL injection (if enabled)
-	scanResult, scanErr := sqli.GetGlobalMiddleware().ScanQueryResponse(ctx, req.Connector, result.Rows)
-	if scanErr != nil {
-		log.Printf("[MCP] SQLi scan error: %v", scanErr)
-		// Continue - don't block on scan errors
-	} else if scanResult.Blocked {
-		log.Printf("[MCP] SQLi detected in response from connector '%s': pattern=%s category=%s",
-			req.Connector, scanResult.Pattern, scanResult.Category)
+	// Response-phase policy evaluation: SQLi scan, PII redaction, exfiltration (Issue #1258)
+	outputOutcome := evaluateOutputPolicies(ctx,
+		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
+		result.Rows, "", nil, result.RowCount, true)
 
-		// Log audit entry for SQLi block (treat as request block since it's a security issue)
+	// Use redacted row data if PII was redacted
+	responseData := result.Rows
+	if outputOutcome.RedactedRows != nil {
+		responseData = outputOutcome.RedactedRows
+	}
+
+	// Update audit entry with output policy results
+	auditEntry.ExfilRowsReturned = result.RowCount
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
+		auditEntry.ResponseRedacted = true
+		auditEntry.ResponseRedactionsCount = len(outputOutcome.StaticResult.RedactedFields)
+		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
+	}
+
+	if outputOutcome.SQLiBlocked {
 		auditEntry.RequestBlocked = true
-		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", scanResult.Pattern)
+		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", outputOutcome.SQLiPattern)
 		auditEntry.RowCount = result.RowCount
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-
-		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
+		sendErrorResponse(w,
+			fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outputOutcome.SQLiPattern),
+			http.StatusForbidden, nil)
 		return
 	}
 
-	// Response-phase policy evaluation (after connector.Query, for PII redaction)
-	var responsePolicyResult *sharedpolicy.ResponseResult
-	responseData := result.Rows
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
-		responsePolicyResult = policyEngine.EvaluateResponse(ctx, result.Rows, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			ConnectorName: req.Connector,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-			},
-			SkipCategories:  mcpDetectionCfg.SkipCategories,
-			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
-			MaxRedactions:   100, // Limit redactions per response
-		})
-
-		// Update audit entry with response policy evaluation results
-		if responsePolicyResult.Redacted {
-			auditEntry.ResponseRedacted = true
-			auditEntry.ResponseRedactionsCount = len(responsePolicyResult.RedactedFields)
-			auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
-		}
-
-		if responsePolicyResult.Blocked {
-			log.Printf("[MCP] Response blocked by policy '%s': %s",
-				responsePolicyResult.BlockedBy.PolicyID, responsePolicyResult.BlockReason)
-
-			// Log audit entry for response block
-			auditEntry.RequestBlocked = true // Mark as blocked (response phase block)
-			auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason)
-			auditEntry.RowCount = result.RowCount
-			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-			logMCPQueryAudit(auditEntry)
-
-			sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason),
-				http.StatusForbidden, nil)
-			return
-		}
-		// Use redacted content if available
-		if responsePolicyResult.Redacted {
-			if redactedRows, ok := responsePolicyResult.Content.([]map[string]interface{}); ok {
-				responseData = redactedRows
-			}
-		}
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Blocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason)
+		auditEntry.RowCount = result.RowCount
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason),
+			http.StatusForbidden, nil)
+		return
 	}
 
-	// Exfiltration detection (Issue #966): Check row count and data volume limits
-	var exfiltrationCheckInfo *sharedpolicy.ExfiltrationCheckInfo
-	exfiltrationChecker := sharedpolicy.GetGlobalExfiltrationChecker()
-	if exfiltrationChecker != nil && exfiltrationChecker.IsEnabled() {
-		exfilResult, exfilInfo := exfiltrationChecker.CheckWithInfo(ctx, result.RowCount, responseData)
-		exfiltrationCheckInfo = exfilInfo
-
-		// Update audit entry with exfiltration check info
-		auditEntry.ExfilRowsReturned = result.RowCount
-
-		if exfilResult.Exceeded {
-			log.Printf("[MCP] Exfiltration limit exceeded for connector '%s': %s (actual=%d, limit=%d)",
-				req.Connector, exfilResult.LimitType, exfilResult.ActualValue, exfilResult.LimitValue)
-
-			// Log audit entry for exfiltration violation
-			auditEntry.ExfilExceeded = true
-			auditEntry.ExfilLimitType = exfilResult.LimitType
-			auditEntry.RowCount = result.RowCount
-			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-			logMCPQueryAudit(auditEntry)
-
-			// Return 403 with detailed error message including limit info
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":      false,
-				"error":        exfilResult.BlockReason,
-				"limit_type":   exfilResult.LimitType,
-				"actual_value": exfilResult.ActualValue,
-				"limit_value":  exfilResult.LimitValue,
-			})
-			return
-		}
+	if outputOutcome.ExfilResult != nil && outputOutcome.ExfilResult.Exceeded {
+		auditEntry.ExfilExceeded = true
+		auditEntry.ExfilLimitType = outputOutcome.ExfilResult.LimitType
+		auditEntry.RowCount = result.RowCount
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":      false,
+			"error":        outputOutcome.ExfilResult.BlockReason,
+			"limit_type":   outputOutcome.ExfilResult.LimitType,
+			"actual_value": outputOutcome.ExfilResult.ActualValue,
+			"limit_value":  outputOutcome.ExfilResult.LimitValue,
+		})
+		return
 	}
 
 	// Build policy info for response
-	policyInfo := sharedpolicy.BuildPolicyInfo(requestPolicyResult, responsePolicyResult)
-	// Add exfiltration check info to policy info (Issue #966)
-	if policyInfo != nil && exfiltrationCheckInfo != nil {
-		policyInfo.ExfiltrationCheck = exfiltrationCheckInfo
-	} else if policyInfo == nil && exfiltrationCheckInfo != nil {
-		// Create minimal policy info just for exfiltration data
+	policyInfo := sharedpolicy.BuildPolicyInfo(inputOutcome.StaticResult, outputOutcome.StaticResult)
+	if policyInfo != nil && outputOutcome.ExfilInfo != nil {
+		policyInfo.ExfiltrationCheck = outputOutcome.ExfilInfo
+	} else if policyInfo == nil && outputOutcome.ExfilInfo != nil {
 		policyInfo = &sharedpolicy.PolicyInfo{
-			ExfiltrationCheck: exfiltrationCheckInfo,
+			ExfiltrationCheck: outputOutcome.ExfilInfo,
 		}
 	}
-	// Add dynamic policy info (Issue #968)
-	if policyInfo != nil && dynamicPolicyInfo != nil {
-		policyInfo.DynamicPolicyInfo = dynamicPolicyInfo
-	} else if policyInfo == nil && dynamicPolicyInfo != nil {
+	if policyInfo != nil && inputOutcome.DynamicInfo != nil {
+		policyInfo.DynamicPolicyInfo = inputOutcome.DynamicInfo
+	} else if policyInfo == nil && inputOutcome.DynamicInfo != nil {
 		policyInfo = &sharedpolicy.PolicyInfo{
-			DynamicPolicyInfo: dynamicPolicyInfo,
+			DynamicPolicyInfo: inputOutcome.DynamicInfo,
 		}
 	}
-	redactedFields := sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+	redactedFields := sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
 
 	// 8. Return results
 	// SDK expects "data" field (ConnectorResponse.Data), not "rows"
@@ -1024,7 +1179,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add policy info fields (additive, backward compatible)
-	if responsePolicyResult != nil && responsePolicyResult.Redacted {
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
 		response["redacted"] = true
 		response["redacted_fields"] = redactedFields
 	}
@@ -1221,92 +1376,40 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Dynamic policy evaluation via Orchestrator (rate limits, budgets, time/role access)
-	var dynamicPolicyInfo *sharedpolicy.DynamicPolicyInfo
-	dynamicEvaluator := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-	if dynamicEvaluator != nil && dynamicEvaluator.IsEnabled(req.Connector) {
-		dynamicReq := sharedpolicy.DynamicPolicyRequest{
-			TenantID:      user.TenantID,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			UserRole:      user.Role,
-			ConnectorName: req.Connector,
-			Operation:     "execute",
-			Statement:     req.Statement,
-			Parameters:    req.Parameters,
-		}
+	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
+	inputOutcome := evaluateInputPolicies(ctx,
+		user.TenantID, fmt.Sprintf("%d", user.ID), user.Role,
+		req.Connector, "execute", req.Statement, req.Parameters)
 
-		dynamicResp, info, err := dynamicEvaluator.EvaluateWithGracefulDegradation(ctx, dynamicReq)
-		dynamicPolicyInfo = info
-
-		if err != nil {
-			log.Printf("[MCP] Dynamic policy evaluation failed for execute: %v", err)
-			sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
-			return
-		}
-
-		if !dynamicResp.Allowed {
-			log.Printf("[MCP] Execute blocked by dynamic policy: %s", dynamicResp.BlockReason)
-
-			auditEntry.RequestBlocked = true
-			auditEntry.RequestBlockReason = dynamicResp.BlockReason
-			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-			logMCPQueryAudit(auditEntry)
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":             false,
-				"error":               dynamicResp.BlockReason,
-				"dynamic_policy_info": info,
-			})
-			return
-		}
+	if inputOutcome.EvalUnavailable {
+		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+		return
 	}
 
-	// Request-phase policy evaluation (before connector.Execute)
-	var requestPolicyResult *sharedpolicy.RequestResult
-	policyEngine := sharedpolicy.GetGlobalEngine()
-	mcpDetectionCfg := GetMCPDetectionConfig()
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) {
-		requestPolicyResult = policyEngine.EvaluateRequest(ctx, req.Statement, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			ConnectorName: req.Connector,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				// Security categories
-				sharedpolicy.CategorySecuritySQLi,
-				sharedpolicy.CategorySecurityDangerous,
-				// PII categories by jurisdiction
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-				// Compliance categories (Issue #1081)
-				sharedpolicy.CategoryComplianceRBI,
-				sharedpolicy.CategoryComplianceSEBI,
-				sharedpolicy.CategoryComplianceEUAIAct,
-				sharedpolicy.CategoryComplianceMASFEAT,
-			},
-			SkipCategories:  mcpDetectionCfg.SkipCategories,
-			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
+	if inputOutcome.DynamicBlocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = inputOutcome.DynamicBlockReason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":             false,
+			"error":               inputOutcome.DynamicBlockReason,
+			"dynamic_policy_info": inputOutcome.DynamicInfo,
 		})
+		return
+	}
 
-		// Update audit entry with request policy evaluation results
-		auditEntry.RequestPoliciesEvaluated = requestPolicyResult.PoliciesEvaluated
-		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(requestPolicyResult.MatchedPolicies)
-
-		if requestPolicyResult.Blocked {
-			log.Printf("[MCP] Execute blocked by policy '%s': %s",
-				requestPolicyResult.BlockedBy.PolicyID, requestPolicyResult.BlockReason)
-
-			// Log audit entry for blocked request
+	if inputOutcome.StaticResult != nil {
+		auditEntry.RequestPoliciesEvaluated = inputOutcome.StaticResult.PoliciesEvaluated
+		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(inputOutcome.StaticResult.MatchedPolicies)
+		if inputOutcome.StaticResult.Blocked {
 			auditEntry.RequestBlocked = true
-			auditEntry.RequestBlockReason = requestPolicyResult.BlockReason
+			auditEntry.RequestBlockReason = inputOutcome.StaticResult.BlockReason
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 			logMCPQueryAudit(auditEntry)
-
-			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", requestPolicyResult.BlockReason),
+			sendErrorResponse(w, fmt.Sprintf("Request blocked: %s", inputOutcome.StaticResult.BlockReason),
 				http.StatusForbidden, nil)
 			return
 		}
@@ -1325,80 +1428,55 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Scan response for SQL injection (if enabled)
-	scanResult, scanErr := sqli.GetGlobalMiddleware().ScanCommandResponse(ctx, req.Connector, result.Message, result.Metadata)
-	if scanErr != nil {
-		log.Printf("[MCP] SQLi scan error: %v", scanErr)
-		// Continue - don't block on scan errors
-	} else if scanResult.Blocked {
-		log.Printf("[MCP] SQLi detected in command response from connector '%s': pattern=%s category=%s",
-			req.Connector, scanResult.Pattern, scanResult.Category)
+	// Response-phase policy evaluation: SQLi scan, PII redaction (Issue #1258)
+	// Exfiltration checking is not applied to execute results (execute returns rows_affected, not data rows).
+	outputOutcome := evaluateOutputPolicies(ctx,
+		user.TenantID, fmt.Sprintf("%d", user.ID), req.Connector,
+		nil, result.Message, result.Metadata, int(result.RowsAffected), false)
 
-		// Log audit entry for SQLi block
+	// Use redacted message if PII was redacted
+	responseMessage := result.Message
+	if outputOutcome.RedactedMessage != "" {
+		responseMessage = outputOutcome.RedactedMessage
+	}
+
+	// Update audit entry with output policy results
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
+		auditEntry.ResponseRedacted = true
+		auditEntry.ResponseRedactionsCount = len(outputOutcome.StaticResult.RedactedFields)
+		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
+	}
+
+	if outputOutcome.SQLiBlocked {
 		auditEntry.RequestBlocked = true
-		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", scanResult.Pattern)
+		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", outputOutcome.SQLiPattern)
 		auditEntry.RowCount = int(result.RowsAffected)
 		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 		logMCPQueryAudit(auditEntry)
-
-		sendErrorResponse(w, fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", scanResult.Pattern), http.StatusForbidden, nil)
+		sendErrorResponse(w,
+			fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outputOutcome.SQLiPattern),
+			http.StatusForbidden, nil)
 		return
 	}
 
-	// Response-phase policy evaluation (PII redaction in execute message)
-	var responsePolicyResult *sharedpolicy.ResponseResult
-	responseMessage := result.Message
-	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(req.Connector) && result.Message != "" {
-		messageData := []map[string]interface{}{{"message": result.Message}}
-		responsePolicyResult = policyEngine.EvaluateResponse(ctx, messageData, sharedpolicy.EvalOptions{
-			TenantID:      user.TenantID,
-			ConnectorName: req.Connector,
-			UserID:        fmt.Sprintf("%d", user.ID),
-			Categories: []sharedpolicy.PolicyCategory{
-				sharedpolicy.CategoryPIIGlobal,
-				sharedpolicy.CategoryPIIUS,
-				sharedpolicy.CategoryPIIIndia,
-				sharedpolicy.CategoryPIIEU,
-				sharedpolicy.CategoryPIISingapore,
-			},
-			SkipCategories:  mcpDetectionCfg.SkipCategories,
-			ActionOverrides: mcpDetectionCfg.BuildActionOverrides(),
-			MaxRedactions:   100,
-		})
-
-		if responsePolicyResult.Redacted {
-			auditEntry.ResponseRedacted = true
-			auditEntry.ResponseRedactionsCount = len(responsePolicyResult.RedactedFields)
-			auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
-			if redactedRows, ok := responsePolicyResult.Content.([]map[string]interface{}); ok && len(redactedRows) > 0 {
-				if msg, ok := redactedRows[0]["message"].(string); ok {
-					responseMessage = msg
-				}
-			}
-		}
-
-		if responsePolicyResult.Blocked {
-			log.Printf("[MCP] Execute response blocked by policy '%s': %s",
-				responsePolicyResult.BlockedBy.PolicyID, responsePolicyResult.BlockReason)
-			auditEntry.RequestBlocked = true
-			auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason)
-			auditEntry.RowCount = int(result.RowsAffected)
-			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-			logMCPQueryAudit(auditEntry)
-
-			sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", responsePolicyResult.BlockReason),
-				http.StatusForbidden, nil)
-			return
-		}
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Blocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason)
+		auditEntry.RowCount = int(result.RowsAffected)
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		sendErrorResponse(w, fmt.Sprintf("Response blocked: %s", outputOutcome.StaticResult.BlockReason),
+			http.StatusForbidden, nil)
+		return
 	}
 
 	// Build policy info for response
-	policyInfo := sharedpolicy.BuildPolicyInfo(requestPolicyResult, responsePolicyResult)
-	if policyInfo != nil && dynamicPolicyInfo != nil {
-		policyInfo.DynamicPolicyInfo = dynamicPolicyInfo
-	} else if policyInfo == nil && dynamicPolicyInfo != nil {
+	policyInfo := sharedpolicy.BuildPolicyInfo(inputOutcome.StaticResult, outputOutcome.StaticResult)
+	if policyInfo != nil && inputOutcome.DynamicInfo != nil {
+		policyInfo.DynamicPolicyInfo = inputOutcome.DynamicInfo
+	} else if policyInfo == nil && inputOutcome.DynamicInfo != nil {
 		policyInfo = &sharedpolicy.PolicyInfo{
-			DynamicPolicyInfo: dynamicPolicyInfo,
+			DynamicPolicyInfo: inputOutcome.DynamicInfo,
 		}
 	}
 
@@ -1411,9 +1489,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		"duration_ms":   result.Duration.Milliseconds(),
 		"message":       responseMessage,
 	}
-	if responsePolicyResult != nil && responsePolicyResult.Redacted {
+	if outputOutcome.StaticResult != nil && outputOutcome.StaticResult.Redacted {
 		response["redacted"] = true
-		response["redacted_fields"] = sharedpolicy.GetRedactedFieldPaths(responsePolicyResult)
+		response["redacted_fields"] = sharedpolicy.GetRedactedFieldPaths(outputOutcome.StaticResult)
 	}
 	if policyInfo != nil {
 		response["policy_info"] = policyInfo
@@ -1430,6 +1508,356 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[MCP] Command executed: connector=%s, action=%s, rows_affected=%d, duration=%v",
 		req.Connector, req.Action, result.RowsAffected, result.Duration)
+}
+
+// --- Standalone policy-check endpoints (Issue #1258) ---
+
+// MCPCheckInputRequest is the request body for POST /api/v1/mcp/check-input.
+// External orchestrators submit the proposed statement before executing it themselves.
+type MCPCheckInputRequest struct {
+	ClientID      string                 `json:"client_id"`
+	UserToken     string                 `json:"user_token"`
+	TenantID      string                 `json:"tenant_id"`
+	UserID        string                 `json:"user_id,omitempty"`
+	UserRole      string                 `json:"user_role,omitempty"`
+	ConnectorType string                 `json:"connector_type"`
+	Statement     string                 `json:"statement"`
+	Parameters    map[string]interface{} `json:"parameters,omitempty"`
+	Operation     string                 `json:"operation,omitempty"` // "query" or "execute"; defaults to "query"
+}
+
+// MCPCheckInputResponse is the response body for POST /api/v1/mcp/check-input.
+type MCPCheckInputResponse struct {
+	Allowed           bool                     `json:"allowed"`
+	BlockReason       string                   `json:"block_reason,omitempty"`
+	PoliciesEvaluated int                      `json:"policies_evaluated"`
+	PolicyInfo        *sharedpolicy.PolicyInfo `json:"policy_info,omitempty"`
+}
+
+// MCPCheckOutputRequest is the request body for POST /api/v1/mcp/check-output.
+// External orchestrators submit the raw connector response for policy scanning.
+type MCPCheckOutputRequest struct {
+	ClientID      string                   `json:"client_id"`
+	UserToken     string                   `json:"user_token"`
+	TenantID      string                   `json:"tenant_id"`
+	UserID        string                   `json:"user_id,omitempty"`
+	ConnectorType string                   `json:"connector_type"`
+	ResponseData  []map[string]interface{} `json:"response_data,omitempty"` // query-style row results
+	Message       string                   `json:"message,omitempty"`       // execute-style response message
+	Metadata      map[string]interface{}   `json:"metadata,omitempty"`      // connector metadata (used by SQLi scanning)
+	RowCount      int                      `json:"row_count,omitempty"`
+}
+
+// MCPCheckOutputResponse is the response body for POST /api/v1/mcp/check-output.
+type MCPCheckOutputResponse struct {
+	Allowed           bool                                `json:"allowed"`
+	BlockReason       string                              `json:"block_reason,omitempty"`
+	RedactedData      interface{}                         `json:"redacted_data,omitempty"`
+	PoliciesEvaluated int                                 `json:"policies_evaluated"`
+	ExfiltrationInfo  *sharedpolicy.ExfiltrationCheckInfo `json:"exfiltration_info,omitempty"`
+	PolicyInfo        *sharedpolicy.PolicyInfo            `json:"policy_info,omitempty"`
+}
+
+// mcpCheckInputHandler evaluates dynamic + request-phase static policies for a proposed
+// MCP statement without executing any connector.
+// POST /api/v1/mcp/check-input
+func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	var req MCPCheckInputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
+		return
+	}
+
+	// Validate required fields
+	if req.ConnectorType == "" {
+		sendErrorResponse(w, "connector_type is required", http.StatusBadRequest, nil)
+		return
+	}
+	if req.TenantID == "" && !isCommunityMode() {
+		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
+		return
+	}
+	if req.Statement == "" {
+		sendErrorResponse(w, "statement is required", http.StatusBadRequest, nil)
+		return
+	}
+
+	// Authentication — same three-way pattern as mcpQueryHandler
+	var tenantID, userID, userRole string
+
+	if isCommunityMode() {
+		tenantID = "default"
+		userID = "0"
+		userRole = "admin"
+	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
+		tenantID = req.TenantID
+		if tenantID == "" {
+			tenantID = req.ClientID
+		}
+		userID = req.UserID
+		userRole = req.UserRole
+	} else {
+		client, err := validateClient(req.ClientID)
+		if err != nil || !client.Enabled {
+			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+			return
+		}
+		user, err := validateUserToken(req.UserToken, client.TenantID)
+		if err != nil {
+			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
+			return
+		}
+		if user.TenantID != client.TenantID {
+			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+			return
+		}
+		tenantID = user.TenantID
+		userID = fmt.Sprintf("%d", user.ID)
+		userRole = user.Role
+	}
+
+	auditEntry := MCPQueryAuditEntry{
+		AuditID:       uuid.New().String(),
+		ConnectorName: req.ConnectorType,
+		Operation:     "check-input",
+		TenantID:      tenantID,
+		UserID:        userID,
+		StatementHash: computeStatementHash(req.Statement),
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	operation := req.Operation
+	if operation == "" {
+		operation = "query"
+	}
+
+	outcome := evaluateInputPolicies(ctx,
+		tenantID, userID, userRole,
+		req.ConnectorType, operation, req.Statement, req.Parameters)
+
+	if outcome.EvalUnavailable {
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		sendErrorResponse(w, "Dynamic policy evaluation unavailable", http.StatusServiceUnavailable, nil)
+		return
+	}
+
+	if outcome.DynamicBlocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = outcome.DynamicBlockReason
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+			Allowed:     false,
+			BlockReason: outcome.DynamicBlockReason,
+		})
+		return
+	}
+
+	policiesEvaluated := 0
+	if outcome.StaticResult != nil {
+		auditEntry.RequestPoliciesEvaluated = outcome.StaticResult.PoliciesEvaluated
+		auditEntry.RequestMatchedPolicies = extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+		policiesEvaluated = outcome.StaticResult.PoliciesEvaluated
+		if outcome.StaticResult.Blocked {
+			auditEntry.RequestBlocked = true
+			auditEntry.RequestBlockReason = outcome.StaticResult.BlockReason
+			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+			logMCPQueryAudit(auditEntry)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+				Allowed:           false,
+				BlockReason:       outcome.StaticResult.BlockReason,
+				PoliciesEvaluated: policiesEvaluated,
+			})
+			return
+		}
+	}
+
+	policyInfo := sharedpolicy.BuildPolicyInfo(outcome.StaticResult, nil)
+	if policyInfo != nil && outcome.DynamicInfo != nil {
+		policyInfo.DynamicPolicyInfo = outcome.DynamicInfo
+	} else if policyInfo == nil && outcome.DynamicInfo != nil {
+		policyInfo = &sharedpolicy.PolicyInfo{DynamicPolicyInfo: outcome.DynamicInfo}
+	}
+
+	auditEntry.Success = true
+	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+	logMCPQueryAudit(auditEntry)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+		Allowed:           true,
+		PoliciesEvaluated: policiesEvaluated,
+		PolicyInfo:        policyInfo,
+	})
+}
+
+// mcpCheckOutputHandler evaluates response-phase policies (SQLi scan, PII redaction,
+// exfiltration limits) on pre-executed connector output without calling any connector.
+// POST /api/v1/mcp/check-output
+func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	var req MCPCheckOutputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest, nil)
+		return
+	}
+
+	// Validate required fields
+	if req.ConnectorType == "" {
+		sendErrorResponse(w, "connector_type is required", http.StatusBadRequest, nil)
+		return
+	}
+	if req.TenantID == "" && !isCommunityMode() {
+		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
+		return
+	}
+	if len(req.ResponseData) == 0 && req.Message == "" {
+		sendErrorResponse(w, "response_data or message is required", http.StatusBadRequest, nil)
+		return
+	}
+
+	// Authentication — same three-way pattern as mcpQueryHandler
+	var tenantID, userID string
+
+	if isCommunityMode() {
+		tenantID = "default"
+		userID = "0"
+	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
+		tenantID = req.TenantID
+		if tenantID == "" {
+			tenantID = req.ClientID
+		}
+		userID = req.UserID
+	} else {
+		client, err := validateClient(req.ClientID)
+		if err != nil || !client.Enabled {
+			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+			return
+		}
+		user, err := validateUserToken(req.UserToken, client.TenantID)
+		if err != nil {
+			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
+			return
+		}
+		if user.TenantID != client.TenantID {
+			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+			return
+		}
+		tenantID = user.TenantID
+		userID = fmt.Sprintf("%d", user.ID)
+	}
+
+	auditEntry := MCPQueryAuditEntry{
+		AuditID:       uuid.New().String(),
+		ConnectorName: req.ConnectorType,
+		Operation:     "check-output",
+		TenantID:      tenantID,
+		UserID:        userID,
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Enable exfiltration checks for query-style responses (rows) but not for
+	// execute-style responses (message only) — consistent with mcpExecuteHandler.
+	checkExfiltration := len(req.ResponseData) > 0
+
+	outcome := evaluateOutputPolicies(ctx,
+		tenantID, userID, req.ConnectorType,
+		req.ResponseData, req.Message, req.Metadata, req.RowCount, checkExfiltration)
+
+	auditEntry.ExfilRowsReturned = req.RowCount
+	if outcome.StaticResult != nil && outcome.StaticResult.Redacted {
+		auditEntry.ResponseRedacted = true
+		auditEntry.ResponseRedactionsCount = len(outcome.StaticResult.RedactedFields)
+		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outcome.StaticResult)
+	}
+
+	if outcome.SQLiBlocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+			Allowed:     false,
+			BlockReason: fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outcome.SQLiPattern),
+		})
+		return
+	}
+
+	if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
+		auditEntry.RequestBlocked = true
+		auditEntry.RequestBlockReason = fmt.Sprintf("Response blocked: %s", outcome.StaticResult.BlockReason)
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+			Allowed:     false,
+			BlockReason: fmt.Sprintf("Response blocked: %s", outcome.StaticResult.BlockReason),
+		})
+		return
+	}
+
+	if outcome.ExfilResult != nil && outcome.ExfilResult.Exceeded {
+		auditEntry.ExfilExceeded = true
+		auditEntry.ExfilLimitType = outcome.ExfilResult.LimitType
+		auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+		logMCPQueryAudit(auditEntry)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+			Allowed:          false,
+			BlockReason:      outcome.ExfilResult.BlockReason,
+			ExfiltrationInfo: outcome.ExfilInfo,
+		})
+		return
+	}
+
+	// Build redacted_data for the response
+	var redactedData interface{}
+	if outcome.RedactedRows != nil {
+		redactedData = outcome.RedactedRows
+	} else if outcome.RedactedMessage != "" {
+		redactedData = outcome.RedactedMessage
+	}
+
+	policiesEvaluated := 0
+	if outcome.StaticResult != nil {
+		policiesEvaluated = outcome.StaticResult.PoliciesEvaluated
+	}
+
+	policyInfo := sharedpolicy.BuildPolicyInfo(nil, outcome.StaticResult)
+	if policyInfo != nil && outcome.ExfilInfo != nil {
+		policyInfo.ExfiltrationCheck = outcome.ExfilInfo
+	} else if policyInfo == nil && outcome.ExfilInfo != nil {
+		policyInfo = &sharedpolicy.PolicyInfo{ExfiltrationCheck: outcome.ExfilInfo}
+	}
+
+	auditEntry.Success = true
+	auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+	logMCPQueryAudit(auditEntry)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
+		Allowed:           true,
+		RedactedData:      redactedData,
+		PoliciesEvaluated: policiesEvaluated,
+		ExfiltrationInfo:  outcome.ExfilInfo,
+		PolicyInfo:        policyInfo,
+	})
 }
 
 // mcpHealthHandler returns overall MCP system health

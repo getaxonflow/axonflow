@@ -15,6 +15,7 @@
 package circuitbreaker
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -56,6 +57,65 @@ type Config struct {
 // Community Edition: Returns a no-op circuit breaker.
 func New(repo *Repository, config Config) *CircuitBreaker {
 	return &CircuitBreaker{}
+}
+
+// CheckInput contains input for checking circuit state.
+// Community Edition: Defined for compilation compatibility.
+type CheckInput struct {
+	OrgID    string
+	TenantID string
+	ClientID string
+	PolicyID string
+}
+
+// CheckResult is the result of checking if a request should proceed.
+// Community Edition: Always returns Allowed=true.
+type CheckResult struct {
+	Allowed   bool
+	CircuitID string
+	Scope     string
+	ScopeID   string
+	Reason    string
+	TrippedBy string
+	TrippedAt *time.Time
+	ExpiresAt *time.Time
+	Comment   string
+}
+
+// Check determines if a request should be allowed based on circuit state.
+// Community Edition: Always allows requests.
+func (cb *CircuitBreaker) Check(ctx context.Context, input CheckInput) (*CheckResult, error) {
+	return &CheckResult{Allowed: true}, nil
+}
+
+// IsAllowed is a convenience method for quick checks.
+// Community Edition: Always returns true.
+func (cb *CircuitBreaker) IsAllowed(ctx context.Context, orgID, tenantID, clientID string) bool {
+	return true
+}
+
+// RecordError records an error for automatic circuit tripping.
+// Community Edition: No-op.
+func (cb *CircuitBreaker) RecordError(ctx context.Context, orgID, tenantID, clientID string) error {
+	return nil
+}
+
+// RecordPolicyViolation records a policy violation for automatic tripping.
+// Community Edition: No-op.
+func (cb *CircuitBreaker) RecordPolicyViolation(ctx context.Context, orgID, tenantID, clientID, policyID string) error {
+	return nil
+}
+
+// LoadCircuits loads active circuits from the database into memory.
+// Community Edition: No-op.
+func (cb *CircuitBreaker) LoadCircuits(ctx context.Context, orgID string) error {
+	return nil
+}
+
+// ExpireCircuits closes circuits that have passed their expiry time.
+// Community Edition: No-op.
+func (cb *CircuitBreaker) ExpireCircuits(ctx context.Context) error {
+	return nil
 }
 
 // Repository provides data access for circuit breaker state.

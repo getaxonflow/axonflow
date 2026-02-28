@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [4.6.0] - 2026-02-26
+## [4.6.0] - 2026-02-28
 
 ### Community
+
+#### Added
+
+- **Standalone MCP Policy-Check Endpoints** (#1265): Two new endpoints for external orchestrators (LangGraph, CrewAI) to validate MCP requests and responses against AxonFlow policies without executing connector queries
+  - `POST /api/v1/mcp/check-input`: Validate SQL/commands against input policies (SQLi detection, dangerous query blocking, PII in queries, dynamic policies). Returns `allowed: true` or `403` with `block_reason`
+  - `POST /api/v1/mcp/check-output`: Validate response data against output policies (PII redaction, exfiltration limits, dynamic policies). Returns original or redacted data with `policy_info`
+  - Supports both query-style (`response_data`) and execute-style (`message` + `metadata`) output validation
+  - Full audit logging for both endpoints
+  - OpenAPI spec updated with 4 new schemas: `MCPCheckInputRequest`, `MCPCheckInputResponse`, `MCPCheckOutputRequest`, `MCPCheckOutputResponse`
+  - New examples: `check-endpoints/` with HTTP, Python, Go, TypeScript, Java examples
 
 #### Fixed
 
@@ -30,10 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **EU AI Act Export to Cloud Storage**: `ExportService` wired with `StorageBackend` for cloud uploads during async export processing. Download handler generates presigned URLs for cloud-stored exports. New `download_url`, `storage_type`, `storage_key` columns on `euaiact_exports`
 - **RBI Module Consolidation**: RBI module merged into `ee/` Go module — removed separate `go.mod`/`go.sum`, aligning with SEBI/EUAIACT/MASFEAT which already share the `ee/` module
 - **Compliance Examples**: `audit-export-cloud/` examples (HTTP, Go, Python, TypeScript, Java) demonstrating full round-trip cloud export with presigned URL download and checksum verification
+- **Circuit Breaker Pipeline Wiring** (#1176, Phase 1): Wire existing circuit breaker state machine into the Agent request pipeline — previously `Check()`, `RecordError()`, `RecordPolicyViolation()` were dead code
+  - `CB.Check()` runs before policy evaluation in both `clientRequestHandler` and `handlePolicyPreCheck` — returns HTTP 503 with dynamic `Retry-After` header when circuit is open
+  - `RecordPolicyViolation()` called on every policy block, tracking violations toward auto-trip threshold (default: 20 violations in 5 minutes)
+  - Active circuits loaded from DB on startup for restart persistence; background goroutine expires circuits every minute for auto-recovery
+  - Community stubs added (`Check`, `IsAllowed`, `RecordError`, `RecordPolicyViolation`, `LoadCircuits`, `ExpireCircuits`) — no-op, always allowed
+  - Example README updated with correct endpoint names and auto-trip documentation; shell script updated with auto-trip demonstration
 
 #### Fixed
 
 - **India PII detector test failures**: 5 pre-existing test expectations corrected — UPI positive indicator precedence, sequential bank account rejection, Verhoeff all-zeros checksum, short bank account masking, `extractContext` boundary calculation
+
+#### Security
+
+- **CVE-2026-24051**: Bumped `go.opentelemetry.io/otel/sdk` v1.38.0 → v1.40.0 (HIGH — OTel SDK resource attribute injection)
+- **GHSA-72hv-8253-57qq**: Overrode transitive `jackson-core` 2.17.0 → 2.18.6 across 69 Java example pom.xml files (HIGH — async JSON parser `maxNumberLength` bypass)
 
 ---
 
