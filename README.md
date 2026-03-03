@@ -1,19 +1,98 @@
 # AxonFlow
 
-> Self-hosted governance and execution control for production AI systems.
+**AxonFlow is a production governance control plane for AI systems.**
 
-## TL;DR
+It sits between your applications and LLM providers to enforce policy, control workflow execution, and produce audit evidence before and during runtime.
 
-- **What:** A control plane that sits between your app and LLM providers, applying real-time policy enforcement, execution control, and orchestration
-- **How it works:** Two capabilities — **governance** (policy enforcement, PII detection, audit trails) and **execution control** (Workflow Control Plane, step ledger, retries) — usable independently or together
-- **How it runs:** Docker Compose locally, no signup, no license key required
-- **Core features:** Policy enforcement (PII, injection attacks), audit trails, multi-model routing, multi-agent planning (MAP), workflow control plane (WCP)
-- **License:** BSL 1.1 (source-available) — converts to Apache 2.0 after 4 years
-- **Not for:** Hobby scripts or single-prompt experiments — built for teams taking AI to production
+It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, and **Java**.
+
+## Why AxonFlow Exists
+
+Production AI systems are multi-step, non-deterministic, and increasingly regulated. In practice:
+
+- Prompt filters alone do not control downstream tool execution.
+- Orchestration frameworks coordinate steps, but do not enforce governance boundaries.
+- Routing gateways improve connectivity, but do not provide approval-backed execution control.
+- Compliance teams need evidence and replayability, not only logs.
+
+AxonFlow addresses this with a single governance control plane across model calls, tool calls, and long-running workflows.
+
+## What AxonFlow Is
+
+AxonFlow is composed of:
+
+- **Agent runtime** for inline policy evaluation and governance checks (`:8080`)
+- **Orchestrator runtime** for workflow execution control and routing (`:8081`)
+- **Policy engine** for tenant and org governance policies
+- **Workflow Control Plane (WCP)** for gated, step-level workflow execution
+- **Audit and evidence layer** for replay, export, and compliance workflows
+
+Execution modes:
+
+- **Gateway Mode**: Pre-check + your own LLM call + audit
+- **Proxy Mode**: AxonFlow enforces and proxies model/tool execution
+- **WCP Mode**: Governed multi-step workflow execution with step gates
+
+## What AxonFlow Does
+
+**Policy Enforcement** — 60+ built-in policies across multiple categories:
+- **Security**: SQL injection detection (37 patterns), unsafe admin access, schema exposure
+- **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
+- **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, DORA frameworks with retention and exports (Enterprise)
+- **Runtime Controls**: Tenant isolation, environment restrictions, approval gates
+- **Cost & Abuse**: Per-user/team limits, anomalous usage detection, token budgets
+
+All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
+
+> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
+
+**Human-in-the-Loop Approval Gates** — Require explicit approvals for high-risk workflow steps. Configurable expiry, pending limits by tier, and automatic workflow abort on expiration.
+
+**Policy Simulation & Impact Reporting** — Dry-run policy changes against historical traffic before deploying. See which requests would be blocked, allowed, or changed.
+
+**Evidence Export** — Generate compliance-ready audit evidence packs with configurable retention windows. Designed for internal governance reviews and regulatory audits.
+
+**Workflow Control Plane (WCP)** — Govern long-running, multi-step AI workflows with step-level gate checks, a durable step ledger, cancellation, and SSE streaming. WCP works with any orchestration framework — your code controls execution, AxonFlow controls governance and visibility.
+
+**Multi-Agent Planning (MAP)** — Define agents in YAML, let AxonFlow turn natural language requests into executable workflows with automatic plan generation and execution tracking.
+
+**SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
+
+**Media Governance** — Governance pipeline for image inputs, including content classification and policy enforcement on multimodal requests.
+
+**Code Governance** — Detect LLM-generated code, identify language and security issues (secrets, eval, shell injection). Logged for compliance.
+
+**Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
+
+**Decision & Execution Replay** — Debug governed workflows with step-by-step state and policy decisions. Timeline view and compliance exports included.
+
+**Cost Controls** — Set budgets at org, team, agent, or user level. Track LLM spend across providers with configurable alerts and enforcement actions.
+
+**Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
+
+**Circuit Breaker** — Emergency kill switch wired into the request pipeline. Instantly halt all LLM traffic when something goes wrong in production.
+
+**Proxy Mode** — Full request lifecycle: policy, planning, routing, audit. Recommended for new projects.
+
+**Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
+
+> **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
+
+## Who This Is For
+
+**Good fit:**
+- Production AI teams needing governance before shipping
+- Platform teams building internal AI infrastructure
+- Regulated industries (healthcare, finance, legal) with compliance requirements
+- Teams wanting audit trails and policy enforcement without building it themselves
+- Teams running multi-step agent workflows that need execution control, retries, and step-level visibility
+
+**Not a good fit:**
+- Single-prompt experiments or notebooks
+- Prototypes where governance isn't a concern yet
+- Projects where adding a service layer is overkill
 
 **[Full Documentation](https://docs.getaxonflow.com)** · **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · **[API Reference](./docs/api/)**
-
-*AxonFlow is implemented in Go as a long-running control plane, with client SDKs for **Python**, **TypeScript**, **Go**, and **Java**.*
 
 **2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
 
@@ -163,57 +242,6 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 ---
 
-## Who This Is For
-
-**Good fit:**
-- Production AI teams needing governance before shipping
-- Platform teams building internal AI infrastructure
-- Regulated industries (healthcare, finance, legal) with compliance requirements
-- Teams wanting audit trails and policy enforcement without building it themselves
-- Teams running multi-step agent workflows that need execution control, retries, and step-level visibility
-
-**Not a good fit:**
-- Single-prompt experiments or notebooks
-- Prototypes where governance isn't a concern yet
-- Projects where adding a service layer is overkill
-
----
-
-## What AxonFlow Does
-
-**Policy Enforcement** — 60+ built-in policies across multiple categories:
-- **Security**: SQL injection detection (37 patterns), unsafe admin access, schema exposure
-- **Sensitive Data**: PII detection (SSN, credit cards, PAN, Aadhaar, email, phone), salary, medical records
-- **Compliance**: GDPR, PCI-DSS, HIPAA basic constraints (Community); EU AI Act, SEBI/RBI, MAS FEAT, DORA frameworks with retention and exports (Enterprise)
-- **Runtime Controls**: Tenant isolation, environment restrictions, approval gates
-- **Cost & Abuse**: Per-user/team limits, anomalous usage detection, token budgets
-
-All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
-
-> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
-
-**Workflow Control Plane (WCP)** — Govern long-running, multi-step AI workflows with step-level gate checks, a durable step ledger, cancellation, and SSE streaming. WCP works with any orchestration framework — your code controls execution, AxonFlow controls governance and visibility.
-
-**Multi-Agent Planning (MAP)** — Define agents in YAML, let AxonFlow turn natural language requests into executable workflows with automatic plan generation and execution tracking.
-
-**SQL Injection Response Scanning** — Detect SQLi payloads in MCP connector responses. Protects against data exfiltration when compromised data is returned from databases.
-
-**Code Governance** — Detect LLM-generated code, identify language and security issues (secrets, eval, shell injection). Logged for compliance.
-
-**Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
-
-**Decision & Execution Replay** — Debug governed workflows with step-by-step state and policy decisions. Timeline view and compliance exports included.
-
-**Cost Controls** — Set budgets at org, team, agent, or user level. Track LLM spend across providers with configurable alerts and enforcement actions.
-
-**Multi-Model Routing** — Route requests across OpenAI, Anthropic, Bedrock, Ollama based on cost, capability, or compliance requirements. Failover included.
-
-**Proxy Mode** — Full request lifecycle: policy, planning, routing, audit. Recommended for new projects.
-
-**Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
-
-> **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
-
 ### Integration Options
 
 For Go, Java, Python, and TypeScript applications, we recommend using the **[AxonFlow SDKs](https://docs.getaxonflow.com/docs/sdk/overview)**. All SDKs are thin wrappers over the same REST APIs, which remain fully supported for custom integrations.
@@ -350,7 +378,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.5.0</version>
+    <version>3.7.0</version>
 </dependency>
 ```
 
