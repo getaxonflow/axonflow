@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Applies to both Agent and Orchestrator health endpoints
 - **Version Check Examples**: New `examples/version-check/` with HTTP, Go, Python, TypeScript, and Java variants demonstrating capability discovery
 - **Compatibility Matrix**: New `docs/COMPATIBILITY_MATRIX.md` mapping platform versions to minimum SDK versions
+- **SDK Telemetry Documentation**: New `docs/TELEMETRY.md` and `docs/TELEMETRY_CONTRACT.md` describing what SDK telemetry collects (version, OS, architecture), what is never collected (prompts, payloads, PII, API keys), defaults by deployment mode, and opt-out methods (`AXONFLOW_TELEMETRY=off` or `DO_NOT_TRACK=1`)
 
 #### Changed
 
