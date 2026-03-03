@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -38,6 +39,7 @@ type StepGateContext struct {
 	OrgID        string
 	UserID       string
 	ClientID     string
+	ToolContext  *ToolContext
 }
 
 // StepGateEvaluation is the result of policy evaluation
@@ -198,6 +200,11 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		return nil, fmt.Errorf("workflow_name is required")
 	}
 
+	// Validate trace_id length (character count, not bytes, to match VARCHAR(255))
+	if utf8.RuneCountInString(req.TraceID) > 255 {
+		return nil, fmt.Errorf("trace_id exceeds maximum length of 255 characters")
+	}
+
 	// Determine source
 	source := req.Source
 	if source == "" {
@@ -227,6 +234,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		OrgID:            orgID,
 		UserID:           userID,
 		ClientID:         clientID,
+		TraceID:          req.TraceID,
 		Metadata:         metadataJSON,
 	}
 
@@ -238,6 +246,13 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		workflow.WorkflowID, workflow.WorkflowName, workflow.Source)
 
 	// Audit log: workflow created
+	auditMeta := map[string]interface{}{
+		"source":      workflow.Source,
+		"total_steps": req.TotalSteps,
+	}
+	if workflow.TraceID != "" {
+		auditMeta["trace_id"] = workflow.TraceID
+	}
 	s.logAudit(ctx, &WorkflowAuditEntry{
 		WorkflowID:   workflow.WorkflowID,
 		WorkflowName: workflow.WorkflowName,
@@ -245,10 +260,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 		TenantID:     tenantID,
 		ClientID:     clientID,
 		UserID:       userID,
-		Metadata: map[string]interface{}{
-			"source":      workflow.Source,
-			"total_steps": req.TotalSteps,
-		},
+		Metadata:     auditMeta,
 	})
 
 	// Unified execution tracking — propagate concurrent limit errors
@@ -325,6 +337,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		OrgID:        orgID,
 		UserID:       userID,
 		ClientID:     clientID,
+		ToolContext:  req.ToolContext,
 	}
 
 	// Evaluate policies (or use override for MAP confirm/step modes)
@@ -396,6 +409,17 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		workflowID, stepID, evaluation.Decision, logutil.Sanitize(evaluation.Reason))
 
 	// Audit log: step gate decision
+	auditMeta := map[string]interface{}{
+		"step_type":          req.StepType,
+		"model":              req.Model,
+		"provider":           req.Provider,
+		"policies_evaluated": len(evaluation.PoliciesEvaluated),
+		"policies_matched":   len(evaluation.PoliciesMatched),
+	}
+	if req.ToolContext != nil {
+		auditMeta["tool_name"] = req.ToolContext.ToolName
+		auditMeta["tool_type"] = req.ToolContext.ToolType
+	}
 	s.logAudit(ctx, &WorkflowAuditEntry{
 		WorkflowID:   workflowID,
 		WorkflowName: workflow.WorkflowName,
@@ -407,13 +431,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		TenantID:     tenantID,
 		ClientID:     clientID,
 		UserID:       userID,
-		Metadata: map[string]interface{}{
-			"step_type":          req.StepType,
-			"model":              req.Model,
-			"provider":           req.Provider,
-			"policies_evaluated": len(evaluation.PoliciesEvaluated),
-			"policies_matched":   len(evaluation.PoliciesMatched),
-		},
+		Metadata:     auditMeta,
 	})
 
 	// Unified execution tracking
@@ -633,9 +651,9 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 
 	// Webhook notification
 	s.fireWebhook(ctx, "workflow.completed", map[string]interface{}{
-		"workflow_id":     workflowID,
-		"workflow_name":   workflow.WorkflowName,
-		"steps_executed":  len(workflow.Steps),
+		"workflow_id":    workflowID,
+		"workflow_name":  workflow.WorkflowName,
+		"steps_executed": len(workflow.Steps),
 	}, workflow.TenantID, workflow.OrgID)
 
 	return nil

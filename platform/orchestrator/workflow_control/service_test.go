@@ -1806,3 +1806,73 @@ func TestDefaultPolicyEvaluatorEvaluateStepGate(t *testing.T) {
 		t.Errorf("decision = %s, want allow", result.Decision)
 	}
 }
+
+// --- P2: Service-level test for ToolContext propagation (#1282) ---
+
+// MockCapturingPolicyEvaluator captures the StepGateContext passed to EvaluateStepGate
+type MockCapturingPolicyEvaluator struct {
+	capturedContext *StepGateContext
+}
+
+func (m *MockCapturingPolicyEvaluator) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+	m.capturedContext = step
+	return &StepGateEvaluation{
+		Decision:          GateDecisionAllow,
+		Reason:            "Allowed for test",
+		PolicyIDs:         []string{},
+		PoliciesEvaluated: []PolicyMatch{},
+		PoliciesMatched:   []PolicyMatch{},
+	}
+}
+
+func TestStepGateToolContextPropagation(t *testing.T) {
+	evaluator := &MockCapturingPolicyEvaluator{}
+	repo := NewMockRepository()
+	svc := NewService(repo, evaluator, nil)
+	ctx := context.Background()
+
+	workflow, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "tool-context-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("failed to create workflow: %v", err)
+	}
+
+	req := &StepGateRequest{
+		StepName: "tool-step",
+		StepType: StepTypeToolCall,
+		ToolContext: &ToolContext{
+			ToolName: "search_database",
+			ToolType: "function",
+			ToolInput: map[string]interface{}{
+				"query": "SELECT * FROM users",
+			},
+		},
+	}
+
+	_, err = svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify ToolContext was propagated to the policy evaluator
+	if evaluator.capturedContext == nil {
+		t.Fatal("policy evaluator was not called")
+	}
+
+	if evaluator.capturedContext.ToolContext == nil {
+		t.Fatal("ToolContext was not propagated to StepGateContext")
+	}
+
+	if evaluator.capturedContext.ToolContext.ToolName != "search_database" {
+		t.Errorf("tool_name = %q, want %q", evaluator.capturedContext.ToolContext.ToolName, "search_database")
+	}
+
+	if evaluator.capturedContext.ToolContext.ToolType != "function" {
+		t.Errorf("tool_type = %q, want %q", evaluator.capturedContext.ToolContext.ToolType, "function")
+	}
+
+	if evaluator.capturedContext.ToolContext.ToolInput["query"] != "SELECT * FROM users" {
+		t.Errorf("tool_input[query] = %v, want 'SELECT * FROM users'", evaluator.capturedContext.ToolContext.ToolInput["query"])
+	}
+}

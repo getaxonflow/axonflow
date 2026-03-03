@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"log"
+	"sort"
 	"time"
 
 	"axonflow/platform/orchestrator/planning"
@@ -105,10 +106,14 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 		TriggerReason: "Step requires human approval per policy",
 		Severity:      "high", // Default to high for require_approval
 		RequestContext: map[string]interface{}{
+			"workflow_id":   step.WorkflowID,
+			"step_id":      step.StepID,
 			"workflow_name": step.WorkflowName,
 			"step_index":    step.StepIndex,
 			"model":         step.Model,
 			"provider":      step.Provider,
+			"tool_name":     toolNameForContext(step),
+			"tool_type":     toolTypeForContext(step),
 		},
 	}
 
@@ -140,6 +145,27 @@ func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.S
 		contextData["step_input."+k] = v
 	}
 
+	// Propagate tool-level context for per-tool governance (#1243)
+	if step.ToolContext != nil {
+		contextData["tool_name"] = step.ToolContext.ToolName
+		if step.ToolContext.ToolType != "" {
+			contextData["tool_type"] = step.ToolContext.ToolType
+		}
+		// Limit tool_input to 50 keys to prevent context bloat.
+		// Sort keys first for deterministic inclusion across identical requests.
+		toolInputKeys := make([]string, 0, len(step.ToolContext.ToolInput))
+		for k := range step.ToolContext.ToolInput {
+			toolInputKeys = append(toolInputKeys, k)
+		}
+		sort.Strings(toolInputKeys)
+		for i, k := range toolInputKeys {
+			if i >= 50 {
+				break
+			}
+			contextData["tool_input."+k] = step.ToolContext.ToolInput[k]
+		}
+	}
+
 	return OrchestratorRequest{
 		RequestID:   step.WorkflowID + "_" + step.StepID,
 		RequestType: "workflow_step_gate",
@@ -153,6 +179,22 @@ func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.S
 		},
 		Context: contextData,
 	}
+}
+
+// toolNameForContext extracts tool name from step context for HITL approval requests.
+func toolNameForContext(step *workflow_control.StepGateContext) string {
+	if step.ToolContext != nil {
+		return step.ToolContext.ToolName
+	}
+	return ""
+}
+
+// toolTypeForContext extracts tool type from step context for HITL approval requests.
+func toolTypeForContext(step *workflow_control.StepGateContext) string {
+	if step.ToolContext != nil {
+		return step.ToolContext.ToolType
+	}
+	return ""
 }
 
 // convertToStepGateEvaluation converts policy evaluation result to WCP step gate evaluation

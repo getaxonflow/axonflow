@@ -57,6 +57,14 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/complete", h.MarkStepCompleted).Methods("POST", "OPTIONS")
 }
 
+// RegisterEvaluationRoutes registers approval routes available to Evaluation tier and above.
+// Same endpoints as Enterprise but accessed via eval license validation at runtime.
+func (h *Handler) RegisterEvaluationRoutes(r *mux.Router) {
+	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/workflows/approvals/pending", h.GetPendingApprovals).Methods("GET", "OPTIONS")
+}
+
 // RegisterEnterpriseRoutes registers enterprise-only approval routes with a gorilla/mux router.
 // Approval endpoints (approve, reject, pending) are only available in enterprise mode.
 func (h *Handler) RegisterEnterpriseRoutes(r *mux.Router) {
@@ -91,6 +99,14 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	workflow, err := h.service.CreateWorkflow(r.Context(), &req, tenantID, orgID, userID, clientID)
 	if err != nil {
+		if strings.Contains(err.Error(), "trace_id exceeds") {
+			h.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"error":   "validation_error",
+				"code":    "INVALID_TRACE_ID",
+				"message": err.Error(),
+			})
+			return
+		}
 		if strings.Contains(err.Error(), "concurrent execution limit reached") {
 			h.writeError(w, http.StatusTooManyRequests, "CONCURRENT_EXECUTION_LIMIT",
 				"Maximum concurrent executions reached. Upgrade your license for higher limits: https://getaxonflow.com/evaluation-license")
@@ -162,6 +178,9 @@ func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 		s := WorkflowSource(source)
 		opts.Source = &s
 	}
+	if traceID := r.URL.Query().Get("trace_id"); traceID != "" {
+		opts.TraceID = traceID
+	}
 
 	// Get tenant/org context
 	opts.TenantID = h.getTenantID(r)
@@ -206,6 +225,15 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 
 	if req.StepType == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "step_type is required")
+		return
+	}
+
+	if req.ToolContext != nil && req.ToolContext.ToolName == "" {
+		h.writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   "validation_error",
+			"code":    "INVALID_TOOL_CONTEXT",
+			"message": "tool_name is required when tool_context is provided",
+		})
 		return
 	}
 

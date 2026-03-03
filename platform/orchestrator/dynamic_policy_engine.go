@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -379,7 +380,8 @@ func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorReques
 		return result.RiskScore
 	case "context":
 		if len(parts) > 1 {
-			return req.Context[parts[1]]
+			key := strings.Join(parts[1:], ".")
+			return req.Context[key]
 		}
 		return req.Context
 	case "media":
@@ -510,10 +512,27 @@ func (e *DynamicPolicyEngine) IsHealthy() bool {
 	return len(e.policies) > 0
 }
 
-// generateCacheKey creates a cache key for policy evaluation
+// generateCacheKey creates a cache key for policy evaluation.
+// Uses length-prefixed encoding for context values to prevent collisions
+// where keys/values containing delimiters could produce identical serializations.
 func (e *DynamicPolicyEngine) generateCacheKey(req OrchestratorRequest) string {
-	// Simple cache key - can be improved
-	return fmt.Sprintf("%s:%s:%s:%s", req.User.Email, req.User.Role, req.RequestType, req.Query)
+	base := fmt.Sprintf("%s:%s:%s:%s", req.User.Email, req.User.Role, req.RequestType, req.Query)
+	if len(req.Context) > 0 {
+		// Include sorted context keys/values to ensure deterministic cache keys
+		keys := make([]string, 0, len(req.Context))
+		for k := range req.Context {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var sb strings.Builder
+		for _, k := range keys {
+			v := fmt.Sprint(req.Context[k])
+			// Length-prefix both key and value to prevent collisions
+			fmt.Fprintf(&sb, "%d:%s=%d:%s,", len(k), k, len(v), v)
+		}
+		base += ":" + sb.String()
+	}
+	return base
 }
 
 // loadPoliciesFromDB loads dynamic policies from database

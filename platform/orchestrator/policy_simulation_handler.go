@@ -1,0 +1,289 @@
+// Copyright 2026 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
+package orchestrator
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+// PolicySimulationHandler handles policy simulation and impact report endpoints.
+// Available to Evaluation tier and above.
+type PolicySimulationHandler struct {
+	engine interface {
+		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
+		ListActivePolicies() []DynamicPolicy
+	}
+	policyService *PolicyService
+	tierChecker   LicenseChecker
+	rateLimiter   *simulationRateLimiter
+}
+
+// simulationRateLimiter tracks daily simulation usage per tenant.
+// NOTE: This is per-process in-memory state. In multi-replica deployments,
+// each replica enforces its own limit independently.
+type simulationRateLimiter struct {
+	mu      sync.Mutex
+	counts  map[string]int // tenant → count
+	resetAt time.Time      // when to reset (start of next UTC day)
+}
+
+var simRateLimiter = &simulationRateLimiter{
+	counts:  make(map[string]int),
+	resetAt: nextUTCMidnight(),
+}
+
+func (rl *simulationRateLimiter) tryConsume(tenantID string, limit int) (bool, int) {
+	if limit < 0 { // unlimited (-1)
+		return true, 0
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	if time.Now().UTC().After(rl.resetAt) {
+		rl.counts = make(map[string]int)
+		rl.resetAt = nextUTCMidnight()
+	}
+
+	current := rl.counts[tenantID]
+	if current >= limit {
+		return false, current
+	}
+
+	rl.counts[tenantID]++
+	return true, current + 1
+}
+
+// NewPolicySimulationHandler creates a new policy simulation handler.
+func NewPolicySimulationHandler(engine interface {
+	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
+	ListActivePolicies() []DynamicPolicy
+}, policyService *PolicyService, tierChecker LicenseChecker) *PolicySimulationHandler {
+	return &PolicySimulationHandler{
+		engine:        engine,
+		policyService: policyService,
+		tierChecker:   tierChecker,
+		rateLimiter:   simRateLimiter,
+	}
+}
+
+// RegisterRoutes registers simulation endpoints.
+func (h *PolicySimulationHandler) RegisterRoutes(r *mux.Router) {
+	r.HandleFunc("/api/v1/policies/simulate", h.SimulatePolicies).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/policies/impact-report", h.ImpactReport).Methods("POST", "OPTIONS")
+}
+
+// SimulatePolicies handles POST /api/v1/policies/simulate.
+// Runs all active policies against the input as a dry run.
+func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// License gate
+	if !h.tierChecker.IsPolicySimulationEnabled() {
+		writeJSONError(w, http.StatusForbidden, ErrCodeFeatureRequiresEvaluation,
+			"Policy simulation requires an Evaluation or Enterprise license. Get a free eval license: https://getaxonflow.com/evaluation-license")
+		return
+	}
+
+	var req SimulatePoliciesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body: "+err.Error())
+		return
+	}
+	if req.Query == "" {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "query is required")
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		if tid, ok := r.Context().Value("tenant_id").(string); ok {
+			tenantID = tid
+		}
+	}
+
+	// Rate limit check
+	limit := h.tierChecker.MaxSimulationsPerDay()
+	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
+	if !allowed {
+		writeJSONError(w, http.StatusTooManyRequests, ErrCodeSimulationLimitExceeded,
+			"Daily simulation limit reached ("+strconv.Itoa(current)+"/"+strconv.Itoa(limit)+"). Upgrade to Enterprise for unlimited simulations: https://getaxonflow.com/pricing")
+		return
+	}
+
+	// Build OrchestratorRequest for dry-run evaluation
+	orchReq := OrchestratorRequest{
+		RequestID:   "sim-" + time.Now().Format("20060102-150405"),
+		Query:       req.Query,
+		RequestType: req.RequestType,
+		User:        req.User,
+		Client:      req.Client,
+		Context:     req.Context,
+		SkipLLM:     true, // Dry run — don't call LLMs
+		Timestamp:   time.Now(),
+	}
+	if orchReq.RequestType == "" {
+		orchReq.RequestType = "simulation"
+	}
+
+	// Evaluate
+	result := h.engine.EvaluateDynamicPolicies(r.Context(), orchReq)
+	totalPolicies := len(h.engine.ListActivePolicies())
+
+	// Build usage info
+	var usage *SimulationDailyUsage
+	if limit > 0 {
+		usage = &SimulationDailyUsage{
+			Used:  current,
+			Limit: limit,
+		}
+	}
+
+	resp := SimulatePoliciesResponse{
+		Allowed:          result.Allowed,
+		AppliedPolicies:  result.AppliedPolicies,
+		RiskScore:        result.RiskScore,
+		RequiredActions:  result.RequiredActions,
+		ProcessingTimeMs: result.ProcessingTimeMs,
+		TotalPolicies:    totalPolicies,
+		DryRun:           true,
+		SimulatedAt:      time.Now(),
+		Tier:             string(h.tierChecker.Tier()),
+		DailyUsage:       usage,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// ImpactReport handles POST /api/v1/policies/impact-report.
+// Tests a single policy against multiple inputs and returns aggregate statistics.
+func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// License gate
+	if !h.tierChecker.IsPolicySimulationEnabled() {
+		writeJSONError(w, http.StatusForbidden, ErrCodeFeatureRequiresEvaluation,
+			"Impact report requires an Evaluation or Enterprise license. Get a free eval license: https://getaxonflow.com/evaluation-license")
+		return
+	}
+
+	var req ImpactReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body: "+err.Error())
+		return
+	}
+	if req.PolicyID == "" {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "policy_id is required")
+		return
+	}
+	if len(req.Inputs) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "at least one input is required")
+		return
+	}
+
+	// Enforce input limit
+	maxInputs := h.tierChecker.MaxImpactReportInputs()
+	if maxInputs > 0 && len(req.Inputs) > maxInputs {
+		writeJSONError(w, http.StatusBadRequest, "INPUT_LIMIT_EXCEEDED",
+			"Too many inputs. Maximum allowed: "+strconv.Itoa(maxInputs))
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		if tid, ok := r.Context().Value("tenant_id").(string); ok {
+			tenantID = tid
+		}
+	}
+
+	if h.policyService == nil {
+		writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Policy service not available")
+		return
+	}
+
+	start := time.Now()
+	var matched, blocked int
+	results := make([]ImpactReportResult, 0, len(req.Inputs))
+
+	for i, input := range req.Inputs {
+		testReq := &TestPolicyRequest{
+			Query:       input.Query,
+			User:        input.User,
+			RequestType: input.RequestType,
+			Context:     input.Context,
+		}
+
+		testResp, err := h.policyService.TestPolicy(r.Context(), tenantID, req.PolicyID, testReq)
+		if err != nil {
+			log.Printf("[ImpactReport] Error testing input %d: %v", i, err)
+			writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to evaluate input "+strconv.Itoa(i))
+			return
+		}
+
+		var actions []string
+		for _, a := range testResp.Actions {
+			actions = append(actions, a.Type)
+		}
+
+		result := ImpactReportResult{
+			InputIndex: i,
+			Matched:    testResp.Matched,
+			Blocked:    testResp.Blocked,
+			Actions:    actions,
+		}
+		results = append(results, result)
+
+		if testResp.Matched {
+			matched++
+		}
+		if testResp.Blocked {
+			blocked++
+		}
+	}
+
+	total := len(req.Inputs)
+	resp := ImpactReportResponse{
+		PolicyID:         req.PolicyID,
+		TotalInputs:      total,
+		Matched:          matched,
+		Blocked:          blocked,
+		MatchRate:        float64(matched) / float64(total),
+		BlockRate:        float64(blocked) / float64(total),
+		Results:          results,
+		ProcessingTimeMs: time.Since(start).Milliseconds(),
+		GeneratedAt:      time.Now(),
+		Tier:             string(h.tierChecker.Tier()),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// writeJSONError writes a JSON error response.
+func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":   code,
+		"code":    code,
+		"message": message,
+	})
+}

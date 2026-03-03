@@ -300,6 +300,24 @@ func TestHealthHandler(t *testing.T) {
 				t.Errorf("Expected version '1.0.0', got %v", health["version"])
 			}
 
+			// Check capabilities array
+			capabilities, ok := health["capabilities"].([]interface{})
+			if !ok || len(capabilities) == 0 {
+				t.Fatal("Expected non-empty 'capabilities' array in health response")
+			}
+
+			// Check sdk_compatibility object
+			sdkCompat, ok := health["sdk_compatibility"].(map[string]interface{})
+			if !ok {
+				t.Fatal("Expected 'sdk_compatibility' object in health response")
+			}
+			if _, ok := sdkCompat["min_sdk_version"].(string); !ok {
+				t.Error("Expected 'min_sdk_version' string in sdk_compatibility")
+			}
+			if _, ok := sdkCompat["recommended_sdk_version"].(string); !ok {
+				t.Error("Expected 'recommended_sdk_version' string in sdk_compatibility")
+			}
+
 			// Check components exist
 			components, ok := health["components"].(map[string]interface{})
 			if !ok {

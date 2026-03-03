@@ -62,6 +62,15 @@ const (
 	StepTypeHumanTask     StepType = "human_task"
 )
 
+// ToolContext provides tool-level context for per-tool governance within tool_call steps.
+// When a tools node invokes multiple individual tools, each tool can be governed independently
+// by including ToolContext in the step gate request.
+type ToolContext struct {
+	ToolName  string                 `json:"tool_name"`
+	ToolType  string                 `json:"tool_type,omitempty"` // "function", "mcp", "api"
+	ToolInput map[string]interface{} `json:"tool_input,omitempty"`
+}
+
 // Workflow represents a registered workflow from an external orchestrator
 type Workflow struct {
 	WorkflowID       string          `json:"workflow_id" db:"workflow_id"`
@@ -74,6 +83,7 @@ type Workflow struct {
 	TenantID         string          `json:"tenant_id,omitempty" db:"tenant_id"`
 	UserID           string          `json:"user_id,omitempty" db:"user_id"`
 	ClientID         string          `json:"client_id,omitempty" db:"client_id"`
+	TraceID          string          `json:"trace_id,omitempty" db:"trace_id"`
 	Metadata         json.RawMessage `json:"metadata,omitempty" db:"metadata"`
 	StartedAt        time.Time       `json:"started_at" db:"started_at"`
 	CompletedAt      *time.Time      `json:"completed_at,omitempty" db:"completed_at"`
@@ -112,13 +122,14 @@ type WorkflowStep struct {
 
 // CreateWorkflowRequest is the request to register a new workflow
 type CreateWorkflowRequest struct {
-	WorkflowName string                 `json:"workflow_name" validate:"required"`
-	Source       WorkflowSource         `json:"source,omitempty"`
+	WorkflowName string         `json:"workflow_name" validate:"required"`
+	Source       WorkflowSource `json:"source,omitempty"`
 	// Deprecated: TotalSteps no longer needs to be declared upfront.
 	// When omitted, total_steps is automatically set to the actual step count
 	// when the workflow reaches a terminal state (completed, aborted, or failed).
-	TotalSteps   *int                   `json:"total_steps,omitempty"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	TotalSteps *int                   `json:"total_steps,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	TraceID    string                 `json:"trace_id,omitempty"`
 }
 
 // CreateWorkflowResponse is the response when a workflow is created
@@ -128,18 +139,20 @@ type CreateWorkflowResponse struct {
 	Source       WorkflowSource `json:"source"`
 	Status       WorkflowStatus `json:"status"`
 	CreatedAt    time.Time      `json:"created_at"`
+	TraceID      string         `json:"trace_id,omitempty"`
 }
 
 // StepGateRequest is the request to check if a step is allowed to proceed
 type StepGateRequest struct {
-	StepName  string                 `json:"step_name,omitempty"`
-	StepType  StepType               `json:"step_type" validate:"required"`
-	StepInput map[string]interface{} `json:"step_input,omitempty"`
-	Model     string                 `json:"model,omitempty"`
-	Provider  string                 `json:"provider,omitempty"`
-	TokensIn  *int                   `json:"tokens_in,omitempty"`
-	TokensOut *int                   `json:"tokens_out,omitempty"`
-	CostUSD   *float64              `json:"cost_usd,omitempty"`
+	StepName    string                 `json:"step_name,omitempty"`
+	StepType    StepType               `json:"step_type" validate:"required"`
+	StepInput   map[string]interface{} `json:"step_input,omitempty"`
+	Model       string                 `json:"model,omitempty"`
+	Provider    string                 `json:"provider,omitempty"`
+	TokensIn    *int                   `json:"tokens_in,omitempty"`
+	TokensOut   *int                   `json:"tokens_out,omitempty"`
+	CostUSD     *float64               `json:"cost_usd,omitempty"`
+	ToolContext *ToolContext           `json:"tool_context,omitempty"`
 	// GateOverride bypasses the policy evaluator and forces a specific decision.
 	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
 	GateOverride *GateDecision `json:"-"`
@@ -176,6 +189,7 @@ type WorkflowStatusResponse struct {
 	TotalSteps       *int           `json:"total_steps,omitempty"`
 	StartedAt        time.Time      `json:"started_at"`
 	CompletedAt      *time.Time     `json:"completed_at,omitempty"`
+	TraceID          string         `json:"trace_id,omitempty"`
 	Steps            []StepInfo     `json:"steps,omitempty"`
 }
 
@@ -206,17 +220,18 @@ type ListWorkflowsOptions struct {
 	Source   *WorkflowSource `json:"source,omitempty"`
 	TenantID string          `json:"tenant_id,omitempty"`
 	OrgID    string          `json:"org_id,omitempty"`
+	TraceID  string          `json:"trace_id,omitempty"`
 	Limit    int             `json:"limit,omitempty"`
 	Offset   int             `json:"offset,omitempty"`
 }
 
 // ListWorkflowsResponse is the response for listing workflows
 type ListWorkflowsResponse struct {
-	Workflows  []WorkflowStatusResponse `json:"workflows"`
-	Total      int                      `json:"total"`
-	Limit      int                      `json:"limit"`
-	Offset     int                      `json:"offset"`
-	HasMore    bool                     `json:"has_more"`
+	Workflows []WorkflowStatusResponse `json:"workflows"`
+	Total     int                      `json:"total"`
+	Limit     int                      `json:"limit"`
+	Offset    int                      `json:"offset"`
+	HasMore   bool                     `json:"has_more"`
 }
 
 // PolicyMatch represents a matched policy for a step
@@ -240,6 +255,7 @@ func (w *Workflow) ToStatusResponse() WorkflowStatusResponse {
 		TotalSteps:       w.TotalSteps,
 		StartedAt:        w.StartedAt,
 		CompletedAt:      w.CompletedAt,
+		TraceID:          w.TraceID,
 	}
 
 	if len(w.Steps) > 0 {
@@ -268,6 +284,7 @@ func (w *Workflow) ToCreateResponse() CreateWorkflowResponse {
 		Source:       w.Source,
 		Status:       w.Status,
 		CreatedAt:    w.CreatedAt,
+		TraceID:      w.TraceID,
 	}
 }
 

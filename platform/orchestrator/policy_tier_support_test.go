@@ -57,6 +57,34 @@ func TestDefaultLicenseChecker(t *testing.T) {
 	if v := checker.MediaGovernanceEnabled(); v != false {
 		t.Errorf("DefaultLicenseChecker.MediaGovernanceEnabled() = %v, want false", v)
 	}
+	// Evaluation-tier feature methods should return Community defaults
+	if v := checker.IsHITLApprovalEnabled(); v != false {
+		t.Errorf("DefaultLicenseChecker.IsHITLApprovalEnabled() = %v, want false", v)
+	}
+	if v := checker.HITLExpiryHours(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.HITLExpiryHours() = %d, want 0", v)
+	}
+	if v := checker.IsPolicySimulationEnabled(); v != false {
+		t.Errorf("DefaultLicenseChecker.IsPolicySimulationEnabled() = %v, want false", v)
+	}
+	if v := checker.MaxSimulationsPerDay(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.MaxSimulationsPerDay() = %d, want 0", v)
+	}
+	if v := checker.MaxImpactReportInputs(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.MaxImpactReportInputs() = %d, want 0", v)
+	}
+	if v := checker.IsEvidenceExportEnabled(); v != false {
+		t.Errorf("DefaultLicenseChecker.IsEvidenceExportEnabled() = %v, want false", v)
+	}
+	if v := checker.MaxEvidenceExportRecords(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.MaxEvidenceExportRecords() = %d, want 0", v)
+	}
+	if v := checker.MaxEvidenceWindowDays(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.MaxEvidenceWindowDays() = %d, want 0", v)
+	}
+	if v := checker.MaxEvidenceExportsPerDay(); v != 0 {
+		t.Errorf("DefaultLicenseChecker.MaxEvidenceExportsPerDay() = %d, want 0", v)
+	}
 }
 
 func TestEnvLicenseChecker_Community(t *testing.T) {
@@ -109,6 +137,34 @@ func TestEnvLicenseChecker_Community(t *testing.T) {
 	}
 	if v := checker.MediaGovernanceEnabled(); v != false {
 		t.Errorf("EnvLicenseChecker.MediaGovernanceEnabled() = %v, want false", v)
+	}
+	// Evaluation-tier feature methods should return Community defaults without a license
+	if v := checker.IsHITLApprovalEnabled(); v != false {
+		t.Errorf("EnvLicenseChecker.IsHITLApprovalEnabled() = %v, want false", v)
+	}
+	if v := checker.HITLExpiryHours(); v != 0 {
+		t.Errorf("EnvLicenseChecker.HITLExpiryHours() = %d, want 0", v)
+	}
+	if v := checker.IsPolicySimulationEnabled(); v != false {
+		t.Errorf("EnvLicenseChecker.IsPolicySimulationEnabled() = %v, want false", v)
+	}
+	if v := checker.MaxSimulationsPerDay(); v != 0 {
+		t.Errorf("EnvLicenseChecker.MaxSimulationsPerDay() = %d, want 0", v)
+	}
+	if v := checker.MaxImpactReportInputs(); v != 0 {
+		t.Errorf("EnvLicenseChecker.MaxImpactReportInputs() = %d, want 0", v)
+	}
+	if v := checker.IsEvidenceExportEnabled(); v != false {
+		t.Errorf("EnvLicenseChecker.IsEvidenceExportEnabled() = %v, want false", v)
+	}
+	if v := checker.MaxEvidenceExportRecords(); v != 0 {
+		t.Errorf("EnvLicenseChecker.MaxEvidenceExportRecords() = %d, want 0", v)
+	}
+	if v := checker.MaxEvidenceWindowDays(); v != 0 {
+		t.Errorf("EnvLicenseChecker.MaxEvidenceWindowDays() = %d, want 0", v)
+	}
+	if v := checker.MaxEvidenceExportsPerDay(); v != 0 {
+		t.Errorf("EnvLicenseChecker.MaxEvidenceExportsPerDay() = %d, want 0", v)
 	}
 }
 

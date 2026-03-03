@@ -67,11 +67,13 @@ async def main() -> int:
                         source=WorkflowSource.EXTERNAL,
                         total_steps=3,
                         metadata={"example": "workflow-control-python"},
+                        trace_id="example-trace-py-001",
                     )
                 )
                 workflow_id = workflow.workflow_id
                 assert_check(workflow.workflow_id != "", "Workflow has ID")
                 assert_check(workflow.workflow_name == "code-review-pipeline", "Workflow name matches")
+                assert_check(workflow.trace_id == "example-trace-py-001", "trace_id returned in create response")
                 print(f"   Workflow ID: {workflow.workflow_id}")
             except Exception as e:
                 failures.append(f"create_workflow failed: {e}")
@@ -236,6 +238,7 @@ async def main() -> int:
             try:
                 status = await client.get_workflow(workflow.workflow_id)
                 assert_check(status.workflow_name == "code-review-pipeline", "Workflow name matches")
+                assert_check(status.trace_id == "example-trace-py-001", "trace_id returned in status response")
                 assert_check(status.status is not None, "Workflow has status")
                 assert_check(len(status.steps) == 3, f"Workflow has 3 steps (got {len(status.steps)})")
                 print(f"   Status: {status.status.value}")

@@ -66,20 +66,29 @@ func setupTestKeypair(t *testing.T) {
 
 // mockLicenseChecker is a mock license checker for testing.
 type mockLicenseChecker struct {
-	tier                    license.Tier
-	policyLimit             int
-	orgPolicyLimit          int
-	policyConnectorLimit          int
-	auditRetentionDays      int
-	maxLLMProviders         int
-	maxExecutionHistory     int
-	maxConcurrentExecutions int
-	maxPlans                int
-	maxVersionsPerPlan      int
-	maxSSEConnections       int
-	maxCostEstimatesPerDay  int
-	maxPendingApprovals     int
-	mediaGovernanceEnabled  bool
+	tier                     license.Tier
+	policyLimit              int
+	orgPolicyLimit           int
+	policyConnectorLimit     int
+	auditRetentionDays       int
+	maxLLMProviders          int
+	maxExecutionHistory      int
+	maxConcurrentExecutions  int
+	maxPlans                 int
+	maxVersionsPerPlan       int
+	maxSSEConnections        int
+	maxCostEstimatesPerDay   int
+	maxPendingApprovals      int
+	mediaGovernanceEnabled   bool
+	hitlApprovalEnabled      bool
+	hitlExpiryHours          int
+	policySimulationEnabled  bool
+	maxSimulationsPerDay     int
+	maxImpactReportInputs    int
+	evidenceExportEnabled    bool
+	maxEvidenceExportRecords int
+	maxEvidenceWindowDays    int
+	maxEvidenceExportsPerDay int
 }
 
 // newMockLicenseChecker creates a mock license checker with sensible defaults.
@@ -99,6 +108,15 @@ func newMockLicenseChecker(tier license.Tier) *mockLicenseChecker {
 	m.maxCostEstimatesPerDay = limits.MaxCostEstimatesPerDay
 	m.maxPendingApprovals = limits.MaxPendingApprovals
 	m.mediaGovernanceEnabled = limits.MediaGovernanceEnabled
+	m.hitlApprovalEnabled = limits.HITLApprovalEnabled
+	m.hitlExpiryHours = limits.HITLExpiryHours
+	m.policySimulationEnabled = limits.PolicySimulationEnabled
+	m.maxSimulationsPerDay = limits.MaxSimulationsPerDay
+	m.maxImpactReportInputs = limits.MaxImpactReportInputs
+	m.evidenceExportEnabled = limits.EvidenceExportEnabled
+	m.maxEvidenceExportRecords = limits.MaxEvidenceExportRecords
+	m.maxEvidenceWindowDays = limits.MaxEvidenceWindowDays
+	m.maxEvidenceExportsPerDay = limits.MaxEvidenceExportsPerDay
 	return m
 }
 
@@ -160,6 +178,42 @@ func (m *mockLicenseChecker) MaxPendingApprovals() int {
 
 func (m *mockLicenseChecker) MediaGovernanceEnabled() bool {
 	return m.mediaGovernanceEnabled
+}
+
+func (m *mockLicenseChecker) IsHITLApprovalEnabled() bool {
+	return m.hitlApprovalEnabled
+}
+
+func (m *mockLicenseChecker) HITLExpiryHours() int {
+	return m.hitlExpiryHours
+}
+
+func (m *mockLicenseChecker) IsPolicySimulationEnabled() bool {
+	return m.policySimulationEnabled
+}
+
+func (m *mockLicenseChecker) MaxSimulationsPerDay() int {
+	return m.maxSimulationsPerDay
+}
+
+func (m *mockLicenseChecker) MaxImpactReportInputs() int {
+	return m.maxImpactReportInputs
+}
+
+func (m *mockLicenseChecker) IsEvidenceExportEnabled() bool {
+	return m.evidenceExportEnabled
+}
+
+func (m *mockLicenseChecker) MaxEvidenceExportRecords() int {
+	return m.maxEvidenceExportRecords
+}
+
+func (m *mockLicenseChecker) MaxEvidenceWindowDays() int {
+	return m.maxEvidenceWindowDays
+}
+
+func (m *mockLicenseChecker) MaxEvidenceExportsPerDay() int {
+	return m.maxEvidenceExportsPerDay
 }
 
 func TestTierValidationError_Error(t *testing.T) {

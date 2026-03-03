@@ -124,10 +124,13 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
+ARG AXONFLOW_VERSION=4.8.0
+ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
+
 # AWS Marketplace metadata
 LABEL name="AxonFlow Agent" \
       vendor="AxonFlow, Inc." \
-      version="1.0.0" \
+      version="${AXONFLOW_VERSION}" \
       release="1" \
       summary="AxonFlow AI Control Plane - Agent Component" \
       description="Sub-10ms policy enforcement engine for AI governance. Evaluates policies, routes requests to orchestrator, and provides audit trail." \
@@ -139,7 +142,7 @@ LABEL name="AxonFlow Agent" \
       io.k8s.display-name="AxonFlow Agent" \
       io.opencontainer.image.title="AxonFlow Agent" \
       io.opencontainer.image.description="Sub-10ms policy enforcement for AI systems" \
-      io.opencontainer.image.version="1.0.0" \
+      io.opencontainer.image.version="${AXONFLOW_VERSION}" \
       io.opencontainer.image.vendor="AxonFlow, Inc." \
       io.opencontainer.image.licenses="Commercial" \
       io.opencontainer.image.url="https://getaxonflow.com" \

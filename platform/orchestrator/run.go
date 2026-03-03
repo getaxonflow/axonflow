@@ -132,6 +132,10 @@ var (
 	// Tier enforcement
 	tierChecker         LicenseChecker       // Global tier-aware license checker
 	auditCleanupService *AuditCleanupService // Tier-aware audit log cleanup
+
+	// Evaluation tier features
+	policySimulationHandler *PolicySimulationHandler // Policy simulation + impact report
+	evidenceExportHandler   *EvidenceExportHandler   // Evidence export + summary
 )
 
 // Per-stage metrics (similar to Agent)
@@ -625,6 +629,9 @@ func Run() {
 		if !isCommunityMode() {
 			workflowControlHandler.RegisterEnterpriseRoutes(r)
 			log.Println("WCP Enterprise routes registered (approval/rejection)")
+		} else if tierChecker != nil && tierChecker.IsHITLApprovalEnabled() {
+			workflowControlHandler.RegisterEvaluationRoutes(r)
+			log.Println("WCP Evaluation routes registered (approval/rejection via eval license)")
 		}
 	}
 
@@ -639,6 +646,18 @@ func Run() {
 	if unifiedExecutionHandler != nil {
 		unifiedExecutionHandler.RegisterRoutes(r)
 		log.Println("Unified Execution API routes registered (/api/v1/unified/executions/...)")
+	}
+
+	// Policy Simulation (Evaluation tier+)
+	if policySimulationHandler != nil {
+		policySimulationHandler.RegisterRoutes(r)
+		log.Println("Policy Simulation API routes registered (/api/v1/policies/simulate, /api/v1/policies/impact-report)")
+	}
+
+	// Evidence Export (Evaluation tier+)
+	if evidenceExportHandler != nil {
+		evidenceExportHandler.RegisterRoutes(r)
+		log.Println("Evidence Export API routes registered (/api/v1/evidence/export, /api/v1/evidence/summary)")
 	}
 
 	// Agent Config CRUD API (MAP v1.0 — Enterprise)
@@ -1164,6 +1183,18 @@ func initializeComponents() {
 		dynamicPolicyAPIHandler = NewDynamicPolicyAPIHandler(policyService)
 		log.Println("Dynamic Policy API initialized ✅ (ADR-026)")
 
+		// Initialize Policy Simulation (Evaluation tier+)
+		if tierChecker != nil && tierChecker.IsPolicySimulationEnabled() {
+			policySimulationHandler = NewPolicySimulationHandler(dynamicPolicyEngine, policyService, tierChecker)
+			log.Println("Policy Simulation API initialized ✅ (Evaluation tier)")
+		}
+
+		// Initialize Evidence Export (Evaluation tier+)
+		if tierChecker != nil && tierChecker.IsEvidenceExportEnabled() {
+			evidenceExportHandler = NewEvidenceExportHandler(usageDB, tierChecker)
+			log.Println("Evidence Export API initialized ✅ (Evaluation tier)")
+		}
+
 		// Initialize Policy Templates API (Track D - Policy Templates)
 		log.Println("Initializing Policy Templates API...")
 		templateRepo := NewTemplateRepository(usageDB)
@@ -1423,11 +1454,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	health := map[string]interface{}{
-		"status":     "healthy",
-		"service":    "axonflow-orchestrator",
-		"version":    "1.0.0",
-		"timestamp":  time.Now().UTC(),
-		"components": components,
+		"status":             "healthy",
+		"service":            "axonflow-orchestrator",
+		"version":            getPlatformVersion(),
+		"timestamp":          time.Now().UTC(),
+		"components":         components,
+		"capabilities":       getCapabilities(),
+		"sdk_compatibility":  getSDKCompatibility(),
 		"features": map[string]bool{
 			"multi_agent_planning": planningEngine != nil && resultAggregator != nil,
 			"sebi_compliance":      sebiModule != nil && sebiModule.IsHealthy(),

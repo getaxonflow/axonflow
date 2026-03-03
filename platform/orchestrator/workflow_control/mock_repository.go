@@ -192,6 +192,9 @@ func (m *MockRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([
 		if opts.Source != nil && w.Source != *opts.Source {
 			continue
 		}
+		if opts.TraceID != "" && w.TraceID != opts.TraceID {
+			continue
+		}
 
 		result = append(result, *w)
 	}

@@ -76,12 +76,14 @@ public class WorkflowControl {
                     .source(WorkflowSource.EXTERNAL)
                     .totalSteps(3)
                     .metadata(Map.of("example", "workflow-control-java"))
+                    .traceId("example-trace-java-001")
                     .build()
             );
 
             System.out.println("   Workflow created!");
             System.out.println("   Workflow ID: " + workflow.getWorkflowId());
             assertCheck(workflow.getWorkflowId() != null, "Workflow created with ID");
+            assertCheck("example-trace-java-001".equals(workflow.getTraceId()), "trace_id returned in create response");
             System.out.println();
 
             // Step 2: Check gate for first step (Generate Code - LLM call)
@@ -249,6 +251,7 @@ public class WorkflowControl {
             System.out.println("   Status: " + status.getStatus());
             System.out.println("   Steps: " + (status.getSteps() != null ? status.getSteps().size() : 0));
             assertCheck(status.getWorkflowName() != null, "Workflow status has name");
+            assertCheck("example-trace-java-001".equals(status.getTraceId()), "trace_id returned in status response");
             assertCheck(status.getStatus() != null, "Workflow status has status");
             System.out.println();
 

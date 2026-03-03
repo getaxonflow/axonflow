@@ -1369,3 +1369,298 @@ func TestHandlerCORSDisallowedOrigin(t *testing.T) {
 		t.Error("should not allow malicious origin")
 	}
 }
+
+// --- Tests for trace_id (#1259) ---
+
+func TestHandlerCreateWorkflowWithTraceID(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+
+	body, _ := json.Marshal(CreateWorkflowRequest{
+		WorkflowName: "traced-workflow",
+		Source:       WorkflowSourceLangGraph,
+		TraceID:      "langsmith-trace-abc123",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.CreateWorkflow(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	var response CreateWorkflowResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response.TraceID != "langsmith-trace-abc123" {
+		t.Errorf("trace_id = %q, want %q", response.TraceID, "langsmith-trace-abc123")
+	}
+}
+
+func TestHandlerGetWorkflowReturnsTraceID(t *testing.T) {
+	handler, svc, _ := setupTestHandler()
+	ctx := context.Background()
+
+	// Create workflow with trace_id
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "traced-workflow",
+		TraceID:      "datadog-trace-xyz789",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/"+workflow.WorkflowID, nil)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
+
+	rr := httptest.NewRecorder()
+	handler.GetWorkflow(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var response WorkflowStatusResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response.TraceID != "datadog-trace-xyz789" {
+		t.Errorf("trace_id = %q, want %q", response.TraceID, "datadog-trace-xyz789")
+	}
+}
+
+func TestHandlerListWorkflowsTraceIDFilter(t *testing.T) {
+	handler, svc, _ := setupTestHandler()
+	ctx := context.Background()
+
+	// Create workflows: 2 with same trace_id, 1 without
+	svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "traced-1",
+		TraceID:      "shared-trace-001",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "traced-2",
+		TraceID:      "shared-trace-001",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "untraced",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows?trace_id=shared-trace-001", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.ListWorkflows(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var response ListWorkflowsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response.Total != 2 {
+		t.Errorf("total = %d, want 2 (filtered by trace_id)", response.Total)
+	}
+
+	for _, w := range response.Workflows {
+		if w.TraceID != "shared-trace-001" {
+			t.Errorf("workflow %s has trace_id=%q, want %q", w.WorkflowID, w.TraceID, "shared-trace-001")
+		}
+	}
+}
+
+func TestHandlerCreateWorkflowWithoutTraceID(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+
+	body, _ := json.Marshal(CreateWorkflowRequest{
+		WorkflowName: "no-trace-workflow",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.CreateWorkflow(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	var response CreateWorkflowResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	// trace_id should be empty (omitted from JSON via omitempty)
+	if response.TraceID != "" {
+		t.Errorf("trace_id = %q, want empty when not provided", response.TraceID)
+	}
+}
+
+func TestServiceCreateWorkflowTraceIDTooLong(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, nil, nil)
+	ctx := context.Background()
+
+	longTraceID := make([]byte, 256)
+	for i := range longTraceID {
+		longTraceID[i] = 'x'
+	}
+
+	_, err := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "long-trace",
+		TraceID:      string(longTraceID),
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	if err == nil {
+		t.Error("expected error for trace_id exceeding 255 chars")
+	}
+}
+
+func TestTraceIDJSONSerialization(t *testing.T) {
+	// Verify trace_id uses omitempty — empty trace_id should not appear in JSON
+	resp := CreateWorkflowResponse{
+		WorkflowID:   "wf_123",
+		WorkflowName: "test",
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	json.Unmarshal(data, &raw)
+
+	if _, exists := raw["trace_id"]; exists {
+		t.Error("trace_id should be omitted from JSON when empty")
+	}
+
+	// With trace_id set, it should appear
+	resp.TraceID = "my-trace"
+	data, _ = json.Marshal(resp)
+	json.Unmarshal(data, &raw)
+
+	if raw["trace_id"] != "my-trace" {
+		t.Errorf("trace_id = %v, want 'my-trace'", raw["trace_id"])
+	}
+}
+
+// --- P2: Handler-level test for trace_id too long (#1281) ---
+
+func TestHandlerCreateWorkflowTraceIDTooLong(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+
+	longTraceID := make([]byte, 256)
+	for i := range longTraceID {
+		longTraceID[i] = 'x'
+	}
+
+	body, _ := json.Marshal(CreateWorkflowRequest{
+		WorkflowName: "long-trace-workflow",
+		TraceID:      string(longTraceID),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.CreateWorkflow(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response["code"] != "INVALID_TRACE_ID" {
+		t.Errorf("code = %v, want INVALID_TRACE_ID", response["code"])
+	}
+}
+
+// --- P2: Handler-level tests for ToolContext (#1282) ---
+
+func TestHandlerStepGateWithToolContext(t *testing.T) {
+	handler, svc, _ := setupTestHandler()
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "tool-context-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	body, _ := json.Marshal(StepGateRequest{
+		StepName: "tool-step",
+		StepType: StepTypeToolCall,
+		ToolContext: &ToolContext{
+			ToolName: "search_database",
+			ToolType: "function",
+			ToolInput: map[string]interface{}{
+				"query": "SELECT * FROM users",
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.StepGate(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestHandlerStepGateToolContextEmptyToolName(t *testing.T) {
+	handler, svc, _ := setupTestHandler()
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "tool-context-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	body, _ := json.Marshal(StepGateRequest{
+		StepName: "tool-step",
+		StepType: StepTypeToolCall,
+		ToolContext: &ToolContext{
+			ToolName: "",
+			ToolType: "function",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/gate", bytes.NewReader(body))
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+
+	rr := httptest.NewRecorder()
+	handler.StepGate(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response["code"] != "INVALID_TOOL_CONTEXT" {
+		t.Errorf("code = %v, want INVALID_TOOL_CONTEXT", response["code"])
+	}
+}
