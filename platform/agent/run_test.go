@@ -107,6 +107,8 @@ func generateTestJWTWithArrayPermissions(userID interface{}, tenantID string, pe
 
 // TestHealthHandler tests the health endpoint
 func TestHealthHandler(t *testing.T) {
+	t.Setenv("AXONFLOW_VERSION", "4.8.0")
+
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
@@ -127,10 +129,21 @@ func TestHealthHandler(t *testing.T) {
 	if response["service"] != "axonflow-agent" {
 		t.Errorf("expected service 'axonflow-agent', got %v", response["service"])
 	}
+	if response["version"] != "4.8.0" {
+		t.Errorf("expected version '4.8.0', got %v", response["version"])
+	}
+	if _, ok := response["capabilities"]; !ok {
+		t.Error("expected capabilities in response")
+	}
+	if _, ok := response["sdk_compatibility"]; !ok {
+		t.Error("expected sdk_compatibility in response")
+	}
 }
 
 // TestReadinessAwareHealthHandler tests the readiness-aware health endpoint
 func TestReadinessAwareHealthHandler(t *testing.T) {
+	t.Setenv("AXONFLOW_VERSION", "4.8.0")
+
 	tests := []struct {
 		name           string
 		appReadyState  bool
@@ -176,8 +189,14 @@ func TestReadinessAwareHealthHandler(t *testing.T) {
 			if _, ok := response["timestamp"]; !ok {
 				t.Error("expected timestamp in response")
 			}
-			if response["version"] != "1.0.0" {
-				t.Errorf("expected version '1.0.0', got %v", response["version"])
+			if response["version"] != "4.8.0" {
+				t.Errorf("expected version '4.8.0', got %v", response["version"])
+			}
+			if _, ok := response["capabilities"]; !ok {
+				t.Error("expected capabilities in response")
+			}
+			if _, ok := response["sdk_compatibility"]; !ok {
+				t.Error("expected sdk_compatibility in response")
 			}
 		})
 	}

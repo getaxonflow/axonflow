@@ -55,6 +55,7 @@ func workflowControlSchema() string {
 			tenant_id VARCHAR(255),
 			user_id VARCHAR(255),
 			client_id VARCHAR(255),
+			trace_id VARCHAR(255),
 			metadata JSONB DEFAULT '{}',
 			started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			completed_at TIMESTAMP WITH TIME ZONE,

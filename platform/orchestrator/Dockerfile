@@ -135,10 +135,13 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
+ARG AXONFLOW_VERSION=4.8.0
+ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
+
 # AWS Marketplace metadata
 LABEL name="AxonFlow Orchestrator" \
       vendor="AxonFlow, Inc." \
-      version="1.0.0" \
+      version="${AXONFLOW_VERSION}" \
       release="1" \
       summary="AxonFlow AI Control Plane - Orchestrator Component" \
       description="Multi-Agent Planning (MAP) orchestrator for coordinating AI agents in parallel with dependency management and autonomous execution." \
@@ -150,7 +153,7 @@ LABEL name="AxonFlow Orchestrator" \
       io.k8s.display-name="AxonFlow Orchestrator" \
       io.opencontainer.image.title="AxonFlow Orchestrator" \
       io.opencontainer.image.description="Multi-Agent Planning orchestrator for AI systems" \
-      io.opencontainer.image.version="1.0.0" \
+      io.opencontainer.image.version="${AXONFLOW_VERSION}" \
       io.opencontainer.image.vendor="AxonFlow, Inc." \
       io.opencontainer.image.licenses="Commercial" \
       io.opencontainer.image.url="https://getaxonflow.com" \

@@ -2746,7 +2746,43 @@ components:
           format: date-time
         version:
           type: string
-          example: "1.0.0"
+          description: Platform version from AXONFLOW_VERSION env var
+          example: "4.8.0"
+        capabilities:
+          type: array
+          description: List of platform capabilities with the version that introduced them
+          items:
+            $ref: '#/components/schemas/PlatformCapability'
+        sdk_compatibility:
+          $ref: '#/components/schemas/SDKCompatInfo'
+
+    PlatformCapability:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Capability identifier
+          example: "workflow_control"
+        since:
+          type: string
+          description: Platform version that introduced this capability
+          example: "4.3.0"
+        description:
+          type: string
+          description: Human-readable description
+          example: "WCP workflow lifecycle management"
+
+    SDKCompatInfo:
+      type: object
+      properties:
+        min_sdk_version:
+          type: string
+          description: Minimum SDK version compatible with this platform
+          example: "3.0.0"
+        recommended_sdk_version:
+          type: string
+          description: Recommended SDK version for full feature coverage
+          example: "3.8.0"
 
     # =========================================================================
     # Static Policies Schemas (ADR-018)

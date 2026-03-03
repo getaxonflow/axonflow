@@ -62,11 +62,19 @@ async def main() -> int:
                 print("Step 1: Start Workflow")
                 workflow_id = await adapter.start_workflow(
                     metadata={"example": "langgraph-adapter"},
+                    trace_id="langgraph-trace-001",
                 )
 
                 assert_check(workflow_id is not None, "start_workflow returned workflow_id")
                 assert_check(workflow_id != "", "workflow_id is not empty")
                 print(f"   Workflow started: {workflow_id}")
+
+                # Verify trace_id was stored
+                status = await client.get_workflow(workflow_id)
+                assert_check(
+                    status.trace_id == "langgraph-trace-001",
+                    f"trace_id persisted correctly (got: {status.trace_id})",
+                )
                 print()
 
                 # Step 2: LangGraph Node 1 - Generate Code (LLM call)

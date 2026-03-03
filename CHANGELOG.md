@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.8.0] - 2026-03-03
+
+### Community
+
+#### Added
+
+- **External Trace ID for Workflows** (#1259): Add optional `trace_id` field to workflows for correlation with external tracing systems (Langsmith, Datadog, OpenTelemetry)
+  - `trace_id` on `CreateWorkflowRequest` and `CreateWorkflowResponse`
+  - `trace_id` on `WorkflowStatusResponse` and `GET /workflows` query parameter
+  - Partial index on `trace_id` column for query performance (NULL values not indexed)
+  - Migration 055: `ALTER TABLE workflows ADD COLUMN trace_id VARCHAR(255)`
+- **Per-Tool Governance (Phase 1)** (#1243): Add `ToolContext` to step gate requests for tool-aware policy evaluation within tool_call steps
+  - New `ToolContext` struct: `tool_name`, `tool_type` (function/mcp/api), `tool_input`
+  - Policy adapter propagates tool context into policy evaluation (tool_name, tool_type, tool_input.* keys)
+  - Optional field — fully backward compatible with existing SDKs
+  - ADR-038 documents Phase 1 (context enrichment) and Phase 2 (tool-scoped policies, future)
+- **Per-Tool Governance Example**: New `langgraph_tools_example.py` demonstrating `check_tool_gate()` and `tool_completed()` for individual tool invocations within a LangGraph tools node
+- **SDK-Platform Version Discovery** (#1275): Health endpoints now report real platform version, capability registry, and SDK compatibility information
+  - `/health` response includes `version` (from `AXONFLOW_VERSION` env var), `capabilities` array, and `sdk_compatibility` object
+  - Capability registry lists all platform features with the version that introduced them (15 capabilities from v1.0.0 through v4.8.0)
+  - `sdk_compatibility` reports `min_sdk_version` and `recommended_sdk_version` for programmatic upgrade guidance
+  - Applies to both Agent and Orchestrator health endpoints
+- **Version Check Examples**: New `examples/version-check/` with HTTP, Go, Python, TypeScript, and Java variants demonstrating capability discovery
+- **Compatibility Matrix**: New `docs/COMPATIBILITY_MATRIX.md` mapping platform versions to minimum SDK versions
+
+#### Changed
+
+- **WCP Examples Updated**: All 6 existing workflow-control examples (Go, Python, Python LangGraph, TypeScript, Java, HTTP) updated with trace_id support and verification assertions
+
+#### Fixed
+
+- **Hardcoded health endpoint versions**: Agent and Orchestrator `/health` previously returned `"1.0.0"` regardless of actual platform version
+- **Dockerfile version labels**: Agent and Orchestrator Dockerfiles now use `AXONFLOW_VERSION` build arg with `ENV` propagation for runtime access
+
+### Enterprise
+
+#### Added
+
+- **SDK Telemetry Checkpoint Service**: New Lambda service at `checkpoint.getaxonflow.com` for anonymous SDK runtime telemetry
+  - `POST /v1/ping` receives SDK telemetry, stores in DynamoDB, returns latest version info
+  - `GET /v1/version` returns latest SDK versions (cacheable)
+  - Privacy-preserving: IPs hashed (SHA256), 90-day TTL, no PII stored
+  - Terraform infrastructure: Lambda, API Gateway, DynamoDB, CloudWatch alarms
+- **Per-Tool Governance Policy Adapter**: `wcp_policy_adapter.go` propagates `ToolContext` fields into the dynamic policy evaluation context, enabling tool-aware governance rules
+- **Evaluation Tier Feature Unlock**: Three high-impact features unlocked for Evaluation license holders, giving evaluators immediate demo value for governance control, safety simulation, and compliance proof
+  - **HITL Approval Gates**: `require_approval` policy action now routes to a real HITL queue with Evaluation+ licenses. Approve/reject API, max 100 pending approvals, 24h fixed expiry with auto-reject, expiry cleanup goroutine
+  - **Policy Simulation + Impact Report**: Two new endpoints for dry-run policy evaluation
+    - `POST /api/v1/policies/simulate`: Run all active policies against input (Evaluation: 300/day, Enterprise: unlimited)
+    - `POST /api/v1/policies/impact-report`: Test a single policy against N inputs with aggregate stats (Evaluation: 50 inputs, Enterprise: 100)
+  - **Evidence Export Pack**: Bundled JSON export of audit logs, workflow steps, and HITL approvals
+    - `POST /api/v1/evidence/export`: Synchronous JSON export with date range and type filters (Evaluation: 5K records, 14-day window, 3/day; Enterprise: unlimited, no watermark)
+    - `GET /api/v1/evidence/summary`: Counts by evidence type within the tier's lookback window
+    - Evaluation exports include `"NOT FOR REGULATORY SUBMISSION"` watermark; Enterprise exports are clean
+  - Updated `TierLimits` struct with 9 new fields for feature gating
+  - Updated `LicenseChecker` interface with 9 new methods
+  - MaxPendingApprovals for Evaluation tier raised from 25 → 100
+  - Database migration 056: `evidence_exports` table for export tracking and rate limiting
+  - OpenAPI spec updated with 4 new endpoint definitions
+
+---
+
 ## [4.7.0] - 2026-02-28
 
 ### Community

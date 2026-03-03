@@ -85,6 +85,7 @@ func main() {
 		Metadata: map[string]interface{}{
 			"test": "issue-1082",
 		},
+		TraceID: "example-trace-go-001",
 	})
 
 	if err != nil {
@@ -95,6 +96,7 @@ func main() {
 	assert(workflow.WorkflowID != "", "Workflow ID is not empty")
 	assert(strings.HasPrefix(workflow.WorkflowID, "wf_"), "Workflow ID has correct prefix 'wf_'")
 	assert(workflow.Status == "in_progress", "Workflow status is in_progress after creation")
+	assert(workflow.TraceID == "example-trace-go-001", "trace_id returned in create response")
 	fmt.Printf("   Workflow ID: %s\n", workflow.WorkflowID)
 	fmt.Println()
 
@@ -258,6 +260,7 @@ func main() {
 	} else {
 		assert(status.WorkflowID == workflow.WorkflowID, "Workflow ID matches")
 		assert(status.WorkflowName == "wcp-validation-test", "Workflow name matches")
+		assert(status.TraceID == "example-trace-go-001", "trace_id returned in status response")
 		// Status should be completed since we completed the workflow
 		isTerminal := status.Status == "completed" || status.Status == "aborted"
 		assert(isTerminal, fmt.Sprintf("Workflow status is terminal: %s", status.Status))

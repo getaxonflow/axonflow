@@ -56,10 +56,12 @@ async function main() {
       source: "external",
       total_steps: 3,
       metadata: { example: "workflow-control-ts" },
+      trace_id: "example-trace-ts-001",
     });
 
     assertCheck(!!workflow.workflow_id, "Workflow created with valid ID");
     assertCheck(workflow.workflow_id.length > 0, "Workflow ID is non-empty");
+    assertCheck(workflow.trace_id === "example-trace-ts-001", "trace_id returned in create response");
     console.log(`   Workflow ID: ${workflow.workflow_id}`);
     console.log();
 
@@ -207,6 +209,7 @@ async function main() {
     console.log("Step 6: Workflow Status");
     const status = await axonflow.getWorkflow(workflow.workflow_id);
     assertCheck(status.workflow_name === "code-review-pipeline", "Workflow name matches");
+    assertCheck(status.trace_id === "example-trace-ts-001", "trace_id returned in status response");
     assertCheck(status.status === "completed" || status.status === "in_progress", "Workflow status is valid");
     console.log(`   Workflow: ${status.workflow_name}`);
     console.log(`   Status: ${status.status}`);

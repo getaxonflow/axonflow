@@ -379,10 +379,12 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		status = "healthy"
 	}
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    status,
-		"service":   "axonflow-agent",
-		"timestamp": time.Now().UTC(),
-		"version":   "1.0.0",
+		"status":             status,
+		"service":            "axonflow-agent",
+		"timestamp":          time.Now().UTC(),
+		"version":            GetPlatformVersion(),
+		"capabilities":       getCapabilities(),
+		"sdk_compatibility":  getSDKCompatibility(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
@@ -988,10 +990,12 @@ func Run() {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "healthy",
-		"service":   "axonflow-agent",
-		"timestamp": time.Now().UTC(),
-		"version":   "1.0.0",
+		"status":             "healthy",
+		"service":            "axonflow-agent",
+		"timestamp":          time.Now().UTC(),
+		"version":            GetPlatformVersion(),
+		"capabilities":       getCapabilities(),
+		"sdk_compatibility":  getSDKCompatibility(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}

@@ -95,9 +95,20 @@ type TierLimits struct {
 	MaxPlans               int `json:"max_plans"`
 	MaxVersionsPerPlan     int `json:"max_versions_per_plan"`
 	MaxSSEConnections      int `json:"max_sse_connections"`
-	MaxCostEstimatesPerDay int `json:"max_cost_estimates_per_day"`
+	MaxCostEstimatesPerDay int  `json:"max_cost_estimates_per_day"`
 	MaxPendingApprovals    int  `json:"max_pending_approvals"`
 	MediaGovernanceEnabled bool `json:"media_governance_enabled"`
+
+	// Evaluation tier feature gates
+	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
+	HITLExpiryHours          int  `json:"hitl_expiry_hours"`
+	PolicySimulationEnabled  bool `json:"policy_simulation_enabled"`
+	MaxSimulationsPerDay     int  `json:"max_simulations_per_day"`
+	MaxImpactReportInputs    int  `json:"max_impact_report_inputs"`
+	EvidenceExportEnabled    bool `json:"evidence_export_enabled"`
+	MaxEvidenceExportRecords int  `json:"max_evidence_export_records"`
+	MaxEvidenceWindowDays    int  `json:"max_evidence_window_days"`
+	MaxEvidenceExportsPerDay int  `json:"max_evidence_exports_per_day"`
 }
 
 // Default tier limits
@@ -116,6 +127,16 @@ var (
 		MaxCostEstimatesPerDay: 10,
 		MaxPendingApprovals:    5,
 		MediaGovernanceEnabled: false, // Opt-in via MEDIA_GOVERNANCE_ENABLED=true
+		// Evaluation features disabled
+		HITLApprovalEnabled:      false,
+		HITLExpiryHours:          0,
+		PolicySimulationEnabled:  false,
+		MaxSimulationsPerDay:     0,
+		MaxImpactReportInputs:    0,
+		EvidenceExportEnabled:    false,
+		MaxEvidenceExportRecords: 0,
+		MaxEvidenceWindowDays:    0,
+		MaxEvidenceExportsPerDay: 0,
 	}
 	EvaluationLimits = TierLimits{
 		TenantPolicies:         50,
@@ -129,8 +150,18 @@ var (
 		MaxVersionsPerPlan:     25,
 		MaxSSEConnections:      25,
 		MaxCostEstimatesPerDay: 100,
-		MaxPendingApprovals:    25,
+		MaxPendingApprovals:    100,
 		MediaGovernanceEnabled: true,
+		// Evaluation features enabled with limits
+		HITLApprovalEnabled:      true,
+		HITLExpiryHours:          24,
+		PolicySimulationEnabled:  true,
+		MaxSimulationsPerDay:     300,
+		MaxImpactReportInputs:    50,
+		EvidenceExportEnabled:    true,
+		MaxEvidenceExportRecords: 5000,
+		MaxEvidenceWindowDays:    14,
+		MaxEvidenceExportsPerDay: 3,
 	}
 	EnterpriseLimits = TierLimits{
 		TenantPolicies:         -1,   // Unlimited
@@ -146,6 +177,16 @@ var (
 		MaxCostEstimatesPerDay: -1,   // Unlimited
 		MaxPendingApprovals:    -1,   // Unlimited
 		MediaGovernanceEnabled: true,
+		// Enterprise features enabled, unlimited
+		HITLApprovalEnabled:      true,
+		HITLExpiryHours:          24,
+		PolicySimulationEnabled:  true,
+		MaxSimulationsPerDay:     -1, // Unlimited
+		MaxImpactReportInputs:    100,
+		EvidenceExportEnabled:    true,
+		MaxEvidenceExportRecords: -1, // Unlimited
+		MaxEvidenceWindowDays:    -1, // Unlimited
+		MaxEvidenceExportsPerDay: -1, // Unlimited
 	}
 )
 

@@ -76,6 +76,37 @@ type LicenseChecker interface {
 	// MediaGovernanceEnabled returns true if media governance is enabled for the current tier.
 	// Community: false by default (opt-in via env var), Evaluation/Enterprise: true.
 	MediaGovernanceEnabled() bool
+
+	// IsHITLApprovalEnabled returns true if HITL approval gates are enabled.
+	IsHITLApprovalEnabled() bool
+
+	// HITLExpiryHours returns the approval expiry time in hours (0 = no expiry).
+	HITLExpiryHours() int
+
+	// IsPolicySimulationEnabled returns true if policy simulation is enabled.
+	IsPolicySimulationEnabled() bool
+
+	// MaxSimulationsPerDay returns the maximum policy simulations per day.
+	// Returns -1 for unlimited (Enterprise).
+	MaxSimulationsPerDay() int
+
+	// MaxImpactReportInputs returns the maximum inputs per impact report run.
+	MaxImpactReportInputs() int
+
+	// IsEvidenceExportEnabled returns true if evidence export is enabled.
+	IsEvidenceExportEnabled() bool
+
+	// MaxEvidenceExportRecords returns the maximum records per evidence export.
+	// Returns -1 for unlimited (Enterprise).
+	MaxEvidenceExportRecords() int
+
+	// MaxEvidenceWindowDays returns the maximum lookback window in days for evidence export.
+	// Returns -1 for unlimited (Enterprise).
+	MaxEvidenceWindowDays() int
+
+	// MaxEvidenceExportsPerDay returns the maximum evidence exports per day.
+	// Returns -1 for unlimited (Enterprise).
+	MaxEvidenceExportsPerDay() int
 }
 
 // DefaultLicenseChecker is a default implementation that returns Community mode.
@@ -154,6 +185,51 @@ func (d *DefaultLicenseChecker) MaxPendingApprovals() int {
 // MediaGovernanceEnabled returns false for Community (opt-in via env var).
 func (d *DefaultLicenseChecker) MediaGovernanceEnabled() bool {
 	return license.CommunityLimits.MediaGovernanceEnabled
+}
+
+// IsHITLApprovalEnabled returns false for Community.
+func (d *DefaultLicenseChecker) IsHITLApprovalEnabled() bool {
+	return license.CommunityLimits.HITLApprovalEnabled
+}
+
+// HITLExpiryHours returns 0 for Community.
+func (d *DefaultLicenseChecker) HITLExpiryHours() int {
+	return license.CommunityLimits.HITLExpiryHours
+}
+
+// IsPolicySimulationEnabled returns false for Community.
+func (d *DefaultLicenseChecker) IsPolicySimulationEnabled() bool {
+	return license.CommunityLimits.PolicySimulationEnabled
+}
+
+// MaxSimulationsPerDay returns 0 for Community.
+func (d *DefaultLicenseChecker) MaxSimulationsPerDay() int {
+	return license.CommunityLimits.MaxSimulationsPerDay
+}
+
+// MaxImpactReportInputs returns 0 for Community.
+func (d *DefaultLicenseChecker) MaxImpactReportInputs() int {
+	return license.CommunityLimits.MaxImpactReportInputs
+}
+
+// IsEvidenceExportEnabled returns false for Community.
+func (d *DefaultLicenseChecker) IsEvidenceExportEnabled() bool {
+	return license.CommunityLimits.EvidenceExportEnabled
+}
+
+// MaxEvidenceExportRecords returns 0 for Community.
+func (d *DefaultLicenseChecker) MaxEvidenceExportRecords() int {
+	return license.CommunityLimits.MaxEvidenceExportRecords
+}
+
+// MaxEvidenceWindowDays returns 0 for Community.
+func (d *DefaultLicenseChecker) MaxEvidenceWindowDays() int {
+	return license.CommunityLimits.MaxEvidenceWindowDays
+}
+
+// MaxEvidenceExportsPerDay returns 0 for Community.
+func (d *DefaultLicenseChecker) MaxEvidenceExportsPerDay() int {
+	return license.CommunityLimits.MaxEvidenceExportsPerDay
 }
 
 // EnvLicenseChecker validates the license via AXONFLOW_LICENSE_KEY environment variable.
@@ -254,6 +330,60 @@ func (e *EnvLicenseChecker) MediaGovernanceEnabled() bool {
 	return limits.MediaGovernanceEnabled
 }
 
+// IsHITLApprovalEnabled returns true if HITL approval gates are enabled for the current tier.
+func (e *EnvLicenseChecker) IsHITLApprovalEnabled() bool {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.HITLApprovalEnabled
+}
+
+// HITLExpiryHours returns the approval expiry time in hours.
+func (e *EnvLicenseChecker) HITLExpiryHours() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.HITLExpiryHours
+}
+
+// IsPolicySimulationEnabled returns true if policy simulation is enabled for the current tier.
+func (e *EnvLicenseChecker) IsPolicySimulationEnabled() bool {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.PolicySimulationEnabled
+}
+
+// MaxSimulationsPerDay returns the maximum policy simulations per day.
+func (e *EnvLicenseChecker) MaxSimulationsPerDay() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxSimulationsPerDay
+}
+
+// MaxImpactReportInputs returns the maximum inputs per impact report run.
+func (e *EnvLicenseChecker) MaxImpactReportInputs() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxImpactReportInputs
+}
+
+// IsEvidenceExportEnabled returns true if evidence export is enabled for the current tier.
+func (e *EnvLicenseChecker) IsEvidenceExportEnabled() bool {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.EvidenceExportEnabled
+}
+
+// MaxEvidenceExportRecords returns the maximum records per evidence export.
+func (e *EnvLicenseChecker) MaxEvidenceExportRecords() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxEvidenceExportRecords
+}
+
+// MaxEvidenceWindowDays returns the maximum lookback window in days.
+func (e *EnvLicenseChecker) MaxEvidenceWindowDays() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxEvidenceWindowDays
+}
+
+// MaxEvidenceExportsPerDay returns the maximum evidence exports per day.
+func (e *EnvLicenseChecker) MaxEvidenceExportsPerDay() int {
+	limits := license.GetCurrentLimits(context.Background())
+	return limits.MaxEvidenceExportsPerDay
+}
+
 // TierValidationError represents a tier-related validation failure.
 type TierValidationError struct {
 	Message string
@@ -290,4 +420,7 @@ const (
 	ErrCodeLicenseExpired                = "LICENSE_EXPIRED"
 	ErrCodeCostEstimateLimitExceeded     = "COST_ESTIMATE_LIMIT_EXCEEDED"
 	ErrCodePendingApprovalLimitExceeded  = "PENDING_APPROVAL_LIMIT_EXCEEDED"
+	ErrCodeSimulationLimitExceeded       = "SIMULATION_LIMIT_EXCEEDED"
+	ErrCodeEvidenceExportLimitExceeded   = "EVIDENCE_EXPORT_LIMIT_EXCEEDED"
+	ErrCodeFeatureRequiresEvaluation     = "FEATURE_REQUIRES_EVALUATION_LICENSE"
 )

@@ -74,9 +74,14 @@ func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) err
 			workflow_id, workflow_name, source, status,
 			current_step_index, total_steps,
 			org_id, tenant_id, user_id, client_id,
-			metadata, started_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			trace_id, metadata, started_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`
+
+	var traceID sql.NullString
+	if workflow.TraceID != "" {
+		traceID = sql.NullString{String: workflow.TraceID, Valid: true}
+	}
 
 	_, err := r.db.ExecContext(ctx, query,
 		workflow.WorkflowID,
@@ -89,6 +94,7 @@ func (r *PostgresRepository) Create(ctx context.Context, workflow *Workflow) err
 		workflow.TenantID,
 		workflow.UserID,
 		workflow.ClientID,
+		traceID,
 		metadata,
 		workflow.StartedAt,
 		workflow.CreatedAt,
@@ -111,7 +117,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 		SELECT workflow_id, workflow_name, source, status,
 			   current_step_index, total_steps,
 			   org_id, tenant_id, user_id, client_id,
-			   metadata, started_at, completed_at, created_at, updated_at
+			   trace_id, metadata, started_at, completed_at, created_at, updated_at
 		FROM workflows
 		WHERE workflow_id = $1
 	`
@@ -119,6 +125,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	var workflow Workflow
 	var totalSteps sql.NullInt64
 	var completedAt sql.NullTime
+	var traceID sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, workflowID).Scan(
 		&workflow.WorkflowID,
@@ -131,6 +138,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 		&workflow.TenantID,
 		&workflow.UserID,
 		&workflow.ClientID,
+		&traceID,
 		&workflow.Metadata,
 		&workflow.StartedAt,
 		&completedAt,
@@ -151,6 +159,9 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 	}
 	if completedAt.Valid {
 		workflow.CompletedAt = &completedAt.Time
+	}
+	if traceID.Valid {
+		workflow.TraceID = traceID.String
 	}
 
 	// Fetch steps
@@ -306,6 +317,12 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		argNum++
 	}
 
+	if opts.TraceID != "" {
+		conditions = append(conditions, fmt.Sprintf("trace_id = $%d", argNum))
+		args = append(args, opts.TraceID)
+		argNum++
+	}
+
 	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
@@ -331,7 +348,7 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		SELECT workflow_id, workflow_name, source, status,
 			   current_step_index, total_steps,
 			   org_id, tenant_id, user_id, client_id,
-			   metadata, started_at, completed_at, created_at, updated_at
+			   trace_id, metadata, started_at, completed_at, created_at, updated_at
 		FROM workflows
 		%s
 		ORDER BY created_at DESC
@@ -351,6 +368,7 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		var workflow Workflow
 		var totalSteps sql.NullInt64
 		var completedAt sql.NullTime
+		var traceID sql.NullString
 
 		err := rows.Scan(
 			&workflow.WorkflowID,
@@ -363,6 +381,7 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 			&workflow.TenantID,
 			&workflow.UserID,
 			&workflow.ClientID,
+			&traceID,
 			&workflow.Metadata,
 			&workflow.StartedAt,
 			&completedAt,
@@ -379,6 +398,9 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 		}
 		if completedAt.Valid {
 			workflow.CompletedAt = &completedAt.Time
+		}
+		if traceID.Valid {
+			workflow.TraceID = traceID.String
 		}
 
 		steps, err := r.GetStepsForWorkflow(ctx, workflow.WorkflowID)

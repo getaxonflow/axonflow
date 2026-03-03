@@ -58,7 +58,8 @@ create_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
         "total_steps": 3,
         "metadata": {
             "example": "workflow-control-http"
-        }
+        },
+        "trace_id": "example-trace-http-001"
     }')
 
 WORKFLOW_ID=$(echo "$create_response" | jq -r '.workflow_id // ""')
@@ -70,6 +71,14 @@ fi
 
 echo -e "   ${GREEN}Workflow created!${NC}"
 echo "   Workflow ID: $WORKFLOW_ID"
+
+# Verify trace_id in create response
+TRACE_ID=$(echo "$create_response" | jq -r '.trace_id // ""')
+if [ "$TRACE_ID" = "example-trace-http-001" ]; then
+    echo -e "   ${GREEN}trace_id returned in create response${NC}"
+else
+    echo -e "   ${RED}FAIL: expected trace_id 'example-trace-http-001', got '$TRACE_ID'${NC}"
+fi
 echo ""
 
 # Step 2: Check gate for first step (Generate Code - LLM call)
@@ -291,6 +300,14 @@ status_response=$(curl -s "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID" \
 echo "   Workflow: $(echo "$status_response" | jq -r '.workflow_name')"
 echo "   Status: $(echo "$status_response" | jq -r '.status')"
 echo "   Steps: $(echo "$status_response" | jq -r '.steps | length')"
+
+# Verify trace_id in status response
+STATUS_TRACE_ID=$(echo "$status_response" | jq -r '.trace_id // ""')
+if [ "$STATUS_TRACE_ID" = "example-trace-http-001" ]; then
+    echo -e "   ${GREEN}trace_id returned in status response${NC}"
+else
+    echo -e "   ${RED}FAIL: expected trace_id 'example-trace-http-001', got '$STATUS_TRACE_ID'${NC}"
+fi
 echo ""
 
 # -------------------------------------------------------

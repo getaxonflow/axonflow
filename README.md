@@ -283,7 +283,7 @@ Teams typically start by placing AxonFlow in front of a single workflow or agent
 
 ## Three-Tier Licensing
 
-AxonFlow offers three tiers. Evaluation and Community use the same core features, with different capacity limits:
+AxonFlow offers three tiers. Community is free with no license key. Evaluation is free with a license key and unlocks governance features designed for teams taking AI to production:
 
 | Feature | Community | Evaluation (Free) | Enterprise |
 |---------|-----------|-------------------|------------|
@@ -291,22 +291,23 @@ AxonFlow offers three tiers. Evaluation and Community use the same core features
 | Org-wide policies | 0 | 5 | Unlimited |
 | Audit retention | 3 days | 14 days | 3650 days |
 | Concurrent executions | 5 | 25 | Unlimited |
-| Pending execution approvals | 5 | 25 | Unlimited |
-
-Concurrent executions applies to MAP and WCP executions per tenant. Pending execution approvals applies to MAP confirm/step mode and WCP approval queues.
+| HITL Approval Gates | — | 100 pending, 24h expiry | Unlimited, configurable expiry |
+| Policy Simulation | — | 300/day | Unlimited |
+| Evidence Export | — | 14-day window, 3/day | Unlimited |
 
 [Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)
 
 ### Stay on Community if:
 - Single team prototyping AI features
-- Development and evaluation
-- Your limits fit in Community capacity (for example, 20 tenant policies and 5 concurrent executions)
+- Development and local evaluation
+- Your limits fit in Community capacity (20 tenant policies, 5 concurrent executions)
 
 ### Upgrade to Evaluation (Free) when:
 - Taking AI to production with a small team
-- Need organization-wide policies (up to 5)
-- Need more execution capacity (history, concurrency, plans)
-- Want 14-day audit retention
+- Need Human-in-the-Loop approval gates for governed workflows
+- Want to simulate policy changes before deploying them (dry-run)
+- Need evidence exports for compliance proof or audit prep
+- Need organization-wide policies (up to 5) and 14-day audit retention
 
 **Get your free Evaluation license:** https://getaxonflow.com/evaluation-license
 
@@ -320,7 +321,7 @@ Concurrent executions applies to MAP and WCP executions per tenant. Pending exec
 **Compliance & Risk**
 - EU AI Act conformity workflows + 10-year retention
 - SEBI/RBI compliance exports + 5-year retention
-- Human-in-the-Loop approval queues
+- Unlimited HITL approval queues with configurable expiry
 - Emergency circuit breaker (kill switch)
 
 **Platform & Operations**
@@ -483,6 +484,16 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - 76% minimum test coverage required
 - Tests must be fast (<5s), deterministic
 - Security-first: validate inputs, no secrets in logs
+
+---
+
+## Telemetry
+
+AxonFlow SDKs send anonymous usage telemetry (SDK version, OS, architecture) on client initialization to help us understand adoption and prioritize features. No prompts, payloads, API keys, or tenant/user identifiers are collected. Source IP is processed transiently for attribution and not stored in plaintext. Telemetry is on by default (off in sandbox mode).
+
+Opt out: `export AXONFLOW_TELEMETRY=off` or `export DO_NOT_TRACK=1`
+
+See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including what is collected, what is never collected, and SDK-level config options.
 
 ---
 

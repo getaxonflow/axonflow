@@ -3426,6 +3426,11 @@ paths:
           schema:
             type: integer
             default: 0
+        - name: trace_id
+          in: query
+          description: Filter by external trace ID
+          schema:
+            type: string
       responses:
         '200':
           description: List of workflows
@@ -5425,6 +5430,301 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  # Evaluation Tier Features
+
+  /api/v1/policies/simulate:
+    post:
+      tags: [Policy Simulation]
+      summary: Simulate all active policies (Evaluation+)
+      description: |
+        Runs all active policies against the provided input as a dry run.
+        No audit writes or action application. Requires Evaluation or Enterprise license.
+      operationId: simulatePolicies
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: The input text to simulate against all policies
+                request_type:
+                  type: string
+                  description: Request type (defaults to "simulation")
+                user:
+                  $ref: '#/components/schemas/UserContext'
+                client:
+                  $ref: '#/components/schemas/ClientContext'
+                context:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Simulation results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed:
+                    type: boolean
+                  applied_policies:
+                    type: array
+                    items:
+                      type: string
+                  risk_score:
+                    type: number
+                  required_actions:
+                    type: array
+                    items:
+                      type: string
+                  processing_time_ms:
+                    type: integer
+                  total_policies:
+                    type: integer
+                  dry_run:
+                    type: boolean
+                    enum: [true]
+                  simulated_at:
+                    type: string
+                    format: date-time
+                  tier:
+                    type: string
+                  daily_usage:
+                    type: object
+                    properties:
+                      used:
+                        type: integer
+                      limit:
+                        type: integer
+        '403':
+          description: Feature requires Evaluation or Enterprise license
+        '429':
+          description: Daily simulation limit exceeded
+
+  /api/v1/policies/impact-report:
+    post:
+      tags: [Policy Simulation]
+      summary: Generate impact report for a policy (Evaluation+)
+      description: |
+        Tests a single policy against multiple inputs and returns aggregate statistics.
+        Requires Evaluation or Enterprise license.
+      operationId: generateImpactReport
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy_id, inputs]
+              properties:
+                policy_id:
+                  type: string
+                inputs:
+                  type: array
+                  items:
+                    type: object
+                    required: [query]
+                    properties:
+                      query:
+                        type: string
+                      request_type:
+                        type: string
+                      user:
+                        type: object
+                        additionalProperties: true
+                      context:
+                        type: object
+                        additionalProperties: true
+      responses:
+        '200':
+          description: Impact report results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy_id:
+                    type: string
+                  total_inputs:
+                    type: integer
+                  matched:
+                    type: integer
+                  blocked:
+                    type: integer
+                  match_rate:
+                    type: number
+                  block_rate:
+                    type: number
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        input_index:
+                          type: integer
+                        matched:
+                          type: boolean
+                        blocked:
+                          type: boolean
+                        actions:
+                          type: array
+                          items:
+                            type: string
+                  processing_time_ms:
+                    type: integer
+                  generated_at:
+                    type: string
+                    format: date-time
+                  tier:
+                    type: string
+        '400':
+          description: Bad request (missing fields or input limit exceeded)
+        '403':
+          description: Feature requires Evaluation or Enterprise license
+
+  /api/v1/evidence/export:
+    post:
+      tags: [Evidence Export]
+      summary: Export evidence pack (Evaluation+)
+      description: |
+        Exports audit logs, workflow steps, and HITL approvals as a bundled JSON pack.
+        Evaluation tier exports include a "NOT FOR REGULATORY SUBMISSION" watermark.
+        Enterprise exports are clean (no watermark).
+      operationId: exportEvidence
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [start_date]
+              properties:
+                start_date:
+                  type: string
+                  description: Start date (YYYY-MM-DD or RFC3339)
+                end_date:
+                  type: string
+                  description: End date (defaults to now)
+                types:
+                  type: array
+                  items:
+                    type: string
+                    enum: [audit_logs, workflow_steps, hitl_approvals]
+                  description: Evidence types to include (defaults to all)
+                limit:
+                  type: integer
+                  description: Maximum records (capped by tier limit)
+      responses:
+        '200':
+          description: Evidence export bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export_id:
+                    type: string
+                  tenant_id:
+                    type: string
+                  tier:
+                    type: string
+                  date_range:
+                    type: object
+                    properties:
+                      start:
+                        type: string
+                        format: date-time
+                      end:
+                        type: string
+                        format: date-time
+                  disclaimer:
+                    type: string
+                    description: Watermark for Evaluation tier exports
+                  record_count:
+                    type: integer
+                  audit_logs:
+                    type: array
+                    items:
+                      type: object
+                  workflow_steps:
+                    type: array
+                    items:
+                      type: object
+                  hitl_approvals:
+                    type: array
+                    items:
+                      type: object
+                  exported_at:
+                    type: string
+                    format: date-time
+                  daily_usage:
+                    type: object
+                    properties:
+                      used:
+                        type: integer
+                      limit:
+                        type: integer
+        '403':
+          description: Feature requires Evaluation or Enterprise license
+        '429':
+          description: Daily export limit exceeded
+
+  /api/v1/evidence/summary:
+    get:
+      tags: [Evidence Export]
+      summary: Get evidence summary (Evaluation+)
+      description: |
+        Returns counts of evidence records by type within the tier's lookback window.
+      operationId: getEvidenceSummary
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      responses:
+        '200':
+          description: Evidence summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                  tier:
+                    type: string
+                  window_days:
+                    type: integer
+                  counts:
+                    type: object
+                    properties:
+                      audit_logs:
+                        type: integer
+                      workflow_steps:
+                        type: integer
+                      hitl_approvals:
+                        type: integer
+                      total:
+                        type: integer
+                  generated_at:
+                    type: string
+                    format: date-time
+                  disclaimer:
+                    type: string
+        '403':
+          description: Feature requires Evaluation or Enterprise license
+
 components:
   schemas:
     HealthResponse:
@@ -5432,14 +5732,23 @@ components:
       properties:
         status:
           type: string
-          enum: [healthy, unhealthy]
+          enum: [healthy, starting, unhealthy]
         service:
           type: string
         version:
           type: string
+          description: Platform version from AXONFLOW_VERSION env var
+          example: "4.8.0"
         timestamp:
           type: string
           format: date-time
+        capabilities:
+          type: array
+          description: List of platform capabilities with the version that introduced them
+          items:
+            $ref: '#/components/schemas/PlatformCapability'
+        sdk_compatibility:
+          $ref: '#/components/schemas/SDKCompatInfo'
         components:
           type: object
           properties:
@@ -5462,6 +5771,34 @@ components:
           properties:
             multi_agent_planning:
               type: boolean
+
+    PlatformCapability:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Capability identifier
+          example: "workflow_control"
+        since:
+          type: string
+          description: Platform version that introduced this capability
+          example: "4.3.0"
+        description:
+          type: string
+          description: Human-readable description
+          example: "WCP workflow lifecycle management"
+
+    SDKCompatInfo:
+      type: object
+      properties:
+        min_sdk_version:
+          type: string
+          description: Minimum SDK version compatible with this platform
+          example: "3.0.0"
+        recommended_sdk_version:
+          type: string
+          description: Recommended SDK version for full feature coverage
+          example: "3.8.0"
 
     PlanStatusResponse:
       type: object
@@ -6419,6 +6756,11 @@ components:
             total_steps is automatically set to the actual step count when the
             workflow reaches a terminal state.
           example: 3
+        trace_id:
+          type: string
+          maxLength: 255
+          description: External trace ID for correlation with Langsmith, Datadog, or OpenTelemetry
+          example: "langsmith-trace-abc123"
         metadata:
           type: object
           description: Additional workflow metadata
@@ -6436,6 +6778,10 @@ components:
         status:
           type: string
           enum: [in_progress, completed, aborted, failed]
+        trace_id:
+          type: string
+          description: External trace ID for correlation with Langsmith, Datadog, or OpenTelemetry
+          example: "langsmith-trace-abc123"
         started_at:
           type: string
           format: date-time
@@ -6453,6 +6799,9 @@ components:
         status:
           type: string
           enum: [in_progress, completed, aborted, failed]
+        trace_id:
+          type: string
+          description: External trace ID for correlation with Langsmith, Datadog, or OpenTelemetry
         current_step_index:
           type: integer
         total_steps:
@@ -6493,6 +6842,29 @@ components:
           type: string
           format: date-time
 
+    ToolContext:
+      type: object
+      description: Tool-level context for per-tool governance within tool_call steps.
+      required:
+        - tool_name
+      properties:
+        tool_name:
+          type: string
+          description: Name of the tool being invoked
+          example: "web_search"
+        tool_type:
+          type: string
+          description: "Tool type: function, mcp, or api"
+          enum:
+            - function
+            - mcp
+            - api
+          example: "function"
+        tool_input:
+          type: object
+          description: Tool input parameters
+          additionalProperties: true
+
     StepGateRequest:
       type: object
       required:
@@ -6532,6 +6904,8 @@ components:
           format: double
           description: Estimated cost in USD for the step (used at gate time)
           example: 0.0023
+        tool_context:
+          $ref: '#/components/schemas/ToolContext'
 
     StepGateResponse:
       type: object

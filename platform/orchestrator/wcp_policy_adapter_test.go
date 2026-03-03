@@ -460,6 +460,203 @@ func TestCreateHITLApproval_NoPolicies(t *testing.T) {
 	}
 }
 
+// --- Tests for ToolContext propagation (#1243) ---
+
+func TestWCPPolicyAdapter_ToolContext_Propagation(t *testing.T) {
+	mockEngine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         true,
+			AppliedPolicies: []string{},
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(mockEngine)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID:   "wf_tool_1",
+		WorkflowName: "tool-test-workflow",
+		StepID:       "step_tool_1",
+		StepName:     "tools/web_search",
+		StepType:     workflow_control.StepTypeToolCall,
+		Model:        "claude-sonnet-4",
+		Provider:     "anthropic",
+		TenantID:     "tenant_1",
+		OrgID:        "org_1",
+		ToolContext: &workflow_control.ToolContext{
+			ToolName: "web_search",
+			ToolType: "function",
+			ToolInput: map[string]interface{}{
+				"query":      "AxonFlow governance",
+				"max_results": 10,
+			},
+		},
+	}
+
+	adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	ctx := mockEngine.lastReq.Context
+	if ctx["tool_name"] != "web_search" {
+		t.Errorf("Expected tool_name='web_search', got %v", ctx["tool_name"])
+	}
+	if ctx["tool_type"] != "function" {
+		t.Errorf("Expected tool_type='function', got %v", ctx["tool_type"])
+	}
+	if ctx["tool_input.query"] != "AxonFlow governance" {
+		t.Errorf("Expected tool_input.query='AxonFlow governance', got %v", ctx["tool_input.query"])
+	}
+	if ctx["tool_input.max_results"] != 10 {
+		t.Errorf("Expected tool_input.max_results=10, got %v", ctx["tool_input.max_results"])
+	}
+}
+
+func TestWCPPolicyAdapter_ToolContext_NilDoesNotInjectKeys(t *testing.T) {
+	mockEngine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         true,
+			AppliedPolicies: []string{},
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(mockEngine)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID: "wf_tool_nil",
+		StepID:     "step_1",
+		StepName:   "generate_code",
+		StepType:   workflow_control.StepTypeLLMCall,
+		// ToolContext is nil
+	}
+
+	adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	ctx := mockEngine.lastReq.Context
+	if _, exists := ctx["tool_name"]; exists {
+		t.Error("Expected tool_name to NOT exist when ToolContext is nil")
+	}
+	if _, exists := ctx["tool_type"]; exists {
+		t.Error("Expected tool_type to NOT exist when ToolContext is nil")
+	}
+}
+
+func TestWCPPolicyAdapter_ToolContext_EmptyToolType(t *testing.T) {
+	mockEngine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         true,
+			AppliedPolicies: []string{},
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(mockEngine)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID: "wf_tool_notype",
+		StepID:     "step_1",
+		StepName:   "tools/sql_query",
+		StepType:   workflow_control.StepTypeToolCall,
+		ToolContext: &workflow_control.ToolContext{
+			ToolName: "sql_query",
+			// ToolType is empty — should NOT inject tool_type key
+		},
+	}
+
+	adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	ctx := mockEngine.lastReq.Context
+	if ctx["tool_name"] != "sql_query" {
+		t.Errorf("Expected tool_name='sql_query', got %v", ctx["tool_name"])
+	}
+	if _, exists := ctx["tool_type"]; exists {
+		t.Error("Expected tool_type to NOT exist when ToolType is empty")
+	}
+}
+
+func TestWCPPolicyAdapter_ToolContext_MCP(t *testing.T) {
+	mockEngine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         true,
+			AppliedPolicies: []string{"mcp-tool-policy"},
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(mockEngine)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID: "wf_tool_mcp",
+		StepID:     "step_mcp",
+		StepName:   "tools/database_query",
+		StepType:   workflow_control.StepTypeToolCall,
+		ToolContext: &workflow_control.ToolContext{
+			ToolName: "database_query",
+			ToolType: "mcp",
+			ToolInput: map[string]interface{}{
+				"sql": "SELECT * FROM users WHERE active = true",
+			},
+		},
+	}
+
+	adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	ctx := mockEngine.lastReq.Context
+	if ctx["tool_name"] != "database_query" {
+		t.Errorf("Expected tool_name='database_query', got %v", ctx["tool_name"])
+	}
+	if ctx["tool_type"] != "mcp" {
+		t.Errorf("Expected tool_type='mcp', got %v", ctx["tool_type"])
+	}
+	if ctx["tool_input.sql"] != "SELECT * FROM users WHERE active = true" {
+		t.Errorf("Expected tool_input.sql, got %v", ctx["tool_input.sql"])
+	}
+}
+
+func TestCreateHITLApproval_WithToolContext(t *testing.T) {
+	approvalID := uuid.New()
+	mock := &mockHITLApprovalCreator{
+		resp: &HITLApprovalResponse{
+			ApprovalID: approvalID,
+			Status:     "pending",
+		},
+	}
+
+	engine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         false,
+			AppliedPolicies: []string{"tool-restriction"},
+			RequiredActions: []string{"require_approval"},
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(engine)
+	adapter.SetHITLApproval(mock)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID:   "wf_hitl_tool",
+		WorkflowName: "tool-approval-workflow",
+		StepID:       "step_tool_hitl",
+		StepName:     "tools/code_executor",
+		StepType:     workflow_control.StepTypeToolCall,
+		OrgID:        "org_1",
+		TenantID:     "tenant_1",
+		ToolContext: &workflow_control.ToolContext{
+			ToolName: "code_executor",
+			ToolType: "function",
+		},
+	}
+
+	result := adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	if result.Decision != workflow_control.GateDecisionRequireApproval {
+		t.Errorf("Expected decision=require_approval, got %s", result.Decision)
+	}
+
+	// Verify tool context was included in HITL request context
+	if mock.lastReq.RequestContext["tool_name"] != "code_executor" {
+		t.Errorf("Expected HITL request tool_name='code_executor', got %v", mock.lastReq.RequestContext["tool_name"])
+	}
+	if mock.lastReq.RequestContext["tool_type"] != "function" {
+		t.Errorf("Expected HITL request tool_type='function', got %v", mock.lastReq.RequestContext["tool_type"])
+	}
+}
+
 // --- Tests for NewWCPAuditAdapter and LogWorkflowOperation ---
 
 func TestNewWCPAuditAdapter(t *testing.T) {
