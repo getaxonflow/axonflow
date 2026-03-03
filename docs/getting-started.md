@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: February 2026** | **Platform: v4.5.0** | **SDKs: v3.7.0**
+**Last Updated: February 2026** | **Platform: v4.8.0** | **SDKs: v3.8.0**
 
 **Build your first AI agent in 10 minutes** - No ML experience required.
 
@@ -197,7 +197,7 @@ npm install @axonflow/sdk
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. All four SDKs are fully supported at v3.7.0.
+Choose your language below. All four SDKs are fully supported at v3.8.0.
 
 #### Go
 
@@ -839,4 +839,4 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 ---
 
 *Last Updated: February 2026*
-*Platform Version: v4.5.0 | SDK Version: v3.7.0*
+*Platform Version: v4.8.0 | SDK Version: v3.8.0*
