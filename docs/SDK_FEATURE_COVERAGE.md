@@ -61,7 +61,7 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 #### WCP Workflow Lifecycle
 | Method | Description | Status |
 |--------|-------------|--------|
-| `failWorkflow()` | Fail a workflow with optional reason | ✅ All SDKs (v3.7.0) |
+| `failWorkflow()` | Fail a workflow with optional reason | ✅ All SDKs (v3.8.0) |
 | `approveStep()` | Approve a pending WCP step | ✅ All SDKs |
 | `rejectStep()` | Reject a pending WCP step | ✅ All SDKs |
 | `getPendingApprovals()` | List steps awaiting approval | ✅ All SDKs |
@@ -69,16 +69,16 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 #### HITL Queue (Enterprise)
 | Method | Description | Status |
 |--------|-------------|--------|
-| `listHITLQueue()` | List pending approval requests | ✅ All SDKs (v3.7.0) |
-| `getHITLRequest()` | Get approval request details | ✅ All SDKs (v3.7.0) |
-| `approveHITLRequest()` | Approve a HITL request | ✅ All SDKs (v3.7.0) |
-| `rejectHITLRequest()` | Reject a HITL request | ✅ All SDKs (v3.7.0) |
-| `getHITLStats()` | Get HITL queue statistics | ✅ All SDKs (v3.7.0) |
+| `listHITLQueue()` | List pending approval requests | ✅ All SDKs (v3.8.0) |
+| `getHITLRequest()` | Get approval request details | ✅ All SDKs (v3.8.0) |
+| `approveHITLRequest()` | Approve a HITL request | ✅ All SDKs (v3.8.0) |
+| `rejectHITLRequest()` | Reject a HITL request | ✅ All SDKs (v3.8.0) |
+| `getHITLStats()` | Get HITL queue statistics | ✅ All SDKs (v3.8.0) |
 
 #### SSE Streaming
 | Method | Description | Status |
 |--------|-------------|--------|
-| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.7.0) |
+| `streamExecutionStatus()` | SSE streaming for real-time execution monitoring. Community: 5 concurrent connections/tenant | ✅ All SDKs (v3.8.0) |
 
 #### Webhook Management
 | Method | Description | Status |
@@ -103,7 +103,7 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 | `policy_info.exfiltration_check` | Row/byte limits info | ✅ All SDKs |
 | `policy_info.dynamic_policy_info` | Tenant policy evaluation info | ✅ All SDKs |
 
-#### Singapore PII Detection (MAS FEAT, Platform v3.7.0+)
+#### Singapore PII Detection (MAS FEAT, Platform v3.8.0+)
 | Pattern | Description | Status |
 |---------|-------------|--------|
 | NRIC (S/T/M prefix) | Singapore National Registration Identity Card | ✅ System policy |
@@ -178,7 +178,7 @@ These APIs are intentionally NOT in SDKs. Use HTTP/curl for these operations.
 |----------|---------------------|
 | `GET /api/v1/hitl/decisions` | Portal/dashboard use (legacy endpoint) |
 
-> **Note:** HITL Queue API is now available in all SDKs (v3.7.0) via `/api/v1/hitl/queue` endpoints:
+> **Note:** HITL Queue API is now available in all SDKs (v3.8.0) via `/api/v1/hitl/queue` endpoints:
 > `listHITLQueue()`, `getHITLRequest()`, `approveHITLRequest()`, `rejectHITLRequest()`, `getHITLStats()`
 
 ### Accuracy & Bias Monitoring

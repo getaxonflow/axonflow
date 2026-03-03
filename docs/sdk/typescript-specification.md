@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.7.0 | **Platform Version:** v4.5.0
+**SDK Version:** v3.8.0 | **Platform Version:** v4.5.0
 
 **Status:** Production Ready
 
@@ -426,4 +426,4 @@ The SDK exports from `@axonflow/sdk`:
 
 ---
 
-*This specification describes the AxonFlow TypeScript SDK v3.7.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*
+*This specification describes the AxonFlow TypeScript SDK v3.8.0 API surface. For architecture details, see [TypeScript Architecture](typescript-architecture.md). For a quick-start guide, see [TypeScript Quickstart](typescript-quickstart.md).*

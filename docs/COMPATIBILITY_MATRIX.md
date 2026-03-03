@@ -7,7 +7,7 @@ This document maps platform versions to minimum SDK versions and the features ea
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
 | v4.8.0 | v3.8.0 | v3.8.0 | Version discovery, capability registry, User-Agent headers |
-| v4.7.0 | v3.7.0 | v3.7.0 | MCP check-input/check-output endpoints, circuit breaker pipeline |
+| v4.7.0 | v3.8.0 | v3.8.0 | MCP check-input/check-output endpoints, circuit breaker pipeline |
 | v4.6.0 | v3.6.0 | v3.6.0 | Open-ended WCP workflows (optional total_steps) |
 | v4.5.0 | v3.6.0 | v3.6.0 | WCP step-complete post-execution metrics |
 | v4.4.0 | v3.5.0 | v3.5.0 | Media governance, cost controls |

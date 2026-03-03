@@ -121,7 +121,7 @@ All examples use the latest SDK versions:
 |-----|---------|---------|
 | Python | `axonflow` | >=3.5.0 |
 | TypeScript | `@axonflow/sdk` | >=3.5.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v3` | v3.7.0 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v3` | v3.8.0 |
 | Java | `com.getaxonflow:axonflow-sdk` | 3.5.0 |
 
 ## Environment Configuration
