@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload documentation preview
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: api-docs-preview
           path: /tmp/api-docs.html
@@ -115,7 +115,7 @@ jobs:
           echo "✅ Static documentation generated"
 
       - name: Upload bundled artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: openapi-bundle
           path: |
