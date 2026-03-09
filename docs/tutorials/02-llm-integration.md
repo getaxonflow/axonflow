@@ -94,7 +94,7 @@ import (
 	"log"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 func main() {
@@ -434,4 +434,4 @@ See the full documentation at [docs.getaxonflow.com](https://docs.getaxonflow.co
 
 ---
 
-Last Updated: February 2026
+Last Updated: March 2026

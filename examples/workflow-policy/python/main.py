@@ -64,7 +64,6 @@ async def main() -> int:
                 CreateWorkflowRequest(
                     workflow_name="policy-demo-python",
                     source=WorkflowSource.EXTERNAL,
-                    total_steps=3,
                     metadata={"example": "workflow-policy-python"},
                 )
             )

@@ -17,11 +17,11 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-All SDKs are at v3.8.0.
+All SDKs are at v4.0.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v3` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v4` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
 | Python | `axonflow` (PyPI) | [axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) |
 | Java | `com.getaxonflow.sdk` (Maven Central) | [axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) |
 | TypeScript | `@axonflow/sdk` (npm) | [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) |
@@ -30,17 +30,17 @@ All SDKs are at v3.8.0.
 
 ```bash
 # Go
-go get github.com/getaxonflow/axonflow-sdk-go/v3
+go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 # Python
-pip3 install axonflow==3.8.0
+pip3 install axonflow==4.0.0
 
 # Java (Maven)
 # Add to pom.xml:
 #   <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>3.8.0</version>
+#     <version>4.0.0</version>
 #   </dependency>
 
 # TypeScript
@@ -68,4 +68,4 @@ Beyond the step-by-step tutorials above, the [guides](../guides/) directory cove
 
 ---
 
-Last Updated: February 2026
+Last Updated: March 2026

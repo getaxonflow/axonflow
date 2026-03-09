@@ -68,7 +68,6 @@ def main() -> int:
             workflow = client.create_workflow(CreateWorkflowRequest(
                 workflow_name="unified-tracking-demo",
                 source=WorkflowSource.EXTERNAL,
-                total_steps=3,
             ))
             workflow_id = workflow.workflow_id
             assert_check(workflow.workflow_id != "", "Workflow has ID")
@@ -204,7 +203,6 @@ def main() -> int:
             sse_wf = client.create_workflow(CreateWorkflowRequest(
                 workflow_name="sse-streaming-demo",
                 source=WorkflowSource.EXTERNAL,
-                total_steps=2,
             ))
             print(f"   Created workflow: {sse_wf.workflow_id}")
 
@@ -252,7 +250,6 @@ def main() -> int:
             cancel_wf = client.create_workflow(CreateWorkflowRequest(
                 workflow_name="cancel-test-demo",
                 source=WorkflowSource.EXTERNAL,
-                total_steps=2,
             ))
             print(f"   Created workflow: {cancel_wf.workflow_id}")
             try:

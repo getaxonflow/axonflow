@@ -1,6 +1,6 @@
 # EU AI Act Compliance Guide
 
-*Last updated: February 2026 | AxonFlow Platform v4.8.0 | SDKs v3.8.0*
+*Last updated: March 2026 | AxonFlow Platform v5.0.0 | SDKs v4.0.0*
 
 AxonFlow provides comprehensive support for EU AI Act compliance. This guide covers the key features and APIs available for organizations operating AI systems in the European Union.
 
@@ -479,7 +479,7 @@ Proxy LLM calls through AxonFlow with EU AI Act compliance policies applied auto
 **Go:**
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v3/axonflow"
+import "github.com/getaxonflow/axonflow-sdk-go/v4/axonflow"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "https://your-axonflow-host",

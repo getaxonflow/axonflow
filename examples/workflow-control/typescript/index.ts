@@ -54,7 +54,6 @@ async function main() {
     const workflow = await axonflow.createWorkflow({
       workflow_name: "code-review-pipeline",
       source: "external",
-      total_steps: 3,
       metadata: { example: "workflow-control-ts" },
       trace_id: "example-trace-ts-001",
     });
@@ -186,7 +185,6 @@ async function main() {
       const failWorkflow = await axonflow.createWorkflow({
         workflow_name: "wcp-fail-test",
         source: "external",
-        total_steps: 2,
         metadata: { test: "fail-workflow" },
       });
       assertCheck(!!failWorkflow.workflow_id, "Fail-test workflow created with valid ID");
@@ -228,7 +226,6 @@ async function main() {
       const approvalWorkflow = await axonflow.createWorkflow({
         workflow_name: "wcp-approval-test",
         source: "external",
-        total_steps: 3,
         metadata: { example: "step-approval-ts" },
       });
 
@@ -299,7 +296,6 @@ async function main() {
       const rejectionWorkflow = await axonflow.createWorkflow({
         workflow_name: "wcp-rejection-test",
         source: "external",
-        total_steps: 2,
         metadata: { example: "step-rejection-ts" },
       });
 
@@ -384,7 +380,6 @@ async function main() {
       const sseWorkflow = await axonflow.createWorkflow({
         workflow_name: "wcp-sse-streaming-test",
         source: "external",
-        total_steps: 2,
         metadata: { example: "sse-streaming-ts" },
       });
 

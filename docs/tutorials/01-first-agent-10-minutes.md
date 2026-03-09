@@ -44,14 +44,14 @@ Choose your language and set up the project.
 ```bash
 mkdir my-first-agent && cd my-first-agent
 go mod init my-first-agent
-go get github.com/getaxonflow/axonflow-sdk-go/v3
+go get github.com/getaxonflow/axonflow-sdk-go/v4
 ```
 
 ### Python
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==3.8.0
+pip3 install axonflow==4.0.0
 ```
 
 ### TypeScript
@@ -71,7 +71,7 @@ npx tsc --init
 # <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>3.8.0</version>
+#     <version>4.0.0</version>
 # </dependency>
 ```
 
@@ -105,7 +105,7 @@ import (
 	"log"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 func main() {
@@ -386,4 +386,4 @@ You can also authenticate with `Authorization: Basic` using base64-encoded `clie
 
 ---
 
-Last Updated: February 2026
+Last Updated: March 2026

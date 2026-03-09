@@ -76,7 +76,6 @@ public class WorkflowFail {
                 CreateWorkflowRequest.builder()
                     .workflowName("fail-workflow-test")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(3)
                     .metadata(Map.of("test", "workflow-fail-java"))
                     .build()
             );
@@ -154,7 +153,6 @@ public class WorkflowFail {
                 CreateWorkflowRequest.builder()
                     .workflowName("fail-no-reason-test")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(2)
                     .metadata(Map.of("test", "fail-no-reason"))
                     .build()
             );

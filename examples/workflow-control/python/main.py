@@ -65,7 +65,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="code-review-pipeline",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=3,
                         metadata={"example": "workflow-control-python"},
                         trace_id="example-trace-py-001",
                     )
@@ -211,7 +210,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="wcp-fail-test",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=2,
                         metadata={"test": "fail-workflow"},
                     )
                 )
@@ -257,7 +255,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="wcp-approval-test",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=3,
                         metadata={"test": "step-approval"},
                     )
                 )
@@ -341,7 +338,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="wcp-rejection-test",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=2,
                         metadata={"test": "step-rejection"},
                     )
                 )
@@ -449,7 +445,6 @@ async def main() -> int:
                 CreateWorkflowRequest(
                     workflow_name="wcp-sse-streaming-test",
                     source=WorkflowSource.EXTERNAL,
-                    total_steps=2,
                     metadata={"test": "sse-streaming"},
                 )
             )

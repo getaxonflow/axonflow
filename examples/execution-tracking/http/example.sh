@@ -68,7 +68,6 @@ WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
   -d '{
     "workflow_name": "execution-tracking-demo",
     "source": "external",
-    "total_steps": 3,
     "metadata": {"example": "http-execution-tracking"}
   }')
 
@@ -154,8 +153,7 @@ CANCEL_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
   -H "$AUTH_HEADER" \
   -d '{
     "workflow_name": "cancel-test-demo",
-    "source": "external",
-    "total_steps": 2
+    "source": "external"
   }')
 
 CANCEL_WF_ID=$(echo "$CANCEL_WF_RESPONSE" | jq -r '.workflow_id // empty')
@@ -190,7 +188,6 @@ SSE_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
   -d '{
     "workflow_name": "sse-streaming-demo",
     "source": "external",
-    "total_steps": 2,
     "metadata": {"example": "sse-streaming"}
   }')
 

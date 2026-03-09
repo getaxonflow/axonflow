@@ -54,7 +54,6 @@ async function main() {
   const workflow = await client.createWorkflow({
     workflow_name: "policy-demo-typescript",
     source: "external",
-    total_steps: 3,
     metadata: { example: "workflow-policy-typescript" },
   });
   assertCheck(!!workflow.workflow_id, "Workflow created with valid ID");

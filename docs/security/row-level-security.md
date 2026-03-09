@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.8.0
+**Platform Version:** v5.0.0
 
 **Status:** Active in Production
 

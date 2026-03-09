@@ -70,7 +70,6 @@ public class WorkflowPolicyExample {
             CreateWorkflowRequest createReq = CreateWorkflowRequest.builder()
                     .workflowName("policy-demo-java")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(3)
                     .metadata(Map.of("example", "workflow-policy-java"))
                     .build();
 

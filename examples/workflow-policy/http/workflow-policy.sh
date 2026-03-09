@@ -102,7 +102,6 @@ WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
   -d '{
     "workflow_name": "policy-demo-workflow",
     "source": "external",
-    "total_steps": 3,
     "metadata": {
       "example": "workflow-policy-http"
     }

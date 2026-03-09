@@ -59,7 +59,6 @@ async function main(): Promise<void> {
     const request: CreateWorkflowRequest = {
       workflow_name: 'unified-tracking-demo',
       source: 'external',
-      total_steps: 3,
     };
     workflow = await client.createWorkflow(request);
     console.log(`Workflow ID: ${workflow.workflow_id}`);
@@ -209,7 +208,6 @@ async function main(): Promise<void> {
     const sseWf = await client.createWorkflow({
       workflow_name: 'sse-streaming-demo',
       source: 'external',
-      total_steps: 2,
     });
     console.log(`  Created workflow: ${sseWf.workflow_id}`);
 
@@ -259,7 +257,6 @@ async function main(): Promise<void> {
     const cancelTest = await client.createWorkflow({
       workflow_name: 'cancel-test-demo',
       source: 'external',
-      total_steps: 2,
     });
     console.log(`  Created workflow: ${cancelTest.workflow_id}`);
     try {
@@ -286,7 +283,6 @@ async function main(): Promise<void> {
     const resumeTest = await client.createWorkflow({
       workflow_name: 'resume-test-demo',
       source: 'external',
-      total_steps: 2,
     });
     // Abort the workflow first
     await client.abortWorkflow(resumeTest.workflow_id, 'Testing abort for resume');
