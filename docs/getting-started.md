@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: February 2026** | **Platform: v4.8.0** | **SDKs: v3.8.0**
+**Last Updated: March 2026** | **Platform: v5.0.0** | **SDKs: v4.0.0**
 
 **Build your first AI agent in 10 minutes** - No ML experience required.
 
@@ -173,7 +173,7 @@ Choose your language:
 
 **Go:**
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v3
+go get github.com/getaxonflow/axonflow-sdk-go/v4
 ```
 
 **Python:**
@@ -197,7 +197,7 @@ npm install @axonflow/sdk
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. All four SDKs are fully supported at v3.8.0.
+Choose your language below. All four SDKs are fully supported at v4.0.0.
 
 #### Go
 
@@ -212,7 +212,7 @@ import (
     "log"
     "os"
 
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 func main() {
@@ -838,5 +838,5 @@ You've built your first AI agent with AxonFlow! Here's what to explore next:
 
 ---
 
-*Last Updated: February 2026*
-*Platform Version: v4.8.0 | SDK Version: v3.8.0*
+*Last Updated: March 2026*
+*Platform Version: v5.0.0 | SDK Version: v4.0.0*

@@ -9,7 +9,7 @@ When the SDK client is initialized, a single HTTP request is sent with:
 | Field | Example | Purpose |
 |-------|---------|---------|
 | SDK language | `go` | Language distribution |
-| SDK version | `3.8.0` | Version adoption tracking |
+| SDK version | `4.0.0` | Version adoption tracking |
 | Platform version | `4.8.0` | Compatibility monitoring |
 | OS | `linux` | Platform support priority |
 | Architecture | `amd64` | ARM vs x86 distribution |

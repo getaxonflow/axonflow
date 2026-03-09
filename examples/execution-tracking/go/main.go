@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 var failures []string
@@ -63,7 +63,6 @@ func main() {
 	workflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "unified-tracking-demo",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   3,
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
@@ -204,7 +203,6 @@ func main() {
 	sseWF, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "sse-streaming-demo",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 	})
 	if err != nil {
 		fmt.Printf("   Error creating SSE workflow: %v\n", err)
@@ -256,7 +254,6 @@ func main() {
 	cancelTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "cancel-test-demo",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 	})
 	if err != nil {
 		fmt.Printf("   Error creating cancel test workflow: %v\n", err)
@@ -288,7 +285,6 @@ func main() {
 	resumeTest, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "resume-test-demo",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 	})
 	if err != nil {
 		fmt.Printf("  Error creating resume test workflow: %v\n", err)

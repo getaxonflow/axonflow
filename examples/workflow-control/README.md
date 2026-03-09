@@ -125,7 +125,7 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
     adapter = AxonFlowLangGraphAdapter(client, "my-workflow")
 
     # Start workflow
-    await adapter.start_workflow(total_steps=3)
+    await adapter.start_workflow()
 
     # Before each node
     if await adapter.check_gate("generate", "llm_call", model="claude-haiku-4-5-20251001", provider="anthropic"):

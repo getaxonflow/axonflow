@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v3.8.0 | **Platform Version:** v4.8.0
+**SDK Version:** v4.0.0 | **Platform Version:** v5.0.0
 
 AxonFlow provides official SDKs in four languages for integrating LLM governance into your applications. All SDKs offer identical feature coverage (see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md)) and follow the same API design principles: type-safe clients, automatic retries, and structured error handling.
 
@@ -12,7 +12,7 @@ AxonFlow provides official SDKs in four languages for integrating LLM governance
 
 | SDK | Repository | Install |
 |-----|-----------|---------|
-| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v3` |
+| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v4` |
 | **Python** | [github.com/getaxonflow/axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) | `pip install axonflow` |
 | **TypeScript** | [github.com/getaxonflow/axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) | `npm install @axonflow/sdk` |
 | **Java** | [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) | See [Maven Central](#java) |
@@ -24,7 +24,7 @@ AxonFlow provides official SDKs in four languages for integrating LLM governance
 ### Go
 
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v3
+go get github.com/getaxonflow/axonflow-sdk-go/v4
 ```
 
 ```go
@@ -33,7 +33,7 @@ package main
 import (
     "context"
     "fmt"
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 func main() {

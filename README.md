@@ -370,7 +370,7 @@ See the full **[Community vs Evaluation vs Enterprise feature matrix](https://do
 ```bash
 pip install axonflow          # Python
 npm install @axonflow/sdk     # TypeScript
-go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
+go get github.com/getaxonflow/axonflow-sdk-go/v4  # Go
 ```
 
 ```xml
@@ -378,7 +378,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v3  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.8.0</version>
+    <version>4.0.0</version>
 </dependency>
 ```
 
@@ -416,7 +416,7 @@ const response = await axonflow.proxyLLMCall({
 ### Go
 
 ```go
-import axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+import axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "http://localhost:8080",

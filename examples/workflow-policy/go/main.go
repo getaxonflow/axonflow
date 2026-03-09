@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v3"
+	"github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 var failures []string
@@ -57,7 +57,6 @@ func main() {
 	workflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "policy-demo-go",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   3,
 		Metadata: map[string]interface{}{
 			"example": "workflow-policy-go",
 		},

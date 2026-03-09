@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v3"
+	"github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 var (
@@ -74,7 +74,6 @@ func main() {
 	workflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "fail-workflow-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   3,
 		Metadata: map[string]interface{}{
 			"test": "workflow-fail-go",
 		},
@@ -171,7 +170,6 @@ func main() {
 	noReasonWf, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "fail-no-reason-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 		Metadata: map[string]interface{}{
 			"test": "fail-no-reason",
 		},

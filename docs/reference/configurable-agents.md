@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v4.8.0
+**Platform Version:** v5.0.0
 
 Configure Multi-Agent Planning (MAP) agents using YAML files instead of hardcoded templates.
 
@@ -290,7 +290,7 @@ import (
 	"fmt"
 	"log"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v3"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 func main() {

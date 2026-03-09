@@ -58,7 +58,6 @@ public class ExecutionTrackingExample {
             CreateWorkflowRequest createRequest = CreateWorkflowRequest.builder()
                 .workflowName("unified-tracking-demo")
                 .source(WorkflowSource.EXTERNAL)
-                .totalSteps(3)
                 .build();
 
             CreateWorkflowResponse workflow = client.createWorkflow(createRequest);
@@ -208,7 +207,6 @@ public class ExecutionTrackingExample {
                 CreateWorkflowRequest sseRequest = CreateWorkflowRequest.builder()
                     .workflowName("sse-streaming-demo")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(2)
                     .build();
                 CreateWorkflowResponse sseWf = client.createWorkflow(sseRequest);
                 System.out.println("  Created workflow: " + sseWf.getWorkflowId());
@@ -261,7 +259,6 @@ public class ExecutionTrackingExample {
                 CreateWorkflowRequest cancelRequest = CreateWorkflowRequest.builder()
                     .workflowName("cancel-test-demo")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(2)
                     .build();
                 CreateWorkflowResponse cancelTest = client.createWorkflow(cancelRequest);
                 System.out.println("  Created workflow: " + cancelTest.getWorkflowId());
@@ -290,7 +287,6 @@ public class ExecutionTrackingExample {
                 CreateWorkflowRequest resumeRequest = CreateWorkflowRequest.builder()
                     .workflowName("resume-test-demo")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(2)
                     .build();
                 CreateWorkflowResponse resumeTest = client.createWorkflow(resumeRequest);
 

@@ -55,7 +55,6 @@ create_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -d '{
         "workflow_name": "code-review-pipeline",
         "source": "external",
-        "total_steps": 3,
         "metadata": {
             "example": "workflow-control-http"
         },
@@ -252,7 +251,6 @@ fail_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -d '{
         "workflow_name": "wcp-fail-test",
         "source": "external",
-        "total_steps": 2,
         "metadata": {
             "example": "fail-workflow-http"
         }
@@ -326,7 +324,6 @@ approval_create=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflo
     -d '{
         "workflow_name": "wcp-approval-test",
         "source": "external",
-        "total_steps": 3,
         "metadata": {
             "example": "step-approval-http"
         }
@@ -414,7 +411,6 @@ rejection_create=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workfl
     -d '{
         "workflow_name": "wcp-rejection-test",
         "source": "external",
-        "total_steps": 2,
         "metadata": {
             "example": "step-rejection-http"
         }
@@ -504,7 +500,6 @@ sse_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -d '{
         "workflow_name": "wcp-sse-streaming-test",
         "source": "external",
-        "total_steps": 2,
         "metadata": {
             "example": "sse-streaming-http"
         }

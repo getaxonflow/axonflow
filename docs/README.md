@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: February 2026** | **Platform: v4.8.0** | **SDKs: v3.8.0**
+**Last Updated: March 2026** | **Platform: v5.0.0** | **SDKs: v4.0.0**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -31,7 +31,7 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. All SDKs are at v3.8.0.
+AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. All SDKs are at v4.0.0.
 
 | Document | Description |
 |----------|-------------|
@@ -41,7 +41,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. All SDKs a
 ### Go SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go)
-- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v3`
+- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v4`
 
 ### Python SDK
 

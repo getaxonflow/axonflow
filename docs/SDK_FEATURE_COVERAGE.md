@@ -24,8 +24,8 @@ This document defines what features AxonFlow SDKs cover and explicitly exclude.
 | Method | Description | Status |
 |--------|-------------|--------|
 | `healthCheck()` | Verify connectivity | ✅ All SDKs |
-| `healthCheckDetailed()` | Detailed health with capabilities and version discovery | ✅ All SDKs (v3.8.0) |
-| `hasCapability()` | Check if platform supports a named capability | ✅ All SDKs (v3.8.0) |
+| `healthCheckDetailed()` | Detailed health with capabilities and version discovery | ✅ All SDKs (v4.0.0) |
+| `hasCapability()` | Check if platform supports a named capability | ✅ All SDKs (v4.0.0) |
 | `getPolicyApprovedContext()` | Pre-check policy before LLM call | ✅ All SDKs |
 | `preCheck()` | Alias for getPolicyApprovedContext | ✅ All SDKs |
 | `auditLLMCall()` | Log LLM call for audit | ✅ All SDKs |
@@ -220,12 +220,12 @@ All 4 SDKs should have identical method coverage:
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v3.8.0 | ~44 | ✅ |
-| Python | v3.8.0 | ~44 | ✅ |
-| TypeScript | v3.8.0 | ~45 | ✅ (+protect) |
-| Java | v3.8.0 | ~44 | ✅ |
+| Go | v4.0.0 | ~44 | ✅ |
+| Python | v4.0.0 | ~44 | ✅ |
+| TypeScript | v4.0.0 | ~45 | ✅ (+protect) |
+| Java | v4.0.0 | ~44 | ✅ |
 
-### Infrastructure (v3.8.0)
+### Infrastructure (v4.0.0)
 
 | Feature | Description | Status |
 |---------|-------------|--------|
@@ -238,7 +238,7 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
-| 2026-03-01 | Added healthCheckDetailed() and hasCapability() to all SDKs (v3.8.0); Added User-Agent headers and version mismatch warnings; Added Infrastructure section |
+| 2026-03-01 | Added healthCheckDetailed() and hasCapability() to all SDKs (v4.0.0); Added User-Agent headers and version mismatch warnings; Added Infrastructure section |
 | 2026-02-12 | Added failWorkflow() to all SDKs; Added HITL Queue API (listHITLQueue, getHITLRequest, approveHITLRequest, rejectHITLRequest, getHITLStats) to all SDKs; Moved HITL from exclusions to Tier 2 |
 | 2026-02-07 | Added SSE streaming (streamExecutionStatus) for real-time MAP/WCP execution monitoring |
 | 2026-02-07 | Added WCP step approval (approveStep, rejectStep, getPendingApprovals), rollbackPlan, webhook management (createWebhook, getWebhook, updateWebhook, deleteWebhook, listWebhooks) |

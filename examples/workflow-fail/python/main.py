@@ -69,7 +69,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="fail-workflow-test",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=3,
                         metadata={"test": "workflow-fail-python"},
                     )
                 )
@@ -159,7 +158,6 @@ async def main() -> int:
                     CreateWorkflowRequest(
                         workflow_name="fail-no-reason-test",
                         source=WorkflowSource.EXTERNAL,
-                        total_steps=2,
                         metadata={"test": "fail-no-reason"},
                     )
                 )

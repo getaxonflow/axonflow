@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v3"
+	"github.com/getaxonflow/axonflow-sdk-go/v4"
 )
 
 var failures []string
@@ -81,7 +81,6 @@ func main() {
 	workflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "wcp-validation-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   3,
 		Metadata: map[string]interface{}{
 			"test": "issue-1082",
 		},
@@ -278,7 +277,6 @@ func main() {
 	approvalWorkflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "wcp-approval-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   3,
 		Metadata: map[string]interface{}{
 			"test": "step-approval",
 		},
@@ -347,7 +345,6 @@ func main() {
 	rejectWorkflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "wcp-rejection-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 		Metadata: map[string]interface{}{
 			"test": "step-rejection",
 		},
@@ -460,7 +457,6 @@ func main() {
 	failWorkflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "wcp-fail-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 		Metadata: map[string]interface{}{
 			"test": "fail-workflow",
 		},
@@ -508,7 +504,6 @@ func main() {
 	sseWorkflow, err := client.CreateWorkflow(axonflow.CreateWorkflowRequest{
 		WorkflowName: "wcp-sse-streaming-test",
 		Source:       axonflow.WorkflowSourceExternal,
-		TotalSteps:   2,
 		Metadata: map[string]interface{}{
 			"test": "sse-streaming",
 		},

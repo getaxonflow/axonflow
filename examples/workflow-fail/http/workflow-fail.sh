@@ -77,7 +77,6 @@ create_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -d '{
         "workflow_name": "fail-workflow-test",
         "source": "external",
-        "total_steps": 3,
         "metadata": {
             "test": "workflow-fail-http"
         }
@@ -196,7 +195,6 @@ no_reason_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -d '{
         "workflow_name": "fail-no-reason-test",
         "source": "external",
-        "total_steps": 2,
         "metadata": {
             "test": "fail-no-reason-http"
         }

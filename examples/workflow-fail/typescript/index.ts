@@ -54,7 +54,6 @@ async function main() {
     const workflow = await axonflow.createWorkflow({
       workflow_name: "fail-workflow-test",
       source: "external",
-      total_steps: 3,
       metadata: { test: "workflow-fail-ts" },
     });
 
@@ -124,7 +123,6 @@ async function main() {
     const noReasonWf = await axonflow.createWorkflow({
       workflow_name: "fail-no-reason-test",
       source: "external",
-      total_steps: 2,
       metadata: { test: "fail-no-reason" },
     });
 

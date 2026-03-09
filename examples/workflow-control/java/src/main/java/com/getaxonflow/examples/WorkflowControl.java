@@ -74,7 +74,6 @@ public class WorkflowControl {
                 CreateWorkflowRequest.builder()
                     .workflowName("code-review-pipeline")
                     .source(WorkflowSource.EXTERNAL)
-                    .totalSteps(3)
                     .metadata(Map.of("example", "workflow-control-java"))
                     .traceId("example-trace-java-001")
                     .build()
@@ -224,7 +223,6 @@ public class WorkflowControl {
                     CreateWorkflowRequest.builder()
                         .workflowName("wcp-fail-test")
                         .source(WorkflowSource.EXTERNAL)
-                        .totalSteps(2)
                         .metadata(Map.of("test", "fail-workflow"))
                         .build()
                 );
@@ -268,7 +266,6 @@ public class WorkflowControl {
                     CreateWorkflowRequest.builder()
                         .workflowName("wcp-approval-test")
                         .source(WorkflowSource.EXTERNAL)
-                        .totalSteps(3)
                         .metadata(Map.of("example", "step-approval-java"))
                         .build()
                 );
@@ -341,7 +338,6 @@ public class WorkflowControl {
                     CreateWorkflowRequest.builder()
                         .workflowName("wcp-rejection-test")
                         .source(WorkflowSource.EXTERNAL)
-                        .totalSteps(2)
                         .metadata(Map.of("example", "step-rejection-java"))
                         .build()
                 );
@@ -431,7 +427,6 @@ public class WorkflowControl {
                     CreateWorkflowRequest.builder()
                         .workflowName("wcp-sse-streaming-test")
                         .source(WorkflowSource.EXTERNAL)
-                        .totalSteps(2)
                         .metadata(Map.of("example", "sse-streaming-java"))
                         .build()
                 );
