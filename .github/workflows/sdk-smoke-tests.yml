@@ -37,6 +37,7 @@ permissions:
   pull-requests: read
 
 env:
+  DO_NOT_TRACK: '1'
   # Timeouts and retry configuration
   HEALTH_CHECK_RETRIES: 30
   HEALTH_CHECK_INTERVAL: 2

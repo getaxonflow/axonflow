@@ -3768,7 +3768,7 @@ components:
         operation:
           type: string
           enum: [query, execute]
-          default: query
+          default: execute
           description: Operation type — affects dynamic policy evaluation (rate limits may differ)
 
     MCPCheckInputResponse:
