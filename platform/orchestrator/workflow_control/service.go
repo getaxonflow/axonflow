@@ -247,8 +247,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 
 	// Audit log: workflow created
 	auditMeta := map[string]interface{}{
-		"source":      workflow.Source,
-		"total_steps": req.TotalSteps,
+		"source": workflow.Source,
 	}
 	if workflow.TraceID != "" {
 		auditMeta["trace_id"] = workflow.TraceID
@@ -618,11 +617,6 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 			*step.ApprovalStatus == ApprovalStatusPending {
 			return fmt.Errorf("cannot complete workflow with pending approval for step %s", step.StepID)
 		}
-	}
-
-	if workflow.TotalSteps != nil && *workflow.TotalSteps != workflow.CurrentStepIndex {
-		s.logger.Printf("[WorkflowControl] WARN: workflow %s declared total_steps=%d but completed with current_step_index=%d",
-			workflowID, *workflow.TotalSteps, workflow.CurrentStepIndex)
 	}
 
 	if err := s.repo.Complete(ctx, workflowID); err != nil {

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.0.0] - 2026-03-09
+
+### Community
+
+#### Breaking Changes
+
+- **Removed `total_steps` from `CreateWorkflowRequest` API** (#1318): The field was deprecated since Platform v4.5.0. Total steps are now exclusively auto-computed when the workflow reaches a terminal state (completed, aborted, or failed). Clients sending `total_steps` in create requests will have the field silently ignored. The `total_steps` field remains in `WorkflowStatusResponse`.
+- **MCP `operation` default changed from `"query"` to `"execute"`** (#1307): `mcpCheckInputHandler` now defaults to `"execute"` when no `operation` is specified. Callers relying on the implicit `"query"` default must now pass `operation: "query"` explicitly.
+
+#### Added
+
+- **Python SDK: MCP Tool Interceptor** (SDK PR #109, #112): New `mcp_tool_interceptor()` factory method on `AxonFlowLangGraphAdapter` for enforcing AxonFlow input/output policies around MCP tool calls in LangGraph agents. Includes `MCPInterceptorOptions` configuration and JSON serialization fix.
+- **Python LangGraph MCP Interceptor Example** (#1317): New example demonstrating MCP input/output policy checks integrated into a LangGraph agent with tool interception
+
+#### Fixed
+
+- Community sync workflow: include `docs/tutorials/` in sync using include-before-exclude rsync pattern (#1297)
+- Community sync workflow: fixed commit detection to use merged PRs instead of workflow runs, fixed pathspec with positive `.` anchor (#1302)
+- Community sync workflow: fixed jq parse error, split detection step permissions, added GH_TOKEN to sync step (#1295, #1299-#1301)
+- Restored historical version annotations incorrectly bumped in docs sweep (#1298)
+
+### Enterprise
+
+#### Fixed
+
+- Customer portal UI: removed vulnerable `@tootallnate/once` dependency (#1309)
+
+### Note
+
+This major version also formally acknowledges a breaking change shipped in a prior minor release:
+- `MediaAnalysisResult.extractedText` replaced by `hasExtractedText` + `extractedTextLength` (v4.4.0)
+
+---
+
 ## [4.8.0] - 2026-03-03
 
 ### Community

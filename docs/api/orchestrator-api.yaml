@@ -6745,17 +6745,6 @@ components:
           description: Source orchestrator
           enum: [langgraph, langchain, crewai, external]
           default: external
-        total_steps:
-          type: integer
-          nullable: true
-          deprecated: true
-          description: >
-            Total number of steps, if known upfront. Omit or pass null for
-            open-ended workflows (e.g. LangGraph agentic loops where the step
-            count depends on LLM decisions at runtime). When omitted or null,
-            total_steps is automatically set to the actual step count when the
-            workflow reaches a terminal state.
-          example: 3
         trace_id:
           type: string
           maxLength: 255

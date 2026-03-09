@@ -1523,7 +1523,7 @@ type MCPCheckInputRequest struct {
 	ConnectorType string                 `json:"connector_type"`
 	Statement     string                 `json:"statement"`
 	Parameters    map[string]interface{} `json:"parameters,omitempty"`
-	Operation     string                 `json:"operation,omitempty"` // "query" or "execute"; defaults to "query"
+	Operation     string                 `json:"operation,omitempty"` // "query" or "execute"; defaults to "execute"
 }
 
 // MCPCheckInputResponse is the response body for POST /api/v1/mcp/check-input.
@@ -1632,7 +1632,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 
 	operation := req.Operation
 	if operation == "" {
-		operation = "query"
+		operation = "execute"
 	}
 
 	outcome := evaluateInputPolicies(ctx,
