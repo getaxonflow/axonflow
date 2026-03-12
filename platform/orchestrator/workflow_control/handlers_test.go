@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
@@ -401,7 +402,8 @@ func TestHandlerApproveStep(t *testing.T) {
 	}
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
+	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "approver@example.com")
 
@@ -410,6 +412,65 @@ func TestHandlerApproveStep(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
+func TestHandlerApproveStepMissingComment(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	handler := NewHandler(svc)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	gateReq := &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
+
+	// No body — should be rejected
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("X-User-ID", "approver@example.com")
+
+	rr := httptest.NewRecorder()
+	handler.ApproveStep(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestHandlerApproveStepShortComment(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	handler := NewHandler(svc)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	gateReq := &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Too short — should be rejected
+	body := strings.NewReader(`{"comment": "ok"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("X-User-ID", "approver@example.com")
+
+	rr := httptest.NewRecorder()
+	handler.ApproveStep(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 }
 
@@ -431,7 +492,8 @@ func TestHandlerRejectStep(t *testing.T) {
 	}
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", gateReq, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", nil)
+	body := strings.NewReader(`{"reason": "Contains prohibited content, rejecting"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 	req.Header.Set("X-User-ID", "rejecter@example.com")
 
@@ -1149,7 +1211,8 @@ func TestHandlerApproveStepNotFound(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/approve", nil)
+	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/approve", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1174,7 +1237,8 @@ func TestHandlerApproveStepNoApprovalNeeded(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
+	body := strings.NewReader(`{"comment": "Reviewed and approved for production"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -1200,11 +1264,12 @@ func TestHandlerApproveStepNotPending(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	// Approve the step first
-	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com", "")
+	// Approve the step first (via service directly, bypasses handler validation)
+	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com", "Initial approval for testing")
 
-	// Try to approve again
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
+	// Try to approve again via handler
+	body := strings.NewReader(`{"comment": "Attempting second approval"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()
@@ -1212,6 +1277,63 @@ func TestHandlerApproveStepNotPending(t *testing.T) {
 
 	if rr.Code != http.StatusConflict {
 		t.Errorf("status = %d, want %d", rr.Code, http.StatusConflict)
+	}
+}
+
+func TestHandlerRejectStepMissingReason(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	handler := NewHandler(svc)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// No body — should be rejected
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("X-User-ID", "rejecter@example.com")
+
+	rr := httptest.NewRecorder()
+	handler.RejectStep(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
+func TestHandlerRejectStepShortReason(t *testing.T) {
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, nil)
+	handler := NewHandler(svc)
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "test-workflow",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "step-1",
+		StepType: StepTypeLLMCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	// Too short — should be rejected
+	body := strings.NewReader(`{"reason": "no"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
+	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
+	req.Header.Set("X-User-ID", "rejecter@example.com")
+
+	rr := httptest.NewRecorder()
+	handler.RejectStep(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d, body: %s", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
 }
 
@@ -1237,7 +1359,8 @@ func TestHandlerRejectStepNotFound(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/reject", nil)
+	body := strings.NewReader(`{"reason": "Rejecting due to policy violation"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/non-existent/reject", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "non-existent"})
 
 	rr := httptest.NewRecorder()
@@ -1262,7 +1385,8 @@ func TestHandlerRejectStepNoApprovalNeeded(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", nil)
+	body := strings.NewReader(`{"reason": "Rejecting due to policy violation"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/reject", body)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID, "step_id": "step-1"})
 
 	rr := httptest.NewRecorder()

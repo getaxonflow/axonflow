@@ -3826,7 +3826,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	if pendingStepID != "" {
 		// Approve the pending step in WCP
-		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-User-ID"), ""); err != nil {
+		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-User-ID"), "Auto-approved via plan resume"); err != nil {
 			log.Printf("[ResumePlan] Failed to approve step %s: %v", pendingStepID, err)
 			sendErrorResponse(w, "Failed to approve step: "+err.Error(), http.StatusInternalServerError)
 			return

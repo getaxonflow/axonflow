@@ -1446,6 +1446,37 @@ func TestEvaluateRequest_NumericParameterPIIDetected(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequest_Float64ParameterPIIDetected(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:   "pii_credit_card",
+			Name:       "Credit Card Detection",
+			Category:   CategoryPIIGlobal,
+			Pattern:    regexp.MustCompile(`\b\d{13,19}\b`),
+			PatternStr: `\b\d{13,19}\b`,
+			Severity:   SeverityCritical,
+			Phase:      PhaseBoth,
+			Enabled:    true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// JSON decodes numbers as float64 — this must still match PII patterns.
+	// Before the fix, float64(4111111111111111) was formatted as "4.111111111111111e+15"
+	// which would NOT match \b\d{13,19}\b.
+	result := engine.EvaluateRequest(context.Background(), "Process payment", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"card_number": float64(4111111111111111),
+		},
+	})
+
+	if len(result.MatchedPolicies) == 0 {
+		t.Error("Expected float64 parameter to be scanned and PII detected, but got 0 matches")
+	}
+}
+
 func TestEvaluateRequest_BoolParametersSkipped(t *testing.T) {
 	policies := []CompiledPolicy{
 		{
