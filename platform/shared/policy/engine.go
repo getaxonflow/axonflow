@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -165,11 +166,16 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 				if data, err := json.Marshal(v); err == nil {
 					paramStr = string(data)
 				}
+			case float64:
+				// JSON decodes numbers as float64. Use decimal notation to preserve
+				// digit sequences for PII pattern matching (credit cards, SSNs, etc).
+				// fmt.Sprintf("%v") produces scientific notation for large values.
+				paramStr = strconv.FormatFloat(v, 'f', -1, 64)
+			case int64:
+				paramStr = strconv.FormatInt(v, 10)
 			case bool:
 				continue // booleans have no PII/compliance/injection risk
 			default:
-				// Numeric values: convert to string for PII/compliance scanning
-				// (e.g., SSN or credit card number passed as an integer)
 				paramStr = fmt.Sprintf("%v", v)
 			}
 			if paramStr == "" {

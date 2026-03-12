@@ -496,14 +496,21 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		approvedBy = "system"
 	}
 
-	// Parse optional request body for approval comment
+	// Parse request body for approval comment (required, min 10 characters)
 	var comment string
 	if r.Body != nil {
 		var body struct {
 			Comment string `json:"comment"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		comment = body.Comment
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
+			return
+		}
+		comment = strings.TrimSpace(body.Comment)
+	}
+	if len(comment) < 10 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Comment is required (minimum 10 characters)")
+		return
 	}
 
 	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, approvedBy, comment); err != nil {
@@ -555,14 +562,21 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		rejectedBy = "system"
 	}
 
-	// Parse optional request body for rejection reason
+	// Parse request body for rejection reason (required, min 10 characters)
 	var reason string
 	if r.Body != nil {
 		var body struct {
 			Reason string `json:"reason"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		reason = body.Reason
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
+			return
+		}
+		reason = strings.TrimSpace(body.Reason)
+	}
+	if len(reason) < 10 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Reason is required (minimum 10 characters)")
+		return
 	}
 
 	if err := h.service.RejectStep(r.Context(), workflowID, stepID, rejectedBy, reason); err != nil {
