@@ -98,7 +98,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build Agent Image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: platform/agent/Dockerfile
@@ -135,7 +135,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Build Orchestrator Image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: platform/orchestrator/Dockerfile
