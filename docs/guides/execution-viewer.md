@@ -1,6 +1,6 @@
 # Execution Viewer
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 **Platform Version:** v5.0.0 | **SDK Version:** v4.0.0
 
@@ -117,6 +117,33 @@ The UI fetches data from the same REST API used by the SDKs:
 | `GET /api/v1/executions/{id}` | Detail view |
 | `GET /api/v1/executions/{id}/export` | Export button |
 
+## Enterprise Portal
+
+Enterprise license holders have access to the Customer Portal UI with dedicated pages for execution monitoring and approval management.
+
+### Execution Timeline (`/executions`)
+
+The enterprise portal provides a full-featured Execution Timeline page:
+
+- Filter executions by type (MAP/WCP) and status
+- Expandable rows showing the complete step timeline with color-coded status indicators
+- Policy gate decisions visible per step (allow, block, require_approval)
+- LLM usage details (model, provider, token counts, cost)
+- Per-step and total cost tracking
+- Collapsible JSON input/output for debugging
+
+### Approval Dashboard (`/approvals`)
+
+For workflows using HITL (human-in-the-loop) approval policies, the portal includes an Approval Dashboard:
+
+- Queue of pending approval requests across all active workflows
+- Policy context for each approval (matched policies, decision reason, step input)
+- Approve or reject with required justification (audit trail)
+- Live pending count badge in navigation
+- Real-time queue refresh
+
+The enterprise portal is available at your configured portal domain (e.g., `ecommerce-prod-us.getaxonflow.com`). See the [enterprise documentation](../enterprise/execution-timeline.md) for details.
+
 ## REST API (curl)
 
 You can query execution data directly via the Agent REST API (port 8080). Use `X-Client-Id` and `X-Client-Secret` headers for authentication (alternatively, `Authorization: Basic` is supported).
@@ -190,7 +217,7 @@ Example response:
       "step_type": "llm_call",
       "status": "completed",
       "duration": "5s",
-      "model": "gpt-4",
+      "model": "gpt-4o",
       "provider": "openai",
       "cost_usd": 0.0280
     },
@@ -207,7 +234,7 @@ Example response:
       "step_type": "llm_call",
       "status": "completed",
       "duration": "6s",
-      "model": "gpt-4",
+      "model": "gpt-4o",
       "provider": "openai",
       "cost_usd": 0.0132
     }

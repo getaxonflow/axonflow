@@ -113,11 +113,59 @@ def main() -> int:
     print()
 
     # ---------------------------------------------------------------
+    # CHECK-INPUT: PARAMETER SCANNING (Issue #1287)
+    # ---------------------------------------------------------------
+
+    # Test 5: Clean parameterized query passes
+    print("Test 5: Check-Input — Clean Parameterized Query")
+    print("------------------------------------------------")
+    resp = check_input({
+        "connector_type": "postgres",
+        "statement": "SELECT * FROM users WHERE id = $1",
+        "operation": "query",
+        "parameters": {"1": "usr-42"},
+    })
+    data = resp.json()
+    assert_check(resp.status_code == 200, f"HTTP 200 (got {resp.status_code})")
+    assert_check(data.get("allowed") is True, "allowed = true")
+    print()
+
+    # Test 6: SQLi hidden in parameters — blocked
+    print("Test 6: Check-Input — SQLi in Parameters")
+    print("-----------------------------------------")
+    resp = check_input({
+        "connector_type": "postgres",
+        "statement": "SELECT * FROM users WHERE id = $1",
+        "operation": "query",
+        "parameters": {"1": "1 OR 1=1; DROP TABLE users--"},
+    })
+    data = resp.json()
+    assert_check(resp.status_code == 403, f"HTTP 403 (got {resp.status_code})")
+    assert_check(data.get("allowed") is False, "allowed = false (SQLi in parameters)")
+    assert_check(bool(data.get("block_reason")), f"block_reason: {data.get('block_reason', '')}")
+    print()
+
+    # Test 7: PII hidden in parameters — detected
+    print("Test 7: Check-Input — PII in Parameters (SSN)")
+    print("----------------------------------------------")
+    resp = check_input({
+        "connector_type": "postgres",
+        "statement": "INSERT INTO contacts VALUES ($1, $2)",
+        "operation": "execute",
+        "parameters": {"1": "Alice", "2": "123-45-6789"},
+    })
+    data = resp.json()
+    # PII detection uses redact action (not block), so allowed=true but policies match
+    assert_check(resp.status_code == 200, f"HTTP 200 (got {resp.status_code})")
+    assert_check(data.get("policies_evaluated", 0) > 0, "PII policies evaluated for parameters")
+    print()
+
+    # ---------------------------------------------------------------
     # CHECK-OUTPUT TESTS
     # ---------------------------------------------------------------
 
-    # Test 5: Clean response passes
-    print("Test 5: Check-Output — Clean Response Data")
+    # Test 8: Clean response passes
+    print("Test 8: Check-Output — Clean Response Data")
     print("-------------------------------------------")
     resp = check_output({
         "connector_type": "postgres",
@@ -132,8 +180,8 @@ def main() -> int:
     assert_check(data.get("allowed") is True, "allowed = true")
     print()
 
-    # Test 6: PII in response — redacted
-    print("Test 6: Check-Output — PII Redaction (SSN)")
+    # Test 9: PII in response — redacted
+    print("Test 9: Check-Output — PII Redaction (SSN)")
     print("-------------------------------------------")
     resp = check_output({
         "connector_type": "postgres",
@@ -153,8 +201,8 @@ def main() -> int:
     assert_check(data.get("policies_evaluated", 0) > 0, "Policies were evaluated")
     print()
 
-    # Test 7: Execute-style response (message only)
-    print("Test 7: Check-Output — Execute Response (Message)")
+    # Test 10: Execute-style response (message only)
+    print("Test 10: Check-Output — Execute Response (Message)")
     print("--------------------------------------------------")
     resp = check_output({
         "connector_type": "postgres",
@@ -168,8 +216,8 @@ def main() -> int:
     assert_check(data.get("allowed") is True, "allowed = true")
     print()
 
-    # Test 8: Validation error — missing both response_data and message
-    print("Test 8: Check-Output — Missing response_data and message")
+    # Test 11: Validation error — missing both response_data and message
+    print("Test 11: Check-Output — Missing response_data and message")
     print("---------------------------------------------------------")
     resp = check_output({
         "connector_type": "postgres",

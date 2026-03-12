@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -149,6 +150,57 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 				// Record violation
 				e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
 				break // Stop on first block for performance
+			}
+		}
+	}
+
+	// Scan parameter values individually (Issue #1287)
+	if !result.Blocked && len(opts.Parameters) > 0 {
+		for key, val := range opts.Parameters {
+			paramStr := ""
+			switch v := val.(type) {
+			case string:
+				paramStr = v
+			case map[string]interface{}, []interface{}:
+				if data, err := json.Marshal(v); err == nil {
+					paramStr = string(data)
+				}
+			case bool:
+				continue // booleans have no PII/compliance/injection risk
+			default:
+				// Numeric values: convert to string for PII/compliance scanning
+				// (e.g., SSN or credit card number passed as an integer)
+				paramStr = fmt.Sprintf("%v", v)
+			}
+			if paramStr == "" {
+				continue
+			}
+
+			for i := range policies {
+				policy := &policies[i]
+				match := e.evaluator.Evaluate(paramStr, policy)
+				if match != nil {
+					action := policy.GetActionForPhase(PhaseRequest)
+					if opts.ActionOverrides != nil {
+						if override, ok := opts.ActionOverrides[policy.Category]; ok {
+							action = override
+						}
+					}
+					match.Action = action
+					match.FieldPath = fmt.Sprintf("parameter '%s'", key)
+					result.MatchedPolicies = append(result.MatchedPolicies, *match)
+
+					if match.Action == ActionBlock {
+						result.Blocked = true
+						result.BlockedBy = policy
+						result.BlockReason = fmt.Sprintf("Blocked by policy %s in parameter '%s'", policy.Name, key)
+						e.metrics.RecordViolation(ctx, opts, policy, match.MatchText)
+						break
+					}
+				}
+			}
+			if result.Blocked {
+				break
 			}
 		}
 	}

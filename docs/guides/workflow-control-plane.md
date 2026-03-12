@@ -182,6 +182,37 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
     await adapter.complete_workflow()
 ```
 
+### MCP Tool Interceptor (MultiServerMCPClient)
+
+When using LangGraph's `MultiServerMCPClient` from `langchain-mcp-adapters`, use `mcp_tool_interceptor()` to wrap every MCP tool call with AxonFlow input/output policy enforcement:
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from axonflow import AxonFlow
+from axonflow.adapters import AxonFlowLangGraphAdapter, MCPInterceptorOptions
+
+async with AxonFlow(endpoint="http://localhost:8080") as client:
+    adapter = AxonFlowLangGraphAdapter(client, "my-workflow")
+
+    mcp_client = MultiServerMCPClient(
+        {"lookup": {"url": "http://localhost:8000/mcp", "transport": "http"}},
+        tool_interceptors=[adapter.mcp_tool_interceptor()],
+    )
+    tools = await mcp_client.get_tools()
+```
+
+Use `MCPInterceptorOptions` to customise connector type derivation or operation:
+
+```python
+opts = MCPInterceptorOptions(
+    connector_type_fn=lambda req: req.server_name,  # default: "{server_name}.{tool_name}"
+    operation="query",  # default: "execute"
+)
+tool_interceptors=[adapter.mcp_tool_interceptor(opts)]
+```
+
+The interceptor enforces `mcp_check_input → handler → mcp_check_output`, raises `PolicyViolationError` on block, and automatically substitutes `redacted_data` when output redaction is applied.
+
 ### Go
 
 ```go

@@ -29,10 +29,11 @@ type Repository interface {
 	// Step operations
 	AddStep(ctx context.Context, step *WorkflowStep) error
 	GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
-	UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string) error
+	UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error
 	MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error
 	GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error)
-	GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]WorkflowStep, error)
+	GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error)
+	CountPendingApprovals(ctx context.Context, tenantID string) (int, error)
 }
 
 // PostgresRepository implements Repository using PostgreSQL
@@ -498,7 +499,7 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 			   decision, decision_reason, policies_evaluated, policies_matched,
 			   approval_status, approved_by, approved_at,
 			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
-			   step_output, gate_checked_at, step_completed_at
+			   step_output, approval_comment, gate_checked_at, step_completed_at
 		FROM workflow_steps
 		WHERE workflow_id = $1 AND step_id = $2
 	`
@@ -507,6 +508,7 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 	var approvalStatus sql.NullString
 	var approvedBy sql.NullString
 	var approvedAt sql.NullTime
+	var approvalComment sql.NullString
 	var stepCompletedAt sql.NullTime
 	var stepOutput []byte
 
@@ -531,6 +533,7 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 		&step.TokensOut,
 		&step.CostUSD,
 		&stepOutput,
+		&approvalComment,
 		&step.GateCheckedAt,
 		&stepCompletedAt,
 	)
@@ -552,6 +555,9 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 	if approvedAt.Valid {
 		step.ApprovedAt = &approvedAt.Time
 	}
+	if approvalComment.Valid {
+		step.ApprovalComment = approvalComment.String
+	}
 	if stepCompletedAt.Valid {
 		step.StepCompletedAt = &stepCompletedAt.Time
 	}
@@ -563,14 +569,18 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 }
 
 // UpdateStepApproval updates the approval status of a step
-func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string) error {
+func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error {
 	now := time.Now()
 	query := `
 		UPDATE workflow_steps
-		SET approval_status = $1, approved_by = $2, approved_at = $3
-		WHERE workflow_id = $4 AND step_id = $5
+		SET approval_status = $1, approved_by = $2, approved_at = $3, approval_comment = $4
+		WHERE workflow_id = $5 AND step_id = $6
 	`
-	result, err := r.db.ExecContext(ctx, query, status, approvedBy, now, workflowID, stepID)
+	var commentVal interface{}
+	if comment != "" {
+		commentVal = comment
+	}
+	result, err := r.db.ExecContext(ctx, query, status, approvedBy, now, commentVal, workflowID, stepID)
 	if err != nil {
 		return err
 	}
@@ -639,7 +649,7 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 			   decision, decision_reason, policies_evaluated, policies_matched,
 			   approval_status, approved_by, approved_at,
 			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
-			   step_output, gate_checked_at, step_completed_at
+			   step_output, approval_comment, gate_checked_at, step_completed_at
 		FROM workflow_steps
 		WHERE workflow_id = $1
 		ORDER BY step_index ASC
@@ -657,6 +667,7 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 		var approvalStatus sql.NullString
 		var approvedBy sql.NullString
 		var approvedAt sql.NullTime
+		var approvalComment sql.NullString
 		var stepCompletedAt sql.NullTime
 		var stepOutput []byte
 
@@ -681,6 +692,7 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 			&step.TokensOut,
 			&step.CostUSD,
 			&stepOutput,
+			&approvalComment,
 			&step.GateCheckedAt,
 			&stepCompletedAt,
 		)
@@ -698,6 +710,9 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 		if approvedAt.Valid {
 			step.ApprovedAt = &approvedAt.Time
 		}
+		if approvalComment.Valid {
+			step.ApprovalComment = approvalComment.String
+		}
 		if stepCompletedAt.Valid {
 			step.StepCompletedAt = &stepCompletedAt.Time
 		}
@@ -714,17 +729,17 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 	return steps, nil
 }
 
-// GetPendingApprovals retrieves steps awaiting approval for a tenant
-func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]WorkflowStep, error) {
+// GetPendingApprovals retrieves steps awaiting approval for a tenant, including workflow-level context.
+func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
 	query := `
-		SELECT ws.id, ws.workflow_id, ws.step_id, ws.step_index, ws.step_name, ws.step_type,
-			   ws.decision, ws.decision_reason, ws.policies_evaluated, ws.policies_matched,
-			   ws.approval_status, ws.step_input, ws.model, ws.provider,
-			   ws.tokens_in, ws.tokens_out, ws.gate_checked_at
+		SELECT ws.workflow_id, ws.step_id, ws.step_index, ws.step_name, ws.step_type,
+			   ws.decision, ws.decision_reason, ws.policies_matched,
+			   ws.approval_status, ws.step_input, ws.gate_checked_at,
+			   w.workflow_name
 		FROM workflow_steps ws
 		JOIN workflows w ON ws.workflow_id = w.workflow_id
 		WHERE ws.approval_status = 'pending' AND w.tenant_id = $1
@@ -738,29 +753,24 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 	}
 	defer rows.Close()
 
-	var steps []WorkflowStep
+	var results []PendingApprovalResponse
 	for rows.Next() {
-		var step WorkflowStep
+		var item PendingApprovalResponse
 		var approvalStatus sql.NullString
 
 		err := rows.Scan(
-			&step.ID,
-			&step.WorkflowID,
-			&step.StepID,
-			&step.StepIndex,
-			&step.StepName,
-			&step.StepType,
-			&step.Decision,
-			&step.DecisionReason,
-			&step.PoliciesEvaluated,
-			&step.PoliciesMatched,
+			&item.WorkflowID,
+			&item.StepID,
+			&item.StepIndex,
+			&item.StepName,
+			&item.StepType,
+			&item.Decision,
+			&item.DecisionReason,
+			&item.PoliciesMatched,
 			&approvalStatus,
-			&step.StepInput,
-			&step.Model,
-			&step.Provider,
-			&step.TokensIn,
-			&step.TokensOut,
-			&step.GateCheckedAt,
+			&item.StepInput,
+			&item.CreatedAt,
+			&item.WorkflowName,
 		)
 		if err != nil {
 			return nil, err
@@ -768,14 +778,24 @@ func (r *PostgresRepository) GetPendingApprovals(ctx context.Context, tenantID s
 
 		if approvalStatus.Valid {
 			as := ApprovalStatus(approvalStatus.String)
-			step.ApprovalStatus = &as
+			item.ApprovalStatus = &as
 		}
 
-		steps = append(steps, step)
+		results = append(results, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate pending approval rows: %w", err)
 	}
 
-	return steps, nil
+	return results, nil
+}
+
+// CountPendingApprovals returns the total number of pending approvals for a tenant.
+func (r *PostgresRepository) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM workflow_steps ws
+		 JOIN workflows w ON ws.workflow_id = w.workflow_id
+		 WHERE ws.approval_status = 'pending' AND w.tenant_id = $1`, tenantID).Scan(&count)
+	return count, err
 }

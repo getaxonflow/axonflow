@@ -454,7 +454,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 }
 
 // ApproveStep approves a step that requires approval (Enterprise feature)
-func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, approvedBy string) error {
+func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, approvedBy string, comment string) error {
 	step, err := s.repo.GetStep(ctx, workflowID, stepID)
 	if err != nil {
 		return err
@@ -468,7 +468,7 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 		return fmt.Errorf("step is not pending approval")
 	}
 
-	if err := s.repo.UpdateStepApproval(ctx, workflowID, stepID, ApprovalStatusApproved, approvedBy); err != nil {
+	if err := s.repo.UpdateStepApproval(ctx, workflowID, stepID, ApprovalStatusApproved, approvedBy, comment); err != nil {
 		return fmt.Errorf("failed to approve step: %w", err)
 	}
 
@@ -489,7 +489,7 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 }
 
 // RejectStep rejects a step that requires approval (Enterprise feature)
-func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rejectedBy string) error {
+func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rejectedBy string, reason string) error {
 	step, err := s.repo.GetStep(ctx, workflowID, stepID)
 	if err != nil {
 		return err
@@ -503,7 +503,7 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rej
 		return fmt.Errorf("step is not pending approval")
 	}
 
-	if err := s.repo.UpdateStepApproval(ctx, workflowID, stepID, ApprovalStatusRejected, rejectedBy); err != nil {
+	if err := s.repo.UpdateStepApproval(ctx, workflowID, stepID, ApprovalStatusRejected, rejectedBy, reason); err != nil {
 		return fmt.Errorf("failed to reject step: %w", err)
 	}
 
@@ -726,8 +726,13 @@ func (s *Service) ListWorkflows(ctx context.Context, opts ListWorkflowsOptions) 
 }
 
 // GetPendingApprovals returns steps awaiting approval for a tenant
-func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]WorkflowStep, error) {
+func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error) {
 	return s.repo.GetPendingApprovals(ctx, tenantID, limit)
+}
+
+// CountPendingApprovals returns the total number of pending approvals for a tenant
+func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
+	return s.repo.CountPendingApprovals(ctx, tenantID)
 }
 
 // MarkStepCompleted marks a step as completed after the external orchestrator executes it.

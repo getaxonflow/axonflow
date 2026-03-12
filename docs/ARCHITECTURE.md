@@ -27,25 +27,52 @@ AxonFlow treats agents as long-running, stateful systems that require governance
 AxonFlow is a **control plane**, not an orchestration framework. It doesn't replace LangChain or CrewAI — it makes them operable in production.
 
 ```
-┌─────────────┐      ┌─────────────────────────────┐      ┌─────────────────┐
-│             │      │          AxonFlow           │      │  LLM Providers  │
-│    Your     │ ───▶ │  ┌─────────┐  ┌─────────┐  │ ───▶ │  OpenAI         │
-│    App      │      │  │ Policy  │  │  Audit  │  │      │  Anthropic      │
-│             │ ◀─── │  │ Engine  │  │   Log   │  │ ◀─── │  Gemini         │
-└─────────────┘      │  └─────────┘  └─────────┘  │      └─────────────────┘
-                     └─────────────────────────────┘
-                                  │
-                                  ▼
-                     ┌─────────────────────────────┐
-                     │      MCP Connectors         │
-                     │  Postgres, Salesforce, S3   │
-                     └─────────────────────────────┘
+┌─────────────┐    ┌──────────────────────────────────────────────────┐
+│  Your App   │───▶│                Agent (:8080)                     │
+│   (SDK)     │    │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+└─────────────┘    │  │  Policy  │ │   MCP    │ │  Media / Code    │ │
+                   │  │  Engine  │ │Connectors│ │  Governance      │ │
+                   │  │  (60+)   │ │          │ │                  │ │
+                   │  └──────────┘ └──────────┘ └──────────────────┘ │
+                   │  ┌──────────────────┐ ┌─────────────────────┐   │
+                   │  │ PII / SQLi       │ │ Circuit Breaker     │   │
+                   │  │ Detection        │ │ (Kill Switch)       │   │
+                   │  └──────────────────┘ └─────────────────────┘   │
+                   └────────────────────┬─────────────────────────────┘
+                                        │
+                                        ▼
+                   ┌──────────────────────────────────────────────────┐
+                   │             Orchestrator (:8081)                 │
+                   │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+                   │  │   WCP    │ │  MAP     │ │  Cost Controls   │ │
+                   │  │  Step    │ │  Plan +  │ │  & Multi-Model   │ │
+                   │  │  Gates   │ │  Execute │ │  Routing         │ │
+                   │  └──────────┘ └──────────┘ └──────────────────┘ │
+                   │  ┌──────────────────┐ ┌─────────────────────┐   │
+                   │  │ HITL Approval    │ │ Evidence Export      │   │
+                   │  │ Gates            │ │ & Decision Replay    │   │
+                   │  └──────────────────┘ └─────────────────────┘   │
+                   └────────────────────┬─────────────────────────────┘
+                                        │
+                                        ▼
+                   ┌──────────────────────────────────────────────────┐
+                   │                 LLM Providers                    │
+                   │   (OpenAI, Anthropic, Gemini, Bedrock, Ollama)   │
+                   └──────────────────────────────────────────────────┘
+
+           PostgreSQL (policies, audit, evidence) • Redis (cache)
+                   MCP Connectors (Postgres, Salesforce, S3, ...)
 ```
 
 **AxonFlow provides:**
 - **Policy enforcement** — Block PII, SQLi, dangerous queries before they reach LLMs
+- **Media and code governance** — Image classification, code scanning policies
+- **Workflow Control Plane (WCP)** — Step-level gates for external orchestrators (LangChain, Temporal, etc.)
+- **Circuit breaker** — Emergency kill switch to halt all LLM calls instantly
 - **Audit logging** — Complete trail of every AI decision for compliance
+- **Evidence export and decision replay** — Compliance-grade exports and step-by-step replay
 - **Cost controls** — Budget limits and usage tracking per tenant
+- **HITL approval gates** — Human review for high-risk decisions
 
 ### Gateway Mode (Recommended for Existing Stacks)
 
@@ -311,9 +338,9 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 │                              │  ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │
 │                              │  │ OpenAI  │ │Anthropic│ │ Gemini  │   │    │
 │                              │  └─────────┘ └─────────┘ └─────────┘   │    │
-│                              │  ┌─────────┐ ┌─────────┐               │    │
-│                              │  │ Azure   │ │ Ollama  │               │    │
-│                              │  └─────────┘ └─────────┘               │    │
+│                              │  ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │
+│                              │  │ Azure   │ │ Ollama  │ │ Bedrock │   │    │
+│                              │  └─────────┘ └─────────┘ └─────────┘   │    │
 │                              └──────────────────▲──────────────────────┘    │
 │                                                 │                            │
 │   ┌─────────┐      ┌──────────────────┐      ┌──────────────────┐          │
@@ -323,8 +350,11 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 │   └─────────┘      │  • PII Detection │      │  • LLM Routing    │          │
 │                    │  • SQLi Scanning │      │  • Cost Controls  │          │
 │                    │  • Rate Limits   │      │  • MAP Planning   │          │
-│                    │  • Gateway APIs  │      │  • Execution Replay│         │
-│                    │  • MCP Handler   │      │                    │          │
+│                    │  • Gateway APIs  │      │  • WCP Step Gates │          │
+│                    │  • MCP Handler   │      │  • HITL Approvals │          │
+│                    │  • Media / Code  │      │  • Evidence Export │          │
+│                    │    Governance    │      │  • Decision Replay │          │
+│                    │  • Circuit Break │      │                    │          │
 │                    └────────┬─────────┘      └─────────┬──────────┘          │
 │                             │                          │                     │
 │                             │    ┌─────────────────────┘                     │
@@ -336,6 +366,8 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 │                    │  • Policies         │    │  • Rate Limits   │          │
 │                    │  • Audit Logs       │    │  • Policy Cache  │          │
 │                    │  • Cost Budgets     │    │  • Session State │          │
+│                    │  • Evidence         │    │  • Circuit State │          │
+│                    │  • Workflow Steps   │    │                  │          │
 │                    │  • Tenant Config    │    │                  │          │
 │                    └─────────────────────┘    └──────────────────┘          │
 │                                                                              │
@@ -360,6 +392,7 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 | System policies | `static_policies.go` | PII, SQLi, rate limits |
 | Gateway handlers | `gateway_handlers.go` | Pre-check / Audit APIs |
 | MCP handler | `mcp_handler.go` | Connector orchestration |
+| Circuit breaker | `circuitbreaker/` | Emergency kill switch (Evaluation+) |
 | Decision chain | `decision_chain.go` | Audit trail |
 
 ### Orchestrator Service (`:8081`)
@@ -372,7 +405,11 @@ plan = await axonflow.generate_plan("Book cheapest flight to London next Tuesday
 | Tenant policies | `dynamic_policy_engine.go` | Configurable rules, risk |
 | LLM routing | `llm/router.go` | Provider selection |
 | Planning engine | `planning_engine.go` | MAP |
+| WCP handlers | `workflow_control/` | Step gates, workflow lifecycle |
 | Cost controls | `cost/` | Budget management |
+| HITL approvals | `hitl_wcp_community.go` | Approval queue, expiry (Evaluation+) |
+| Media governance | `media_governance_handlers.go`, `media/` | Image classification, content policies |
+| Evidence export | `evidence_export_handler.go` | Compliance exports (Evaluation+) |
 | Replay | `replay/` | Execution debugging |
 
 ### Shared Policy Engine
@@ -426,6 +463,7 @@ platform/
 │   ├── static_policies.go
 │   ├── gateway_handlers.go
 │   ├── mcp_handler.go
+│   ├── circuitbreaker/       # Emergency kill switch (Evaluation+)
 │   ├── decision_chain.go
 │   ├── sqli/
 │   └── hitl/                 # Enterprise
@@ -435,6 +473,12 @@ platform/
 │   ├── dynamic_policy_engine.go
 │   ├── planning_engine.go
 │   ├── workflow_engine.go
+│   ├── workflow_control/     # WCP step gates
+│   ├── media_governance_handlers.go # Media/code governance
+│   ├── media_governance_config.go
+│   ├── media/                  # Media analysis types
+│   ├── evidence_export_handler.go  # Evaluation+
+│   ├── hitl_wcp_community.go # HITL approval gates (Evaluation+)
 │   ├── llm/
 │   ├── cost/
 │   └── replay/

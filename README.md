@@ -102,7 +102,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 ## Pick Your First 10-Minute Path
 
-AxonFlow has two primary capabilities. Start with whichever matches your use case:
+If you're adding governance to an existing AI stack (LangChain, CrewAI, direct API calls), start with Path A. If you're building new multi-step agent workflows that need execution control, start with Path B.
 
 ### Path A: Govern Existing LLM Calls
 
@@ -190,10 +190,10 @@ This demonstrates:
 
 | Provider | Community | Enterprise | Notes |
 |----------|:---------:|:----------:|-------|
-| **OpenAI** | ✅ | ✅ | GPT-5.2, GPT-4o, GPT-4 |
-| **Anthropic** | ✅ | ✅ | Claude Sonnet 4, Claude Opus 4.5 |
+| **OpenAI** | ✅ | ✅ | GPT-5.x, GPT-4o, GPT-4 |
+| **Anthropic** | ✅ | ✅ | Claude Opus 4.6, Claude Sonnet 4.6 |
 | **Azure OpenAI** | ✅ | ✅ | Azure AI Foundry & Classic endpoints |
-| **Google Gemini** | ✅ | ✅ | Gemini 3 Flash, Gemini 3 Pro |
+| **Google Gemini** | ✅ | ✅ | Gemini 3.x (Pro, Flash, Flash-Lite) |
 | **Ollama** | ✅ | ✅ | Local/air-gapped deployments |
 | **AWS Bedrock** | ❌ | ✅ | HIPAA-compliant, data residency |
 
@@ -261,6 +261,8 @@ All features—policy enforcement, audit logging, MCP connectors, WCP workflows�
 |---------|----------|---------------------|
 | **Governance** | Inline policy enforcement | Post-hoc monitoring |
 | **Architecture** | Active prevention | Passive detection (observability) |
+| **Workflow Execution Control** | Step-level gates, durable ledger, cancellation | Chain sequencing only |
+| **Evidence & Replay** | Compliance exports, decision replay, audit retention | Trace logging |
 | **Enterprise Focus** | Built for compliance & security first | Developer-first framework |
 | **Multi-Tenant** | Production-ready isolation | DIY multi-tenancy |
 | **Self-Hosted** | Full core available | Partial (monitoring requires cloud) |
@@ -274,38 +276,64 @@ All features—policy enforcement, audit logging, MCP connectors, WCP workflows�
 ## Architecture
 
 ```
-┌─────────────┐    ┌─────────────────────────────────────┐
-│  Your App   │───▶│            Agent (:8080)            │
-│   (SDK)     │    │  ┌───────────┐ ┌─────────────┐      │
-└─────────────┘    │  │  Policy   │ │    MCP      │      │
-                   │  │  Engine   │ │ Connectors  │      │
-                   │  └───────────┘ └─────────────┘      │
-                   └───────────────┬─────────────────────┘
-                                   │
-                                   ▼
-                   ┌─────────────────────────────────────┐
-                   │        Orchestrator (:8081)         │
-                   │  ┌───────────┐ ┌─────────────┐      │
-                   │  │  WCP /    │ │ Multi-Agent │      │
-                   │  │  Policies │ │  Planning   │      │
-                   │  └───────────┘ └─────────────┘      │
-                   └───────────────┬─────────────────────┘
-                                   │
-                                   ▼
-                   ┌─────────────────────────────────────┐
-                   │            LLM Providers            │
-                   │  (OpenAI, Anthropic, Bedrock, etc.) │
-                   └─────────────────────────────────────┘
+┌─────────────┐    ┌──────────────────────────────────────────────────┐
+│  Your App   │───▶│                Agent (:8080)                     │
+│   (SDK)     │    │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+└─────────────┘    │  │  Policy  │ │   MCP    │ │  Media / Code    │ │
+                   │  │  Engine  │ │Connectors│ │  Governance      │ │
+                   │  │  (60+)   │ │          │ │                  │ │
+                   │  └──────────┘ └──────────┘ └──────────────────┘ │
+                   │  ┌──────────────────┐ ┌─────────────────────┐   │
+                   │  │ PII / SQLi       │ │ Circuit Breaker     │   │
+                   │  │ Detection        │ │ (Kill Switch)       │   │
+                   │  └──────────────────┘ └─────────────────────┘   │
+                   └────────────────────┬─────────────────────────────┘
+                                        │
+                                        ▼
+                   ┌──────────────────────────────────────────────────┐
+                   │             Orchestrator (:8081)                 │
+                   │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
+                   │  │   WCP    │ │  MAP     │ │  Cost Controls   │ │
+                   │  │  Step    │ │  Plan +  │ │  & Multi-Model   │ │
+                   │  │  Gates   │ │  Execute │ │  Routing         │ │
+                   │  └──────────┘ └──────────┘ └──────────────────┘ │
+                   │  ┌──────────────────┐ ┌─────────────────────┐   │
+                   │  │ HITL Approval    │ │ Evidence Export      │   │
+                   │  │ Gates            │ │ & Decision Replay    │   │
+                   │  └──────────────────┘ └─────────────────────┘   │
+                   └────────────────────┬─────────────────────────────┘
+                                        │
+                                        ▼
+                   ┌──────────────────────────────────────────────────┐
+                   │                 LLM Providers                    │
+                   │   (OpenAI, Anthropic, Gemini, Bedrock, Ollama)   │
+                   └──────────────────────────────────────────────────┘
 
-        PostgreSQL (policies, audit) • Redis (cache)
+           PostgreSQL (policies, audit, evidence) • Redis (cache)
 ```
 
-- **Agent** (:8080): Policy enforcement, PII detection, SQLi response scanning, MCP connectors
-- **Orchestrator** (:8081): LLM routing, WCP workflows, tenant policies, multi-agent planning
+- **Agent** (:8080): Policy enforcement, PII detection, SQLi response scanning, media/code governance, MCP connectors, circuit breaker
+- **Orchestrator** (:8081): WCP step gates, multi-agent planning, LLM routing, cost controls, HITL approval gates, evidence export, decision replay
 
 ### Why AxonFlow often becomes the default control plane
 
 Teams typically start by placing AxonFlow in front of a single workflow or agent to evaluate policy enforcement, auditability, and execution control. As usage grows, running some AI workflows through AxonFlow and others outside it tends to create fragmented audit logs, inconsistent policies, and duplicated observability. For this reason, teams that continue using AxonFlow often standardize on it as a single control plane for AI workflows, while retaining their existing orchestration frameworks and execution logic.
+
+### What evaluators are saying
+
+> *"So many teams are just making the first steps, which work quite easily in a localhost environment, but then when they try to move this to production they find that they have to build so much core infrastructure. I am happy to see this solution looking so much more mature and feature rich."*
+> — Principal Technical Product Manager · Global travel marketplace
+
+> *"Most failures aren't model quality issues. The idea of a lightweight, inline control plane that doesn't replace the orchestrator but governs execution step-by-step feels like a pragmatic way to tackle that."*
+> — Staff Software Engineer · Global travel marketplace
+
+> *"This is massively needed. Large corporations are building their own frameworks but a new business looking to go agentic can't do it without this."*
+> — Principal Product Manager, AI/ML · Global payments platform
+
+> *"Your product gives a no-fluff approach to bolt the security early on and not as an afterthought."*
+> — Principal Engineer · Global travel marketplace
+
+*Quotes are anonymized and lightly edited for clarity.*
 
 ---
 
@@ -381,6 +409,8 @@ go get github.com/getaxonflow/axonflow-sdk-go/v4  # Go
     <version>4.0.0</version>
 </dependency>
 ```
+
+> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export DO_NOT_TRACK=1` or `export AXONFLOW_TELEMETRY=off`. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
 
 ### Python
 
@@ -515,16 +545,6 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
-## Telemetry
-
-AxonFlow SDKs send anonymous usage telemetry (SDK version, OS, architecture) on client initialization to help us understand adoption and prioritize features. No prompts, payloads, API keys, or tenant/user identifiers are collected. Source IP is processed transiently for attribution and not stored in plaintext. Telemetry is on by default (off in sandbox mode).
-
-Opt out: `export AXONFLOW_TELEMETRY=off` or `export DO_NOT_TRACK=1`
-
-See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including what is collected, what is never collected, and SDK-level config options.
-
----
-
 ## Links
 
 - **Docs:** https://docs.getaxonflow.com
@@ -569,4 +589,4 @@ No attribution. No tracking. No follow-up unless you explicitly opt in.
 
 ---
 
-_Quick Start verified locally: Feb 2026_
+_Quick Start verified locally: Mar 2026_

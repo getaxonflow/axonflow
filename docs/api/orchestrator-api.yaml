@@ -3642,7 +3642,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/v1/workflow-control/{workflowId}/steps/{stepId}/approve:
+  /api/v1/workflows/{workflowId}/steps/{stepId}/approve:
     post:
       tags:
         - Workflow Control Plane
@@ -3667,15 +3667,18 @@ paths:
             type: string
           example: "step-2"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - comment
               properties:
                 comment:
                   type: string
-                  description: Optional approval comment
+                  minLength: 10
+                  description: Audit justification for approving the step (minimum 10 characters after trimming)
                 approved_by:
                   type: string
                   description: User ID of the approver
@@ -3707,7 +3710,7 @@ paths:
                 success: false
                 error: "Step step-2 is not awaiting approval"
 
-  /api/v1/workflow-control/{workflowId}/steps/{stepId}/reject:
+  /api/v1/workflows/{workflowId}/steps/{stepId}/reject:
     post:
       tags:
         - Workflow Control Plane
@@ -3732,15 +3735,18 @@ paths:
             type: string
           example: "step-2"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - reason
               properties:
                 reason:
                   type: string
-                  description: Reason for rejection
+                  minLength: 10
+                  description: Audit justification for rejecting the step (minimum 10 characters after trimming)
                 rejected_by:
                   type: string
                   description: User ID of the rejector
@@ -3773,7 +3779,7 @@ paths:
                 success: false
                 error: "Step step-2 is not awaiting approval"
 
-  /api/v1/workflow-control/pending-approvals:
+  /api/v1/workflows/approvals/pending:
     get:
       tags:
         - Workflow Control Plane

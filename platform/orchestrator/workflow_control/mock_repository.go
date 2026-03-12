@@ -264,7 +264,7 @@ func (m *MockRepository) GetStep(ctx context.Context, workflowID, stepID string)
 }
 
 // UpdateStepApproval updates a step's approval status
-func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string) error {
+func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -272,6 +272,7 @@ func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, ste
 		if step, ok := steps[stepID]; ok {
 			step.ApprovalStatus = &status
 			step.ApprovedBy = approvedBy
+			step.ApprovalComment = comment
 			now := time.Now()
 			step.ApprovedAt = &now
 			return nil
@@ -328,12 +329,12 @@ func (m *MockRepository) GetStepsForWorkflow(ctx context.Context, workflowID str
 	return result, nil
 }
 
-// GetPendingApprovals retrieves steps awaiting approval
-func (m *MockRepository) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]WorkflowStep, error) {
+// GetPendingApprovals retrieves steps awaiting approval with workflow context
+func (m *MockRepository) GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result []WorkflowStep
+	var result []PendingApprovalResponse
 
 	for workflowID, steps := range m.steps {
 		workflow, ok := m.workflows[workflowID]
@@ -343,7 +344,20 @@ func (m *MockRepository) GetPendingApprovals(ctx context.Context, tenantID strin
 
 		for _, step := range steps {
 			if step.ApprovalStatus != nil && *step.ApprovalStatus == ApprovalStatusPending {
-				result = append(result, *step)
+				result = append(result, PendingApprovalResponse{
+					WorkflowID:      step.WorkflowID,
+					WorkflowName:    workflow.WorkflowName,
+					StepID:          step.StepID,
+					StepIndex:       step.StepIndex,
+					StepName:        step.StepName,
+					StepType:        step.StepType,
+					Decision:        step.Decision,
+					DecisionReason:  step.DecisionReason,
+					PoliciesMatched: step.PoliciesMatched,
+					StepInput:       step.StepInput,
+					ApprovalStatus:  step.ApprovalStatus,
+					CreatedAt:       step.GateCheckedAt,
+				})
 				if limit > 0 && len(result) >= limit {
 					return result, nil
 				}
@@ -352,4 +366,25 @@ func (m *MockRepository) GetPendingApprovals(ctx context.Context, tenantID strin
 	}
 
 	return result, nil
+}
+
+// CountPendingApprovals returns the total number of pending approvals for a tenant.
+func (m *MockRepository) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for workflowID, steps := range m.steps {
+		workflow, ok := m.workflows[workflowID]
+		if !ok || (tenantID != "" && workflow.TenantID != tenantID) {
+			continue
+		}
+		for _, step := range steps {
+			if step.ApprovalStatus != nil && *step.ApprovalStatus == ApprovalStatusPending {
+				count++
+			}
+		}
+	}
+
+	return count, nil
 }

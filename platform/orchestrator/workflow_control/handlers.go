@@ -496,7 +496,17 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		approvedBy = "system"
 	}
 
-	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, approvedBy); err != nil {
+	// Parse optional request body for approval comment
+	var comment string
+	if r.Body != nil {
+		var body struct {
+			Comment string `json:"comment"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		comment = body.Comment
+	}
+
+	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, approvedBy, comment); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -545,7 +555,17 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		rejectedBy = "system"
 	}
 
-	if err := h.service.RejectStep(r.Context(), workflowID, stepID, rejectedBy); err != nil {
+	// Parse optional request body for rejection reason
+	var reason string
+	if r.Body != nil {
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		reason = body.Reason
+	}
+
+	if err := h.service.RejectStep(r.Context(), workflowID, stepID, rejectedBy, reason); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -599,9 +619,16 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	totalCount, countErr := h.service.CountPendingApprovals(r.Context(), tenantID)
+	if countErr != nil {
+		h.logger.Printf("[WorkflowControl] CountPendingApprovals error: %v", countErr)
+		// Fall back to len(steps) if count query fails
+		totalCount = len(steps)
+	}
+
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pending_approvals": steps,
-		"count":             len(steps),
+		"count":             totalCount,
 	})
 }
 

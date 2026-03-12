@@ -1113,7 +1113,7 @@ func TestHandlerResumeWorkflowRejected(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com")
+	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow2.WorkflowID+"/resume", nil)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow2.WorkflowID})
@@ -1201,7 +1201,7 @@ func TestHandlerApproveStepNotPending(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step first
-	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com")
+	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com", "")
 
 	// Try to approve again
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/steps/step-1/approve", nil)
@@ -1318,10 +1318,16 @@ func TestHandlerGetPendingApprovalsWithLimit(t *testing.T) {
 	var response map[string]interface{}
 	json.Unmarshal(rr.Body.Bytes(), &response)
 
-	// Limit is 2
+	// count is the total number of pending approvals (5), not limited
 	count := int(response["count"].(float64))
-	if count > 2 {
-		t.Errorf("count = %d, should be <= 2 with limit", count)
+	if count != 5 {
+		t.Errorf("count = %d, want 5 (total pending)", count)
+	}
+
+	// pending_approvals should be limited to 2 items
+	approvals := response["pending_approvals"].([]interface{})
+	if len(approvals) > 2 {
+		t.Errorf("pending_approvals len = %d, should be <= 2 with limit", len(approvals))
 	}
 }
 

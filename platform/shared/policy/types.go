@@ -221,6 +221,7 @@ type EvalOptions struct {
 
 	// Request context
 	ConnectorName string
+	Parameters    map[string]interface{} // Optional parameters to scan individually
 
 	// Category filtering
 	Categories     []PolicyCategory // Only evaluate these categories (empty = all)

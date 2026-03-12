@@ -10,8 +10,15 @@ but needs AxonFlow as a policy gate.
 
 | Endpoint | Purpose | Key Policies |
 |----------|---------|-------------|
-| `POST /api/v1/mcp/check-input` | Validate input before execution | SQLi blocking, dangerous queries, dynamic policies |
+| `POST /api/v1/mcp/check-input` | Validate input before execution | SQLi blocking, dangerous queries, **parameter scanning**, dynamic policies |
 | `POST /api/v1/mcp/check-output` | Validate output after execution | PII redaction, exfiltration limits, SQLi response scanning |
+
+## Parameter Scanning (Issue #1287)
+
+The `check-input` endpoint scans `parameters` values individually for SQLi, PII, and compliance
+violations. This prevents attackers from passing a clean `statement` while embedding payloads in
+parameter values. Each parameter value is scanned independently (not concatenated with the statement)
+to avoid false positives from concatenation artifacts.
 
 ## Prerequisites
 
