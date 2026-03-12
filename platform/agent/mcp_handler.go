@@ -136,6 +136,21 @@ func computeStatementHash(statement string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// computeParametersHash computes a SHA256 hash of the parameters map for audit logging.
+// JSON-serializes with sorted keys (Go's json.Marshal sorts map keys), then SHA-256 + hex.
+// Returns "" for nil or empty maps.
+func computeParametersHash(params map[string]interface{}) string {
+	if len(params) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
 // logMCPQueryAudit logs an MCP query operation to the audit queue.
 // This is called at the end of mcpQueryHandler to persist the audit entry.
 func logMCPQueryAudit(entry MCPQueryAuditEntry) {
@@ -693,6 +708,7 @@ func evaluateInputPolicies(
 			TenantID:      tenantID,
 			ConnectorName: connectorName,
 			UserID:        userID,
+			Parameters:    parameters,
 			Categories: []sharedpolicy.PolicyCategory{
 				sharedpolicy.CategorySecuritySQLi,
 				sharedpolicy.CategorySecurityDangerous,
@@ -1619,12 +1635,14 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	auditEntry := MCPQueryAuditEntry{
-		AuditID:       uuid.New().String(),
-		ConnectorName: req.ConnectorType,
-		Operation:     "check-input",
-		TenantID:      tenantID,
-		UserID:        userID,
-		StatementHash: computeStatementHash(req.Statement),
+		AuditID:        uuid.New().String(),
+		ConnectorName:  req.ConnectorType,
+		Operation:      "check-input",
+		TenantID:       tenantID,
+		UserID:         userID,
+		StatementHash:  computeStatementHash(req.Statement),
+		ParametersHash: computeParametersHash(req.Parameters),
+		ParameterCount: len(req.Parameters),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

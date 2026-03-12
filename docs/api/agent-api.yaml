@@ -788,7 +788,8 @@ paths:
         ## Audit Logging
 
         All check-input evaluations are logged to the `mcp_query_audits` table with
-        `operation: "check-input"` for compliance tracking.
+        `operation: "check-input"` for compliance tracking. Audit entries include
+        `parameters_hash` (SHA-256) and `parameter_count` for forensic analysis.
       operationId: mcpCheckInput
       requestBody:
         required: true
@@ -3764,7 +3765,12 @@ components:
         parameters:
           type: object
           additionalProperties: true
-          description: Optional query parameters
+          description: |
+            Optional query parameters. Values are individually scanned for SQLi,
+            PII, and compliance violations by the static policy engine. String
+            values are scanned directly; nested objects/arrays are JSON-serialized
+            before scanning; numeric values are converted to strings for
+            PII/compliance detection. Boolean values are skipped.
         operation:
           type: string
           enum: [query, execute]

@@ -84,6 +84,7 @@ func workflowControlSchema() string {
 			tokens_out INTEGER,
 			cost_usd DOUBLE PRECISION,
 			step_output JSONB,
+			approval_comment TEXT,
 			gate_checked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			step_completed_at TIMESTAMP WITH TIME ZONE,
 			UNIQUE(workflow_id, step_id)
@@ -672,7 +673,7 @@ func TestPostgresRepository_Integration_Approvals(t *testing.T) {
 	repo.AddStep(ctx, step)
 
 	t.Run("approve step", func(t *testing.T) {
-		err := repo.UpdateStepApproval(ctx, workflow.WorkflowID, "approval-step", ApprovalStatusApproved, "approver@test.com")
+		err := repo.UpdateStepApproval(ctx, workflow.WorkflowID, "approval-step", ApprovalStatusApproved, "approver@test.com", "")
 		if err != nil {
 			t.Fatalf("UpdateStepApproval() error = %v", err)
 		}
@@ -717,6 +718,27 @@ func TestPostgresRepository_Integration_Approvals(t *testing.T) {
 		}
 		if len(approvals) < 1 {
 			t.Errorf("Expected at least 1 pending approval, got %d", len(approvals))
+		}
+
+		// Verify workflow_name is populated
+		found := false
+		for _, a := range approvals {
+			if a.WorkflowName == "Pending Approvals Test" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("Expected pending approval with workflow_name='Pending Approvals Test'")
+		}
+
+		// Verify CountPendingApprovals
+		count, countErr := repo.CountPendingApprovals(ctx, tenantID)
+		if countErr != nil {
+			t.Fatalf("CountPendingApprovals() error = %v", countErr)
+		}
+		if count < 1 {
+			t.Errorf("CountPendingApprovals = %d, want >= 1", count)
 		}
 	})
 }

@@ -2008,3 +2008,80 @@ func TestMCPDynamicPolicyHandler_TimeAccess_AllDaysAllowed(t *testing.T) {
 		t.Error("expected Allowed=true because today is in the list")
 	}
 }
+
+func TestEvaluateCondition_ParametersDotKey(t *testing.T) {
+	engine := newTestEngine(nil)
+	defer engine.Close()
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	cond := PolicyCondition{
+		Field:    "parameters.table_name",
+		Operator: "equals",
+		Value:    "users",
+	}
+
+	req := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		Operation:     "query",
+		Parameters: map[string]interface{}{
+			"table_name": "users",
+		},
+	}
+
+	if !handler.evaluateCondition(cond, req) {
+		t.Error("expected evaluateCondition to return true when parameters.table_name matches")
+	}
+}
+
+func TestEvaluateCondition_ParameterCount(t *testing.T) {
+	engine := newTestEngine(nil)
+	defer engine.Close()
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	cond := PolicyCondition{
+		Field:    "parameter_count",
+		Operator: "equals",
+		Value:    3,
+	}
+
+	req := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		Operation:     "query",
+		Parameters: map[string]interface{}{
+			"table_name": "users",
+			"limit":      100,
+			"offset":     0,
+		},
+	}
+
+	if !handler.evaluateCondition(cond, req) {
+		t.Error("expected evaluateCondition to return true when parameter_count equals 3")
+	}
+}
+
+func TestEvaluateCondition_ParametersMissingKey(t *testing.T) {
+	engine := newTestEngine(nil)
+	defer engine.Close()
+	handler := NewMCPDynamicPolicyHandler(engine)
+
+	cond := PolicyCondition{
+		Field:    "parameters.missing_key",
+		Operator: "equals",
+		Value:    "anything",
+	}
+
+	req := MCPPolicyEvaluationRequest{
+		TenantID:      "tenant-1",
+		ConnectorName: "postgres",
+		Operation:     "query",
+		Parameters: map[string]interface{}{
+			"table_name": "users",
+		},
+	}
+
+	if handler.evaluateCondition(cond, req) {
+		t.Error("expected evaluateCondition to return false when parameter key does not exist")
+	}
+}

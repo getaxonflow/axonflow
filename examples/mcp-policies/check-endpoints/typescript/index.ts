@@ -72,11 +72,54 @@ async function main(): Promise<void> {
     console.log();
 
     // ---------------------------------------------------------------
+    // CHECK-INPUT: PARAMETER SCANNING (Issue #1287)
+    // ---------------------------------------------------------------
+
+    // Test 4: Clean parameterized query passes
+    console.log('Test 4: Check-Input — Clean Parameterized Query');
+    console.log('------------------------------------------------');
+    inputResp = await client.mcpCheckInput({
+        connectorType: 'postgres',
+        statement: 'SELECT * FROM users WHERE id = $1',
+        operation: 'query',
+        parameters: { '1': 'usr-42' },
+    });
+    assert(inputResp.allowed === true, 'allowed = true');
+    console.log();
+
+    // Test 5: SQLi hidden in parameters — blocked
+    console.log('Test 5: Check-Input — SQLi in Parameters');
+    console.log('-----------------------------------------');
+    inputResp = await client.mcpCheckInput({
+        connectorType: 'postgres',
+        statement: 'SELECT * FROM users WHERE id = $1',
+        operation: 'query',
+        parameters: { '1': '1 OR 1=1; DROP TABLE users--' },
+    });
+    assert(inputResp.allowed === false, 'allowed = false (SQLi detected in parameters)');
+    assert(!!inputResp.block_reason, `block_reason: ${inputResp.block_reason}`);
+    console.log();
+
+    // Test 6: PII hidden in parameters — detected
+    console.log('Test 6: Check-Input — PII in Parameters (SSN)');
+    console.log('----------------------------------------------');
+    inputResp = await client.mcpCheckInput({
+        connectorType: 'postgres',
+        statement: 'INSERT INTO contacts VALUES ($1, $2)',
+        operation: 'execute',
+        parameters: { '1': 'Alice', '2': '123-45-6789' },
+    });
+    // PII detection uses redact action (not block), so allowed=true but policies match
+    console.log(`   allowed=${inputResp.allowed}, policies_evaluated=${inputResp.policies_evaluated}`);
+    assert(inputResp.policies_evaluated > 0, 'PII policies evaluated for parameters');
+    console.log();
+
+    // ---------------------------------------------------------------
     // CHECK-OUTPUT TESTS
     // ---------------------------------------------------------------
 
-    // Test 4: Clean response data passes
-    console.log('Test 4: Check-Output — Clean Response Data');
+    // Test 7: Clean response data passes
+    console.log('Test 7: Check-Output — Clean Response Data');
     console.log('-------------------------------------------');
     let outputResp = await client.mcpCheckOutput({
         connectorType: 'postgres',
@@ -90,8 +133,8 @@ async function main(): Promise<void> {
     assert(outputResp.policies_evaluated > 0, `policies_evaluated = ${outputResp.policies_evaluated}`);
     console.log();
 
-    // Test 5: PII in response — redacted
-    console.log('Test 5: Check-Output — PII Redaction (SSN)');
+    // Test 8: PII in response — redacted
+    console.log('Test 8: Check-Output — PII Redaction (SSN)');
     console.log('-------------------------------------------');
     outputResp = await client.mcpCheckOutput({
         connectorType: 'postgres',
@@ -108,8 +151,8 @@ async function main(): Promise<void> {
     }
     console.log();
 
-    // Test 6: Execute-style response
-    console.log('Test 6: Check-Output — Execute Response (Message)');
+    // Test 9: Execute-style response
+    console.log('Test 9: Check-Output — Execute Response (Message)');
     console.log('--------------------------------------------------');
     outputResp = await client.mcpCheckOutput({
         connectorType: 'postgres',

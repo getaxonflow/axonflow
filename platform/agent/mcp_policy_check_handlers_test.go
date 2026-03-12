@@ -1031,3 +1031,109 @@ func TestMCPCheckOutputResponse_Fields(t *testing.T) {
 // Suppress unused import warning - context and fmt are used above
 var _ = context.Background
 var _ = fmt.Sprintf
+
+// =============================================================================
+// Parameter scanning handler tests
+// =============================================================================
+
+func TestMCPCheckInputHandler_WithParameters_Allowed(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// No policy engines → everything passes
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
+	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
+
+	body, _ := json.Marshal(MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "SELECT * FROM users WHERE id = $1",
+		TenantID:      "default",
+		Parameters:    map[string]interface{}{"1": "safe-value-123"},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpCheckInputHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp MCPCheckInputResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
+	}
+}
+
+func TestMCPCheckInputHandler_EmptyParameters(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	// No policy engines → everything passes
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
+	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
+
+	body, _ := json.Marshal(MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "SELECT 1",
+		TenantID:      "default",
+		Parameters:    map[string]interface{}{},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpCheckInputHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp MCPCheckInputResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if !resp.Allowed {
+		t.Errorf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
+	}
+}
+
+func TestEvaluateInputPolicies_WithParameters(t *testing.T) {
+	// When both dynamic evaluator and static engine are nil, params don't cause issues
+	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
+
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	ctx := context.Background()
+	params := map[string]interface{}{
+		"1": "1 OR 1=1; DROP TABLE users--",
+		"2": "normal-value",
+	}
+	out := evaluateInputPolicies(ctx, "t1", "u1", "admin", "postgres", "query", "SELECT * FROM users WHERE id = $1", params)
+
+	if out.EvalUnavailable {
+		t.Error("expected EvalUnavailable=false")
+	}
+	if out.DynamicBlocked {
+		t.Error("expected DynamicBlocked=false")
+	}
+	if out.StaticResult != nil {
+		t.Error("expected StaticResult=nil")
+	}
+}

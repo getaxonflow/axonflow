@@ -114,8 +114,26 @@ type WorkflowStep struct {
 	TokensOut         *int            `json:"tokens_out,omitempty" db:"tokens_out"`
 	CostUSD           *float64        `json:"cost_usd,omitempty" db:"cost_usd"`
 	StepOutput        json.RawMessage `json:"step_output,omitempty" db:"step_output"`
+	ApprovalComment   string          `json:"approval_comment,omitempty" db:"approval_comment"`
 	GateCheckedAt     time.Time       `json:"gate_checked_at" db:"gate_checked_at"`
 	StepCompletedAt   *time.Time      `json:"step_completed_at,omitempty" db:"step_completed_at"`
+}
+
+// PendingApprovalResponse is the shape returned by the pending approvals API.
+// It extends WorkflowStep with workflow-level fields needed for UI display.
+type PendingApprovalResponse struct {
+	WorkflowID      string          `json:"workflow_id"`
+	WorkflowName    string          `json:"workflow_name"`
+	StepID          string          `json:"step_id"`
+	StepIndex       int             `json:"step_index"`
+	StepName        string          `json:"step_name,omitempty"`
+	StepType        StepType        `json:"step_type,omitempty"`
+	Decision        GateDecision    `json:"decision"`
+	DecisionReason  string          `json:"decision_reason,omitempty"`
+	PoliciesMatched json.RawMessage `json:"policies_matched,omitempty"`
+	StepInput       json.RawMessage `json:"step_input,omitempty"`
+	ApprovalStatus  *ApprovalStatus `json:"approval_status,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 // --- API Request/Response Types ---

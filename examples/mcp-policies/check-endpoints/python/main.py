@@ -86,11 +86,54 @@ def main() -> int:
     print()
 
     # ---------------------------------------------------------------
+    # CHECK-INPUT: PARAMETER SCANNING (Issue #1287)
+    # ---------------------------------------------------------------
+
+    # Test 4: Clean parameterized query passes
+    print("Test 4: Check-Input — Clean Parameterized Query")
+    print("------------------------------------------------")
+    resp = client.mcp_check_input(
+        connector_type="postgres",
+        statement="SELECT * FROM users WHERE id = $1",
+        operation="query",
+        parameters={"1": "usr-42"},
+    )
+    assert_check(resp.allowed, "allowed = true")
+    print()
+
+    # Test 5: SQLi hidden in parameters — blocked
+    print("Test 5: Check-Input — SQLi in Parameters")
+    print("-----------------------------------------")
+    resp = client.mcp_check_input(
+        connector_type="postgres",
+        statement="SELECT * FROM users WHERE id = $1",
+        operation="query",
+        parameters={"1": "1 OR 1=1; DROP TABLE users--"},
+    )
+    assert_check(not resp.allowed, "allowed = false (SQLi detected in parameters)")
+    assert_check(bool(resp.block_reason), f"block_reason: {resp.block_reason}")
+    print()
+
+    # Test 6: PII hidden in parameters — detected
+    print("Test 6: Check-Input — PII in Parameters (SSN)")
+    print("----------------------------------------------")
+    resp = client.mcp_check_input(
+        connector_type="postgres",
+        statement="INSERT INTO contacts VALUES ($1, $2)",
+        operation="execute",
+        parameters={"1": "Alice", "2": "123-45-6789"},
+    )
+    # PII detection uses redact action (not block), so allowed=true but policies match
+    print(f"   allowed={resp.allowed}, policies_evaluated={resp.policies_evaluated}")
+    assert_check(resp.policies_evaluated > 0, "PII policies evaluated for parameters")
+    print()
+
+    # ---------------------------------------------------------------
     # CHECK-OUTPUT TESTS
     # ---------------------------------------------------------------
 
-    # Test 4: Clean response passes
-    print("Test 4: Check-Output — Clean Response Data")
+    # Test 7: Clean response passes
+    print("Test 7: Check-Output — Clean Response Data")
     print("-------------------------------------------")
     resp_out = client.mcp_check_output(
         connector_type="postgres",
@@ -104,8 +147,8 @@ def main() -> int:
     assert_check(resp_out.policies_evaluated > 0, f"policies_evaluated = {resp_out.policies_evaluated}")
     print()
 
-    # Test 5: PII in response — redacted
-    print("Test 5: Check-Output — PII Redaction (SSN)")
+    # Test 8: PII in response — redacted
+    print("Test 8: Check-Output — PII Redaction (SSN)")
     print("-------------------------------------------")
     resp_out = client.mcp_check_output(
         connector_type="postgres",
@@ -121,8 +164,8 @@ def main() -> int:
         assert_check("123-45-6789" not in redacted_str, "SSN was redacted from response")
     print()
 
-    # Test 6: Execute-style response
-    print("Test 6: Check-Output — Execute Response (Message)")
+    # Test 9: Execute-style response
+    print("Test 9: Check-Output — Execute Response (Message)")
     print("--------------------------------------------------")
     resp_out = client.mcp_check_output(
         connector_type="postgres",

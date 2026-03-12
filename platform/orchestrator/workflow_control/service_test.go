@@ -622,13 +622,13 @@ func TestApproveStep(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@example.com")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@example.com", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Try to approve again (should fail)
-	err = svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@example.com")
+	err = svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@example.com", "")
 	if err == nil {
 		t.Error("expected error when approving already approved step")
 	}
@@ -652,7 +652,7 @@ func TestRejectStep(t *testing.T) {
 	svc.StepGate(ctx, workflow.WorkflowID, "step-1", req, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Reject the step
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "rejecter@example.com")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "rejecter@example.com", "")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -831,7 +831,7 @@ func TestApproveStepNonExistent(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "non-existent", "approver@test.com")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "non-existent", "approver@test.com", "")
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -846,7 +846,7 @@ func TestRejectStepNonExistent(t *testing.T) {
 		WorkflowName: "test-workflow",
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "non-existent", "rejector@test.com")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "non-existent", "rejector@test.com", "")
 	if err == nil {
 		t.Error("expected error for non-existent step")
 	}
@@ -1274,7 +1274,7 @@ func TestResumeWorkflowAfterApproval(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step
-	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com")
+	err := svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com", "")
 	if err != nil {
 		t.Errorf("approve step error: %v", err)
 	}
@@ -1409,7 +1409,7 @@ func TestRejectStepAlreadyRejected(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Reject first time
-	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "user@test.com")
+	err := svc.RejectStep(ctx, workflow.WorkflowID, "step-1", "user@test.com", "")
 	if err != nil {
 		t.Errorf("first reject unexpected error: %v", err)
 	}
@@ -1425,10 +1425,10 @@ func TestRejectStepAlreadyRejected(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve first
-	svc.ApproveStep(ctx, workflow2.WorkflowID, "step-1", "approver@test.com")
+	svc.ApproveStep(ctx, workflow2.WorkflowID, "step-1", "approver@test.com", "")
 
 	// Try to reject after approval
-	err = svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com")
+	err = svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com", "")
 	if err == nil {
 		t.Error("reject after approval should fail")
 	}

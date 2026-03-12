@@ -77,7 +77,9 @@ type MCPQueryAuditEntry struct {
 	UserID        string   `json:"user_id,omitempty"`
 	ConnectorName string   `json:"connector_name"`
 	Operation     string   `json:"operation"` // query, execute, list_resources, etc.
-	StatementHash string   `json:"statement_hash,omitempty"`
+	StatementHash  string `json:"statement_hash,omitempty"`
+	ParametersHash string `json:"parameters_hash,omitempty"`
+	ParameterCount int    `json:"parameter_count"`
 
 	// Request phase (pre-execution policy evaluation)
 	RequestBlocked          bool     `json:"request_blocked"`
@@ -274,6 +276,8 @@ func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
 			"connector_name":             mcpEntry.ConnectorName,
 			"operation":                  mcpEntry.Operation,
 			"statement_hash":             mcpEntry.StatementHash,
+			"parameters_hash":            mcpEntry.ParametersHash,
+			"parameter_count":            mcpEntry.ParameterCount,
 			"request_blocked":            mcpEntry.RequestBlocked,
 			"request_block_reason":       mcpEntry.RequestBlockReason,
 			"request_policies_evaluated": mcpEntry.RequestPoliciesEvaluated,
@@ -519,11 +523,12 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		insertQuery := `
 			INSERT INTO mcp_query_audits (
 				audit_id, tenant_id, client_id, user_id, connector_name, operation, statement_hash,
+				parameters_hash, parameter_count,
 				request_blocked, request_block_reason, request_policies_evaluated, request_matched_policies,
 				response_redacted, response_redactions_count, response_redacted_fields,
 				exfil_rows_returned, exfil_exceeded, exfil_limit_type,
 				row_count, duration_ms, success, error_message
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 		`
 		// Convert slices to pq.Array for PostgreSQL compatibility
 		requestMatchedPolicies := toStringSlice(entry.Details["request_matched_policies"])
@@ -537,6 +542,8 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 			entry.Details["connector_name"],
 			entry.Details["operation"],
 			entry.Details["statement_hash"],
+			entry.Details["parameters_hash"],
+			entry.Details["parameter_count"],
 			entry.Details["request_blocked"],
 			entry.Details["request_block_reason"],
 			entry.Details["request_policies_evaluated"],

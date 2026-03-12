@@ -1263,3 +1263,259 @@ func TestUnifiedPolicyEngine_InvalidateCache_EmptiesCache(t *testing.T) {
 		t.Errorf("Expected 0 cached tenants after invalidation, got %d", stats.CachedTenants)
 	}
 }
+
+func TestEvaluateRequest_ParametersSQLi(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "Look up this customer", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"customer_id": "1 UNION SELECT * FROM passwords --",
+		},
+	})
+
+	if !result.Blocked {
+		t.Fatal("Expected request to be blocked due to SQLi in parameter")
+	}
+	if result.BlockedBy == nil || result.BlockedBy.PolicyID != "sqli_union" {
+		t.Error("Expected BlockedBy to reference sqli_union policy")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].FieldPath != "parameter 'customer_id'" {
+		t.Errorf("Expected FieldPath 'parameter \\'customer_id\\'', got %q", result.MatchedPolicies[0].FieldPath)
+	}
+}
+
+func TestEvaluateRequest_ParametersPII(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:   "pii_ssn",
+			Name:       "US SSN Detection",
+			Category:   CategoryPIIUS,
+			Pattern:    regexp.MustCompile(`\d{3}-\d{2}-\d{4}`),
+			PatternStr: `\d{3}-\d{2}-\d{4}`,
+			Severity:   SeverityCritical,
+			Phase:      PhaseBoth,
+			Enabled:    true,
+			// No ActionRequest set — PII defaults to redact, not block
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "Update the employee record", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"ssn": "123-45-6789",
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected request NOT to be blocked (PII defaults to redact)")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].PolicyID != "pii_ssn" {
+		t.Errorf("Expected matched policy pii_ssn, got %s", result.MatchedPolicies[0].PolicyID)
+	}
+	if result.MatchedPolicies[0].FieldPath != "parameter 'ssn'" {
+		t.Errorf("Expected FieldPath 'parameter \\'ssn\\'', got %q", result.MatchedPolicies[0].FieldPath)
+	}
+}
+
+func TestEvaluateRequest_NilParameters(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Nil parameters — backward compatible, should not panic
+	result := engine.EvaluateRequest(context.Background(), "What is the weather today?", EvalOptions{
+		TenantID:   "test-tenant",
+		Parameters: nil,
+	})
+
+	if result.Blocked {
+		t.Error("Expected request NOT to be blocked with clean statement and nil parameters")
+	}
+	if len(result.MatchedPolicies) != 0 {
+		t.Errorf("Expected 0 matched policies, got %d", len(result.MatchedPolicies))
+	}
+}
+
+func TestEvaluateRequest_NumericParametersNoFalsePositives(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_union",
+			Name:          "SQL Injection - UNION",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)union\s+select`),
+			PatternStr:    `(?i)union\s+select`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+		{
+			PolicyID:   "pii_ssn",
+			Name:       "US SSN Detection",
+			Category:   CategoryPIIUS,
+			Pattern:    regexp.MustCompile(`\d{3}-\d{2}-\d{4}`),
+			PatternStr: `\d{3}-\d{2}-\d{4}`,
+			Severity:   SeverityCritical,
+			Phase:      PhaseBoth,
+			Enabled:    true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "Fetch metrics", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"page":     42,
+			"limit":    100,
+			"active":   true,
+			"ratio":    3.14,
+			"order_id": int64(999999),
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected request NOT to be blocked — ordinary numeric/bool values should not match")
+	}
+	if len(result.MatchedPolicies) != 0 {
+		t.Errorf("Expected 0 matched policies for ordinary numeric/bool parameters, got %d", len(result.MatchedPolicies))
+	}
+}
+
+func TestEvaluateRequest_NumericParameterPIIDetected(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:   "pii_credit_card",
+			Name:       "Credit Card Detection",
+			Category:   CategoryPIIGlobal,
+			Pattern:    regexp.MustCompile(`\b\d{13,19}\b`),
+			PatternStr: `\b\d{13,19}\b`,
+			Severity:   SeverityCritical,
+			Phase:      PhaseBoth,
+			Enabled:    true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// A credit card number passed as an integer should still be detected
+	result := engine.EvaluateRequest(context.Background(), "Process payment", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"card_number": int64(4111111111111111),
+		},
+	})
+
+	if len(result.MatchedPolicies) == 0 {
+		t.Error("Expected numeric parameter to be scanned and PII detected, but got 0 matches")
+	}
+}
+
+func TestEvaluateRequest_BoolParametersSkipped(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_drop",
+			Name:          "SQL Injection - DROP TABLE",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)drop\s+table`),
+			PatternStr:    `(?i)drop\s+table`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "Check status", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"active":   true,
+			"verified": false,
+		},
+	})
+
+	if result.Blocked {
+		t.Error("Expected bool parameters to be skipped entirely")
+	}
+	if len(result.MatchedPolicies) != 0 {
+		t.Errorf("Expected 0 matched policies for bool parameters, got %d", len(result.MatchedPolicies))
+	}
+}
+
+func TestEvaluateRequest_NestedParametersSQLi(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_drop",
+			Name:          "SQL Injection - DROP TABLE",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)drop\s+table`),
+			PatternStr:    `(?i)drop\s+table`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionBlock,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "Process this order", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"order": map[string]interface{}{
+				"id":   "12345",
+				"note": "; DROP TABLE orders --",
+			},
+		},
+	})
+
+	if !result.Blocked {
+		t.Fatal("Expected request to be blocked due to SQLi in nested parameter")
+	}
+	if result.BlockedBy == nil || result.BlockedBy.PolicyID != "sqli_drop" {
+		t.Error("Expected BlockedBy to reference sqli_drop policy")
+	}
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("Expected 1 matched policy, got %d", len(result.MatchedPolicies))
+	}
+	if result.MatchedPolicies[0].FieldPath != "parameter 'order'" {
+		t.Errorf("Expected FieldPath 'parameter \\'order\\'', got %q", result.MatchedPolicies[0].FieldPath)
+	}
+}

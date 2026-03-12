@@ -43,13 +43,13 @@ public class McpCheckEndpointsExample {
         System.out.println("======================================");
         System.out.println();
 
-        AxonFlowConfig config = new AxonFlowConfig.Builder()
+        AxonFlowConfig config = AxonFlowConfig.builder()
                 .endpoint(env("AXONFLOW_ENDPOINT", "http://localhost:8080"))
                 .clientId(env("AXONFLOW_CLIENT_ID", "demo"))
                 .clientSecret(env("AXONFLOW_CLIENT_SECRET", ""))
                 .build();
 
-        AxonFlow client = new AxonFlow(config);
+        AxonFlow client = AxonFlow.create(config);
 
         // ---------------------------------------------------------------
         // CHECK-INPUT TESTS
@@ -87,11 +87,59 @@ public class McpCheckEndpointsExample {
         System.out.println();
 
         // ---------------------------------------------------------------
+        // CHECK-INPUT: PARAMETER SCANNING (Issue #1287)
+        // ---------------------------------------------------------------
+
+        // Test 4: Clean parameterized query passes
+        System.out.println("Test 4: Check-Input — Clean Parameterized Query");
+        System.out.println("------------------------------------------------");
+        Map<String, Object> cleanParamOpts = new HashMap<>();
+        cleanParamOpts.put("operation", "query");
+        Map<String, Object> cleanParams = new HashMap<>();
+        cleanParams.put("1", "usr-42");
+        cleanParamOpts.put("parameters", cleanParams);
+        inputResp = client.mcpCheckInput("postgres",
+                "SELECT * FROM users WHERE id = $1", cleanParamOpts);
+        assertCheck(inputResp.isAllowed(), "allowed = true");
+        System.out.println();
+
+        // Test 5: SQLi hidden in parameters — blocked
+        System.out.println("Test 5: Check-Input — SQLi in Parameters");
+        System.out.println("-----------------------------------------");
+        Map<String, Object> sqliParamOpts = new HashMap<>();
+        sqliParamOpts.put("operation", "query");
+        Map<String, Object> sqliParams = new HashMap<>();
+        sqliParams.put("1", "1 OR 1=1; DROP TABLE users--");
+        sqliParamOpts.put("parameters", sqliParams);
+        inputResp = client.mcpCheckInput("postgres",
+                "SELECT * FROM users WHERE id = $1", sqliParamOpts);
+        assertCheck(!inputResp.isAllowed(), "allowed = false (SQLi detected in parameters)");
+        assertCheck(inputResp.getBlockReason() != null && !inputResp.getBlockReason().isEmpty(),
+                "block_reason: " + inputResp.getBlockReason());
+        System.out.println();
+
+        // Test 6: PII hidden in parameters — detected
+        System.out.println("Test 6: Check-Input — PII in Parameters (SSN)");
+        System.out.println("----------------------------------------------");
+        Map<String, Object> piiParamOpts = new HashMap<>();
+        piiParamOpts.put("operation", "execute");
+        Map<String, Object> piiParams = new HashMap<>();
+        piiParams.put("1", "Alice");
+        piiParams.put("2", "123-45-6789");
+        piiParamOpts.put("parameters", piiParams);
+        inputResp = client.mcpCheckInput("postgres",
+                "INSERT INTO contacts VALUES ($1, $2)", piiParamOpts);
+        System.out.println("   allowed=" + inputResp.isAllowed() +
+                ", policies_evaluated=" + inputResp.getPoliciesEvaluated());
+        assertCheck(inputResp.getPoliciesEvaluated() > 0, "PII policies evaluated for parameters");
+        System.out.println();
+
+        // ---------------------------------------------------------------
         // CHECK-OUTPUT TESTS
         // ---------------------------------------------------------------
 
-        // Test 4: Clean response data passes
-        System.out.println("Test 4: Check-Output — Clean Response Data");
+        // Test 7: Clean response data passes
+        System.out.println("Test 7: Check-Output — Clean Response Data");
         System.out.println("-------------------------------------------");
         List<Map<String, Object>> cleanData = new ArrayList<>();
         Map<String, Object> row1 = new HashMap<>();
@@ -111,8 +159,8 @@ public class McpCheckEndpointsExample {
                 "policies_evaluated = " + outputResp.getPoliciesEvaluated());
         System.out.println();
 
-        // Test 5: PII in response — redacted
-        System.out.println("Test 5: Check-Output — PII Redaction (SSN)");
+        // Test 8: PII in response — redacted
+        System.out.println("Test 8: Check-Output — PII Redaction (SSN)");
         System.out.println("-------------------------------------------");
         List<Map<String, Object>> piiData = new ArrayList<>();
         Map<String, Object> piiRow1 = new HashMap<>();
@@ -134,8 +182,8 @@ public class McpCheckEndpointsExample {
         }
         System.out.println();
 
-        // Test 6: Execute-style response
-        System.out.println("Test 6: Check-Output — Execute Response (Message)");
+        // Test 9: Execute-style response
+        System.out.println("Test 9: Check-Output — Execute Response (Message)");
         System.out.println("--------------------------------------------------");
         Map<String, Object> options = new HashMap<>();
         options.put("message", "3 rows updated");

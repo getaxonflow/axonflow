@@ -260,8 +260,20 @@ func (h *MCPDynamicPolicyHandler) evaluateCondition(cond PolicyCondition, req MC
 		fieldValue = req.UserRole
 	case "tenant_id":
 		fieldValue = req.TenantID
+	case "parameter_count":
+		fieldValue = len(req.Parameters)
 	default:
-		return false
+		if strings.HasPrefix(cond.Field, "parameters.") {
+			key := strings.TrimPrefix(cond.Field, "parameters.")
+			if req.Parameters != nil {
+				if v, ok := req.Parameters[key]; ok {
+					fieldValue = fmt.Sprintf("%v", v)
+				}
+			}
+		}
+		if fieldValue == nil {
+			return false
+		}
 	}
 
 	switch cond.Operator {

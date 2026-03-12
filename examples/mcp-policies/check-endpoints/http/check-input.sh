@@ -82,12 +82,36 @@ check "Clean execute operation" "200" '{
     "operation": "execute"
 }' '.allowed' 'true'
 
-# Test 5: Missing connector_type — bad request
+# Test 5: Clean parameterized query — should pass
+check "Clean parameterized query" "200" '{
+    "connector_type": "postgres",
+    "statement": "SELECT * FROM users WHERE id = $1",
+    "operation": "query",
+    "parameters": {"1": "usr-42"}
+}' '.allowed' 'true'
+
+# Test 6: SQLi in parameters — should be blocked
+check "SQLi in parameters" "403" '{
+    "connector_type": "postgres",
+    "statement": "SELECT * FROM users WHERE id = $1",
+    "operation": "query",
+    "parameters": {"1": "1 OR 1=1; DROP TABLE users--"}
+}' '.allowed' 'false'
+
+# Test 7: PII in parameters — detected (allowed but policies match)
+check "PII in parameters (SSN)" "200" '{
+    "connector_type": "postgres",
+    "statement": "INSERT INTO contacts VALUES ($1, $2)",
+    "operation": "execute",
+    "parameters": {"1": "Alice", "2": "123-45-6789"}
+}' '.allowed' 'true'
+
+# Test 8: Missing connector_type — bad request
 check "Missing connector_type (validation error)" "400" '{
     "statement": "SELECT 1"
 }' '' ''
 
-# Test 6: Missing statement — bad request
+# Test 9: Missing statement — bad request
 check "Missing statement (validation error)" "400" '{
     "connector_type": "postgres"
 }' '' ''

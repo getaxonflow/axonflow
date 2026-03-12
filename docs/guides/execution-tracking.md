@@ -1,6 +1,6 @@
 # Unified Execution Tracking
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 **Platform Version:** v5.0.0 | **SDK Version:** v4.0.0
 
@@ -17,6 +17,7 @@ The unified execution system provides:
 3. **Cost Tracking** - Per-step and total cost information
 4. **Real-Time Progress** - Progress percentage and elapsed duration
 5. **Backward Compatibility** - Existing APIs continue to work
+6. **Enterprise Portal UI** - Visual execution timeline and approval dashboard (enterprise license, see [Execution Viewer](execution-viewer.md#enterprise-portal))
 
 ## Quick Start
 
@@ -46,7 +47,7 @@ Response:
       "step_type": "llm_call",
       "status": "completed",
       "duration": "8s",
-      "model": "gpt-4",
+      "model": "gpt-4o",
       "provider": "openai",
       "cost_usd": 0.02
     },

@@ -101,11 +101,67 @@ func main() {
 	fmt.Println()
 
 	// ---------------------------------------------------------------
+	// CHECK-INPUT: PARAMETER SCANNING (Issue #1287)
+	// ---------------------------------------------------------------
+
+	// Test 4: Clean parameterized query passes
+	fmt.Println("Test 4: Check-Input — Clean Parameterized Query")
+	fmt.Println("------------------------------------------------")
+	resp, err = client.MCPCheckInput(ctx, axonflow.MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "SELECT * FROM users WHERE id = $1",
+		Operation:     "query",
+		Parameters:    map[string]interface{}{"1": "usr-42"},
+	})
+	if err != nil {
+		fmt.Printf("   ERROR: %v\n", err)
+	} else {
+		assert(resp.Allowed, "allowed = true")
+	}
+	fmt.Println()
+
+	// Test 5: SQLi hidden in parameters — blocked
+	fmt.Println("Test 5: Check-Input — SQLi in Parameters")
+	fmt.Println("-----------------------------------------")
+	resp, err = client.MCPCheckInput(ctx, axonflow.MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "SELECT * FROM users WHERE id = $1",
+		Operation:     "query",
+		Parameters:    map[string]interface{}{"1": "1 OR 1=1; DROP TABLE users--"},
+	})
+	if err != nil {
+		fmt.Printf("   Blocked (error): %v\n", err)
+		assert(true, "SQLi in parameters was blocked")
+	} else {
+		assert(!resp.Allowed, "allowed = false (SQLi detected in parameters)")
+		assert(resp.BlockReason != "", fmt.Sprintf("block_reason: %s", resp.BlockReason))
+	}
+	fmt.Println()
+
+	// Test 6: PII hidden in parameters — detected
+	fmt.Println("Test 6: Check-Input — PII in Parameters (SSN)")
+	fmt.Println("----------------------------------------------")
+	resp, err = client.MCPCheckInput(ctx, axonflow.MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "INSERT INTO contacts VALUES ($1, $2)",
+		Operation:     "execute",
+		Parameters:    map[string]interface{}{"1": "Alice", "2": "123-45-6789"},
+	})
+	if err != nil {
+		fmt.Printf("   ERROR: %v\n", err)
+	} else {
+		// PII detection uses redact action (not block), so allowed=true but policies match
+		fmt.Printf("   allowed=%v, policies_evaluated=%d\n", resp.Allowed, resp.PoliciesEvaluated)
+		assert(resp.PoliciesEvaluated > 0, "PII policies evaluated for parameters")
+	}
+	fmt.Println()
+
+	// ---------------------------------------------------------------
 	// CHECK-OUTPUT TESTS
 	// ---------------------------------------------------------------
 
-	// Test 4: Clean response data passes
-	fmt.Println("Test 4: Check-Output — Clean Response Data")
+	// Test 7: Clean response data passes
+	fmt.Println("Test 7: Check-Output — Clean Response Data")
 	fmt.Println("-------------------------------------------")
 	outResp, err := client.MCPCheckOutput(ctx, axonflow.MCPCheckOutputRequest{
 		ConnectorType: "postgres",
@@ -123,8 +179,8 @@ func main() {
 	}
 	fmt.Println()
 
-	// Test 5: PII in response — redacted
-	fmt.Println("Test 5: Check-Output — PII Redaction (SSN)")
+	// Test 8: PII in response — redacted
+	fmt.Println("Test 8: Check-Output — PII Redaction (SSN)")
 	fmt.Println("-------------------------------------------")
 	outResp, err = client.MCPCheckOutput(ctx, axonflow.MCPCheckOutputRequest{
 		ConnectorType: "postgres",
@@ -144,8 +200,8 @@ func main() {
 	}
 	fmt.Println()
 
-	// Test 6: Execute-style response
-	fmt.Println("Test 6: Check-Output — Execute Response (Message)")
+	// Test 9: Execute-style response
+	fmt.Println("Test 9: Check-Output — Execute Response (Message)")
 	fmt.Println("--------------------------------------------------")
 	outResp, err = client.MCPCheckOutput(ctx, axonflow.MCPCheckOutputRequest{
 		ConnectorType: "postgres",

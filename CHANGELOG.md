@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.1.0] - 2026-03-12
+
+### Community
+
+#### Security
+
+- **`check-input` parameter scanning** (#1287): The `check-input` endpoint now inspects `parameters` field values individually for SQLi, PII, and compliance violations. Previously, a caller could pass a benign `statement` while embedding payloads in parameters that bypassed all policy checks. Each parameter value is scanned independently by the static policy engine; string values are scanned directly, nested objects/arrays are JSON-serialized before scanning, numeric values are converted to strings for PII/compliance detection, and boolean values are skipped.
+
+#### Added
+
+- **Audit: parameter tracking in MCP query audits** (#1287): Added `parameters_hash` (SHA-256) and `parameter_count` columns to `mcp_query_audits` table for forensic analysis of check-input requests. Migration: `057_mcp_audit_parameters.sql`
+- **Dynamic policy: parameter condition fields** (#1287): Dynamic policies can now match on `parameters.<key>` (individual parameter values) and `parameter_count` (number of parameters) as condition fields
+
+### Enterprise
+
+#### Added
+
+- **Execution Timeline page** (#1329): New customer portal page showing unified MAP and WCP execution history with real-time status, step-level drill-down, cost tracking, and policy decision visibility. Supports filtering by execution type and status, pagination, and keyboard-accessible expandable rows.
+- **HITL Approval Flow Dashboard** (#1330): New customer portal page for human-in-the-loop approval queue management. Displays pending approval steps with workflow context, policy triggers, and matched policies. Supports approve/reject with mandatory justification, expandable detail panels with step input inspection, and real-time badge count polling in navigation. Migration `058_approval_justification.sql` adds `approval_comment` column to `workflow_steps`.
+- **Enterprise portal documentation** (#1331): Added enterprise docs for Execution Timeline and Approval Dashboard. Fixed OpenAPI spec paths and added `minLength` constraints on approval comment/reason fields.
+
+---
+
 ## [5.0.0] - 2026-03-09
 
 ### Community
