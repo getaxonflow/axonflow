@@ -51,7 +51,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==4.0.0
+pip3 install axonflow==4.1.0
 ```
 
 ### TypeScript
@@ -71,7 +71,7 @@ npx tsc --init
 # <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>4.0.0</version>
+#     <version>4.1.0</version>
 # </dependency>
 ```
 

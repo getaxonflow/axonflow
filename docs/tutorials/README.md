@@ -17,7 +17,7 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-All SDKs are at v4.0.0.
+All SDKs are at v4.1.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
@@ -33,14 +33,14 @@ All SDKs are at v4.0.0.
 go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 # Python
-pip3 install axonflow==4.0.0
+pip3 install axonflow==4.1.0
 
 # Java (Maven)
 # Add to pom.xml:
 #   <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>4.0.0</version>
+#     <version>4.1.0</version>
 #   </dependency>
 
 # TypeScript

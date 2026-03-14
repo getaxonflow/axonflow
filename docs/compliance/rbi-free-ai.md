@@ -1,6 +1,6 @@
 # RBI FREE-AI Framework Compliance
 
-*Last updated: March 2026 | AxonFlow Platform v5.0.0 | SDKs v4.0.0*
+*Last updated: March 2026 | AxonFlow Platform v5.0.0 | SDKs v4.1.0*
 
 AxonFlow provides comprehensive compliance support for the Reserve Bank of India's **Framework for Responsible and Ethical Enablement of AI (FREE-AI)** guidelines for Indian banking institutions.
 
