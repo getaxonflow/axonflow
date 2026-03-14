@@ -462,6 +462,94 @@ func TestGetProxyConfig(t *testing.T) {
 	}
 }
 
+func TestProxyAuthMiddleware_CommunityModePassesThrough(t *testing.T) {
+	// In community mode (DEPLOYMENT_MODE="" which is the test default), auth is skipped
+	called := false
+	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/audit/tenant/test", nil)
+	// No auth headers — should still pass in community mode
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if !called {
+		t.Error("Expected handler to be called in community mode")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", w.Code)
+	}
+}
+
+func TestProxyAuthMiddleware_OptionsPassesThrough(t *testing.T) {
+	// OPTIONS (CORS preflight) should always pass without auth
+	t.Setenv("DEPLOYMENT_MODE", "production")
+
+	called := false
+	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/audit/tool-call", nil)
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if !called {
+		t.Error("Expected handler to be called for OPTIONS")
+	}
+}
+
+func TestProxyAuthMiddleware_ProductionRequiresAuth(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "production")
+
+	called := false
+	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", nil)
+	// No auth headers
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if called {
+		t.Error("Handler should NOT be called without auth in production mode")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401, got %d", w.Code)
+	}
+}
+
+func TestProxyAuthMiddleware_ProductionInvalidCreds(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "production")
+
+	called := false
+	handler := proxyAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", nil)
+	req.SetBasicAuth("nonexistent-client", "bad-secret")
+	w := httptest.NewRecorder()
+
+	handler(w, req)
+
+	if called {
+		t.Error("Handler should NOT be called with invalid credentials")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401, got %d", w.Code)
+	}
+}
+
 func TestIsRunningInDocker(t *testing.T) {
 	// In test environment, should detect correctly
 	// We can't fully test Docker detection in non-Docker environment,

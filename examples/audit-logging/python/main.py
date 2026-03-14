@@ -22,7 +22,7 @@ import time
 from dotenv import load_dotenv
 from axonflow import AxonFlow
 from axonflow.exceptions import PolicyViolationError
-from axonflow.types import AuditSearchRequest, AuditQueryOptions, TokenUsage
+from axonflow.types import AuditSearchRequest, AuditQueryOptions, AuditToolCallRequest, TokenUsage
 
 load_dotenv()
 
@@ -145,8 +145,38 @@ async def main() -> int:
             failures.append(f"SQL injection test failed: {e}")
         print()
 
-    # Test 3: Query audit logs via SDK
-    print("3. Query Audit Logs")
+    # Test 3: Tool Call Audit (Non-LLM tool tracking)
+    print("3. Tool Call Audit (Non-LLM)")
+    async with AxonFlow(
+        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        client_id=client_id,
+        client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+    ) as tool_client:
+        try:
+            tool_result = await tool_client.audit_tool_call(
+                AuditToolCallRequest(
+                    tool_name="weather-api",
+                    tool_type="api",
+                    input={"city": "San Francisco", "units": "metric"},
+                    output={"temperature": 18, "condition": "sunny"},
+                    duration_ms=245,
+                    success=True,
+                    policies_applied=["data-residency", "rate-limit"],
+                )
+            )
+            assert_check(tool_result is not None, "audit_tool_call succeeded")
+            assert_check(tool_result.status == "recorded", "Tool call audit status is 'recorded'")
+            print(f"   Audit ID: {tool_result.audit_id}")
+            print(f"   Status: {tool_result.status}")
+        except Exception as e:
+            if "404" in str(e):
+                print("   Endpoint not available (requires Platform v5.1.0+)")
+            else:
+                failures.append(f"audit_tool_call failed: {e}")
+    print()
+
+    # Test 4: Query audit logs via SDK
+    print("4. Query Audit Logs")
     async with AxonFlow(
         endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
         client_id=client_id,
@@ -164,8 +194,8 @@ async def main() -> int:
             failures.append(f"get_audit_logs_by_tenant failed: {e}")
         print()
 
-        # Test 4: Search audit logs
-        print("4. Search Audit Logs")
+        # Test 5: Search audit logs
+        print("5. Search Audit Logs")
         try:
             search_result = await query_client.search_audit_logs(
                 AuditSearchRequest(
@@ -187,6 +217,7 @@ async def main() -> int:
         print("Audit Logging operations validated:")
         print("  - get_policy_approved_context() (pre-check)")
         print("  - audit_llm_call()")
+        print("  - audit_tool_call()")
         print("  - get_audit_logs_by_tenant()")
         print("  - search_audit_logs()")
         return 0

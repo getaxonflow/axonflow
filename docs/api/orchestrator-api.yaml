@@ -2419,6 +2419,73 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /api/v1/audit/tool-call:
+    post:
+      tags:
+        - Audit
+      summary: Record a tool call audit entry
+      description: |
+        Records a non-LLM tool call (API calls, webhooks, MCP tool executions by external
+        orchestrators) in the AxonFlow audit trail. Only `tool_name` is required; all other
+        fields are optional.
+      operationId: auditToolCall
+      security:
+        - basicAuth: []
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: Tenant identifier (must match the client ID from Basic auth credentials)
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditToolCallRequest'
+            example:
+              tool_name: "getUserInfo"
+              tool_type: "mcp"
+              input: {}
+              output: {}
+              workflow_id: "wf_abc123"
+              step_id: "step-3"
+              user_id: "user@example.com"
+              duration_ms: 45
+              policies_applied: ["pii_check", "data_access"]
+              success: true
+              error_message: ""
+      responses:
+        '201':
+          description: Tool call audit recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditToolCallResponse'
+              example:
+                audit_id: "audit_1710432000_abcd1234"
+                status: "recorded"
+                timestamp: "2026-03-14T12:00:00Z"
+        '400':
+          description: Bad request (missing tool_name, invalid body, or missing X-Tenant-ID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid Basic auth credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Client ID does not match tenant scope, or request not routed through Agent gateway
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # =============================================================================
   # SEBI Compliance APIs (Enterprise)
   # Indian Financial Services - SEBI AI/ML Guidelines & DPDP Act 2023
@@ -6642,6 +6709,63 @@ components:
         latency_ms:
           type: integer
 
+    AuditToolCallRequest:
+      type: object
+      required:
+        - tool_name
+      properties:
+        tool_name:
+          type: string
+          description: Name of the tool that was called
+        tool_type:
+          type: string
+          description: Type of tool (e.g., mcp, api, webhook)
+        input:
+          type: object
+          description: Input data sent to the tool
+        output:
+          type: object
+          description: Output data returned by the tool
+        workflow_id:
+          type: string
+          description: Associated workflow ID
+        step_id:
+          type: string
+          description: Associated workflow step ID
+        user_id:
+          type: string
+          description: User who triggered the tool call
+        duration_ms:
+          type: integer
+          format: int64
+          description: Duration of the tool call in milliseconds
+        policies_applied:
+          type: array
+          items:
+            type: string
+          description: List of policy names applied during the tool call
+        success:
+          type: boolean
+          description: Whether the tool call succeeded
+        error_message:
+          type: string
+          description: Error message if the tool call failed
+
+    AuditToolCallResponse:
+      type: object
+      properties:
+        audit_id:
+          type: string
+          description: Unique identifier for the audit entry
+        status:
+          type: string
+          description: Recording status
+          enum: [recorded]
+        timestamp:
+          type: string
+          format: date-time
+          description: When the audit entry was recorded
+
     WorkflowExecuteRequest:
       type: object
       required:
@@ -9381,6 +9505,10 @@ components:
             error: "Internal server error"
 
   securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: OAuth2-style client credentials (clientId:clientSecret)
     BearerAuth:
       type: http
       scheme: bearer

@@ -157,6 +157,46 @@ echo "   Total:      ${TOTAL}ms"
 echo ""
 
 # =========================================================================
+# Tool Call Audit (Non-LLM tool tracking)
+# =========================================================================
+
+echo -e "${CYAN}Tool Call Audit${NC}"
+echo "========================================"
+echo ""
+echo "Recording a non-LLM tool call (e.g., API call, MCP execution)..."
+echo ""
+
+TOOL_AUDIT_HTTP_CODE=$(curl -s -o /tmp/tool_audit_response.json -w "%{http_code}" \
+    -X POST "$ORCHESTRATOR_URL/api/v1/audit/tool-call" \
+    -H "Content-Type: application/json" \
+    "${AUTH_HEADER[@]}" \
+    -H "X-Client-ID: $CLIENT_ID" \
+    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -d "{
+        \"tool_name\": \"weather-api\",
+        \"tool_type\": \"api\",
+        \"input\": {\"city\": \"San Francisco\", \"units\": \"metric\"},
+        \"output\": {\"temperature\": 18, \"condition\": \"sunny\"},
+        \"duration_ms\": 245,
+        \"success\": true,
+        \"policies_applied\": [\"data-residency\", \"rate-limit\"]
+    }")
+
+if [ "$TOOL_AUDIT_HTTP_CODE" = "404" ]; then
+    echo -e "   ${YELLOW}Endpoint not available (requires Platform v5.1.0+)${NC}"
+elif [ "$TOOL_AUDIT_HTTP_CODE" = "201" ] || [ "$TOOL_AUDIT_HTTP_CODE" = "200" ]; then
+    TOOL_AUDIT_ID=$(jq -r '.audit_id // "none"' /tmp/tool_audit_response.json)
+    TOOL_AUDIT_STATUS=$(jq -r '.status // "unknown"' /tmp/tool_audit_response.json)
+    echo "   Audit ID: $TOOL_AUDIT_ID"
+    echo "   Status: $TOOL_AUDIT_STATUS"
+    echo -e "   ${GREEN}Tool call audit recorded successfully${NC}"
+else
+    echo -e "   ${RED}Unexpected HTTP $TOOL_AUDIT_HTTP_CODE${NC}"
+    cat /tmp/tool_audit_response.json 2>/dev/null
+fi
+echo ""
+
+# =========================================================================
 # Query Audit Logs
 # =========================================================================
 
@@ -223,8 +263,9 @@ echo "Audit Logging Complete!"
 echo ""
 echo "API Endpoints Used:"
 echo "  Agent (8080):"
-echo "    POST /api/policy/pre-check - Policy validation"
-echo "    POST /api/audit/llm-call   - Audit logging"
+echo "    POST /api/policy/pre-check      - Policy validation"
+echo "    POST /api/audit/llm-call        - Audit logging"
 echo "  Orchestrator (8081):"
-echo "    GET  /api/v1/audit/tenant/{id} - Get tenant logs"
-echo "    POST /api/v1/audit/search      - Search logs"
+echo "    POST /api/v1/audit/tool-call    - Tool call audit"
+echo "    GET  /api/v1/audit/tenant/{id}  - Get tenant logs"
+echo "    POST /api/v1/audit/search       - Search logs"

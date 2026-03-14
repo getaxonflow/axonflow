@@ -18,6 +18,9 @@ import com.getaxonflow.sdk.types.AuditOptions;
 import com.getaxonflow.sdk.types.TokenUsage;
 import com.getaxonflow.sdk.exceptions.AxonFlowException;
 
+import com.getaxonflow.sdk.types.AuditToolCallRequest;
+import com.getaxonflow.sdk.types.AuditToolCallResponse;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -155,6 +158,52 @@ public class AuditLoggingExample {
         }
 
         System.out.println("Audit Logging Complete!");
+        System.out.println();
+
+        // =========================================================================
+        // Tool Call Audit (Non-LLM tool tracking)
+        // =========================================================================
+
+        System.out.println("========================================");
+        System.out.println("Tool Call Audit (Non-LLM)");
+        System.out.println("========================================");
+        System.out.println();
+
+        System.out.println("Recording a non-LLM tool call (e.g., API call, MCP execution)...");
+        try {
+            Map<String, Object> toolInput = new HashMap<>();
+            toolInput.put("city", "San Francisco");
+            toolInput.put("units", "metric");
+
+            Map<String, Object> toolOutput = new HashMap<>();
+            toolOutput.put("temperature", 18);
+            toolOutput.put("condition", "sunny");
+
+            AuditToolCallResponse toolCallResult = client.auditToolCall(
+                AuditToolCallRequest.builder()
+                    .toolName("weather-api")
+                    .toolType("api")
+                    .input(toolInput)
+                    .output(toolOutput)
+                    .durationMs(245L)
+                    .success(true)
+                    .policiesApplied(Arrays.asList("data-residency", "rate-limit"))
+                    .build()
+            );
+
+            System.out.printf("   Audit ID: %s%n", toolCallResult.getAuditId());
+            System.out.printf("   Status: %s%n", toolCallResult.getStatus());
+            System.out.printf("   Timestamp: %s%n", toolCallResult.getTimestamp());
+            assertCheck(toolCallResult.getAuditId() != null, "auditToolCall returned audit ID");
+            assertCheck("recorded".equals(toolCallResult.getStatus()), "Tool call audit status is 'recorded'");
+        } catch (AxonFlowException e) {
+            if (e.getMessage() != null && e.getMessage().contains("404")) {
+                System.out.println("   Endpoint not available (requires Platform v5.1.0+)");
+            } else {
+                System.out.printf("   Error: %s%n", e.getMessage());
+                failures.add("auditToolCall failed: " + e.getMessage());
+            }
+        }
         System.out.println();
 
         // =========================================================================

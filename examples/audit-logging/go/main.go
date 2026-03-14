@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/getaxonflow/axonflow-sdk-go/v4"
@@ -90,7 +91,7 @@ func main() {
 
 		if openaiKey != "" {
 			completion, err := openaiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-				Model: openai.GPT4oMini,
+				Model: "gpt-4o-mini",
 				Messages: []openai.ChatCompletionMessage{
 					{Role: openai.ChatMessageRoleUser, Content: q.query},
 				},
@@ -167,6 +168,39 @@ func main() {
 	}
 
 	fmt.Println("Audit Logging Complete!")
+	fmt.Println()
+
+	// =========================================================================
+	// Tool Call Audit (Non-LLM tool tracking)
+	// =========================================================================
+
+	fmt.Println("========================================")
+	fmt.Println("Tool Call Audit (Non-LLM)")
+	fmt.Println("========================================")
+	fmt.Println()
+
+	fmt.Println("Recording a non-LLM tool call (e.g., API call, MCP execution)...")
+	success := true
+	toolCallResp, err := axClient.AuditToolCall(ctx, axonflow.AuditToolCallRequest{
+		ToolName:        "weather-api",
+		ToolType:        "api",
+		Input:           map[string]interface{}{"city": "San Francisco", "units": "metric"},
+		Output:          map[string]interface{}{"temperature": 18, "condition": "sunny"},
+		DurationMs:      245,
+		Success:         &success,
+		PoliciesApplied: []string{"data-residency", "rate-limit"},
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			fmt.Println("   Endpoint not available (requires Platform v5.1.0+)")
+		} else {
+			fmt.Printf("   Error: %v\n", err)
+		}
+	} else {
+		fmt.Printf("   Audit ID: %s\n", toolCallResp.AuditID)
+		fmt.Printf("   Status: %s\n", toolCallResp.Status)
+		fmt.Printf("   Timestamp: %s\n", toolCallResp.Timestamp)
+	}
 	fmt.Println()
 
 	// =========================================================================
