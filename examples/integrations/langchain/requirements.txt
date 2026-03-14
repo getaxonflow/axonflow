@@ -1,5 +1,5 @@
 # AxonFlow SDK
-axonflow>=4.0.0
+axonflow>=4.1.0
 
 # LangChain
 langchain>=0.1.0

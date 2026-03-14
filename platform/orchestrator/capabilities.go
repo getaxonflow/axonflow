@@ -55,6 +55,6 @@ func getCapabilities() []PlatformCapability {
 func getSDKCompatibility() SDKCompatInfo {
 	return SDKCompatInfo{
 		MinSDKVersion:         "3.0.0",
-		RecommendedSDKVersion: "4.0.0",
+		RecommendedSDKVersion: "4.1.0",
 	}
 }

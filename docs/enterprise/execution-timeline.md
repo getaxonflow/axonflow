@@ -2,7 +2,7 @@
 
 **Last Updated:** March 2026
 
-**Platform Version:** v5.0.0 | **SDK Version:** v4.0.0
+**Platform Version:** v5.0.0 | **SDK Version:** v4.1.0
 
 The Execution Timeline page provides enterprise customers with a centralized view of all MAP plan and WCP workflow executions. It surfaces real-time status, step-level timelines, policy gate decisions, LLM usage details, and per-step cost tracking directly within the Customer Portal.
 

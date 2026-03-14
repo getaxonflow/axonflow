@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**SDK Version:** v4.0.0 | **Platform Version:** v5.0.0
+**SDK Version:** v4.1.0 | **Platform Version:** v5.0.0
 
 AxonFlow provides official SDKs in four languages for integrating LLM governance into your applications. All SDKs offer identical feature coverage (see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md)) and follow the same API design principles: type-safe clients, automatic retries, and structured error handling.
 

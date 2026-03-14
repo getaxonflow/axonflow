@@ -40,7 +40,7 @@ Environment variables always win. Config flag overrides mode-based defaults but 
 | Field | Type | Example |
 |-------|------|---------|
 | `sdk` | string | `"go"`, `"python"`, `"typescript"`, `"java"` |
-| `sdk_version` | string | `"4.0.0"` |
+| `sdk_version` | string | `"4.1.0"` |
 | `os` | string | `"linux"`, `"Darwin"`, `"Windows"` |
 | `arch` | string | `"amd64"`, `"arm64"` |
 | `runtime_version` | string | `"go1.22.0"`, `"3.12.0"`, `"v20.11.0"`, `"21.0.1"` |

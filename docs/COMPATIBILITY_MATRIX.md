@@ -6,7 +6,7 @@ This document maps platform versions to minimum SDK versions and the features ea
 
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
-| v5.0.0 | v4.0.0 | v4.0.0 | Removed `total_steps` from create workflow, MCP operation default `"execute"`, Go module v4 |
+| v5.0.0 | v4.0.0 | v4.1.0 | Removed `total_steps` from create workflow, MCP operation default `"execute"`, Go module v4 |
 | v4.8.0 | v3.8.0 | v3.8.0 | Version discovery, capability registry, User-Agent headers |
 | v4.7.0 | v3.7.0 | v3.7.0 | MCP check-input/check-output endpoints, circuit breaker pipeline |
 | v4.6.0 | v3.6.0 | v3.6.0 | Open-ended WCP workflows (optional total_steps) |
