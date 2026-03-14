@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -20,8 +21,15 @@ import (
 	"strings"
 	"time"
 
+	"axonflow/platform/shared/serviceauth"
+
 	"github.com/gorilla/mux"
 )
+
+// proxyTokenGenerator signs proxied requests so the orchestrator can verify
+// they came through the Agent gateway (not directly from an external caller).
+// Uses the same AXONFLOW_INTERNAL_SERVICE_SECRET shared secret as MCP auth.
+var proxyTokenGenerator *serviceauth.TokenGenerator
 
 // ProxyConfig holds configuration for the reverse proxy
 type ProxyConfig struct {
@@ -40,6 +48,12 @@ type ReverseProxyHandler struct {
 // NewReverseProxyHandler creates a new reverse proxy handler for backend services
 func NewReverseProxyHandler(config ProxyConfig) (*ReverseProxyHandler, error) {
 	handler := &ReverseProxyHandler{}
+
+	// Initialize proxy token generator for signing proxied requests
+	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+		proxyTokenGenerator = serviceauth.NewTokenGenerator(secret, nil)
+		log.Printf("[Proxy] Internal service token signing enabled for proxied requests")
+	}
 
 	// Parse and configure Orchestrator proxy
 	if config.OrchestratorInternalURL != "" {
@@ -78,6 +92,10 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 		// X-Tenant-ID, X-User-ID, Authorization, X-License-Key are already in the request
 		// Just ensure Host header is set correctly for the target
 		req.Host = target.Host
+
+		// Inject internal service token to prove request came through the Agent gateway.
+		// The orchestrator can verify this to reject direct access attempts.
+		req.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 	}
 
 	// Custom error handler for logging and 502 responses
@@ -129,58 +147,121 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 	log.Printf("[Proxy] Portal request completed in %v", time.Since(start))
 }
 
+// proxyAuthMiddleware wraps a proxy handler with client credential validation.
+// In community mode (DEPLOYMENT_MODE="" or "community"), auth is skipped.
+// In production mode, Basic auth credentials are validated against the DB or whitelist.
+// The authenticated client's tenant ID is set as X-Tenant-ID for downstream services.
+func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for CORS preflight
+		if r.Method == http.MethodOptions {
+			next(w, r)
+			return
+		}
+
+		if isCommunityMode() {
+			next(w, r)
+			return
+		}
+
+		// Extract and validate Basic auth credentials
+		clientID := extractClientID(r)
+		clientSecret := extractClientSecret(r)
+		if clientID == "" || clientSecret == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"Authentication required"}`))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var client *Client
+		var err error
+		if authDB != nil {
+			client, err = validateClientCredentialsDB(ctx, authDB, clientID, clientSecret)
+		} else {
+			client, err = validateClientCredentials(ctx, clientID, clientSecret)
+		}
+		if err != nil {
+			log.Printf("[Proxy] Auth failed for client '%s': %v", clientID, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"Authentication failed"}`))
+			return
+		}
+
+		if !client.Enabled {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"Client disabled"}`))
+			return
+		}
+
+		// Set tenant ID from authenticated client for downstream tenant isolation
+		r.Header.Set("X-Tenant-ID", client.TenantID)
+
+		next(w, r)
+	}
+}
+
 // RegisterProxyRoutes registers all proxy routes on the provided router
 // This enables Single Entry Point Architecture (ADR-026)
 func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
+	// Auth-wrapped proxy handlers
+	orchAuth := proxyAuthMiddleware(h.ProxyToOrchestrator)
+	portalAuth := proxyAuthMiddleware(h.ProxyToPortal)
+
 	// Routes proxied to Orchestrator (port 8081)
 	// Dynamic policies - new consistent path
-	r.PathPrefix("/api/v1/dynamic-policies").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/dynamic-policies").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Connectors
-	r.PathPrefix("/api/v1/connectors").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/connectors").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Cost Controls
-	r.PathPrefix("/api/v1/cost").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-	r.PathPrefix("/api/v1/budgets").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-	r.PathPrefix("/api/v1/usage").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
-	r.PathPrefix("/api/v1/pricing").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+	r.PathPrefix("/api/v1/cost").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/budgets").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/usage").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
+	r.PathPrefix("/api/v1/pricing").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
 	// Multi-Agent Planning (MAP)
-	r.PathPrefix("/api/v1/plan").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/plan").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Execution Replay
-	r.PathPrefix("/api/v1/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
+	r.PathPrefix("/api/v1/executions").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
 
 	// Execution Viewer UI (served by orchestrator)
-	r.PathPrefix("/ui/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+	r.PathPrefix("/ui/executions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
 	// Unified Execution Tracking (#1075)
-	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "OPTIONS")
+	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
 	// Audit Logs
-	r.PathPrefix("/api/v1/audit").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "OPTIONS")
+	r.PathPrefix("/api/v1/audit").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
 
 	// LLM Providers
-	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// MAS FEAT Compliance (Singapore) - Enterprise feature
-	r.PathPrefix("/api/v1/masfeat").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/masfeat").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Workflow Control Plane (#834)
-	r.PathPrefix("/api/v1/workflows").HandlerFunc(h.ProxyToOrchestrator).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/workflows").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Routes proxied to Portal (port 8082)
-	// Portal Authentication (login, logout, session)
+	// Portal Authentication (login, logout, session) — no auth (login flow)
 	r.PathPrefix("/api/v1/auth").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Code Governance
-	r.PathPrefix("/api/v1/code-governance").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/code-governance").HandlerFunc(portalAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Portal Auth & Management
-	r.PathPrefix("/api/v1/portal").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/portal").HandlerFunc(portalAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Git Providers
-	r.PathPrefix("/api/v1/git-providers").HandlerFunc(h.ProxyToPortal).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/git-providers").HandlerFunc(portalAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	log.Println("[Proxy] Registered proxy routes for Single Entry Point Architecture (ADR-026)")
 }

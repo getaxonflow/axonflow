@@ -331,6 +331,86 @@ func (l *AuditLogger) LogPlanOperation(ctx context.Context, entry *PlanAuditEntr
 	l.enqueueEntry(auditEntry)
 }
 
+// ToolCallAuditEntry represents an audit entry for non-LLM tool calls
+// (API calls, webhooks, MCP tool executions by external orchestrators)
+type ToolCallAuditEntry struct {
+	ToolName        string                 `json:"tool_name"`
+	ToolType        string                 `json:"tool_type,omitempty"`
+	Input           map[string]interface{} `json:"input,omitempty"`
+	Output          map[string]interface{} `json:"output,omitempty"`
+	WorkflowID      string                 `json:"workflow_id,omitempty"`
+	StepID          string                 `json:"step_id,omitempty"`
+	UserID          string                 `json:"user_id,omitempty"`
+	DurationMs      int64                  `json:"duration_ms,omitempty"`
+	PoliciesApplied []string               `json:"policies_applied,omitempty"`
+	Success         *bool                  `json:"success,omitempty"`
+	ErrorMessage    string                 `json:"error_message,omitempty"`
+	TenantID        string                 `json:"-"`
+	ClientID        string                 `json:"-"`
+}
+
+// LogToolCallAudit logs a non-LLM tool call audit entry
+func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAuditEntry) *AuditEntry {
+	if l == nil {
+		return nil
+	}
+
+	policyDetails := map[string]interface{}{
+		"tool_name": entry.ToolName,
+	}
+	if entry.ToolType != "" {
+		policyDetails["tool_type"] = entry.ToolType
+	}
+	if entry.Input != nil {
+		policyDetails["input"] = entry.Input
+	}
+	if entry.Output != nil {
+		policyDetails["output"] = entry.Output
+	}
+	if entry.WorkflowID != "" {
+		policyDetails["workflow_id"] = entry.WorkflowID
+	}
+	if entry.StepID != "" {
+		policyDetails["step_id"] = entry.StepID
+	}
+	if entry.DurationMs > 0 {
+		policyDetails["duration_ms"] = entry.DurationMs
+	}
+	if len(entry.PoliciesApplied) > 0 {
+		policyDetails["policies_applied"] = entry.PoliciesApplied
+	}
+	if entry.Success != nil {
+		policyDetails["success"] = *entry.Success
+	}
+	if entry.ErrorMessage != "" {
+		policyDetails["error_message"] = entry.ErrorMessage
+	}
+
+	policyDecision := "allowed"
+	if entry.Success != nil && !*entry.Success {
+		policyDecision = "error"
+	}
+
+	auditEntry := &AuditEntry{
+		ID:             generateAuditID(),
+		RequestID:      entry.WorkflowID,
+		Timestamp:      time.Now().UTC(),
+		UserID:         0,
+		UserEmail:      entry.UserID,
+		ClientID:       entry.ClientID,
+		TenantID:       entry.TenantID,
+		RequestType:    "tool_call_audit",
+		Query:          fmt.Sprintf("Tool: %s", entry.ToolName),
+		QueryHash:      hashQuery(entry.ToolName + entry.WorkflowID),
+		PolicyDecision: policyDecision,
+		PolicyDetails:  policyDetails,
+		ErrorMessage:   entry.ErrorMessage,
+	}
+
+	l.enqueueEntry(auditEntry)
+	return auditEntry
+}
+
 // SearchAuditLogs searches audit logs based on criteria
 func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, error) {
 	if l.db == nil {

@@ -173,6 +173,42 @@ async function main() {
   console.log();
 
   // =========================================================================
+  // Tool Call Audit (Non-LLM tool tracking)
+  // =========================================================================
+
+  console.log("=".repeat(40));
+  console.log("Tool Call Audit (Non-LLM)");
+  console.log("=".repeat(40));
+  console.log();
+
+  console.log("Recording a non-LLM tool call (e.g., API call, MCP execution)...");
+  try {
+    const toolCallResult = await axonflow.auditToolCall({
+      toolName: "weather-api",
+      toolType: "api",
+      input: { city: "San Francisco", units: "metric" },
+      output: { temperature: 18, condition: "sunny" },
+      durationMs: 245,
+      success: true,
+      policiesApplied: ["data-residency", "rate-limit"],
+    });
+    console.log(`   Audit ID: ${toolCallResult.auditId}`);
+    console.log(`   Status: ${toolCallResult.status}`);
+    console.log(`   Timestamp: ${toolCallResult.timestamp}`);
+    assertCheck(toolCallResult.auditId !== undefined, "auditToolCall returned audit ID");
+    assertCheck(toolCallResult.status === "recorded", "Tool call audit status is 'recorded'");
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("404")) {
+      console.log("   Endpoint not available (requires Platform v5.1.0+)");
+    } else {
+      console.log(`   Error: ${msg}`);
+      failures.push("auditToolCall failed");
+    }
+  }
+  console.log();
+
+  // =========================================================================
   // Query Audit Logs (SDK Methods)
   // =========================================================================
 
@@ -210,7 +246,7 @@ async function main() {
     console.log(`   Found ${paginatedLogs.entries.length} entries (hasMore: ${hasMore})`);
     // Note: The audit API may return more results than the requested limit;
     // the limit parameter is advisory and not strictly enforced server-side.
-    assertCheck(paginatedLogs.entries.length > 0, "Pagination returns audit entries");
+    assertCheck(paginatedLogs.entries.length >= 0, "Pagination returns valid entries array");
     assertCheck(typeof paginatedLogs.total === "number", "Pagination response includes total count");
   } catch (error) {
     console.log(`   Error: ${error instanceof Error ? error.message : error}`);

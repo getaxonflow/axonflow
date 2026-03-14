@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.2.0] - 2026-03-14
+
+### Community
+
+#### Security
+
+- **Proxy route authentication** (#1340): Agent gateway now validates client credentials on all proxied `/api/v1/*` routes before forwarding to backend services. Previously, proxy routes forwarded requests without authentication.
+- **Proxy auth token hardening** (#1340): Reject static fallback proxy token when `AXONFLOW_INTERNAL_SERVICE_SECRET` is configured; only HMAC-signed tokens accepted in hardened deployments.
+
+#### Added
+
+- **Tool call audit endpoint** (#1260): `POST /api/v1/audit/tool-call` records non-LLM tool call audit entries (API calls, MCP executions, function invocations) for compliance tracking. Includes Basic auth enforcement and 1MB request body size limit.
+- **Audit query SDK methods** (#1260, ADR-023): `GetAuditLogsByTenant` and `SearchAuditLogs` for programmatic audit log retrieval with pagination and filtering. Supported in all 4 SDKs (v4.1.0+).
+
+#### Fixed
+
+- Allow tenant/client ID mismatch on proxy-verified requests where the Agent maps client IDs to different tenant IDs (e.g., `healthcare-demo` -> `healthcare_tenant`) (#1340)
+- AWS Marketplace CloudFormation template updated to v5.0.0 (#1339)
+- Deploy workflow resolves version from ECR instead of HEAD (#1341, #1343)
+- Migration 122 FK ordering fix + GCP secret backup docs (#1344)
+
+---
+
 ## [5.1.0] - 2026-03-12
 
 ### Community

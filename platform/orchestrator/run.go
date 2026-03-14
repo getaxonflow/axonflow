@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 	"github.com/rs/cors"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/shared/serviceauth"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/orchestrator/cloudstorage" // Cloud storage backends for audit exports (#589)
 	"axonflow/platform/orchestrator/cost"         // Cost controls & budget management (#764)
@@ -136,6 +138,9 @@ var (
 	// Evaluation tier features
 	policySimulationHandler *PolicySimulationHandler // Policy simulation + impact report
 	evidenceExportHandler   *EvidenceExportHandler   // Evidence export + summary
+
+	// Proxy auth validation — verifies requests came through the Agent gateway
+	proxyTokenValidator *serviceauth.TokenValidator
 )
 
 // Per-stage metrics (similar to Agent)
@@ -492,6 +497,7 @@ func Run() {
 	// Metrics and monitoring
 	r.HandleFunc("/api/v1/metrics", metricsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
+	r.HandleFunc("/api/v1/audit/tool-call", auditToolCallHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tenant/{tenant_id}", tenantAuditLogsHandler).Methods("GET")
 
 	// Workflow endpoints
@@ -1420,6 +1426,14 @@ func initializeComponents() {
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
 	}
+
+	// Initialize proxy auth validator — verifies requests came through the Agent gateway
+	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+		proxyTokenValidator = serviceauth.NewTokenValidator(secret, nil, serviceauth.DefaultClockSkew)
+		log.Println("Proxy auth validation enabled for audit write endpoints")
+	} else {
+		log.Println("[SECURITY] Proxy auth validation disabled — AXONFLOW_INTERNAL_SERVICE_SECRET not set")
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -2315,6 +2329,112 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
+
+	// Verify request came through the Agent gateway (not direct access).
+	// The Agent proxy injects X-Axonflow-Proxy-Auth with an HMAC-signed token.
+	// When AXONFLOW_INTERNAL_SERVICE_SECRET is configured, reject unverified requests.
+	proxyToken := r.Header.Get("X-Axonflow-Proxy-Auth")
+	if proxyTokenValidator != nil {
+		if proxyToken == "" {
+			log.Printf("[AuditToolCall] BLOCKED: missing proxy auth header (direct access attempt)")
+			sendErrorResponse(w, "Unauthorized: request must be routed through AxonFlow Agent", http.StatusForbidden)
+			return
+		}
+		valid, _, err := proxyTokenValidator.ValidateToken(proxyToken)
+		if !valid {
+			log.Printf("[AuditToolCall] BLOCKED: invalid proxy auth token: %v", err)
+			sendErrorResponse(w, "Unauthorized: invalid proxy authentication", http.StatusForbidden)
+			return
+		}
+	}
+
+	// Validate authentication: require Basic auth credentials
+	clientID, err := extractBasicAuthClientID(r)
+	if err != nil {
+		sendErrorResponse(w, "Missing authentication", http.StatusUnauthorized)
+		return
+	}
+
+	var req ToolCallAuditEntry
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(req.ToolName) == "" {
+		sendErrorResponse(w, "tool_name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Require tenant scope — audit writes must be attributed to a tenant.
+	// When the request came through the Agent proxy (verified via proxy auth),
+	// X-Tenant-ID is set by the Agent from the authenticated client's tenant
+	// and can be trusted. When accessed directly (community mode, no proxy auth),
+	// fall back to clientID == tenantID check to prevent cross-tenant injection.
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		sendErrorResponse(w, "X-Tenant-ID header is required", http.StatusBadRequest)
+		return
+	}
+
+	proxyVerified := proxyTokenValidator != nil && r.Header.Get("X-Axonflow-Proxy-Auth") != ""
+	if !proxyVerified && clientID != tenantID {
+		log.Printf("[AuditToolCall] BLOCKED: clientID %q does not match X-Tenant-ID %q (no proxy auth)", clientID, tenantID)
+		sendErrorResponse(w, "Client ID does not match tenant scope", http.StatusForbidden)
+		return
+	}
+
+	req.ClientID = clientID
+	req.TenantID = tenantID
+
+	auditEntry := auditLogger.LogToolCallAudit(r.Context(), &req)
+
+	auditID := ""
+	var ts time.Time
+	if auditEntry != nil {
+		auditID = auditEntry.ID
+		ts = auditEntry.Timestamp
+	} else {
+		auditID = generateAuditID()
+		ts = time.Now().UTC()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"audit_id":  auditID,
+		"status":    "recorded",
+		"timestamp": ts,
+	}); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
+}
+
+// extractBasicAuthClientID extracts the client ID from an OAuth2 Basic auth header.
+// Format: Authorization: Basic base64(clientId:clientSecret)
+// Returns the clientID and nil on success, or an error if the header is missing/invalid.
+func extractBasicAuthClientID(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Basic ") {
+		return "", fmt.Errorf("missing or invalid Authorization header")
+	}
+
+	encoded := strings.TrimPrefix(authHeader, "Basic ")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("invalid base64 in Authorization header")
+	}
+
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("invalid Basic auth format: expected clientId:clientSecret")
+	}
+
+	return parts[0], nil
 }
 
 func tenantWorkflowExecutionsHandler(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ AxonFlow provides comprehensive audit trails for AI interactions:
 |---------|-------------|
 | Pre-check Logging | Records policy evaluations before LLM calls |
 | LLM Call Auditing | Logs provider, model, tokens, latency |
+| Tool Call Auditing | Records non-LLM tool calls (API, MCP, functions) |
 | Context Tracking | Links pre-check to audit via context ID |
 | Search & Query | Query audit logs by user, time, client |
 
@@ -86,12 +87,13 @@ Each example demonstrates the complete Gateway Mode workflow:
 
 ## SDK + HTTP Coverage
 
-This example set covers the audit read methods added for issue `#878`:
+This example set covers the audit methods from issues `#878` and `#1260`:
 
 | Capability | Go | Python | TypeScript | Java | HTTP |
 |------------|----|--------|------------|------|------|
 | Pre-check (`getPolicyApprovedContext`) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/policy/pre-check`) |
 | Audit write (`auditLLMCall`) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/audit/llm-call`) |
+| Tool call audit (`auditToolCall`) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/v1/audit/tool-call`) |
 | Audit search (`SearchAuditLogs` / equivalent) | ✅ | ✅ | ✅ | ✅ | ✅ (`POST /api/v1/audit/search`) |
 | Tenant logs (`GetAuditLogsByTenant` / equivalent) | ✅ | ✅ | ✅ | ✅ | ✅ (`GET /api/v1/audit/tenant/{tenant_id}`) |
 
