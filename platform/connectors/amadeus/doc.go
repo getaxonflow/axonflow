@@ -38,6 +38,6 @@ The Enterprise edition supports:
 # Contact
 
 For Enterprise licensing: sales@getaxonflow.com
-For documentation: https://docs.getaxonflow.com/connectors/amadeus
+For documentation: https://docs.getaxonflow.com/docs/mcp/connectors/amadeus
 */
 package amadeus

@@ -566,3 +566,59 @@ func TestCodeArtifactMetadata_Fields(t *testing.T) {
 		t.Errorf("UnsafePatterns = %d, want 2", metadata.UnsafePatterns)
 	}
 }
+
+func TestEvaluateCodePolicies_NonEmpty(t *testing.T) {
+	categories, err := EvaluateCodePolicies("def hello(): pass", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(categories) != 3 {
+		t.Fatalf("expected 3 categories, got %d", len(categories))
+	}
+	expected := []string{
+		string(CategoryCodeSecrets),
+		string(CategoryCodeUnsafe),
+		string(CategoryCodeCompliance),
+	}
+	for i, cat := range categories {
+		if cat != expected[i] {
+			t.Errorf("category[%d] = %q, want %q", i, cat, expected[i])
+		}
+	}
+}
+
+func TestEvaluateCodePolicies_Empty(t *testing.T) {
+	categories, err := EvaluateCodePolicies("", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if categories != nil {
+		t.Errorf("expected nil for empty code, got %v", categories)
+	}
+}
+
+func TestExtractResponseContent_NestedDataMap(t *testing.T) {
+	// Test nested map with "data" key containing a sub-map with "data" string
+	input := map[string]interface{}{
+		"data": map[string]interface{}{
+			"data": "nested-data-value",
+		},
+	}
+	result := extractResponseContent(input)
+	if result != "nested-data-value" {
+		t.Errorf("extractResponseContent() = %q, want %q", result, "nested-data-value")
+	}
+}
+
+func TestExtractResponseContent_NestedContentMap(t *testing.T) {
+	// Test nested map with "data" key containing a sub-map with "content" string
+	input := map[string]interface{}{
+		"data": map[string]interface{}{
+			"content": "nested-content-value",
+		},
+	}
+	result := extractResponseContent(input)
+	if result != "nested-content-value" {
+		t.Errorf("extractResponseContent() = %q, want %q", result, "nested-content-value")
+	}
+}

@@ -1410,21 +1410,220 @@ paths:
       tags:
         - Circuit Breaker
       summary: Get circuit breaker status
+      description: |
+        Returns all active (open) circuits for the organization.
+        Uses X-Org-ID header for org identification.
       operationId: getCircuitBreakerStatus
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
-        - name: org_id
+      responses:
+        '200':
+          description: Active circuit breaker circuits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      active_circuits:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CircuitBreaker'
+                      count:
+                        type: integer
+                      emergency_stop_active:
+                        type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/circuit-breaker/history:
+    get:
+      tags:
+        - Circuit Breaker
+      summary: Get circuit breaker history
+      description: |
+        Returns circuit breaker trip/reset history for audit trail.
+        Ordered by creation time descending.
+      operationId: getCircuitBreakerHistory
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: limit
           in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Circuit breaker history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      history:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CircuitBreaker'
+                      count:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/circuit-breaker/config:
+    get:
+      tags:
+        - Circuit Breaker
+      summary: Get circuit breaker config
+      description: |
+        Returns effective circuit breaker configuration. If tenant_id is provided,
+        returns tenant-specific overrides merged with global defaults. Otherwise
+        returns global defaults.
+      operationId: getCircuitBreakerConfig
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+          description: Optional tenant ID for tenant-specific config
+      responses:
+        '200':
+          description: Effective circuit breaker configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/CircuitBreakerConfigResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    put:
+      tags:
+        - Circuit Breaker
+      summary: Update per-tenant circuit breaker config
+      description: |
+        Creates or updates per-tenant circuit breaker threshold overrides.
+        Null fields fall back to global defaults.
+      operationId: updateCircuitBreakerConfig
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerConfigUpdate'
+      responses:
+        '200':
+          description: Config updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/circuit-breaker/notifications:
+    get:
+      tags:
+        - Circuit Breaker
+      summary: List notification configs
+      description: Returns all circuit breaker notification configs for the organization.
+      operationId: listCircuitBreakerNotifications
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      responses:
+        '200':
+          description: Notification configs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      notifications:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CircuitBreakerNotificationConfig'
+                      count:
+                        type: integer
+    post:
+      tags:
+        - Circuit Breaker
+      summary: Create notification config
+      description: |
+        Create a notification channel for circuit breaker auto-trip events.
+        Supports webhook (HMAC-signed), Slack (Block Kit), and PagerDuty (Events API v2).
+      operationId: createCircuitBreakerNotification
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerNotificationCreate'
+      responses:
+        '201':
+          description: Notification config created
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/circuit-breaker/notifications/{id}:
+    put:
+      tags:
+        - Circuit Breaker
+      summary: Update notification config
+      operationId: updateCircuitBreakerNotification
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerNotificationUpdate'
+      responses:
+        '200':
+          description: Notification config updated
+        '404':
+          description: Notification config not found
+    delete:
+      tags:
+        - Circuit Breaker
+      summary: Delete notification config
+      operationId: deleteCircuitBreakerNotification
+      parameters:
+        - $ref: '#/components/parameters/LicenseKey'
+        - name: id
+          in: path
           required: true
           schema:
             type: string
       responses:
         '200':
-          description: Circuit breaker status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CircuitBreaker'
+          description: Notification config deleted
+        '404':
+          description: Notification config not found
 
   # ==========================================================================
   # Accuracy & Bias Detection (EU AI Act Article 15)
@@ -4322,6 +4521,127 @@ components:
         requires_two_person:
           type: boolean
           description: Whether two-person authorization is required
+
+    CircuitBreakerConfigResponse:
+      type: object
+      properties:
+        source:
+          type: string
+          enum: [global, tenant]
+          description: Whether config is global defaults or tenant-specific
+        error_threshold:
+          type: integer
+          description: Number of errors in window to trigger auto-trip
+        violation_threshold:
+          type: integer
+          description: Number of policy violations in window to trigger auto-trip
+        window_seconds:
+          type: integer
+          description: Sliding window duration for counting events
+        default_timeout_seconds:
+          type: integer
+          description: How long a circuit stays open before auto-recovery
+        max_timeout_seconds:
+          type: integer
+          description: Maximum allowed circuit timeout
+        enable_auto_recovery:
+          type: boolean
+          description: Whether open circuits automatically close after timeout
+        tenant_id:
+          type: string
+          description: Tenant ID (present when source is tenant)
+        overrides:
+          type: object
+          description: Tenant-specific override values (present when source is tenant)
+
+    CircuitBreakerConfigUpdate:
+      type: object
+      required:
+        - tenant_id
+      properties:
+        tenant_id:
+          type: string
+        error_threshold:
+          type: integer
+          nullable: true
+        violation_threshold:
+          type: integer
+          nullable: true
+        window_seconds:
+          type: integer
+          nullable: true
+        default_timeout_seconds:
+          type: integer
+          nullable: true
+        max_timeout_seconds:
+          type: integer
+          nullable: true
+        enable_auto_recovery:
+          type: boolean
+          nullable: true
+
+    CircuitBreakerNotificationConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        tenant_id:
+          type: string
+        type:
+          type: string
+          enum: [webhook, slack, pagerduty]
+        url:
+          type: string
+        secret:
+          type: string
+          description: Masked in GET responses
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CircuitBreakerNotificationCreate:
+      type: object
+      required:
+        - type
+        - url
+      properties:
+        type:
+          type: string
+          enum: [webhook, slack, pagerduty]
+        url:
+          type: string
+          description: Webhook URL, Slack incoming webhook URL, or PagerDuty override URL
+        secret:
+          type: string
+          description: HMAC secret for webhooks, or PagerDuty routing key
+        tenant_id:
+          type: string
+          description: Optional tenant filter for notifications
+        active:
+          type: boolean
+          default: true
+
+    CircuitBreakerNotificationUpdate:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [webhook, slack, pagerduty]
+        url:
+          type: string
+        secret:
+          type: string
+        tenant_id:
+          type: string
+        active:
+          type: boolean
 
     # ==========================================================================
     # Accuracy & Bias Schemas (EU AI Act Article 15)

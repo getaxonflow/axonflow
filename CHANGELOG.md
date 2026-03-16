@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.3.0] - 2026-03-17
+
+### Community
+
+#### Added
+
+- **Circuit breaker error auto-trip** (#1176): Upstream LLM errors (orchestrator hard failures, orchestrator-level errors, proxy 502s) now automatically trip client-scoped circuits after threshold exceeded within a sliding window. Previously, `RecordError` was implemented but not wired into the request pipeline.
+- **Sliding window for circuit breaker thresholds** (#1176): Error and policy violation counting now uses a time-windowed approach (default 5 minutes) instead of lifetime counters. Errors outside the window are automatically discarded.
+- **Per-tool governance examples** (#1243): LangGraph adapter examples for TypeScript, Go, and Java demonstrating per-tool gate checks within tools nodes.
+- **WCP guide updated**: Workflow Control Plane documentation expanded with TypeScript, Go, and Java LangGraph adapter examples alongside Python.
+
+### Enterprise
+
+#### Added
+
+- **Per-tenant circuit breaker thresholds** (#1176): Tenants can override global circuit breaker defaults (error threshold, violation threshold, window duration, timeout, auto-recovery) via `GET/PUT /api/v1/circuit-breaker/config`. Null fields fall back to global defaults. In-memory cache with 1-minute TTL.
+- **Circuit breaker notification fan-out** (#1176): Auto-trip events trigger notifications via webhook (HMAC-SHA256 signed), Slack (Block Kit), or PagerDuty (Events API v2). CRUD endpoints at `/api/v1/circuit-breaker/notifications`. Includes SSRF protection (private IP rejection) and retry with exponential backoff.
+- **SDK circuit breaker observability** (#1176): New methods across all 4 SDKs: `GetCircuitBreakerStatus`, `GetCircuitBreakerHistory`, `GetCircuitBreakerConfig`, `UpdateCircuitBreakerConfig`.
+
+---
+
 ## [5.2.0] - 2026-03-14
 
 ### Community

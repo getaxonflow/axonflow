@@ -101,6 +101,17 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 	// Custom error handler for logging and 502 responses
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[Proxy] Error proxying to %s: %v (path: %s)", serviceName, err, r.URL.Path)
+		// Record proxy error for circuit breaker auto-trip (#1176 Phase 2B)
+		if circuitBreakerInstance != nil {
+			orgID := r.Header.Get("X-Org-ID")
+			tenantID := r.Header.Get("X-Tenant-ID")
+			clientID := r.Header.Get("X-Client-ID")
+			if orgID != "" && clientID != "" {
+				if cbErr := circuitBreakerInstance.RecordError(r.Context(), orgID, tenantID, clientID); cbErr != nil {
+					log.Printf("[CircuitBreaker] RecordError (proxy) failed: %v", cbErr)
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(`{"error":"Backend service unavailable","service":"` + serviceName + `"}`))
@@ -199,8 +210,11 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Set tenant ID from authenticated client for downstream tenant isolation
+		// Set identity headers from authenticated client for downstream services
+		// and circuit breaker error tracking (RecordError in proxy ErrorHandler)
 		r.Header.Set("X-Tenant-ID", client.TenantID)
+		r.Header.Set("X-Org-ID", client.OrgID)
+		r.Header.Set("X-Client-ID", client.ID)
 
 		next(w, r)
 	}
