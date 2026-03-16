@@ -32,6 +32,10 @@ func NewHandler(cb *CircuitBreaker) *Handler {
 	return &Handler{}
 }
 
+// SetNotificationService sets the notification service.
+// Community Edition: No-op.
+func (h *Handler) SetNotificationService(ns *NotificationService) {}
+
 // RegisterRoutes registers circuit breaker routes with a mux router.
 // Community Edition: Does not register any routes (feature not available).
 func (h *Handler) RegisterRoutes(r *mux.Router) {
@@ -117,6 +121,80 @@ func (cb *CircuitBreaker) LoadCircuits(ctx context.Context, orgID string) error 
 func (cb *CircuitBreaker) ExpireCircuits(ctx context.Context) error {
 	return nil
 }
+
+// SetTripCallback sets a callback function called when circuits trip.
+// Community Edition: No-op.
+func (cb *CircuitBreaker) SetTripCallback(fn func(trip *TripEvent)) {}
+
+// TripEvent is emitted when a circuit is tripped.
+// Community Edition: Defined for compilation compatibility.
+type TripEvent struct {
+	CircuitID string
+	OrgID     string
+	TenantID  string
+	Scope     string
+	ScopeID   string
+	Reason    string
+	TrippedBy string
+	Comment   string
+	Timestamp time.Time
+}
+
+// TenantConfig holds per-tenant circuit breaker threshold overrides.
+// Community Edition: Defined for compilation compatibility.
+type TenantConfig struct {
+	ID                    string
+	OrgID                 string
+	TenantID              string
+	ErrorThreshold        *int
+	ViolationThreshold    *int
+	WindowSeconds         *int
+	DefaultTimeoutSeconds *int
+	MaxTimeoutSeconds     *int
+	EnableAutoRecovery    *bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+// GetConfig returns the global config.
+// Community Edition: Returns zero-value config.
+func (cb *CircuitBreaker) GetConfig() Config {
+	return Config{}
+}
+
+// GetTenantConfig returns nil (no tenant config in community).
+func (cb *CircuitBreaker) GetTenantConfig(ctx context.Context, orgID, tenantID string) (*TenantConfig, error) {
+	return nil, nil
+}
+
+// UpsertTenantConfig is a no-op in community edition.
+func (cb *CircuitBreaker) UpsertTenantConfig(ctx context.Context, config *TenantConfig) error {
+	return nil
+}
+
+// NotificationConfig holds notification channel configuration.
+// Community Edition: Defined for compilation compatibility.
+type NotificationConfig struct {
+	ID       string
+	OrgID    string
+	TenantID string
+	Type     string
+	URL      string
+	Secret   string
+	Active   bool
+}
+
+// NotificationService handles notification delivery.
+// Community Edition: No-op implementation.
+type NotificationService struct{}
+
+// NewNotificationService creates a no-op notification service.
+func NewNotificationService(repo *Repository) *NotificationService {
+	return &NotificationService{}
+}
+
+// HandleTripEvent is a no-op in community edition.
+func (ns *NotificationService) HandleTripEvent(event *TripEvent) {}
 
 // Repository provides data access for circuit breaker state.
 // Community Edition: No-op implementation.

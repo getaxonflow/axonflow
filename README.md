@@ -131,7 +131,7 @@ Use the Workflow Control Plane (WCP) to manage multi-step AI workflows with step
 
 This creates a WCP workflow, runs step-level gate checks, records a step ledger, demonstrates cancellation, and shows unified execution status.
 
-> **[Execution tracking guide](https://docs.getaxonflow.com/docs/orchestration/workflow-control-plane)** — WCP workflow creation, step gates, SSE streaming, and unified execution status.
+> **[Execution tracking guide](https://docs.getaxonflow.com/docs/orchestration/wcp/overview)** — WCP workflow creation, step gates, SSE streaming, and unified execution status.
 
 ---
 

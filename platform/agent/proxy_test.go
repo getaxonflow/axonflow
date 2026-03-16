@@ -550,6 +550,20 @@ func TestProxyAuthMiddleware_ProductionInvalidCreds(t *testing.T) {
 	}
 }
 
+func TestGetProxyConfig_EnvOverrides(t *testing.T) {
+	t.Setenv("ORCHESTRATOR_URL", "http://custom-orchestrator:9090")
+	t.Setenv("PORTAL_URL", "http://custom-portal:9091")
+
+	config := GetProxyConfig()
+
+	if config.OrchestratorInternalURL != "http://custom-orchestrator:9090" {
+		t.Errorf("OrchestratorInternalURL = %s, want http://custom-orchestrator:9090", config.OrchestratorInternalURL)
+	}
+	if config.PortalInternalURL != "http://custom-portal:9091" {
+		t.Errorf("PortalInternalURL = %s, want http://custom-portal:9091", config.PortalInternalURL)
+	}
+}
+
 func TestIsRunningInDocker(t *testing.T) {
 	// In test environment, should detect correctly
 	// We can't fully test Docker detection in non-Docker environment,

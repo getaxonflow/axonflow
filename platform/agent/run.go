@@ -945,7 +945,10 @@ func Run() {
 		PolicyViolationWindow:    5 * time.Minute,
 		EnableAutoRecovery:       true,
 	})
+	notifService := circuitbreaker.NewNotificationService(cbRepo)
+	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
 	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
+	cbHandler.SetNotificationService(notifService)
 	cbHandler.RegisterRoutes(globalRouter)
 	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
 
@@ -1386,6 +1389,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		if agentMetrics != nil {
 			atomic.AddInt64(&agentMetrics.failedRequests, 1)
 		}
+		// Record error for circuit breaker auto-trip (#1176 Phase 2B)
+		if circuitBreakerInstance != nil {
+			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ID); cbErr != nil {
+				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
+			}
+		}
 		sendErrorResponse(w, "Orchestrator error: "+err.Error(), http.StatusInternalServerError, nil)
 		return
 	}
@@ -1429,6 +1438,12 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		promRequestsTotal.WithLabelValues("orchestrator_error").Inc()
 		log.Printf("[clientRequestHandler] Orchestrator returned error: %s", orchError)
+		// Record orchestrator-level error for circuit breaker auto-trip (#1176 Phase 2B)
+		if circuitBreakerInstance != nil {
+			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ID); cbErr != nil {
+				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
+			}
+		}
 	}
 	promPolicyEvaluations.Inc()
 	promRequestDuration.WithLabelValues("dynamic").Observe(float64(latencyMs))
