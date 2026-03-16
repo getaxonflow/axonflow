@@ -17,7 +17,7 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-All SDKs are at v4.1.0.
+All SDKs are at v4.2.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
