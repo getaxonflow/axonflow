@@ -213,7 +213,80 @@ tool_interceptors=[adapter.mcp_tool_interceptor(opts)]
 
 The interceptor enforces `mcp_check_input → handler → mcp_check_output`, raises `PolicyViolationError` on block, and automatically substitutes `redacted_data` when output redaction is applied.
 
-### Go
+### TypeScript LangGraph Adapter
+
+```typescript
+import { AxonFlow, AxonFlowLangGraphAdapter } from "@axonflow/sdk";
+
+const client = new AxonFlow({ endpoint: "http://localhost:8080" });
+const adapter = new AxonFlowLangGraphAdapter(client, "my-workflow");
+
+await adapter.startWorkflow();
+
+if (await adapter.checkGate("generate", "llm_call", { model: "gpt-4" })) {
+  const result = await generateCode(state);
+  await adapter.stepCompleted("generate");
+}
+
+// Per-tool governance
+if (await adapter.checkToolGate("web_search", "function")) {
+  const result = await webSearch(state);
+  await adapter.toolCompleted("web_search", { output: result });
+}
+
+await adapter.completeWorkflow();
+```
+
+### Go LangGraph Adapter
+
+```go
+adapter := axonflow.NewLangGraphAdapter(client, "my-workflow")
+
+ctx := context.Background()
+adapter.StartWorkflow(ctx, nil, "")
+
+allowed, _ := adapter.CheckGate(ctx, "generate", axonflow.StepTypeLLMCall,
+    &axonflow.CheckGateOptions{Model: "gpt-4"})
+if allowed {
+    result := generateCode(state)
+    adapter.StepCompleted(ctx, "generate", nil)
+}
+
+// Per-tool governance
+allowed, _ = adapter.CheckToolGate(ctx, "web_search", "function", nil)
+if allowed {
+    result := webSearch(state)
+    adapter.ToolCompleted(ctx, "web_search",
+        &axonflow.ToolCompletedOptions{Output: result})
+}
+
+adapter.CompleteWorkflow(ctx)
+```
+
+### Java LangGraph Adapter
+
+```java
+LangGraphAdapter adapter = LangGraphAdapter.builder(client, "my-workflow").build();
+
+adapter.startWorkflow();
+
+if (adapter.checkGate("generate", "llm_call",
+        CheckGateOptions.builder().model("gpt-4").build())) {
+    Object result = generateCode(state);
+    adapter.stepCompleted("generate");
+}
+
+// Per-tool governance
+if (adapter.checkToolGate("web_search", "function")) {
+    Object result = webSearch(state);
+    adapter.toolCompleted("web_search",
+        ToolCompletedOptions.builder().output(Map.of("results", result)).build());
+}
+
+adapter.completeWorkflow();
+```
+
+### Go (Low-Level Client)
 
 ```go
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
@@ -495,10 +568,14 @@ See the complete examples in `examples/workflow-control/`:
 
 - `http/workflow-control.sh` - HTTP/curl example
 - `go/main.go` - Go SDK example
+- `go/langgraph_tools_example.go` - Go per-tool governance with LangGraph adapter
 - `python/main.py` - Python SDK example
 - `python/langgraph_example.py` - LangGraph adapter example
+- `python/langgraph_tools_example.py` - Python per-tool governance with LangGraph adapter
 - `typescript/index.ts` - TypeScript SDK example
+- `typescript/langgraph_tools_example.ts` - TypeScript per-tool governance with LangGraph adapter
 - `java/WorkflowControl.java` - Java SDK example
+- `java/LangGraphToolsExample.java` - Java per-tool governance with LangGraph adapter
 
 ## Related
 

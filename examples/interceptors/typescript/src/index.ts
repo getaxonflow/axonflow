@@ -245,7 +245,7 @@ async function main() {
   console.log();
   console.log("Note: This example uses Gateway Mode (recommended).");
   console.log("The wrapOpenAIClient interceptor is deprecated in v2.0.0.");
-  console.log("See: https://docs.getaxonflow.com/sdk/gateway-mode");
+  console.log("See: https://docs.getaxonflow.com/docs/sdk/gateway-mode");
 
   process.exit(failures.length > 0 ? 1 : 0);
 }
