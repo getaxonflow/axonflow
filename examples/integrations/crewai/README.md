@@ -29,7 +29,7 @@ CrewAI enables building multi-agent systems where specialized agents collaborate
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - Docker (for local AxonFlow)
 - OpenAI API key
 

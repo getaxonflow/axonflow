@@ -12,7 +12,7 @@ This example demonstrates how to enforce AxonFlow policies around MCP tool calls
 
 ## Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - AxonFlow running locally (`docker compose up`)
 
 ## Quick Start

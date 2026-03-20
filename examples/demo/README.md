@@ -21,7 +21,7 @@ docker compose ps
 ## Prerequisites
 
 - **Docker Desktop** - For running AxonFlow services ([install](https://docs.docker.com/get-docker/))
-- **Python 3.9+** - For running demo examples (required by axonflow SDK)
+- **Python 3.10+** - For running demo examples (required by axonflow SDK)
 - **Python packages** - Installed automatically (see `requirements.txt`)
 
 Required (for LLM features):

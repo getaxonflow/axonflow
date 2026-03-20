@@ -311,11 +311,11 @@ func TestHealthHandler(t *testing.T) {
 			if !ok {
 				t.Fatal("Expected 'sdk_compatibility' object in health response")
 			}
-			if _, ok := sdkCompat["min_sdk_version"].(string); !ok {
-				t.Error("Expected 'min_sdk_version' string in sdk_compatibility")
+			if _, ok := sdkCompat["min_sdk_version"].(map[string]interface{}); !ok {
+				t.Error("Expected 'min_sdk_version' map in sdk_compatibility")
 			}
-			if _, ok := sdkCompat["recommended_sdk_version"].(string); !ok {
-				t.Error("Expected 'recommended_sdk_version' string in sdk_compatibility")
+			if _, ok := sdkCompat["recommended_sdk_version"].(map[string]interface{}); !ok {
+				t.Error("Expected 'recommended_sdk_version' map in sdk_compatibility")
 			}
 
 			// Check components exist

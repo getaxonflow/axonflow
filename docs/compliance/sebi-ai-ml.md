@@ -1,6 +1,6 @@
 # SEBI AI/ML Guidelines Compliance
 
-*Last updated: March 2026 | AxonFlow Platform v5.3.0 | SDKs v4.2.0*
+*Last updated: March 2026 | AxonFlow Platform v5.3.0 | SDKs: Python v5.0.0, Go/TypeScript/Java v4.2.0*
 
 AxonFlow provides compliance support for the Securities and Exchange Board of India's **Framework for AI/ML in Securities Markets** for regulated entities in India's capital markets.
 

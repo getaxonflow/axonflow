@@ -16,7 +16,7 @@ Demonstrates AxonFlow's PII detection and blocking with Azure OpenAI as the LLM 
 ## Prerequisites
 
 - AxonFlow running with `PII_ACTION=block`
-- Python 3.9+
+- Python 3.10+
 
 ## Run
 

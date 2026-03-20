@@ -13,7 +13,7 @@ Features demonstrated:
 
 Requirements:
 - AxonFlow running locally (docker compose up)
-- Python 3.9+
+- Python 3.10+
 
 Usage:
     # Basic test (no LLM API key needed - uses AxonFlow's configured provider)

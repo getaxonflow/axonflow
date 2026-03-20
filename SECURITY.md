@@ -134,8 +134,8 @@ AxonFlow includes comprehensive security features by default:
 
 ### 3. Policy Enforcement
 
-- **Static Policies (Agent)**: Sub-10ms enforcement at the edge
-- **Dynamic Policies (Orchestrator)**: Context-aware policy evaluation
+- **System Policies (Agent)**: Sub-10ms enforcement at the edge
+- **Tenant Policies (Orchestrator)**: Context-aware policy evaluation
 - **Content Filtering**: SQL injection, XSS, and malicious prompt prevention
 - **Rate Limiting**: Redis-backed distributed rate limiting per tenant
 
