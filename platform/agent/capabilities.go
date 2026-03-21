@@ -12,8 +12,8 @@ type PlatformCapability struct {
 
 // SDKCompatInfo describes SDK version compatibility for this platform version.
 type SDKCompatInfo struct {
-	MinSDKVersion         string `json:"min_sdk_version"`
-	RecommendedSDKVersion string `json:"recommended_sdk_version"`
+	MinSDKVersion         map[string]string `json:"min_sdk_version"`
+	RecommendedSDKVersion map[string]string `json:"recommended_sdk_version"`
 }
 
 func getCapabilities() []PlatformCapability {
@@ -38,7 +38,17 @@ func getCapabilities() []PlatformCapability {
 
 func getSDKCompatibility() SDKCompatInfo {
 	return SDKCompatInfo{
-		MinSDKVersion:         "3.0.0",
-		RecommendedSDKVersion: "4.2.0",
+		MinSDKVersion: map[string]string{
+			"python":     "3.0.0",
+			"typescript": "3.0.0",
+			"go":         "3.0.0",
+			"java":       "3.0.0",
+		},
+		RecommendedSDKVersion: map[string]string{
+			"python":     "5.0.0",
+			"typescript": "4.2.0",
+			"go":         "4.2.0",
+			"java":       "4.2.0",
+		},
 	}
 }

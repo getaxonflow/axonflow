@@ -1,5 +1,5 @@
 # AxonFlow SDK (from feature branch)
-axonflow>=4.2.0
+axonflow>=5.0.0
 
 # For loading environment variables
 python-dotenv>=1.0.0

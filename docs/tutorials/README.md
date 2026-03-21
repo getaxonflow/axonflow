@@ -11,13 +11,13 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## Prerequisites
 
-- **Go 1.25+**, **Python 3.9+**, **Node.js 18+**, or **Java 17+** (tutorials include examples in multiple languages)
+- **Go 1.25+**, **Python 3.10+**, **Node.js 18+**, or **Java 17+** (tutorials include examples in multiple languages)
 - **Docker** and **Docker Compose** (for local development)
 - An AxonFlow SDK for your language of choice (see below)
 
 ## SDKs
 
-All SDKs are at v4.2.0.
+SDK versions: Python v5.0.0, Go/TypeScript/Java v4.2.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
@@ -33,7 +33,7 @@ All SDKs are at v4.2.0.
 go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 # Python
-pip3 install axonflow==4.1.0
+pip3 install axonflow==5.0.0
 
 # Java (Maven)
 # Add to pom.xml:

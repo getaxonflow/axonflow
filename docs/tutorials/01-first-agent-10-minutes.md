@@ -29,7 +29,7 @@ Before starting, confirm you have:
 - Your **Client ID** and **Client Secret** (from CloudFormation Outputs or your deployment configuration)
 - One of the following installed:
   - **Go 1.25+** (`go version`)
-  - **Python 3.9+** (`python3 --version`)
+  - **Python 3.10+** (`python3 --version`)
   - **Node.js 18+** (`node --version`)
   - **Java 17+** and **Maven 3.8+** (`java --version`, `mvn --version`)
 
@@ -51,7 +51,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==4.1.0
+pip3 install axonflow==5.0.0
 ```
 
 ### TypeScript

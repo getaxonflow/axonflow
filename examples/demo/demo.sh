@@ -92,7 +92,7 @@ check_services() {
 check_python() {
     if ! command -v python3 &> /dev/null; then
         echo -e "${RED}Error: Python 3 not found${NC}"
-        echo "Install Python 3.9+ to run the demo examples"
+        echo "Install Python 3.10+ to run the demo examples"
         exit 1
     fi
 
@@ -101,9 +101,9 @@ check_python() {
     PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
     PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
 
-    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 9 ]); then
-        echo -e "${RED}Error: Python 3.9+ required (found $PYTHON_VERSION)${NC}"
-        echo "The axonflow SDK requires Python 3.9 or later."
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
+        echo -e "${RED}Error: Python 3.10+ required (found $PYTHON_VERSION)${NC}"
+        echo "The axonflow SDK requires Python 3.10 or later."
         echo "Please upgrade Python: https://www.python.org/downloads/"
         exit 1
     fi

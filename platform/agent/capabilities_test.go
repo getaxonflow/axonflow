@@ -43,11 +43,19 @@ func TestGetCapabilitiesContainsVersionDiscovery(t *testing.T) {
 
 func TestGetSDKCompatibility(t *testing.T) {
 	compat := getSDKCompatibility()
-	if compat.MinSDKVersion == "" {
+	if len(compat.MinSDKVersion) == 0 {
 		t.Error("expected non-empty MinSDKVersion")
 	}
-	if compat.RecommendedSDKVersion == "" {
+	if len(compat.RecommendedSDKVersion) == 0 {
 		t.Error("expected non-empty RecommendedSDKVersion")
+	}
+	for _, lang := range []string{"python", "typescript", "go", "java"} {
+		if compat.MinSDKVersion[lang] == "" {
+			t.Errorf("expected MinSDKVersion for %q", lang)
+		}
+		if compat.RecommendedSDKVersion[lang] == "" {
+			t.Errorf("expected RecommendedSDKVersion for %q", lang)
+		}
 	}
 }
 

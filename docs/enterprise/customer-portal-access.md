@@ -116,7 +116,7 @@ curl -X POST https://{stack-domain}:8090/api/v1/admin/onboard-customer \
     "name": "Acme Corporation",
     "tier": "Enterprise",
     "validity_days": 365,
-    "email": "admin@acme.com",
+    "contact_email": "admin@acme.com",
     "password": "secure-portal-password"
   }'
 ```

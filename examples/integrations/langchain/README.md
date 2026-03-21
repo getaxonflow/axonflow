@@ -20,7 +20,7 @@ This integration shows how to wrap LangChain LLM calls with AxonFlow governance:
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - Docker (for local AxonFlow)
 - OpenAI API key
 

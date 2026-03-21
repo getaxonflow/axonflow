@@ -1,8 +1,8 @@
 # AxonFlow
 
-**AxonFlow is a production governance control plane for AI systems.**
+**AxonFlow is a runtime control layer for production AI systems.**
 
-It sits between your applications and LLM providers to enforce policy, control workflow execution, and produce audit evidence before and during runtime.
+It operates inside the execution path, governing how AI systems interact with tools, APIs, data, and models in real time. AxonFlow enforces policy, controls workflow execution, and produces audit-grade evidence before and during runtime.
 
 It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, and **Java**.
 
@@ -15,7 +15,7 @@ Production AI systems are multi-step, non-deterministic, and increasingly regula
 - Routing gateways improve connectivity, but do not provide approval-backed execution control.
 - Compliance teams need evidence and replayability, not only logs.
 
-AxonFlow addresses this with a single governance control plane across model calls, tool calls, and long-running workflows.
+AxonFlow addresses this with a single runtime control layer across model calls, tool calls, and long-running workflows.
 
 ## What AxonFlow Is
 
@@ -220,7 +220,7 @@ curl -X POST http://localhost:8080/api/policy/pre-check \
 Experience the complete governance suite: PII detection, SQL injection blocking,
 proxy and gateway modes, MCP connectors, multi-agent planning, and observability.
 
-**Requires:** Python 3.9+ (for demo scripts)
+**Requires:** Python 3.10+ (for demo scripts)
 
 ```bash
 # Ensure your .env has a valid API key
@@ -410,8 +410,6 @@ go get github.com/getaxonflow/axonflow-sdk-go/v4  # Go
 </dependency>
 ```
 
-> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export DO_NOT_TRACK=1` or `export AXONFLOW_TELEMETRY=off`. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
-
 ### Python
 
 ```python
@@ -495,6 +493,8 @@ if (approval.isApproved()) {
 ```
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
+
+> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export DO_NOT_TRACK=1` or `export AXONFLOW_TELEMETRY=off`. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
 
 ---
 
