@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.3.1] - 2026-03-23
+
+### Community
+
+#### Fixed
+
+- **Cross-tenant dynamic policy cache collision** (#1410): Dynamic policy cache was keyed by policy name, causing policies with the same name across different tenants to silently overwrite each other. In multi-tenant deployments, this could result in step gate evaluations using the wrong tenant's policy or skipping policies entirely due to tenant mismatch. Cache key changed from `name` to `policy_id` to ensure all policies coexist regardless of naming. Includes `GetPolicy()` fallback search by name field for backward compatibility.
+
+---
+
 ## [5.3.0] - 2026-03-17
 
 ### Community
