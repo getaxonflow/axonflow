@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: March 2026** | **Platform: v5.3.0** | **SDKs: Python v5.0.0, Go/TypeScript/Java v4.2.0**
+**Last Updated: March 2026** | **Platform: v5.3.0** | **SDKs: Python v5.1.0, Go/TypeScript/Java v4.2.0**
 
 **Build your first AI agent in 10 minutes** - No ML experience required.
 

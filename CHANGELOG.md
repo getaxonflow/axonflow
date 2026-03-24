@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.3.1] - 2026-03-24
+
+### Community
+
+#### Added
+
+- **Audit compliance summary endpoint**: `POST /api/v1/audit/summary` returns aggregated compliance stats for a date range including total events, breakdown by severity and action type, top triggered policies, and a compliance score. Used by the Customer Portal audit page.
+
+#### Fixed
+
+- **Cross-tenant dynamic policy cache collision** (#1410): Dynamic policy cache was keyed by policy name, causing policies with the same name across different tenants to silently overwrite each other. In multi-tenant deployments, this could result in step gate evaluations using the wrong tenant's policy or skipping policies entirely due to tenant mismatch. Cache key changed from `name` to `policy_id` to ensure all policies coexist regardless of naming. Includes `GetPolicy()` fallback search by name field for backward compatibility.
+- **step_input/tool_input field resolution in dynamic policies** (#1408): Dynamic policy conditions referencing `step_input.*` and `tool_input.*` fields now resolve correctly during step gate evaluation. Previously these fields were not extracted from the policy evaluation context, causing conditions like `step_input.query contains "DROP"` to never match.
+- **Step gate policy matching for step_input fields** (#1409): Fixed policy matching logic to correctly evaluate conditions against step_input fields in the dynamic policy engine. Added comprehensive test coverage for step_input and tool_input condition matching.
+
+### Enterprise
+
+#### Added
+
+- **SSO metadata URL fetcher**: `POST /api/v1/sso/fetch-metadata` in the Customer Portal fetches and parses SAML IDP metadata from a URL. Includes SSRF protection (HTTPS-only, private IP rejection, DNS validation), per-session rate limiting (5/min), 1MB response size limit, and automatic provider detection (Okta, Azure AD, Google, OneLogin, Auth0).
+
+#### Fixed
+
+- **Portal proxy missing headers**: Customer Portal orchestrator proxy now forwards `X-Org-ID` and `X-Client-ID` headers from session context, fixing 401 errors on SEBI compliance endpoints and other handlers that require these headers.
+- **SEBI audit export integer-only org IDs**: SEBI audit export service migrated from `int orgID` to `string tenantID` for consistency with the rest of the platform. Portal tenants with string IDs (e.g., `travel-us`) now work correctly with SEBI endpoints.
+- **SEBI org name lookup**: `getOrgName` now queries `org_id` column first (matching the varchar tenant ID from portal), with fallback to numeric `id` for backward compatibility.
+- **Compliance page crash on EU AI Act data**: Fixed `StatusBadge` component crash when `status` is undefined. Added null-safety guard. Also fixed `getEUAIActConformity()` API function to transform the backend list response (`{assessments: [...]}`) into the single-object shape (`{status, risk_level, last_assessment, requirements}`) expected by the compliance page UI.
+- **SCIM page smoke test false positive**: Playwright smoke test `afterEach` filter now catches browser-level "Failed to load resource: 403/404" console errors that lack endpoint URL context, preventing false failures on the SCIM settings page when SCIM provisioning is not configured.
+
+---
+
 ## [5.3.0] - 2026-03-17
 
 ### Community

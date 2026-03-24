@@ -381,7 +381,16 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 			"loaded_at": time.Now().Unix(),
 		}
 
-		newPolicies[name] = policyData
+		// Use policy_id as cache key to avoid cross-tenant name collisions.
+		// Different tenants can have policies with the same name, and using name
+		// as the key caused the second policy to overwrite the first.
+		// Fall back to name for backward compatibility with legacy policies that
+		// might not have a policy_id set.
+		cacheKey := policyID
+		if cacheKey == "" {
+			cacheKey = name
+		}
+		newPolicies[cacheKey] = policyData
 	}
 
 	if err = rows.Err(); err != nil {
@@ -492,20 +501,25 @@ func (e *DatabaseDynamicPolicyEngine) GetPolicy(name string) (map[string]interfa
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	policy, exists := e.policies[name]
-	if !exists {
-		return nil, false
+	// Try direct cache key lookup first (policy_id or name)
+	if policy, exists := e.policies[name]; exists {
+		if policyMap, ok := policy.(map[string]interface{}); ok {
+			policyMap["database_accessed"] = true
+			return policyMap, true
+		}
 	}
 
-	policyMap, ok := policy.(map[string]interface{})
-	if !ok {
-		return nil, false
+	// Fall back to searching by name field (cache key may be policy_id)
+	for _, policy := range e.policies {
+		if policyMap, ok := policy.(map[string]interface{}); ok {
+			if policyMap["name"] == name {
+				policyMap["database_accessed"] = true
+				return policyMap, true
+			}
+		}
 	}
 
-	// Mark that database was accessed
-	policyMap["database_accessed"] = true
-
-	return policyMap, true
+	return nil, false
 }
 
 func (e *DatabaseDynamicPolicyEngine) GetAllPolicies() map[string]interface{} {
@@ -569,17 +583,24 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	}
 
 	// Check for tenant-specific policies
-	for name, policy := range policies {
+	for cacheKey, policy := range policies {
 		policyMap, ok := policy.(map[string]interface{})
 		if !ok {
 			continue
+		}
+
+		// Use the policy name from the data (cache key may be policy_id)
+		name, _ := policyMap["name"].(string)
+		if name == "" {
+			name = cacheKey
 		}
 
 		// Check if policy applies to this tenant
 		metadata, ok := policyMap["_metadata"].(map[string]interface{})
 		if ok {
 			policyTenant, _ := metadata["tenant_id"].(string)
-			if policyTenant != "global" && policyTenant != tenantID {
+			// "global" and "default" (NULL tenant_id) apply to all tenants
+			if policyTenant != "global" && policyTenant != "default" && policyTenant != tenantID {
 				continue
 			}
 		}
@@ -610,7 +631,8 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 		if len(conditions) > 0 {
 			allMatch := true
 			for _, cond := range conditions {
-				if !e.evaluateCondition(cond, req) {
+				condResult := e.evaluateCondition(cond, req)
+				if !condResult {
 					allMatch = false
 					break
 				}
