@@ -384,6 +384,15 @@ func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorReques
 			return req.Context[key]
 		}
 		return req.Context
+	case "step_input", "tool_input":
+		// Step/tool input fields are stored in context as "step_input.fieldName" / "tool_input.fieldName"
+		// by WCPPolicyAdapter.convertToOrchestratorRequest. Allow policies to reference them
+		// directly (e.g. "step_input.recipient_count") without requiring the "context." prefix.
+		if len(parts) > 1 && req.Context != nil {
+			key := strings.Join(parts, ".")
+			return req.Context[key]
+		}
+		return nil
 	case "media":
 		// Media governance fields — resolved from context["media_analysis"]
 		// These are populated by the media analysis pipeline before policy evaluation.

@@ -2392,6 +2392,113 @@ paths:
                 items:
                   $ref: '#/components/schemas/AuditLogEntry'
 
+  /api/v1/audit/summary:
+    post:
+      tags:
+        - Audit
+      summary: Get audit compliance summary
+      description: |
+        Returns aggregated compliance summary statistics for a given date range.
+        Includes total event counts, breakdowns by severity and action type,
+        top triggered policies, and an overall compliance score.
+      operationId: getAuditSummary
+      parameters:
+        - name: X-Tenant-ID
+          in: header
+          required: true
+          description: |
+            Tenant identifier for scoping results. Required to prevent cross-tenant
+            data aggregation. Falls back to X-Org-ID if X-Tenant-ID is not provided.
+          schema:
+            type: string
+          example: "travel-us"
+        - name: X-Org-ID
+          in: header
+          description: Organization identifier (fallback when X-Tenant-ID is absent)
+          schema:
+            type: string
+          example: "travel-us"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - start_time
+                - end_time
+              properties:
+                start_time:
+                  type: string
+                  format: date-time
+                  description: Start of date range (RFC3339)
+                end_time:
+                  type: string
+                  format: date-time
+                  description: End of date range (RFC3339, must be after start_time)
+            example:
+              start_time: "2026-01-01T00:00:00Z"
+              end_time: "2026-04-01T00:00:00Z"
+      responses:
+        '200':
+          description: Compliance summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_events:
+                    type: integer
+                    description: Total audit events in the date range
+                  by_severity:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    description: Event counts by severity (info, warning, critical)
+                  by_action:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                    description: Event counts by action type (llm_call, tool_call, etc.)
+                  top_policies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        policy_name:
+                          type: string
+                        trigger_count:
+                          type: integer
+                        block_count:
+                          type: integer
+                    description: Top 10 policies by trigger count
+                  compliance_score:
+                    type: number
+                    format: float
+                    description: "Compliance score 0-100 (100 = no blocked events)"
+              example:
+                total_events: 1523
+                by_severity:
+                  info: 1400
+                  warning: 100
+                  critical: 23
+                by_action:
+                  llm_call: 1200
+                  tool_call: 300
+                  policy_check: 23
+                top_policies:
+                  - policy_name: "demo-block-bulk-email"
+                    trigger_count: 15
+                    block_count: 15
+                  - policy_name: "pii-detection"
+                    trigger_count: 8
+                    block_count: 3
+                compliance_score: 98.5
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          description: Internal server error
+
   /api/v1/audit/tenant/{tenant_id}:
     get:
       tags:

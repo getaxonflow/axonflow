@@ -606,7 +606,15 @@ func (s *PolicyService) evaluateCondition(cond PolicyCondition, req *TestPolicyR
 			fieldValue = req.Context[contextField]
 		}
 	default:
-		return false
+		// For fields like "step_input.recipient_count" or "tool_input.query",
+		// look them up directly in the context map (WCPPolicyAdapter stores them
+		// with dotted keys like "step_input.recipient_count" in OrchestratorRequest.Context).
+		if req.Context != nil {
+			fieldValue = req.Context[cond.Field]
+		}
+		if fieldValue == nil {
+			return false
+		}
 	}
 
 	// Evaluate the condition

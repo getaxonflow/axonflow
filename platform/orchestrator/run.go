@@ -499,6 +499,7 @@ func Run() {
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tool-call", auditToolCallHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tenant/{tenant_id}", tenantAuditLogsHandler).Methods("GET")
+	r.HandleFunc("/api/v1/audit/summary", auditSummaryRequestHandler).Methods("POST", "OPTIONS")
 
 	// Workflow endpoints
 	r.HandleFunc("/api/v1/workflows/executions/tenant/{tenant_id}", tenantWorkflowExecutionsHandler).Methods("GET")
@@ -2264,6 +2265,19 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+}
+
+var auditSummaryHandler *AuditSummaryHandler
+
+func auditSummaryRequestHandler(w http.ResponseWriter, r *http.Request) {
+	if auditSummaryHandler == nil {
+		var db *sql.DB
+		if auditLogger != nil {
+			db = auditLogger.db
+		}
+		auditSummaryHandler = NewAuditSummaryHandler(db)
+	}
+	auditSummaryHandler.HandleSummary(w, r)
 }
 
 func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
