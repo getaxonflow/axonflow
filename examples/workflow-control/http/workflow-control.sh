@@ -169,6 +169,13 @@ gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/
         "step_input": {
             "tool": "code_reviewer",
             "code": "def sort_list(items): return sorted(items)"
+        },
+        "tool_context": {
+            "tool_name": "code_reviewer",
+            "tool_type": "function",
+            "tool_input": {
+                "code": "def sort_list(items): return sorted(items)"
+            }
         }
     }')
 
@@ -441,6 +448,13 @@ else
             "step_input": {
                 "tool": "risky_action",
                 "action": "delete_all"
+            },
+            "tool_context": {
+                "tool_name": "risky_action",
+                "tool_type": "function",
+                "tool_input": {
+                    "action": "delete_all"
+                }
             }
         }')
 

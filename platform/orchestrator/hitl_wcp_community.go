@@ -19,6 +19,8 @@ import (
 	"log"
 	"time"
 
+	logutil "axonflow/platform/shared/logger"
+
 	"github.com/google/uuid"
 
 	"axonflow/platform/agent/license"
@@ -95,7 +97,7 @@ func (a *evalWCPHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprov
 		return nil, fmt.Errorf("failed to create HITL approval: %w", err)
 	}
 
-	log.Printf("✅ [WCP-HITL-Eval] Created approval request: %s for step %s (expires %s)", requestID, req.StepName, expiresAt.Format(time.RFC3339))
+	log.Printf("✅ [WCP-HITL-Eval] Created approval request: %s for step %s (expires %s)", requestID, logutil.Sanitize(req.StepName), expiresAt.Format(time.RFC3339))
 
 	return &HITLApprovalResponse{
 		ApprovalID: requestID,

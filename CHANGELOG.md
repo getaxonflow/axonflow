@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.4.0] - 2026-03-25
+
+### Community
+
+#### Security
+
+- **Log injection prevention** (CodeQL): Sanitize user-controlled values in log statements across agent proxy, WCP service, and HITL handler using `logutil.Sanitize()`. Prevents newline/ANSI injection into structured logs. Affects `platform/agent/proxy.go`, `platform/orchestrator/workflow_control/service.go`, `platform/orchestrator/hitl_wcp_community.go`.
+
+#### Added
+
+- **Policy conflict detection** (#1062): New `POST /api/v1/policies/conflicts` endpoint analyzes active policies for contradictions (`contradictory_action`), shadows, and redundancies. Helps teams validate policy configurations before deploying changes. Available at Evaluation tier and above, sharing the simulation rate limiter.
+- **Policy simulation examples**: 8-step deterministic E2E examples in HTTP/cURL, Python, TypeScript, Go, and Java demonstrating simulate, impact report, and conflict detection workflows.
+- **LangGraph tool output enforcement example** (#1413): Python example demonstrating `tool_output_wrapper()` for policy enforcement on local `@tool` outputs in LangGraph workflows.
+- **LangGraph 1-line wrapper example**: New `langgraph_wrapper_example.py` demonstrating `wrap_langgraph()` for transparent governance of compiled LangGraph StateGraphs without modifying the graph definition.
+- **Per-tool governance in HTTP example**: `workflow-control.sh` now uses the `tool_context` field in step gate requests for tool_call steps, demonstrating structured tool-level policy evaluation.
+
+### Enterprise
+
+#### Security
+
+- **Log injection prevention** (CodeQL): Sanitize user-controlled values in checkpoint-service and customer-portal log statements. Affects `ee/platform/checkpoint-service/pkg/{notification,handler,bakeoff}`, `ee/platform/customer-portal/api/orchestrator_proxy.go`.
+- **Prototype pollution fix** (Dependabot GHSA-rf6f-7fwh-wjgh): Updated `flatted` dependency in customer-portal-ui via `npm audit fix`.
+
+#### Added
+
+- **Portal: Policy Simulation Modal**: "Simulate Policies" button on the Policies page for dry-running all active policies against test queries. Shows allowed/blocked status, risk score, applied policies, and daily usage.
+- **Portal: Policy Impact Modal**: "Preview Impact" per-policy button for batch-testing a policy against multiple inputs. Displays match/block rates with per-input results table. Auto-detects conflicts on the target policy.
+- **OpenAPI spec**: Added `POST /api/v1/policies/conflicts` endpoint definition.
+
+---
+
 ## [5.3.1] - 2026-03-24
 
 ### Community

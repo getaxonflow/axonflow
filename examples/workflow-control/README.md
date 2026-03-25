@@ -138,6 +138,31 @@ async with AxonFlow(endpoint="http://localhost:8080") as client:
 
 See `python/langgraph_example.py` for a full example.
 
+### 3. LangGraph Wrapper (Python)
+
+For the simplest integration, `wrap_langgraph()` wraps a compiled StateGraph in one call. Governance gates fire automatically at every node transition via LangChain callbacks:
+
+```python
+from axonflow import AxonFlow
+from axonflow.adapters import wrap_langgraph, NodeConfig
+
+async with AxonFlow(endpoint="http://localhost:8080") as client:
+    governed = wrap_langgraph(
+        compiled_graph,
+        client=client,
+        workflow_name="research-pipeline",
+        node_config={
+            "plan": NodeConfig(step_type="llm_call", model="claude-sonnet-4-20250514", provider="anthropic"),
+            "search": NodeConfig(step_type="tool_call"),
+        },
+    )
+    result = await governed.ainvoke({"query": "AI governance"})
+```
+
+The `GovernedGraph` returned by `wrap_langgraph()` is reusable — each `ainvoke()` creates a new AxonFlow workflow. Per-node overrides (step type, model, provider) are configured via `NodeConfig`.
+
+See `python/langgraph_wrapper_example.py` for a full example.
+
 ## Gate Decisions
 
 | Decision | Description |
