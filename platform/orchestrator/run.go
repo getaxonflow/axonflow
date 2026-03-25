@@ -1190,9 +1190,10 @@ func initializeComponents() {
 		dynamicPolicyAPIHandler = NewDynamicPolicyAPIHandler(policyService)
 		log.Println("Dynamic Policy API initialized ✅ (ADR-026)")
 
-		// Initialize Policy Simulation (Evaluation tier+)
+		// Initialize Policy Simulation + Conflict Detection (Evaluation tier+)
+		conflictService := NewPolicyConflictService(policyService)
 		if tierChecker != nil && tierChecker.IsPolicySimulationEnabled() {
-			policySimulationHandler = NewPolicySimulationHandler(dynamicPolicyEngine, policyService, tierChecker)
+			policySimulationHandler = NewPolicySimulationHandler(dynamicPolicyEngine, policyService, conflictService, tierChecker)
 			log.Println("Policy Simulation API initialized ✅ (Evaluation tier)")
 		}
 

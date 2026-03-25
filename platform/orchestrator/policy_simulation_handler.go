@@ -22,9 +22,10 @@ type PolicySimulationHandler struct {
 		EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
 		ListActivePolicies() []DynamicPolicy
 	}
-	policyService *PolicyService
-	tierChecker   LicenseChecker
-	rateLimiter   *simulationRateLimiter
+	policyService   *PolicyService
+	conflictService *PolicyConflictService
+	tierChecker     LicenseChecker
+	rateLimiter     *simulationRateLimiter
 }
 
 // simulationRateLimiter tracks daily simulation usage per tenant.
@@ -67,12 +68,13 @@ func (rl *simulationRateLimiter) tryConsume(tenantID string, limit int) (bool, i
 func NewPolicySimulationHandler(engine interface {
 	EvaluateDynamicPolicies(context.Context, OrchestratorRequest) *PolicyEvaluationResult
 	ListActivePolicies() []DynamicPolicy
-}, policyService *PolicyService, tierChecker LicenseChecker) *PolicySimulationHandler {
+}, policyService *PolicyService, conflictService *PolicyConflictService, tierChecker LicenseChecker) *PolicySimulationHandler {
 	return &PolicySimulationHandler{
-		engine:        engine,
-		policyService: policyService,
-		tierChecker:   tierChecker,
-		rateLimiter:   simRateLimiter,
+		engine:          engine,
+		policyService:   policyService,
+		conflictService: conflictService,
+		tierChecker:     tierChecker,
+		rateLimiter:     simRateLimiter,
 	}
 }
 
@@ -80,6 +82,7 @@ func NewPolicySimulationHandler(engine interface {
 func (h *PolicySimulationHandler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/policies/simulate", h.SimulatePolicies).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/policies/impact-report", h.ImpactReport).Methods("POST", "OPTIONS")
+	r.HandleFunc("/api/v1/policies/conflicts", h.DetectConflicts).Methods("POST", "OPTIONS")
 }
 
 // SimulatePolicies handles POST /api/v1/policies/simulate.
@@ -136,6 +139,20 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 	}
 	if orchReq.RequestType == "" {
 		orchReq.RequestType = "simulation"
+	}
+
+	// Propagate tenant ID into evaluation context so tenant-scoped policies
+	// are included in the simulation (not just global policies).
+	if tenantID != "" {
+		if orchReq.User.TenantID == "" {
+			orchReq.User.TenantID = tenantID
+		}
+		if orchReq.Client.TenantID == "" {
+			orchReq.Client.TenantID = tenantID
+		}
+		if orchReq.Client.ID == "" {
+			orchReq.Client.ID = tenantID
+		}
 	}
 
 	// Evaluate
@@ -271,6 +288,63 @@ func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Re
 		GeneratedAt:      time.Now(),
 		Tier:             string(h.tierChecker.Tier()),
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// DetectConflicts handles POST /api/v1/policies/conflicts.
+// Analyzes active policies for contradictions, shadows, and redundancies.
+func (h *PolicySimulationHandler) DetectConflicts(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// License gate
+	if !h.tierChecker.IsPolicySimulationEnabled() {
+		writeJSONError(w, http.StatusForbidden, ErrCodeFeatureRequiresEvaluation,
+			"Policy conflict detection requires an Evaluation or Enterprise license. Get a free eval license: https://getaxonflow.com/evaluation-license")
+		return
+	}
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		if tid, ok := r.Context().Value("tenant_id").(string); ok {
+			tenantID = tid
+		}
+	}
+	if tenantID == "" {
+		writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "X-Tenant-ID header is required")
+		return
+	}
+
+	// Rate limit check
+	limit := h.tierChecker.MaxSimulationsPerDay()
+	allowed, current := h.rateLimiter.tryConsume(tenantID, limit)
+	if !allowed {
+		writeJSONError(w, http.StatusTooManyRequests, ErrCodeSimulationLimitExceeded,
+			"Daily simulation limit reached ("+strconv.Itoa(current)+"/"+strconv.Itoa(limit)+"). Upgrade to Enterprise for unlimited simulations: https://getaxonflow.com/pricing")
+		return
+	}
+
+	var req PolicyConflictRequest
+	if r.Body != nil && r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	resp, err := h.conflictService.DetectConflicts(r.Context(), tenantID, req.PolicyID)
+	if err != nil {
+		log.Printf("[DetectConflicts] Error: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to detect conflicts")
+		return
+	}
+
+	resp.Tier = string(h.tierChecker.Tier())
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

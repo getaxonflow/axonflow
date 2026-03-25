@@ -243,7 +243,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 	}
 
 	s.logger.Printf("[WorkflowControl] Created workflow %s (%s) source=%s",
-		workflow.WorkflowID, workflow.WorkflowName, workflow.Source)
+		workflow.WorkflowID, logutil.Sanitize(workflow.WorkflowName), logutil.Sanitize(string(workflow.Source)))
 
 	// Audit log: workflow created
 	auditMeta := map[string]interface{}{
@@ -571,7 +571,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 		return fmt.Errorf("failed to abort workflow: %w", err)
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow aborted: %s reason=%s", workflowID, reason)
+	s.logger.Printf("[WorkflowControl] Workflow aborted: %s reason=%s", workflowID, logutil.Sanitize(reason))
 
 	// Audit log: workflow aborted
 	s.logAudit(ctx, &WorkflowAuditEntry{

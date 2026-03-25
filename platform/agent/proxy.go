@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/serviceauth"
 
 	"github.com/gorilla/mux"
@@ -100,7 +101,7 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 
 	// Custom error handler for logging and 502 responses
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[Proxy] Error proxying to %s: %v (path: %s)", serviceName, err, r.URL.Path)
+		log.Printf("[Proxy] Error proxying to %s: %v (path: %s)", logutil.Sanitize(serviceName), err, logutil.Sanitize(r.URL.Path))
 		// Record proxy error for circuit breaker auto-trip (#1176 Phase 2B)
 		if circuitBreakerInstance != nil {
 			orgID := r.Header.Get("X-Org-ID")
@@ -119,7 +120,7 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 
 	// Custom ModifyResponse for logging successful proxied responses
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		log.Printf("[Proxy] %s responded: %d %s (path: %s)", serviceName, resp.StatusCode, resp.Status, resp.Request.URL.Path)
+		log.Printf("[Proxy] %s responded: %d %s (path: %s)", logutil.Sanitize(serviceName), resp.StatusCode, resp.Status, logutil.Sanitize(resp.Request.URL.Path))
 		return nil
 	}
 
@@ -137,7 +138,7 @@ func (h *ReverseProxyHandler) ProxyToOrchestrator(w http.ResponseWriter, r *http
 	}
 
 	start := time.Now()
-	log.Printf("[Proxy] Proxying to Orchestrator: %s %s", r.Method, r.URL.Path)
+	log.Printf("[Proxy] Proxying to Orchestrator: %s %s", r.Method, logutil.Sanitize(r.URL.Path))
 	h.orchestratorProxy.ServeHTTP(w, r)
 	log.Printf("[Proxy] Orchestrator request completed in %v", time.Since(start))
 }
@@ -153,7 +154,7 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 	}
 
 	start := time.Now()
-	log.Printf("[Proxy] Proxying to Portal: %s %s", r.Method, r.URL.Path)
+	log.Printf("[Proxy] Proxying to Portal: %s %s", r.Method, logutil.Sanitize(r.URL.Path))
 	h.portalProxy.ServeHTTP(w, r)
 	log.Printf("[Proxy] Portal request completed in %v", time.Since(start))
 }
@@ -196,7 +197,7 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			client, err = validateClientCredentials(ctx, clientID, clientSecret)
 		}
 		if err != nil {
-			log.Printf("[Proxy] Auth failed for client '%s': %v", clientID, err)
+			log.Printf("[Proxy] Auth failed for client '%s': %v", logutil.Sanitize(clientID), err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":"Authentication failed"}`))

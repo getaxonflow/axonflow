@@ -5772,6 +5772,83 @@ paths:
         '403':
           description: Feature requires Evaluation or Enterprise license
 
+  /api/v1/policies/conflicts:
+    post:
+      tags: [Policy Simulation]
+      summary: Detect policy conflicts (Evaluation+)
+      description: |
+        Analyzes active policies for contradictions, shadows, and redundancies.
+        Optionally filter to conflicts involving a specific policy.
+        Requires Evaluation or Enterprise license.
+      operationId: detectPolicyConflicts
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policy_id:
+                  type: string
+                  description: Optional — filter to conflicts involving this policy
+      responses:
+        '200':
+          description: Conflict analysis results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conflicts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        policy_a:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                        policy_b:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                        conflict_type:
+                          type: string
+                          enum: [contradictory_action, shadow, redundant]
+                        description:
+                          type: string
+                        severity:
+                          type: string
+                          enum: [high, medium, low]
+                        overlapping_field:
+                          type: string
+                  total_policies:
+                    type: integer
+                  conflict_count:
+                    type: integer
+                  checked_at:
+                    type: string
+                    format: date-time
+                  tier:
+                    type: string
+        '403':
+          description: Feature requires Evaluation or Enterprise license
+        '429':
+          description: Daily simulation limit exceeded
+
   /api/v1/evidence/export:
     post:
       tags: [Evidence Export]

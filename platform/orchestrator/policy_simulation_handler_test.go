@@ -95,7 +95,7 @@ func TestSimulatePolicies_Success(t *testing.T) {
 		activePolicies: make([]DynamicPolicy, 5),
 	}
 
-	handler := NewPolicySimulationHandler(engine, nil, checker)
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
 	// Reset rate limiter for test
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  make(map[string]int),
@@ -145,7 +145,7 @@ func TestSimulatePolicies_CommunityForbidden(t *testing.T) {
 		tier:             license.TierCommunity,
 		policySimEnabled: false,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	body, _ := json.Marshal(SimulatePoliciesRequest{Query: "test"})
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader(body))
@@ -168,7 +168,7 @@ func TestSimulatePolicies_RateLimit(t *testing.T) {
 		evaluateResult: &PolicyEvaluationResult{Allowed: true},
 	}
 
-	handler := NewPolicySimulationHandler(engine, nil, checker)
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  map[string]int{"test-tenant": 2}, // Already at limit
 		resetAt: nextUTCMidnight(),
@@ -192,7 +192,7 @@ func TestImpactReport_InputLimitExceeded(t *testing.T) {
 		policySimEnabled: true,
 		maxImpactInputs:  3,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	inputs := make([]ImpactReportInput, 5) // Over limit of 3
 	for i := range inputs {
@@ -218,7 +218,7 @@ func TestSimulatePolicies_OPTIONS(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/policies/simulate", nil)
 	w := httptest.NewRecorder()
@@ -239,7 +239,7 @@ func TestSimulatePolicies_EmptyQuery(t *testing.T) {
 		policySimEnabled: true,
 		maxSimsPerDay:    100,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  make(map[string]int),
 		resetAt: nextUTCMidnight(),
@@ -270,7 +270,7 @@ func TestSimulatePolicies_InvalidJSON(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	req := httptest.NewRequest("POST", "/api/v1/policies/simulate", bytes.NewReader([]byte("{invalid json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -298,7 +298,7 @@ func TestSimulatePolicies_UnlimitedTier(t *testing.T) {
 		activePolicies: make([]DynamicPolicy, 3),
 	}
 
-	handler := NewPolicySimulationHandler(engine, nil, checker)
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  make(map[string]int),
 		resetAt: nextUTCMidnight(),
@@ -346,7 +346,7 @@ func TestSimulatePolicies_TenantFromContext(t *testing.T) {
 		activePolicies: make([]DynamicPolicy, 2),
 	}
 
-	handler := NewPolicySimulationHandler(engine, nil, checker)
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  make(map[string]int),
 		resetAt: nextUTCMidnight(),
@@ -371,7 +371,7 @@ func TestImpactReport_EmptyPolicyID(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	body, _ := json.Marshal(ImpactReportRequest{
 		PolicyID: "",
@@ -401,7 +401,7 @@ func TestImpactReport_NoInputs(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	body, _ := json.Marshal(ImpactReportRequest{
 		PolicyID: "pol-1",
@@ -431,7 +431,7 @@ func TestImpactReport_InvalidJSON(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader([]byte("not json")))
 	req.Header.Set("X-Tenant-ID", "test-tenant")
@@ -449,7 +449,7 @@ func TestImpactReport_OPTIONS(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/policies/impact-report", nil)
 	w := httptest.NewRecorder()
@@ -524,7 +524,7 @@ func TestSimulatePolicies_DefaultRequestType(t *testing.T) {
 		activePolicies: make([]DynamicPolicy, 0),
 	}
 
-	handler := NewPolicySimulationHandler(engine, nil, checker)
+	handler := NewPolicySimulationHandler(engine, nil, nil, checker)
 	handler.rateLimiter = &simulationRateLimiter{
 		counts:  make(map[string]int),
 		resetAt: nextUTCMidnight(),
@@ -559,7 +559,7 @@ func TestSimulationHandler_RegisterRoutes(t *testing.T) {
 		tier:             license.TierEvaluation,
 		policySimEnabled: true,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 	r := mux.NewRouter()
 	handler.RegisterRoutes(r)
 
@@ -572,6 +572,10 @@ func TestSimulationHandler_RegisterRoutes(t *testing.T) {
 	if !r.Match(req, &match) {
 		t.Error("Expected /api/v1/policies/impact-report POST to match")
 	}
+	req = httptest.NewRequest("POST", "/api/v1/policies/conflicts", nil)
+	if !r.Match(req, &match) {
+		t.Error("Expected /api/v1/policies/conflicts POST to match")
+	}
 }
 
 func TestImpactReport_CommunityForbidden(t *testing.T) {
@@ -579,7 +583,7 @@ func TestImpactReport_CommunityForbidden(t *testing.T) {
 		tier:             license.TierCommunity,
 		policySimEnabled: false,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	body, _ := json.Marshal(ImpactReportRequest{PolicyID: "pol-1", Inputs: []ImpactReportInput{{Query: "test"}}})
 	req := httptest.NewRequest("POST", "/api/v1/policies/impact-report", bytes.NewReader(body))
@@ -598,7 +602,7 @@ func TestImpactReport_NilPolicyService(t *testing.T) {
 		policySimEnabled: true,
 		maxImpactInputs:  50,
 	}
-	handler := NewPolicySimulationHandler(nil, nil, checker)
+	handler := NewPolicySimulationHandler(nil, nil, nil, checker)
 
 	body, _ := json.Marshal(ImpactReportRequest{
 		PolicyID: "pol-1",
@@ -641,7 +645,7 @@ func TestImpactReport_Success(t *testing.T) {
 	policySvc := NewPolicyServiceWithLicense(repo, nil, checker)
 
 	engine := &mockPolicyEngineForSim{}
-	handler := NewPolicySimulationHandler(engine, policySvc, checker)
+	handler := NewPolicySimulationHandler(engine, policySvc, nil, checker)
 
 	now := time.Now()
 
