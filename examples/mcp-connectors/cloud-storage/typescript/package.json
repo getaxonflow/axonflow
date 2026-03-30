@@ -1,0 +1,16 @@
+{
+  "name": "axonflow-cloud-storage-example",
+  "version": "1.0.0",
+  "description": "AxonFlow cloud storage connector example using TypeScript SDK",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^4.3.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}

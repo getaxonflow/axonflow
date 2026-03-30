@@ -69,5 +69,24 @@ connectors:
     max_retries: 3
     tenant_id: "*"
 
+  # S3 connector - connects to MinIO (S3-compatible) from docker-compose
+  # Demonstrates cloud storage connector in Community edition
+  s3:
+    type: s3
+    enabled: true
+    display_name: "S3 Storage (MinIO)"
+    description: "S3-compatible object storage via MinIO for local development"
+    credentials:
+      access_key_id: "${MINIO_ROOT_USER:-minioadmin}"
+      secret_access_key: "${MINIO_ROOT_PASSWORD:-minioadmin}"
+    options:
+      endpoint: "http://${MINIO_HOST:-minio}:${MINIO_PORT:-9000}"
+      region: "us-east-1"
+      force_path_style: true
+      default_bucket: "axonflow-test-bucket"
+    timeout_ms: 30000
+    max_retries: 3
+    tenant_id: "*"
+
 # LLM providers are configured via environment variables in docker-compose.yml
 # (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
