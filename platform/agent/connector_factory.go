@@ -16,13 +16,16 @@ import (
 	"log"
 	"sync"
 
+	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/cassandra"
+	"axonflow/platform/connectors/gcs"
 	httpconnector "axonflow/platform/connectors/http"
 	"axonflow/platform/connectors/mongodb"
 	"axonflow/platform/connectors/mysql"
 	"axonflow/platform/connectors/postgres"
 	"axonflow/platform/connectors/redis"
+	"axonflow/platform/connectors/s3"
 )
 
 // ConnectorCreator is a function that creates a new connector instance.
@@ -167,6 +170,19 @@ func (f *ConnectorFactoryRegistry) RegisterCommunityConnectors() {
 	// HTTP connector (generic API access)
 	f.RegisterOrReplace(ConnectorHTTP, func() base.Connector {
 		return httpconnector.NewHTTPConnector()
+	})
+
+	// Cloud storage connectors
+	f.RegisterOrReplace(ConnectorS3, func() base.Connector {
+		return s3.NewS3Connector()
+	})
+
+	f.RegisterOrReplace(ConnectorAzureBlob, func() base.Connector {
+		return azureblob.NewAzureBlobConnector()
+	})
+
+	f.RegisterOrReplace(ConnectorGCS, func() base.Connector {
+		return gcs.NewGCSConnector()
 	})
 
 	f.logger.Printf("Registered %d Community connectors", f.Count())

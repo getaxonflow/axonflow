@@ -229,7 +229,7 @@ func TestConnectorFactoryRegistry_RegisterCommunityConnectors(t *testing.T) {
 	factory := NewConnectorFactoryRegistry()
 	factory.RegisterCommunityConnectors()
 
-	// Community connectors: postgres, mysql, mongodb, cassandra, redis, http
+	// Community connectors: postgres, mysql, mongodb, cassandra, redis, http, s3, azure_blob, gcs
 	expectedCommunityConnectors := []string{
 		ConnectorPostgres,
 		ConnectorMySQL,
@@ -237,6 +237,9 @@ func TestConnectorFactoryRegistry_RegisterCommunityConnectors(t *testing.T) {
 		ConnectorCassandra,
 		ConnectorRedis,
 		ConnectorHTTP,
+		ConnectorS3,
+		ConnectorAzureBlob,
+		ConnectorGCS,
 	}
 
 	for _, ct := range expectedCommunityConnectors {
@@ -265,9 +268,9 @@ func TestGetDefaultConnectorFactory(t *testing.T) {
 		t.Fatal("Expected non-nil default factory")
 	}
 
-	// Should have Community connectors registered
-	if factory.Count() < 6 {
-		t.Errorf("Expected at least 6 Community connectors, got %d", factory.Count())
+	// Should have Community connectors registered (9 in community build)
+	if factory.Count() < 9 {
+		t.Errorf("Expected at least 9 Community connectors, got %d", factory.Count())
 	}
 
 	// Verify singleton behavior
@@ -311,6 +314,119 @@ func TestCreateConnectorFactory(t *testing.T) {
 	}
 	if conn.Type() != "custom-redis" {
 		t.Errorf("Expected type 'custom-redis', got '%s'", conn.Type())
+	}
+}
+
+func TestConnectorFactoryRegistry_CloudStorageAreCommunity(t *testing.T) {
+	factory := NewConnectorFactoryRegistry()
+	factory.RegisterCommunityConnectors()
+
+	cloudStorageConnectors := []string{ConnectorS3, ConnectorAzureBlob, ConnectorGCS}
+
+	for _, ct := range cloudStorageConnectors {
+		if !factory.IsRegistered(ct) {
+			t.Errorf("Cloud storage connector '%s' should be registered as Community", ct)
+		}
+
+		conn, err := factory.Create(ct)
+		if err != nil {
+			t.Errorf("Failed to create cloud storage connector '%s': %v", ct, err)
+			continue
+		}
+		if conn == nil {
+			t.Errorf("Expected non-nil connector for '%s'", ct)
+			continue
+		}
+		if conn.Type() == "" {
+			t.Errorf("Expected non-empty type for '%s'", ct)
+		}
+		if conn.Version() == "" {
+			t.Errorf("Expected non-empty version for '%s'", ct)
+		}
+		caps := conn.Capabilities()
+		if len(caps) == 0 {
+			t.Errorf("Expected non-empty capabilities for '%s'", ct)
+		}
+	}
+
+	if factory.Count() != 9 {
+		t.Errorf("Expected exactly 9 Community connectors, got %d", factory.Count())
+	}
+}
+
+func TestConnectorFactoryRegistry_EnterpriseConnectorsNotInCommunity(t *testing.T) {
+	factory := NewConnectorFactoryRegistry()
+	factory.RegisterCommunityConnectors()
+
+	enterpriseOnlyConnectors := []string{
+		ConnectorAmadeus,
+		ConnectorSalesforce,
+		ConnectorSlack,
+		ConnectorSnowflake,
+		ConnectorHubSpot,
+		ConnectorJira,
+		ConnectorServiceNow,
+	}
+
+	for _, ct := range enterpriseOnlyConnectors {
+		if factory.IsRegistered(ct) {
+			t.Errorf("Enterprise connector '%s' should NOT be registered in Community factory", ct)
+		}
+
+		_, err := factory.Create(ct)
+		if err == nil {
+			t.Errorf("Expected error when creating enterprise connector '%s' from Community factory", ct)
+		}
+	}
+}
+
+func TestConnectorFactoryRegistry_CloudStorageConnectorMetadata(t *testing.T) {
+	factory := NewConnectorFactoryRegistry()
+	factory.RegisterCommunityConnectors()
+
+	tests := []struct {
+		connectorType    string
+		expectedType     string
+		expectedCapQuery bool
+		expectedCapExec  bool
+	}{
+		{ConnectorS3, "s3", true, true},
+		{ConnectorAzureBlob, "azureblob", true, true},
+		{ConnectorGCS, "gcs", true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.connectorType, func(t *testing.T) {
+			conn, err := factory.Create(tt.connectorType)
+			if err != nil {
+				t.Fatalf("Failed to create connector: %v", err)
+			}
+
+			if conn.Type() != tt.expectedType {
+				t.Errorf("Expected type '%s', got '%s'", tt.expectedType, conn.Type())
+			}
+
+			if conn.Name() == "" {
+				t.Error("Expected non-empty Name()")
+			}
+
+			if conn.Version() == "" {
+				t.Error("Expected non-empty Version()")
+			}
+
+			caps := conn.Capabilities()
+			capSet := make(map[string]bool)
+			for _, c := range caps {
+				capSet[c] = true
+			}
+
+			if tt.expectedCapQuery && !capSet["query"] {
+				t.Error("Expected 'query' capability")
+			}
+			if tt.expectedCapExec && !capSet["execute"] {
+				t.Error("Expected 'execute' capability")
+			}
+		})
 	}
 }
 
