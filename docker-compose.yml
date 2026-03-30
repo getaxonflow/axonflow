@@ -340,12 +340,45 @@ services:
     networks:
       - axonflow-network
 
+  # MinIO (S3-compatible object storage for local development)
+  # Bucket creation is handled via the entrypoint script below.
+  minio:
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    entrypoint: >
+      /bin/sh -c "
+      minio server /data --console-address ':9001' &
+      MINIO_PID=$$!;
+      until mc ready local 2>/dev/null; do sleep 1; done;
+      mc alias set local http://localhost:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/axonflow-test-bucket;
+      wait $$MINIO_PID
+      "
+    container_name: axonflow-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    networks:
+      - axonflow-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres-data:
     driver: local
   prometheus-data:
     driver: local
   grafana-data:
+    driver: local
+  minio-data:
     driver: local
 
 networks:

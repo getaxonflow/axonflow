@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.4.1] - 2026-03-30
+
+### Community
+
+#### Fixed
+
+- **Cloud storage connectors now available in Community edition**: S3, Azure Blob, and GCS connectors were implemented in the community code path but only registered in the enterprise connector factory. Moved registration to the community factory so all users can use cloud storage connectors without an enterprise license.
+
+#### Added
+
+- **Cloud storage connector examples**: New E2E examples for S3/MinIO operations with hardened assertions in HTTP, Go, Python, TypeScript, and Java (`examples/mcp-connectors/cloud-storage/`).
+- **MinIO service in community Docker Compose**: Added MinIO to `docker-compose.yml` for local S3-compatible storage testing without requiring enterprise mode.
+
+---
+
 ## [5.4.0] - 2026-03-25
 
 ### Community
