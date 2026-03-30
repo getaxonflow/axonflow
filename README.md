@@ -1,8 +1,8 @@
 # AxonFlow
 
-**AxonFlow is a runtime control layer for production AI systems.**
+**AxonFlow is the execution authority and system of record for AI decisions in production workflows.**
 
-It operates inside the execution path, governing how AI systems interact with tools, APIs, data, and models in real time. AxonFlow enforces policy, controls workflow execution, and produces audit-grade evidence before and during runtime.
+It operates inside the execution path between your workflow logic and model or tool calls. Gateways can help at the request boundary and observability tools can tell you what happened later. AxonFlow records why an action was allowed, blocked, paused, or resumed while the workflow is running.
 
 It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, and **Java**.
 
@@ -11,27 +11,29 @@ It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScri
 Production AI systems are multi-step, non-deterministic, and increasingly regulated. In practice:
 
 - Prompt filters alone do not control downstream tool execution.
-- Orchestration frameworks coordinate steps, but do not enforce governance boundaries.
-- Routing gateways improve connectivity, but do not provide approval-backed execution control.
-- Compliance teams need evidence and replayability, not only logs.
+- Orchestration frameworks coordinate steps, but do not decide whether a risky step should execute.
+- Routing gateways improve connectivity, but do not give you workflow-level approvals or safe resume semantics.
+- Logs show that something happened, but not always why it was allowed or who owned the decision path.
 
-AxonFlow addresses this with a single runtime control layer across model calls, tool calls, and long-running workflows.
+AxonFlow addresses this with a runtime execution layer that enforces policy at the step boundary and records decision context at execution time.
 
 ## What AxonFlow Is
 
 AxonFlow is composed of:
 
-- **Agent runtime** for inline policy evaluation and governance checks (`:8080`)
-- **Orchestrator runtime** for workflow execution control and routing (`:8081`)
+- **Agent runtime** for inline policy evaluation and execution checks (`:8080`)
+- **Orchestrator runtime** for workflow execution state and routing (`:8081`)
 - **Policy engine** for tenant and org governance policies
 - **Workflow Control Plane (WCP)** for gated, step-level workflow execution
-- **Audit and evidence layer** for replay, export, and compliance workflows
+- **Decision record and evidence layer** for replay, export, and compliance workflows
 
 Execution modes:
 
 - **Gateway Mode**: Pre-check + your own LLM call + audit
 - **Proxy Mode**: AxonFlow enforces and proxies model/tool execution
 - **WCP Mode**: Governed multi-step workflow execution with step gates
+
+AxonFlow is not a workflow engine, observability dashboard, or prompt gateway. Your application or orchestrator still decides what to do next. AxonFlow decides whether the next model or tool action can run and records that decision.
 
 ## What AxonFlow Does
 
@@ -62,7 +64,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Code Governance** — Detect LLM-generated code, identify language and security issues (secrets, eval, shell injection). Logged for compliance.
 
-**Audit Trails** — Every request logged with full context. Know what was blocked, why, and by which policy. Token usage tracked for cost analysis.
+**Decision Records & Audit Trails** — Every request and governed step is recorded with decision context. Know what was blocked, why it was blocked, and which policy or approval path applied. Token usage tracked for cost analysis.
 
 **Decision & Execution Replay** — Debug governed workflows with step-by-step state and policy decisions. Timeline view and compliance exports included.
 
@@ -74,7 +76,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Proxy Mode** — Full request lifecycle: policy, planning, routing, audit. Recommended for new projects.
 
-**Gateway Mode** — Governance for existing stacks (LangChain, CrewAI, and similar frameworks). Pre-check → your call → audit.
+**Gateway Mode** — Request-boundary governance for existing stacks. Pre-check → your call → audit.
 
 > **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
 

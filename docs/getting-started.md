@@ -2,7 +2,7 @@
 
 **Last Updated: March 2026** | **Platform: v5.3.0** | **SDKs: Python v5.2.0, Go/TypeScript/Java v4.3.0**
 
-**Build your first AI agent in 10 minutes** - No ML experience required.
+**Get AxonFlow running locally in about 10 minutes.**
 
 ---
 
@@ -20,7 +20,9 @@
 
 ## What is AxonFlow?
 
-AxonFlow is an **AI governance platform** that makes it easy to:
+AxonFlow is the **execution authority and system of record for AI decisions in production workflows**. It sits in the execution path between your application logic and LLM or tool calls.
+
+It helps you:
 
 - ✅ Deploy production-ready AI agents with built-in governance
 - ✅ Connect to your data sources (databases, APIs, file systems)
@@ -28,7 +30,9 @@ AxonFlow is an **AI governance platform** that makes it easy to:
 - ✅ Enforce policies, rate limits, and permissions automatically
 - ✅ Monitor usage, costs, and performance in real-time
 
-**Think of it as a "control plane" for AI agents** - you focus on defining what your agent should do, AxonFlow handles the infrastructure, security, and governance.
+Logs can tell you that a call happened. AxonFlow records why a step was allowed, blocked, paused, or resumed.
+
+**AxonFlow is not a workflow engine.** Your code or orchestrator still decides what to do next. AxonFlow enforces execution policy and records the decision at runtime.
 
 ---
 
