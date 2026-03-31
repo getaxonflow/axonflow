@@ -91,5 +91,5 @@ Media governance is controlled by these policies:
 ## Next Steps
 
 - [PII Detection](../pii-detection/) - Text-based PII detection
-- [Media Governance Guide](../../docs/guides/media-governance.md) - Full configuration reference
+- [Media Governance Guide](https://docs.getaxonflow.com/docs/security/media-governance/) - Full configuration reference
 - [Gateway Mode](../integrations/gateway-mode/) - Full LLM integration

@@ -17,7 +17,7 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python v5.2.0, Go/TypeScript/Java v4.3.0.
+SDK versions: Python v5.3.0, Go/TypeScript/Java v4.3.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
@@ -33,7 +33,7 @@ SDK versions: Python v5.2.0, Go/TypeScript/Java v4.3.0.
 go get github.com/getaxonflow/axonflow-sdk-go/v4
 
 # Python
-pip3 install axonflow==5.2.0
+pip3 install axonflow==5.3.0
 
 # Java (Maven)
 # Add to pom.xml:

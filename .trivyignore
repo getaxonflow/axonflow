@@ -59,3 +59,14 @@ CVE-2025-52999  # jackson-core in openai-gpt3-java - example code only
 # ------------------------------------------------------------------------------
 
 # Add confirmed false positives here after verification
+
+# ------------------------------------------------------------------------------
+# Unfixable - Waiting for Upstream
+# ------------------------------------------------------------------------------
+
+# github.com/docker/docker indirect dependency - fix requires v29.3.1 but
+# Go module only publishes up to v28.x as +incompatible. Module is not
+# directly used (go mod why: "main module does not need package").
+# Bumped to v28.5.2 (latest available). Will resolve when docker publishes
+# v29+ as a proper Go module or when the pulling dependency updates.
+CVE-2026-34040  # docker/docker AuthZ bypass - indirect, unused, no v29 available

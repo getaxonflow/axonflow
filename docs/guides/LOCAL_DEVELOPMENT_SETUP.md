@@ -514,9 +514,9 @@ golangci-lint run ./platform/...
 
 ## Related Documentation
 
-- [Getting Started](/docs/getting-started/) - Quick start guide
-- [Configuration](/docs/configuration/) - Platform configuration reference
-- [MCP Connectors](/docs/mcp/) - Connector setup and configuration
+- [Getting Started](https://docs.getaxonflow.com/docs/getting-started/) - Quick start guide
+- [Deployment Overview](https://docs.getaxonflow.com/docs/deployment/overview/) - Platform deployment and runtime setup
+- [MCP Connectors](https://docs.getaxonflow.com/docs/mcp/overview/) - Connector setup and configuration
 
 ---
 

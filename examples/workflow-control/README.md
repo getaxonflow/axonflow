@@ -236,6 +236,6 @@ async for event in client.stream_execution_status(workflow_id=workflow.workflow_
 
 ## Next Steps
 
-- [Workflow Control Plane Guide](../../docs/guides/workflow-control-plane.md)
-- [Policy Configuration](../../docs/guides/policies.md)
-- [LangGraph Integration](../../docs/integrations/langgraph.md)
+- [Workflow Control Plane Guide](https://docs.getaxonflow.com/docs/orchestration/wcp/overview/)
+- [Policy Configuration](https://docs.getaxonflow.com/docs/orchestration/wcp/policy-configuration/)
+- [LangGraph Integration](https://docs.getaxonflow.com/docs/orchestration/wcp/langgraph-wrapper/)

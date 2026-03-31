@@ -235,7 +235,7 @@ Features:
 
 ## Related Documentation
 
-- [API Reference](/docs/api/)
-- [Workflow Engine](/docs/orchestration/)
-- [Compliance Features](/docs/governance/)
-- [Execution Viewer Guide](/docs/guides/execution-viewer.md)
+- [API Reference](https://docs.getaxonflow.com/docs/api/overview/)
+- [Workflow Engine](https://docs.getaxonflow.com/docs/orchestration/overview/)
+- [Compliance Features](https://docs.getaxonflow.com/docs/governance/overview/)
+- [Execution Viewer Guide](https://docs.getaxonflow.com/docs/orchestration/execution-viewer/)
