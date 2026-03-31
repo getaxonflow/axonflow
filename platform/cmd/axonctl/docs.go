@@ -71,7 +71,7 @@ Examples:
 				fmt.Printf("   Reason: %s\n", reason)
 			}
 			fmt.Printf("\n📧 Instructions for %s:\n", email)
-			fmt.Println("   1. Visit: https://docs.getaxonflow.com/docs/protected/")
+			fmt.Println("   1. Visit: https://enterprise-docs.getaxonflow.com/docs/overview/")
 			fmt.Println("   2. Enter your email address when prompted")
 			fmt.Println("   3. Check your email for a one-time PIN")
 			fmt.Println("   4. Enter the PIN to access the documentation")

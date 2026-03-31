@@ -125,8 +125,8 @@ mvn compile exec:java -q
 
 ## Related Documentation
 
-- [Workflow Control Plane Guide](../../docs/guides/workflow-control-plane.md)
-- [Policy Configuration](../../docs/guides/policies.md)
+- [Workflow Control Plane Guide](https://docs.getaxonflow.com/docs/orchestration/wcp/overview/)
+- [Policy Configuration](https://docs.getaxonflow.com/docs/orchestration/wcp/policy-configuration/)
 - [API Reference](../../docs/api/orchestrator-api.yaml)
 
 ## Issues

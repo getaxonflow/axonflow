@@ -475,9 +475,9 @@ MAP v1.0 introduces **confirm** and **step** execution modes that bridge MAP and
 
 ## Related Documentation
 
-- [Workflow Control Plane](/docs/orchestration/wcp/) - WCP integration guide
-- [SDK Feature Coverage](/docs/SDK_FEATURE_COVERAGE/) - MAP and WCP SDK methods
-- [Community vs Enterprise Features](/docs/features/community-vs-enterprise/) - Feature availability matrix
+- [Workflow Control Plane](https://docs.getaxonflow.com/docs/orchestration/wcp/overview/) - WCP integration guide
+- [SDK Overview](https://docs.getaxonflow.com/docs/sdk/overview/) - MAP and WCP integration patterns across SDKs
+- [Community vs Enterprise Features](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/) - Feature availability matrix
 
 ---
 

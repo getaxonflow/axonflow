@@ -202,9 +202,9 @@ For AWS Marketplace:
 
 ## Related
 
-- [Getting Started](/docs/getting-started.md)
-- [CloudFormation Deployment](/docs/deployment/cloudformation.md)
-- [AWS Marketplace](/docs/deployment/aws-marketplace.md)
+- [Getting Started](https://docs.getaxonflow.com/docs/getting-started/)
+- [CloudFormation Deployment](https://enterprise-docs.getaxonflow.com/docs/operations/cloudformation/)
+- [AWS Marketplace](https://enterprise-docs.getaxonflow.com/docs/operations/aws-marketplace/)
 
 ## Support
 

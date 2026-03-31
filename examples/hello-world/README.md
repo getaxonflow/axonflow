@@ -258,7 +258,7 @@ docker compose logs agent orchestrator
 
 - **[Support Demo](../support-demo/)** - Real-world customer support example with PII detection
 - **[PII Detection](../pii-detection/)** - See how AxonFlow blocks sensitive data
-- **[Gateway vs Proxy Mode](../../docs/guides/integration-modes.md)** - Choose your integration pattern
+- **[Gateway vs Proxy Mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode/)** - Choose your integration pattern
 
 ---
 

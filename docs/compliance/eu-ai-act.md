@@ -1,6 +1,6 @@
 # EU AI Act Compliance Guide
 
-*Last updated: March 2026 | AxonFlow Platform v5.3.0 | SDKs: Python v5.2.0, Go/TypeScript/Java v4.3.0*
+*Last updated: March 2026 | AxonFlow Platform v5.4.1 | SDKs: Python v5.3.0, Go/TypeScript/Java v4.3.0*
 
 AxonFlow provides comprehensive support for EU AI Act compliance. This guide covers the key features and APIs available for organizations operating AI systems in the European Union.
 
@@ -564,7 +564,7 @@ var response = client.proxyLlmCall(
 4. **Run conformity assessment** before deployment
 5. **Monitor metrics** for ongoing compliance
 
-For detailed setup instructions, see the [Enterprise Installation Guide](/docs/enterprise/installation.md).
+For detailed setup instructions, see the [Enterprise Deployment Guide](https://enterprise-docs.getaxonflow.com/docs/deployment-guide/).
 
 ## Related Documentation
 

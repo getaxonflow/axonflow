@@ -182,6 +182,6 @@ client = AxonFlow(
 
 ## Related Documentation
 
-- [PII Detection](/docs/security/pii-detection.md) - Supported PII types and configuration
-- [SQL Injection Scanning](/docs/security/sql-injection-scanning.md) - SQLi detection modes
-- [Policy Enforcement](/docs/policies/) - Custom policy rules
+- [PII Detection](https://docs.getaxonflow.com/docs/security/pii-detection/) - Supported PII types and configuration
+- [SQL Injection Scanning](https://docs.getaxonflow.com/docs/security/sql-injection-scanning/) - SQLi detection modes
+- [Policy Enforcement](https://docs.getaxonflow.com/docs/policies/overview/) - Custom policy rules
