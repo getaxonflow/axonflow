@@ -21,6 +21,7 @@ import (
 
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/config"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // ConnectorFactory creates a connector instance based on type
@@ -250,7 +251,7 @@ func (r *Registry) Unregister(name string) error {
 
 	if exists {
 		if err := connector.Disconnect(ctx); err != nil {
-			r.logger.Printf("Error disconnecting connector '%s': %v", name, err)
+			r.logger.Printf("Error disconnecting connector '%s': %v", logutil.Sanitize(name), err)
 		}
 	}
 

@@ -12,7 +12,7 @@
 
 | Software | Version | Purpose |
 |----------|---------|---------|
-| Go | 1.23+ | Backend development |
+| Go | 1.25+ | Backend development |
 | Node.js | 20+ | Portal frontend |
 | Docker | 24+ | Container runtime |
 | Docker Compose | 2.20+ | Multi-container orchestration |
@@ -24,7 +24,7 @@
 
 ```bash
 # Check all prerequisites
-go version          # go1.23.x or higher
+go version          # go1.25.x or higher
 node --version      # v20.x.x or higher
 docker --version    # Docker version 24.x.x
 docker compose version  # v2.20.x or higher
@@ -417,7 +417,7 @@ Recommended extensions:
 
 1. Open project as Go module
 2. Enable Go modules integration
-3. Set GOROOT to Go 1.23+
+3. Set GOROOT to Go 1.25+
 4. Configure run configurations for agent/orchestrator
 
 ---

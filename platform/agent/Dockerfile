@@ -86,6 +86,7 @@ RUN --mount=type=bind,source=.,target=/src \
 # For enterprise builds, include the enterprise tag
 # For Community builds, no tag is needed (uses Community stubs)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
+    -trimpath -ldflags="-s -w" \
     $(if [ "$EDITION" = "enterprise" ]; then echo "-tags enterprise"; fi) \
     -o /app/agent ./cmd/agent
 
@@ -124,7 +125,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
-ARG AXONFLOW_VERSION=4.8.0
+ARG AXONFLOW_VERSION=5.5.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

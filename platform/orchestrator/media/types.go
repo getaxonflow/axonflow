@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"time"
 
+	"axonflow/platform/connectors/base"
+
 	_ "golang.org/x/image/webp"
 )
 
@@ -245,6 +247,12 @@ func isPrivateIP(ip net.IP) bool {
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
+// validateURLForSSRF is the pre-flight SSRF validation function.
+// It is a variable so that tests can override it when using loopback test servers.
+var validateURLForSSRF = func(rawURL string) error {
+	return base.ValidateURL(rawURL, base.DefaultURLValidationOptions())
+}
+
 // ssrfSafeClient is an HTTP client that blocks connections to private/internal IP ranges.
 // The net.Dialer.Control callback inspects the resolved IP at the socket level,
 // preventing DNS rebinding and redirect-based SSRF attacks.
@@ -296,6 +304,13 @@ func (m *MediaContent) fetchURLData(ctx context.Context) ([]byte, error) {
 
 	if m.URL == "" {
 		return nil, &MediaError{Code: ErrMediaInvalidContent, Message: "URL is empty"}
+	}
+
+	// Pre-flight SSRF validation: check scheme, resolve DNS, and block private IPs
+	// before making the network request. This is defense-in-depth alongside the
+	// socket-level check in ssrfSafeClient.
+	if err := validateURLForSSRF(m.URL); err != nil {
+		return nil, &MediaError{Code: ErrMediaDownloadFailed, Message: fmt.Sprintf("URL blocked by SSRF protection: %v", err)}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

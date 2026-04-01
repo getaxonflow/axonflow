@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"axonflow/platform/shared/serviceauth"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // Note: Internal service authentication is handled by the shared serviceauth package.
@@ -82,7 +83,7 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	}
 
 	log.Printf("[MCPRouter] Routing query to agent - connector: %s, query: %s, user: %s",
-		connector, req.Query, req.User.Email)
+		logutil.Sanitize(connector), logutil.Sanitize(req.Query), logutil.Sanitize(req.User.Email))
 
 	tenantID := req.User.TenantID
 	if tenantID == "" {
@@ -151,7 +152,7 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("agent returned status %d", resp.StatusCode)
 		}
-		log.Printf("[MCPRouter] Agent MCP query failed: %s (duration: %v)", errMsg, duration)
+		log.Printf("[MCPRouter] Agent MCP query failed: %s (duration: %v)", logutil.Sanitize(errMsg), duration)
 		return &OrchestratorResponse{
 			RequestID:      req.RequestID,
 			Success:        false,
@@ -168,7 +169,7 @@ func (r *MCPQueryRouter) RouteToAgent(ctx context.Context, req OrchestratorReque
 	durationMs, _ := agentResp["duration_ms"].(float64)
 
 	log.Printf("[MCPRouter] Agent MCP query succeeded - connector: %s, rows: %d, agent_duration: %.0fms, total_duration: %v",
-		connector, int(rowCount), durationMs, duration)
+		logutil.Sanitize(connector), int(rowCount), durationMs, duration)
 
 	// Build orchestrator response
 	// Format matches OrchestratorResponse structure

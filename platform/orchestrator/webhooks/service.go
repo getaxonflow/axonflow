@@ -323,7 +323,7 @@ func (s *Service) deliverWebhook(ctx context.Context, sub Subscription, eventTyp
 		}
 
 		lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-		s.logger.Printf("[Webhooks] Delivery %s attempt %d got HTTP %d: %s", deliveryID, attempt+1, resp.StatusCode, responseBody)
+		s.logger.Printf("[Webhooks] Delivery %s attempt %d got HTTP %d: %s", deliveryID, attempt+1, resp.StatusCode, logutil.Sanitize(responseBody))
 	}
 
 	// All retries exhausted

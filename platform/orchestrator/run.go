@@ -1515,13 +1515,13 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if len(req.Media) > 0 && mediaPipeline != nil && isMediaGovernanceEnabled(&req) {
 		// Check per-tenant analyzer restrictions (enforcement pending pipeline support)
 		if allowed := getAllowedAnalyzers(&req); allowed != nil {
-			log.Printf("[MEDIA] Tenant analyzer restriction in effect: %v (pipeline filtering pending)", allowed)
+			log.Printf("[MEDIA] Tenant analyzer restriction in effect: %v (pipeline filtering pending)", logutil.Sanitize(fmt.Sprintf("%v", allowed)))
 		}
 		mediaItems := convertMediaRequestsToMediaContent(req.Media)
 		mediaStart := time.Now()
 		results, mediaErr := mediaPipeline.AnalyzeMedia(ctx, req.RequestID, mediaItems)
 		if mediaErr != nil {
-			log.Printf("[MEDIA] Analysis failed for request %s: %v", req.RequestID, mediaErr)
+			log.Printf("[MEDIA] Analysis failed for request %s: %v", logutil.Sanitize(req.RequestID), mediaErr)
 			if mediaPipeline.GetEnforcementStrategy(ctx) == media.EnforcementFailClosed {
 				sendErrorResponse(w, fmt.Sprintf("media analysis failed: %v", mediaErr), http.StatusForbidden)
 				return
@@ -1603,7 +1603,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			delete(mediaCtx, "_pii_set") // Remove temporary dedup set
 			req.Context["media_analysis"] = mediaCtx
-			log.Printf("[MEDIA] Analysis complete for request %s: %d item(s) analyzed", req.RequestID, len(results))
+			log.Printf("[MEDIA] Analysis complete for request %s: %d item(s) analyzed", logutil.Sanitize(req.RequestID), len(results))
 		}
 	}
 
@@ -1643,7 +1643,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 			req.Context["policy_routing_reason"] = policyResult.RoutingReason
 		}
 		log.Printf("[POLICY_ROUTING] Injected routing hints: preferred=%s, allowed=%v, reason=%s",
-			policyResult.PreferredProvider, policyResult.AllowedProviders, policyResult.RoutingReason)
+			logutil.Sanitize(policyResult.PreferredProvider), policyResult.AllowedProviders, logutil.Sanitize(policyResult.RoutingReason))
 	}
 
 	if !policyResult.Allowed {
@@ -1681,7 +1681,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// MCP queries should go to agent MCP handler, not LLM
 	if req.RequestType == "mcp-query" {
 		log.Printf("[Orchestrator] Routing MCP query to agent - connector: %v, query: %s",
-			req.Context["connector"], req.Query)
+			logutil.Sanitize(fmt.Sprintf("%v", req.Context["connector"])), logutil.Sanitize(req.Query))
 
 		response, err := mcpQueryRouter.RouteToAgent(ctx, req)
 		latencyMs := time.Since(startTime).Milliseconds()
@@ -1723,7 +1723,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if len(queryPreview) > 50 {
 		queryPreview = queryPreview[:50] + "..."
 	}
-	log.Printf("[LLM] Request received: skip_llm=%v, query=%q", req.SkipLLM, queryPreview)
+	log.Printf("[LLM] Request received: skip_llm=%v, query=%q", req.SkipLLM, logutil.Sanitize(queryPreview))
 
 	if req.SkipLLM {
 		log.Printf("[LLM] SKIPPING: Using mock response (skip_llm=true)")
@@ -1779,7 +1779,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 				orchestratorMetrics.recordRequest(req.RequestType, "unknown", latencyMsErr, false, false, 0, 0)
 			}
 
-			sendErrorResponse(w, "LLM routing failed: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "LLM routing failed", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -2245,7 +2245,7 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	results, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
-		sendErrorResponse(w, "Audit search failed: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Audit search failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -2323,7 +2323,7 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	results, err := auditLogger.SearchAuditLogs(searchReq)
 	if err != nil {
-		sendErrorResponse(w, "Failed to fetch tenant audit logs: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to fetch tenant audit logs", http.StatusInternalServerError)
 		return
 	}
 
@@ -2398,7 +2398,7 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxyVerified := proxyTokenValidator != nil && r.Header.Get("X-Axonflow-Proxy-Auth") != ""
 	if !proxyVerified && clientID != tenantID {
-		log.Printf("[AuditToolCall] BLOCKED: clientID %q does not match X-Tenant-ID %q (no proxy auth)", clientID, tenantID)
+		log.Printf("[AuditToolCall] BLOCKED: clientID %q does not match X-Tenant-ID %q (no proxy auth)", logutil.Sanitize(clientID), logutil.Sanitize(tenantID))
 		sendErrorResponse(w, "Client ID does not match tenant scope", http.StatusForbidden)
 		return
 	}
@@ -2981,7 +2981,7 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate plan ID
 	planID := fmt.Sprintf("plan_%d_%s", time.Now().Unix(), generateRandomString(8))
 
-	log.Printf("[GeneratePlan] Query: %s, Domain: %s, Mode: %s, PlanID: %s", req.Query, req.Domain, req.ExecutionMode, planID)
+	log.Printf("[GeneratePlan] Query: %s, Domain: %s, Mode: %s, PlanID: %s", logutil.Sanitize(req.Query), logutil.Sanitize(req.Domain), logutil.Sanitize(req.ExecutionMode), planID)
 
 	// Step 1: Generate execution plan (without executing)
 	planGenReq := PlanGenerationRequest{
@@ -3122,7 +3122,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 1: Retrieve plan from database (with authorization check)
 	plan, err := planService.GetPlanForExecution(r.Context(), planID, orgID)
 	if err != nil {
-		log.Printf("[ExecutePlan] Failed to retrieve plan %s: %v", planID, err)
+		log.Printf("[ExecutePlan] Failed to retrieve plan %s: %v", logutil.Sanitize(planID), err)
 		if errors.Is(err, planning.ErrPlanNotFound) {
 			sendErrorResponse(w, "Plan not found: "+planID, http.StatusNotFound)
 		} else if errors.Is(err, planning.ErrPlanExpired) {
@@ -3137,7 +3137,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[ExecutePlan] Retrieved plan %s (domain: %s, steps: %d)", planID, plan.Domain, plan.StepCount)
+	log.Printf("[ExecutePlan] Retrieved plan %s (domain: %s, steps: %d)", logutil.Sanitize(planID), logutil.Sanitize(plan.Domain), plan.StepCount)
 
 	// Start unified execution tracking (#1075)
 	var unifiedExecID string
@@ -3163,7 +3163,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			log.Printf("[ExecutePlan] Warning: failed to start unified tracking for %s: %v", planID, err)
+			log.Printf("[ExecutePlan] Warning: failed to start unified tracking for %s: %v", logutil.Sanitize(planID), err)
 		} else {
 			unifiedExecID = execStatus.ExecutionID
 			log.Printf("[ExecutePlan] Started unified execution tracking: %s", unifiedExecID)
@@ -3222,7 +3222,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !policyResult.Allowed {
 		// Log blocked request
-		log.Printf("[ExecutePlan] BLOCKED: Plan %s blocked by policy: %v", planID, policyResult.AppliedPolicies)
+		log.Printf("[ExecutePlan] BLOCKED: Plan %s blocked by policy: %v", logutil.Sanitize(planID), policyResult.AppliedPolicies)
 		auditLogger.LogBlockedRequest(r.Context(), policyReq, policyResult)
 
 		// Mark plan as failed due to policy block
@@ -3289,7 +3289,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			if hitlExec != nil && hitlExec.Status == StatusPaused {
 				// Store execution for later resume via /plans/{id}/steps/{step_id}/approve
 				hitlWorkflowEngine.SaveExecution(hitlExec)
-				log.Printf("[ExecutePlan] Plan %s paused for HITL approval at step %d", planID, hitlExec.PausedAtStep)
+				log.Printf("[ExecutePlan] Plan %s paused for HITL approval at step %d", logutil.Sanitize(planID), hitlExec.PausedAtStep)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusAccepted)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3302,7 +3302,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 				})
 				return
 			}
-			log.Printf("[ExecutePlan] HITL execution failed for plan %s: %v", planID, hitlErr)
+			log.Printf("[ExecutePlan] HITL execution failed for plan %s: %v", logutil.Sanitize(planID), hitlErr)
 			_ = planService.MarkPlanFailed(r.Context(), planID, hitlErr.Error())
 			if mapExecutionTracker != nil && unifiedExecID != "" {
 				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusFailed, hitlErr.Error())
@@ -3313,7 +3313,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// HITL execution completed without pause — convert to standard WorkflowExecution
 		if hitlExec != nil && hitlExec.WorkflowExecution != nil {
 			execution := hitlExec.WorkflowExecution
-			log.Printf("[ExecutePlan] HITL execution completed for plan %s: ExecutionID=%s", planID, execution.ID)
+			log.Printf("[ExecutePlan] HITL execution completed for plan %s: ExecutionID=%s", logutil.Sanitize(planID), execution.ID)
 			var finalResult interface{} = execution.Output
 			if execution.Output != nil {
 				if result, ok := execution.Output["final_result"]; ok {
@@ -3323,7 +3323,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 			_ = planService.MarkPlanCompleted(r.Context(), planID, finalResult)
 			if mapExecutionTracker != nil && unifiedExecID != "" {
 				if err := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); err != nil {
-					log.Printf("[ExecutePlan] Warning: failed to sync HITL step results: %v", err)
+					log.Printf("[ExecutePlan] Warning: failed to sync HITL step results: %v", logutil.Sanitize(err.Error()))
 				}
 				_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "")
 			}
@@ -3363,13 +3363,13 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Client-ID"))
 		}
 		if err != nil {
-			log.Printf("[ExecutePlan] WCP execution setup failed for plan %s: %v", planID, err)
+			log.Printf("[ExecutePlan] WCP execution setup failed for plan %s: %v", logutil.Sanitize(planID), err)
 			_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
 			sendErrorResponse(w, "WCP execution setup failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		// Return immediately — client must call POST /plan/{id}/resume to advance steps
-		log.Printf("[ExecutePlan] Plan %s entering %s mode (workflow=%s)", planID, plan.ExecutionMode, wcpResult.WorkflowID)
+		log.Printf("[ExecutePlan] Plan %s entering %s mode (workflow=%s)", logutil.Sanitize(planID), logutil.Sanitize(plan.ExecutionMode), wcpResult.WorkflowID)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"plan_id":       wcpResult.PlanID,
@@ -3386,12 +3386,12 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		execution, err = workflowEngine.ExecuteWorkflowWithParallelSupport(ctx, workflow, execContext, req.User, plan.Parallel)
 	}
 	if err != nil {
-		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", planID, err)
+		log.Printf("[ExecutePlan] Execution failed for plan %s: %v", logutil.Sanitize(planID), err)
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
 		// Sync partial step results on failure (steps may have partial data)
 		if mapExecutionTracker != nil && unifiedExecID != "" && execution != nil {
 			if syncErr := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); syncErr != nil {
-				log.Printf("[ExecutePlan] Warning: failed to sync partial step results: %v", syncErr)
+				log.Printf("[ExecutePlan] Warning: failed to sync partial step results: %v", logutil.Sanitize(syncErr.Error()))
 			}
 		}
 		// Sync unified tracking on failure (#1075)
@@ -3402,7 +3402,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[ExecutePlan] Execution completed for plan %s: ExecutionID=%s", planID, execution.ID)
+	log.Printf("[ExecutePlan] Execution completed for plan %s: ExecutionID=%s", logutil.Sanitize(planID), execution.ID)
 
 	// Step 4: Extract final result
 	var finalResult interface{}
@@ -3421,20 +3421,20 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Step 5: Mark plan as completed
 	if err := planService.MarkPlanCompleted(r.Context(), planID, finalResult); err != nil {
-		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", planID, err)
+		log.Printf("[ExecutePlan] Warning: failed to mark plan %s as completed: %v", logutil.Sanitize(planID), err)
 	}
 
 	// Sync step-level results to unified tracker (provider, model, tokens, cost, status)
 	if mapExecutionTracker != nil && unifiedExecID != "" {
 		if err := mapExecutionTracker.SyncStepResults(r.Context(), planID, execution.Steps, workflowEngine.GetCostEstimator()); err != nil {
-			log.Printf("[ExecutePlan] Warning: failed to sync step results: %v", err)
+			log.Printf("[ExecutePlan] Warning: failed to sync step results: %v", logutil.Sanitize(err.Error()))
 		}
 	}
 
 	// Sync unified tracking on success (#1075)
 	if mapExecutionTracker != nil && unifiedExecID != "" {
 		if err := mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, ""); err != nil {
-			log.Printf("[ExecutePlan] Warning: failed to sync unified tracking: %v", err)
+			log.Printf("[ExecutePlan] Warning: failed to sync unified tracking: %v", logutil.Sanitize(err.Error()))
 		}
 	}
 
@@ -3473,7 +3473,7 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		PolicyInfo: policyResult, // Include policy evaluation result (Issue #1020)
 	}
 
-	log.Printf("[ExecutePlan] Success in %dms: PlanID=%s, TasksExecuted=%d", executionTimeMs, planID, len(execution.Steps))
+	log.Printf("[ExecutePlan] Success in %dms: PlanID=%s, TasksExecuted=%d", executionTimeMs, logutil.Sanitize(planID), len(execution.Steps))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -3507,12 +3507,12 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 	// Always verify tenant ownership via the plan service before returning any data
 	plan, err := planService.GetPlan(r.Context(), planID)
 	if err != nil {
-		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", planID, err)
+		log.Printf("[GetPlanStatus] Failed to get plan %s: %v", logutil.Sanitize(planID), err)
 		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
 	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
-		log.Printf("[GetPlanStatus] Authorization failed: plan %s belongs to org %s, requested by org %s", planID, plan.OrgID, orgID)
+		log.Printf("[GetPlanStatus] Authorization failed: plan %s belongs to org %s, requested by org %s", logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
 		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 		return
 	}
@@ -3533,7 +3533,7 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Fall through to legacy handler if unified tracking fails
-		log.Printf("[GetPlanStatus] Unified tracking not available for %s, using legacy: %v", planID, err)
+		log.Printf("[GetPlanStatus] Unified tracking not available for %s, using legacy: %v", logutil.Sanitize(planID), err)
 	}
 
 	// Convert plan to unified ExecutionStatus, then to API response.
@@ -3544,7 +3544,7 @@ func getPlanStatusHandler(w http.ResponseWriter, r *http.Request) {
 	response := buildUnifiedStatusResponse(execStatus)
 
 	log.Printf("[GetPlanStatus] Returning plan %s with status %s (legacy path, %.1f%% complete)",
-		planID, plan.Status, execStatus.ProgressPercent)
+		logutil.Sanitize(planID), logutil.Sanitize(string(plan.Status)), execStatus.ProgressPercent)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -3700,7 +3700,7 @@ func cancelPlanHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := r.Header.Get("X-Org-ID")
 
 	if err := planService.CancelPlan(r.Context(), planID, orgID, req.Reason); err != nil {
-		log.Printf("[CancelPlan] Failed to cancel plan %s: %v", planID, err)
+		log.Printf("[CancelPlan] Failed to cancel plan %s: %v", logutil.Sanitize(planID), err)
 		if errors.Is(err, planning.ErrPlanNotFound) {
 			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 			return
@@ -3714,7 +3714,7 @@ func cancelPlanHandler(w http.ResponseWriter, r *http.Request) {
 		_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCancelled, req.Reason)
 	}
 
-	log.Printf("[CancelPlan] Plan %s cancelled: %s", planID, req.Reason)
+	log.Printf("[CancelPlan] Plan %s cancelled: %s", logutil.Sanitize(planID), logutil.Sanitize(req.Reason))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3763,7 +3763,7 @@ func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	plan, err := planService.UpdatePlan(r.Context(), &req)
 	if err != nil {
-		log.Printf("[UpdatePlan] Failed to update plan %s: %v", planID, err)
+		log.Printf("[UpdatePlan] Failed to update plan %s: %v", logutil.Sanitize(planID), err)
 		if errors.Is(err, planning.ErrVersionConflict) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
@@ -3786,7 +3786,7 @@ func updatePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[UpdatePlan] Plan %s updated to version %d", planID, plan.Version)
+	log.Printf("[UpdatePlan] Plan %s updated to version %d", logutil.Sanitize(planID), plan.Version)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3818,7 +3818,7 @@ func getPlanVersionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	versions, err := planService.GetPlanVersions(r.Context(), planID, orgID)
 	if err != nil {
-		log.Printf("[GetPlanVersions] Failed to get versions for plan %s: %v", planID, err)
+		log.Printf("[GetPlanVersions] Failed to get versions for plan %s: %v", logutil.Sanitize(planID), err)
 		if errors.Is(err, planning.ErrPlanNotFound) {
 			sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 			return
@@ -3827,7 +3827,7 @@ func getPlanVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[GetPlanVersions] Returning %d versions for plan %s", len(versions), planID)
+	log.Printf("[GetPlanVersions] Returning %d versions for plan %s", len(versions), logutil.Sanitize(planID))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3881,7 +3881,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Get the plan — must be in "executing" status (set during ExecutePlan)
 	plan, err := planService.GetPlan(r.Context(), planID)
 	if err != nil {
-		log.Printf("[ResumePlan] Plan %s not found: %v", planID, err)
+		log.Printf("[ResumePlan] Plan %s not found: %v", logutil.Sanitize(planID), err)
 		sendErrorResponse(w, "Plan not found", http.StatusNotFound)
 		return
 	}

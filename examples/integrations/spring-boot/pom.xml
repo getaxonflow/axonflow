@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.12</version>
+        <version>3.5.13</version>
         <relativePath/>
     </parent>
 
@@ -24,7 +24,7 @@
         <!-- Override Tomcat version to fix CVE-2026-24734 -->
         <tomcat.version>10.1.52</tomcat.version>
         <!-- Override Spring Framework to fix CVE-2025-41249 -->
-        <spring-framework.version>6.2.11</spring-framework.version>
+        <spring-framework.version>6.2.17</spring-framework.version>
         <!-- Override Jackson to fix GHSA-72hv-8253-57qq -->
         <jackson-bom.version>2.18.6</jackson-bom.version>
     </properties>

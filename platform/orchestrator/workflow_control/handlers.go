@@ -112,7 +112,7 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 				"Maximum concurrent executions reached. Upgrade your license for higher limits: https://getaxonflow.com/evaluation-license")
 			return
 		}
-		h.logger.Printf("[WorkflowControl] CreateWorkflow error: %v", err)
+		h.logger.Printf("[WorkflowControl] CreateWorkflow error: %v", logutil.Sanitize(err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create workflow")
 		return
 	}
@@ -375,7 +375,7 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, http.StatusConflict, "WORKFLOW_TERMINAL", err.Error())
 			return
 		}
-		h.logger.Printf("[WorkflowControl] FailWorkflow error for %s: %v", workflowID, logutil.Sanitize(err.Error()))
+		h.logger.Printf("[WorkflowControl] FailWorkflow error for %s: %v", logutil.Sanitize(workflowID), logutil.Sanitize(err.Error()))
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fail workflow")
 		return
 	}

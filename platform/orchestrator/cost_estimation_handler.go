@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/agent/license"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // costEstimateRateLimiter tracks daily cost estimation usage per tenant.
@@ -213,7 +214,7 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 
 	plan, err := planService.GetPlan(r.Context(), planID)
 	if err != nil {
-		log.Printf("[GetPlanCost] Failed to get plan %s: %v", planID, err)
+		log.Printf("[GetPlanCost] Failed to get plan %s: %v", logutil.Sanitize(planID), err)
 		sendErrorResponse(w, "Plan not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
@@ -227,7 +228,7 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse workflow definition from the plan
 	var workflow Workflow
 	if err := json.Unmarshal(plan.WorkflowDefinition, &workflow); err != nil {
-		log.Printf("[GetPlanCost] Failed to parse workflow for plan %s: %v", planID, err)
+		log.Printf("[GetPlanCost] Failed to parse workflow for plan %s: %v", logutil.Sanitize(planID), err)
 		sendErrorResponse(w, "Failed to parse plan workflow definition", http.StatusInternalServerError)
 		return
 	}

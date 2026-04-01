@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // PlanAuditLogger interface for audit logging plan operations
@@ -121,7 +123,7 @@ func (s *Service) StorePlan(ctx context.Context, req *CreatePlanRequest) (*Plan,
 	}
 
 	log.Printf("[PlanService] Stored plan %s (domain: %s, steps: %d, expires: %v)",
-		plan.PlanID, plan.Domain, plan.StepCount, plan.ExpiresAt)
+		logutil.Sanitize(plan.PlanID), logutil.Sanitize(plan.Domain), plan.StepCount, plan.ExpiresAt)
 
 	// Audit log: plan created
 	s.logAudit(ctx, &PlanAuditEntry{
@@ -160,7 +162,7 @@ func (s *Service) GetPlanForExecution(ctx context.Context, planID string, orgID 
 	// This prevents cross-tenant plan execution
 	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
 		log.Printf("[PlanService] Authorization failed: plan %s belongs to org %s, requested by org %s",
-			planID, plan.OrgID, orgID)
+			logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
 		return nil, ErrPlanNotFound // Return not found to avoid leaking plan existence
 	}
 
@@ -228,7 +230,7 @@ func (s *Service) MarkPlanCompleted(ctx context.Context, planID string, result i
 		return fmt.Errorf("failed to mark plan completed: %w", err)
 	}
 
-	log.Printf("[PlanService] Plan %s completed", planID)
+	log.Printf("[PlanService] Plan %s completed", logutil.Sanitize(planID))
 
 	// Audit log: plan completed
 	if plan != nil {
@@ -258,7 +260,7 @@ func (s *Service) MarkPlanFailed(ctx context.Context, planID string, errMsg stri
 		return fmt.Errorf("failed to mark plan failed: %w", err)
 	}
 
-	log.Printf("[PlanService] Plan %s failed: %s", planID, errMsg)
+	log.Printf("[PlanService] Plan %s failed: %s", logutil.Sanitize(planID), logutil.Sanitize(errMsg))
 
 	// Audit log: plan failed
 	if plan != nil {
@@ -292,7 +294,7 @@ func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, r
 	// Authorization: verify the requesting org matches the plan's org
 	if orgID != "" && plan.OrgID != "" && plan.OrgID != orgID {
 		log.Printf("[PlanService] Cancel authorization failed: plan %s belongs to org %s, requested by org %s",
-			planID, plan.OrgID, orgID)
+			logutil.Sanitize(planID), logutil.Sanitize(plan.OrgID), logutil.Sanitize(orgID))
 		return ErrPlanNotFound // Return not found to avoid leaking plan existence
 	}
 
@@ -305,7 +307,7 @@ func (s *Service) CancelPlan(ctx context.Context, planID string, orgID string, r
 		return fmt.Errorf("failed to cancel plan: %w", err)
 	}
 
-	log.Printf("[PlanService] Plan %s cancelled: %s", planID, reason)
+	log.Printf("[PlanService] Plan %s cancelled: %s", logutil.Sanitize(planID), logutil.Sanitize(reason))
 
 	// Audit log: plan cancelled
 	s.logAudit(ctx, &PlanAuditEntry{
@@ -424,7 +426,7 @@ func (s *Service) UpdatePlan(ctx context.Context, req *UpdatePlanRequest) (*Plan
 		log.Printf("[PlanService] Warning: failed to save plan version: %v", err)
 	}
 
-	log.Printf("[PlanService] Plan %s updated: v%d → v%d (%s)", req.PlanID, req.ExpectedVersion, updatedPlan.Version, changeSummary)
+	log.Printf("[PlanService] Plan %s updated: v%d → v%d (%s)", logutil.Sanitize(req.PlanID), req.ExpectedVersion, updatedPlan.Version, logutil.Sanitize(changeSummary))
 
 	// Audit log
 	s.logAudit(ctx, &PlanAuditEntry{
@@ -530,7 +532,7 @@ func (s *Service) RollbackPlan(ctx context.Context, req *RollbackPlanRequest) (*
 	}
 
 	log.Printf("[PlanService] Plan %s rolled back: v%d → v%d (restored from v%d snapshot)",
-		req.PlanID, plan.Version, restoredPlan.Version, req.TargetVersion)
+		logutil.Sanitize(req.PlanID), plan.Version, restoredPlan.Version, req.TargetVersion)
 
 	// Audit log
 	s.logAudit(ctx, &PlanAuditEntry{

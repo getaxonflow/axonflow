@@ -16,6 +16,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // AuditLogger handles media analysis audit logging.
@@ -66,10 +68,10 @@ func (a *AuditLogger) LogMediaAnalysis(requestID string, result *AggregatedMedia
 
 	// Core audit log (all tiers)
 	a.logger.Printf("request=%s media_index=%d hash=%s mime=%s size=%d analyzers=%d pii=%t safe=%t time_ms=%d",
-		record.RequestID,
+		logutil.Sanitize(record.RequestID),
 		record.MediaIndex,
 		record.SHA256Hash,
-		record.MIMEType,
+		logutil.Sanitize(record.MIMEType),
 		record.FileSizeBytes,
 		record.AnalyzerCount,
 		record.HasPII,
@@ -81,15 +83,15 @@ func (a *AuditLogger) LogMediaAnalysis(requestID string, result *AggregatedMedia
 	if a.isEnterprise {
 		if record.HasFaces {
 			a.logger.Printf("request=%s media_index=%d faces=%d biometric=%t",
-				record.RequestID, record.MediaIndex, record.FaceCount, record.HasBiometricData)
+				logutil.Sanitize(record.RequestID), record.MediaIndex, record.FaceCount, record.HasBiometricData)
 		}
 		if record.NSFWScore > 0 || record.ViolenceScore > 0 {
 			a.logger.Printf("request=%s media_index=%d nsfw=%.2f violence=%.2f",
-				record.RequestID, record.MediaIndex, record.NSFWScore, record.ViolenceScore)
+				logutil.Sanitize(record.RequestID), record.MediaIndex, record.NSFWScore, record.ViolenceScore)
 		}
 		if record.DocumentType != "" {
 			a.logger.Printf("request=%s media_index=%d doc_type=%s",
-				record.RequestID, record.MediaIndex, record.DocumentType)
+				logutil.Sanitize(record.RequestID), record.MediaIndex, logutil.Sanitize(record.DocumentType))
 		}
 	}
 }

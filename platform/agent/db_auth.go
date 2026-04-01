@@ -248,7 +248,7 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 	}
 
 	if !validationResult.Valid {
-		log.Printf("[LICENSE-DEBUG] License INVALID: %s", validationResult.Error)
+		log.Printf("[LICENSE-DEBUG] License INVALID: %s", logutil.Sanitize(validationResult.Error))
 		return nil, fmt.Errorf("license invalid or expired: %s", validationResult.Error)
 	}
 
@@ -318,7 +318,11 @@ func updateAPIKeyLastUsed(ctx context.Context, db *sql.DB, apiKeyID string) {
 	if err != nil {
 		// Log error but don't fail the request
 		// In production, send to monitoring/logging system
-		fmt.Printf("Warning: Failed to update last_used_at for API key %s: %v\n", apiKeyID, err)
+		redactedKeyID := apiKeyID
+		if len(apiKeyID) > 8 {
+			redactedKeyID = apiKeyID[:4] + "***" + apiKeyID[len(apiKeyID)-4:]
+		}
+		fmt.Printf("Warning: Failed to update last_used_at for API key %s: %v\n", redactedKeyID, err)
 	}
 }
 

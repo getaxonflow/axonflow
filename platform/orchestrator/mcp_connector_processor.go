@@ -267,12 +267,12 @@ func (p *MCPConnectorProcessor) formatResponse(stepName string, rows []map[strin
 
 	// Generic formatting
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Found %d result(s):\n\n", len(rows)))
+	fmt.Fprintf(&builder,"Found %d result(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		builder.WriteString(fmt.Sprintf("%d. ", i+1))
+		fmt.Fprintf(&builder,"%d. ", i+1)
 		for k, v := range row {
-			builder.WriteString(fmt.Sprintf("%s: %v, ", k, v))
+			fmt.Fprintf(&builder,"%s: %v, ", k, v)
 		}
 		builder.WriteString("\n")
 	}
@@ -283,14 +283,14 @@ func (p *MCPConnectorProcessor) formatResponse(stepName string, rows []map[strin
 // formatFlightResults formats flight search results
 func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{}) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Found %d flight option(s):\n\n", len(rows)))
+	fmt.Fprintf(&builder,"Found %d flight option(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		builder.WriteString(fmt.Sprintf("Option %d:\n", i+1))
+		fmt.Fprintf(&builder,"Option %d:\n", i+1)
 
 		if price, ok := row["price"].(map[string]interface{}); ok {
 			if total, ok := price["total"].(string); ok {
-				builder.WriteString(fmt.Sprintf("  Price: %s\n", total))
+				fmt.Fprintf(&builder,"  Price: %s\n", total)
 			}
 		}
 
@@ -298,7 +298,7 @@ func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{
 			builder.WriteString("  Itinerary:\n")
 			// Format first itinerary
 			// (In production, would parse full Amadeus response structure)
-			builder.WriteString(fmt.Sprintf("    %v\n", itineraries[0]))
+			fmt.Fprintf(&builder,"    %v\n", itineraries[0])
 		}
 
 		builder.WriteString("\n")
@@ -310,17 +310,17 @@ func (p *MCPConnectorProcessor) formatFlightResults(rows []map[string]interface{
 // formatHotelResults formats hotel search results
 func (p *MCPConnectorProcessor) formatHotelResults(rows []map[string]interface{}) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Found %d hotel option(s):\n\n", len(rows)))
+	fmt.Fprintf(&builder,"Found %d hotel option(s):\n\n", len(rows))
 
 	for i, row := range rows {
-		builder.WriteString(fmt.Sprintf("%d. ", i+1))
+		fmt.Fprintf(&builder,"%d. ", i+1)
 
 		if name, ok := row["name"].(string); ok {
-			builder.WriteString(fmt.Sprintf("%s - ", name))
+			fmt.Fprintf(&builder,"%s - ", name)
 		}
 
 		if price, ok := row["price"].(string); ok {
-			builder.WriteString(fmt.Sprintf("$%s/night", price))
+			fmt.Fprintf(&builder,"$%s/night", price)
 		}
 
 		builder.WriteString("\n")

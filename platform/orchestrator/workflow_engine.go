@@ -386,7 +386,7 @@ func (p *LLMCallProcessor) buildPreviousOutputsContext(execution *WorkflowExecut
 				continue
 			}
 
-			builder.WriteString(fmt.Sprintf("## Step: %s\n", stepExec.Name))
+			fmt.Fprintf(&builder, "## Step: %s\n", stepExec.Name)
 
 			// Include the formatted response if available (for connectors)
 			if response, ok := stepExec.Output["response"].(string); ok && response != "" {
@@ -400,7 +400,7 @@ func (p *LLMCallProcessor) buildPreviousOutputsContext(execution *WorkflowExecut
 						if key == "provider" || key == "model" || key == "tokens_used" || key == "response_time" || key == "duration" || key == "cached" || key == "connector" {
 							continue
 						}
-						builder.WriteString(fmt.Sprintf("  %s: %v\n", key, value))
+						fmt.Fprintf(&builder, "  %s: %v\n", key, value)
 					}
 					builder.WriteString("\n")
 				}

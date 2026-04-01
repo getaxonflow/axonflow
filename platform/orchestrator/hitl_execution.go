@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // ErrExecutionNotFound is returned when an execution ID is not found in storage.
@@ -308,7 +310,7 @@ func (e *HITLWorkflowEngine) AbortExecution(ctx context.Context, exec *HITLWorkf
 		}
 	}
 
-	log.Printf("[HITL] Execution %s aborted: %s", exec.ID, reason)
+	log.Printf("[HITL] Execution %s aborted: %s", exec.ID, logutil.Sanitize(reason))
 
 	return exec, nil
 }

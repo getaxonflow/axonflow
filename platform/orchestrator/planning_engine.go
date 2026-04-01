@@ -1036,7 +1036,7 @@ func (e *PlanningEngine) applyExecutionMode(workflow *Workflow, mode string) {
 		return
 	}
 
-	log.Printf("[PlanningEngine] Applying execution mode: %s", mode)
+	log.Printf("[PlanningEngine] Applying execution mode: %s", logger.Sanitize(mode))
 
 	switch mode {
 	case "sequential":
@@ -1063,7 +1063,7 @@ func (e *PlanningEngine) applyExecutionMode(workflow *Workflow, mode string) {
 
 	default:
 		// "auto" or unknown — let optimizeExecutionMode handle it
-		log.Printf("[PlanningEngine] Unknown or auto mode: %s", mode)
+		log.Printf("[PlanningEngine] Unknown or auto mode: %s", logger.Sanitize(mode))
 	}
 }
 
@@ -1295,7 +1295,7 @@ func (e *PlanningEngine) extractFlightParameters(query string) map[string]interf
 
 	params["max"] = 5 // Always limit results
 
-	log.Printf("[PlanningEngine] Extracted flight params: %+v from query: %s", params, query)
+	log.Printf("[PlanningEngine] Extracted flight params: %+v from query: %s", params, logger.Sanitize(query))
 	return params
 }
 
