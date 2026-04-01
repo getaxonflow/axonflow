@@ -2,7 +2,7 @@
 
 > **Comprehensive reference:** For the full SEBI AI/ML framework mapping including API endpoints, policy templates, and audit export workflows, see [sebi-ai-ml.md](./sebi-ai-ml.md). This document focuses on Indian PII detection details and hands-on implementation examples.
 
-*Last updated: March 2026 | AxonFlow Platform v5.4.1 | SDKs: Python v5.3.0, Go/TypeScript/Java v4.3.0*
+*Last updated: March 2026 | AxonFlow Platform v5.4.2 | SDKs: Python v5.4.0, Go v4.3.0, TypeScript v4.3.1, Java v4.3.0*
 
 This guide covers AxonFlow's compliance features for the Securities and Exchange Board of India (SEBI) AI/ML Guidelines (June 2025 Consultation Paper) and the Digital Personal Data Protection Act (DPDP) 2023.
 
