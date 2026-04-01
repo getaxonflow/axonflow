@@ -255,6 +255,11 @@ For Go, Java, Python, and TypeScript applications, we recommend using the **[Axo
 
 All features—policy enforcement, audit logging, MCP connectors, WCP workflows—are available via both SDKs and HTTP.
 
+For AI agent runtimes, see:
+- [**OpenClaw**](https://docs.getaxonflow.com/docs/integration/openclaw/) — policy enforcement, approval gates, and audit trails for OpenClaw tool execution
+- [**Anthropic Computer Use**](https://docs.getaxonflow.com/docs/integration/computer-use/) — governed desktop and tool actions
+- [**Claude Agent SDK**](https://docs.getaxonflow.com/docs/integration/claude-agent-sdk/) — MCP tool governance patterns
+
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
 
 ### vs LangChain / LangSmith
