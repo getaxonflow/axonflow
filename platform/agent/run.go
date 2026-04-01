@@ -43,6 +43,7 @@ import (
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/cost"
+	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -1009,7 +1010,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&agentMetrics.totalRequests, 1)
 
 	// Log incoming request with headers
-	log.Printf("📨 Incoming request from %s - Method: %s, Path: %s", r.RemoteAddr, r.Method, r.URL.Path)
+	log.Printf("📨 Incoming request from %s - Method: %s, Path: %s", r.RemoteAddr, r.Method, logutil.Sanitize(r.URL.Path))
 	log.Printf("   Headers: X-License-Key: %s, X-Client-Secret: %s, Content-Type: %s",
 		maskString(r.Header.Get("X-License-Key")),
 		maskString(r.Header.Get("X-Client-Secret")),
@@ -1025,7 +1026,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	parseTime := time.Since(startTime)
 	log.Printf("[TIMING] Request parse: %v", parseTime)
 	log.Printf("   Request body: ClientID='%s', RequestType='%s', Query='%s'",
-		req.ClientID, req.RequestType, truncateString(req.Query, 50))
+		logutil.Sanitize(req.ClientID), logutil.Sanitize(req.RequestType), logutil.Sanitize(truncateString(req.Query, 50)))
 
 	// 1. Validate client authentication
 	validateClientStart := time.Now()
@@ -1034,7 +1035,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if isCommunityMode() {
-		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", req.ClientID)
+		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", logutil.Sanitize(req.ClientID))
 		// Create a dummy client for community deployments
 		// Issue #1082: Use "demo-org" for OrgID to enable budget enforcement testing
 		client = &Client{
@@ -1055,7 +1056,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
 			return
 		}
-		log.Printf("🔐 Validating credentials for client '%s' with secret '%s...'", req.ClientID, maskString(clientSecret))
+		log.Printf("🔐 Validating credentials for client '%s' with secret '%s...'", logutil.Sanitize(req.ClientID), maskString(clientSecret))
 
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
@@ -1067,11 +1068,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			client, err = validateClientCredentials(ctx, req.ClientID, clientSecret)
 		}
 		if err != nil {
-			log.Printf("❌ Credentials validation failed for client '%s': %v", req.ClientID, err)
+			log.Printf("❌ Credentials validation failed for client '%s': %v", logutil.Sanitize(req.ClientID), err)
 			sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
 			return
 		}
-		log.Printf("✅ Credentials validated successfully for client '%s' (Tier: %s)", client.ID, client.LicenseTier)
+		log.Printf("✅ Credentials validated successfully for client '%s' (Tier: %s)", logutil.Sanitize(client.ID), logutil.Sanitize(client.LicenseTier))
 	}
 
 	if !client.Enabled {
@@ -1094,9 +1095,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Verify tenant isolation
 	tenantCheckStart := time.Now()
-	log.Printf("🔍 Checking tenant isolation: User TenantID='%s', Client TenantID='%s'", user.TenantID, client.TenantID)
+	log.Printf("🔍 Checking tenant isolation: User TenantID='%s', Client TenantID='%s'", logutil.Sanitize(user.TenantID), logutil.Sanitize(client.TenantID))
 	if user.TenantID != client.TenantID {
-		log.Printf("❌ TENANT MISMATCH: User TenantID='%s' does not match Client TenantID='%s'", user.TenantID, client.TenantID)
+		log.Printf("❌ TENANT MISMATCH: User TenantID='%s' does not match Client TenantID='%s'", logutil.Sanitize(user.TenantID), logutil.Sanitize(client.TenantID))
 		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 		return
 	}
@@ -1114,7 +1115,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		if cbErr != nil {
 			log.Printf("⚠️ Circuit breaker check error: %v", cbErr)
 		} else if !cbResult.Allowed {
-			log.Printf("🔴 Request blocked by circuit breaker: scope=%s reason=%s", cbResult.Scope, cbResult.Reason)
+			log.Printf("🔴 Request blocked by circuit breaker: scope=%s reason=%s", logutil.Sanitize(string(cbResult.Scope)), logutil.Sanitize(string(cbResult.Reason)))
 			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
 				w.Header().Set("Retry-After", retryAfter)
 			}
@@ -1193,7 +1194,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[TIMING] Policy evaluation: %v", policyEvalTime)
 
 	if policyResult.Blocked {
-		log.Printf("Request blocked by static policy for user %s: %s", user.Email, policyResult.Reason)
+		log.Printf("Request blocked by static policy for user %s: %s", logutil.Sanitize(user.Email), logutil.Sanitize(policyResult.Reason))
 
 		// Record policy violation for auto-trip threshold tracking (#1176)
 		if circuitBreakerInstance != nil {

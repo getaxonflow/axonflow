@@ -190,7 +190,7 @@ func (s *Service) trackExecution(ctx context.Context, op string, fn func() error
 		return
 	}
 	if err := fn(); err != nil {
-		s.logger.Printf("[WorkflowControl] Execution tracking error (%s): %v", op, err)
+		s.logger.Printf("[WorkflowControl] Execution tracking error (%s): %v", logutil.Sanitize(op), err)
 	}
 }
 
@@ -243,7 +243,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *CreateWorkflowRequest
 	}
 
 	s.logger.Printf("[WorkflowControl] Created workflow %s (%s) source=%s",
-		workflow.WorkflowID, logutil.Sanitize(workflow.WorkflowName), logutil.Sanitize(string(workflow.Source)))
+		logutil.Sanitize(workflow.WorkflowID), logutil.Sanitize(workflow.WorkflowName), logutil.Sanitize(string(workflow.Source)))
 
 	// Audit log: workflow created
 	auditMeta := map[string]interface{}{
@@ -405,7 +405,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	}
 
 	s.logger.Printf("[WorkflowControl] Step gate: workflow=%s step=%s decision=%s reason=%s",
-		workflowID, stepID, evaluation.Decision, logutil.Sanitize(evaluation.Reason))
+		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), evaluation.Decision, logutil.Sanitize(evaluation.Reason))
 
 	// Audit log: step gate decision
 	auditMeta := map[string]interface{}{
@@ -473,7 +473,7 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 	}
 
 	s.logger.Printf("[WorkflowControl] Step approved: workflow=%s step=%s by=%s",
-		workflowID, stepID, logutil.Sanitize(approvedBy))
+		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(approvedBy))
 
 	// Webhook notification (best-effort — get workflow for tenant context)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
@@ -513,7 +513,7 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rej
 	}
 
 	s.logger.Printf("[WorkflowControl] Step rejected: workflow=%s step=%s by=%s",
-		workflowID, stepID, logutil.Sanitize(rejectedBy))
+		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(rejectedBy))
 
 	// Webhook notification (best-effort)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
@@ -552,7 +552,7 @@ func (s *Service) ResumeWorkflow(ctx context.Context, workflowID string) error {
 		}
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow resumed: %s", workflowID)
+	s.logger.Printf("[WorkflowControl] Workflow resumed: %s", logutil.Sanitize(workflowID))
 	return nil
 }
 
@@ -571,7 +571,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 		return fmt.Errorf("failed to abort workflow: %w", err)
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow aborted: %s reason=%s", workflowID, logutil.Sanitize(reason))
+	s.logger.Printf("[WorkflowControl] Workflow aborted: %s reason=%s", logutil.Sanitize(workflowID), logutil.Sanitize(reason))
 
 	// Audit log: workflow aborted
 	s.logAudit(ctx, &WorkflowAuditEntry{
@@ -623,7 +623,7 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 		return fmt.Errorf("failed to complete workflow: %w", err)
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow completed: %s", workflowID)
+	s.logger.Printf("[WorkflowControl] Workflow completed: %s", logutil.Sanitize(workflowID))
 
 	// Audit log: workflow completed
 	s.logAudit(ctx, &WorkflowAuditEntry{
@@ -668,7 +668,7 @@ func (s *Service) FailWorkflow(ctx context.Context, workflowID string, reason st
 		return fmt.Errorf("failed to fail workflow: %w", err)
 	}
 
-	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", workflowID, logutil.Sanitize(reason))
+	s.logger.Printf("[WorkflowControl] Workflow failed: %s reason=%s", logutil.Sanitize(workflowID), logutil.Sanitize(reason))
 
 	// Audit log: workflow failed
 	s.logAudit(ctx, &WorkflowAuditEntry{

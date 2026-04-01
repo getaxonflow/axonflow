@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"axonflow/platform/orchestrator/llm"
+	logutil "axonflow/platform/shared/logger"
 	_ "axonflow/platform/orchestrator/llm/openai"
 	_ "axonflow/platform/orchestrator/llm/providers"
 )
@@ -367,7 +368,7 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 
 	// Atomically update provider config in registry
 	if err := h.registry.Update(r.Context(), config); err != nil {
-		h.logger.Printf("[LLMProviderAPI] update error provider %s: %v", providerName, err)
+		h.logger.Printf("[LLMProviderAPI] update error provider %s: %v", logutil.Sanitize(providerName), err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update provider")
 		return
 	}
@@ -461,7 +462,7 @@ func (h *LLMProviderAPIHandler) handleTestProvider(w http.ResponseWriter, r *htt
 
 	resp, err := provider.Complete(r.Context(), req)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "TEST_FAILED", "test failed: "+err.Error())
+		h.writeError(w, http.StatusInternalServerError, "TEST_FAILED", "test failed: "+logutil.Sanitize(err.Error()))
 		return
 	}
 

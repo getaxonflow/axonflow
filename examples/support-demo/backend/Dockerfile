@@ -16,10 +16,10 @@ COPY *.go ./
 COPY migrations/ ./migrations/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -trimpath -ldflags="-s -w" -o main .
 
 # Final stage - minimal runtime image
-FROM alpine:latest
+FROM alpine:3.22
 
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates curl tzdata

@@ -1,0 +1,32 @@
+name: Version Alignment Check
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'CHANGELOG.md'
+      - 'docker-compose*.yml'
+      - '**/Dockerfile*'
+      - '**/capabilities.go'
+  push:
+    branches: [main, develop]
+    paths:
+      - 'CHANGELOG.md'
+      - 'docker-compose*.yml'
+      - '**/Dockerfile*'
+      - '**/capabilities.go'
+  merge_group:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-versions:
+    name: Validate Version Alignment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check version alignment
+        run: ./scripts/validate-version-alignment.sh

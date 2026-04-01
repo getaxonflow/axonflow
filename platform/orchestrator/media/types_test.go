@@ -334,6 +334,10 @@ func TestComputeSHA256_URL(t *testing.T) {
 	origClient := ssrfSafeClient
 	ssrfSafeClient = &http.Client{Timeout: 5 * time.Second}
 	defer func() { ssrfSafeClient = origClient }()
+	// Skip pre-flight SSRF check for loopback test server
+	origValidate := validateURLForSSRF
+	validateURLForSSRF = func(string) error { return nil }
+	defer func() { validateURLForSSRF = origValidate }()
 
 	imageData := []byte("test image bytes from URL")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,6 +409,10 @@ func TestGetRawData_URL(t *testing.T) {
 	origClient := ssrfSafeClient
 	ssrfSafeClient = &http.Client{Timeout: 5 * time.Second}
 	defer func() { ssrfSafeClient = origClient }()
+	// Skip pre-flight SSRF check for loopback test server
+	origValidate := validateURLForSSRF
+	validateURLForSSRF = func(string) error { return nil }
+	defer func() { validateURLForSSRF = origValidate }()
 
 	imageData := []byte("raw URL image content")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

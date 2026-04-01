@@ -17,6 +17,7 @@ import (
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/config"
 	"axonflow/platform/connectors/registry"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // Global connector registry
@@ -253,7 +254,7 @@ func installConnectorHandler(w http.ResponseWriter, r *http.Request) {
 	if err := connectorRegistry.Register(connectorID, connector, config); err != nil {
 		// Best-effort rollback: remove the DB record we just wrote
 		if rbErr := deleteConnectorConfig(r.Context(), connectorID, tenantID); rbErr != nil {
-			log.Printf("[Connector Marketplace] WARNING: Registry failed and DB rollback also failed for %s: register=%v, rollback=%v", connectorID, err, rbErr)
+			log.Printf("[Connector Marketplace] WARNING: Registry failed and DB rollback also failed for %s: register=%v, rollback=%v", logutil.Sanitize(connectorID), err, rbErr)
 		}
 		http.Error(w, "Failed to install connector: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -297,7 +298,7 @@ func uninstallConnectorHandler(w http.ResponseWriter, r *http.Request) {
 		// Log the error — the orphaned DB record will be harmless (connector
 		// can't serve requests without being in the registry) and will be
 		// overwritten on re-install.
-		log.Printf("Warning: connector %q unregistered from memory but DB delete failed: %v", connectorID, err)
+		log.Printf("Warning: connector %q unregistered from memory but DB delete failed: %v", logutil.Sanitize(connectorID), err)
 		http.Error(w, "Failed to delete connector config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -440,7 +441,7 @@ func deleteConnectorConfig(ctx context.Context, connectorID, tenantID string) er
 	}
 
 	if rows, _ := result.RowsAffected(); rows == 0 {
-		log.Printf("[Connector Marketplace] No connector config found for tenant=%s connector=%s", tenantID, connectorID)
+		log.Printf("[Connector Marketplace] No connector config found for tenant=%s connector=%s", logutil.Sanitize(tenantID), logutil.Sanitize(connectorID))
 	}
 
 	return nil

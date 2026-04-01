@@ -17,6 +17,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // AuditSummaryRequest is the request body for POST /api/v1/audit/summary
@@ -101,7 +103,7 @@ func (h *AuditSummaryHandler) HandleSummary(w http.ResponseWriter, r *http.Reque
 
 	summary, err := h.queryAuditSummary(tenantID, startTime, endTime)
 	if err != nil {
-		log.Printf("[AuditSummary] query failed for tenant %s: %v", tenantID, err)
+		log.Printf("[AuditSummary] query failed for tenant %s: %v", logutil.Sanitize(tenantID), err)
 		sendErrorResponse(w, "Failed to generate audit summary", http.StatusInternalServerError)
 		return
 	}

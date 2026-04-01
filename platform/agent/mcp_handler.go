@@ -44,6 +44,7 @@ import (
 	"axonflow/platform/connectors/postgres"
 	"axonflow/platform/connectors/redis"
 	"axonflow/platform/connectors/registry"
+	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/connectors/s3"
 	"axonflow/platform/connectors/salesforce"
 	"axonflow/platform/connectors/servicenow"
@@ -366,7 +367,7 @@ func validateTenantConnectorAccess(ctx context.Context, connectorName, tenantID 
 	if runtimeConfigService != nil {
 		if _, _, err := runtimeConfigService.GetConnectorConfig(ctx, tenantID, connectorName); err != nil {
 			log.Printf("[MCP] Runtime connector access check failed for %q (tenant: %s): %v; falling back to static registry validation",
-				connectorName, tenantID, err)
+				logutil.Sanitize(connectorName), logutil.Sanitize(tenantID), err)
 		} else {
 			return nil
 		}
@@ -395,12 +396,12 @@ func GetConnectorForTenant(ctx context.Context, tenantID, connectorName string) 
 	if tenantReg != nil {
 		connector, err := tenantReg.GetConnector(ctx, tenantID, connectorName)
 		if err == nil {
-			log.Printf("[MCP] Retrieved connector '%s' for tenant '%s' from TenantConnectorRegistry", connectorName, tenantID)
+			log.Printf("[MCP] Retrieved connector '%s' for tenant '%s' from TenantConnectorRegistry", logutil.Sanitize(connectorName), logutil.Sanitize(tenantID))
 			return connector, nil
 		}
 		// Log the error but fall back to static registry
 		log.Printf("[MCP] TenantConnectorRegistry lookup failed for '%s' (tenant: %s): %v, falling back to static registry",
-			connectorName, tenantID, err)
+			logutil.Sanitize(connectorName), logutil.Sanitize(tenantID), err)
 	}
 
 	// Fall back to static registry (backward compatibility)
@@ -413,7 +414,7 @@ func GetConnectorForTenant(ctx context.Context, tenantID, connectorName string) 
 		return nil, fmt.Errorf("connector '%s' not found: %w", connectorName, err)
 	}
 
-	log.Printf("[MCP] Retrieved connector '%s' from static registry (fallback)", connectorName)
+	log.Printf("[MCP] Retrieved connector '%s' from static registry (fallback)", logutil.Sanitize(connectorName))
 	return connector, nil
 }
 
@@ -693,7 +694,7 @@ func evaluateInputPolicies(
 			return out
 		}
 		if !dynamicResp.Allowed {
-			log.Printf("[MCP] Request blocked by dynamic policy: %s", dynamicResp.BlockReason)
+			log.Printf("[MCP] Request blocked by dynamic policy: %s", logutil.Sanitize(dynamicResp.BlockReason))
 			out.DynamicBlocked = true
 			out.DynamicBlockReason = dynamicResp.BlockReason
 			return out
@@ -790,7 +791,7 @@ func evaluateOutputPolicies(
 			// Continue - don't block on scan errors
 		} else if scanResult.Blocked {
 			log.Printf("[MCP] SQLi detected in response from connector '%s': pattern=%s category=%s",
-				connectorName, scanResult.Pattern, scanResult.Category)
+				logutil.Sanitize(connectorName), logutil.Sanitize(scanResult.Pattern), logutil.Sanitize(string(scanResult.Category)))
 			out.SQLiBlocked = true
 			out.SQLiPattern = scanResult.Pattern
 			return out
@@ -802,7 +803,7 @@ func evaluateOutputPolicies(
 			// Continue - don't block on scan errors
 		} else if scanResult.Blocked {
 			log.Printf("[MCP] SQLi detected in command response from connector '%s': pattern=%s category=%s",
-				connectorName, scanResult.Pattern, scanResult.Category)
+				logutil.Sanitize(connectorName), logutil.Sanitize(scanResult.Pattern), logutil.Sanitize(string(scanResult.Category)))
 			out.SQLiBlocked = true
 			out.SQLiPattern = scanResult.Pattern
 			return out
@@ -874,7 +875,7 @@ func evaluateOutputPolicies(
 			out.ExfilInfo = exfilInfo
 			if exfilResult.Exceeded {
 				log.Printf("[MCP] Exfiltration limit exceeded for connector '%s': %s (actual=%d, limit=%d)",
-					connectorName, exfilResult.LimitType, exfilResult.ActualValue, exfilResult.LimitValue)
+					logutil.Sanitize(connectorName), logutil.Sanitize(exfilResult.LimitType), exfilResult.ActualValue, exfilResult.LimitValue)
 			}
 		}
 	}
@@ -1523,7 +1524,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	logMCPQueryAudit(auditEntry)
 
 	log.Printf("[MCP] Command executed: connector=%s, action=%s, rows_affected=%d, duration=%v",
-		req.Connector, req.Action, result.RowsAffected, result.Duration)
+		logutil.Sanitize(req.Connector), logutil.Sanitize(req.Action), result.RowsAffected, result.Duration)
 }
 
 // --- Standalone policy-check endpoints (Issue #1258) ---

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"axonflow/platform/connectors/base"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // BaseConnector provides a foundation for building custom connectors.
@@ -342,9 +343,18 @@ func (c *BaseConnector) SetVersion(version string) {
 	c.version = version
 }
 
-// Log writes a log message with the connector prefix
+// Log writes a log message with the connector prefix.
+// String arguments are sanitized to prevent log injection.
 func (c *BaseConnector) Log(format string, args ...interface{}) {
-	c.logger.Printf(format, args...)
+	sanitized := make([]interface{}, len(args))
+	for i, arg := range args {
+		if s, ok := arg.(string); ok {
+			sanitized[i] = logutil.Sanitize(s)
+		} else {
+			sanitized[i] = arg
+		}
+	}
+	c.logger.Printf(format, sanitized...)
 }
 
 // GetTimeout returns the configured timeout or default

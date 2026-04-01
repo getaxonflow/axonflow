@@ -744,7 +744,18 @@ func extractBearerToken(r *http.Request) string {
 }
 
 func executeSQL(query string) ([]map[string]interface{}, error) {
-	rows, err := db.Query(query)
+	trimmed := strings.TrimSpace(query)
+	if !strings.HasPrefix(strings.ToUpper(trimmed), "SELECT") {
+		return nil, fmt.Errorf("only SELECT queries are allowed")
+	}
+
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(trimmed)
 	if err != nil {
 		return nil, err
 	}

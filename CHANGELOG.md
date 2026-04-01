@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [5.5.0] - 2026-04-01
+
+### Community
+
+#### Added
+
+- **OpenClaw integration**: E2E examples and architecture documentation for the `@axonflow/openclaw` plugin. Demonstrates tool input governance, outbound message scanning, and audit logging using `openclaw.*` connector types.
+- **Computer Use governance**: E2E examples for Anthropic Computer Use with `ComputerUseGovernor` (Python SDK) and raw HTTP tests. Covers bash command blocking, PII detection, credential exfiltration prevention, and output redaction.
+- **Claude Agent SDK integration**: TypeScript example demonstrating MCP tool governance with Claude Agent SDK using existing `mcpCheckInput`/`mcpCheckOutput`.
+- **GovernedTool E2E examples**: LangChain AgentExecutor, LangGraph ToolNode, and HTTP examples for framework-agnostic tool governance.
+- **SSRF prevention**: Pre-flight URL validation (scheme allowlist, DNS resolution, private IP blocking) on SSO metadata fetch and media URL fetch, complementing existing socket-level protections.
+- **Log injection prevention**: Sanitized user-controlled values in log statements across agent proxy, orchestrator, and HITL handler to prevent newline/ANSI injection.
+- **Dockerfile hardening**: Non-root user directives, pinned base image tags, and health checks across all Dockerfiles.
+- **Go binary hardening**: Strip debug symbols, symbol tables, and build paths from production binaries.
+- **Source map prevention**: Disabled source map generation in frontend Docker builds to prevent source code exposure.
+
+#### Changed
+
+- **Docker Compose version default**: Updated `AXONFLOW_VERSION` from `5.1.0` to `5.5.0`. The stale default caused missing endpoints (e.g., `audit/tool-call`) for users running `docker compose up` without explicitly setting the version.
+
+#### Security
+
+- **Amadeus connector SSRF enforcement**: Added pre-flight URL validation for Amadeus connector callbacks.
+- **SQL injection prevention in demo backends**: Demo backends now use read-only transactions to prevent SQL injection in example queries.
+- **Version alignment CI check**: New CI workflow validates that version defaults in Docker Compose, Dockerfiles, and CHANGELOG stay in sync.
+
+#### Fixed
+
+- **Stale docker-compose/Dockerfile version defaults**: Updated hardcoded version defaults from `5.1.0`/`4.8.0` to `5.5.0` across Docker Compose files and Dockerfiles.
+
+- **Broken docs links**: Fixed 15+ stale links across platform surfaces (AWS Marketplace, SCIM, axonctl, Cloudflare Access setup).
+- **Spring Boot/Tomcat update**: Bumped Spring Boot to 3.5.13, Spring Framework to 6.2.17, and Tomcat to 10.1.52 in integration example (CVE fixes).
+- **Dependency update**: Bumped `golang.org/x/image` to v0.38.0, fixing out-of-memory vulnerability via crafted TIFF file.
+
+#### Documentation
+
+- **Computer Use governance architecture**: Sampling loop governance boundary, tool action taxonomy, default blocked bash patterns.
+- **OpenClaw integration architecture**: Plugin hook flow, connector type convention, approval flow integration, lightweight HTTP client design.
+
+### Enterprise
+
+#### Added
+
+- **Infrastructure hardening**: CloudFormation template updated with RDS private access, restricted security group egress, KMS encryption for SNS/Secrets Manager/CloudWatch, HTTP-to-HTTPS redirect, and ALB invalid header dropping. Terraform modules updated with KMS encryption for DynamoDB, CloudWatch, and Secrets Manager, plus Lambda X-Ray tracing.
+- **GovernedTool integration comparison**: Internal documentation comparing GovernedTool, tool_output_wrapper, and mcp_tool_interceptor across framework compatibility, governance scope, and deployment patterns.
+
+---
+
 ## [5.4.1] - 2026-03-30
 
 ### Community

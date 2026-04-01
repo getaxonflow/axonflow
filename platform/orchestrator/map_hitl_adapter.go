@@ -12,6 +12,8 @@ import (
 	"log"
 	"net/http"
 
+	logutil "axonflow/platform/shared/logger"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
@@ -92,7 +94,7 @@ func (a *MAPHITLApprovalAdapter) CreateApproval(ctx context.Context, req *HITLAp
 	approvalID := uuid.New()
 
 	log.Printf("[MAP-HITL] Created approval request %s for step %s (policy: %s)",
-		approvalID, req.StepName, req.PolicyName)
+		approvalID, logutil.Sanitize(req.StepName), logutil.Sanitize(req.PolicyName))
 
 	return &HITLApprovalResponse{
 		ApprovalID: approvalID,
@@ -139,7 +141,7 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[MAP-HITL] Step approval for plan %s, step %s", planID, stepID)
+	log.Printf("[MAP-HITL] Step approval for plan %s, step %s", logutil.Sanitize(planID), logutil.Sanitize(stepID))
 
 	// Find the paused execution for this plan
 	executionStoreMutex.Lock()
@@ -166,7 +168,7 @@ func mapStepApproveHandler(w http.ResponseWriter, r *http.Request) {
 	targetExec.ApprovalStatus = StatusApproved
 	targetExec.Status = "running"
 
-	log.Printf("[MAP-HITL] Execution %s approved and resumed for plan %s, step %s", targetExec.ID, planID, stepID)
+	log.Printf("[MAP-HITL] Execution %s approved and resumed for plan %s, step %s", targetExec.ID, logutil.Sanitize(planID), logutil.Sanitize(stepID))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
@@ -207,7 +209,7 @@ func mapStepRejectHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 
-	log.Printf("[MAP-HITL] Step rejection for plan %s, step %s: %s", planID, stepID, req.Reason)
+	log.Printf("[MAP-HITL] Step rejection for plan %s, step %s: %s", logutil.Sanitize(planID), logutil.Sanitize(stepID), logutil.Sanitize(req.Reason))
 
 	// Find the paused execution for this plan
 	executionStoreMutex.Lock()

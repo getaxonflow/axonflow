@@ -1,6 +1,6 @@
 module axonflow/platform
 
-go 1.24.0
+go 1.25.0
 
 require (
 	cloud.google.com/go/storage v1.58.0
@@ -27,7 +27,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
 	go.mongodb.org/mongo-driver v1.17.1
-	golang.org/x/image v0.36.0
+	golang.org/x/image v0.38.0
 	google.golang.org/api v0.256.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -142,9 +142,9 @@ require (
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto v0.0.0-20250922171735-9219d122eba9 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect

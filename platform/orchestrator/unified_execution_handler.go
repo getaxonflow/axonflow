@@ -19,6 +19,7 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/orchestrator/planning"
 	"axonflow/platform/shared/execution"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // UnifiedExecutionHandler handles HTTP requests for unified execution status tracking.
@@ -233,7 +234,7 @@ func (h *UnifiedExecutionHandler) GetExecutionStatus(w http.ResponseWriter, r *h
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 			return
 		}
-		h.logger.Printf("[UnifiedExecution] GetExecutionStatus error for %s: %v", executionID, err)
+		h.logger.Printf("[UnifiedExecution] GetExecutionStatus error for %s: %v", logutil.Sanitize(executionID), err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
@@ -277,7 +278,7 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 			return
 		}
-		h.logger.Printf("[UnifiedExecution] CancelExecution lookup error for %s: %v", executionID, err)
+		h.logger.Printf("[UnifiedExecution] CancelExecution lookup error for %s: %v", logutil.Sanitize(executionID), err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
@@ -308,7 +309,7 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 			return
 		}
 		if err := h.wcpTracker.wcpService.AbortWorkflow(ctx, workflowID, req.Reason); err != nil {
-			h.logger.Printf("[UnifiedExecution] WCP AbortWorkflow error for %s: %v", workflowID, err)
+			h.logger.Printf("[UnifiedExecution] WCP AbortWorkflow error for %s: %v", logutil.Sanitize(workflowID), err)
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to cancel WCP workflow")
 			return
 		}
@@ -326,14 +327,14 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 		}
 		orgID, _ := exec.Metadata["org_id"].(string)
 		if err := h.planService.CancelPlan(ctx, planID, orgID, req.Reason); err != nil {
-			h.logger.Printf("[UnifiedExecution] MAP CancelPlan error for %s: %v", planID, err)
+			h.logger.Printf("[UnifiedExecution] MAP CancelPlan error for %s: %v", logutil.Sanitize(planID), err)
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to cancel MAP plan")
 			return
 		}
 		// Sync status to execution_history
 		if h.mapTracker != nil {
 			if syncErr := h.mapTracker.SyncPlanStatus(ctx, planID, planning.PlanStatusCancelled, req.Reason); syncErr != nil {
-				h.logger.Printf("[WARN] SyncPlanStatus failed for %s: %v", executionID, syncErr)
+				h.logger.Printf("[WARN] SyncPlanStatus failed for %s: %v", logutil.Sanitize(executionID), syncErr)
 			}
 		}
 
@@ -378,7 +379,7 @@ func (h *UnifiedExecutionHandler) StreamExecutionStatus(w http.ResponseWriter, r
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found: "+executionID)
 			return
 		}
-		h.logger.Printf("[UnifiedExecution] StreamExecutionStatus error for %s: %v", executionID, err)
+		h.logger.Printf("[UnifiedExecution] StreamExecutionStatus error for %s: %v", logutil.Sanitize(executionID), err)
 		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve execution")
 		return
 	}
