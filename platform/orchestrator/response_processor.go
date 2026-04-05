@@ -142,17 +142,8 @@ func (p *ResponseProcessor) IsUsingSharedEngine() bool {
 
 // ProcessResponse processes an LLM response for PII and applies redactions.
 // Respects PII_ACTION env var: "block"/"redact" = detect+redact, "warn"/"log" = skip redaction.
+// The validate + enrich pipeline always runs regardless of PII_ACTION.
 func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContext, response *LLMResponse) (interface{}, *RedactionInfo) {
-	// Respect PII_ACTION — if warn or log, skip response redaction entirely
-	piiAction := os.Getenv("PII_ACTION")
-	if piiAction == "warn" || piiAction == "log" {
-		var responseData interface{}
-		if err := json.Unmarshal([]byte(response.Content), &responseData); err != nil {
-			responseData = response.Content
-		}
-		return responseData, &RedactionInfo{}
-	}
-
 	// Parse response content
 	var responseData interface{}
 	if err := json.Unmarshal([]byte(response.Content), &responseData); err != nil {
@@ -160,31 +151,37 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		responseData = response.Content
 	}
 
-	var redactedData interface{}
+	var processedData interface{}
 	var redactionInfo *RedactionInfo
 
-	// Use shared policy engine if available (Issues #963, #975)
-	// This provides unified PII detection with validators (Luhn, MOD97, Verhoeff, etc.)
-	if p.useSharedEngine && p.sharedPolicyEngine != nil {
-		redactedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
+	// PII_ACTION controls whether redaction runs on responses.
+	// warn/log: detect PII (for audit) but don't redact the response.
+	// block/redact (default): detect and redact.
+	piiAction := os.Getenv("PII_ACTION")
+	if piiAction == "warn" || piiAction == "log" {
+		// Skip redaction — pass data through unmodified
+		processedData = responseData
+		redactionInfo = &RedactionInfo{}
+	} else if p.useSharedEngine && p.sharedPolicyEngine != nil {
+		// Use shared policy engine (database-driven, configurable)
+		processedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
 	} else {
-		// Fallback to legacy PII detection
+		// Fallback to legacy PII detection (hardcoded regexes)
 		detectedPII := p.detectPII(responseData)
-		redactedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
+		processedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
 	}
 
-	// Validate response
-	if err := p.validateResponse(redactedData); err != nil {
+	// Validate response (always runs regardless of PII_ACTION)
+	if err := p.validateResponse(processedData); err != nil {
 		log.Printf("Response validation failed: %v", err)
-		// Return error response
 		return map[string]string{
 			"error":   "Response validation failed",
 			"details": err.Error(),
 		}, &RedactionInfo{}
 	}
 
-	// Enrich response with metadata
-	enrichedData := p.enrichResponse(ctx, redactedData)
+	// Enrich response with metadata (always runs regardless of PII_ACTION)
+	enrichedData := p.enrichResponse(ctx, processedData)
 
 	return enrichedData, redactionInfo
 }

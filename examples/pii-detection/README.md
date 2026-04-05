@@ -57,8 +57,12 @@ mvn compile exec:java
 ### HTTP (curl)
 ```bash
 cd http
-chmod +x pii-detection.sh
+
+# Basic PII detection (default redact mode)
 ./pii-detection.sh
+
+# PII modes — tests request-side + response-side detection with assertions
+./pii-modes.sh
 ```
 
 ## Expected Output
@@ -70,8 +74,21 @@ Each example tests multiple PII patterns:
 - India PAN - REDACTED
 - India Aadhaar - REDACTED (with Verhoeff checksum validation)
 
-> **Note:** PII detection now defaults to `redact` action instead of `block` (Issue #891).
-> To restore blocking behavior, set `PII_ACTION=block` in your environment.
+> **Note:** PII detection defaults to `redact` mode. Use `PII_ACTION` to control behavior:
+
+| PII_ACTION | Request-side | Response-side | Audit |
+|------------|-------------|---------------|-------|
+| `block` | Rejected | Rejected | Yes |
+| `redact` (default) | Approved* | Redacted | Yes |
+| `warn` | Approved | Pass-through | Yes |
+| `log` | Approved | Pass-through | Yes |
+
+\* Approved with `requires_redaction=true` flag.
+
+To change: set `PII_ACTION` in docker-compose.yml and restart.
+```bash
+PII_ACTION=block docker compose up -d
+```
 
 ## How It Works
 
