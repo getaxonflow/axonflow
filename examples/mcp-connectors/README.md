@@ -1,13 +1,13 @@
-# MCP Connector Examples - Orchestrator Routing
+# MCP Connector Examples
 
-These examples test the **full MCP connector flow** through the orchestrator:
+These examples test the **full MCP connector flow** through the Agent:
 
 ```
-SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
+SDK -> Agent (port 8080) -> Orchestrator (internal) -> Agent -> Connector
 ```
 
-This is different from direct agent calls and exercises the internal service
-authentication between orchestrator and agent.
+The Agent proxies MCP requests to the Orchestrator, which evaluates policies
+and routes back through the Agent to the connector.
 
 ## Prerequisites
 
@@ -54,21 +54,21 @@ java McpConnectorExample.java
 
 ## What These Examples Test
 
-1. **Orchestrator Routing**: Sends `request_type: "mcp-query"` to orchestrator
-2. **Internal Service Auth**: Orchestrator uses internal credentials to call agent
+1. **Agent Routing**: Sends `request_type: "mcp-query"` to the Agent
+2. **Internal Service Auth**: Agent proxies to Orchestrator using internal credentials
 3. **Connector Query**: Agent executes query via postgres connector
-4. **Response Flow**: Data flows back through orchestrator to SDK
+4. **Response Flow**: Data flows back through Agent to SDK
 
 ## Expected Output
 
 ```
 ==============================================
-MCP Connector Example - Orchestrator Routing
+MCP Connector Example
 ==============================================
-Orchestrator URL: http://localhost:8081
+Agent URL: http://localhost:8080
 
-Test 1: Query postgres connector via orchestrator...
-SUCCESS: MCP query through orchestrator worked!
+Test 1: Query postgres connector via Agent...
+SUCCESS: MCP query through Agent worked!
   Request ID: mcp-test-1234567890
   Processing Time: 50ms
   Rows returned: 1
@@ -84,7 +84,7 @@ All MCP connector tests PASSED!
 
 ## Troubleshooting
 
-**"Invalid client" error**: The orchestrator-to-agent authentication is not working.
+**"Invalid client" error**: Internal service authentication is not working.
 Check that PR #814 fix is applied.
 
 **"Connection refused"**: AxonFlow is not running. Run `docker compose up -d`.

@@ -10,7 +10,7 @@
 #
 # Prerequisites:
 #   - AxonFlow Agent running at http://localhost:8080
-#   - AxonFlow Orchestrator running at http://localhost:8081
+#   - AxonFlow Agent running at http://localhost:8080
 #   - curl and jq installed
 #
 # API Endpoints demonstrated:
@@ -30,9 +30,8 @@
 set -e
 
 # Configuration
-AGENT_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_ENDPOINT:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-client}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo-secret}"
 TENANT_ID="${AXONFLOW_TENANT:-demo}"
 
@@ -52,7 +51,6 @@ echo "AxonFlow Media Governance Policies - HTTP/curl"
 echo "================================================"
 echo ""
 echo "Agent URL:        $AGENT_URL"
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
 echo "Tenant ID:        $TENANT_ID"
 echo ""
 
@@ -71,12 +69,12 @@ assert_pass() {
 # Test 1: Verify system media policies exist
 # ========================================
 echo -e "${CYAN}Test 1: Verify system media policies exist${NC}"
-echo "  GET $ORCHESTRATOR_URL/api/v1/policies/dynamic?type=media&limit=100"
+echo "  GET $AGENT_URL/api/v1/policies/dynamic?type=media&limit=100"
 echo ""
 
 RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
-    "$ORCHESTRATOR_URL/api/v1/policies/dynamic?type=media&limit=100" \
-    -H "X-Tenant-ID: $TENANT_ID")
+    "$AGENT_URL/api/v1/policies/dynamic?type=media&limit=100" \
+)
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
@@ -121,8 +119,7 @@ echo ""
 
 RESPONSE2=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"Describe this image\",
         \"user_token\": \"media-policy-user\",
@@ -163,9 +160,8 @@ echo ""
 
 # 3a. Create a custom media policy: block if has_faces == true
 echo "  3a. Creating custom media policy: block if media.has_faces == true"
-CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
+CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/policies" \
     -H "Content-Type: application/json" \
-    -H "X-Tenant-ID: $TENANT_ID" \
     -d '{
         "name": "test-face-block-http-example",
         "description": "Blocks images containing faces (HTTP example test policy)",
@@ -202,8 +198,8 @@ assert_pass "$([ -n "$CREATED_POLICY_ID" ] && echo true || echo false)" \
 # 3b. Verify it appears in the list
 echo ""
 echo "  3b. Verifying policy appears in list"
-LIST_RESPONSE=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/dynamic?type=media&limit=100" \
-    -H "X-Tenant-ID: $TENANT_ID")
+LIST_RESPONSE=$(curl -s "$AGENT_URL/api/v1/policies/dynamic?type=media&limit=100" \
+)
 
 if [ -n "$CREATED_POLICY_ID" ]; then
     FOUND_IN_LIST=$(echo "$LIST_RESPONSE" | jq --arg id "$CREATED_POLICY_ID" '[.[] | select(.id == $id)] | length')
@@ -218,8 +214,7 @@ echo ""
 echo "  3c. Sending 1x1 image request (no faces expected)"
 PROCESS_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"Describe this image\",
         \"user_token\": \"media-policy-user\",
@@ -247,8 +242,8 @@ echo ""
 echo "  3d. Cleaning up: deleting custom policy"
 if [ -n "$CREATED_POLICY_ID" ]; then
     DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
-        "$ORCHESTRATOR_URL/api/v1/policies/$CREATED_POLICY_ID" \
-        -H "X-Tenant-ID: $TENANT_ID")
+        "$AGENT_URL/api/v1/policies/$CREATED_POLICY_ID" \
+    )
     DELETE_HTTP_CODE=$(echo "$DELETE_RESPONSE" | tail -1)
     assert_pass "$([ "$DELETE_HTTP_CODE" = "204" ] && echo true || echo false)" \
         "Policy deleted (HTTP $DELETE_HTTP_CODE)"
@@ -264,10 +259,10 @@ echo -e "${CYAN}Test 4: Media governance config -- read status${NC}"
 echo ""
 
 # 4a. GET /api/v1/media-governance/status
-echo "  4a. GET $ORCHESTRATOR_URL/api/v1/media-governance/status"
+echo "  4a. GET $AGENT_URL/api/v1/media-governance/status"
 STATUS_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
-    "$ORCHESTRATOR_URL/api/v1/media-governance/status" \
-    -H "X-Tenant-ID: $TENANT_ID")
+    "$AGENT_URL/api/v1/media-governance/status" \
+)
 
 STATUS_HTTP_CODE=$(echo "$STATUS_RESPONSE" | tail -1)
 STATUS_BODY=$(echo "$STATUS_RESPONSE" | sed '$d')
@@ -288,10 +283,10 @@ echo "   Tier: $TIER_VALUE | Available: $AVAILABLE_VALUE | Per-tenant control: $
 
 # 4b. GET /api/v1/media-governance/config
 echo ""
-echo "  4b. GET $ORCHESTRATOR_URL/api/v1/media-governance/config"
+echo "  4b. GET $AGENT_URL/api/v1/media-governance/config"
 CONFIG_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
-    "$ORCHESTRATOR_URL/api/v1/media-governance/config" \
-    -H "X-Tenant-ID: $TENANT_ID")
+    "$AGENT_URL/api/v1/media-governance/config" \
+)
 
 CONFIG_HTTP_CODE=$(echo "$CONFIG_RESPONSE" | tail -1)
 CONFIG_BODY=$(echo "$CONFIG_RESPONSE" | sed '$d')
@@ -318,9 +313,8 @@ echo ""
 
 # 5a. Create a media policy
 echo "  5a. Creating media policy: media.nsfw_score > 0.5 -> block"
-TOGGLE_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
+TOGGLE_CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/policies" \
     -H "Content-Type: application/json" \
-    -H "X-Tenant-ID: $TENANT_ID" \
     -d '{
         "name": "test-nsfw-toggle-http-example",
         "description": "NSFW threshold policy for toggle lifecycle test",
@@ -363,9 +357,8 @@ echo ""
 echo "  5b. Disabling policy (PUT enabled=false)"
 if [ -n "$TOGGLE_POLICY_ID" ]; then
     DISABLE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-        "$ORCHESTRATOR_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
+        "$AGENT_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
         -d '{"enabled": false}')
 
     DISABLE_HTTP=$(echo "$DISABLE_RESPONSE" | tail -1)
@@ -386,9 +379,8 @@ echo ""
 echo "  5c. Re-enabling policy (PUT enabled=true)"
 if [ -n "$TOGGLE_POLICY_ID" ]; then
     ENABLE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-        "$ORCHESTRATOR_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
+        "$AGENT_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
         -d '{"enabled": true}')
 
     ENABLE_HTTP=$(echo "$ENABLE_RESPONSE" | tail -1)
@@ -409,8 +401,8 @@ echo ""
 echo "  5d. Cleaning up: deleting toggle test policy"
 if [ -n "$TOGGLE_POLICY_ID" ]; then
     TOGGLE_DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
-        "$ORCHESTRATOR_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
-        -H "X-Tenant-ID: $TENANT_ID")
+        "$AGENT_URL/api/v1/policies/$TOGGLE_POLICY_ID" \
+    )
     TOGGLE_DELETE_HTTP=$(echo "$TOGGLE_DELETE_RESPONSE" | tail -1)
     assert_pass "$([ "$TOGGLE_DELETE_HTTP" = "204" ] && echo true || echo false)" \
         "Policy deleted (HTTP $TOGGLE_DELETE_HTTP)"
@@ -433,9 +425,8 @@ if [ "$PER_TENANT" = "true" ]; then
     # 6a. Disable media governance for this tenant
     echo "  6a. Disabling media governance (PUT enabled=false)"
     MG_DISABLE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-        "$ORCHESTRATOR_URL/api/v1/media-governance/config" \
+        "$AGENT_URL/api/v1/media-governance/config" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
         -d '{"enabled": false}')
 
     MG_DISABLE_HTTP=$(echo "$MG_DISABLE_RESPONSE" | tail -1)
@@ -453,8 +444,7 @@ if [ "$PER_TENANT" = "true" ]; then
     echo "  6b. Sending image request with media governance disabled"
     MG_OFF_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d "{
             \"query\": \"Describe this image\",
             \"user_token\": \"media-policy-user\",
@@ -481,9 +471,8 @@ if [ "$PER_TENANT" = "true" ]; then
     echo ""
     echo "  6c. Re-enabling media governance (PUT enabled=true)"
     MG_ENABLE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT \
-        "$ORCHESTRATOR_URL/api/v1/media-governance/config" \
+        "$AGENT_URL/api/v1/media-governance/config" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
         -d '{"enabled": true}')
 
     MG_ENABLE_HTTP=$(echo "$MG_ENABLE_RESPONSE" | tail -1)
@@ -501,8 +490,7 @@ if [ "$PER_TENANT" = "true" ]; then
     echo "  6d. Sending image request with media governance re-enabled"
     MG_ON_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d "{
             \"query\": \"Describe this image\",
             \"user_token\": \"media-policy-user\",
@@ -543,8 +531,7 @@ echo ""
 
 RESPONSE7=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"What is the capital of France?\",
         \"user_token\": \"media-policy-user\",

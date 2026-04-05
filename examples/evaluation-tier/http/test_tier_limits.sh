@@ -30,7 +30,7 @@ set -e
 
 # Configuration
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-test-org-001}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-test-secret}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-tenant-001}"
 
@@ -102,11 +102,9 @@ echo "Detected tier (from env): $EXPECTED_TIER"
 echo "Endpoint: $ENDPOINT"
 echo ""
 
-# Generate JWT token for authentication
-# In a real scenario, this would be provided by your auth system
-AUTH_HEADER="Authorization: Bearer test-token"
 CONTENT_TYPE="Content-Type: application/json"
-TENANT_HEADER="X-Tenant-ID: $TENANT_ID"
+AUTH_CREDS="$CLIENT_ID:${CLIENT_SECRET}"
+# Tenant is injected by agent from auth credentials
 
 # Test 1: Health Check
 echo ""
@@ -155,9 +153,8 @@ POLICY_JSON='{
 
 CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
     -X POST "$ENDPOINT/api/v1/dynamic-policies" \
-    -H "$AUTH_HEADER" \
+    -u "$AUTH_CREDS" \
     -H "$CONTENT_TYPE" \
-    -H "$TENANT_HEADER" \
     -d "$POLICY_JSON" || echo "000")
 
 HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
@@ -171,8 +168,7 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         # Clean up
         DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" \
             -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$POLICY_ID" \
-            -H "$AUTH_HEADER" \
-            -H "$TENANT_HEADER" || echo "000")
+            -u "$AUTH_CREDS" || echo "000")
         info "Cleaned up test policy"
     fi
 elif [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "429" ]; then
@@ -220,9 +216,8 @@ ORG_POLICY_JSON='{
 
 CREATE_ORG_RESPONSE=$(curl -s -w "\n%{http_code}" \
     -X POST "$ENDPOINT/api/v1/dynamic-policies" \
-    -H "$AUTH_HEADER" \
+    -u "$AUTH_CREDS" \
     -H "$CONTENT_TYPE" \
-    -H "$TENANT_HEADER" \
     -d "$ORG_POLICY_JSON" || echo "000")
 
 HTTP_CODE=$(echo "$CREATE_ORG_RESPONSE" | tail -n1)
@@ -249,8 +244,7 @@ elif [ "$EXPECTED_TIER" = "evaluation" ]; then
             info "Created org policy ID: $POLICY_ID"
             # Clean up
             curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$POLICY_ID" \
-                -H "$AUTH_HEADER" \
-                -H "$TENANT_HEADER" > /dev/null
+                -u "$AUTH_CREDS" > /dev/null
             info "Cleaned up org policy"
         fi
     elif echo "$BODY" | grep -q "ORG_POLICY_LIMIT_EXCEEDED"; then
@@ -268,8 +262,7 @@ else
             info "Created org policy ID: $POLICY_ID"
             # Clean up
             curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$POLICY_ID" \
-                -H "$AUTH_HEADER" \
-                -H "$TENANT_HEADER" > /dev/null
+                -u "$AUTH_CREDS" > /dev/null
             info "Cleaned up org policy"
         fi
     else
@@ -294,11 +287,8 @@ info "Expected SSE connection limit: $EXPECTED_SSE"
 
 # SSE handler validates execution existence before checking connection limits.
 # We need a real execution ID. Query the orchestrator for existing executions.
-ORCHESTRATOR_PORT="${AXONFLOW_ORCHESTRATOR_PORT:-8081}"
-ORCHESTRATOR_URL="http://localhost:$ORCHESTRATOR_PORT"
-
-EXEC_LIST=$(curl -s "$ORCHESTRATOR_URL/api/v1/unified/executions?limit=1" \
-    -H "$TENANT_HEADER" 2>/dev/null || echo "{}")
+EXEC_LIST=$(curl -s "$ENDPOINT/api/v1/unified/executions?limit=1" \
+    -u "$AUTH_CREDS" 2>/dev/null || echo "{}")
 SSE_EXEC_ID=$(echo "$EXEC_LIST" | python3 -c "
 import sys,json
 try:
@@ -315,7 +305,7 @@ if [ -z "$SSE_EXEC_ID" ]; then
     # Try creating an execution
     CREATE_EXEC=$(curl -s -X POST "$ENDPOINT/api/request" \
         -H "Content-Type: application/json" \
-        -H "$TENANT_HEADER" \
+        -u "$AUTH_CREDS" \
         -d "{
             \"query\": \"sse limit test\",
             \"request_type\": \"simple\",
@@ -334,9 +324,9 @@ SSE_PIDS=()
 
 open_sse_conn() {
     curl -s -o /dev/null -N --max-time 10 \
-        -H "$TENANT_HEADER" \
+        -u "$AUTH_CREDS" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null &
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null &
     SSE_PIDS+=($!)
 }
 
@@ -354,9 +344,9 @@ if [ -z "$SSE_EXEC_ID" ]; then
 elif [ "$EXPECTED_SSE" -gt 0 ] 2>/dev/null; then
     # Verify SSE works for this execution
     SSE_CHECK=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        -H "$TENANT_HEADER" \
+        -u "$AUTH_CREDS" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
     if [ "$SSE_CHECK" != "200" ]; then
         info "SKIP: SSE endpoint returned HTTP $SSE_CHECK (execution may have completed)"
@@ -384,9 +374,9 @@ elif [ "$EXPECTED_SSE" -gt 0 ] 2>/dev/null; then
 
         if [ "$ACTIVE_COUNT" -ge "$EXPECTED_SSE" ]; then
             OVER_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-                -H "$TENANT_HEADER" \
+                -u "$AUTH_CREDS" \
                 -H "Accept: text/event-stream" \
-                "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+                "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
             if [ "$OVER_CODE" = "429" ]; then
                 pass "Connection $((EXPECTED_SSE + 1)) correctly rejected (HTTP 429)"
@@ -401,9 +391,9 @@ elif [ "$EXPECTED_SSE" -gt 0 ] 2>/dev/null; then
     fi
 elif [ "$EXPECTED_SSE" -eq -1 ]; then
     SSE_CHECK=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        -H "$TENANT_HEADER" \
+        -u "$AUTH_CREDS" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
     if [ "$SSE_CHECK" != "200" ]; then
         info "SKIP: SSE endpoint returned HTTP $SSE_CHECK (execution may have completed)"

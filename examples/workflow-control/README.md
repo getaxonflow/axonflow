@@ -48,8 +48,7 @@ The Workflow Control Plane allows you to:
 
 ### Prerequisites
 
-- AxonFlow Agent running at `http://localhost:8080`
-- AxonFlow Orchestrator running at `http://localhost:8081`
+- AxonFlow running at `http://localhost:8080`
 
 ### Run Examples
 

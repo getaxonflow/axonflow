@@ -44,9 +44,9 @@ public class WorkflowPolicyExample {
         System.out.println("==========================================");
         System.out.println();
 
-        // Initialize client - use orchestrator endpoint for workflow APIs
+        // Initialize client - use agent endpoint for workflow APIs
         AxonFlowConfig config = AxonFlowConfig.builder()
-                .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8081"))
+                .endpoint(getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
                 .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo"))
                 .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "secret"))
                 .build();

@@ -69,8 +69,8 @@ mvn compile exec:java -Pcreate
 
 | Type | Description | Location |
 |------|-------------|----------|
-| Static | Pattern-based (regex) rules | Agent (port 8080) |
-| Dynamic | Condition-based rules | Orchestrator (port 8081) |
+| Static | Pattern-based (regex) rules | Agent |
+| Dynamic | Condition-based rules | Orchestrator (internal) |
 
 ### Policy Tiers
 

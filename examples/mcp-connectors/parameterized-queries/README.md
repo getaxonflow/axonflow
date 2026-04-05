@@ -125,7 +125,7 @@ These examples use the Agent's MCP query endpoint directly:
 ```
 POST http://localhost:8080/mcp/resources/query
 Content-Type: application/json
-X-Tenant-ID: default
+Basic auth tenant: default
 
 {
   "connector": "postgres",

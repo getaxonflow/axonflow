@@ -59,6 +59,20 @@ func isCommunityMode() bool {
 	return mode == "community" || mode == ""
 }
 
+// getDeploymentOrgID returns the canonical deployment org_id from the ORG_ID env var.
+// This is the single source of truth for org identity — set at deployment time in
+// docker-compose or platform config. License org_id must match this value.
+// Defaults to "local-dev-org" if not set — matches docker-compose.yml default.
+// This default MUST NOT change across versions — existing installs rely on the
+// implicit value for data continuity via the RLS org_id column.
+func getDeploymentOrgID() string {
+	orgID := os.Getenv("ORG_ID")
+	if orgID == "" {
+		return "local-dev-org"
+	}
+	return orgID
+}
+
 // Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
 // Docker Compose services communicate via service names on the axonflow-network.
 // No configuration required - the Agent detects Docker and uses appropriate URLs.
@@ -83,9 +97,7 @@ var (
 	orchestratorURL        = getOrchestratorURL() // Auto-discovered based on environment
 	authDB                 *sql.DB                // Database for Option 3 authentication
 	usageDB                *sql.DB // Database for usage metering
-	staticPolicyEngine     *StaticPolicyEngine
-	dbPolicyEngine         *DatabasePolicyEngine
-	tierAwarePolicyEngine  *TierAwarePolicyEngine // New tier-aware policy engine for tenant-specific policies
+	tierAwarePolicyEngine  *TierAwarePolicyEngine // Tier-aware policy engine for tenant-specific policies
 	meteringService           *marketplace.MeteringService // AWS Marketplace metering
 	costService               *cost.Service // Cost tracking and budget enforcement (Issue #1082)
 	circuitBreakerInstance    *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
@@ -298,12 +310,14 @@ func (m *AgentMetrics) recordLatency(latencyMs int64, policyType string) {
 	}
 }
 
-// Client represents registered client application
+// Client represents an authenticated client.
+// ID and TenantID come from the Basic auth clientId (tenant identity for data isolation).
+// OrgID comes from the license validation (org entitlement scope).
 type Client struct {
-	ID            string    `json:"id"`
+	ID            string    `json:"id"`        // Client identifier (from Basic auth username)
 	Name          string    `json:"name"`
-	OrgID         string    `json:"org_id"` // Organization ID for usage tracking
-	TenantID      string    `json:"tenant_id"`
+	OrgID         string    `json:"org_id"`    // Organization ID from license (entitlement scope)
+	TenantID      string    `json:"tenant_id"` // Tenant ID for data isolation (from Basic auth clientId)
 	Permissions   []string  `json:"permissions"`
 	RateLimit     int       `json:"rate_limit"`
 	Enabled       bool      `json:"enabled"`
@@ -439,8 +453,21 @@ func Run() {
 			log.Fatalf("Invalid license: %s (error: %s)", result.Message, result.Error)
 		}
 
+		// Validate license org_id matches deployment ORG_ID.
+		// ORG_ID is the canonical deployment identity (set in docker-compose/env).
+		// License org_id must match — mismatch means data will split across orgs.
+		deploymentOrgID := getDeploymentOrgID()
+		if result.OrgID != "" && result.OrgID != deploymentOrgID {
+			log.Fatalf("❌ License org_id mismatch: license has org_id=%q but deployment ORG_ID=%q. "+
+				"These must match or data will be split across organizations. "+
+				"Either update ORG_ID in your docker-compose/env to match the license, "+
+				"or request a new license with org_id=%q.",
+				result.OrgID, deploymentOrgID, deploymentOrgID)
+		}
+
 		log.Printf("✅ License validated successfully")
 		log.Printf("   Tier: %s", result.Tier)
+		log.Printf("   Org: %s", deploymentOrgID)
 		log.Printf("   Max Nodes: %d", result.MaxNodes)
 		log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
 
@@ -623,150 +650,124 @@ func Run() {
 		}
 	}
 
-	// Try to initialize database policy engine first
-	dbEngine, err := NewDatabasePolicyEngine()
-	if err != nil {
-		log.Printf("Failed to initialize database policy engine: %v", err)
-		log.Println("Falling back to static policy engine")
-		staticPolicyEngine = NewStaticPolicyEngine()
-	} else {
-		dbPolicyEngine = dbEngine
-		log.Println("AxonFlow Agent initialized with database-backed policy enforcement")
-		defer func() { _ = dbPolicyEngine.Close() }()
-
-		// Initialize standalone AuditManager (decoupled from DatabasePolicyEngine).
-		// NOTE: This creates a second audit queue separate from dbPolicyEngine's internal one.
-		// The primary path (shared engine) uses AuditManager's queue via SharedPolicyAuditAdapter.
-		// The deprecated fallback path (dbPolicyEngine.EvaluateStaticPolicies) still uses its
-		// own internal queue. Both queues will be consolidated when DatabasePolicyEngine is
-		// removed in a future phase.
-		initAuditManager(dbEngine.db)
-		if auditManager != nil {
-			defer func() {
-				if err := auditManager.Shutdown(context.Background()); err != nil {
-					log.Printf("⚠️ Audit manager shutdown error: %v", err)
-				}
-			}()
-		}
-
-		// Recover any failed audit entries from fallback file
-		// This ensures compliance audit trails are not lost even after crashes
-		if auditManager != nil {
-			if recovered, err := auditManager.RecoverEntries(); err != nil {
-				log.Printf("⚠️ Failed to recover audit entries: %v", err)
-			} else if recovered > 0 {
-				log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
-			}
-		} else if dbPolicyEngine != nil {
-			if recovered, err := dbPolicyEngine.RecoverAuditEntries(); err != nil {
-				log.Printf("⚠️ Failed to recover audit entries: %v", err)
-			} else if recovered > 0 {
-				log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
-			}
-		}
-	}
-
-	// Initialize Option 3 authentication database
+	// Initialize database, audit manager, and policy engine.
+	// DB mode: full enforcement with DB-loaded policies + DB audit.
+	// No-DB mode: engine with nil DB (community fallback) + JSONL audit.
 	if dbURL != "" {
+		var err error
 		authDB, err = sql.Open("postgres", dbURL)
 		if err != nil {
 			log.Fatalf("Failed to connect to authentication database: %v", err)
 		}
 		defer func() { _ = authDB.Close() }()
 
-		// Test connection
 		if err := authDB.Ping(); err != nil {
 			log.Fatalf("Failed to ping authentication database: %v", err)
 		}
 		log.Println("✅ Authentication database connected (Option 3)")
 
-		// Use same database for usage metering
 		usageDB = authDB
 		log.Println("✅ Usage metering database connected")
 
-		// Initialize tier-aware policy engine for tenant-specific policy evaluation
-		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
-		log.Println("✅ Tier-aware policy engine initialized (tenant policies enabled)")
+		// Audit manager with DB — writes to Postgres
+		initAuditManager(usageDB)
+		if auditManager != nil {
+			defer func() {
+				if err := auditManager.Shutdown(context.Background()); err != nil {
+					log.Printf("⚠️ Audit manager shutdown error: %v", err)
+				}
+			}()
+			if recovered, err := auditManager.RecoverEntries(); err != nil {
+				log.Printf("⚠️ Failed to recover audit entries: %v", err)
+			} else if recovered > 0 {
+				log.Printf("✅ Recovered %d audit entries from fallback file", recovered)
+			}
+		}
 
-		// Initialize unified shared policy engine for MCP request/response evaluation
-		// Pass audit adapter so shared engine logs through the same audit infrastructure
+		// Tier-aware policy engine (tenant-specific policies from DB)
+		tierAwarePolicyEngine = NewTierAwarePolicyEngine(authDB, nil)
+		log.Println("✅ Tier-aware policy engine initialized")
+
+		// Activate integration-specific policies before policy engine init
+		// so the shared engine sees enabled rows on first load.
+		ActivateIntegrationsFromEnv(usageDB)
+
+		// Shared policy engine with DB — loads policies from database
 		var sharedAuditQueue sharedpolicy.AuditQueue
 		if auditManager != nil {
 			sharedAuditQueue = &SharedPolicyAuditAdapter{queue: auditManager.GetQueue()}
 		}
-		sharedpolicy.InitGlobalEngine(authDB, sharedpolicy.DefaultEngineConfig(), sharedAuditQueue)
-		log.Println("✅ Shared policy engine initialized (phase-aware enforcement with audit)")
+		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(authDB, sharedpolicy.DefaultEngineConfig(), sharedAuditQueue))
+		log.Println("✅ Policy enforcement: DB-backed shared engine (with audit)")
 
-		// Initialize exfiltration checker for MCP data extraction limits (Issue #966)
-		sharedpolicy.InitGlobalExfiltrationChecker()
-		exfilLimits := sharedpolicy.GetGlobalExfiltrationChecker().GetLimits()
-		log.Printf("✅ Exfiltration checker initialized (enabled=%v, maxRows=%d, maxBytes=%d)",
-			exfilLimits.Enabled, exfilLimits.MaxRowsPerQuery, exfilLimits.MaxBytesPerQuery)
-
-		// Initialize dynamic policy evaluator for MCP (Issue #968)
-		// Disabled by default - enable via MCP_DYNAMIC_POLICIES_ENABLED=true
-		sharedpolicy.InitGlobalDynamicPolicyEvaluator()
-		// Set orchestrator endpoint using the same resolution as other Agent→Orchestrator calls
-		sharedpolicy.SetGlobalOrchestratorEndpoint(getOrchestratorURL())
-		dynamicEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
-		if dynamicEval != nil {
-			config := dynamicEval.GetConfig()
-			log.Printf("✅ Dynamic policy evaluator initialized (enabled=%v, endpoint=%s, graceful=%v)",
-				config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
-		}
-
-		// Cache detection configs at startup — read env vars once, not per-request.
-		// Follows the same pattern as InitGlobalDynamicPolicyEvaluator().
-		InitDetectionConfigs()
-		log.Println("✅ Detection configs cached (MCP + Gateway static policy settings)")
-
-		// Initialize cost service for budget enforcement (Issue #1082)
-		// This enables pre-request budget checks in Gateway Mode
+		// Cost service for budget enforcement (requires DB)
 		costRepo := cost.NewPostgresRepository(authDB)
 		costService = cost.NewService(costRepo, nil)
 		log.Println("✅ Cost service initialized (budget enforcement enabled)")
 
-		// Initialize AWS Marketplace metering (if enabled)
+		// AWS Marketplace metering (requires DB)
 		if os.Getenv("ENABLE_MARKETPLACE_METERING") == "true" {
 			productCode := os.Getenv("MARKETPLACE_PRODUCT_CODE")
 			if productCode == "" {
 				log.Fatal("❌ MARKETPLACE_PRODUCT_CODE required when ENABLE_MARKETPLACE_METERING=true")
 			}
 
-			var err error
-			meteringService, err = marketplace.NewMeteringService(authDB, productCode)
-			if err != nil {
-				log.Fatalf("❌ Failed to create AWS Marketplace metering service: %v", err)
+			var mErr error
+			meteringService, mErr = marketplace.NewMeteringService(authDB, productCode)
+			if mErr != nil {
+				log.Fatalf("❌ Failed to create AWS Marketplace metering service: %v", mErr)
 			}
 
 			ctx := context.Background()
-			if err := meteringService.Start(ctx); err != nil {
-				log.Printf("⚠️  Failed to start AWS Marketplace metering: %v", err)
+			if mErr := meteringService.Start(ctx); mErr != nil {
+				log.Printf("⚠️  Failed to start AWS Marketplace metering: %v", mErr)
 			} else {
 				log.Println("✅ AWS Marketplace metering service started")
 			}
 		}
+	} else {
+		// AxonFlow requires PostgreSQL for policy enforcement, audit logging,
+		// and execution tracking. Without a database, the platform cannot
+		// provide governance guarantees. Refuse to start.
+		log.Fatal("❌ DATABASE_URL is required. AxonFlow requires PostgreSQL for policy enforcement, " +
+			"audit logging, and execution tracking. Set DATABASE_URL or use 'docker compose up -d' " +
+			"which includes PostgreSQL. See: https://docs.getaxonflow.com/docs/deployment/quickstart")
+	}
 
-		// Initialize Redis for distributed rate limiting
-		redisURL := os.Getenv("REDIS_URL")
-		if redisURL != "" {
-			if err := initRedis(redisURL); err != nil {
-				log.Printf("Warning: Failed to initialize Redis: %v", err)
-				log.Println("Falling back to in-memory rate limiting")
-			} else {
-				log.Println("✅ Redis rate limiting enabled")
-				defer func() {
-					if err := closeRedis(); err != nil {
-						log.Printf("Error closing Redis: %v", err)
-					}
-				}()
-			}
+	// DB-independent initializations (work in both DB and no-DB mode)
+	sharedpolicy.InitGlobalExfiltrationChecker()
+	exfilLimits := sharedpolicy.GetGlobalExfiltrationChecker().GetLimits()
+	log.Printf("✅ Exfiltration checker initialized (enabled=%v, maxRows=%d, maxBytes=%d)",
+		exfilLimits.Enabled, exfilLimits.MaxRowsPerQuery, exfilLimits.MaxBytesPerQuery)
+
+	sharedpolicy.InitGlobalDynamicPolicyEvaluator()
+	sharedpolicy.SetGlobalOrchestratorEndpoint(getOrchestratorURL())
+	dynamicEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	if dynamicEval != nil {
+		config := dynamicEval.GetConfig()
+		log.Printf("✅ Dynamic policy evaluator initialized (enabled=%v, endpoint=%s, graceful=%v)",
+			config.Enabled, config.OrchestratorEndpoint, config.GracefulDegradation)
+	}
+
+	InitDetectionConfigs()
+	log.Println("✅ Detection configs cached (MCP + Gateway static policy settings)")
+
+	// Redis rate limiting (works without DB)
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL != "" {
+		if err := initRedis(redisURL); err != nil {
+			log.Printf("Warning: Failed to initialize Redis: %v", err)
+			log.Println("Falling back to in-memory rate limiting")
 		} else {
-			log.Println("ℹ️  REDIS_URL not set - using in-memory rate limiting")
+			log.Println("✅ Redis rate limiting enabled")
+			defer func() {
+				if err := closeRedis(); err != nil {
+					log.Printf("Error closing Redis: %v", err)
+				}
+			}()
 		}
 	} else {
-		log.Println("ℹ️  DATABASE_URL not set - Option 3 disabled, using Option 2 whitelist")
-		log.Println("⚠️  Usage metering disabled - DATABASE_URL required")
+		log.Println("ℹ️  REDIS_URL not set - using in-memory rate limiting")
 	}
 
 	// Initialize node enforcement (heartbeat + monitoring)
@@ -888,11 +889,14 @@ func Run() {
 	globalRouter.HandleFunc("/api/clients", listClientsHandler).Methods("GET")
 	globalRouter.HandleFunc("/api/clients", createClientHandler).Methods("POST")
 
-	// Policy testing endpoint for debugging
-	globalRouter.HandleFunc("/api/policies/test", policyTestHandler).Methods("POST")
+	// Policy testing endpoint — protected by auth middleware (tenant from credentials)
+	globalRouter.Handle("/api/policies/test", apiAuthMiddleware(http.HandlerFunc(policyTestHandler))).Methods("POST")
 
 	// Register MCP connector endpoints
 	RegisterMCPHandlers(globalRouter)
+
+	// Register MCP server protocol endpoint (Claude Code plugin — #1484)
+	RegisterMCPServerHandler(globalRouter)
 
 	// Register connector refresh API endpoints (ADR-007)
 	// These endpoints allow manual cache invalidation for connector configurations
@@ -917,7 +921,9 @@ func Run() {
 	})
 	hitlHandler := hitl.NewHandler(hitlService)
 	hitlHandler.RegisterRoutes(globalRouter)
-	// Note: In community edition, RegisterRoutes is a no-op (HITL is an enterprise feature)
+	// Note: In community edition, RegisterRoutes registers a single /status endpoint
+	// Auth for HITL is handled by the handler reading X-Org-ID/X-Tenant-ID headers,
+	// which are set by proxyAuthMiddleware for proxied requests or directly by clients.
 
 	// Start HITL expiration background job (1-hour ticker)
 	// Enterprise: expires stale pending approval requests. Community: no-op.
@@ -950,7 +956,7 @@ func Run() {
 	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
 	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
 	cbHandler.SetNotificationService(notifService)
-	cbHandler.RegisterRoutes(globalRouter)
+	cbHandler.RegisterRoutes(globalRouter, mux.MiddlewareFunc(apiAuthMiddleware))
 	// Note: In community edition, RegisterRoutes is a no-op (Circuit Breaker is an enterprise feature)
 
 	// Load active circuits from DB so they survive agent restarts
@@ -1036,12 +1042,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	if isCommunityMode() {
 		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", logutil.Sanitize(req.ClientID))
-		// Create a dummy client for community deployments
-		// Issue #1082: Use "demo-org" for OrgID to enable budget enforcement testing
+		// Create a default client for community deployments
 		client = &Client{
 			ID:          req.ClientID,
 			Name:        "Community",
-			OrgID:       "demo-org",
+			OrgID:       getDeploymentOrgID(),
 			TenantID:    req.ClientID,
 			Enabled:     true,
 			LicenseTier: "Community",
@@ -1154,12 +1159,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		policyResult = convertSharedResultToStatic(requestResult)
 		log.Printf("[Proxy] Shared policy engine evaluated %d policies in %dms",
 			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
-	} else if dbPolicyEngine != nil {
-		// Fallback: DB engine (when shared engine not initialized)
-		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
-	} else if staticPolicyEngine != nil {
-		policyResult = staticPolicyEngine.EvaluateStaticPolicies(user, req.Query, req.RequestType)
 	} else {
+		log.Println("[Proxy] WARNING: No policy engine available (shared engine not initialized)")
 		policyResult = &StaticPolicyResult{}
 	}
 
@@ -1511,10 +1512,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		codeArtifact = DetectCodeInResponse(responseContent)
 		if codeArtifact != nil {
 			// Evaluate code-specific policies
-			if staticPolicyEngine != nil {
-				policiesChecked, _ := EvaluateCodePolicies(responseContent, staticPolicyEngine)
-				codeArtifact.PoliciesChecked = policiesChecked
-			}
+			policiesChecked, _ := EvaluateCodePolicies(responseContent)
+			codeArtifact.PoliciesChecked = policiesChecked
 			log.Printf("[AUDIT] Code artifact detected: language=%s, type=%s, size=%d bytes, secrets=%d, unsafe=%d",
 				codeArtifact.Language, codeArtifact.CodeType, codeArtifact.SizeBytes,
 				codeArtifact.SecretsDetected, codeArtifact.UnsafePatterns)
@@ -1663,13 +1662,11 @@ func validateClient(clientID string) (*Client, error) {
 		return nil, fmt.Errorf("client ID required")
 	}
 
-	// Issue #1082: TenantID must match what SDK uses when creating budgets
-	// The SDK sends X-Tenant-ID header based on client_id, so we use clientID here
 	return &Client{
 		ID:          clientID,
 		Name:        "Demo Client",
-		OrgID:       "demo-org", // Issue #1082: Set OrgID for budget enforcement
-		TenantID:    clientID,   // Issue #1082: Match SDK's tenant_id pattern
+		OrgID:       getDeploymentOrgID(),
+		TenantID:    clientID,
 		Permissions: []string{"query", "llm"},
 		RateLimit:   100,
 		Enabled:     true,
@@ -1800,7 +1797,9 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		orchReq.Header.Set("X-Tenant-ID", user.TenantID)
 	}
 	if client != nil {
-		orchReq.Header.Set("X-Client-ID", client.ID)
+		if client.OrgID != "" {
+			orchReq.Header.Set("X-Org-ID", getDeploymentOrgID())
+		}
 		if (user == nil || user.TenantID == "") && client.TenantID != "" {
 			orchReq.Header.Set("X-Tenant-ID", client.TenantID)
 		}
@@ -1879,10 +1878,10 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mock user for testing - use tenant ID from request header if provided
-	tenantID := r.Header.Get("X-Tenant-ID")
+	// Derive tenant from auth context (set by apiAuthMiddleware or community default)
+	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
-		tenantID = "tenant_1" // fallback for backward compatibility
+		tenantID = "community" // default for community mode
 	}
 	testUser := &User{
 		Email:       testReq.UserEmail,
@@ -1911,11 +1910,8 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 			ActionOverrides: gatewayDetectionCfg.BuildActionOverrides(),
 		})
 		result = convertSharedResultToStatic(requestResult)
-	} else if dbPolicyEngine != nil {
-		result = dbPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
-	} else if staticPolicyEngine != nil {
-		result = staticPolicyEngine.EvaluateStaticPolicies(testUser, testReq.Query, testReq.RequestType)
 	} else {
+		log.Println("[PolicyTest] WARNING: No policy engine available")
 		result = &StaticPolicyResult{}
 	}
 

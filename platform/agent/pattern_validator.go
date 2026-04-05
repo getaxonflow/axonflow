@@ -63,8 +63,7 @@ type Match struct {
 
 // validatePatternWithLimits validates that a pattern is valid RE2 regex with safety checks.
 // This includes length limits, capture group limits, and timeout testing.
-// Note: There's a simpler validateRE2Pattern in db_policies.go that only checks for
-// unsupported Perl regex syntax. This function does more comprehensive validation.
+// This includes length limits, capture group limits, and timeout testing.
 func validatePatternWithLimits(pattern string) error {
 	// Check empty
 	if strings.TrimSpace(pattern) == "" {

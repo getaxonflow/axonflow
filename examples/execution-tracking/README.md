@@ -15,8 +15,7 @@ These examples demonstrate how to use AxonFlow's **Unified Execution Tracking AP
 
 ## Prerequisites
 
-- AxonFlow Agent running (default: `http://localhost:8080`)
-- AxonFlow Orchestrator running (default: `http://localhost:8081`)
+- AxonFlow running (default: `http://localhost:8080`)
 - SDK installed for your language (for SDK examples)
 
 ## Environment Variables
@@ -26,7 +25,6 @@ All examples support these environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | AxonFlow Agent URL |
-| `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | AxonFlow Orchestrator URL |
 | `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
 | `AXONFLOW_CLIENT_SECRET` | `demo` | Client secret for authentication |
 

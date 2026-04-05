@@ -36,7 +36,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_ENDPOINT:-${AXONFLOW_AGENT_URL:-http://localhost:8080}}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-org}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 
 RED='\033[0;31m'
@@ -103,8 +103,8 @@ echo -e "${BLUE}Test 1: List HITL Queue${NC}"
 echo "   GET /api/v1/hitl/queue"
 
 list_response=$(curl -s -w "\n%{http_code}" "$AGENT_URL/api/v1/hitl/queue" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 list_body=$(echo "$list_response" | sed '$d')
 list_http=$(echo "$list_response" | tail -n 1)
@@ -128,8 +128,8 @@ echo -e "${BLUE}Test 2: List HITL Queue with Filters${NC}"
 echo "   GET /api/v1/hitl/queue?status=pending&limit=10"
 
 list_filtered_response=$(curl -s -w "\n%{http_code}" "$AGENT_URL/api/v1/hitl/queue?status=pending&limit=10" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 list_filtered_body=$(echo "$list_filtered_response" | sed '$d')
 list_filtered_http=$(echo "$list_filtered_response" | tail -n 1)
@@ -153,8 +153,8 @@ echo -e "${BLUE}Test 3: Get HITL Request (fake ID)${NC}"
 echo "   GET /api/v1/hitl/queue/fake-id-123"
 
 get_response=$(curl -s -w "\n%{http_code}" "$AGENT_URL/api/v1/hitl/queue/fake-id-123" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 get_body=$(echo "$get_response" | sed '$d')
 get_http=$(echo "$get_response" | tail -n 1)
@@ -179,8 +179,7 @@ echo "   POST /api/v1/hitl/queue/fake-id-123/approve"
 
 approve_response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/hitl/queue/fake-id-123/approve" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{"reviewer_id":"test","reviewer_email":"test@example.com"}')
 
 approve_body=$(echo "$approve_response" | sed '$d')
@@ -206,8 +205,7 @@ echo "   POST /api/v1/hitl/queue/fake-id-123/reject"
 
 reject_response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/hitl/queue/fake-id-123/reject" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{"reviewer_id":"test","reviewer_email":"test@example.com","reason":"test rejection"}')
 
 reject_body=$(echo "$reject_response" | sed '$d')
@@ -232,8 +230,8 @@ echo -e "${BLUE}Test 6: Get HITL Stats${NC}"
 echo "   GET /api/v1/hitl/queue/stats"
 
 stats_response=$(curl -s -w "\n%{http_code}" "$AGENT_URL/api/v1/hitl/queue/stats" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 stats_body=$(echo "$stats_response" | sed '$d')
 stats_http=$(echo "$stats_response" | tail -n 1)

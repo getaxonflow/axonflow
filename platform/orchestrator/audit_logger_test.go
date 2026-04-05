@@ -463,7 +463,7 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-						sqlmock.AnyArg(), sqlmock.AnyArg(),
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 					).
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectCommit()
@@ -527,7 +527,7 @@ func TestBatchWriter_Write(t *testing.T) {
 			setupMock: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
 				mock.ExpectPrepare("INSERT INTO audit_logs")
-				// First entry
+				// First entry (24 args including org_id)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -536,9 +536,9 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-						sqlmock.AnyArg(), sqlmock.AnyArg()).
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				// Second entry
+				// Second entry (24 args including org_id)
 				mock.ExpectExec("INSERT INTO audit_logs").
 					WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
@@ -547,7 +547,7 @@ func TestBatchWriter_Write(t *testing.T) {
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-						sqlmock.AnyArg(), sqlmock.AnyArg()).
+						sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(2, 1))
 				mock.ExpectCommit()
 			},

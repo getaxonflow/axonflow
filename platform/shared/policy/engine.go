@@ -340,6 +340,13 @@ func (e *UnifiedPolicyEngine) InvalidateCache(tenantID string, orgID *string) {
 	e.cache.Invalidate(tenantID, orgID)
 }
 
+// InvalidateAllCaches clears the entire policy cache for all tenants.
+// Used when global policy changes (e.g., integration activation) affect
+// every tenant's effective policy set.
+func (e *UnifiedPolicyEngine) InvalidateAllCaches() {
+	e.cache.InvalidateAll()
+}
+
 // GetStats returns engine statistics.
 func (e *UnifiedPolicyEngine) GetStats() map[string]interface{} {
 	return map[string]interface{}{

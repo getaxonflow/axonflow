@@ -46,9 +46,9 @@ type Result struct {
 }
 
 func main() {
-	baseURL := os.Getenv("ORCHESTRATOR_URL")
+	baseURL := os.Getenv("AXONFLOW_AGENT_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:8081"
+		baseURL = "http://localhost:8080"
 	}
 
 	concurrent := 10

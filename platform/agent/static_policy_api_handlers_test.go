@@ -13,6 +13,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -127,7 +128,10 @@ func TestHandleListStaticPolicies(t *testing.T) {
 
 			req := httptest.NewRequest("GET", "/api/v1/static-policies"+tt.queryParams, nil)
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -238,7 +242,7 @@ func TestHandleCreateStaticPolicy(t *testing.T) {
 	}{
 		{
 			name:     "missing tenant ID",
-			tenantID: "",
+			tenantID: "", // Empty tenant from context → 401
 			requestBody: CreateStaticPolicyRequest{
 				Name:     "Test Policy",
 				Pattern:  "test.*pattern",
@@ -247,7 +251,7 @@ func TestHandleCreateStaticPolicy(t *testing.T) {
 				Tier:     TierTenant,
 			},
 			setupMock:      func(mock sqlmock.Sqlmock) {},
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:     "missing name",
@@ -291,7 +295,10 @@ func TestHandleCreateStaticPolicy(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/v1/static-policies", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -380,7 +387,10 @@ func TestHandleUpdateStaticPolicy(t *testing.T) {
 				req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
 			}
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 				req.Header.Set("X-User-ID", "test-user")
 			}
 			rr := httptest.NewRecorder()
@@ -501,7 +511,7 @@ func TestHandleGetEffectivePolicies(t *testing.T) {
 			name:           "missing tenant ID",
 			tenantID:       "",
 			setupMock:      func(mock sqlmock.Sqlmock) {},
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:     "success",
@@ -549,7 +559,10 @@ func TestHandleGetEffectivePolicies(t *testing.T) {
 
 			req := httptest.NewRequest("GET", "/api/v1/static-policies/effective", nil)
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -715,7 +728,10 @@ func TestHandleGetVersionHistory(t *testing.T) {
 			req := httptest.NewRequest("GET", "/api/v1/static-policies/"+tt.policyID+"/versions", nil)
 			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -756,7 +772,7 @@ func TestHandleCreateOverride(t *testing.T) {
 				OverrideReason: "Testing",
 			},
 			setupMock:      func(mock sqlmock.Sqlmock) {},
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusUnauthorized,
 		},
 	}
 
@@ -777,7 +793,10 @@ func TestHandleCreateOverride(t *testing.T) {
 			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
 			req.Header.Set("Content-Type", "application/json")
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -803,7 +822,7 @@ func TestHandleDeleteOverride(t *testing.T) {
 			policyID:       "test-policy",
 			tenantID:       "",
 			setupMock:      func(mock sqlmock.Sqlmock) {},
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusUnauthorized,
 		},
 	}
 
@@ -822,7 +841,10 @@ func TestHandleDeleteOverride(t *testing.T) {
 			req := httptest.NewRequest("DELETE", "/api/v1/static-policies/"+tt.policyID+"/override", nil)
 			req = mux.SetURLVars(req, map[string]string{"id": tt.policyID})
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -846,7 +868,7 @@ func TestHandleListOverrides(t *testing.T) {
 			name:           "missing tenant ID",
 			tenantID:       "",
 			setupMock:      func(mock sqlmock.Sqlmock) {},
-			expectedStatus: http.StatusBadRequest,
+			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:     "success - empty list",
@@ -896,7 +918,10 @@ func TestHandleListOverrides(t *testing.T) {
 
 			req := httptest.NewRequest("GET", "/api/v1/static-policies/overrides", nil)
 			if tt.tenantID != "" {
-				req.Header.Set("X-Tenant-ID", tt.tenantID)
+				// Inject tenant via context (apiAuthMiddleware sets this in production)
+				ctx := context.WithValue(req.Context(), ContextKeyTenantID, tt.tenantID)
+				ctx = context.WithValue(ctx, ContextKeyOrgID, "test-org")
+				req = req.WithContext(ctx)
 			}
 			rr := httptest.NewRecorder()
 
@@ -1067,6 +1092,70 @@ func TestRegisterStaticPolicyHandlers(t *testing.T) {
 		match := &mux.RouteMatch{}
 		if router.Match(req, match) {
 			t.Error("expected no routes to be registered with nil db")
+		}
+	})
+}
+
+// TestHandlerCreateStaticPolicy_AuthContext verifies policy creation uses auth context.
+func TestHandlerCreateStaticPolicy_AuthContext(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	handler := NewStaticPolicyAPIHandler(db)
+
+	t.Run("uses tenant from context", func(t *testing.T) {
+		body := `{"name":"test","pattern":"test.*","category":"security","action":"block","description":"test"}`
+		req := httptest.NewRequest("POST", "/api/v1/static-policies", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "auth-tenant")
+		ctx = context.WithValue(ctx, ContextKeyOrgID, "auth-org")
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		handler.HandleCreateStaticPolicy(w, req)
+		// Should succeed or fail at DB level, not auth level
+		if w.Code == http.StatusUnauthorized {
+			t.Error("Should not get 401 with valid auth context")
+		}
+	})
+
+	t.Run("rejects empty tenant context", func(t *testing.T) {
+		body := `{"name":"test","pattern":"test.*","category":"security","action":"block"}`
+		req := httptest.NewRequest("POST", "/api/v1/static-policies", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		// No tenant in context
+		w := httptest.NewRecorder()
+		handler.HandleCreateStaticPolicy(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("Expected 401 without tenant, got %d", w.Code)
+		}
+	})
+}
+
+// TestHandlerOverrideCreate_AuthContext verifies override creation uses auth context.
+func TestHandlerOverrideCreate_AuthContext(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	handler := NewStaticPolicyAPIHandler(db)
+
+	t.Run("rejects empty tenant context", func(t *testing.T) {
+		body := `{"enabled":false,"action":"warn"}`
+		req := httptest.NewRequest("POST", "/api/v1/static-policies/test-id/overrides", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.HandleCreateOverride(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("Expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("rejects invalid JSON body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/v1/static-policies/test-id/overrides", bytes.NewBufferString("{invalid"))
+		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		handler.HandleCreateOverride(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Expected 400, got %d", w.Code)
 		}
 	})
 }

@@ -106,8 +106,8 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 		if circuitBreakerInstance != nil {
 			orgID := r.Header.Get("X-Org-ID")
 			tenantID := r.Header.Get("X-Tenant-ID")
-			clientID := r.Header.Get("X-Client-ID")
-			if orgID != "" && clientID != "" {
+			clientID := tenantID // clientId = tenantId in the unified identity model
+			if orgID != "" && tenantID != "" {
 				if cbErr := circuitBreakerInstance.RecordError(r.Context(), orgID, tenantID, clientID); cbErr != nil {
 					log.Printf("[CircuitBreaker] RecordError (proxy) failed: %v", cbErr)
 				}
@@ -160,9 +160,16 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 }
 
 // proxyAuthMiddleware wraps a proxy handler with client credential validation.
-// In community mode (DEPLOYMENT_MODE="" or "community"), auth is skipped.
-// In production mode, Basic auth credentials are validated against the DB or whitelist.
-// The authenticated client's tenant ID is set as X-Tenant-ID for downstream services.
+// Sets two identity headers for downstream services:
+//   - X-Tenant-ID: from clientId in Basic auth (data isolation + client identity)
+//   - X-Org-ID: from deployment ORG_ID env var (canonical org identity — NOT from license)
+//
+// The ORG_ID env var is the single source of truth for org identity, set at deployment time.
+// The license org_id must match ORG_ID (validated at startup), but at runtime the env var
+// is always used — the license only proves entitlement, it doesn't define org identity.
+//
+// In community mode, auth is skipped but identity headers are still injected
+// (defaulting to "community") so the orchestrator always has tenant context.
 func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Skip auth for CORS preflight
@@ -172,6 +179,14 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if isCommunityMode() {
+			// In community mode, derive tenant from Basic auth or default to "community".
+			// Always inject identity headers so the orchestrator has consistent context.
+			clientID := extractClientID(r)
+			if clientID == "" {
+				clientID = "community"
+			}
+			r.Header.Set("X-Tenant-ID", clientID)
+			r.Header.Set("X-Org-ID", getDeploymentOrgID())
 			next(w, r)
 			return
 		}
@@ -212,10 +227,11 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Set identity headers from authenticated client for downstream services
-		// and circuit breaker error tracking (RecordError in proxy ErrorHandler)
+		// and circuit breaker error tracking (RecordError in proxy ErrorHandler).
+		// X-Org-ID always comes from deployment ORG_ID (single source of truth),
+		// NOT from the license — license org_id was validated at startup to match.
 		r.Header.Set("X-Tenant-ID", client.TenantID)
-		r.Header.Set("X-Org-ID", client.OrgID)
-		r.Header.Set("X-Client-ID", client.ID)
+		r.Header.Set("X-Org-ID", getDeploymentOrgID())
 
 		next(w, r)
 	}
@@ -232,6 +248,12 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Dynamic policies - new consistent path
 	r.PathPrefix("/api/v1/dynamic-policies").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
+	// MCP Process (query processing via orchestrator)
+	r.PathPrefix("/api/v1/process").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+
+	// MCP Policy Evaluation
+	r.PathPrefix("/api/v1/mcp/evaluate-policies").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+
 	// Connectors
 	r.PathPrefix("/api/v1/connectors").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
@@ -242,6 +264,7 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	r.PathPrefix("/api/v1/pricing").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
 	// Multi-Agent Planning (MAP)
+	r.PathPrefix("/api/v1/plans").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 	r.PathPrefix("/api/v1/plan").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Execution Replay
@@ -250,8 +273,8 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Execution Viewer UI (served by orchestrator)
 	r.PathPrefix("/ui/executions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
 
-	// Unified Execution Tracking (#1075)
-	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
+	// Unified Execution Tracking (#1075) — GET for list/stream, POST for cancel
+	r.PathPrefix("/api/v1/unified/executions").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
 
 	// Audit Logs
 	r.PathPrefix("/api/v1/audit").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
@@ -259,11 +282,37 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// LLM Providers
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
+	// Policy Simulation & Impact Report (Enterprise) — must be before /api/v1/policies
+	r.PathPrefix("/api/v1/policies/simulate").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+	r.PathPrefix("/api/v1/policies/impact-report").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+	r.PathPrefix("/api/v1/policies/conflicts").HandlerFunc(orchAuth).Methods("POST", "OPTIONS")
+	// Dynamic policy CRUD via legacy /api/v1/policies path (orchestrator)
+	r.PathPrefix("/api/v1/policies/dynamic").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
+	r.PathPrefix("/api/v1/policies").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// Evidence Export (Enterprise compliance)
+	r.PathPrefix("/api/v1/evidence").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
+
+	// RBI Compliance (India banking) - Enterprise feature
+	r.PathPrefix("/api/v1/rbi").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// SEBI Compliance (India securities) - Enterprise feature
+	r.PathPrefix("/api/v1/sebi").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
 	// MAS FEAT Compliance (Singapore) - Enterprise feature
 	r.PathPrefix("/api/v1/masfeat").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
 	// Workflow Control Plane (#834)
 	r.PathPrefix("/api/v1/workflows").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// Note: HITL endpoints (/api/v1/hitl/*) are registered directly on the agent
+	// by hitl.Handler.RegisterRoutes(), NOT proxied to orchestrator.
+
+	// Webhooks
+	r.PathPrefix("/api/v1/webhooks").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+	// Media Governance Config
+	r.PathPrefix("/api/v1/media-governance").HandlerFunc(orchAuth).Methods("GET", "PUT", "OPTIONS")
 
 	// Routes proxied to Portal (port 8082)
 	// Portal Authentication (login, logout, session) — no auth (login flow)
@@ -319,17 +368,28 @@ func GetProxyConfig() ProxyConfig {
 // IsProxiedPath returns true if the path should be proxied to a backend service
 func IsProxiedPath(path string) bool {
 	// Orchestrator paths
-	if strings.HasPrefix(path, "/api/v1/dynamic-policies") ||
+	if strings.HasPrefix(path, "/api/v1/process") ||
+		strings.HasPrefix(path, "/api/v1/mcp/evaluate-policies") ||
+		strings.HasPrefix(path, "/api/v1/dynamic-policies") ||
 		strings.HasPrefix(path, "/api/v1/connectors") ||
 		strings.HasPrefix(path, "/api/v1/cost") ||
 		strings.HasPrefix(path, "/api/v1/budgets") ||
 		strings.HasPrefix(path, "/api/v1/usage") ||
 		strings.HasPrefix(path, "/api/v1/pricing") ||
+		strings.HasPrefix(path, "/api/v1/plans") ||
 		strings.HasPrefix(path, "/api/v1/plan") ||
 		strings.HasPrefix(path, "/api/v1/executions") ||
 		strings.HasPrefix(path, "/api/v1/audit") ||
 		strings.HasPrefix(path, "/api/v1/llm-providers") ||
-		strings.HasPrefix(path, "/api/v1/masfeat") {
+		strings.HasPrefix(path, "/api/v1/masfeat") ||
+		strings.HasPrefix(path, "/api/v1/rbi") ||
+		strings.HasPrefix(path, "/api/v1/sebi") ||
+		strings.HasPrefix(path, "/api/v1/webhooks") ||
+		strings.HasPrefix(path, "/api/v1/media-governance") ||
+		strings.HasPrefix(path, "/api/v1/policies/simulate") ||
+		strings.HasPrefix(path, "/api/v1/policies/impact-report") ||
+		strings.HasPrefix(path, "/api/v1/policies/conflicts") ||
+		strings.HasPrefix(path, "/api/v1/evidence") {
 		return true
 	}
 

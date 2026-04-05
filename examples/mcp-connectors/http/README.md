@@ -6,7 +6,6 @@ This example installs and exercises the built-in HTTP connector by calling the O
 
 - AxonFlow stack running via `docker compose` (Enterprise or Community)
 - Agent reachable at `http://localhost:8080`
-- Orchestrator reachable at `http://localhost:8081`
 
 ## Environment
 
@@ -15,7 +14,7 @@ This example installs and exercises the built-in HTTP connector by calling the O
 - `AXONFLOW_CLIENT_SECRET` (required in enterprise mode)
 - `AXONFLOW_TENANT_ID` (optional; defaults to `AXONFLOW_CLIENT_ID`)
 - `AXONFLOW_USER_TOKEN` (optional, defaults to `default-user`)
-- `AXONFLOW_CONNECTOR_BASE_URL` (default: `http://axonflow-orchestrator:8081`; use `http://localhost:8081` if agent runs outside docker)
+- `AXONFLOW_CONNECTOR_BASE_URL` (default: `http://axonflow-orchestrator:8081`; internal service-to-service URL)
 
 ## Run (Go)
 

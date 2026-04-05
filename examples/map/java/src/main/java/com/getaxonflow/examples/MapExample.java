@@ -680,10 +680,10 @@ public class MapExample {
         }
 
         if (sseExec != null) {
-            String orchestratorUrl = getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081");
+            String agentUrl = getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080");
             String sseClientId = getEnv("AXONFLOW_CLIENT_ID", "demo-org");
             String sseClientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "demo");
-            String streamUrl = orchestratorUrl + "/api/v1/unified/executions/" + ssePlan.getPlanId() + "/stream";
+            String streamUrl = agentUrl + "/api/v1/unified/executions/" + ssePlan.getPlanId() + "/stream";
             System.out.println("   SSE URL: " + streamUrl);
 
             try {
@@ -695,7 +695,6 @@ public class MapExample {
                 conn.setRequestProperty("Accept", "application/json");
                 conn.setRequestProperty("X-Client-ID", sseClientId);
                 conn.setRequestProperty("X-Client-Secret", sseClientSecret);
-                conn.setRequestProperty("X-Tenant-ID", sseClientId);
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(10000);
                 conn.connect();

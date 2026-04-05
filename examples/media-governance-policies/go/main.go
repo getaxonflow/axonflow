@@ -14,11 +14,8 @@
 //   - Per-tenant media governance disable/enable (Enterprise only)
 //   - Non-media requests unaffected by media policies
 //
-// Two clients are used:
-//   - orchestratorClient: connects to AXONFLOW_ENDPOINT (default 8081) for policy CRUD
-//     and media governance configuration
-//   - agentClient: connects to AXONFLOW_AGENT_ENDPOINT (default 8080) for proxy LLM
-//     calls that route through the agent pipeline
+// All requests go through the agent entry point (AXONFLOW_ENDPOINT, default 8080).
+// The agent proxies policy CRUD, media governance config, and LLM proxy requests.
 //
 // Usage:
 //
@@ -26,10 +23,9 @@
 //
 // Environment:
 //
-//	AXONFLOW_ENDPOINT       - Orchestrator URL (default: http://localhost:8081)
-//	AXONFLOW_AGENT_ENDPOINT - Agent URL (default: http://localhost:8080)
-//	AXONFLOW_CLIENT_ID      - Client/Tenant ID for policy scoping
-//	AXONFLOW_CLIENT_SECRET  - Client secret (optional for community mode)
+//	AXONFLOW_ENDPOINT      - Agent URL (default: http://localhost:8080)
+//	AXONFLOW_CLIENT_ID     - Client/Tenant ID for policy scoping
+//	AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 package main
@@ -72,30 +68,19 @@ func main() {
 	fmt.Println("============================================")
 	fmt.Println()
 
-	// Initialize orchestrator client for policy CRUD and media governance config.
-	// Dynamic policies and media governance configuration are managed by the
-	// orchestrator (port 8081). In production, the agent proxies these requests.
-	orchestratorEndpoint := getEnv("AXONFLOW_ENDPOINT", "http://localhost:8081")
-	agentEndpoint := getEnv("AXONFLOW_AGENT_ENDPOINT", "http://localhost:8080")
+	// Initialize client: all requests go through the agent entry point.
+	agentEndpoint := getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080")
 	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-tenant")
 	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "")
 
-	orchestratorClient := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     orchestratorEndpoint,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	})
-
-	// Initialize agent client for proxy LLM calls (media requests route through agent).
-	agentClient := axonflow.NewClient(axonflow.AxonFlowConfig{
+	client := axonflow.NewClient(axonflow.AxonFlowConfig{
 		Endpoint:     agentEndpoint,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	})
 
-	fmt.Printf("Orchestrator: %s\n", orchestratorEndpoint)
-	fmt.Printf("Agent:        %s\n", agentEndpoint)
-	fmt.Printf("Client ID:    %s\n", clientID)
+	fmt.Printf("Agent:     %s\n", agentEndpoint)
+	fmt.Printf("Client ID: %s\n", clientID)
 	fmt.Println()
 
 	// Track per-tenant control availability for Test 6
@@ -108,7 +93,7 @@ func main() {
 	fmt.Println("  ListDynamicPolicies(type=media, page_size=100)")
 	fmt.Println()
 
-	policies, err := orchestratorClient.ListDynamicPolicies(&axonflow.ListDynamicPoliciesOptions{
+	policies, err := client.ListDynamicPolicies(&axonflow.ListDynamicPoliciesOptions{
 		Type:     "media",
 		Limit: 100,
 	})
@@ -147,7 +132,7 @@ func main() {
 	fmt.Println("  ProxyLLMCallWithMedia (1x1 white JPEG)")
 	fmt.Println()
 
-	resp2, err := agentClient.ProxyLLMCallWithMedia(
+	resp2, err := client.ProxyLLMCallWithMedia(
 		"media-policy-user",
 		"Describe this image",
 		"chat",
@@ -208,7 +193,7 @@ func main() {
 		Enabled:  true,
 	}
 
-	created, err := orchestratorClient.CreateDynamicPolicy(createReq)
+	created, err := client.CreateDynamicPolicy(createReq)
 	if err != nil {
 		fmt.Printf("   FATAL: CreateDynamicPolicy failed: %v\n", err)
 		os.Exit(1)
@@ -220,7 +205,7 @@ func main() {
 	// 3b. Verify it appears in the list
 	fmt.Println()
 	fmt.Println("  3b. Verifying policy appears in list")
-	policiesAfterCreate, err := orchestratorClient.ListDynamicPolicies(&axonflow.ListDynamicPoliciesOptions{
+	policiesAfterCreate, err := client.ListDynamicPolicies(&axonflow.ListDynamicPoliciesOptions{
 		Type:     "media",
 		Limit: 100,
 	})
@@ -241,7 +226,7 @@ func main() {
 	// 3c. Send a 1x1 image request -- should NOT be blocked (no faces in a 1px image)
 	fmt.Println()
 	fmt.Println("  3c. Sending 1x1 image request (no faces expected)")
-	resp3c, err := agentClient.ProxyLLMCallWithMedia(
+	resp3c, err := client.ProxyLLMCallWithMedia(
 		"media-policy-user",
 		"Describe this image",
 		"chat",
@@ -262,7 +247,7 @@ func main() {
 	// 3d. Cleanup -- delete the custom policy
 	fmt.Println()
 	fmt.Println("  3d. Cleaning up: deleting custom policy")
-	err = orchestratorClient.DeleteDynamicPolicy(created.ID)
+	err = client.DeleteDynamicPolicy(created.ID)
 	if err != nil {
 		fmt.Printf("   ERROR: DeleteDynamicPolicy failed: %v\n", err)
 		assert(false, "Policy deleted successfully")
@@ -279,7 +264,7 @@ func main() {
 
 	// 4a. GetMediaGovernanceStatus
 	fmt.Println("  4a. GetMediaGovernanceStatus")
-	status, err := orchestratorClient.GetMediaGovernanceStatus()
+	status, err := client.GetMediaGovernanceStatus()
 	if err != nil {
 		fmt.Printf("   FATAL: GetMediaGovernanceStatus failed: %v\n", err)
 		os.Exit(1)
@@ -293,7 +278,7 @@ func main() {
 	// 4b. GetMediaGovernanceConfig
 	fmt.Println()
 	fmt.Println("  4b. GetMediaGovernanceConfig")
-	config, err := orchestratorClient.GetMediaGovernanceConfig()
+	config, err := client.GetMediaGovernanceConfig()
 	if err != nil {
 		fmt.Printf("   FATAL: GetMediaGovernanceConfig failed: %v\n", err)
 		os.Exit(1)
@@ -334,7 +319,7 @@ func main() {
 		Enabled:  true,
 	}
 
-	toggleCreated, err := orchestratorClient.CreateDynamicPolicy(toggleCreateReq)
+	toggleCreated, err := client.CreateDynamicPolicy(toggleCreateReq)
 	if err != nil {
 		fmt.Printf("   FATAL: CreateDynamicPolicy failed: %v\n", err)
 		os.Exit(1)
@@ -346,7 +331,7 @@ func main() {
 	// 5b. Disable the policy
 	fmt.Println()
 	fmt.Println("  5b. Disabling policy (UpdateDynamicPolicy enabled=false)")
-	disabledPolicy, err := orchestratorClient.UpdateDynamicPolicy(toggleCreated.ID, &axonflow.UpdateDynamicPolicyRequest{
+	disabledPolicy, err := client.UpdateDynamicPolicy(toggleCreated.ID, &axonflow.UpdateDynamicPolicyRequest{
 		Enabled: boolPtr(false),
 	})
 	if err != nil {
@@ -359,7 +344,7 @@ func main() {
 	// 5c. Re-enable the policy
 	fmt.Println()
 	fmt.Println("  5c. Re-enabling policy (UpdateDynamicPolicy enabled=true)")
-	enabledPolicy, err := orchestratorClient.UpdateDynamicPolicy(toggleCreated.ID, &axonflow.UpdateDynamicPolicyRequest{
+	enabledPolicy, err := client.UpdateDynamicPolicy(toggleCreated.ID, &axonflow.UpdateDynamicPolicyRequest{
 		Enabled: boolPtr(true),
 	})
 	if err != nil {
@@ -372,7 +357,7 @@ func main() {
 	// 5d. Cleanup
 	fmt.Println()
 	fmt.Println("  5d. Cleaning up: deleting toggle test policy")
-	err = orchestratorClient.DeleteDynamicPolicy(toggleCreated.ID)
+	err = client.DeleteDynamicPolicy(toggleCreated.ID)
 	if err != nil {
 		fmt.Printf("   ERROR: DeleteDynamicPolicy failed: %v\n", err)
 		assert(false, "Toggle policy deleted successfully")
@@ -393,7 +378,7 @@ func main() {
 
 		// 6a. Disable media governance for this tenant
 		fmt.Println("  6a. Disabling media governance (UpdateMediaGovernanceConfig enabled=false)")
-		_, err := orchestratorClient.UpdateMediaGovernanceConfig(axonflow.UpdateMediaGovernanceConfigRequest{
+		_, err := client.UpdateMediaGovernanceConfig(axonflow.UpdateMediaGovernanceConfigRequest{
 			Enabled: boolPtr(false),
 		})
 		if err != nil {
@@ -406,7 +391,7 @@ func main() {
 		// 6b. Process request with media -- media_analysis should be absent
 		fmt.Println()
 		fmt.Println("  6b. Sending image request with media governance disabled")
-		resp6b, err := agentClient.ProxyLLMCallWithMedia(
+		resp6b, err := client.ProxyLLMCallWithMedia(
 			"media-policy-user",
 			"Describe this image",
 			"chat",
@@ -428,7 +413,7 @@ func main() {
 		// 6c. Re-enable media governance
 		fmt.Println()
 		fmt.Println("  6c. Re-enabling media governance (UpdateMediaGovernanceConfig enabled=true)")
-		_, err = orchestratorClient.UpdateMediaGovernanceConfig(axonflow.UpdateMediaGovernanceConfigRequest{
+		_, err = client.UpdateMediaGovernanceConfig(axonflow.UpdateMediaGovernanceConfigRequest{
 			Enabled: boolPtr(true),
 		})
 		if err != nil {
@@ -441,7 +426,7 @@ func main() {
 		// 6d. Verify media_analysis returns after re-enable
 		fmt.Println()
 		fmt.Println("  6d. Sending image request with media governance re-enabled")
-		resp6d, err := agentClient.ProxyLLMCallWithMedia(
+		resp6d, err := client.ProxyLLMCallWithMedia(
 			"media-policy-user",
 			"Describe this image",
 			"chat",
@@ -477,7 +462,7 @@ func main() {
 	fmt.Println("  ProxyLLMCall (text only, no media)")
 	fmt.Println()
 
-	resp7, err := agentClient.ProxyLLMCall(
+	resp7, err := client.ProxyLLMCall(
 		"media-policy-user",
 		"What is the capital of France?",
 		"chat",

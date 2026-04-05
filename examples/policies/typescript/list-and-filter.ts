@@ -23,7 +23,7 @@ function assertCheck(condition: boolean, message: string): void {
 }
 
 async function main() {
-  // Policy management APIs require clientId for X-Tenant-ID header
+  // Policy management APIs require clientId for OAuth2 client credentials
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_ENDPOINT || 'http://localhost:8080',
     clientId: process.env.AXONFLOW_CLIENT_ID || 'demo-tenant',

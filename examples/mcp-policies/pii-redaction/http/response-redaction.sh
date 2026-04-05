@@ -11,7 +11,7 @@
 set -e
 
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo}"
 
 # Base64 encode credentials for Basic auth

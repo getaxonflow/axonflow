@@ -33,7 +33,7 @@ async function main(): Promise<number> {
   console.log();
 
   const client = new AxonFlow({
-    endpoint: process.env.AXONFLOW_ORCHESTRATOR_URL || "http://localhost:8081",
+    endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
     clientId: process.env.AXONFLOW_CLIENT_ID || "demo-org",
     clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo",
   });

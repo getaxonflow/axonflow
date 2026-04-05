@@ -111,12 +111,13 @@ Each audit entry includes:
 
 ## Querying Audit Logs
 
-Use the Orchestrator API to search audit logs:
+Search audit logs via the Agent API:
 
 ```bash
 # Search by user and date range
-curl -X POST http://localhost:8081/api/v1/audit/search \
+curl -X POST http://localhost:8080/api/v1/audit/search \
   -H "Content-Type: application/json" \
+  -u demo:demo-secret \
   -d '{
     "user_email": "user@example.com",
     "start_time": "2025-01-01T00:00:00Z",
@@ -125,7 +126,7 @@ curl -X POST http://localhost:8081/api/v1/audit/search \
   }'
 
 # Get tenant audit logs
-curl http://localhost:8081/api/v1/audit/tenant/demo
+curl -u demo:demo-secret http://localhost:8080/api/v1/audit/tenant/demo
 ```
 
 ## Next Steps

@@ -17,7 +17,7 @@
 set -e
 
 # Configuration
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 ORG_ID="${ORG_ID:-demo-org}"
 USER_ID="${USER_ID:-admin@company.com}"
 
@@ -30,7 +30,7 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}=== AxonFlow Dynamic Policies Setup ===${NC}"
 echo ""
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
+echo "Agent URL: $AGENT_URL"
 echo "Organization ID: $ORG_ID"
 echo ""
 
@@ -44,17 +44,17 @@ api_call() {
     echo -e "${YELLOW}$description${NC}"
 
     if [ "$method" = "GET" ]; then
-        response=$(curl -s -X GET "${ORCHESTRATOR_URL}${endpoint}" \
+        response=$(curl -s -X GET "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID")
     elif [ "$method" = "DELETE" ]; then
-        response=$(curl -s -X DELETE "${ORCHESTRATOR_URL}${endpoint}" \
+        response=$(curl -s -X DELETE "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID")
     else
-        response=$(curl -s -X POST "${ORCHESTRATOR_URL}${endpoint}" \
+        response=$(curl -s -X POST "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID" \
@@ -76,11 +76,11 @@ api_call() {
 
 # Check orchestrator health
 echo "Checking orchestrator health..."
-health_response=$(curl -s "${ORCHESTRATOR_URL}/health" 2>/dev/null || echo '{"status":"unavailable"}')
+health_response=$(curl -s "${AGENT_URL}/health" 2>/dev/null || echo '{"status":"unavailable"}')
 if echo "$health_response" | grep -q '"status":"healthy"'; then
     echo -e "   ${GREEN}Orchestrator is healthy${NC}"
 else
-    echo -e "   ${RED}Orchestrator not available at ${ORCHESTRATOR_URL}${NC}"
+    echo -e "   ${RED}Orchestrator not available at ${AGENT_URL}${NC}"
     echo "   Make sure AxonFlow platform is running: docker compose up -d"
     exit 1
 fi
@@ -317,5 +317,5 @@ echo "  3. Query with PII terms - should route to Ollama"
 echo "  4. Login as eu.agent@company.com - should route to local model"
 echo ""
 echo "To delete all policies:"
-echo "  curl -X DELETE '${ORCHESTRATOR_URL}/api/v1/dynamic-policies/{policy-id}' \\"
+echo "  curl -X DELETE '${AGENT_URL}/api/v1/dynamic-policies/{policy-id}' \\"
 echo "       -H 'X-Org-ID: $ORG_ID' -H 'X-User-ID: $USER_ID'"

@@ -18,7 +18,7 @@ function assertCheck(condition: boolean, message: string): void {
 
 async function main() {
   // Create client
-  const endpoint = process.env.ORCHESTRATOR_URL || "http://localhost:8081";
+  const endpoint = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
   const client = new AxonFlowClient({ endpoint });
 
   console.log("=== Community LLM Provider Tests (TypeScript SDK) ===");

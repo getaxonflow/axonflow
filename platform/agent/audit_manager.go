@@ -19,9 +19,7 @@ import (
 )
 
 // AuditManager provides standalone audit queue lifecycle management.
-// It decouples the AuditQueue from DatabasePolicyEngine so that all modes
-// (proxy, gateway, MCP) can access the audit queue without going through
-// the database policy engine.
+// All modes (proxy, gateway, MCP) access the audit queue through this manager.
 type AuditManager struct {
 	queue *AuditQueue
 	db    *sql.DB
@@ -77,7 +75,7 @@ func (am *AuditManager) Shutdown(ctx context.Context) error {
 var auditManager *AuditManager
 
 // initAuditManager creates and initializes the global AuditManager.
-// Must be called before DatabasePolicyEngine or shared engine initialization.
+// Must be called before shared engine initialization.
 func initAuditManager(db *sql.DB) {
 	performanceMode := getEnv("AGENT_PERFORMANCE_MODE", "") == "true"
 

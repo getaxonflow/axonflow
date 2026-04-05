@@ -31,9 +31,9 @@ async function main() {
   console.log("==========================================");
   console.log();
 
-  // Initialize client - use orchestrator endpoint for workflow APIs
+  // Initialize client - use agent endpoint for workflow APIs
   const client = new AxonFlow({
-    endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8081",
+    endpoint: process.env.AXONFLOW_ENDPOINT || "http://localhost:8080",
     clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
     clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "secret",
   });

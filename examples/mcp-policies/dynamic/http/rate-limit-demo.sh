@@ -14,9 +14,8 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
-TENANT_ID="${AXONFLOW_TENANT_ID:-local-dev-org}"
+TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 REQUEST_COUNT="${1:-5}"
 
 echo "=== Dynamic Policy: Rate Limit Demo ==="
@@ -25,9 +24,8 @@ echo ""
 # Step 1: Create rate limit policy
 echo "Step 1: Creating rate limit policy (3 requests/minute)..."
 
-policy_response=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/dynamic-policies" \
+policy_response=$(curl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: ${TENANT_ID}" \
   -d '{
     "name": "test-rate-limit",
     "description": "Test rate limit - 3 requests per minute",
@@ -115,13 +113,13 @@ echo ""
 echo "Step 3: Cleaning up..."
 
 if [ -n "$policy_id" ]; then
-    curl -s -X DELETE "${ORCHESTRATOR_URL}/api/v1/dynamic-policies/${policy_id}" \
-      -H "X-Tenant-ID: ${TENANT_ID}" > /dev/null 2>&1 || true
+    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
+      > /dev/null 2>&1 || true
     echo "✓ Deleted rate limit policy"
 else
     # Try to delete by name
-    curl -s -X DELETE "${ORCHESTRATOR_URL}/api/v1/dynamic-policies/test-rate-limit" \
-      -H "X-Tenant-ID: ${TENANT_ID}" > /dev/null 2>&1 || true
+    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/test-rate-limit" \
+      > /dev/null 2>&1 || true
 fi
 
 echo ""

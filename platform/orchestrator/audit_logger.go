@@ -43,6 +43,7 @@ type AuditEntry struct {
 	UserRole         string                 `json:"user_role"`
 	ClientID         string                 `json:"client_id"`
 	TenantID         string                 `json:"tenant_id"`
+	OrgID            string                 `json:"org_id"`
 	RequestType      string                 `json:"request_type"`
 	Query            string                 `json:"query"`
 	QueryHash        string                 `json:"query_hash"`
@@ -81,10 +82,7 @@ func NewAuditLogger(databaseURL string) *AuditLogger {
 		}
 	}
 
-	// Create tables if they don't exist
-	if err := createAuditTables(db); err != nil {
-		log.Printf("Failed to create audit tables: %v", err)
-	}
+	// audit_logs table created by migration 059_runtime_tables_to_migrations.sql
 
 	logger := &AuditLogger{
 		db:           db,
@@ -113,6 +111,7 @@ func (l *AuditLogger) LogSuccessfulRequest(ctx context.Context, req Orchestrator
 		UserRole:      req.User.Role,
 		ClientID:      req.Client.ID,
 		TenantID:      req.User.TenantID,
+		OrgID:         req.Client.OrgID,
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
@@ -157,6 +156,7 @@ func (l *AuditLogger) LogBlockedRequest(ctx context.Context, req OrchestratorReq
 		UserRole:      req.User.Role,
 		ClientID:      req.Client.ID,
 		TenantID:      req.User.TenantID,
+		OrgID:         req.Client.OrgID,
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
@@ -185,6 +185,7 @@ func (l *AuditLogger) LogFailedRequest(ctx context.Context, req OrchestratorRequ
 		UserRole:      req.User.Role,
 		ClientID:      req.Client.ID,
 		TenantID:      req.User.TenantID,
+		OrgID:         req.Client.OrgID,
 		RequestType:   req.RequestType,
 		Query:         req.Query,
 		QueryHash:     hashQuery(req.Query),
@@ -206,6 +207,7 @@ type WorkflowAuditEntry struct {
 	Decision     string // allow, block, require_approval (for step_gate)
 	Reason       string
 	TenantID     string
+	OrgID        string
 	ClientID     string
 	UserID       string
 	Metadata     map[string]interface{}
@@ -259,6 +261,7 @@ func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowA
 		UserID:         0, // Workflow operations may not have user context
 		ClientID:       entry.ClientID,
 		TenantID:       entry.TenantID,
+		OrgID:          entry.OrgID,
 		RequestType:    "workflow_" + entry.Operation,
 		Query:          fmt.Sprintf("Workflow: %s, Operation: %s", entry.WorkflowName, entry.Operation),
 		QueryHash:      hashQuery(entry.WorkflowID + entry.Operation),
@@ -321,6 +324,7 @@ func (l *AuditLogger) LogPlanOperation(ctx context.Context, entry *PlanAuditEntr
 		UserID:         0, // Plan operations may not have user context
 		ClientID:       entry.ClientID,
 		TenantID:       entry.TenantID,
+		OrgID:          entry.OrgID,
 		RequestType:    "plan_" + entry.Operation,
 		Query:          entry.Query,
 		QueryHash:      hashQuery(entry.PlanID + entry.Operation),
@@ -346,6 +350,7 @@ type ToolCallAuditEntry struct {
 	Success         *bool                  `json:"success,omitempty"`
 	ErrorMessage    string                 `json:"error_message,omitempty"`
 	TenantID        string                 `json:"-"`
+	OrgID           string                 `json:"-"`
 	ClientID        string                 `json:"-"`
 }
 
@@ -399,6 +404,7 @@ func (l *AuditLogger) LogToolCallAudit(ctx context.Context, entry *ToolCallAudit
 		UserEmail:      entry.UserID,
 		ClientID:       entry.ClientID,
 		TenantID:       entry.TenantID,
+		OrgID:          entry.OrgID,
 		RequestType:    "tool_call_audit",
 		Query:          fmt.Sprintf("Tool: %s", entry.ToolName),
 		QueryHash:      hashQuery(entry.ToolName + entry.WorkflowID),
@@ -740,11 +746,11 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO audit_logs (
 			id, request_id, timestamp, user_id, user_email, user_role,
-			client_id, tenant_id, request_type, query, query_hash,
+			client_id, tenant_id, org_id, request_type, query, query_hash,
 			policy_decision, policy_details, provider, model,
 			response_time_ms, tokens_used, cost, redacted_fields,
 			error_message, response_sample, compliance_flags, security_metrics
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 	`)
 	if err != nil {
 		return err
@@ -766,6 +772,7 @@ func (b *BatchWriter) Write(entries []*AuditEntry) error {
 			entry.UserRole,
 			entry.ClientID,
 			entry.TenantID,
+			entry.OrgID,
 			entry.RequestType,
 			entry.Query,
 			entry.QueryHash,
@@ -796,43 +803,3 @@ func (b *BatchWriter) periodicFlush() {
 	}
 }
 
-// createAuditTables creates the audit tables if they don't exist
-func createAuditTables(db *sql.DB) error {
-	query := `
-	CREATE TABLE IF NOT EXISTS audit_logs (
-		id VARCHAR(255) PRIMARY KEY,
-		request_id VARCHAR(255) NOT NULL,
-		timestamp TIMESTAMP NOT NULL,
-		user_id INTEGER NOT NULL,
-		user_email VARCHAR(255) NOT NULL,
-		user_role VARCHAR(50) NOT NULL,
-		client_id VARCHAR(255) NOT NULL,
-		tenant_id VARCHAR(255) NOT NULL,
-		request_type VARCHAR(50) NOT NULL,
-		query TEXT NOT NULL,
-		query_hash VARCHAR(255) NOT NULL,
-		policy_decision VARCHAR(50) NOT NULL,
-		policy_details JSONB,
-		provider VARCHAR(50),
-		model VARCHAR(100),
-		response_time_ms BIGINT,
-		tokens_used INTEGER,
-		cost DECIMAL(10, 6),
-		redacted_fields JSONB,
-		error_message TEXT,
-		response_sample TEXT,
-		compliance_flags JSONB,
-		security_metrics JSONB,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
-	CREATE INDEX IF NOT EXISTS idx_audit_logs_user_email ON audit_logs(user_email);
-	CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_id ON audit_logs(tenant_id);
-	CREATE INDEX IF NOT EXISTS idx_audit_logs_request_id ON audit_logs(request_id);
-	CREATE INDEX IF NOT EXISTS idx_audit_logs_policy_decision ON audit_logs(policy_decision);
-	`
-
-	_, err := db.Exec(query)
-	return err
-}

@@ -2,7 +2,7 @@
 # AxonFlow Cost Controls Example - HTTP (curl) - Comprehensive
 #
 # This script demonstrates ALL Cost Controls API endpoints using curl commands.
-# Make sure the orchestrator is running at http://localhost:8081
+# Make sure the agent is running at http://localhost:8080
 #
 # Endpoints tested:
 # 1.  POST   /api/v1/budgets         - Create a budget
@@ -20,7 +20,7 @@
 
 set -e
 
-BASE_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
+BASE_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 ORG_ID="demo-org"
 BUDGET_ID="demo-budget-http-$(date +%s)"
 

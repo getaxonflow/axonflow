@@ -64,10 +64,16 @@ const (
 	// Default: "warn" (composite score needs tuning)
 	EnvHighRiskAction = "HIGH_RISK_ACTION"
 
-	// EnvDangerousQueryAction controls dangerous query (DROP, TRUNCATE) behavior.
+	// EnvDangerousQueryAction controls dangerous SQL query (DROP, TRUNCATE) behavior.
 	// Valid values: "block", "warn", "log"
-	// Default: "block" (destructive operations)
+	// Default: "block" (destructive SQL operations)
 	EnvDangerousQueryAction = "DANGEROUS_QUERY_ACTION"
+
+	// EnvDangerousCommandAction controls dangerous shell command behavior
+	// (reverse shells, rm -rf, credential access, SSRF, path traversal, curl|bash).
+	// Valid values: "block", "warn", "log"
+	// Default: "block" (dangerous command execution)
+	EnvDangerousCommandAction = "DANGEROUS_COMMAND_ACTION"
 
 	// Deprecated environment variables - these will be removed in a future release.
 	// Use the new *_ACTION variables instead.
@@ -98,9 +104,17 @@ type DetectionConfig struct {
 	// Default: warn
 	HighRiskAction DetectionAction
 
-	// DangerousQueryAction determines behavior when dangerous queries are detected.
+	// DangerousQueryAction determines behavior when dangerous SQL queries are detected
+	// (DROP TABLE, TRUNCATE, etc.).
 	// Default: block
 	DangerousQueryAction DetectionAction
+
+	// DangerousCommandAction determines behavior when dangerous shell commands are
+	// detected (reverse shells, rm -rf, credential access, SSRF, path traversal,
+	// curl|bash, etc.). Separate from DangerousQueryAction because SQL dangers
+	// and shell dangers have different risk profiles and different teams own them.
+	// Default: block
+	DangerousCommandAction DetectionAction
 }
 
 // DefaultDetectionConfig returns the default detection configuration.
@@ -111,7 +125,8 @@ func DefaultDetectionConfig() DetectionConfig {
 		PIIAction:            DetectionActionRedact, // Non-blocking, preserves UX
 		SensitiveDataAction:  DetectionActionWarn,   // May have false positives
 		HighRiskAction:       DetectionActionWarn,   // Composite score needs tuning
-		DangerousQueryAction: DetectionActionBlock,  // Destructive operations
+		DangerousQueryAction:   DetectionActionBlock, // Destructive SQL operations
+		DangerousCommandAction: DetectionActionBlock, // Dangerous shell commands
 	}
 }
 
@@ -168,15 +183,21 @@ func DetectionConfigFromEnv() DetectionConfig {
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
-	// Parse DANGEROUS_QUERY_ACTION
+	// Parse DANGEROUS_QUERY_ACTION (SQL: DROP, TRUNCATE)
 	if action := os.Getenv(EnvDangerousQueryAction); action != "" {
 		cfg.DangerousQueryAction = parseDetectionAction(action, "DANGEROUS_QUERY_ACTION", DetectionActionBlock,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
+	// Parse DANGEROUS_COMMAND_ACTION (shell: rm -rf, reverse shells, curl|bash, SSRF)
+	if action := os.Getenv(EnvDangerousCommandAction); action != "" {
+		cfg.DangerousCommandAction = parseDetectionAction(action, "DANGEROUS_COMMAND_ACTION", DetectionActionBlock,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+
 	// Log configuration summary
-	log.Printf("[Detection] Configuration: SQLI=%s, PII=%s, SensitiveData=%s, HighRisk=%s, DangerousQuery=%s",
-		cfg.SQLIAction, cfg.PIIAction, cfg.SensitiveDataAction, cfg.HighRiskAction, cfg.DangerousQueryAction)
+	log.Printf("[Detection] Configuration: SQLI=%s, PII=%s, SensitiveData=%s, HighRisk=%s, DangerousQuery=%s, DangerousCommand=%s",
+		cfg.SQLIAction, cfg.PIIAction, cfg.SensitiveDataAction, cfg.HighRiskAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction)
 
 	return cfg
 }
@@ -260,14 +281,16 @@ const (
 	EnvGatewayStaticPoliciesEnabled = "GATEWAY_STATIC_POLICIES_ENABLED"
 
 	// MCP action overrides
-	EnvMCPPIIAction            = "MCP_PII_ACTION"
-	EnvMCPSQLIAction           = "MCP_SQLI_ACTION"
-	EnvMCPDangerousQueryAction = "MCP_DANGEROUS_QUERY_ACTION"
+	EnvMCPPIIAction              = "MCP_PII_ACTION"
+	EnvMCPSQLIAction             = "MCP_SQLI_ACTION"
+	EnvMCPDangerousQueryAction   = "MCP_DANGEROUS_QUERY_ACTION"
+	EnvMCPDangerousCommandAction = "MCP_DANGEROUS_COMMAND_ACTION"
 
 	// Gateway action overrides
-	EnvGatewayPIIAction            = "GATEWAY_PII_ACTION"
-	EnvGatewaySQLIAction           = "GATEWAY_SQLI_ACTION"
-	EnvGatewayDangerousQueryAction = "GATEWAY_DANGEROUS_QUERY_ACTION"
+	EnvGatewayPIIAction              = "GATEWAY_PII_ACTION"
+	EnvGatewaySQLIAction             = "GATEWAY_SQLI_ACTION"
+	EnvGatewayDangerousQueryAction   = "GATEWAY_DANGEROUS_QUERY_ACTION"
+	EnvGatewayDangerousCommandAction = "GATEWAY_DANGEROUS_COMMAND_ACTION"
 
 	// Category skip lists
 	EnvMCPStaticPoliciesSkipCategories     = "MCP_STATIC_POLICIES_SKIP_CATEGORIES"
@@ -291,8 +314,11 @@ type ModeDetectionConfig struct {
 	// SQLIAction is the action for SQL injection detection in this mode.
 	SQLIAction DetectionAction
 
-	// DangerousQueryAction is the action for dangerous query detection in this mode.
+	// DangerousQueryAction is the action for dangerous SQL query detection in this mode.
 	DangerousQueryAction DetectionAction
+
+	// DangerousCommandAction is the action for dangerous shell command detection in this mode.
+	DangerousCommandAction DetectionAction
 
 	// SkipCategories lists policy categories to skip in this mode.
 	// Parsed from comma-separated env var.
@@ -313,10 +339,11 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 	globalCfg := DetectionConfigFromEnv()
 
 	cfg := ModeDetectionConfig{
-		Enabled:              parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
-		PIIAction:            globalCfg.PIIAction,
-		SQLIAction:           globalCfg.SQLIAction,
-		DangerousQueryAction: globalCfg.DangerousQueryAction,
+		Enabled:                parseBoolEnv(EnvMCPStaticPoliciesEnabled, true),
+		PIIAction:              globalCfg.PIIAction,
+		SQLIAction:             globalCfg.SQLIAction,
+		DangerousQueryAction:   globalCfg.DangerousQueryAction,
+		DangerousCommandAction: globalCfg.DangerousCommandAction,
 	}
 
 	// MCP-specific overrides (highest precedence)
@@ -330,6 +357,10 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 	}
 	if action := os.Getenv(EnvMCPDangerousQueryAction); action != "" {
 		cfg.DangerousQueryAction = parseDetectionAction(action, EnvMCPDangerousQueryAction, cfg.DangerousQueryAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
+	if action := os.Getenv(EnvMCPDangerousCommandAction); action != "" {
+		cfg.DangerousCommandAction = parseDetectionAction(action, EnvMCPDangerousCommandAction, cfg.DangerousCommandAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
@@ -348,8 +379,8 @@ func MCPDetectionConfigFromEnv() ModeDetectionConfig {
 	if !cfg.Enabled {
 		log.Printf("[Detection] MCP static policies DISABLED")
 	} else {
-		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, DangerousQuery=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.SkipCategories)
+		log.Printf("[Detection] MCP static policies: PII=%s, SQLI=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
 	}
 
 	return cfg
@@ -365,10 +396,11 @@ func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
 	globalCfg := DetectionConfigFromEnv()
 
 	cfg := ModeDetectionConfig{
-		Enabled:              parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
-		PIIAction:            globalCfg.PIIAction,
-		SQLIAction:           globalCfg.SQLIAction,
-		DangerousQueryAction: globalCfg.DangerousQueryAction,
+		Enabled:                parseBoolEnv(EnvGatewayStaticPoliciesEnabled, true),
+		PIIAction:              globalCfg.PIIAction,
+		SQLIAction:             globalCfg.SQLIAction,
+		DangerousQueryAction:   globalCfg.DangerousQueryAction,
+		DangerousCommandAction: globalCfg.DangerousCommandAction,
 	}
 
 	// Gateway-specific overrides (highest precedence)
@@ -384,6 +416,10 @@ func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
 		cfg.DangerousQueryAction = parseDetectionAction(action, EnvGatewayDangerousQueryAction, cfg.DangerousQueryAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
+	if action := os.Getenv(EnvGatewayDangerousCommandAction); action != "" {
+		cfg.DangerousCommandAction = parseDetectionAction(action, EnvGatewayDangerousCommandAction, cfg.DangerousCommandAction,
+			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+	}
 
 	// Category skip list
 	cfg.SkipCategories = parseCategoryList(os.Getenv(EnvGatewayStaticPoliciesSkipCategories))
@@ -391,8 +427,8 @@ func GatewayDetectionConfigFromEnv() ModeDetectionConfig {
 	if !cfg.Enabled {
 		log.Printf("[Detection] Gateway static policies DISABLED")
 	} else {
-		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, DangerousQuery=%s, SkipCategories=%v",
-			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.SkipCategories)
+		log.Printf("[Detection] Gateway static policies: PII=%s, SQLI=%s, DangerousQuery=%s, DangerousCommand=%s, SkipCategories=%v",
+			cfg.PIIAction, cfg.SQLIAction, cfg.DangerousQueryAction, cfg.DangerousCommandAction, cfg.SkipCategories)
 	}
 
 	return cfg
@@ -412,8 +448,13 @@ func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCate
 	sqliAction := c.SQLIAction.ToPolicyAction()
 	overrides[sharedpolicy.CategorySecuritySQLi] = sqliAction
 
-	dangerousAction := c.DangerousQueryAction.ToPolicyAction()
-	overrides[sharedpolicy.CategorySecurityDangerous] = dangerousAction
+	dangerousQueryAction := c.DangerousQueryAction.ToPolicyAction()
+	// dangerous_queries category uses the SQL-specific action
+	// (no explicit category constant — these are legacy policies using "dangerous_queries" string)
+
+	dangerousCommandAction := c.DangerousCommandAction.ToPolicyAction()
+	overrides[sharedpolicy.CategorySecurityDangerous] = dangerousCommandAction
+	_ = dangerousQueryAction // Used by legacy engine for "dangerous_queries" category
 
 	return overrides
 }

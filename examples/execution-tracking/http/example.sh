@@ -8,19 +8,17 @@
 
 set -e
 
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-org}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo}"
 
-# Build Basic auth header
+# Build Basic auth header for agent calls
 AUTH_HEADER="Authorization: Basic $(echo -n "${CLIENT_ID}:${CLIENT_SECRET}" | base64)"
 
 echo "AxonFlow Unified Execution Tracking Example - HTTP/cURL"
 echo "========================================================"
 echo ""
 echo "Agent URL: $AGENT_URL"
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
 echo ""
 
 # =============================================
@@ -62,7 +60,7 @@ echo ""
 
 # Step 1: Create workflow
 echo "Creating WCP workflow..."
-WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+WF_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" \
   -d '{
@@ -89,7 +87,7 @@ for STEP_NUM in 1 2 3; do
   STEP_ID="step-${STEP_NUM}"
 
   # Check gate
-  GATE_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/${STEP_ID}/gate" \
+  GATE_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/${STEP_ID}/gate" \
     -H "Content-Type: application/json" \
     -H "$AUTH_HEADER" \
     -d "{
@@ -104,7 +102,7 @@ for STEP_NUM in 1 2 3; do
 
   if [ "$DECISION" = "allow" ] || [ "$DECISION" = "ALLOW" ]; then
     # Mark step completed
-    curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/${STEP_ID}/complete" \
+    curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/${STEP_ID}/complete" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
       -d "{\"output\": {\"result\": \"step-${STEP_NUM}-done\"}}" > /dev/null
@@ -119,7 +117,7 @@ echo ""
 
 # Step 3: Complete workflow
 echo "Completing workflow..."
-curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/complete" \
+curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/complete" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" > /dev/null
 
@@ -128,8 +126,9 @@ echo ""
 
 # Step 4: Get final status
 echo "Getting workflow status..."
-STATUS_RESPONSE=$(curl -s "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}" \
-  -H "$AUTH_HEADER")
+STATUS_RESPONSE=$(curl -s "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}" \
+  -H "$AUTH_HEADER" \
+)
 
 WF_NAME=$(echo "$STATUS_RESPONSE" | jq -r '.workflow_name // "unknown"')
 WF_STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status // "unknown"')
@@ -148,7 +147,7 @@ echo ""
 
 # Create a workflow to cancel
 echo "Creating workflow to test cancellation..."
-CANCEL_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+CANCEL_WF_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" \
   -d '{
@@ -162,7 +161,7 @@ if [ -n "$CANCEL_WF_ID" ]; then
 
   # Cancel via unified API
   echo "   Cancelling via POST /api/v1/unified/executions/{id}/cancel..."
-  CANCEL_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/unified/executions/${CANCEL_WF_ID}/cancel" \
+  CANCEL_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/unified/executions/${CANCEL_WF_ID}/cancel" \
     -H "Content-Type: application/json" \
     -H "$AUTH_HEADER" \
     -d '{"reason": "testing unified cancel endpoint"}')
@@ -182,7 +181,7 @@ echo ""
 
 # Create a workflow to stream
 echo "Creating workflow for SSE streaming demo..."
-SSE_WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+SSE_WF_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows" \
   -H "Content-Type: application/json" \
   -H "$AUTH_HEADER" \
   -d '{
@@ -200,9 +199,9 @@ else
 
   # Start SSE listener in the background
   SSE_OUTPUT=$(mktemp /tmp/axonflow-sse-XXXXXX)
-  curl -s -N "${ORCHESTRATOR_URL}/api/v1/unified/executions/${SSE_WF_ID}/stream" \
+  curl -s -N "${AGENT_URL}/api/v1/unified/executions/${SSE_WF_ID}/stream" \
     -H "$AUTH_HEADER" \
-    -H "X-Tenant-ID: $CLIENT_ID" > "$SSE_OUTPUT" 2>&1 &
+    > "$SSE_OUTPUT" 2>&1 &
   SSE_PID=$!
 
   # Give the SSE connection time to establish
@@ -213,7 +212,7 @@ else
   for SSE_STEP in 1 2; do
     SSE_STEP_ID="step-${SSE_STEP}"
 
-    curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/gate" \
+    curl -s -X POST "${AGENT_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/gate" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
       -d "{
@@ -224,7 +223,7 @@ else
         \"step_input\": {\"action\": \"sse-process-${SSE_STEP}\"}
       }" > /dev/null
 
-    curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/complete" \
+    curl -s -X POST "${AGENT_URL}/api/v1/workflows/${SSE_WF_ID}/steps/${SSE_STEP_ID}/complete" \
       -H "Content-Type: application/json" \
       -H "$AUTH_HEADER" \
       -d "{\"output\": {\"result\": \"sse-step-${SSE_STEP}-done\"}}" > /dev/null
@@ -233,7 +232,7 @@ else
   done
 
   # Complete the workflow
-  curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${SSE_WF_ID}/complete" \
+  curl -s -X POST "${AGENT_URL}/api/v1/workflows/${SSE_WF_ID}/complete" \
     -H "Content-Type: application/json" \
     -H "$AUTH_HEADER" > /dev/null
 
@@ -268,8 +267,9 @@ echo ""
 echo -e "\033[1;34m=== Part 5: List Workflows ===\033[0m"
 echo ""
 
-LIST_RESPONSE=$(curl -s "${ORCHESTRATOR_URL}/api/v1/workflows?limit=5" \
-  -H "$AUTH_HEADER")
+LIST_RESPONSE=$(curl -s "${AGENT_URL}/api/v1/workflows?limit=5" \
+  -H "$AUTH_HEADER" \
+)
 
 TOTAL=$(echo "$LIST_RESPONSE" | jq -r '.total // 0')
 COUNT=$(echo "$LIST_RESPONSE" | jq -r '.workflows | length // 0')

@@ -37,7 +37,7 @@ func (c *Client) do(method, path string) ([]byte, int, error) {
 		return nil, 0, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("X-Client-ID", c.clientID)
+	req.Header.Set("X-Tenant-ID", c.clientID)
 	req.Header.Set("X-Client-Secret", c.clientSecret)
 	req.Header.Set("Accept", "application/json")
 

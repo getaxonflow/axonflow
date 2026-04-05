@@ -553,11 +553,11 @@ func main() {
 		assert(err == nil, "MarkStepCompleted for SSE step succeeded")
 	}
 
-	// Stream execution status via HTTP SSE endpoint (on orchestrator, not agent)
-	orchestratorEndpoint := getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+	// Stream execution status via HTTP SSE endpoint
+	agentEndpoint := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-org")
 	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "")
-	streamURL := fmt.Sprintf("%s/api/v1/unified/executions/%s/stream", orchestratorEndpoint, sseWorkflow.WorkflowID)
+	streamURL := fmt.Sprintf("%s/api/v1/unified/executions/%s/stream", agentEndpoint, sseWorkflow.WorkflowID)
 	fmt.Printf("   SSE URL: %s\n", streamURL)
 
 	req, reqErr := http.NewRequest("GET", streamURL, nil)
@@ -568,7 +568,6 @@ func main() {
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-Client-ID", clientID)
 	req.Header.Set("X-Client-Secret", clientSecret)
-	req.Header.Set("X-Tenant-ID", clientID)
 
 	sseClient := &http.Client{Timeout: 30 * time.Second}
 	resp, respErr := sseClient.Do(req)

@@ -693,7 +693,7 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 
 // generateTestServiceLicenseKey creates a valid Ed25519-signed service license for testing.
 // Service licenses are self-contained with Ed25519 signature validation.
-func generateTestServiceLicenseKey(tenantID, tier, serviceName, serviceType string, permissions []string, expiryDate string) string {
+func generateTestServiceLicenseKey(orgID, tier, serviceName, serviceType string, permissions []string, expiryDate string) string {
 	// Ed25519 private key seeds matching the public keys in license_community.go
 	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
 	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
@@ -710,7 +710,7 @@ func generateTestServiceLicenseKey(tenantID, tier, serviceName, serviceType stri
 
 	payload := map[string]interface{}{
 		"tier":         tier,
-		"tenant_id":    tenantID,
+		"org_id":       orgID,
 		"service_name": serviceName,
 		"service_type": serviceType,
 		"permissions":  permissions,
@@ -729,7 +729,7 @@ func generateTestServiceLicenseKey(tenantID, tier, serviceName, serviceType stri
 
 // TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup verifies that
 // service licenses bypass database lookup entirely. The Ed25519 signature
-// is sufficient to validate all claims (tenant_id, tier, permissions, expiry).
+// is sufficient to validate all claims (org_id, tier, permissions, expiry).
 func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -740,7 +740,7 @@ func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T
 	// Generate a valid V2 service license
 	// Note: This org doesn't exist in DB, but should still work for V2 licenses
 	testLicenseKey := generateTestServiceLicenseKey(
-		"travel-us",                              // tenant_id
+		"travel-us",                              // org_id
 		"Enterprise",                             // tier
 		"trip-planner",                           // service_name
 		"client-application",                     // service_type
@@ -763,13 +763,19 @@ func TestValidateViaOrganizations_V2ServiceLicense_NoDatabaseLookup(t *testing.T
 		t.Fatal("expected client, got nil")
 	}
 
-	// Verify client data comes from the signed license payload
+	// OrgID comes from the signed license payload (org entitlement)
 	if client.OrgID != "travel-us" {
-		t.Errorf("expected OrgID=travel-us, got %s", client.OrgID)
+		t.Errorf("expected OrgID=travel-us (from license), got %s", client.OrgID)
 	}
 
-	if client.TenantID != "travel-us" {
-		t.Errorf("expected TenantID=travel-us, got %s", client.TenantID)
+	// TenantID comes from clientID in Basic auth (data isolation), NOT from license
+	if client.TenantID != "travel-client" {
+		t.Errorf("expected TenantID=travel-client (from clientID), got %s", client.TenantID)
+	}
+
+	// ID also comes from clientID
+	if client.ID != "travel-client" {
+		t.Errorf("expected ID=travel-client (from clientID), got %s", client.ID)
 	}
 
 	if client.ServiceName != "trip-planner" {

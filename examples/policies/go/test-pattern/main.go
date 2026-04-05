@@ -30,9 +30,16 @@ func main() {
 		endpoint = "http://localhost:8080"
 	}
 
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	if clientID == "" {
+		clientID = "test-org-001"
+	}
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint: endpoint,
-		ClientID: "test-org-001", // Used as tenant ID
+		Endpoint:     endpoint,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	})
 
 	fmt.Println("AxonFlow Policy Management - Pattern Testing")

@@ -16,7 +16,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 
 # Colors
 RED='\033[0;31m'
@@ -81,25 +80,22 @@ check_services() {
     fi
     print_success "Agent healthy at $AGENT_URL"
 
-    if ! curl -s "$ORCHESTRATOR_URL/health" > /dev/null 2>&1; then
-        echo -e "${RED}Error: Orchestrator not responding at $ORCHESTRATOR_URL${NC}"
-        echo -e "Run: ${CYAN}docker compose up -d${NC}"
-        exit 1
-    fi
-    print_success "Orchestrator healthy at $ORCHESTRATOR_URL"
+    # Orchestrator health is checked indirectly through agent proxy
 }
 
 check_python() {
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${RED}Error: Python 3 not found${NC}"
+    PYTHON_CMD="${PYTHON:-python3}"
+    if ! command -v "$PYTHON_CMD" &> /dev/null; then
+        echo -e "${RED}Error: $PYTHON_CMD not found${NC}"
         echo "Install Python 3.10+ to run the demo examples"
+        echo "Or set PYTHON=python3.11 to use a specific version"
         exit 1
     fi
 
-    # Check Python version (3.9+ required for axonflow SDK)
-    PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
-    PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+    # Check Python version (3.10+ required for axonflow SDK)
+    PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    PYTHON_MAJOR=$($PYTHON_CMD -c 'import sys; print(sys.version_info.major)')
+    PYTHON_MINOR=$($PYTHON_CMD -c 'import sys; print(sys.version_info.minor)')
 
     if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
         echo -e "${RED}Error: Python 3.10+ required (found $PYTHON_VERSION)${NC}"
@@ -111,11 +107,11 @@ check_python() {
 
     # Only install if packages are missing
     # Use python3 -m pip to ensure we install to the same Python that runs the scripts
-    if ! python3 -c "import axonflow, httpx, openai" 2>/dev/null; then
+    if ! $PYTHON_CMD -c "import axonflow, httpx, openai" 2>/dev/null; then
         echo -e "${YELLOW}Installing Python dependencies...${NC}"
-        if ! python3 -m pip install -r "$SCRIPT_DIR/requirements.txt" --disable-pip-version-check; then
+        if ! $PYTHON_CMD -m pip install -r "$SCRIPT_DIR/requirements.txt" --disable-pip-version-check; then
             echo -e "${RED}Error: Failed to install Python dependencies${NC}"
-            echo "Try running manually: python3 -m pip install -r $SCRIPT_DIR/requirements.txt"
+            echo "Try running manually: $PYTHON_CMD -m pip install -r $SCRIPT_DIR/requirements.txt"
             exit 1
         fi
     fi
@@ -134,7 +130,7 @@ part1_the_problem() {
     print_step "Running unprotected call..."
     echo ""
 
-    python3 "$SCRIPT_DIR/01_the_problem.py"
+    $PYTHON_CMD "$SCRIPT_DIR/01_the_problem.py"
 
     echo ""
     echo -e "${RED}${BOLD}Problems with unprotected AI:${NC}"
@@ -162,7 +158,7 @@ part2_governance() {
     print_step "Testing PII patterns (SSN, Credit Card, PAN, Aadhaar)..."
     echo ""
 
-    python3 "$SCRIPT_DIR/02_pii_detection.py"
+    $PYTHON_CMD "$SCRIPT_DIR/02_pii_detection.py"
 
     wait_for_user
 
@@ -172,7 +168,7 @@ part2_governance() {
     print_step "Testing SQL injection patterns..."
     echo ""
 
-    python3 "$SCRIPT_DIR/03_sql_injection.py"
+    $PYTHON_CMD "$SCRIPT_DIR/03_sql_injection.py"
 
     wait_for_user
 }
@@ -194,7 +190,7 @@ part3_integration() {
     echo -e "${DIM}App → AxonFlow → LLM → Response${NC}"
     echo ""
 
-    python3 "$SCRIPT_DIR/04_proxy_mode.py"
+    $PYTHON_CMD "$SCRIPT_DIR/04_proxy_mode.py"
 
     wait_for_user
 
@@ -203,7 +199,7 @@ part3_integration() {
     echo -e "${DIM}Pre-check → Your LLM Call → Audit${NC}"
     echo ""
 
-    python3 "$SCRIPT_DIR/05_gateway_mode.py"
+    $PYTHON_CMD "$SCRIPT_DIR/05_gateway_mode.py"
 
     wait_for_user
 }
@@ -221,7 +217,7 @@ part4_connectors() {
     print_step "Querying support tickets via PostgreSQL connector..."
     echo ""
 
-    python3 "$SCRIPT_DIR/06_mcp_connector.py"
+    $PYTHON_CMD "$SCRIPT_DIR/06_mcp_connector.py"
 
     wait_for_user
 }
@@ -239,7 +235,7 @@ part5_map() {
     print_step "Generating and executing a multi-step plan..."
     echo ""
 
-    python3 "$SCRIPT_DIR/07_multi_agent_planning.py"
+    $PYTHON_CMD "$SCRIPT_DIR/07_multi_agent_planning.py"
 
     wait_for_user
 }
@@ -258,7 +254,7 @@ part6_observability() {
     echo -e "${CYAN}${BOLD}6.1 Audit Trail Query${NC}"
     echo ""
 
-    python3 "$SCRIPT_DIR/08_audit_trail.py"
+    $PYTHON_CMD "$SCRIPT_DIR/08_audit_trail.py"
 
     echo ""
 
@@ -289,7 +285,7 @@ part7_multimodel() {
     echo -e "${MAGENTA}Switch providers without changing application code.${NC}"
     echo ""
 
-    python3 "$SCRIPT_DIR/09_multi_model.py"
+    $PYTHON_CMD "$SCRIPT_DIR/09_multi_model.py"
 
     wait_for_user
 }

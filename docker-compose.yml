@@ -83,8 +83,9 @@ services:
       # Service ports and mode
       PORT: 8080
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
+      AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-5.5.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-6.0.0}"
 
       # Media governance (v4.5.0+) - set to "true" to enable in Community mode
       MEDIA_GOVERNANCE_ENABLED: ${MEDIA_GOVERNANCE_ENABLED:-}
@@ -218,7 +219,7 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-5.5.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-6.0.0}"
 
       # Media governance (v4.5.0+) - set to "true" to enable in Community mode
       MEDIA_GOVERNANCE_ENABLED: ${MEDIA_GOVERNANCE_ENABLED:-}

@@ -568,7 +568,7 @@ func TestCodeArtifactMetadata_Fields(t *testing.T) {
 }
 
 func TestEvaluateCodePolicies_NonEmpty(t *testing.T) {
-	categories, err := EvaluateCodePolicies("def hello(): pass", nil)
+	categories, err := EvaluateCodePolicies("def hello(): pass")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestEvaluateCodePolicies_NonEmpty(t *testing.T) {
 }
 
 func TestEvaluateCodePolicies_Empty(t *testing.T) {
-	categories, err := EvaluateCodePolicies("", nil)
+	categories, err := EvaluateCodePolicies("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

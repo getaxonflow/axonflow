@@ -41,8 +41,8 @@ async function main(): Promise<void> {
   console.log();
 
   // Initialize client
-  // WCP endpoints are on the orchestrator (port 8081)
-  const endpoint = process.env.AXONFLOW_ENDPOINT || 'http://localhost:8081';
+  // WCP endpoints go through the agent (port 8080)
+  const endpoint = process.env.AXONFLOW_ENDPOINT || 'http://localhost:8080';
   const clientId = process.env.AXONFLOW_CLIENT_ID || 'demo';
   const clientSecret = process.env.AXONFLOW_CLIENT_SECRET || 'demo';
 
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     console.log();
   } catch (err) {
     console.log(`Error creating workflow: ${err}`);
-    console.log('Note: WCP endpoints are on the orchestrator (port 8081)');
+    console.log('Note: WCP endpoints go through the agent (port 8080)');
     failures.push('createWorkflow failed');
     printSummaryAndExit();
     return;

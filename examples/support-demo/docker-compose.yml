@@ -89,5 +89,5 @@ volumes:
 
 networks:
   axonflow-network:
-    name: axonflow_axonflow-network
+    name: ${AXONFLOW_NETWORK:-axonflow_axonflow-network}
     external: true

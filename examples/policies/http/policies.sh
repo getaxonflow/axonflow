@@ -2,10 +2,10 @@
 # AxonFlow Policy Management - HTTP/curl
 #
 # Demonstrates policy CRUD operations and pattern testing using raw HTTP.
-# Works with the Orchestrator API (port 8081).
+# Works with the Agent API (port 8080).
 #
 # Prerequisites:
-#   - AxonFlow Orchestrator running at http://localhost:8081
+#   - AxonFlow Agent running at http://localhost:8080
 #   - curl and jq installed
 #
 # Usage:
@@ -14,11 +14,12 @@
 
 set -e
 
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-}"
-CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
-TENANT_ID="${AXONFLOW_TENANT:-demo}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo-secret}"
+
+# Basic auth for agent proxy
+AUTH_HEADER="Authorization: Basic $(echo -n "${CLIENT_ID}:${CLIENT_SECRET}" | base64)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -29,8 +30,7 @@ NC='\033[0m'
 echo "AxonFlow Policy Management - HTTP/curl"
 echo "========================================"
 echo ""
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
-echo "Tenant ID: $TENANT_ID"
+echo "Agent URL: $AGENT_URL"
 echo ""
 
 # =========================================================================
@@ -39,9 +39,8 @@ echo ""
 echo -e "${CYAN}1. List System Policies${NC}"
 echo "========================================"
 
-response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+response=$(curl -s "$AGENT_URL/api/v1/static-policies" \
+    -H "$AUTH_HEADER")
 
 count=$(echo "$response" | jq -r 'if type == "array" then length else 0 end')
 echo "Found $count system policies"
@@ -60,17 +59,15 @@ echo "========================================"
 
 # Filter PII policies
 echo -e "${YELLOW}PII Detection Policies:${NC}"
-response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static?category=pii_detection" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+response=$(curl -s "$AGENT_URL/api/v1/static-policies?category=pii_detection" \
+    -H "$AUTH_HEADER")
 echo "$response" | jq -r '.[] | "  - \(.name)"' 2>/dev/null || echo "  (No policies found)"
 echo ""
 
 # Filter SQLi policies
 echo -e "${YELLOW}SQL Injection Policies:${NC}"
-response=$(curl -s "$ORCHESTRATOR_URL/api/v1/policies/static?category=sql_injection" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+response=$(curl -s "$AGENT_URL/api/v1/static-policies?category=sql_injection" \
+    -H "$AUTH_HEADER")
 echo "$response" | jq -r '.[] | "  - \(.name)"' 2>/dev/null || echo "  (No policies found)"
 echo ""
 
@@ -83,10 +80,9 @@ echo "========================================"
 POLICY_NAME="custom_profanity_filter_http"
 echo "Creating policy: $POLICY_NAME"
 
-response=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies/static" \
+response=$(curl -s -X POST "$AGENT_URL/api/v1/static-policies" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "$AUTH_HEADER" \
     -d "{
         \"name\": \"$POLICY_NAME\",
         \"description\": \"Blocks profanity in user queries (HTTP example)\",
@@ -122,10 +118,9 @@ echo -e "${CYAN}4. Test Pattern Matching${NC}"
 echo "========================================"
 
 echo "Testing SSN pattern..."
-response=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies/patterns/test" \
+response=$(curl -s -X POST "$AGENT_URL/api/v1/static-policies/test" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "$AUTH_HEADER" \
     -d '{
         "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
         "test_strings": [
@@ -152,8 +147,7 @@ test_policy() {
 
     response=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "$AUTH_HEADER" \
         -d "{
             \"query\": \"$query\",
             \"user_token\": \"policy-test-user\",
@@ -182,9 +176,8 @@ echo "========================================"
 
 if [ -n "$POLICY_ID" ]; then
     echo "Deleting test policy: $POLICY_NAME"
-    response=$(curl -s -X DELETE "$ORCHESTRATOR_URL/api/v1/policies/static/$POLICY_ID" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET")
+    response=$(curl -s -X DELETE "$AGENT_URL/api/v1/static-policies/$POLICY_ID" \
+        -H "$AUTH_HEADER")
     echo -e "   Status: ${GREEN}Deleted${NC}"
 else
     echo "No test policy to clean up"
@@ -195,7 +188,7 @@ echo "========================================"
 echo "Policy Management Complete!"
 echo ""
 echo "API Endpoints Used:"
-echo "  GET  /api/v1/policies/static       - List policies"
-echo "  POST /api/v1/policies/static       - Create policy"
-echo "  POST /api/v1/policies/patterns/test - Test pattern"
-echo "  DELETE /api/v1/policies/static/{id} - Delete policy"
+echo "  GET  /api/v1/static-policies       - List policies"
+echo "  POST /api/v1/static-policies       - Create policy"
+echo "  POST /api/v1/static-policies/test  - Test pattern"
+echo "  DELETE /api/v1/static-policies/{id} - Delete policy"

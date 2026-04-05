@@ -11,10 +11,8 @@ Demonstrates and VALIDATES media governance policy management:
   - Per-tenant media governance disable/enable (Enterprise only)
   - Non-media requests unaffected by media policies
 
-Two client instances are used:
-  - orchestrator_client: connects to AXONFLOW_ORCHESTRATOR_ENDPOINT for policy CRUD
-    and media governance config
-  - agent_client: connects to AXONFLOW_ENDPOINT for ProxyLLMCall requests
+All requests go through the agent entry point (AXONFLOW_ENDPOINT, default port 8080).
+The agent proxies policy CRUD, media governance config, and ProxyLLMCall requests.
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 This ensures CI/CD pipelines catch regressions.
@@ -69,7 +67,6 @@ async def main() -> int:
     global pipeline_active
 
     agent_endpoint = get_env("AXONFLOW_ENDPOINT", "http://localhost:8080")
-    orchestrator_endpoint = get_env("AXONFLOW_ORCHESTRATOR_ENDPOINT", "http://localhost:8081")
     client_id = get_env("AXONFLOW_CLIENT_ID", "demo")
     client_secret = get_env("AXONFLOW_CLIENT_SECRET", "demo")
     tenant_id = get_env("AXONFLOW_TENANT", client_id)
@@ -78,28 +75,17 @@ async def main() -> int:
     print("AxonFlow Media Governance Policies - Python SDK")
     print("=" * 50)
     print()
-    print(f"  Agent endpoint:        {agent_endpoint}")
-    print(f"  Orchestrator endpoint: {orchestrator_endpoint}")
-    print(f"  Tenant ID:             {tenant_id}")
+    print(f"  Agent endpoint: {agent_endpoint}")
+    print(f"  Tenant ID:      {tenant_id}")
     print()
 
-    # Two client instances:
-    # - orchestrator_client: policy CRUD and media governance config
-    # - agent_client: ProxyLLMCall requests with media
-    async with (
-        AxonFlow(
-            endpoint=orchestrator_endpoint,
-            client_id=client_id,
-            client_secret=client_secret,
-            debug=is_debug,
-        ) as orchestrator_client,
-        AxonFlow(
-            endpoint=agent_endpoint,
-            client_id=client_id,
-            client_secret=client_secret,
-            debug=is_debug,
-        ) as agent_client,
-    ):
+    # Single client: all requests go through the agent entry point
+    async with AxonFlow(
+        endpoint=agent_endpoint,
+        client_id=client_id,
+        client_secret=client_secret,
+        debug=is_debug,
+    ) as client:
         # ========================================
         # Test 1: Verify system media policies exist
         # ========================================
@@ -108,7 +94,7 @@ async def main() -> int:
         print()
 
         try:
-            policies = await orchestrator_client.list_dynamic_policies(
+            policies = await client.list_dynamic_policies(
                 ListDynamicPoliciesOptions(type="media", limit=100)
             )
         except Exception as e:
@@ -158,7 +144,7 @@ async def main() -> int:
         print()
 
         try:
-            resp2 = await agent_client.proxy_llm_call_with_media(
+            resp2 = await client.proxy_llm_call_with_media(
                 user_token="media-policy-user",
                 query="Describe this image",
                 request_type="chat",
@@ -204,7 +190,7 @@ async def main() -> int:
         print("  3a. Creating custom media policy: block if media.has_faces == true")
         created_policy = None
         try:
-            created_policy = await orchestrator_client.create_dynamic_policy(
+            created_policy = await client.create_dynamic_policy(
                 CreateDynamicPolicyRequest(
                     name="test-face-block-python-example",
                     description="Blocks images containing faces (Python example test policy)",
@@ -240,7 +226,7 @@ async def main() -> int:
         print("  3b. Verifying policy appears in list")
         if created_policy:
             try:
-                updated_list = await orchestrator_client.list_dynamic_policies(
+                updated_list = await client.list_dynamic_policies(
                     ListDynamicPoliciesOptions(type="media", limit=100)
                 )
                 found = any(p.id == created_policy.id for p in updated_list)
@@ -255,7 +241,7 @@ async def main() -> int:
         print()
         print("  3c. Sending 1x1 image request (no faces expected)")
         try:
-            resp3c = await agent_client.proxy_llm_call_with_media(
+            resp3c = await client.proxy_llm_call_with_media(
                 user_token="media-policy-user",
                 query="Describe this image",
                 request_type="chat",
@@ -281,7 +267,7 @@ async def main() -> int:
         print("  3d. Cleaning up: deleting custom policy")
         if created_policy:
             try:
-                await orchestrator_client.delete_dynamic_policy(created_policy.id)
+                await client.delete_dynamic_policy(created_policy.id)
                 assert_check(True, "Policy deleted successfully")
             except Exception as e:
                 print(f"   FAIL: Failed to delete policy: {e}")
@@ -301,7 +287,7 @@ async def main() -> int:
         # 4a. get_media_governance_status()
         print("  4a. get_media_governance_status()")
         try:
-            status = await orchestrator_client.get_media_governance_status()
+            status = await client.get_media_governance_status()
 
             assert_check(
                 status.available is not None,
@@ -325,7 +311,7 @@ async def main() -> int:
         print()
         print("  4b. get_media_governance_config()")
         try:
-            config = await orchestrator_client.get_media_governance_config()
+            config = await client.get_media_governance_config()
 
             assert_check(
                 config.tenant_id is not None,
@@ -355,7 +341,7 @@ async def main() -> int:
         print("  5a. Creating media policy: media.nsfw_score > 0.5 -> block")
         toggle_policy = None
         try:
-            toggle_policy = await orchestrator_client.create_dynamic_policy(
+            toggle_policy = await client.create_dynamic_policy(
                 CreateDynamicPolicyRequest(
                     name="test-nsfw-toggle-python-example",
                     description="NSFW threshold policy for toggle lifecycle test",
@@ -397,7 +383,7 @@ async def main() -> int:
         print("  5b. Disabling policy (update enabled=false)")
         if toggle_policy:
             try:
-                disabled = await orchestrator_client.update_dynamic_policy(
+                disabled = await client.update_dynamic_policy(
                     toggle_policy.id,
                     UpdateDynamicPolicyRequest(enabled=False),
                 )
@@ -416,7 +402,7 @@ async def main() -> int:
         print("  5c. Re-enabling policy (update enabled=true)")
         if toggle_policy:
             try:
-                reenabled = await orchestrator_client.update_dynamic_policy(
+                reenabled = await client.update_dynamic_policy(
                     toggle_policy.id,
                     UpdateDynamicPolicyRequest(enabled=True),
                 )
@@ -435,7 +421,7 @@ async def main() -> int:
         print("  5d. Cleaning up: deleting toggle test policy")
         if toggle_policy:
             try:
-                await orchestrator_client.delete_dynamic_policy(toggle_policy.id)
+                await client.delete_dynamic_policy(toggle_policy.id)
                 assert_check(True, "Toggle policy deleted successfully")
             except Exception as e:
                 print(f"   FAIL: Failed to delete toggle policy: {e}")
@@ -457,7 +443,7 @@ async def main() -> int:
             # 6a. Disable media governance for this tenant
             print("  6a. Disabling media governance (update_media_governance_config enabled=false)")
             try:
-                mg_disabled = await orchestrator_client.update_media_governance_config(
+                mg_disabled = await client.update_media_governance_config(
                     UpdateMediaGovernanceConfigRequest(enabled=False)
                 )
                 assert_check(
@@ -472,7 +458,7 @@ async def main() -> int:
             print()
             print("  6b. Sending image request with media governance disabled")
             try:
-                resp6b = await agent_client.proxy_llm_call_with_media(
+                resp6b = await client.proxy_llm_call_with_media(
                     user_token="media-policy-user",
                     query="Describe this image",
                     request_type="chat",
@@ -497,7 +483,7 @@ async def main() -> int:
             print()
             print("  6c. Re-enabling media governance (update_media_governance_config enabled=true)")
             try:
-                mg_enabled = await orchestrator_client.update_media_governance_config(
+                mg_enabled = await client.update_media_governance_config(
                     UpdateMediaGovernanceConfigRequest(enabled=True)
                 )
                 assert_check(
@@ -512,7 +498,7 @@ async def main() -> int:
             print()
             print("  6d. Sending image request with media governance re-enabled")
             try:
-                resp6d = await agent_client.proxy_llm_call_with_media(
+                resp6d = await client.proxy_llm_call_with_media(
                     user_token="media-policy-user",
                     query="Describe this image",
                     request_type="chat",
@@ -549,7 +535,7 @@ async def main() -> int:
         print()
 
         try:
-            resp7 = await agent_client.proxy_llm_call(
+            resp7 = await client.proxy_llm_call(
                 user_token="media-policy-user",
                 query="What is the capital of France?",
                 request_type="chat",

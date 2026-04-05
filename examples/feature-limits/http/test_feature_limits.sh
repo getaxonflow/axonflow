@@ -26,7 +26,8 @@
 set -euo pipefail
 
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-test-org-001}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-tenant-limits-$(date +%s)}"
 PASS=0
 FAIL=0
@@ -44,7 +45,7 @@ cleanup() {
         echo "Cleaning up ${#CREATED_POLICIES[@]} test policies..."
         for policy_id in "${CREATED_POLICIES[@]}"; do
             curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$policy_id" \
-                -H "X-Tenant-ID: $TENANT_ID" > /dev/null 2>&1 || true
+                -u "$CLIENT_ID:${CLIENT_SECRET}" > /dev/null 2>&1 || true
         done
         echo "Cleanup complete."
     fi
@@ -89,7 +90,7 @@ create_policy() {
     local response
     response=$(curl -s -w "\n%{http_code}" -X POST "$ENDPOINT/api/v1/dynamic-policies" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -d "{
             \"name\": \"boundary-test-policy-$idx\",
             \"description\": \"Boundary test policy $idx\",
@@ -127,7 +128,7 @@ create_org_policy() {
     local response
     response=$(curl -s -w "\n%{http_code}" -X POST "$ENDPOINT/api/v1/dynamic-policies" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -d "{
             \"name\": \"boundary-org-policy-$idx\",
             \"description\": \"Boundary org policy $idx\",
@@ -314,7 +315,7 @@ echo ""
 echo "4. Connectors with Custom Policies (limit=$CONNECTOR_LIMIT)"
 
 # List all registered connectors — registration is unlimited across all tiers.
-CONN_RESPONSE=$(curl -s "$ENDPOINT/api/v1/connectors" 2>/dev/null || echo "")
+CONN_RESPONSE=$(curl -s "$ENDPOINT/api/v1/connectors" -u "$CLIENT_ID:${CLIENT_SECRET}" 2>/dev/null || echo "")
 if echo "$CONN_RESPONSE" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
     CONN_STATS=$(echo "$CONN_RESPONSE" | python3 -c "
 import sys,json
@@ -352,7 +353,8 @@ fi
 echo ""
 echo "5. LLM Provider Limit (limit=$MAX_PROVIDERS)"
 
-LLM_RESPONSE=$(curl -s -w "\n%{http_code}" "$ENDPOINT/api/v1/llm-providers" 2>/dev/null || echo -e "\n000")
+LLM_RESPONSE=$(curl -s -w "\n%{http_code}" "$ENDPOINT/api/v1/llm-providers" \
+    -u "$CLIENT_ID:${CLIENT_SECRET}" 2>/dev/null || echo -e "\n000")
 LLM_CODE=$(echo "$LLM_RESPONSE" | tail -1)
 
 if [ "$LLM_CODE" = "200" ]; then
@@ -389,7 +391,7 @@ echo ""
 echo "6. Execution History (cap=$MAX_HISTORY)"
 
 EXEC_RESPONSE=$(curl -s -w "\n%{http_code}" "$ENDPOINT/api/v1/unified/executions?limit=1000" \
-    -H "X-Tenant-ID: $TENANT_ID" 2>/dev/null || echo -e "\n000")
+    -u "$CLIENT_ID:${CLIENT_SECRET}" 2>/dev/null || echo -e "\n000")
 EXEC_CODE=$(echo "$EXEC_RESPONSE" | tail -1)
 
 if [ "$EXEC_CODE" = "200" ]; then
@@ -432,7 +434,7 @@ echo "8. MAP Plans (limit=$MAX_PLANS)"
 
 PLAN_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ENDPOINT/api/v1/plan" \
     -H "Content-Type: application/json" \
-    -H "X-Tenant-ID: $TENANT_ID" \
+    -u "$CLIENT_ID:${CLIENT_SECRET}" \
     -d "{
         \"query\": \"feature limits boundary test plan\",
         \"domain\": \"test\",
@@ -463,14 +465,9 @@ fi
 echo ""
 echo "9. SSE Connection Limit (limit=$MAX_SSE)"
 
-# The orchestrator SSE endpoint is on port 8081 (direct), but we can also
-# access it through the agent proxy on port 8080.
-ORCHESTRATOR_PORT="${AXONFLOW_ORCHESTRATOR_PORT:-8081}"
-ORCHESTRATOR_URL="http://localhost:$ORCHESTRATOR_PORT"
-
 # First, find an existing execution to stream (from earlier test runs or create one)
-EXEC_LIST=$(curl -s "$ORCHESTRATOR_URL/api/v1/unified/executions?limit=1" \
-    -H "X-Tenant-ID: $TENANT_ID" 2>/dev/null || echo "{}")
+EXEC_LIST=$(curl -s "$ENDPOINT/api/v1/unified/executions?limit=1" \
+    -u "$CLIENT_ID:${CLIENT_SECRET}" 2>/dev/null || echo "{}")
 SSE_EXEC_ID=$(echo "$EXEC_LIST" | python3 -c "
 import sys,json
 try:
@@ -487,7 +484,7 @@ if [ -z "$SSE_EXEC_ID" ]; then
     # Try creating an execution via simple request
     CREATE_EXEC=$(curl -s -X POST "$ENDPOINT/api/request" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -d "{
             \"query\": \"sse connection limit test\",
             \"request_type\": \"simple\",
@@ -507,9 +504,9 @@ SSE_PIDS=()
 # Helper: open an SSE connection in background (to orchestrator directly)
 open_sse() {
     curl -s -o /dev/null -N --max-time 10 \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null &
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null &
     SSE_PIDS+=($!)
 }
 
@@ -527,9 +524,9 @@ if [ -z "$SSE_EXEC_ID" ]; then
 elif [ "$MAX_SSE" -gt 0 ] 2>/dev/null; then
     # Verify single SSE connection works first
     SSE_CHECK=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
     if [ "$SSE_CHECK" != "200" ]; then
         skip "SSE endpoint returned HTTP $SSE_CHECK (execution may have completed too quickly)"
@@ -563,9 +560,9 @@ elif [ "$MAX_SSE" -gt 0 ] 2>/dev/null; then
         # Now try one more — should be rejected (HTTP 429)
         if [ "$ACTIVE_SSE" -ge "$MAX_SSE" ]; then
             OVER_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-                -H "X-Tenant-ID: $TENANT_ID" \
+                -u "$CLIENT_ID:${CLIENT_SECRET}" \
                 -H "Accept: text/event-stream" \
-                "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+                "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
             if [ "$OVER_CODE" = "429" ]; then
                 pass "SSE connection $((MAX_SSE + 1)) correctly rejected (HTTP 429)"
@@ -581,9 +578,9 @@ elif [ "$MAX_SSE" -gt 0 ] 2>/dev/null; then
 elif [ "$MAX_SSE" -eq -1 ]; then
     # Enterprise: unlimited — verify many connections work
     SSE_CHECK=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        -H "X-Tenant-ID: $TENANT_ID" \
+        -u "$CLIENT_ID:${CLIENT_SECRET}" \
         -H "Accept: text/event-stream" \
-        "$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
+        "$ENDPOINT/api/v1/unified/executions/$SSE_EXEC_ID/stream" 2>/dev/null || echo "000")
 
     if [ "$SSE_CHECK" != "200" ]; then
         skip "SSE endpoint returned HTTP $SSE_CHECK (execution may have completed)"

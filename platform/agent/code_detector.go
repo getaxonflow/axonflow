@@ -304,7 +304,7 @@ func countMatches(code string, patterns []*regexp.Regexp) int {
 
 // EvaluateCodePolicies returns the code governance policy categories that were evaluated.
 // This is used for audit logging to track which policy categories were checked.
-func EvaluateCodePolicies(code string, policyEngine *StaticPolicyEngine) ([]string, error) {
+func EvaluateCodePolicies(code string) ([]string, error) {
 	if code == "" {
 		return nil, nil
 	}

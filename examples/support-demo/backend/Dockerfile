@@ -7,13 +7,13 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy module files first for better caching
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source files
+# Copy all source files
+COPY go.mod ./
 COPY *.go ./
 COPY migrations/ ./migrations/
+
+# Download dependencies (generates go.sum from go.mod + source imports)
+RUN go mod tidy
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -trimpath -ldflags="-s -w" -o main .

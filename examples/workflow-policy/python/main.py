@@ -45,9 +45,9 @@ async def main() -> int:
     print("=" * 50)
     print()
 
-    # Use orchestrator endpoint for workflow APIs
+    # Use agent endpoint for workflow APIs
     client = AxonFlow(
-        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8081"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "secret"),
     )

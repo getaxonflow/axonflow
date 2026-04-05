@@ -116,13 +116,9 @@ func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseK
 }
 
 // getMCPAuditQueue returns the audit queue for MCP handlers.
-// Uses the global AuditManager (preferred), falling back to DatabasePolicyEngine.
 func getMCPAuditQueue() *AuditQueue {
 	if auditManager != nil {
 		return auditManager.GetQueue()
-	}
-	if dbPolicyEngine != nil {
-		return dbPolicyEngine.GetAuditQueue()
 	}
 	return nil
 }
@@ -928,7 +924,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		client = &Client{
 			ID:          "community",
 			Name:        "Community Client",
-			TenantID:    "default",
+			TenantID:    "community",
 			Permissions: []string{"query", "execute", "mcp"},
 			RateLimit:   0,
 			Enabled:     true,
@@ -937,7 +933,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			ID:          0,
 			Email:       "user@community.local",
 			Name:        "Community User",
-			TenantID:    "default",
+			TenantID:    "community",
 			Role:        "admin",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
@@ -967,12 +963,31 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			Permissions: []string{"query", "execute", "mcp"},
 		}
 	} else {
-		// Enterprise/SaaS mode: Full client and user validation
+		// Enterprise/SaaS mode: try Basic auth first (service license), then whitelist
 		var err error
-		client, err = validateClient(req.ClientID)
-		if err != nil {
-			sendErrorResponse(w, "Invalid client", http.StatusUnauthorized, nil)
-			return
+		clientID := extractClientID(r)
+		clientSecret := extractClientSecret(r)
+
+		if clientID != "" && clientSecret != "" {
+			// Basic auth present — use the same validation as proxy (DB or whitelist)
+			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer authCancel()
+			if authDB != nil {
+				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
+			} else {
+				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
+			}
+			if err != nil {
+				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
+				return
+			}
+		} else {
+			// Fallback to legacy whitelist validation from request body
+			client, err = validateClient(req.ClientID)
+			if err != nil {
+				sendErrorResponse(w, "Invalid client", http.StatusUnauthorized, nil)
+				return
+			}
 		}
 
 		if !client.Enabled {
@@ -980,11 +995,22 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate user token
+		// Validate user token (optional for Basic auth — derive from client)
 		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil {
+		if err != nil && clientID == "" {
+			// Only fail on user token if no Basic auth was provided
 			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
 			return
+		} else if err != nil {
+			// Basic auth present — create a service user from client identity
+			user = &User{
+				ID:          0,
+				Email:       client.ID + "@axonflow.local",
+				Name:        client.Name,
+				TenantID:    client.TenantID,
+				Role:        "service",
+				Permissions: client.Permissions,
+			}
 		}
 
 		// Verify tenant isolation
@@ -996,6 +1022,7 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Update audit entry with authenticated user/client info
 	auditEntry.TenantID = user.TenantID
+	auditEntry.OrgID = client.OrgID
 	auditEntry.ClientID = client.ID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
@@ -1283,7 +1310,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		client = &Client{
 			ID:          "community",
 			Name:        "Community Client",
-			TenantID:    "default",
+			TenantID:    "community",
 			Permissions: []string{"query", "execute", "mcp"},
 			RateLimit:   0,
 			Enabled:     true,
@@ -1292,7 +1319,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			ID:          0,
 			Email:       "user@community.local",
 			Name:        "Community User",
-			TenantID:    "default",
+			TenantID:    "community",
 			Role:        "admin",
 			Permissions: []string{"query", "execute", "mcp"},
 		}
@@ -1320,20 +1347,57 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 			Permissions: []string{"query", "execute", "mcp"},
 		}
 	} else {
-		// Enterprise/SaaS mode: Full client and user validation
+		// Enterprise/SaaS mode: try Basic auth first (service license), then whitelist
 		var err error
-		client, err = validateClient(req.ClientID)
-		if err != nil || !client.Enabled {
-			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+		clientID := extractClientID(r)
+		clientSecret := extractClientSecret(r)
+
+		if clientID != "" && clientSecret != "" {
+			// Basic auth present — use the same validation as proxy (DB or whitelist)
+			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer authCancel()
+			if authDB != nil {
+				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
+			} else {
+				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
+			}
+			if err != nil {
+				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
+				return
+			}
+		} else {
+			// Fallback to legacy whitelist validation from request body
+			client, err = validateClient(req.ClientID)
+			if err != nil {
+				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+				return
+			}
+		}
+
+		if !client.Enabled {
+			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
 			return
 		}
 
+		// Validate user token (optional for Basic auth — derive from client)
 		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil {
+		if err != nil && clientID == "" {
+			// Only fail on user token if no Basic auth was provided
 			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
 			return
+		} else if err != nil {
+			// Basic auth present — create a service user from client identity
+			user = &User{
+				ID:          0,
+				Email:       client.ID + "@axonflow.local",
+				Name:        client.Name,
+				TenantID:    client.TenantID,
+				Role:        "service",
+				Permissions: client.Permissions,
+			}
 		}
 
+		// Verify tenant isolation
 		if user.TenantID != client.TenantID {
 			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
 			return
@@ -1342,6 +1406,7 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Update audit entry with authenticated user/client info
 	auditEntry.TenantID = user.TenantID
+	auditEntry.OrgID = client.OrgID
 	auditEntry.ClientID = client.ID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
@@ -1592,20 +1657,17 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "connector_type is required", http.StatusBadRequest, nil)
 		return
 	}
-	if req.TenantID == "" && !isCommunityMode() {
-		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
-		return
-	}
 	if req.Statement == "" {
 		sendErrorResponse(w, "statement is required", http.StatusBadRequest, nil)
 		return
 	}
 
 	// Authentication — same three-way pattern as mcpQueryHandler
+	// Note: tenant_id validation moved to after auth since Basic auth derives it from client
 	var tenantID, userID, userRole string
 
 	if isCommunityMode() {
-		tenantID = "default"
+		tenantID = "community"
 		userID = "0"
 		userRole = "admin"
 	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
@@ -1616,15 +1678,48 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		userID = req.UserID
 		userRole = req.UserRole
 	} else {
-		client, err := validateClient(req.ClientID)
-		if err != nil || !client.Enabled {
-			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
+		var client *Client
+		var user *User
+		var err error
+		clientID := extractClientID(r)
+		clientSecret := extractClientSecret(r)
+
+		if clientID != "" && clientSecret != "" {
+			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer authCancel()
+			if authDB != nil {
+				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
+			} else {
+				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
+			}
+			if err != nil {
+				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
+				return
+			}
+		} else {
+			client, err = validateClient(req.ClientID)
+			if err != nil {
+				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+				return
+			}
+		}
+		if !client.Enabled {
+			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
 			return
 		}
-		user, err := validateUserToken(req.UserToken, client.TenantID)
-		if err != nil {
+		user, err = validateUserToken(req.UserToken, client.TenantID)
+		if err != nil && clientID == "" {
 			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
 			return
+		} else if err != nil {
+			user = &User{
+				ID:       0,
+				Email:    client.ID + "@axonflow.local",
+				Name:     client.Name,
+				TenantID: client.TenantID,
+				Role:     "service",
+			}
 		}
 		if user.TenantID != client.TenantID {
 			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
@@ -1635,11 +1730,18 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		userRole = user.Role
 	}
 
+	// Validate tenant_id after auth (Basic auth derives it from client)
+	if tenantID == "" {
+		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
+		return
+	}
+
 	auditEntry := MCPQueryAuditEntry{
 		AuditID:        uuid.New().String(),
 		ConnectorName:  req.ConnectorType,
 		Operation:      "check-input",
 		TenantID:       tenantID,
+		OrgID:          getDeploymentOrgID(),
 		UserID:         userID,
 		StatementHash:  computeStatementHash(req.Statement),
 		ParametersHash: computeParametersHash(req.Parameters),
@@ -1736,20 +1838,17 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "connector_type is required", http.StatusBadRequest, nil)
 		return
 	}
-	if req.TenantID == "" && !isCommunityMode() {
-		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
-		return
-	}
 	if len(req.ResponseData) == 0 && req.Message == "" {
 		sendErrorResponse(w, "response_data or message is required", http.StatusBadRequest, nil)
 		return
 	}
 
 	// Authentication — same three-way pattern as mcpQueryHandler
+	// Note: tenant_id validation moved to after auth since Basic auth derives it from client
 	var tenantID, userID string
 
 	if isCommunityMode() {
-		tenantID = "default"
+		tenantID = "community"
 		userID = "0"
 	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		tenantID = req.TenantID
@@ -1758,15 +1857,48 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		userID = req.UserID
 	} else {
-		client, err := validateClient(req.ClientID)
-		if err != nil || !client.Enabled {
-			sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
+		var client *Client
+		var user *User
+		var err error
+		clientID := extractClientID(r)
+		clientSecret := extractClientSecret(r)
+
+		if clientID != "" && clientSecret != "" {
+			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer authCancel()
+			if authDB != nil {
+				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
+			} else {
+				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
+			}
+			if err != nil {
+				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
+				return
+			}
+		} else {
+			client, err = validateClient(req.ClientID)
+			if err != nil {
+				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
+				return
+			}
+		}
+		if !client.Enabled {
+			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
 			return
 		}
-		user, err := validateUserToken(req.UserToken, client.TenantID)
-		if err != nil {
+		user, err = validateUserToken(req.UserToken, client.TenantID)
+		if err != nil && clientID == "" {
 			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
 			return
+		} else if err != nil {
+			user = &User{
+				ID:       0,
+				Email:    client.ID + "@axonflow.local",
+				Name:     client.Name,
+				TenantID: client.TenantID,
+				Role:     "service",
+			}
 		}
 		if user.TenantID != client.TenantID {
 			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
@@ -1776,11 +1908,18 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		userID = fmt.Sprintf("%d", user.ID)
 	}
 
+	// Validate tenant_id after auth (Basic auth derives it from client)
+	if tenantID == "" {
+		sendErrorResponse(w, "tenant_id is required", http.StatusBadRequest, nil)
+		return
+	}
+
 	auditEntry := MCPQueryAuditEntry{
 		AuditID:       uuid.New().String(),
 		ConnectorName: req.ConnectorType,
 		Operation:     "check-output",
 		TenantID:      tenantID,
+		OrgID:         getDeploymentOrgID(),
 		UserID:        userID,
 	}
 

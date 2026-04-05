@@ -78,9 +78,10 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 		stopCh:       make(chan struct{}),
 	}
 
-	// Initialize schema
-	if err := engine.initializeSchema(); err != nil {
-		log.Printf("Warning: Failed to initialize schema: %v", err)
+	// Tables created by migration 010_policy_tables.sql
+	// Seed default data (system media policies, sample policies if empty)
+	if err := engine.seedDefaultData(); err != nil {
+		log.Printf("Warning: Failed to seed default data: %v", err)
 	}
 
 	// Load initial policies
@@ -99,45 +100,7 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 	return engine, nil
 }
 
-func (e *DatabaseDynamicPolicyEngine) initializeSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS dynamic_policies (
-		id SERIAL PRIMARY KEY,
-		policy_id VARCHAR(100) UNIQUE NOT NULL,
-		name VARCHAR(255) NOT NULL,
-		description TEXT,
-		policy_type VARCHAR(50),
-		conditions JSONB,
-		actions JSONB,
-		tenant_id VARCHAR(100),
-		environment VARCHAR(50),
-		priority INTEGER DEFAULT 0,
-		enabled BOOLEAN DEFAULT true,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_policies_tenant ON dynamic_policies(tenant_id);
-	CREATE INDEX IF NOT EXISTS idx_policies_enabled ON dynamic_policies(enabled);
-	CREATE INDEX IF NOT EXISTS idx_policies_priority ON dynamic_policies(priority DESC);
-
-	CREATE TABLE IF NOT EXISTS policy_metrics (
-		id SERIAL PRIMARY KEY,
-		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		policy_name VARCHAR(255),
-		execution_time_ms INTEGER,
-		success BOOLEAN,
-		tenant_id VARCHAR(100)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON policy_metrics(timestamp DESC);
-	`
-
-	_, err := e.db.Exec(schema)
-	if err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
-	}
-
+func (e *DatabaseDynamicPolicyEngine) seedDefaultData() error {
 	// Seed system media policies (idempotent — ON CONFLICT DO NOTHING)
 	if err := e.seedSystemMediaPolicies(); err != nil {
 		log.Printf("Warning: Failed to seed system media policies: %v", err)
@@ -145,7 +108,7 @@ func (e *DatabaseDynamicPolicyEngine) initializeSchema() error {
 
 	// Insert sample policies if table is empty
 	var count int
-	err = e.db.QueryRow("SELECT COUNT(*) FROM dynamic_policies").Scan(&count)
+	err := e.db.QueryRow("SELECT COUNT(*) FROM dynamic_policies").Scan(&count)
 	if err != nil {
 		return err
 	}

@@ -47,12 +47,10 @@ func assertCheck(condition bool, message string) {
 
 func main() {
 	// Initialize client
-	// Note: Dynamic policies are managed by the orchestrator (port 8081)
-	// In production, the agent proxies these requests, but for community mode
-	// we connect to the orchestrator directly.
+	// All requests go through the agent entry point (port 8080)
 	endpoint := os.Getenv("AXONFLOW_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:8081" // Orchestrator port for dynamic policies
+		endpoint = "http://localhost:8080"
 	}
 
 	clientID := os.Getenv("AXONFLOW_CLIENT_ID")

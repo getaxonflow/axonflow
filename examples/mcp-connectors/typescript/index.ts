@@ -1,8 +1,8 @@
 /**
- * MCP Connector Example - Tests Orchestrator-to-Agent Routing
+ * MCP Connector Example - Tests Agent Routing
  *
  * This example tests the FULL MCP connector flow:
- *   SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
+ *   SDK -> Agent (port 8080) -> Connector
  *
  * Usage:
  *   docker compose up -d  # Start AxonFlow
@@ -12,7 +12,7 @@
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
-interface OrchestratorRequest {
+interface AgentRequest {
   request_id: string;
   query: string;
   request_type: string;
@@ -28,7 +28,7 @@ interface OrchestratorRequest {
   context: Record<string, unknown>;
 }
 
-interface OrchestratorResponse {
+interface AgentResponse {
   request_id: string;
   success: boolean;
   data?: {
@@ -52,17 +52,17 @@ function assertCheck(condition: boolean, message: string): void {
 }
 
 async function main() {
-  const orchestratorUrl = process.env.ORCHESTRATOR_URL || "http://localhost:8081";
+  const agentUrl = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
 
   console.log("==============================================");
-  console.log("MCP Connector Example - Orchestrator Routing");
+  console.log("MCP Connector Example - Agent Routing");
   console.log("==============================================");
-  console.log(`Orchestrator URL: ${orchestratorUrl}\n`);
+  console.log(`Agent URL: ${agentUrl}\n`);
 
-  // Test 1: Query postgres connector through orchestrator
-  console.log("Test 1: Query postgres connector via orchestrator...");
+  // Test 1: Query postgres connector through agent
+  console.log("Test 1: Query postgres connector via agent...");
 
-  const request: OrchestratorRequest = {
+  const request: AgentRequest = {
     request_id: `mcp-test-${Date.now()}`,
     query: "SELECT 1 as test_value, 'hello' as test_message",
     request_type: "mcp-query",
@@ -82,16 +82,16 @@ async function main() {
   };
 
   try {
-    const response = await fetch(`${orchestratorUrl}/api/v1/process`, {
+    const response = await fetch(`${agentUrl}/api/v1/process`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
     });
 
-    const result = (await response.json()) as OrchestratorResponse;
+    const result = (await response.json()) as AgentResponse;
 
     if (result.success) {
-      console.log("SUCCESS: MCP query through orchestrator worked!");
+      console.log("SUCCESS: MCP query through agent worked!");
       console.log(`  Request ID: ${result.request_id}`);
       console.log(`  Processing Time: ${result.processing_time}`);
       if (result.data) {
@@ -105,7 +105,7 @@ async function main() {
       assertCheck(result.processing_time !== undefined, "Response includes processing_time");
     } else {
       console.log(`FAILED: ${result.error}`);
-      failures.push(`MCP query through orchestrator failed: ${result.error}`);
+      failures.push(`MCP query through agent failed: ${result.error}`);
     }
 
     // Test 2: Query with database alias
@@ -114,13 +114,13 @@ async function main() {
     request.request_id = `mcp-test-${Date.now()}`;
     request.context.connector = "database";
 
-    const response2 = await fetch(`${orchestratorUrl}/api/v1/process`, {
+    const response2 = await fetch(`${agentUrl}/api/v1/process`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
     });
 
-    const result2 = (await response2.json()) as OrchestratorResponse;
+    const result2 = (await response2.json()) as AgentResponse;
 
     if (result2.success) {
       console.log("SUCCESS: Database alias connector worked!");

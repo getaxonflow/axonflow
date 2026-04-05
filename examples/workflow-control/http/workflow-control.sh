@@ -15,8 +15,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-workflow-control-example}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 
 RED='\033[0;31m'
@@ -50,8 +49,7 @@ echo "   Creating 'code-review-pipeline' workflow..."
 
 create_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "workflow_name": "code-review-pipeline",
         "source": "external",
@@ -86,8 +84,7 @@ echo "   Checking if 'generate_code' step is allowed..."
 
 gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/gate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "step_name": "Generate Code",
         "step_type": "llm_call",
@@ -116,8 +113,7 @@ case "$decision" in
         echo "   Aborting workflow..."
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/abort" \
             -H "Content-Type: application/json" \
-            -H "X-Client-ID: $CLIENT_ID" \
-            -H "X-Client-Secret: $CLIENT_SECRET" \
+            -H "Authorization: Basic $AUTH_B64" \
             -d '{"reason": "Step blocked by policy"}'
         exit 0
         ;;
@@ -139,8 +135,7 @@ if [ "$decision" = "allow" ]; then
     echo "   Marking step completed..."
     curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/complete" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{
             "output": {
                 "code": "def sort_list(items): return sorted(items)"
@@ -159,8 +154,7 @@ echo "   Checking if 'review_code' step is allowed..."
 
 gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-2/gate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "step_name": "Review Code",
         "step_type": "tool_call",
@@ -185,7 +179,7 @@ case "$decision" in
         echo -e "   Decision: ${GREEN}ALLOW${NC}"
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-2/complete" \
             -H "Content-Type: application/json" \
-            -H "X-Client-ID: $CLIENT_ID" \
+            -H "Authorization: Basic $AUTH_B64" \
             -d '{"output": {"review": "LGTM"}, "tokens_in": 480, "tokens_out": 120, "cost_usd": 0.0071}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
         ;;
@@ -205,8 +199,7 @@ echo "   Checking if 'deploy' step is allowed..."
 
 gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-3/gate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "step_name": "Deploy to Production",
         "step_type": "connector_call",
@@ -224,7 +217,7 @@ case "$decision" in
         echo -e "   Decision: ${GREEN}ALLOW${NC}"
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-3/complete" \
             -H "Content-Type: application/json" \
-            -H "X-Client-ID: $CLIENT_ID" \
+            -H "Authorization: Basic $AUTH_B64" \
             -d '{"output": {"pr_url": "https://github.com/example/pr/123"}, "tokens_in": 95, "tokens_out": 30, "cost_usd": 0.0015}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
         ;;
@@ -242,8 +235,8 @@ echo ""
 echo -e "${BLUE}Step 5: Complete Workflow${NC}"
 curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/complete" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" > /dev/null
+    -H "Authorization: Basic $AUTH_B64" \
+ > /dev/null
 echo -e "   ${GREEN}Workflow completed!${NC}"
 echo ""
 
@@ -253,8 +246,7 @@ echo "   Creating a workflow to test /fail endpoint..."
 
 fail_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "workflow_name": "wcp-fail-test",
         "source": "external",
@@ -273,8 +265,7 @@ else
     # Call /fail endpoint
     fail_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$FAIL_WF_ID/fail" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{"reason": "LLM provider timeout"}')
 
     fail_status=$(echo "$fail_response" | jq -r '.status // "unknown"')
@@ -285,8 +276,8 @@ else
 
     # Verify status via GET
     verify_response=$(curl -s "$AGENT_URL/api/v1/workflows/$FAIL_WF_ID" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET")
+        -H "Authorization: Basic $AUTH_B64" \
+)
     verify_status=$(echo "$verify_response" | jq -r '.status // "unknown"')
     if [ "$verify_status" = "failed" ]; then
         echo -e "   ${GREEN}Verified: workflow status is 'failed'${NC}"
@@ -299,8 +290,8 @@ echo ""
 # Step 6: Get final workflow status
 echo -e "${BLUE}Step 6: Workflow Status${NC}"
 status_response=$(curl -s "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "   Workflow: $(echo "$status_response" | jq -r '.workflow_name')"
 echo "   Status: $(echo "$status_response" | jq -r '.status')"
@@ -326,8 +317,7 @@ echo "   Creating 'wcp-approval-test' workflow (3 steps)..."
 
 approval_create=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "workflow_name": "wcp-approval-test",
         "source": "external",
@@ -351,8 +341,7 @@ else
     echo "   Checking gate for step-1..."
     approval_gate=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$APPROVAL_WF_ID/steps/step-1/gate" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{
             "step_name": "Approval Target Step",
             "step_type": "llm_call",
@@ -373,8 +362,8 @@ else
     approve_response=$(curl -s -w "\n%{http_code}" -X POST \
         "$AGENT_URL/api/v1/workflows/$APPROVAL_WF_ID/steps/step-1/approve" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET")
+        -H "Authorization: Basic $AUTH_B64" \
+)
 
     approve_body=$(echo "$approve_response" | sed '$d')
     approve_http=$(echo "$approve_response" | tail -n 1)
@@ -390,8 +379,8 @@ else
     echo "   Checking pending approvals..."
     pending_response=$(curl -s -w "\n%{http_code}" \
         "$AGENT_URL/api/v1/workflows/pending-approvals" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET")
+        -H "Authorization: Basic $AUTH_B64" \
+)
 
     pending_body=$(echo "$pending_response" | sed '$d')
     pending_http=$(echo "$pending_response" | tail -n 1)
@@ -413,8 +402,7 @@ echo "   Creating 'wcp-rejection-test' workflow (2 steps)..."
 
 rejection_create=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "workflow_name": "wcp-rejection-test",
         "source": "external",
@@ -438,8 +426,7 @@ else
     echo "   Checking gate for step-1..."
     rejection_gate=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$REJECTION_WF_ID/steps/step-1/gate" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{
             "step_name": "Rejection Target Step",
             "step_type": "tool_call",
@@ -466,8 +453,8 @@ else
     reject_response=$(curl -s -w "\n%{http_code}" -X POST \
         "$AGENT_URL/api/v1/workflows/$REJECTION_WF_ID/steps/step-1/reject" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET")
+        -H "Authorization: Basic $AUTH_B64" \
+)
 
     reject_body=$(echo "$reject_response" | sed '$d')
     reject_http=$(echo "$reject_response" | tail -n 1)
@@ -487,8 +474,8 @@ echo "   Fetching pending approvals list..."
 
 all_pending_response=$(curl -s -w "\n%{http_code}" \
     "$AGENT_URL/api/v1/workflows/pending-approvals" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 all_pending_body=$(echo "$all_pending_response" | sed '$d')
 all_pending_http=$(echo "$all_pending_response" | tail -n 1)
@@ -509,8 +496,7 @@ echo "   Creating workflow for SSE streaming test..."
 
 sse_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "workflow_name": "wcp-sse-streaming-test",
         "source": "external",
@@ -531,8 +517,7 @@ else
     echo "   Checking gate for sse-step-1..."
     sse_gate=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$SSE_WF_ID/steps/sse-step-1/gate" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{
             "step_name": "SSE Test Step",
             "step_type": "llm_call",
@@ -551,14 +536,13 @@ else
     if [ "$sse_decision" = "allow" ]; then
         curl -s -X POST "$AGENT_URL/api/v1/workflows/$SSE_WF_ID/steps/sse-step-1/complete" \
             -H "Content-Type: application/json" \
-            -H "X-Client-ID: $CLIENT_ID" \
-            -H "X-Client-Secret: $CLIENT_SECRET" \
+            -H "Authorization: Basic $AUTH_B64" \
             -d '{"output": {"result": "sse test output"}, "tokens_in": 200, "tokens_out": 60, "cost_usd": 0.0031}' > /dev/null
         echo -e "   ${GREEN}Step completed!${NC}"
     fi
 
     # Verify SSE execution streaming endpoint is available
-    SSE_URL="$ORCHESTRATOR_URL/api/v1/unified/executions/$SSE_WF_ID/stream"
+    SSE_URL="$AGENT_URL/api/v1/unified/executions/$SSE_WF_ID/stream"
     echo "   SSE URL: $SSE_URL"
     echo "   Verifying SSE endpoint is registered..."
 
@@ -566,9 +550,8 @@ else
     # Curl exits with code 28 (timeout) even after a successful 200 response.
     # The || true prevents set -e from killing the script.
     SSE_HTTP_CODE=$(curl -s -o /tmp/sse_body.txt -w "%{http_code}" --max-time 3 \
-      -H "X-Client-ID: $CLIENT_ID" \
-      -H "X-Client-Secret: $CLIENT_SECRET" \
-      -H "X-Tenant-ID: $CLIENT_ID" \
+      -H "Authorization: Basic $AUTH_B64" \
+
       -H "Accept: text/event-stream" \
       "$SSE_URL" 2>/dev/null || true)
     SSE_HTTP_CODE=${SSE_HTTP_CODE:-000}
@@ -595,8 +578,7 @@ else
     # Cleanup SSE workflow
     curl -s -X POST "$AGENT_URL/api/v1/workflows/$SSE_WF_ID/abort" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d '{"reason": "test cleanup"}' > /dev/null 2>&1 || true
 fi
 echo ""

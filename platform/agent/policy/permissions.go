@@ -85,8 +85,9 @@ func (pe *PermissionEvaluator) EvaluateMCPPermission(
 		return true, nil
 	}
 
-	// Check global MCP wildcard: "mcp:*"
-	if hasPermission(validationResult.Permissions, "mcp:*") {
+	// Check global MCP wildcard: "mcp:*" or "mcp:*:*"
+	if hasPermission(validationResult.Permissions, "mcp:*") ||
+		hasPermission(validationResult.Permissions, "mcp:*:*") {
 		return true, nil
 	}
 

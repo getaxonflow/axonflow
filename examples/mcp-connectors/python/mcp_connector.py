@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP Connector Example - Tests Orchestrator-to-Agent Routing
+MCP Connector Example - Tests Agent Routing
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 
 This example tests the FULL MCP connector flow:
-  SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
+  SDK -> Agent (port 8080) -> Connector
 
 Run with: python mcp_connector.py
 Prerequisites: docker compose up -d
@@ -30,15 +30,15 @@ def assert_check(condition: bool, message: str) -> None:
 
 
 def main() -> int:
-    orchestrator_url = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8081")
+    agent_url = os.environ.get("AXONFLOW_AGENT_URL", "http://localhost:8080")
 
     print("==============================================")
-    print("MCP Connector Example - Orchestrator Routing")
+    print("MCP Connector Example - Agent Routing")
     print("==============================================")
-    print(f"Orchestrator URL: {orchestrator_url}\n")
+    print(f"Agent URL: {agent_url}\n")
 
-    # Test 1: Query postgres connector through orchestrator
-    print("Test 1: Query postgres connector via orchestrator...")
+    # Test 1: Query postgres connector through agent
+    print("Test 1: Query postgres connector via agent...")
 
     request = {
         "request_id": f"mcp-test-{int(time.time() * 1000)}",
@@ -61,18 +61,18 @@ def main() -> int:
 
     try:
         response = requests.post(
-            f"{orchestrator_url}/api/request",
+            f"{agent_url}/api/request",
             headers={"Content-Type": "application/json"},
             json=request,
             timeout=30
         )
 
-        assert_check(response.status_code in [200, 400, 403], "Orchestrator responded to request")
+        assert_check(response.status_code in [200, 400, 403], "Agent responded to request")
 
         result = response.json()
 
         if result.get("success"):
-            assert_check(True, "MCP query through orchestrator succeeded")
+            assert_check(True, "MCP query through agent succeeded")
             assert_check(result.get("request_id") is not None, "Response has request_id")
 
             print(f"   Request ID: {result.get('request_id')}")
@@ -88,7 +88,7 @@ def main() -> int:
             error = result.get("error", "Unknown error")
             print(f"   Note: Query returned error: {error}")
             # Not a failure - connector may not be configured
-            assert_check(True, "Orchestrator processed request (connector may not be configured)")
+            assert_check(True, "Agent processed request (connector may not be configured)")
 
         # Test 2: Query with database alias connector
         print("\nTest 2: Query 'database' connector (alias for postgres)...")
@@ -97,20 +97,20 @@ def main() -> int:
         request["context"]["connector"] = "database"
 
         response = requests.post(
-            f"{orchestrator_url}/api/request",
+            f"{agent_url}/api/request",
             headers={"Content-Type": "application/json"},
             json=request,
             timeout=30
         )
 
-        assert_check(response.status_code in [200, 400, 403], "Orchestrator responded to alias request")
+        assert_check(response.status_code in [200, 400, 403], "Agent responded to alias request")
 
         result = response.json()
 
         if result.get("success"):
             assert_check(True, "Database alias connector worked")
         else:
-            assert_check(True, "Orchestrator processed alias request")
+            assert_check(True, "Agent processed alias request")
 
         print("\n==============================================")
 
@@ -129,8 +129,8 @@ def main() -> int:
         print("✓ ALL TESTS PASSED")
         print()
         print("MCP Connector Routing validated:")
-        print("  - Orchestrator receives MCP requests")
-        print("  - Requests routed to Agent")
+        print("  - Agent receives MCP requests")
+        print("  - Requests routed to connector")
         print("  - Connector alias resolution works")
         return 0
     else:

@@ -13,8 +13,8 @@
 
 set -euo pipefail
 
-AGENT_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-org}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo}"
 
 PASS=0
@@ -45,8 +45,7 @@ echo "-------------------------------------------"
 
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/webhooks" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "url": "https://example.com/webhooks/axonflow",
     "events": ["step.approval_required", "workflow.completed"],
@@ -75,8 +74,8 @@ echo "2. GetWebhook - Retrieve the subscription..."
 echo "-------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/webhooks/${WEBHOOK_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "Get response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -96,8 +95,7 @@ echo "-------------------------------------------"
 # Create a second webhook for listing
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/webhooks" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "url": "https://example.com/webhooks/backup",
     "events": ["step.approved", "step.rejected"],
@@ -107,8 +105,8 @@ RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/webhooks" \
 WEBHOOK2_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null || echo "")
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/webhooks" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "List response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -127,8 +125,7 @@ echo "-------------------------------------------"
 
 RESPONSE=$(curl -s -X PUT "${AGENT_URL}/api/v1/webhooks/${WEBHOOK_ID}" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "url": "https://example.com/webhooks/updated",
     "active": false
@@ -154,23 +151,23 @@ echo "5. DeleteWebhook - Delete both subscriptions..."
 echo "-------------------------------------------"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "${AGENT_URL}/api/v1/webhooks/${WEBHOOK_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 DEL1_OK=$([ "$HTTP_CODE" = "204" ] && echo "true" || echo "false")
 check_result "First webhook deleted (HTTP $HTTP_CODE)" "$DEL1_OK"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "${AGENT_URL}/api/v1/webhooks/${WEBHOOK2_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 DEL2_OK=$([ "$HTTP_CODE" = "204" ] && echo "true" || echo "false")
 check_result "Second webhook deleted (HTTP $HTTP_CODE)" "$DEL2_OK"
 
 # Verify deletion
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AGENT_URL}/api/v1/webhooks/${WEBHOOK_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 IS_GONE=$([ "$HTTP_CODE" = "404" ] && echo "true" || echo "false")
 check_result "Deleted webhook returns 404 (HTTP $HTTP_CODE)" "$IS_GONE"
@@ -183,8 +180,8 @@ echo "6. Error Handling - Invalid webhook ID..."
 echo "-------------------------------------------"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AGENT_URL}/api/v1/webhooks/nonexistent-webhook-id" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 IS_NOT_FOUND=$([ "$HTTP_CODE" = "404" ] && echo "true" || echo "false")
 check_result "Nonexistent webhook returns 404 (HTTP $HTTP_CODE)" "$IS_NOT_FOUND"

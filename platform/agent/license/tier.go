@@ -249,7 +249,7 @@ type ValidationResult struct {
 type ServiceLicensePayload struct {
 	LicenseID   string      `json:"id,omitempty"`
 	Tier        string      `json:"tier"`
-	TenantID    string      `json:"tenant_id"`
+	OrgID       string      `json:"org_id"`
 	ServiceName string      `json:"service_name,omitempty"`
 	ServiceType string      `json:"service_type,omitempty"`
 	Permissions []string    `json:"permissions,omitempty"`

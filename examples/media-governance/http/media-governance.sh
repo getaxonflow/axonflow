@@ -17,7 +17,7 @@ set -e
 
 # Configuration
 AGENT_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-client}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo-secret}"
 
 # Minimal valid 1x1 white pixel JPEG encoded as base64
@@ -141,8 +141,7 @@ echo "  Query: Describe this image"
 
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"Describe this image\",
         \"user_token\": \"media-governance-user\",
@@ -172,8 +171,7 @@ echo "  Query: Compare these images"
 
 RESPONSE2=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"Compare these images\",
         \"user_token\": \"media-governance-user\",
@@ -202,8 +200,7 @@ echo "  Query: Analyze this image from URL"
 
 RESPONSE3=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"Analyze this image from URL\",
         \"user_token\": \"media-governance-user\",
@@ -233,8 +230,7 @@ echo "  Query: What is the capital of France?"
 
 RESPONSE4=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"What is the capital of France?\",
         \"user_token\": \"media-governance-user\",

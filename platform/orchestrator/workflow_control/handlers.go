@@ -692,7 +692,7 @@ func (h *Handler) getUserID(r *http.Request) string {
 
 // getClientID extracts client ID from request
 func (h *Handler) getClientID(r *http.Request) string {
-	if clientID := r.Header.Get("X-Client-ID"); clientID != "" {
+	if clientID := r.Header.Get("X-Tenant-ID"); clientID != "" {
 		return clientID
 	}
 	if clientID, ok := r.Context().Value("client_id").(string); ok {
@@ -719,7 +719,7 @@ func (h *Handler) handleCORS(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Org-ID, X-User-ID, X-Client-ID")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Org-ID, X-User-ID")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusOK)
 }
