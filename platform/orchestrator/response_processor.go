@@ -155,20 +155,22 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 	var redactionInfo *RedactionInfo
 
 	// PII_ACTION controls whether redaction runs on responses.
-	// warn/log: detect PII (for audit) but don't redact the response.
-	// block/redact (default): detect and redact.
+	// All modes run detection (for audit). Only block/redact actually modify the response.
 	piiAction := os.Getenv("PII_ACTION")
-	if piiAction == "warn" || piiAction == "log" {
-		// Skip redaction — pass data through unmodified
-		processedData = responseData
-		redactionInfo = &RedactionInfo{}
-	} else if p.useSharedEngine && p.sharedPolicyEngine != nil {
+	skipRedaction := piiAction == "warn" || piiAction == "log"
+
+	if p.useSharedEngine && p.sharedPolicyEngine != nil {
 		// Use shared policy engine (database-driven, configurable)
 		processedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
 	} else {
 		// Fallback to legacy PII detection (hardcoded regexes)
 		detectedPII := p.detectPII(responseData)
 		processedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
+	}
+
+	// warn/log: detection ran (redactionInfo populated for audit) but return original data
+	if skipRedaction {
+		processedData = responseData
 	}
 
 	// Validate response (always runs regardless of PII_ACTION)
