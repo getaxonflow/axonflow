@@ -7,139 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [6.0.0] - 2026-04-05 (Identity Model)
+## [6.0.0] - 2026-04-05
 
 > **Upgrade note:** Most users running with default settings are unaffected. If you customized `ORG_ID` or `AXONFLOW_CLIENT_ID` in your docker-compose, verify they still match your deployed identity before upgrading. See [deployment/licensing](https://docs.getaxonflow.com/docs/deployment/licensing) for details.
 
 ### BREAKING CHANGES
 
-- **License payload field renamed: `tenant_id` → `org_id`.** The Ed25519 license payload now uses `org_id` to identify the organization (entitlement scope). Previously, `tenant_id` was used for both org identity and tenant isolation — these are now separate concepts. Existing licenses with `tenant_id` will not be recognized; regenerate with the updated keygen tool.
-- **`X-Client-ID` header removed.** Redundant with `X-Tenant-ID` — both carried the same value (clientId from Basic auth). All orchestrator reads changed to `X-Tenant-ID`. CORS headers updated. axonctl updated.
-- **License `org_id` must match deployment `ORG_ID`.** The agent validates at startup that the license's `org_id` matches the `ORG_ID` environment variable. Mismatch causes a fatal error with instructions to fix.
+- **Unified identity model.** `tenant_id` (from Basic auth `clientId`) for data isolation, `org_id` (from deployment `ORG_ID` env var) for entitlement scope. SDKs send credentials, server derives identity — no client-supplied identity headers.
+- **License payload field renamed: `tenant_id` → `org_id`.** Existing licenses with `tenant_id` will not be recognized; regenerate with the updated keygen tool.
+- **`X-Client-ID` header removed.** Redundant with `X-Tenant-ID`. All orchestrator reads changed to `X-Tenant-ID`.
+- **License `org_id` must match deployment `ORG_ID`.** Agent validates at startup; mismatch causes a fatal error.
+- **`X-Tenant-ID` header no longer accepted from clients.** The server derives tenant context from OAuth2 Client Credentials (Basic auth). SDKs must be updated to v5.0+ (Python), v5.0+ (Go), v5.0+ (TypeScript), v5.0+ (Java).
+- **Legacy DatabasePolicyEngine removed.** All policy evaluation flows through the unified SharedPolicyEngine.
+- **Basic auth required in evaluation/enterprise mode.** All proxied API endpoints require `Authorization: Basic base64(clientId:clientSecret)` when `DEPLOYMENT_MODE` is not `community`.
 
 ### Community
 
 #### Added
 
-- **Unified identity model.** Two concepts, two sources of truth: `tenant_id` (from Basic auth `clientId`, default `"community"`) for data isolation, `org_id` (from deployment `ORG_ID` env var, default `"local-dev-org"`) for entitlement scope. SDKs send credentials, server derives identity — no client-supplied identity headers.
-- **`tenants` table** (migration 062) maps tenant_id → org_id. Auto-populated on first authenticated request via `register_tenant()` SQL function. Enables multi-tenant deployments where one organization has multiple tenants (prod, staging, dev).
-- **`org_id` column** on `audit_logs` (migration 059) and `mcp_query_audits` (migration 061) with backfill from `tenant_id`. All audit write paths (6 Log* functions + MCP audit INSERT) now populate `org_id`.
-- **Auto-registration of organizations and tenants.** On first authenticated request, the agent auto-registers the org and tenant in the database. Uses in-memory cache to skip DB on subsequent requests. Self-hosted users never need to manually seed identity tables.
-- **Community mode identity headers.** Agent now injects `X-Tenant-ID` and `X-Org-ID` headers in community mode (from Basic auth clientId and deployment ORG_ID). The orchestrator always has identity context.
-- **Orchestrator identity from headers.** The main request handler reads identity from `X-Tenant-ID` and `X-Org-ID` headers (set by agent), overriding JSON body fields. Identity is always server-derived, never client-supplied.
-- **MCP handler Basic auth support.** The mcpQueryHandler enterprise auth path now accepts Basic auth (service license validation), falling back to the legacy whitelist for backward compatibility.
-- **Startup org_id mismatch validation.** Agent fails fast if license `org_id` doesn't match deployment `ORG_ID`, preventing data split across organizations.
-- **ADR-041**: Organization and Tenant Identity Separation — documents the two-concept model, upgrade path, and migration strategy.
-- **PII detection modes example** (`examples/pii-detection/http/pii-modes.sh`). Tests request-side and response-side PII detection with assertions across all `PII_ACTION` modes. Includes ISO timestamp false positive regression test.
+- **`tenants` table** (migration 062) maps tenant_id → org_id. Auto-populated on first authenticated request. Enables multi-tenant deployments (prod, staging, dev under one org).
+- **`org_id` column** on `audit_logs` (migration 059) and `mcp_query_audits` (migration 061) with backfill from `tenant_id`. All audit write paths now populate `org_id`.
+- **Auto-registration of organizations and tenants.** In-memory cache skips DB on subsequent requests. Self-hosted users never need to manually seed identity tables.
+- **Claude Code plugin** ([getaxonflow/axonflow-claude-plugin](https://github.com/getaxonflow/axonflow-claude-plugin)) — automatic policy enforcement, PII scanning, and audit trails via PreToolUse/PostToolUse hooks and 6 MCP tools.
+- **MCP server protocol endpoint** (`/api/v1/mcp-server`). JSON-RPC 2.0 over Streamable HTTP with 6 governance tools: `check_policy`, `check_output`, `audit_tool_call`, `list_policies`, `get_policy_stats`, `search_audit_events`.
+- **Integration policy activation system.** Integration-specific policies auto-enabled when an integration is detected via `AXONFLOW_INTEGRATIONS` env var, connector type auto-detection, or MCP client identification.
+- **10 dangerous command system policies** (migration 059): reverse shells, destructive filesystem ops, credential access, download-and-execute, SSRF, path traversal, dynamic code execution.
+- **`DANGEROUS_COMMAND_ACTION` config** split from `DANGEROUS_QUERY_ACTION`. Different risk profiles, configured independently.
+- **OAuth2 Client Credentials authentication** for all policy API endpoints.
+- **Community mode identity headers.** Agent injects `X-Tenant-ID` and `X-Org-ID` in community mode. Orchestrator identity always server-derived.
+- **MCP handler Basic auth support.** All 4 MCP handlers accept Basic auth (service license validation), falling back to legacy whitelist.
+- **Startup org_id mismatch validation.** Agent fails fast if license `org_id` doesn't match deployment `ORG_ID`.
+- **Response PII detection uses database-driven policy engine.** Shared engine wired in orchestrator for response scanning.
+- **PII detection modes example** (`examples/pii-detection/http/pii-modes.sh`). Tests request-side and response-side PII with ISO timestamp false positive regression test.
+- **Proxy routes** for MCP processing, MAP cost estimation, unified execution cancel, legacy policy reads.
+- **Runtime table creation moved to migrations.** `audit_logs`, `dynamic_policies`, `policy_metrics`, `media_governance_config`.
+- **ADR-041**: Organization and Tenant Identity Separation.
+- **Setup script repo override.** `COMMUNITY_REPO` environment variable in `setup-e2e-testing.sh` allows pointing community-mode testing at any repo path.
 
 #### Changed
 
-- **All example CLIENT_ID defaults standardized to `"community"`.** Previously each HTTP shell script and SDK example used random defaults (`hello-world-http`, `pii-detection-demo`, `demo-org`, `local-dev-org`, etc.).
-- **All examples migrated to Basic auth.** 15 examples still using `X-Client-ID`/`X-Client-Secret` headers converted to `Authorization: Basic` format.
-- **License keygen parameter renamed.** `GenerateServiceLicenseKey()` parameter `tenantID` → `orgID`. The `-org` CLI flag is unchanged.
-- **Enterprise compose stale V2 secret removed.** `AXONFLOW_CLIENT_SECRET` default cleared (was an unusable old V2 format token). Use `setup-e2e-testing.sh` to generate valid Ed25519 licenses.
-- **Orchestrator `ORG_ID` fallback changed from `"default"` to `"local-dev-org"`.** Matches docker-compose.yml default. Logs a warning when `ORG_ID` is not explicitly set.
-
-#### Fixed
-
-- **Agent auth collapsed tenant_id and org_id.** `validateViaOrganizations()` set `Client.TenantID`, `Client.ID`, and `Client.OrgID` all to the same license-derived value. Now `TenantID` and `ID` come from the Basic auth `clientId` (tenant identity), while `OrgID` comes from the deployment `ORG_ID` env var.
-- **Community mode X-Tenant-ID was spoofable.** Agent preserved client-supplied `X-Tenant-ID` header in community mode. Now always overrides with server-derived value.
-- **Community mode `org_id` defaulted to `"demo-org"`.** Changed to `getDeploymentOrgID()` everywhere (resolves to `"local-dev-org"` by default).
-- **`AXONFLOW_CLIENT_SECRET` not exported in evaluation mode.** Setup script only exported `LICENSE_KEY`. Fixed to export both.
-- **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from .env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
-- **Response PII redaction now respects `PII_ACTION` env var.** `PII_ACTION=warn` and `PII_ACTION=log` now skip response redaction but still run detection for audit logging (previously always redacted regardless of setting).
-- **Response PII detection now uses database-driven policy engine.** Wired up the shared policy engine in the orchestrator so response scanning uses the same configurable policies as request-side detection instead of hardcoded regexes.
-- **4 PII false positives on ISO timestamps** (migration 063). `10:37:58.123456789Z` triggered SSN (`123456789` matched optional-separator pattern), phone (`58.1234` matched dot separator), bank account (`123456789` matched 8+ digits), and Singapore UEN (`123456789Z` matched digit+letter). SSN now requires separators, phone dots only in all-dots format (555.123.4567), bank account minimum 10 digits, UEN excludes Z as check letter.
-- **13 HTTP examples missing Basic auth.** `AUTH_B64` variable used but never defined after X-Client-ID to Basic auth migration.
-
----
-
-## [6.0.0] - 2026-04-05
-
-### BREAKING CHANGES
-
-- **`X-Tenant-ID` header no longer accepted from clients.** The server derives tenant context from OAuth2 Client Credentials (Basic auth). Clients sending `X-Tenant-ID` will have it ignored — the authenticated client's tenant takes precedence. SDKs must be updated to v5.0+ (Python), v5.0+ (Go), v5.0+ (TypeScript), v5.0+ (Java). The `X-Tenant-ID` header is still used internally between agent and orchestrator.
-- **Legacy DatabasePolicyEngine removed.** All policy evaluation flows through the unified SharedPolicyEngine. Code depending on the standalone `DatabasePolicyEngine` or `StaticPolicyEngine` types must migrate to the shared engine.
-- **Basic auth required in evaluation/enterprise mode.** All proxied API endpoints (dynamic policies, connectors, plans, audit, executions) now require `Authorization: Basic base64(clientId:clientSecret)` when `DEPLOYMENT_MODE` is not `community`. Community mode continues to work without credentials.
-
-### Community
-
-#### Added
-
-- **Claude Code plugin** ([getaxonflow/axonflow-claude-plugin](https://github.com/getaxonflow/axonflow-claude-plugin)) — automatic policy enforcement, PII scanning, and audit trails for Claude Code via PreToolUse/PostToolUse hooks and 6 MCP tools.
-- **MCP server protocol endpoint** (`/api/v1/mcp-server`) for Claude Code plugin integration. JSON-RPC 2.0 over Streamable HTTP with 6 governance tools: `check_policy`, `check_output`, `audit_tool_call`, `list_policies`, `get_policy_stats`, `search_audit_events`. Supports both MCP protocol versions (`2024-11-05` and `2025-06-18`) with automatic version negotiation.
-- **Integration policy activation system.** Integration-specific policies (OpenClaw, Claude Code) are pre-loaded as disabled and automatically enabled when an integration is detected via `AXONFLOW_INTEGRATIONS` env var, connector type auto-detection, or MCP client identification. Avoids runtime migrations — only UPDATE on existing rows.
-- **10 dangerous command system policies** (migration 059): reverse shells, destructive filesystem operations (`rm -rf /`, `dd if=`), credential file access, download-and-execute (`curl|bash`), cloud metadata SSRF, internal network access, agent config file protection, path traversal, dynamic code execution, unauthorized package installation from remote sources.
-- **`DANGEROUS_COMMAND_ACTION` config** split from `DANGEROUS_QUERY_ACTION`. Shell command blocking and SQL query blocking have different risk profiles and can now be configured independently.
-- **OAuth2 Client Credentials authentication** for all policy API endpoints. Clients send `Authorization: Basic base64(clientId:clientSecret)` and the server derives all context (tenant, org, permissions).
-- **Community mode smart defaults.** The agent proxy automatically injects `X-Tenant-ID: community` for the orchestrator when no credentials are provided. HTTP API callers without any auth default to the `community` tenant.
-- **`X-Org-ID` header forwarding** from agent to orchestrator on all forwarded requests. Previously only proxied requests forwarded org context — now `forwardToOrchestrator` (used by `/api/request`) also sets it.
-- **Proxy routes for MCP processing.** Agent now proxies `/api/v1/process` and `/api/v1/mcp/evaluate-policies` to the Orchestrator, enabling MCP connector queries and policy evaluation through the single entry point.
-- **Proxy route for MAP cost estimation.** Agent now proxies `/api/v1/plans` (plural) for plan cost estimation endpoints, complementing the existing `/api/v1/plan` routes.
-- **Unified execution cancel via proxy.** `POST /api/v1/unified/executions/{id}/cancel` is now proxied through the agent (previously only GET was forwarded).
-- **Legacy policy GET proxy.** Agent now proxies `GET /api/v1/policies` for dynamic policy reads, complementing the existing POST/PUT/DELETE support.
-- **Setup script repo override.** `COMMUNITY_REPO` environment variable in `setup-e2e-testing.sh` allows pointing community-mode testing at any repo path (e.g., a git worktree with unreleased changes).
-
-#### Changed
-
-- **Static policy API endpoints** are now protected by `apiAuthMiddleware` via a gorilla/mux subrouter. Tenant and org IDs are extracted from authenticated request context instead of raw headers.
-- **Audit tool-call endpoint** now accepts proxy-authenticated requests without requiring a non-empty client secret. Requests validated by the agent proxy token are trusted for tenant identification.
-- **`PII_ACTION` environment variable** controls PII enforcement behavior: `block` rejects requests containing critical PII (SSN, credit card, Aadhaar), `redact` masks PII in responses (default). Examples test both modes explicitly.
-- **All examples use agent single entry point.** 106 example files migrated from orchestrator-direct (port 8081) to agent (port 8080). `AXONFLOW_ORCHESTRATOR_URL` renamed to `AXONFLOW_AGENT_URL`. Manual `X-Tenant-ID`/`X-Org-ID` headers removed — the agent proxy derives tenant identity from OAuth2 credentials.
-- **Runtime table creation moved to migrations.** `audit_logs` and `media_governance_config` tables are now created by migration 059 instead of at orchestrator startup via `CREATE TABLE IF NOT EXISTS`. The runtime `CREATE TABLE` for `dynamic_policies` and `policy_metrics` (which was always a no-op since migration 010 creates them) has also been removed. This ensures all tables exist before any subsequent migrations reference them.
+- **All example CLIENT_ID defaults standardized to `"community"`.** Previously random per-example defaults.
+- **All examples migrated to Basic auth.** 15 examples converted from `X-Client-ID`/`X-Client-Secret` headers.
+- **All examples use agent single entry point.** 106 files migrated from orchestrator-direct (port 8081) to agent (port 8080).
+- **`PII_ACTION` environment variable** controls enforcement on both request and response sides: `block`, `redact` (default), `warn`, `log`.
+- **Static policy API endpoints** protected by `apiAuthMiddleware` via gorilla/mux subrouter.
+- **License keygen parameter renamed.** `tenantID` → `orgID`.
+- **Enterprise compose stale V2 secret removed.** `AXONFLOW_CLIENT_SECRET` default cleared. Use `setup-e2e-testing.sh` to generate valid Ed25519 licenses.
+- **Orchestrator `ORG_ID` fallback changed from `"default"` to `"local-dev-org"`.** Logs a warning when not explicitly set.
 
 #### Removed
 
-- **`DatabasePolicyEngine`** (`db_policies.go`, ~744 lines) — standalone database policy engine with hardcoded category limitations.
-- **`StaticPolicyEngine`** struct and methods (`static_policies.go`, collapsed from ~634 lines to ~39 lines of shared type definitions).
-- **`dbPolicyEngine` and `staticPolicyEngine` global variables** and all fallback branches in `clientRequestHandler`, `policyTestHandler`, `gateway_handlers`, and `mcp_handler`.
+- **`DatabasePolicyEngine`** (`db_policies.go`, ~744 lines).
+- **`StaticPolicyEngine`** struct and methods (~634 lines collapsed to ~39 lines).
 - **`db_policies_test.go`** (~1,648 lines), **`static_policies_test.go`** (~1,964 lines), **`agent_bench_test.go`** (~400 lines).
 
 #### Fixed
 
-- **MCP execute/check-input/check-output handlers ignored Basic auth.** Only the query handler (`/mcp/resources/query`) extracted credentials from the `Authorization: Basic` header. The execute handler (`/mcp/tools/execute`), check-input (`/api/v1/mcp/check-input`), and check-output (`/api/v1/mcp/check-output`) required `client_id` and `user_token` in the request body, breaking all HTTP examples in enterprise mode. All 4 MCP handlers now use the same auth pattern: Basic auth first, fallback to request body.
-- **check-input/check-output rejected Basic auth requests with missing `tenant_id`.** The `tenant_id` field was validated before authentication ran. When using Basic auth, tenant_id is derived from the authenticated client — the pre-auth validation rejected the request with 400 before auth could set it. Moved tenant_id validation to after authentication.
-- **Compliance module log messages misleading in community mode.** RBI, SEBI, EU AI Act, and MAS FEAT modules logged "routes registered" even when the community stub's `RegisterRoutesWithMux` was a no-op. Now logs "routes inactive — Enterprise build required" when the module is not healthy.
-- **Validator substring matching** in policy evaluator. `strings.Contains(policyID, key)` caused "pipe" in a policy ID to match the "ip" validator, silently bypassing all `security-dangerous` policies. Fixed with word-boundary matching using underscore delimiters.
-- **Empty tenant in community mode.** HTTP API callers without `client_id` previously got an empty tenant ID, causing silent failures in policy scoping. Now defaults to `community`.
-- **System policies counted against tenant limit.** `CountByTenant` query included system-tier policies (seeded by migrations) in the tenant's policy quota, causing false `POLICY_LIMIT_EXCEEDED` errors. System-tier policies are now excluded.
-- **MAP confirm mode end-to-end.** Three bugs preventing confirm mode from working: (1) missing `X-Org-ID` forwarding caused WCP workflow creation with empty org_id, (2) resume handler didn't sync execution tracker on completion so `GetPlanStatus` returned stale status, (3) example `extract_json` didn't check agent response `data` envelope.
-- **SSE streaming missing `X-Tenant-ID`.** Orchestrator SSE endpoints require `X-Tenant-ID` for tenant isolation. Updated 6 examples (HTTP, Go, TypeScript) to include the header on orchestrator-direct SSE calls.
-- **Proxy community mode tenant injection.** Agent proxy now derives tenant from Basic auth `clientId` (or defaults to `community`) before forwarding to orchestrator.
-- **Cloud-storage example SDK API mismatch.** Updated `Config` to `AxonFlowConfig` and removed context parameter from `ListConnectors()` for SDK v4.3.0 compatibility.
-- **Version-check example SDK struct mismatch.** Server returns `min_sdk_version` as per-language object `{"go":"3.0.0",...}`. Rewrote example to use raw HTTP with `map[string]string` struct instead of SDK's `HealthCheckDetailed()`.
-- **Support-demo Docker build.** `go.sum` was gitignored under `examples/`. Changed Dockerfile to use `go mod tidy` instead of requiring `go.sum` in build context. Made Docker network name configurable via `AXONFLOW_NETWORK` env var.
-- **Python 3.10+ compatibility in test scripts.** `test-all.sh` and `demo.sh` now respect `PYTHON` env var for configurable Python path, enabling use on systems where `python3` is older than 3.10.
-- **Policy example used wrong agent paths.** `examples/policies/http/policies.sh` called `/api/v1/policies/static` and `/api/v1/policies/patterns/test` which don't exist on the agent. Updated to use `/api/v1/static-policies` and `/api/v1/static-policies/test`.
+- **Agent auth collapsed tenant_id and org_id.** Now `TenantID` comes from Basic auth clientId, `OrgID` from deployment `ORG_ID` env var.
+- **Community mode X-Tenant-ID was spoofable.** Now always overrides with server-derived value.
+- **Response PII redaction now respects `PII_ACTION` env var.** `warn`/`log` modes skip redaction but still run detection for audit.
+- **4 PII false positives on ISO timestamps** (migration 063). SSN, phone, bank account, Singapore UEN patterns tightened.
+- **MCP execute/check-input/check-output handlers ignored Basic auth.** All 4 handlers now use same auth pattern.
+- **check-input/check-output rejected Basic auth requests.** `tenant_id` validation moved to after authentication.
+- **Validator substring matching** in policy evaluator. Fixed with word-boundary matching.
+- **System policies counted against tenant limit.** System-tier policies now excluded from quota.
+- **MAP confirm mode end-to-end.** Three bugs fixed (org_id forwarding, execution tracker sync, response envelope).
+- **13 HTTP examples missing Basic auth.** `AUTH_B64` variable defined after migration.
+- **Compliance module log messages misleading in community mode.** Now shows "routes inactive — Enterprise build required".
+- **SSE streaming missing `X-Tenant-ID`.** Updated 6 examples.
+- **Cloud-storage example SDK API mismatch.** Updated for SDK v4.3.0.
+- **Version-check example SDK struct mismatch.** Rewrote to use raw HTTP.
+- **Policy example used wrong agent paths.** Updated to `/api/v1/static-policies`.
+- **Support-demo Docker build.** `go.sum` was gitignored under `examples/`. Changed Dockerfile to use `go mod tidy`. Docker network name configurable via `AXONFLOW_NETWORK` env var.
+- **Python 3.10+ compatibility in test scripts.** `test-all.sh` and `demo.sh` now respect `PYTHON` env var.
+- **Proxy community mode tenant injection.** Agent proxy now derives tenant from Basic auth `clientId` (or defaults to `community`).
+- **`AXONFLOW_CLIENT_SECRET` not exported in evaluation mode.** Setup script now exports both `LICENSE_KEY` and `CLIENT_SECRET`.
+- **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from .env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
+- **Community mode `org_id` defaulted to `"demo-org"`.** Changed to `getDeploymentOrgID()` (resolves to `"local-dev-org"` by default).
 
 ### Enterprise
 
 #### Added
 
-- **Missing proxy routes for enterprise endpoints.** Policy simulation (`/api/v1/policies/simulate`, `/api/v1/policies/impact-report`, `/api/v1/policies/conflicts`), evidence export (`/api/v1/evidence`), RBI compliance (`/api/v1/rbi`), SEBI compliance (`/api/v1/sebi`), webhooks (`/api/v1/webhooks`), media governance config (`/api/v1/media-governance`), and legacy policy CRUD (`/api/v1/policies`) are now proxied through the agent per ADR-026 single entry point architecture.
+- **Missing proxy routes for enterprise endpoints.** Policy simulation, evidence export, RBI/SEBI compliance, webhooks, media governance config.
 
 #### Changed
 
-- **Static policy API auth middleware.** All 12 static policy endpoints use `apiAuthMiddleware` via a gorilla/mux subrouter. Handlers read tenant/org/client from authenticated context (`TenantIDFromContext`, `OrgIDFromContext`, `ClientIDFromContext`).
-- **MAP confirm/step mode execution.** WCP workflows created during confirm mode now correctly store `org_id` from the authenticated client. Resume handler syncs execution tracker on plan completion.
+- **Static policy API auth middleware.** All 12 endpoints use `apiAuthMiddleware`.
+- **MAP confirm/step mode execution.** WCP workflows correctly store `org_id`. Resume handler syncs execution tracker.
 
 #### Fixed
 
-- **Tier-limits example used Bearer auth instead of Basic auth.** Enterprise tier verification example sent `Authorization: Bearer` but the agent proxy requires `Authorization: Basic` in enterprise mode.
-- **HITL queue creation failed with nil JSON context.** PostgreSQL jsonb column rejected nil `request_context`. Now defaults to `'{}'` when not provided.
-- **Enterprise HITL handler missing `/api/v1/hitl/status` endpoint.** The enterprise handler registered queue/stats/expire but not the status endpoint, which was only in the community handler.
-- **MCP permission evaluator rejected `mcp:*:*` wildcard.** The evaluator checked for `mcp:*` (2-part) but service licenses use `mcp:*:*` (3-part). A service with `mcp:*:*` was denied MCP access.
-- **MCP enterprise examples missing `client_id` and `user_token` in request body.** The MCP handler validates these fields from the request body (not just Basic auth headers). Fixed across all 4 SDKs (Go, Python, TypeScript, Java).
-- **Bedrock inference profile ID in enterprise Docker Compose default.** The default model ID lacked the `us.` prefix required for newer Anthropic models on Bedrock.
-- **Circuit breaker routes bypassed auth.** `DELETE /api/v1/circuit-breaker/notifications/{id}` and emergency-stop aliases (`/api/v1/emergency-stop`, `/api/v1/emergency-stop/release`) were registered on the parent router without `apiAuthMiddleware`, leaving destructive operations accessible without authentication. All circuit breaker routes now use auth-protected subrouters.
-- **Auth middleware didn't inject identity headers.** `apiAuthMiddleware` now sets `X-Tenant-ID`, `X-Org-ID`, and `X-Client-ID` on the request after authentication, enabling downstream handlers (e.g., circuit breaker) to read identity without cross-package context key coupling.
+- **Circuit breaker routes bypassed auth.** All routes now use auth-protected subrouters.
+- **Auth middleware didn't inject identity headers.** `apiAuthMiddleware` now sets `X-Tenant-ID` and `X-Org-ID`.
+- **MCP permission evaluator rejected `mcp:*:*` wildcard.**
+- **HITL queue creation failed with nil JSON context.**
+- **Enterprise HITL handler missing `/api/v1/hitl/status` endpoint.**
+- **MCP enterprise examples missing `client_id` and `user_token` in request body.**
+- **Tier-limits example used Bearer auth instead of Basic auth.**
+- **Bedrock inference profile ID** missing `us.` prefix.
 
 ### SDK
 
 #### Fixed
 
-- **Missing `status` field on `PlanResponse`** across Go, Python, and TypeScript SDKs. The server returns plan status (pending, executing, completed, failed, cancelled) but the SDK structs/types were missing this field, causing compilation errors in examples. Java SDK already had it.
-- **Bedrock inference profile ID** in E2E setup script. Newer Anthropic models on Bedrock require `us.` prefix for inference profile IDs.
+- **Missing `status` field on `PlanResponse`** across Go, Python, and TypeScript SDKs.
+- **All SDKs reject `client_secret` without `client_id`** to prevent wrong-tenant data storage.
+- **Bedrock inference profile ID** in E2E setup script.
 
 ---
 
