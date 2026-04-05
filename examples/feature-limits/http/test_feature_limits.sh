@@ -52,6 +52,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Clean up leftover test policies from previous runs
+EXISTING_TEST_POLICIES=$(curl -s -u "$CLIENT_ID:${CLIENT_SECRET}" "$ENDPOINT/api/v1/dynamic-policies?page_size=100" 2>/dev/null \
+    | jq -r '.policies[] | select(.name | startswith("boundary-test-policy")) | .id' 2>/dev/null || echo "")
+if [ -n "$EXISTING_TEST_POLICIES" ]; then
+    echo "Cleaning up leftover test policies from previous runs..."
+    for pid in $EXISTING_TEST_POLICIES; do
+        curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$pid" \
+            -u "$CLIENT_ID:${CLIENT_SECRET}" > /dev/null 2>&1 || true
+    done
+fi
+
 # Detect tier from license key
 # Ed25519 format: AXON-{base64url_payload}.{base64url_signature}
 detect_tier() {
@@ -410,7 +421,7 @@ echo "7. Audit Retention (${AUDIT_RETENTION} days)"
 
 # Check orchestrator logs for retention config (only works with docker compose)
 if command -v docker &>/dev/null; then
-    RETENTION_LOG=$(docker compose logs axonflow-orchestrator 2>/dev/null | grep -o "retention: [0-9]* days" | tail -1 || echo "")
+    RETENTION_LOG=$(docker logs axonflow-orchestrator 2>&1 | grep -o "retention: [0-9]* days" | tail -1 || echo "")
     if [ -n "$RETENTION_LOG" ]; then
         ACTUAL_DAYS=$(echo "$RETENTION_LOG" | grep -o "[0-9]*")
         if [ "$ACTUAL_DAYS" = "$AUDIT_RETENTION" ]; then
