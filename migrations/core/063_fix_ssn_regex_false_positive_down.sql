@@ -11,3 +11,7 @@ WHERE policy_id = 'pii_ssn_detection'
 UPDATE static_policies SET pattern = '(?:\+?1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)?[0-9]{3}[-.\s]?[0-9]{4}\b|\+[0-9]{1,3}[-.\s]?[0-9]{6,14}\b'
 WHERE policy_id = 'sys_pii_phone'
   AND pattern NOT LIKE '%[-.]%';
+
+UPDATE static_policies SET pattern = '\b\d{8,9}[A-Z]\b|\b[TS]\d{2}[A-Z]{2}\d{4}[A-Z]\b'
+WHERE policy_id = 'sys_pii_singapore_uen'
+  AND pattern = '\b\d{8,9}[A-Y]\b|\b[TS]\d{2}[A-Z]{2}\d{4}[A-Z]\b';
