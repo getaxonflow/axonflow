@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP handler Basic auth support.** The mcpQueryHandler enterprise auth path now accepts Basic auth (service license validation), falling back to the legacy whitelist for backward compatibility.
 - **Startup org_id mismatch validation.** Agent fails fast if license `org_id` doesn't match deployment `ORG_ID`, preventing data split across organizations.
 - **ADR-041**: Organization and Tenant Identity Separation — documents the two-concept model, upgrade path, and migration strategy.
+- **PII detection modes example** (`examples/pii-detection/http/pii-modes.sh`). Tests request-side and response-side PII detection with assertions across all `PII_ACTION` modes. Includes ISO timestamp false positive regression test.
 
 #### Changed
 
@@ -46,9 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Community mode `org_id` defaulted to `"demo-org"`.** Changed to `getDeploymentOrgID()` everywhere (resolves to `"local-dev-org"` by default).
 - **`AXONFLOW_CLIENT_SECRET` not exported in evaluation mode.** Setup script only exported `LICENSE_KEY`. Fixed to export both.
 - **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from .env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
-- **Response PII redaction now respects `PII_ACTION` env var.** `PII_ACTION=warn` and `PII_ACTION=log` now skip response redaction (previously always redacted regardless of setting).
+- **Response PII redaction now respects `PII_ACTION` env var.** `PII_ACTION=warn` and `PII_ACTION=log` now skip response redaction but still run detection for audit logging (previously always redacted regardless of setting).
 - **Response PII detection now uses database-driven policy engine.** Wired up the shared policy engine in the orchestrator so response scanning uses the same configurable policies as request-side detection instead of hardcoded regexes.
-- **Bank account PII false positive on timestamps.** Narrowed regex from `\d{8,17}` to `\d{10,17}` — 9-digit timestamps and phone numbers no longer trigger false matches.
+- **4 PII false positives on ISO timestamps** (migration 063). `10:37:58.123456789Z` triggered SSN (`123456789` matched optional-separator pattern), phone (`58.1234` matched dot separator), bank account (`123456789` matched 8+ digits), and Singapore UEN (`123456789Z` matched digit+letter). SSN now requires separators, phone dots only in all-dots format (555.123.4567), bank account minimum 10 digits, UEN excludes Z as check letter.
+- **13 HTTP examples missing Basic auth.** `AUTH_B64` variable used but never defined after X-Client-ID to Basic auth migration.
 
 ---
 
