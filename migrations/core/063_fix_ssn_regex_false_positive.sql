@@ -5,6 +5,6 @@
 --          Changed to require at least dashes or spaces between groups.
 --          SSN format is always XXX-XX-XXXX or XXX XX XXXX — never 9 consecutive digits.
 
-UPDATE policies SET pattern = '\b\d{3}[-\s]\d{2}[-\s]\d{4}\b'
-WHERE name = 'pii_ssn_detection'
-  AND pattern = '\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b';
+UPDATE static_policies SET pattern = '\b(\d{3})[- ](\d{2})[- ](\d{4})\b'
+WHERE policy_id = 'sys_pii_ssn'
+  AND pattern = '\b(\d{3})[- ]?(\d{2})[- ]?(\d{4})\b';

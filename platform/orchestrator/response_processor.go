@@ -484,7 +484,7 @@ func (p *ResponseProcessor) IsHealthy() bool {
 func NewPIIDetector() *PIIDetector {
 	return &PIIDetector{
 		patterns: map[string]*regexp.Regexp{
-			"ssn":          regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+			"ssn":          regexp.MustCompile(`\b\d{3}[-\s]\d{2}[-\s]\d{4}\b`),
 			"credit_card":  regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
 			"email":        regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
 			"phone":        regexp.MustCompile(`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`),
