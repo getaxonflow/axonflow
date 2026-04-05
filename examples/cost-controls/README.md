@@ -96,7 +96,7 @@ chmod +x cost-controls.sh
 
 | SDK | Version | Package |
 |-----|---------|---------|
-| Go | v4.1.0+ | `github.com/getaxonflow/axonflow-sdk-go/v4` |
+| Go | v5.0.0+ | `github.com/getaxonflow/axonflow-sdk-go/v5` |
 | Python | 4.1.0+ | `axonflow` |
 | TypeScript | 4.1.0+ | `@axonflow/sdk` |
 | Java | 4.1.0+ | `com.getaxonflow:axonflow-sdk` |

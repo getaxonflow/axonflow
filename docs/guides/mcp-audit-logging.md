@@ -2,7 +2,7 @@
 
 **Last Updated:** February 2026
 
-**Platform Version:** v5.0.0 | **SDK Version:** v4.1.0
+**Platform Version:** v5.0.0 | **SDK Version:** v5.0.0
 
 This guide covers audit logging specific to MCP (Model Context Protocol) connector operations. For general audit logging (LLM proxy calls, policy evaluations), see [Audit Logging](./audit-logging.md). Every MCP query and execute operation is automatically logged to provide a complete audit trail for compliance and security analysis.
 
@@ -161,7 +161,7 @@ The SDK's `ConnectorResponse` includes `PolicyInfo` that matches the audit entry
 ### Go
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v4"
+import "github.com/getaxonflow/axonflow-sdk-go/v5"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     os.Getenv("AXONFLOW_ENDPOINT"),

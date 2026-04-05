@@ -17,11 +17,11 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python v5.3.0, Go/TypeScript/Java v4.3.0.
+SDK versions: Python v6.0.0, Go/TypeScript/Java v5.0.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v4` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v5` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
 | Python | `axonflow` (PyPI) | [axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) |
 | Java | `com.getaxonflow.sdk` (Maven Central) | [axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) |
 | TypeScript | `@axonflow/sdk` (npm) | [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) |
@@ -30,7 +30,7 @@ SDK versions: Python v5.3.0, Go/TypeScript/Java v4.3.0.
 
 ```bash
 # Go
-go get github.com/getaxonflow/axonflow-sdk-go/v4
+go get github.com/getaxonflow/axonflow-sdk-go/v5
 
 # Python
 pip3 install axonflow==5.3.0
@@ -68,4 +68,4 @@ Beyond the step-by-step tutorials above, the [guides](../guides/) directory cove
 
 ---
 
-Last Updated: March 2026
+Last Updated: April 2026

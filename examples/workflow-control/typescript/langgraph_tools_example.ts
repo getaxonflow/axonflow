@@ -1,7 +1,7 @@
 /**
  * LangGraph Per-Tool Governance Example - TypeScript
  *
- * Requires: @axonflow/sdk v4.2.0+
+ * Requires: @axonflow/sdk v5.0.0+
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  *

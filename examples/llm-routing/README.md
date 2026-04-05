@@ -118,7 +118,7 @@ AXONFLOW_ENDPOINT=http://localhost:8080 python provider_routing.py
 ```bash
 cd go
 go mod init example
-go get github.com/getaxonflow/axonflow-sdk-go/v4
+go get github.com/getaxonflow/axonflow-sdk-go/v5
 AXONFLOW_ENDPOINT=http://localhost:8080 go run provider_routing.go
 ```
 

@@ -290,7 +290,7 @@ import (
 	"fmt"
 	"log"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
 )
 
 func main() {
