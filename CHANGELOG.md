@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Community mode `org_id` defaulted to `"demo-org"`.** Changed to `getDeploymentOrgID()` everywhere (resolves to `"local-dev-org"` by default).
 - **`AXONFLOW_CLIENT_SECRET` not exported in evaluation mode.** Setup script only exported `LICENSE_KEY`. Fixed to export both.
 - **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from .env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
+- **Response PII redaction now respects `PII_ACTION` env var.** `PII_ACTION=warn` and `PII_ACTION=log` now skip response redaction (previously always redacted regardless of setting).
+- **Response PII detection now uses database-driven policy engine.** Wired up the shared policy engine in the orchestrator so response scanning uses the same configurable policies as request-side detection instead of hardcoded regexes.
+- **Bank account PII false positive on timestamps.** Narrowed regex from `\d{8,17}` to `\d{10,17}` — 9-digit timestamps and phone numbers no longer trigger false matches.
 
 ---
 

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -134,8 +135,24 @@ func (p *ResponseProcessor) SetUseEnhancedDetector(enabled bool) {
 	p.useEnhancedDetector = enabled
 }
 
-// ProcessResponse processes an LLM response for PII and applies redactions
+// IsUsingSharedEngine returns true if the shared policy engine is active
+func (p *ResponseProcessor) IsUsingSharedEngine() bool {
+	return p.useSharedEngine && p.sharedPolicyEngine != nil
+}
+
+// ProcessResponse processes an LLM response for PII and applies redactions.
+// Respects PII_ACTION env var: "block"/"redact" = detect+redact, "warn"/"log" = skip redaction.
 func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContext, response *LLMResponse) (interface{}, *RedactionInfo) {
+	// Respect PII_ACTION — if warn or log, skip response redaction entirely
+	piiAction := os.Getenv("PII_ACTION")
+	if piiAction == "warn" || piiAction == "log" {
+		var responseData interface{}
+		if err := json.Unmarshal([]byte(response.Content), &responseData); err != nil {
+			responseData = response.Content
+		}
+		return responseData, &RedactionInfo{}
+	}
+
 	// Parse response content
 	var responseData interface{}
 	if err := json.Unmarshal([]byte(response.Content), &responseData); err != nil {
@@ -473,7 +490,7 @@ func NewPIIDetector() *PIIDetector {
 			"email":        regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
 			"phone":        regexp.MustCompile(`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`),
 			"ip_address":   regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`),
-			"bank_account": regexp.MustCompile(`\b\d{8,17}\b`), // Simple pattern, could be more specific
+			"bank_account": regexp.MustCompile(`\b\d{10,17}\b`), // 10+ digits — avoids false positives on 9-digit timestamps, phone numbers, zip codes
 		},
 	}
 }
