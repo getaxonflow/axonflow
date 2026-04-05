@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -134,7 +135,14 @@ func (p *ResponseProcessor) SetUseEnhancedDetector(enabled bool) {
 	p.useEnhancedDetector = enabled
 }
 
-// ProcessResponse processes an LLM response for PII and applies redactions
+// IsUsingSharedEngine returns true if the shared policy engine is active
+func (p *ResponseProcessor) IsUsingSharedEngine() bool {
+	return p.useSharedEngine && p.sharedPolicyEngine != nil
+}
+
+// ProcessResponse processes an LLM response for PII and applies redactions.
+// Respects PII_ACTION env var: "block"/"redact" = detect+redact, "warn"/"log" = skip redaction.
+// The validate + enrich pipeline always runs regardless of PII_ACTION.
 func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContext, response *LLMResponse) (interface{}, *RedactionInfo) {
 	// Parse response content
 	var responseData interface{}
@@ -143,31 +151,39 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		responseData = response.Content
 	}
 
-	var redactedData interface{}
+	var processedData interface{}
 	var redactionInfo *RedactionInfo
 
-	// Use shared policy engine if available (Issues #963, #975)
-	// This provides unified PII detection with validators (Luhn, MOD97, Verhoeff, etc.)
+	// PII_ACTION controls whether redaction runs on responses.
+	// All modes run detection (for audit). Only block/redact actually modify the response.
+	piiAction := os.Getenv("PII_ACTION")
+	skipRedaction := piiAction == "warn" || piiAction == "log"
+
 	if p.useSharedEngine && p.sharedPolicyEngine != nil {
-		redactedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
+		// Use shared policy engine (database-driven, configurable)
+		processedData, redactionInfo = p.processWithSharedEngine(ctx, user, responseData)
 	} else {
-		// Fallback to legacy PII detection
+		// Fallback to legacy PII detection (hardcoded regexes)
 		detectedPII := p.detectPII(responseData)
-		redactedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
+		processedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
 	}
 
-	// Validate response
-	if err := p.validateResponse(redactedData); err != nil {
+	// warn/log: detection ran (redactionInfo populated for audit) but return original data
+	if skipRedaction {
+		processedData = responseData
+	}
+
+	// Validate response (always runs regardless of PII_ACTION)
+	if err := p.validateResponse(processedData); err != nil {
 		log.Printf("Response validation failed: %v", err)
-		// Return error response
 		return map[string]string{
 			"error":   "Response validation failed",
 			"details": err.Error(),
 		}, &RedactionInfo{}
 	}
 
-	// Enrich response with metadata
-	enrichedData := p.enrichResponse(ctx, redactedData)
+	// Enrich response with metadata (always runs regardless of PII_ACTION)
+	enrichedData := p.enrichResponse(ctx, processedData)
 
 	return enrichedData, redactionInfo
 }
@@ -468,12 +484,12 @@ func (p *ResponseProcessor) IsHealthy() bool {
 func NewPIIDetector() *PIIDetector {
 	return &PIIDetector{
 		patterns: map[string]*regexp.Regexp{
-			"ssn":          regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`),
+			"ssn":          regexp.MustCompile(`\b\d{3}[- ]\d{2}[- ]\d{4}\b`),
 			"credit_card":  regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
 			"email":        regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
-			"phone":        regexp.MustCompile(`\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`),
+			"phone":        regexp.MustCompile(`\b(\+?1[- .]?)?\(?\d{3}\)?[- ]\d{3}[- ]\d{4}\b|\b\d{3}\.\d{3}\.\d{4}\b`),
 			"ip_address":   regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`),
-			"bank_account": regexp.MustCompile(`\b\d{8,17}\b`), // Simple pattern, could be more specific
+			"bank_account": regexp.MustCompile(`\b\d{10,17}\b`), // 10+ digits — avoids false positives on 9-digit timestamps, phone numbers, zip codes
 		},
 	}
 }

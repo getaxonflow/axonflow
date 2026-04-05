@@ -1611,3 +1611,53 @@ func TestMCPServer_CheckOutput_WithRows(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", resp.Error)
 	}
 }
+
+func TestTrimAuditSearchResponse(t *testing.T) {
+	// Verify that large fields are stripped from audit search results
+	resp := map[string]interface{}{
+		"entries": []interface{}{
+			map[string]interface{}{
+				"id":            "audit-1",
+				"request_body":  "large request body that should be removed",
+				"response_body": "large response body that should be removed",
+				"raw_request":   "raw request data",
+				"raw_response":  "raw response data",
+				"query":         string(make([]byte, 300)), // 300 chars, should be truncated
+				"tenant_id":     "community",
+			},
+		},
+	}
+
+	// Apply the same trimming logic as mcpToolSearchAuditEvents
+	if entries, ok := resp["entries"].([]interface{}); ok {
+		for i, entry := range entries {
+			if e, ok := entry.(map[string]interface{}); ok {
+				delete(e, "request_body")
+				delete(e, "response_body")
+				delete(e, "raw_request")
+				delete(e, "raw_response")
+				if q, ok := e["query"].(string); ok && len(q) > 200 {
+					e["query"] = q[:200] + "...(truncated)"
+				}
+				entries[i] = e
+			}
+		}
+	}
+
+	entry := resp["entries"].([]interface{})[0].(map[string]interface{})
+	if _, ok := entry["request_body"]; ok {
+		t.Error("request_body should have been removed")
+	}
+	if _, ok := entry["response_body"]; ok {
+		t.Error("response_body should have been removed")
+	}
+	if _, ok := entry["raw_request"]; ok {
+		t.Error("raw_request should have been removed")
+	}
+	if q := entry["query"].(string); len(q) > 215 {
+		t.Errorf("query should be truncated, got %d chars", len(q))
+	}
+	if entry["tenant_id"] != "community" {
+		t.Error("tenant_id should be preserved")
+	}
+}

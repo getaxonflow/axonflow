@@ -24,6 +24,7 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 
 # Build auth header: use Authorization: Basic if client_secret is set (enterprise mode)

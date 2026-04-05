@@ -312,7 +312,7 @@ func getMCPTools() []mcpTool {
 				"properties": map[string]interface{}{
 					"from": map[string]interface{}{
 						"type":        "string",
-						"description": "Start time (ISO 8601). Defaults to last 1 hour.",
+						"description": "Start time (ISO 8601). Defaults to last 15 minutes.",
 					},
 					"to": map[string]interface{}{
 						"type":        "string",
@@ -982,9 +982,9 @@ func mcpToolSearchAuditEvents(session *mcpSession, args map[string]interface{}) 
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
 
-	// Default to last 1 hour if not provided
+	// Default to last 15 minutes if not provided (keeps response size manageable)
 	if from == "" {
-		from = now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05Z")
+		from = now.Add(-15 * time.Minute).Format("2006-01-02T15:04:05Z")
 	} else if len(from) == 10 {
 		from += "T00:00:00Z"
 	}
@@ -1015,6 +1015,28 @@ func mcpToolSearchAuditEvents(session *mcpSession, args map[string]interface{}) 
 	if err != nil {
 		return nil, fmt.Errorf("audit search failed: %w", err)
 	}
+
+	// Trim response to keep output size manageable. The orchestrator returns
+	// full request/response payloads per event which can be 10KB+ each.
+	// Strip large fields and keep only what's useful for debugging/compliance.
+	if respMap, ok := resp.(map[string]interface{}); ok {
+		if entries, ok := respMap["entries"].([]interface{}); ok {
+			for i, entry := range entries {
+				if e, ok := entry.(map[string]interface{}); ok {
+					delete(e, "request_body")
+					delete(e, "response_body")
+					delete(e, "raw_request")
+					delete(e, "raw_response")
+					if q, ok := e["query"].(string); ok && len(q) > 200 {
+						e["query"] = q[:200] + "...(truncated)"
+					}
+					entries[i] = e
+				}
+			}
+			respMap["entries"] = entries
+		}
+	}
+
 	return resp, nil
 }
 

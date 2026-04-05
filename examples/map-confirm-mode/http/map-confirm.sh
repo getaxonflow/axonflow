@@ -22,6 +22,7 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 AUTH_HEADER="Authorization: Basic $(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)"
 
@@ -29,6 +30,16 @@ echo "=============================================="
 echo "MAP Confirm Mode - HTTP API Example (Enterprise)"
 echo "=============================================="
 echo "Agent URL: $AGENT_URL"
+
+# Detect community mode — confirm mode requires Enterprise license
+HEALTH=$(curl -s "$AGENT_URL/health" 2>/dev/null || echo '{}')
+TIER=$(echo "$HEALTH" | jq -r '.license_tier // "community"' 2>/dev/null || echo "community")
+if [ "$TIER" = "community" ] || [ "$TIER" = "Community" ] || [ -z "$CLIENT_SECRET" ]; then
+    echo ""
+    echo "⏭  Skipping: Confirm mode requires Enterprise license (current: $TIER)"
+    echo "   Get a free Evaluation license at https://getaxonflow.com/evaluation-license"
+    exit 0
+fi
 echo ""
 
 PASS=0

@@ -38,6 +38,7 @@ import (
 
 	"axonflow/platform/agent/license"
 	"axonflow/platform/shared/serviceauth"
+	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/orchestrator/cloudstorage" // Cloud storage backends for audit exports (#589)
 	"axonflow/platform/orchestrator/cost"         // Cost controls & budget management (#764)
@@ -1018,9 +1019,21 @@ func initializeComponents() {
 		log.Println("Amadeus API Client initialized (not configured - will use mock data)")
 	}
 
-	// Initialize Response Processor
+	// Initialize shared policy engine in orchestrator process (required for response PII detection).
+	// The agent has its own engine — the orchestrator needs its own since they're separate processes.
+	if usageDB != nil {
+		sharedpolicy.SetGlobalEngine(sharedpolicy.NewUnifiedPolicyEngine(
+			usageDB, sharedpolicy.DefaultEngineConfig(), nil))
+		log.Println("Shared policy engine initialized for orchestrator response processing")
+	}
+
+	// Initialize Response Processor (uses shared engine if available, else legacy regexes)
 	responseProcessor = NewResponseProcessor()
-	log.Println("Response Processor initialized with PII detection")
+	if responseProcessor.IsUsingSharedEngine() {
+		log.Println("Response Processor initialized with shared policy engine (database-driven PII detection)")
+	} else {
+		log.Println("Response Processor initialized with legacy PII detection (shared engine not available)")
+	}
 
 	// Initialize Audit Logger
 	auditLogger = NewAuditLogger(dbURL)

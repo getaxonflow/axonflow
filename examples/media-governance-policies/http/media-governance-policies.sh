@@ -33,6 +33,7 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo-secret}"
+AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
 TENANT_ID="${AXONFLOW_TENANT:-demo}"
 
 # Minimal valid 1x1 white pixel JPEG encoded as base64
