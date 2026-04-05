@@ -484,10 +484,10 @@ func (p *ResponseProcessor) IsHealthy() bool {
 func NewPIIDetector() *PIIDetector {
 	return &PIIDetector{
 		patterns: map[string]*regexp.Regexp{
-			"ssn":          regexp.MustCompile(`\b\d{3}[-\s]\d{2}[-\s]\d{4}\b`),
+			"ssn":          regexp.MustCompile(`\b\d{3}[- ]\d{2}[- ]\d{4}\b`),
 			"credit_card":  regexp.MustCompile(`\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b`),
 			"email":        regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`),
-			"phone":        regexp.MustCompile(`\b(\+?1[-\s]?)?\(?\d{3}\)?[-\s]?\d{3}[-\s]?\d{4}\b`),
+			"phone":        regexp.MustCompile(`\b(\+?1[- .]?)?\(?\d{3}\)?[- ]\d{3}[- ]\d{4}\b|\b\d{3}\.\d{3}\.\d{4}\b`),
 			"ip_address":   regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`),
 			"bank_account": regexp.MustCompile(`\b\d{10,17}\b`), // 10+ digits — avoids false positives on 9-digit timestamps, phone numbers, zip codes
 		},
