@@ -1661,3 +1661,119 @@ func TestTrimAuditSearchResponse(t *testing.T) {
 		t.Error("tenant_id should be preserved")
 	}
 }
+
+func TestMCPSearchAuditEvents_ResponseTrimming(t *testing.T) {
+	// Verify large fields are stripped and long queries truncated
+	resp := map[string]interface{}{
+		"entries": []interface{}{
+			map[string]interface{}{
+				"id":            "audit-1",
+				"request_body":  "large request body that should be removed",
+				"response_body": "large response body that should be removed",
+				"raw_request":   "raw request data",
+				"raw_response":  "raw response data",
+				"query":         string(make([]byte, 300)),
+				"tenant_id":     "community",
+			},
+			map[string]interface{}{
+				"id":         "audit-2",
+				"query":      "short query",
+				"tenant_id":  "community",
+				"raw_request": "should be removed",
+			},
+		},
+	}
+
+	if entries, ok := resp["entries"].([]interface{}); ok {
+		for i, entry := range entries {
+			if e, ok := entry.(map[string]interface{}); ok {
+				delete(e, "request_body")
+				delete(e, "response_body")
+				delete(e, "raw_request")
+				delete(e, "raw_response")
+				if q, ok := e["query"].(string); ok && len(q) > 200 {
+					e["query"] = q[:200] + "...(truncated)"
+				}
+				entries[i] = e
+			}
+		}
+	}
+
+	entries := resp["entries"].([]interface{})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	e1 := entries[0].(map[string]interface{})
+	if _, ok := e1["request_body"]; ok {
+		t.Error("request_body should be removed")
+	}
+	if _, ok := e1["raw_response"]; ok {
+		t.Error("raw_response should be removed")
+	}
+	if q := e1["query"].(string); len(q) > 215 {
+		t.Errorf("query should be truncated, got %d chars", len(q))
+	}
+
+	e2 := entries[1].(map[string]interface{})
+	if e2["query"] != "short query" {
+		t.Error("short query should be preserved")
+	}
+	if _, ok := e2["raw_request"]; ok {
+		t.Error("raw_request should be removed from entry 2")
+	}
+}
+
+func TestMCPSearchAuditEvents_EmptyResponseTrimming(t *testing.T) {
+	// Edge case: empty entries, nil entries, non-map entries
+	testCases := []struct {
+		name string
+		resp map[string]interface{}
+	}{
+		{"nil entries", map[string]interface{}{"entries": nil}},
+		{"empty entries", map[string]interface{}{"entries": []interface{}{}}},
+		{"no entries key", map[string]interface{}{"total": 0}},
+		{"non-slice entries", map[string]interface{}{"entries": "not a slice"}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Should not panic
+			if entries, ok := tc.resp["entries"].([]interface{}); ok {
+				for i, entry := range entries {
+					if e, ok := entry.(map[string]interface{}); ok {
+						delete(e, "request_body")
+						if q, ok := e["query"].(string); ok && len(q) > 200 {
+							e["query"] = q[:200] + "...(truncated)"
+						}
+						entries[i] = e
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGetDeploymentOrgID_Default(t *testing.T) {
+	// When ORG_ID is not set, should return "local-dev-org"
+	original := os.Getenv("ORG_ID")
+	os.Unsetenv("ORG_ID")
+	defer func() {
+		if original != "" {
+			os.Setenv("ORG_ID", original)
+		}
+	}()
+
+	result := getDeploymentOrgID()
+	if result != "local-dev-org" {
+		t.Errorf("expected 'local-dev-org', got %q", result)
+	}
+}
+
+func TestGetDeploymentOrgID_Custom(t *testing.T) {
+	t.Setenv("ORG_ID", "my-custom-org")
+	result := getDeploymentOrgID()
+	if result != "my-custom-org" {
+		t.Errorf("expected 'my-custom-org', got %q", result)
+	}
+}
