@@ -121,6 +121,25 @@ else
     fail "Clean query unexpectedly blocked"
 fi
 
+# ISO timestamp — must NOT trigger false positives (SSN, phone, bank account, UEN)
+# This is the key regression test: 10:37:58.123456789Z previously matched 4 PII patterns.
+RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Basic $AUTH_B64" \
+    -d "{
+        \"query\": \"Event logged at 2026-04-05T10:37:58.123456789Z in production\",
+        \"user_token\": \"pii-test-user\",
+        \"client_id\": \"$CLIENT_ID\"
+    }")
+
+APPROVED=$(echo "$RESPONSE" | jq -r '.approved // false')
+PII_MATCHED=$(echo "$RESPONSE" | jq -r '[.policies // [] | .[] | select(startswith("sys_pii") or startswith("pii_"))] | length' 2>/dev/null || echo "0")
+if [ "$APPROVED" = "true" ] && [ "$PII_MATCHED" = "0" ]; then
+    pass "ISO timestamp (123456789Z) not flagged as PII (no false positive)"
+else
+    fail "ISO timestamp triggered PII false positive (matched $PII_MATCHED patterns)"
+fi
+
 echo ""
 
 # ========================================
@@ -185,6 +204,25 @@ elif [ "$POLICIES_EVALUATED" -gt 0 ]; then
     pass "Response-side PII detected ($POLICIES_EVALUATED policies evaluated)"
 else
     fail "Response-side PII not detected"
+fi
+
+# Response-side timestamp false positive check
+RESPONSE=$(curl -s -X POST "$AGENT_URL/api/v1/mcp/check-output" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Basic $AUTH_B64" \
+    -d "{
+        \"connector_type\": \"cli\",
+        \"message\": \"Event at 2026-04-05T10:37:58.123456789Z completed successfully\",
+        \"client_id\": \"$CLIENT_ID\",
+        \"user_token\": \"pii-test-user\",
+        \"tenant_id\": \"$CLIENT_ID\"
+    }")
+
+RESP_REDACTED=$(echo "$RESPONSE" | jq -r '.redacted_output // .message // ""')
+if echo "$RESP_REDACTED" | grep -q '\*'; then
+    fail "Response-side: ISO timestamp triggered false positive (redacted: $RESP_REDACTED)"
+else
+    pass "Response-side: ISO timestamp not flagged as PII (no false positive)"
 fi
 
 echo ""
