@@ -22,8 +22,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-map-http-example}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 
@@ -61,8 +60,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -111,13 +109,13 @@ echo "----------------------------------------------"
 
 COST_RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 COST_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 if [ "$COST_HTTP_CODE" = "200" ]; then
     echo "Cost estimate:"
@@ -134,8 +132,8 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "Response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -153,8 +151,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -179,8 +176,8 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "Response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -199,8 +196,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -229,8 +225,7 @@ check_result "Generated plan to cancel ($CANCEL_PLAN_ID)" "$HAS_CANCEL_PLAN_ID"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/plan/${CANCEL_PLAN_ID}/cancel" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "reason": "Testing cancel functionality"
   }')
@@ -247,8 +242,7 @@ check_result "Plan status is cancelled ($CANCEL_STATUS)" "$IS_CANCELLED"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -283,8 +277,7 @@ echo "6a. Sequential mode..."
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -313,8 +306,7 @@ check_result "Generated sequential plan ($SEQ_PLAN_ID)" "$HAS_SEQ_PLAN"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -333,8 +325,7 @@ echo "6b. Parallel mode..."
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -363,8 +354,7 @@ check_result "Generated parallel plan ($PAR_PLAN_ID)" "$HAS_PAR_PLAN"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -387,8 +377,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -417,8 +406,7 @@ check_result "Generated plan for versioning ($VER_PLAN_ID)" "$HAS_VER_PLAN"
 RESPONSE=$(curl -s -X PUT "${AGENT_URL}/api/v1/plan/${VER_PLAN_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "version": 1,
     "execution_mode": "parallel"
@@ -436,8 +424,7 @@ check_result "Plan updated to version 2 (got $NEW_VERSION)" "$IS_V2"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "${AGENT_URL}/api/v1/plan/${VER_PLAN_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "version": 1,
     "execution_mode": "sequential"
@@ -449,8 +436,8 @@ check_result "Stale update rejected with 409 (got $HTTP_CODE)" "$IS_CONFLICT"
 # 7d. Get version history
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${VER_PLAN_ID}/versions" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "Version history response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -475,8 +462,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a brief plan to greet a new user and ask how to help them",
     "user_token": "'"$USER_TOKEN"'",
@@ -505,8 +491,7 @@ check_result "Generated plan for rollback ($RB_PLAN_ID)" "$HAS_RB_PLAN"
 RESPONSE=$(curl -s -X PUT "${AGENT_URL}/api/v1/plan/${RB_PLAN_ID}" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "version": 1,
     "execution_mode": "parallel"
@@ -524,8 +509,8 @@ check_result "Plan updated to version 2 (got $RB_NEW_VERSION)" "$IS_RB_V2"
 HTTP_CODE=$(curl -s -o /tmp/axonflow_rollback_response.json -w "%{http_code}" -X POST "${AGENT_URL}/api/v1/plan/${RB_PLAN_ID}/rollback/1" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 ROLLBACK_RESPONSE=$(cat /tmp/axonflow_rollback_response.json 2>/dev/null || echo "{}")
 
@@ -550,7 +535,7 @@ else
     # 8e. Get version history and verify rollback entry
     RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${RB_PLAN_ID}/versions" \
       ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-      -H "X-Client-ID: $CLIENT_ID")
+      -H "Authorization: Basic $AUTH_B64")
 
     echo "Version history after rollback:"
     echo "$RESPONSE" | python3 -m json.tool 2>/dev/null || echo "$RESPONSE"
@@ -570,7 +555,7 @@ print(len(versions))
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${AGENT_URL}/api/v1/plan/${RB_PLAN_ID}/rollback/99" \
       -H "Content-Type: application/json" \
       ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-      -H "X-Client-ID: $CLIENT_ID")
+      -H "Authorization: Basic $AUTH_B64")
 
     IS_RB_BAD=$([ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "404" ] && echo "true" || echo "false")
     check_result "Rollback to invalid version rejected (got $HTTP_CODE)" "$IS_RB_BAD"
@@ -585,8 +570,7 @@ echo "----------------------------------------------"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Summarize quarterly report",
     "user_token": "'"$USER_TOKEN"'",
@@ -615,8 +599,7 @@ check_result "Generated plan for SSE streaming ($SSE_PLAN_ID)" "$HAS_SSE_PLAN"
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
   ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -632,13 +615,12 @@ check_result "SSE plan execution succeeded" "$SSE_EXEC_SUCCESS"
 
 # 15c. Verify SSE execution streaming endpoint is available
 echo "   Verifying SSE endpoint is registered..."
-SSE_URL="${ORCHESTRATOR_URL}/api/v1/unified/executions/${SSE_PLAN_ID}/stream"
+SSE_URL="${AGENT_URL}/api/v1/unified/executions/${SSE_PLAN_ID}/stream"
 echo "   SSE URL: $SSE_URL"
 
 SSE_HTTP_CODE=$(curl -s -o /tmp/sse_body.txt -w "%{http_code}" --max-time 10 \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
-  -H "X-Tenant-ID: $CLIENT_ID" \
+  ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+  -H "Accept: text/event-stream" \
   "$SSE_URL" 2>/dev/null || echo "000")
 SSE_BODY=$(cat /tmp/sse_body.txt 2>/dev/null || echo "")
 
@@ -660,7 +642,6 @@ else
     check_result "SSE endpoint available (expected 200 or JSON 404, got $SSE_HTTP_CODE)" "false"
 fi
 echo "   Tip: For real-time SSE events, connect DURING plan execution:"
-echo "     curl -N -H 'Accept: text/event-stream' -H 'X-Tenant-ID: $CLIENT_ID' $SSE_URL"
 echo ""
 
 # Summary
@@ -682,4 +663,4 @@ echo "  POST /api/v1/plan/{id}/cancel                     - Cancel a plan"
 echo "  PUT  /api/v1/plan/{id}                            - Update a plan (versioning)"
 echo "  GET  /api/v1/plan/{id}/versions                   - Get version history"
 echo "  POST /api/v1/plan/{id}/rollback/{version}     - Rollback a plan (enterprise)"
-echo "  GET  /api/v1/unified/executions/{id}/stream - SSE execution status stream (orchestrator :8081)"
+echo "  GET  /api/v1/unified/executions/{id}/stream - SSE execution status stream"

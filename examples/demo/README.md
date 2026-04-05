@@ -209,7 +209,6 @@ export ANTHROPIC_API_KEY=sk-ant-your-key
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | Agent endpoint |
-| `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | Orchestrator endpoint |
 | `AXONFLOW_CLIENT_ID` | `demo-client` | Client identifier |
 | `AXONFLOW_CLIENT_SECRET` | `demo-secret` | Client secret |
 | `OPENAI_API_KEY` | - | For LLM calls |

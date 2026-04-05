@@ -26,7 +26,7 @@ function assertCheck(condition: boolean, message: string): void {
 }
 
 async function main() {
-  // Initialize the client with clientId for X-Tenant-ID header
+  // Initialize the client with clientId for OAuth2 client credentials
   // Policy management APIs require tenant identification
   const client = new AxonFlow({
     endpoint: process.env.AXONFLOW_ENDPOINT || 'http://localhost:8080',

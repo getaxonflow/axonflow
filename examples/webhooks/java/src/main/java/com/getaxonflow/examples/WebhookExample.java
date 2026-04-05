@@ -47,7 +47,7 @@ public class WebhookExample {
         System.out.println();
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-                .endpoint(getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"))
+                .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
                 .clientId(getEnv("AXONFLOW_CLIENT_ID", "demo-org"))
                 .clientSecret(getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
                 .build());

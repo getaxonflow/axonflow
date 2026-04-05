@@ -21,7 +21,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-map-lifecycle-example}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 
@@ -68,8 +68,7 @@ generate_plan() {
 
     curl -s -X POST "${AGENT_URL}/api/request" \
       -H "Content-Type: application/json" \
-      -H "X-Client-ID: $CLIENT_ID" \
-      -H "X-Client-Secret: $CLIENT_SECRET" \
+      -H "Authorization: Basic $AUTH_B64" \
       -d '{
         "query": "'"$query"'",
         "user_token": "'"$USER_TOKEN"'",
@@ -123,8 +122,8 @@ echo "2. Get Plan Status - Should be pending..."
 echo "----------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 STATUS=$(extract_json "$RESPONSE" "status")
 IS_PENDING=$([ "$STATUS" = "pending" ] || [ "$STATUS" = "created" ] || [ "$STATUS" = "generated" ] && echo "true" || echo "false")
@@ -139,8 +138,7 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s -X PUT "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{"version": 1, "execution_mode": "parallel"}')
 
 echo "Response:"
@@ -161,8 +159,8 @@ echo "4. Get Version History..."
 echo "----------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}/versions" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 echo "Response:"
 echo "$RESPONSE" | python3 -m json.tool 2>/dev/null | head -30 || echo "$RESPONSE"
@@ -183,8 +181,7 @@ echo "----------------------------------------------"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{"version": 1, "execution_mode": "sequential"}')
 
 IS_409=$([ "$HTTP_CODE" = "409" ] && echo "true" || echo "false")
@@ -199,8 +196,7 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -220,8 +216,8 @@ echo "7. Get Plan Status - Should be completed..."
 echo "----------------------------------------------"
 
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 FINAL_STATUS=$(extract_json "$RESPONSE" "status")
 IS_DONE=$([ "$FINAL_STATUS" = "completed" ] || [ "$FINAL_STATUS" = "success" ] && echo "true" || echo "false")
@@ -236,8 +232,7 @@ echo "----------------------------------------------"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${AGENT_URL}/api/v1/plan/${PLAN_ID}/cancel" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{"reason": "Testing cancel on completed plan"}')
 
 IS_REJECTED=$([ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "409" ] || [ "$HTTP_CODE" = "422" ] && echo "true" || echo "false")
@@ -264,8 +259,7 @@ check_result "Second plan generated ($PLAN_ID_2)" "$([ -n "$PLAN_ID_2" ] && echo
 # Cancel it
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/plan/${PLAN_ID_2}/cancel" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{"reason": "Testing cancel flow"}')
 
 CANCEL_STATUS=$(extract_json "$RESPONSE" "status")
@@ -274,8 +268,7 @@ check_result "Plan cancelled ($CANCEL_STATUS)" "$([ "$CANCEL_STATUS" = "cancelle
 # Try to execute cancelled plan
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -310,8 +303,7 @@ check_result "Balanced mode plan generated ($PLAN_ID_3)" "$([ -n "$PLAN_ID_3" ] 
 # Execute balanced plan
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",

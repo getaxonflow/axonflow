@@ -22,15 +22,12 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-org}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 
-# Build auth headers
-AUTH_HEADERS="-H \"X-Client-ID: $CLIENT_ID\""
-if [ -n "$CLIENT_SECRET" ]; then
-    AUTH_HEADERS="$AUTH_HEADERS -H \"X-Client-Secret: $CLIENT_SECRET\""
-fi
+# Build Basic auth
+AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
 
 echo "=============================================="
 echo "Cost Estimation - HTTP/cURL Example"
@@ -100,8 +97,7 @@ ESTIMATE_HTTP_CODE=$(curl -s -o /tmp/axonflow_estimate_response.json -w "%{http_
     --max-time 15 \
     -X POST "${AGENT_URL}/api/v1/plans/estimate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    ${CLIENT_SECRET:+-H "X-Client-Secret: $CLIENT_SECRET"} \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "$ESTIMATE_BODY" || echo "000")
 
 ESTIMATE_RESPONSE=$(cat /tmp/axonflow_estimate_response.json 2>/dev/null || echo "{}")
@@ -172,6 +168,7 @@ PLAN_BODY=$(cat <<EOF
     "query": "Create a brief plan to analyze customer feedback and generate a summary report",
     "domain": "generic",
     "user_token": "$USER_TOKEN",
+    "client_id": "$CLIENT_ID",
     "request_type": "multi-agent-plan"
 }
 EOF
@@ -181,8 +178,7 @@ PLAN_HTTP_CODE=$(curl -s -o /tmp/axonflow_plan_response.json -w "%{http_code}" \
     --max-time 30 \
     -X POST "${AGENT_URL}/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    ${CLIENT_SECRET:+-H "X-Client-Secret: $CLIENT_SECRET"} \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "$PLAN_BODY" || echo "000")
 
 PLAN_RESPONSE=$(cat /tmp/axonflow_plan_response.json 2>/dev/null || echo "{}")
@@ -205,8 +201,7 @@ else
         --max-time 15 \
         -X GET "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        ${CLIENT_SECRET:+-H "X-Client-Secret: $CLIENT_SECRET"} || echo "000")
+        -H "Authorization: Basic $AUTH_B64" || echo "000")
 
     COST_RESPONSE=$(cat /tmp/axonflow_cost_response.json 2>/dev/null || echo "{}")
     echo "   Cost HTTP Status: $COST_HTTP_CODE"

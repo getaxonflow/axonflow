@@ -1,8 +1,8 @@
 /**
- * MCP Connector Example - Tests Orchestrator-to-Agent Routing
+ * MCP Connector Example - Tests Agent Routing
  *
  * This example tests the FULL MCP connector flow:
- *   SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
+ *   SDK -> Agent (port 8080) -> Connector
  *
  * Usage:
  *   docker compose up -d  # Start AxonFlow
@@ -19,22 +19,22 @@ import java.time.Duration;
 public class McpConnectorExample {
     
     public static void main(String[] args) throws Exception {
-        String orchestratorUrl = System.getenv("ORCHESTRATOR_URL");
-        if (orchestratorUrl == null || orchestratorUrl.isEmpty()) {
-            orchestratorUrl = "http://localhost:8081";
+        String agentUrl = System.getenv("AXONFLOW_AGENT_URL");
+        if (agentUrl == null || agentUrl.isEmpty()) {
+            agentUrl = "http://localhost:8080";
         }
 
         System.out.println("==============================================");
-        System.out.println("MCP Connector Example - Orchestrator Routing");
+        System.out.println("MCP Connector Example - Agent Routing");
         System.out.println("==============================================");
-        System.out.println("Orchestrator URL: " + orchestratorUrl + "\n");
+        System.out.println("Agent URL: " + agentUrl + "\n");
 
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
-        // Test 1: Query postgres connector through orchestrator
-        System.out.println("Test 1: Query postgres connector via orchestrator...");
+        // Test 1: Query postgres connector through agent
+        System.out.println("Test 1: Query postgres connector via agent...");
 
         String requestId = "mcp-test-" + System.currentTimeMillis();
         String requestBody = String.format("""
@@ -59,7 +59,7 @@ public class McpConnectorExample {
             """, requestId);
 
         HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(orchestratorUrl + "/api/v1/process"))
+            .uri(URI.create(agentUrl + "/api/v1/process"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody))
             .build();
@@ -68,7 +68,7 @@ public class McpConnectorExample {
         String responseBody = response.body();
 
         if (responseBody.contains("\"success\":true")) {
-            System.out.println("SUCCESS: MCP query through orchestrator worked!");
+            System.out.println("SUCCESS: MCP query through agent worked!");
             System.out.println("  Response: " + responseBody.substring(0, Math.min(200, responseBody.length())) + "...");
         } else {
             System.out.println("FAILED: " + responseBody);
@@ -101,7 +101,7 @@ public class McpConnectorExample {
             """, requestId);
 
         request = HttpRequest.newBuilder()
-            .uri(URI.create(orchestratorUrl + "/api/v1/process"))
+            .uri(URI.create(agentUrl + "/api/v1/process"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody))
             .build();

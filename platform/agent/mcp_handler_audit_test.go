@@ -142,13 +142,13 @@ func TestComputeStatementHash(t *testing.T) {
 // TestGetMCPAuditQueue tests the audit queue retrieval
 func TestGetMCPAuditQueue(t *testing.T) {
 	t.Run("nil policy engine returns nil", func(t *testing.T) {
-		oldDbPolicyEngine := dbPolicyEngine
-		dbPolicyEngine = nil
-		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+		oldAuditManager := auditManager
+		auditManager = nil
+		defer func() { auditManager = oldAuditManager }()
 
 		queue := getMCPAuditQueue()
 		if queue != nil {
-			t.Error("expected nil queue when dbPolicyEngine is nil")
+			t.Error("expected nil queue when auditManager is nil")
 		}
 	})
 
@@ -164,11 +164,9 @@ func TestGetMCPAuditQueue(t *testing.T) {
 
 		auditQueue, _ := NewAuditQueue(AuditModeCompliance, 100, 1, db, fallbackPath)
 
-		oldDbPolicyEngine := dbPolicyEngine
-		dbPolicyEngine = &DatabasePolicyEngine{
-			auditQueue: auditQueue,
-		}
-		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+		oldAuditManager := auditManager
+		auditManager = &AuditManager{queue: auditQueue}
+		defer func() { auditManager = oldAuditManager }()
 
 		queue := getMCPAuditQueue()
 		if queue == nil {
@@ -187,9 +185,9 @@ func TestGetMCPAuditQueue(t *testing.T) {
 // TestLogMCPQueryAudit_Helper tests the helper function for logging
 func TestLogMCPQueryAudit_Helper(t *testing.T) {
 	t.Run("nil audit queue logs warning but doesn't panic", func(t *testing.T) {
-		oldDbPolicyEngine := dbPolicyEngine
-		dbPolicyEngine = nil
-		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+		oldAuditManager := auditManager
+		auditManager = nil
+		defer func() { auditManager = oldAuditManager }()
 
 		// Should not panic
 		entry := MCPQueryAuditEntry{
@@ -213,11 +211,9 @@ func TestLogMCPQueryAudit_Helper(t *testing.T) {
 
 		auditQueue, _ := NewAuditQueue(AuditModeCompliance, 100, 1, db, fallbackPath)
 
-		oldDbPolicyEngine := dbPolicyEngine
-		dbPolicyEngine = &DatabasePolicyEngine{
-			auditQueue: auditQueue,
-		}
-		defer func() { dbPolicyEngine = oldDbPolicyEngine }()
+		oldAuditManager := auditManager
+		auditManager = &AuditManager{queue: auditQueue}
+		defer func() { auditManager = oldAuditManager }()
 
 		// Expect the INSERT
 		mock.ExpectExec("INSERT INTO mcp_query_audits").

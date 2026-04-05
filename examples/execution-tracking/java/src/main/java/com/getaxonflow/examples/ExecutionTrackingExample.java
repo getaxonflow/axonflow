@@ -39,8 +39,8 @@ public class ExecutionTrackingExample {
         System.out.println();
 
         // Initialize client
-        // WCP endpoints are on the orchestrator (port 8081)
-        String endpoint = System.getenv().getOrDefault("AXONFLOW_ENDPOINT", "http://localhost:8081");
+        // WCP endpoints go through the agent (port 8080)
+        String endpoint = System.getenv().getOrDefault("AXONFLOW_ENDPOINT", "http://localhost:8080");
         String clientId = System.getenv().getOrDefault("AXONFLOW_CLIENT_ID", "demo");
         String clientSecret = System.getenv().getOrDefault("AXONFLOW_CLIENT_SECRET", "demo");
 

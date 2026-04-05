@@ -17,7 +17,7 @@ import (
 
 // convertSharedResultToStatic converts a shared policy engine RequestResult
 // to a StaticPolicyResult for backward compatibility with existing handler code.
-// This allows gradual migration from StaticPolicyEngine to the unified shared engine.
+// This bridges the shared engine result to the StaticPolicyResult type used by handlers.
 func convertSharedResultToStatic(result *sharedpolicy.RequestResult) *StaticPolicyResult {
 	if result == nil {
 		return &StaticPolicyResult{

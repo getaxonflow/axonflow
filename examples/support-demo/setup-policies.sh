@@ -11,23 +11,23 @@
 
 set -e
 
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-support-demo}"
 
 echo "🔧 Setting up Support Demo policies..."
-echo "   Orchestrator: $ORCHESTRATOR_URL"
+echo "   Agent: $AGENT_URL"
 echo "   Tenant: $TENANT_ID"
 echo ""
 
 # Wait for orchestrator to be ready
-echo "⏳ Waiting for AxonFlow Orchestrator..."
+echo "⏳ Waiting for AxonFlow Agent..."
 for i in {1..30}; do
-  if curl -s "$ORCHESTRATOR_URL/health" > /dev/null 2>&1; then
-    echo "✅ Orchestrator is ready"
+  if curl -s "$AGENT_URL/health" > /dev/null 2>&1; then
+    echo "✅ Agent is ready"
     break
   fi
   if [ $i -eq 30 ]; then
-    echo "❌ Timeout waiting for orchestrator"
+    echo "❌ Timeout waiting for agent"
     exit 1
   fi
   sleep 1
@@ -39,9 +39,8 @@ echo ""
 # Agents (support staff) are routed to cost-effective providers (Anthropic/local)
 # This demonstrates role-based LLM governance for cost control
 echo "📋 Creating policy: Agent Role LLM Restriction..."
-curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
+curl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "Agent Role LLM Restriction",
     "description": "Route support agents to cost-effective providers. Agents use Anthropic/local instead of OpenAI for cost control.",
@@ -80,9 +79,8 @@ curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
 # Queries containing PII patterns route to local model (data never leaves premises)
 # This demonstrates privacy-preserving LLM governance
 echo "📋 Creating policy: PII Query Routing..."
-curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
+curl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "PII Query Routing",
     "description": "Route queries containing PII to local model. Sensitive data never leaves premises.",
@@ -128,9 +126,8 @@ curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
 # EU users route to local model (Ollama) to ensure data stays in region
 # This demonstrates GDPR/data sovereignty compliance
 echo "📋 Creating policy: EU Region Data Sovereignty..."
-curl -s -X POST "$ORCHESTRATOR_URL/api/v1/policies" \
+curl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "EU Region Data Sovereignty",
     "description": "Route EU users to local model (Ollama) for data sovereignty compliance. Data never leaves the region.",
@@ -174,4 +171,4 @@ echo "  • Login as eu.agent@company.com (EU agent) → Routes to Local/Ollama"
 echo "  • Query with SSN like '123-45-6789' → Routes to Local model"
 echo "  • Login as admin@company.com → Full access to all providers"
 echo ""
-echo "View policies: curl $ORCHESTRATOR_URL/api/v1/dynamic-policies -H 'X-Tenant-ID: $TENANT_ID' | jq"
+echo "View policies: curl $AGENT_URL/api/v1/dynamic-policies | jq"

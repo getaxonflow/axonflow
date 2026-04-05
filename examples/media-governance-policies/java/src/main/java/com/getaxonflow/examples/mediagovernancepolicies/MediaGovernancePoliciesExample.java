@@ -49,11 +49,8 @@ import java.util.Map;
  *   - Per-tenant media governance disable/enable (Enterprise only)
  *   - Non-media requests unaffected by media policies
  *
- * Two client instances are used:
- *   - orchestratorClient: connects to AXONFLOW_ORCHESTRATOR_ENDPOINT (default :8081)
- *     for policy CRUD, media governance config, and status
- *   - agentClient: connects to AXONFLOW_ENDPOINT (default :8080)
- *     for proxyLLMCall requests that trigger media analysis
+ * All requests go through the agent entry point (AXONFLOW_ENDPOINT, default :8080).
+ * The agent proxies policy CRUD, media governance config, and proxyLLMCall requests.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
@@ -95,27 +92,18 @@ public class MediaGovernancePoliciesExample {
         System.out.println("==============================================");
         System.out.println();
 
-        String orchestratorEndpoint = getEnv("AXONFLOW_ORCHESTRATOR_ENDPOINT", "http://localhost:8081");
         String agentEndpoint = getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080");
         String clientId = getEnv("AXONFLOW_CLIENT_ID", "demo");
         String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "demo");
         String tenantId = getEnv("AXONFLOW_TENANT", clientId);
         boolean debug = "true".equals(getEnv("AXONFLOW_DEBUG", ""));
 
-        System.out.println("  Agent endpoint:        " + agentEndpoint);
-        System.out.println("  Orchestrator endpoint: " + orchestratorEndpoint);
-        System.out.println("  Tenant ID:             " + tenantId);
+        System.out.println("  Agent endpoint: " + agentEndpoint);
+        System.out.println("  Tenant ID:      " + tenantId);
         System.out.println();
 
-        // Two clients: orchestrator for policy CRUD, agent for LLM proxy requests
-        AxonFlow orchestratorClient = AxonFlow.create(AxonFlowConfig.builder()
-            .endpoint(orchestratorEndpoint)
-            .clientId(clientId)
-            .clientSecret(clientSecret)
-            .debug(debug)
-            .build());
-
-        AxonFlow agentClient = AxonFlow.create(AxonFlowConfig.builder()
+        // Single client: all requests go through the agent entry point
+        AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
             .endpoint(agentEndpoint)
             .clientId(clientId)
             .clientSecret(clientSecret)
@@ -133,7 +121,7 @@ public class MediaGovernancePoliciesExample {
 
         List<DynamicPolicy> policies;
         try {
-            policies = orchestratorClient.listDynamicPolicies(
+            policies = client.listDynamicPolicies(
                 ListDynamicPoliciesOptions.builder().type("media").limit(100).build()
             );
         } catch (Exception e) {
@@ -202,7 +190,7 @@ public class MediaGovernancePoliciesExample {
 
         ClientResponse resp2;
         try {
-            resp2 = agentClient.proxyLLMCall(
+            resp2 = client.proxyLLMCall(
                 ClientRequest.builder()
                     .query("Describe this image")
                     .userToken(USER_TOKEN)
@@ -255,7 +243,7 @@ public class MediaGovernancePoliciesExample {
             Map<String, Object> blockConfig = new HashMap<>();
             blockConfig.put("message", "Media blocked: faces detected in image");
 
-            DynamicPolicy created = orchestratorClient.createDynamicPolicy(
+            DynamicPolicy created = client.createDynamicPolicy(
                 CreateDynamicPolicyRequest.builder()
                     .name("test-face-block-java-example")
                     .description("Blocks images containing faces (Java example test policy)")
@@ -288,7 +276,7 @@ public class MediaGovernancePoliciesExample {
 
         if (createdPolicyId != null) {
             try {
-                List<DynamicPolicy> listAfterCreate = orchestratorClient.listDynamicPolicies(
+                List<DynamicPolicy> listAfterCreate = client.listDynamicPolicies(
                     ListDynamicPoliciesOptions.builder().type("media").limit(100).build()
                 );
 
@@ -313,7 +301,7 @@ public class MediaGovernancePoliciesExample {
         System.out.println("  3c. Sending 1x1 image request (no faces expected)");
 
         try {
-            ClientResponse resp3c = agentClient.proxyLLMCall(
+            ClientResponse resp3c = client.proxyLLMCall(
                 ClientRequest.builder()
                     .query("Describe this image")
                     .userToken(USER_TOKEN)
@@ -341,7 +329,7 @@ public class MediaGovernancePoliciesExample {
 
         if (createdPolicyId != null) {
             try {
-                orchestratorClient.deleteDynamicPolicy(createdPolicyId);
+                client.deleteDynamicPolicy(createdPolicyId);
                 assertCheck(true, "Policy deleted successfully");
             } catch (Exception e) {
                 System.out.println("   FAIL: deleteDynamicPolicy failed: " + e.getMessage());
@@ -364,7 +352,7 @@ public class MediaGovernancePoliciesExample {
         System.out.println("  4a. Getting media governance status");
 
         try {
-            MediaGovernanceStatus govStatus = orchestratorClient.getMediaGovernanceStatus();
+            MediaGovernanceStatus govStatus = client.getMediaGovernanceStatus();
 
             String tierValue = govStatus.getTier() != null ? govStatus.getTier() : "";
             assertCheck(tierValue != null, "Response contains 'available' field");
@@ -388,7 +376,7 @@ public class MediaGovernancePoliciesExample {
         System.out.println("  4b. Getting media governance config");
 
         try {
-            MediaGovernanceConfig govConfig = orchestratorClient.getMediaGovernanceConfig();
+            MediaGovernanceConfig govConfig = client.getMediaGovernanceConfig();
 
             String configTenantId = govConfig.getTenantId() != null ? govConfig.getTenantId() : "<missing>";
             assertCheck(
@@ -422,7 +410,7 @@ public class MediaGovernancePoliciesExample {
             Map<String, Object> nsfwBlockConfig = new HashMap<>();
             nsfwBlockConfig.put("message", "Media blocked: NSFW score exceeds threshold (> 0.5)");
 
-            DynamicPolicy toggleCreated = orchestratorClient.createDynamicPolicy(
+            DynamicPolicy toggleCreated = client.createDynamicPolicy(
                 CreateDynamicPolicyRequest.builder()
                     .name("test-nsfw-toggle-java-example")
                     .description("NSFW threshold policy for toggle lifecycle test")
@@ -459,7 +447,7 @@ public class MediaGovernancePoliciesExample {
 
         if (togglePolicyId != null) {
             try {
-                DynamicPolicy disabled = orchestratorClient.updateDynamicPolicy(togglePolicyId,
+                DynamicPolicy disabled = client.updateDynamicPolicy(togglePolicyId,
                     UpdateDynamicPolicyRequest.builder().enabled(false).build()
                 );
                 assertCheck(
@@ -480,7 +468,7 @@ public class MediaGovernancePoliciesExample {
 
         if (togglePolicyId != null) {
             try {
-                DynamicPolicy reenabled = orchestratorClient.updateDynamicPolicy(togglePolicyId,
+                DynamicPolicy reenabled = client.updateDynamicPolicy(togglePolicyId,
                     UpdateDynamicPolicyRequest.builder().enabled(true).build()
                 );
                 assertCheck(
@@ -501,7 +489,7 @@ public class MediaGovernancePoliciesExample {
 
         if (togglePolicyId != null) {
             try {
-                orchestratorClient.deleteDynamicPolicy(togglePolicyId);
+                client.deleteDynamicPolicy(togglePolicyId);
                 assertCheck(true, "Policy deleted successfully");
             } catch (Exception e) {
                 System.out.println("   FAIL: deleteDynamicPolicy failed: " + e.getMessage());
@@ -526,7 +514,7 @@ public class MediaGovernancePoliciesExample {
             System.out.println("  6a. Disabling media governance (enabled=false)");
 
             try {
-                MediaGovernanceConfig disabledConfig = orchestratorClient.updateMediaGovernanceConfig(
+                MediaGovernanceConfig disabledConfig = client.updateMediaGovernanceConfig(
                     UpdateMediaGovernanceConfigRequest.builder().enabled(false).build()
                 );
                 assertCheck(
@@ -543,7 +531,7 @@ public class MediaGovernancePoliciesExample {
             System.out.println("  6b. Sending image request with media governance disabled");
 
             try {
-                ClientResponse resp6b = agentClient.proxyLLMCall(
+                ClientResponse resp6b = client.proxyLLMCall(
                     ClientRequest.builder()
                         .query("Describe this image")
                         .userToken(USER_TOKEN)
@@ -573,7 +561,7 @@ public class MediaGovernancePoliciesExample {
             System.out.println("  6c. Re-enabling media governance (enabled=true)");
 
             try {
-                MediaGovernanceConfig enabledConfig = orchestratorClient.updateMediaGovernanceConfig(
+                MediaGovernanceConfig enabledConfig = client.updateMediaGovernanceConfig(
                     UpdateMediaGovernanceConfigRequest.builder().enabled(true).build()
                 );
                 assertCheck(
@@ -590,7 +578,7 @@ public class MediaGovernancePoliciesExample {
             System.out.println("  6d. Sending image request with media governance re-enabled");
 
             try {
-                ClientResponse resp6d = agentClient.proxyLLMCall(
+                ClientResponse resp6d = client.proxyLLMCall(
                     ClientRequest.builder()
                         .query("Describe this image")
                         .userToken(USER_TOKEN)
@@ -633,7 +621,7 @@ public class MediaGovernancePoliciesExample {
 
         ClientResponse resp7;
         try {
-            resp7 = agentClient.proxyLLMCall(
+            resp7 = client.proxyLLMCall(
                 ClientRequest.builder()
                     .query("What is the capital of France?")
                     .userToken(USER_TOKEN)

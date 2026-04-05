@@ -21,8 +21,10 @@
 set -e
 
 AGENT_URL="${AXONFLOW_ENDPOINT:-${AXONFLOW_AGENT_URL:-http://localhost:8080}}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-workflow-fail-example}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
+AUTH_HEADER=(-H "Authorization: Basic $AUTH_B64")
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -70,10 +72,8 @@ echo ""
 echo -e "${BLUE}Test 1: Create Workflow + Step Gate + Complete Step${NC}"
 echo "   Creating 'fail-workflow-test' workflow..."
 
-create_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
+create_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "workflow_name": "fail-workflow-test",
         "source": "external",
@@ -94,10 +94,8 @@ echo "   Workflow ID: $WORKFLOW_ID"
 
 # Step gate
 echo "   Checking gate for step-1..."
-gate_response=$(curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/gate" \
+gate_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/gate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "step_name": "Data Processing",
         "step_type": "llm_call",
@@ -115,10 +113,8 @@ echo "   Gate decision: $decision"
 
 if [ "$decision" = "allow" ]; then
     echo "   Marking step-1 completed..."
-    curl -s -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/complete" \
+    curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-1/complete" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
         -d '{"output": {"records_processed": 150}}' > /dev/null
     assert_check "true" "Step 1 completed"
 fi
@@ -130,10 +126,8 @@ echo ""
 echo -e "${BLUE}Test 2: FailWorkflow with Reason${NC}"
 echo "   Calling POST /api/v1/workflows/$WORKFLOW_ID/fail..."
 
-fail_response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/fail" \
+fail_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/fail" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{"reason": "LLM provider timeout after 30s"}')
 
 fail_body=$(echo "$fail_response" | sed '$d')
@@ -160,9 +154,7 @@ echo ""
 # ========================================
 echo -e "${BLUE}Test 3: Verify Workflow Status via GET${NC}"
 
-verify_response=$(curl -s "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+verify_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID")
 
 verify_status=$(echo "$verify_response" | jq -r '.status // "unknown"')
 verify_name=$(echo "$verify_response" | jq -r '.workflow_name // "unknown"')
@@ -188,10 +180,8 @@ echo ""
 echo -e "${BLUE}Test 4: FailWorkflow without Reason${NC}"
 echo "   Creating second workflow..."
 
-no_reason_create=$(curl -s -X POST "$AGENT_URL/api/v1/workflows" \
+no_reason_create=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v1/workflows" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "workflow_name": "fail-no-reason-test",
         "source": "external",
@@ -209,10 +199,8 @@ fi
 echo "   Workflow ID: $NO_REASON_WF_ID"
 
 # Fail without reason (empty body)
-no_reason_fail=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$NO_REASON_WF_ID/fail" \
+no_reason_fail=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$NO_REASON_WF_ID/fail" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{}')
 
 nr_body=$(echo "$no_reason_fail" | sed '$d')
@@ -240,10 +228,8 @@ echo -e "${BLUE}Test 5: Verify Failed Workflow Cannot Be Resumed${NC}"
 
 # Try step gate on failed workflow
 echo "   Attempting step gate on failed workflow..."
-resume_response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-2/gate" \
+resume_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/steps/step-2/gate" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
     -d '{
         "step_name": "Should Not Execute",
         "step_type": "tool_call",
@@ -264,10 +250,9 @@ echo "   Response: $resume_body"
 
 # Try to complete the failed workflow
 echo "   Attempting to complete failed workflow..."
-complete_response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/complete" \
+complete_response=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/workflows/$WORKFLOW_ID/complete" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+)
 
 complete_body=$(echo "$complete_response" | sed '$d')
 complete_http=$(echo "$complete_response" | tail -n 1)
@@ -286,10 +271,8 @@ echo ""
 # ========================================
 echo -e "${YELLOW}Cleanup${NC}"
 for wf_id in "$WORKFLOW_ID" "$NO_REASON_WF_ID"; do
-    curl -s -X POST "$AGENT_URL/api/v1/workflows/$wf_id/abort" \
+    curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -X POST "$AGENT_URL/api/v1/workflows/$wf_id/abort" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
         -d '{"reason": "test cleanup"}' > /dev/null 2>&1 || true
     echo "   Cleaned up workflow: $wf_id"
 done

@@ -64,13 +64,12 @@ cd http
 
 ## SDK Configuration
 
-All SDKs accept an `orchestratorUrl` (or `orchestrator_url`) configuration option:
+All SDKs accept an `endpoint` configuration option pointing to the Agent:
 
 ```go
 // Go
-client, _ := axonflow.NewClient(axonflow.AxonFlowConfig{
-    Endpoint:        "http://localhost:8080",
-    OrchestratorURL: "http://localhost:8081", // For Execution Replay API
+client := axonflow.NewClient(axonflow.AxonFlowConfig{
+    Endpoint: "http://localhost:8080",
 })
 ```
 
@@ -78,7 +77,6 @@ client, _ := axonflow.NewClient(axonflow.AxonFlowConfig{
 # Python
 client = AxonFlow.sync(
     endpoint="http://localhost:8080",
-    orchestrator_url="http://localhost:8081",  # For Execution Replay API
 )
 ```
 
@@ -86,7 +84,6 @@ client = AxonFlow.sync(
 // TypeScript
 const client = new AxonFlow({
     endpoint: "http://localhost:8080",
-    orchestratorEndpoint: "http://localhost:8081", // For Execution Replay API
 });
 ```
 
@@ -94,11 +91,10 @@ const client = new AxonFlow({
 // Java
 AxonFlowConfig config = AxonFlowConfig.builder()
     .endpoint("http://localhost:8080")
-    .orchestratorUrl("http://localhost:8081") // For Execution Replay API
     .build();
 ```
 
-If not specified, the SDK defaults to the agent URL with port 8081.
+The Agent proxies Execution Replay API requests to the Orchestrator internally.
 
 ## API Reference
 
@@ -199,7 +195,6 @@ The SDK methods correspond to these REST API endpoints:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AXONFLOW_AGENT_URL` | AxonFlow Agent URL | `http://localhost:8080` |
-| `AXONFLOW_ORCHESTRATOR_URL` | Orchestrator URL for Execution Replay | `http://localhost:8081` |
 
 ## CLI (`axonctl`)
 

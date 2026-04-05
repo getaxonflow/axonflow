@@ -737,9 +737,11 @@ func (r *PolicyRepository) findByName(ctx context.Context, tenantID, name string
 	return policy, nil
 }
 
-// CountByTenant counts active policies for a tenant (for policy limit enforcement).
+// CountByTenant counts active tenant-created policies for limit enforcement.
+// System-tier policies (seeded by migrations) are excluded — they should not
+// consume the tenant's policy quota.
 func (r *PolicyRepository) CountByTenant(ctx context.Context, tenantID string) (int, error) {
-	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND deleted_at IS NULL`
+	query := `SELECT COUNT(*) FROM dynamic_policies WHERE tenant_id = $1 AND deleted_at IS NULL AND tier != 'system'`
 	var count int
 	if err := r.db.QueryRowContext(ctx, query, tenantID).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count policies: %w", err)

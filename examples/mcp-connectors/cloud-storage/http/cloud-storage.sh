@@ -13,9 +13,9 @@
 
 set -euo pipefail
 
-AGENT_URL="${AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${CLIENT_ID:-demo-client}"
-CLIENT_SECRET="${CLIENT_SECRET:-demo-secret}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-${AGENT_URL:-http://localhost:8080}}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 AUTH=$(echo -n "${CLIENT_ID}:${CLIENT_SECRET}" | base64)
 
 echo "=============================================="

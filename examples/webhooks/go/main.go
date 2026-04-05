@@ -44,7 +44,7 @@ func main() {
 	fmt.Println()
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
+		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-org"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo"),
 		Debug:        getEnv("AXONFLOW_DEBUG", "") == "true",

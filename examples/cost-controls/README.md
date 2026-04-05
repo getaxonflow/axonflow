@@ -23,9 +23,8 @@ Each SDK example and the HTTP example tests **all 12 operations**:
 
 ## Prerequisites
 
-1. AxonFlow Agent running at `http://localhost:8080`
-2. AxonFlow Orchestrator running at `http://localhost:8081`
-3. The orchestrator must have Cost Controls enabled
+1. AxonFlow running at `http://localhost:8080`
+2. Cost Controls must be enabled
 
 ## Running Examples
 
@@ -146,7 +145,6 @@ All 12 Cost Control methods tested!
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | Agent URL |
-| `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | Orchestrator URL |
 
 ## Related Documentation
 

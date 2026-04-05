@@ -42,7 +42,7 @@ async def main() -> int:
     print("=" * 45)
     print()
 
-    endpoint = get_env("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+    endpoint = get_env("AXONFLOW_AGENT_URL", "http://localhost:8080")
     client_id = get_env("AXONFLOW_CLIENT_ID", "demo-org")
     client_secret = get_env("AXONFLOW_CLIENT_SECRET", "demo")
 

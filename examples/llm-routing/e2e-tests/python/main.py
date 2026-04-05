@@ -36,7 +36,7 @@ async def main() -> int:
     print("=" * 50)
     print()
 
-    endpoint = os.environ.get("ORCHESTRATOR_URL", "http://localhost:8081")
+    endpoint = os.environ.get("AXONFLOW_AGENT_URL", "http://localhost:8080")
     print(f"Target: {endpoint}")
     print()
 

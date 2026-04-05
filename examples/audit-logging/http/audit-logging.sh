@@ -7,8 +7,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-audit-logging-demo}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-audit-user}"
 
@@ -42,7 +41,6 @@ echo "AxonFlow Audit Logging - HTTP/curl"
 echo "========================================"
 echo ""
 echo "Agent URL: $AGENT_URL"
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
 echo ""
 
 # =========================================================================
@@ -64,8 +62,7 @@ PRECHECK_START=$(get_ms)
 PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"$QUERY\",
         \"user_token\": \"$USER_TOKEN\",
@@ -114,8 +111,7 @@ AUDIT_START=$(get_ms)
 AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"context_id\": \"$CONTEXT_ID\",
         \"client_id\": \"$CLIENT_ID\",
@@ -167,11 +163,10 @@ echo "Recording a non-LLM tool call (e.g., API call, MCP execution)..."
 echo ""
 
 TOOL_AUDIT_HTTP_CODE=$(curl -s -o /tmp/tool_audit_response.json -w "%{http_code}" \
-    -X POST "$ORCHESTRATOR_URL/api/v1/audit/tool-call" \
+    -X POST "$AGENT_URL/api/v1/audit/tool-call" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"tool_name\": \"weather-api\",
         \"tool_type\": \"api\",
@@ -208,9 +203,9 @@ echo ""
 echo -e "${YELLOW}GET /api/v1/audit/tenant/$CLIENT_ID${NC}"
 echo ""
 
-AUDIT_LOGS=$(curl -s "${AUTH_HEADER[@]}" "$ORCHESTRATOR_URL/api/v1/audit/tenant/$CLIENT_ID" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET")
+AUDIT_LOGS=$(curl -s "${AUTH_HEADER[@]}" "$AGENT_URL/api/v1/audit/tenant/$CLIENT_ID" \
+    -H "Authorization: Basic $AUTH_B64" \
+)
 
 LOG_COUNT=$(echo "$AUDIT_LOGS" | jq -r '
     if type == "array" then length
@@ -239,11 +234,10 @@ echo ""
 echo -e "${YELLOW}POST /api/v1/audit/search${NC}"
 echo ""
 
-SEARCH_RESPONSE=$(curl -s -X POST "$ORCHESTRATOR_URL/api/v1/audit/search" \
+SEARCH_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/v1/audit/search" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    -H "X-Client-Secret: $CLIENT_SECRET" \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"client_id\": \"$CLIENT_ID\",
         \"limit\": 5
@@ -265,7 +259,6 @@ echo "API Endpoints Used:"
 echo "  Agent (8080):"
 echo "    POST /api/policy/pre-check      - Policy validation"
 echo "    POST /api/audit/llm-call        - Audit logging"
-echo "  Orchestrator (8081):"
 echo "    POST /api/v1/audit/tool-call    - Tool call audit"
 echo "    GET  /api/v1/audit/tenant/{id}  - Get tenant logs"
 echo "    POST /api/v1/audit/search       - Search logs"

@@ -61,15 +61,15 @@ python main.py
 ### List Static Policies
 
 ```bash
-curl -H "X-Tenant-ID: test-org-001" \
+curl -H "Basic auth tenant: test-org-001" \
   http://localhost:8080/api/v1/static-policies
 ```
 
 ### List Dynamic Policies
 
 ```bash
-curl -H "X-Tenant-ID: test-org-001" \
-  http://localhost:8081/api/v1/dynamic-policies
+curl -u demo:demo-secret \
+  http://localhost:8080/api/v1/dynamic-policies
 ```
 
 ### Create Policy
@@ -77,7 +77,7 @@ curl -H "X-Tenant-ID: test-org-001" \
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: test-org-001" \
+  -u demo:demo-secret \
   -d '{
     "name": "high-risk-block",
     "description": "Block queries with high risk score",
@@ -88,7 +88,7 @@ curl -X POST \
     "action": "block",
     "priority": 100
   }' \
-  http://localhost:8081/api/v1/policies
+  http://localhost:8080/api/v1/policies
 ```
 
 ### Update Policy
@@ -96,20 +96,20 @@ curl -X POST \
 ```bash
 curl -X PUT \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: test-org-001" \
+  -u demo:demo-secret \
   -d '{
     "description": "Updated description",
     "enabled": false
   }' \
-  http://localhost:8081/api/v1/policies/{policy_id}
+  http://localhost:8080/api/v1/policies/{policy_id}
 ```
 
 ### Delete Policy
 
 ```bash
 curl -X DELETE \
-  -H "X-Tenant-ID: test-org-001" \
-  http://localhost:8081/api/v1/policies/{policy_id}
+  -u demo:demo-secret \
+  http://localhost:8080/api/v1/policies/{policy_id}
 ```
 
 ## Policy Structure

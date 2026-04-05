@@ -704,10 +704,11 @@ func TestGatewayDetectionConfigFromEnv_SkipCategories(t *testing.T) {
 
 func TestBuildActionOverrides(t *testing.T) {
 	cfg := ModeDetectionConfig{
-		Enabled:              true,
-		PIIAction:            DetectionActionBlock,
-		SQLIAction:           DetectionActionWarn,
-		DangerousQueryAction: DetectionActionLog,
+		Enabled:                true,
+		PIIAction:              DetectionActionBlock,
+		SQLIAction:             DetectionActionWarn,
+		DangerousQueryAction:   DetectionActionLog,
+		DangerousCommandAction: DetectionActionBlock,
 	}
 
 	overrides := cfg.BuildActionOverrides()
@@ -730,9 +731,9 @@ func TestBuildActionOverrides(t *testing.T) {
 		t.Errorf("SQLi: got %s, expected warn", overrides[sharedpolicy.CategorySecuritySQLi])
 	}
 
-	// Verify dangerous queries get log
-	if overrides[sharedpolicy.CategorySecurityDangerous] != sharedpolicy.ActionLog {
-		t.Errorf("Dangerous: got %s, expected log", overrides[sharedpolicy.CategorySecurityDangerous])
+	// Verify dangerous commands (security-dangerous) get block — separate from dangerous queries
+	if overrides[sharedpolicy.CategorySecurityDangerous] != sharedpolicy.ActionBlock {
+		t.Errorf("DangerousCommand: got %s, expected block", overrides[sharedpolicy.CategorySecurityDangerous])
 	}
 }
 

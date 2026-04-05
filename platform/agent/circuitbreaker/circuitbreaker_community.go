@@ -38,7 +38,7 @@ func (h *Handler) SetNotificationService(ns *NotificationService) {}
 
 // RegisterRoutes registers circuit breaker routes with a mux router.
 // Community Edition: Does not register any routes (feature not available).
-func (h *Handler) RegisterRoutes(r *mux.Router) {
+func (h *Handler) RegisterRoutes(r *mux.Router, middlewares ...mux.MiddlewareFunc) {
 	// Circuit breaker is an Enterprise feature
 	// Routes are registered in enterprise builds
 }

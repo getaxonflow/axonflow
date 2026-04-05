@@ -831,9 +831,7 @@ func TestCreateClientHandler(t *testing.T) {
 // TestPolicyTestHandler tests the policy test endpoint
 func TestPolicyTestHandler(t *testing.T) {
 	// Initialize static policy engine
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	tests := []struct {
 		name           string
@@ -899,14 +897,9 @@ func TestPolicyTestHandler(t *testing.T) {
 func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 	// Save original global state
 	originalEngine := tierAwarePolicyEngine
-	originalStatic := staticPolicyEngine
 	defer func() {
 		tierAwarePolicyEngine = originalEngine
-		staticPolicyEngine = originalStatic
 	}()
-
-	// Initialize static engine once
-	staticPolicyEngine = NewStaticPolicyEngine()
 
 	t.Run("policy blocked by tier-aware engine", func(t *testing.T) {
 		// Create fresh mock database for this test
@@ -939,7 +932,7 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		)
 
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("tenant_1", "").
+			WithArgs("test-tenant", "").
 			WillReturnRows(rows)
 
 		body, _ := json.Marshal(map[string]string{
@@ -950,6 +943,9 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		// Inject tenant via context (apiAuthMiddleware sets this in production)
+		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
+		req = req.WithContext(ctx)
 		w := httptest.NewRecorder()
 
 		policyTestHandler(w, req)
@@ -1001,7 +997,7 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 		)
 
 		mock.ExpectQuery(`SELECT`).
-			WithArgs("tenant_1", "").
+			WithArgs("test-tenant", "").
 			WillReturnRows(rows)
 
 		body, _ := json.Marshal(map[string]string{
@@ -1012,6 +1008,8 @@ func TestPolicyTestHandlerWithTierAwareEngine(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/policy/test", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+		ctx := context.WithValue(req.Context(), ContextKeyTenantID, "test-tenant")
+		req = req.WithContext(ctx)
 		w := httptest.NewRecorder()
 
 		policyTestHandler(w, req)
@@ -1157,7 +1155,7 @@ func generateTestLicenseKey(orgID string, tier string, expiryDate string) string
 	// Create Ed25519 service license payload
 	payload := map[string]interface{}{
 		"tier":         tier,
-		"tenant_id":    orgID,
+		"org_id":       orgID,
 		"service_name": orgID + "-service",
 		"service_type": "backend-service",
 		"permissions":  []string{"query", "llm"},
@@ -1187,9 +1185,7 @@ func TestClientRequestHandler_SuccessPath(t *testing.T) {
 		}
 	}
 
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	// Create test license key (expires in future)
 	testLicenseKey := generateTestLicenseKey("test-org", "Enterprise", "20351231")
@@ -1283,9 +1279,7 @@ func TestClientRequestHandler_CircuitBreakerAllowed(t *testing.T) {
 		}
 	}
 
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	// Set up circuit breaker (community stub — always allows)
 	oldCB := circuitBreakerInstance
@@ -1457,9 +1451,7 @@ func TestClientRequestHandler_PolicyBlocked(t *testing.T) {
 		}
 	}
 
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	// Set up circuit breaker so RecordPolicyViolation is called on policy block (#1176)
 	oldCB := circuitBreakerInstance
@@ -1547,9 +1539,7 @@ func TestClientRequestHandler_OrchestratorError(t *testing.T) {
 		}
 	}
 
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	testLicenseKey := generateTestLicenseKey("orch-error", "Enterprise", "20351231")
 
@@ -1612,9 +1602,7 @@ func TestClientRequestHandler_MultiAgentPlan(t *testing.T) {
 		}
 	}
 
-	if staticPolicyEngine == nil {
-		staticPolicyEngine = NewStaticPolicyEngine()
-	}
+	// Policy evaluation uses unified shared engine
 
 	testLicenseKey := generateTestLicenseKey("multi-agent", "Enterprise", "20351231")
 

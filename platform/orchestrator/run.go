@@ -576,25 +576,41 @@ func Run() {
 	// SEBI Compliance Module (Enterprise - India Regulatory)
 	if sebiModule != nil {
 		sebiModule.RegisterRoutesWithMux(r)
-		log.Println("SEBI Compliance API routes registered (/api/v1/sebi/...)")
+		if sebiModule.IsHealthy() {
+			log.Println("SEBI Compliance API routes registered (/api/v1/sebi/...)")
+		} else {
+			log.Println("SEBI Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
 	}
 
 	// RBI FREE-AI Compliance Module (Enterprise - India Banking)
 	if rbiModule != nil {
 		rbiModule.RegisterRoutesWithMux(r)
-		log.Println("RBI FREE-AI Compliance API routes registered (/api/v1/rbi/...)")
+		if rbiModule.IsHealthy() {
+			log.Println("RBI FREE-AI Compliance API routes registered (/api/v1/rbi/...)")
+		} else {
+			log.Println("RBI FREE-AI Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
 	}
 
 	// EU AI Act Compliance Module (Enterprise - EU Regulatory)
 	if euaiactModule != nil {
 		euaiactModule.RegisterRoutesWithMux(r)
-		log.Println("EU AI Act Compliance API routes registered (/api/v1/euaiact/...)")
+		if euaiactModule.IsHealthy() {
+			log.Println("EU AI Act Compliance API routes registered (/api/v1/euaiact/...)")
+		} else {
+			log.Println("EU AI Act Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
 	}
 
 	// MAS FEAT Compliance Module (Enterprise - Singapore MAS)
 	if masfeatModule != nil {
 		masfeatModule.RegisterRoutesWithMux(r)
-		log.Println("MAS FEAT Compliance API routes registered (/api/v1/masfeat/...)")
+		if masfeatModule.IsHealthy() {
+			log.Println("MAS FEAT Compliance API routes registered (/api/v1/masfeat/...)")
+		} else {
+			log.Println("MAS FEAT Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
 	}
 
 	// Media Governance Config API (#1222)
@@ -912,7 +928,8 @@ func initializeComponents() {
 	ctx := context.Background()
 	tenantID := os.Getenv("ORG_ID") // Use org ID as tenant ID
 	if tenantID == "" {
-		tenantID = "default" // Fallback for single-tenant deployments
+		tenantID = "local-dev-org" // Default — matches docker-compose.yml
+		log.Println("⚠️  ORG_ID not set — defaulting to 'local-dev-org'. Set ORG_ID explicitly for production deployments.")
 	}
 	// Load runtime config and convert directly to provider configs, bypassing
 	// goroutine-unsafe os.Setenv (see ApplyLLMConfigToEnv deprecation).
@@ -1503,6 +1520,31 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// Add request ID if not provided
 	if req.RequestID == "" {
 		req.RequestID = generateRequestID()
+	}
+
+	// Identity from headers (set by the agent) takes precedence over JSON body.
+	// This ensures tenant_id and org_id are server-derived from auth, not client-supplied.
+	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+		req.User.TenantID = tenantID
+		req.Client.TenantID = tenantID
+	}
+	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
+		req.Client.OrgID = orgID
+		// Defense-in-depth: warn if incoming org_id doesn't match deployment ORG_ID.
+		// The agent should always send the deployment ORG_ID (validated at startup).
+		// A mismatch here means either a misconfigured agent or direct orchestrator access.
+		expectedOrgID := os.Getenv("ORG_ID")
+		if expectedOrgID == "" {
+			expectedOrgID = "local-dev-org"
+		}
+		if orgID != expectedOrgID {
+			log.Printf("[SECURITY] X-Org-ID mismatch: received %q but deployment ORG_ID is %q. "+
+				"This may indicate misconfigured agent or direct orchestrator access bypassing the agent.",
+				logutil.Sanitize(orgID), logutil.Sanitize(expectedOrgID))
+		}
+	}
+	if clientID := r.Header.Get("X-Tenant-ID"); clientID != "" {
+		req.Client.ID = clientID
 	}
 
 	// Create processing context
@@ -2367,11 +2409,24 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Validate authentication: require Basic auth credentials
+	// Extract client identity: prefer Basic auth, fall back to proxy-injected
+	// headers ONLY if proxy auth was validated (proxyTokenValidator != nil and
+	// token was valid). Without validated proxy auth, require Basic auth to
+	// prevent spoofing of X-Tenant-ID headers.
+	proxyAuthValidated := proxyTokenValidator != nil && proxyToken != ""
 	clientID, err := extractBasicAuthClientID(r)
 	if err != nil {
-		sendErrorResponse(w, "Missing authentication", http.StatusUnauthorized)
-		return
+		if proxyAuthValidated {
+			// Request came through validated agent proxy — trust injected headers
+			clientID = r.Header.Get("X-Tenant-ID")
+			if clientID == "" {
+				clientID = r.Header.Get("X-Tenant-ID")
+			}
+		}
+		if clientID == "" {
+			sendErrorResponse(w, "Missing authentication", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var req ToolCallAuditEntry
@@ -2385,14 +2440,18 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Require tenant scope — audit writes must be attributed to a tenant.
-	// When the request came through the Agent proxy (verified via proxy auth),
-	// X-Tenant-ID is set by the Agent from the authenticated client's tenant
-	// and can be trusted. When accessed directly (community mode, no proxy auth),
-	// fall back to clientID == tenantID check to prevent cross-tenant injection.
+	// Derive tenant scope for audit attribution.
+	// Priority: X-Tenant-ID header (proxy-injected) > clientID (from Basic auth).
+	// SDKs send Basic auth only — tenant is derived from clientID.
+	// Agent proxy sets X-Tenant-ID from authenticated client, so it's trusted
+	// when proxy auth is validated.
 	tenantID := r.Header.Get("X-Tenant-ID")
 	if tenantID == "" {
-		sendErrorResponse(w, "X-Tenant-ID header is required", http.StatusBadRequest)
+		// No header — derive from authenticated clientID (SDK direct calls)
+		tenantID = clientID
+	}
+	if tenantID == "" {
+		sendErrorResponse(w, "Missing authentication: tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 
@@ -2405,6 +2464,7 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 
 	req.ClientID = clientID
 	req.TenantID = tenantID
+	req.OrgID = r.Header.Get("X-Org-ID")
 
 	auditEntry := auditLogger.LogToolCallAudit(r.Context(), &req)
 
@@ -3357,10 +3417,10 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		var wcpResult *MAPWCPExecutionResult
 		if plan.ExecutionMode == "confirm" {
 			wcpResult, err = mapWCPExecutor.ExecuteWithConfirm(ctx, plan, &workflow,
-				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Client-ID"))
+				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Tenant-ID"))
 		} else {
 			wcpResult, err = mapWCPExecutor.ExecuteWithStep(ctx, plan, &workflow,
-				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Client-ID"))
+				r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), req.User.Email, r.Header.Get("X-Tenant-ID"))
 		}
 		if err != nil {
 			log.Printf("[ExecutePlan] WCP execution setup failed for plan %s: %v", logutil.Sanitize(planID), err)
@@ -3980,6 +4040,10 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// All steps completed — mark plan as completed
 		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
 		_ = planService.MarkPlanCompleted(r.Context(), planID, map[string]interface{}{"status": "all_steps_completed"})
+		// Sync unified execution tracker so GetPlanStatus returns correct status
+		if mapExecutionTracker != nil {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "All steps completed via confirm mode")
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -4015,6 +4079,9 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 		// All steps done
 		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
 		_ = planService.MarkPlanCompleted(r.Context(), planID, stepResult.Output)
+		if mapExecutionTracker != nil {
+			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "All steps completed via confirm mode")
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -4036,7 +4103,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 			StepName:     nextStep.Name,
 			StepType:     mapStepTypeToWCP(nextStep.Type),
 			GateOverride: &requireApproval,
-		}, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), r.Header.Get("X-Client-ID"))
+		}, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), r.Header.Get("X-Tenant-ID"))
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

@@ -735,16 +735,15 @@ async def main() -> int:
                 sse_exec = None
 
             if sse_exec is not None:
-                # Stream execution status via HTTP SSE endpoint (on orchestrator, not agent)
-                orchestrator_endpoint = get_env("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
-                stream_url = f"{orchestrator_endpoint}/api/v1/unified/executions/{sse_plan.plan_id}/stream"
+                # Stream execution status via HTTP SSE endpoint
+                agent_endpoint = get_env("AXONFLOW_AGENT_URL", "http://localhost:8080")
+                stream_url = f"{agent_endpoint}/api/v1/unified/executions/{sse_plan.plan_id}/stream"
                 print(f"   SSE URL: {stream_url}")
 
                 headers = {
                     "Accept": "text/event-stream",
                     "X-Client-ID": client_id,
                     "X-Client-Secret": client_secret,
-                    "X-Tenant-ID": client_id,
                 }
 
                 try:

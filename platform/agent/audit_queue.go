@@ -26,6 +26,31 @@ import (
 	"github.com/lib/pq"
 )
 
+// execWithRetry executes a database query with exponential backoff retry.
+func execWithRetry(db *sql.DB, query string, args ...interface{}) error {
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, err := db.Exec(query, args...)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			log.Printf("Database write failed (attempt %d/%d), retrying in %v: %v",
+				attempt+1, maxRetries, delay, err)
+			time.Sleep(delay)
+		}
+	}
+
+	log.Printf("Database write failed after %d attempts: %v", maxRetries, lastErr)
+	return lastErr
+}
+
 // AuditMode defines how audit logs are persisted to the database.
 // The mode affects whether critical entries (like policy violations)
 // are written synchronously or asynchronously.
@@ -73,6 +98,7 @@ const (
 type MCPQueryAuditEntry struct {
 	AuditID       string   `json:"audit_id"`
 	TenantID      string   `json:"tenant_id"`
+	OrgID         string   `json:"org_id"`
 	ClientID      string   `json:"client_id"`
 	UserID        string   `json:"user_id,omitempty"`
 	ConnectorName string   `json:"connector_name"`
@@ -273,6 +299,7 @@ func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
 		Details: map[string]interface{}{
 			"audit_id":                   mcpEntry.AuditID,
 			"tenant_id":                  mcpEntry.TenantID,
+			"org_id":                     mcpEntry.OrgID,
 			"connector_name":             mcpEntry.ConnectorName,
 			"operation":                  mcpEntry.Operation,
 			"statement_hash":             mcpEntry.StatementHash,
@@ -522,13 +549,13 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		// MCP connector query audit storage
 		insertQuery := `
 			INSERT INTO mcp_query_audits (
-				audit_id, tenant_id, client_id, user_id, connector_name, operation, statement_hash,
+				audit_id, tenant_id, org_id, client_id, user_id, connector_name, operation, statement_hash,
 				parameters_hash, parameter_count,
 				request_blocked, request_block_reason, request_policies_evaluated, request_matched_policies,
 				response_redacted, response_redactions_count, response_redacted_fields,
 				exfil_rows_returned, exfil_exceeded, exfil_limit_type,
 				row_count, duration_ms, success, error_message
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		`
 		// Convert slices to pq.Array for PostgreSQL compatibility
 		requestMatchedPolicies := toStringSlice(entry.Details["request_matched_policies"])
@@ -537,6 +564,7 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		return execWithRetry(aq.db, insertQuery,
 			entry.Details["audit_id"],
 			entry.Details["tenant_id"],
+			entry.Details["org_id"],
 			entry.ClientID,
 			entry.UserID,
 			entry.Details["connector_name"],

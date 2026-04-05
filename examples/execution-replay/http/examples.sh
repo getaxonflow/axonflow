@@ -17,16 +17,19 @@
 # Usage: ./examples.sh
 #
 # Environment:
-#   AXONFLOW_ORCHESTRATOR_URL - Orchestrator URL (default: http://localhost:8081)
+#   AXONFLOW_AGENT_URL - Agent URL (default: http://localhost:8080)
 
 set -e
 
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
+AUTH=(-u "$CLIENT_ID:$CLIENT_SECRET")
 
 echo "=============================================="
 echo "AxonFlow Execution Replay API - HTTP Examples"
 echo "=============================================="
-echo "Base URL: $ORCHESTRATOR_URL"
+echo "Base URL: $AGENT_URL"
 echo ""
 
 PASS=0
@@ -48,9 +51,9 @@ check_result() {
 # 1. List executions
 # ========================================
 echo "1. List Executions"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions?limit=10"
+echo "   GET ${AGENT_URL}/api/v1/executions?limit=10"
 
-LIST_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions?limit=10" 2>/dev/null || echo '{}')
+LIST_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions?limit=10" 2>/dev/null || echo '{}')
 LIST_VALID=$(echo "$LIST_RESPONSE" | jq 'has("executions")' 2>/dev/null || echo "false")
 check_result "List executions returns valid JSON with 'executions' field" "$LIST_VALID"
 echo ""
@@ -83,9 +86,9 @@ echo ""
 # 2. Get execution details
 # ========================================
 echo "2. Get Execution Details"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}"
+echo "   GET ${AGENT_URL}/api/v1/executions/${EXECUTION_ID}"
 
-DETAIL_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}" 2>/dev/null || echo '{}')
+DETAIL_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}" 2>/dev/null || echo '{}')
 # Detail response is {"summary": {...}, "steps": [...]}
 DETAIL_HAS_ID=$(echo "$DETAIL_RESPONSE" | jq 'has("request_id") or (.summary | has("request_id"))' 2>/dev/null || echo "false")
 check_result "Execution detail returns request_id" "$DETAIL_HAS_ID"
@@ -102,9 +105,9 @@ echo ""
 # 3. Get execution steps
 # ========================================
 echo "3. Get Execution Steps"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps"
+echo "   GET ${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps"
 
-STEPS_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps" 2>/dev/null || echo '[]')
+STEPS_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps" 2>/dev/null || echo '[]')
 # Steps endpoint returns a JSON array directly (not wrapped in {"steps": [...]})
 STEPS_IS_ARRAY=$(echo "$STEPS_RESPONSE" | jq 'type == "array"' 2>/dev/null || echo "false")
 check_result "Steps endpoint returns JSON array" "$STEPS_IS_ARRAY"
@@ -121,9 +124,9 @@ echo ""
 # 4. Get specific step
 # ========================================
 echo "4. Get Specific Step"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0"
+echo "   GET ${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps/0"
 
-STEP0_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps/0" 2>/dev/null || echo '{}')
+STEP0_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps/0" 2>/dev/null || echo '{}')
 STEP0_HAS_NAME=$(echo "$STEP0_RESPONSE" | jq 'has("step_name") or has("name")' 2>/dev/null || echo "false")
 check_result "Specific step returns step name" "$STEP0_HAS_NAME"
 echo ""
@@ -132,9 +135,9 @@ echo ""
 # 5. Get execution timeline
 # ========================================
 echo "5. Get Execution Timeline"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline"
+echo "   GET ${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/timeline"
 
-TIMELINE_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/timeline" 2>/dev/null || echo '[]')
+TIMELINE_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/timeline" 2>/dev/null || echo '[]')
 TIMELINE_VALID=$(echo "$TIMELINE_RESPONSE" | jq 'type == "array" or has("timeline") or has("events")' 2>/dev/null || echo "false")
 check_result "Timeline returns valid JSON response" "$TIMELINE_VALID"
 echo ""
@@ -143,9 +146,9 @@ echo ""
 # 6. Export execution
 # ========================================
 echo "6. Export Execution"
-echo "   GET ${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true"
+echo "   GET ${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true"
 
-EXPORT_RESPONSE=$(curl -s --max-time 15 "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true" 2>/dev/null || echo '{}')
+EXPORT_RESPONSE=$(curl -s "${AUTH[@]}" --max-time 15 "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/export?include_input=true&include_output=true" 2>/dev/null || echo '{}')
 EXPORT_VALID=$(echo "$EXPORT_RESPONSE" | jq 'type == "object"' 2>/dev/null || echo "false")
 check_result "Export returns valid JSON object" "$EXPORT_VALID"
 echo ""

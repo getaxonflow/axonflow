@@ -4,7 +4,7 @@
 
 set -e
 
-BASE_URL="${ORCHESTRATOR_URL:-http://localhost:8081}"
+BASE_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 TESTS_PASSED=0
 TESTS_FAILED=0
 

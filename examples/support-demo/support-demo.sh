@@ -30,7 +30,7 @@ print_ports() {
     echo -e "  Frontend:     ${YELLOW}http://localhost:3001${NC}"
     echo -e "  Backend API:  ${YELLOW}http://localhost:8082${NC}"
     echo -e "  AxonFlow Agent:       ${YELLOW}http://localhost:8080${NC}"
-    echo -e "  AxonFlow Orchestrator: ${YELLOW}http://localhost:8081${NC}"
+    echo -e "  AxonFlow Orchestrator: ${YELLOW}http://localhost:8081${NC} (internal)"
     echo -e "  PostgreSQL:   ${YELLOW}localhost:5433${NC}"
     echo ""
     echo -e "${GREEN}Demo Users (password: demo123):${NC}"
@@ -111,7 +111,7 @@ echo ""
 # Wait for health checks
 wait_for_health "http://localhost:8082/api/health" "Backend"
 wait_for_health "http://localhost:8080/health" "AxonFlow Agent"
-wait_for_health "http://localhost:8081/health" "AxonFlow Orchestrator"
+# Orchestrator health is checked internally by the agent
 
 # Setup demo policies
 echo ""

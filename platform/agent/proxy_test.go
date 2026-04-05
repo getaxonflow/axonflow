@@ -375,8 +375,9 @@ func TestRegisterProxyRoutes(t *testing.T) {
 		{"GET", "/api/v1/code-governance/metrics", true},
 		{"GET", "/api/v1/portal/status", true},
 		{"GET", "/api/v1/git-providers", true},
+		// Legacy /api/v1/policies GET is now proxied for dynamic policy reads
+		{"GET", "/api/v1/policies", true},
 		// Non-proxied routes should not match
-		{"GET", "/api/v1/policies", false},
 		{"GET", "/health", false},
 	}
 

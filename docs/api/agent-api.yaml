@@ -2248,10 +2248,10 @@ paths:
         Part of ADR-018: Unified Policy Management System.
       operationId: listStaticPolicies
       parameters:
-        - name: X-Tenant-ID
+        - name: Authorization
           in: header
-          required: true
-          description: Tenant ID for multi-tenant policy filtering
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: page
@@ -2302,7 +2302,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StaticPoliciesListResponse'
         '400':
-          description: Missing or invalid X-Tenant-ID header
+          description: Invalid request body or parameters
           content:
             application/json:
               schema:
@@ -2322,16 +2322,10 @@ paths:
         Part of ADR-018: Unified Policy Management System.
       operationId: createStaticPolicy
       parameters:
-        - name: X-Tenant-ID
-          in: header
-          required: true
-          description: Tenant ID for multi-tenant scoping
-          schema:
-            type: string
-        - name: X-Organization-ID
+        - name: Authorization
           in: header
           required: false
-          description: Organization ID (required for organization-tier policies)
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: X-User-ID
@@ -2395,16 +2389,10 @@ paths:
         Used by the Customer Portal for the unified policy view.
       operationId: getEffectivePolicies
       parameters:
-        - name: X-Tenant-ID
-          in: header
-          required: true
-          description: Tenant ID for policy resolution
-          schema:
-            type: string
-        - name: X-Organization-ID
+        - name: Authorization
           in: header
           required: false
-          description: Organization ID for organization-level overrides
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
       responses:
@@ -2415,7 +2403,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EffectivePoliciesResponse'
         '400':
-          description: Missing X-Tenant-ID header
+          description: Invalid request body or parameters
           content:
             application/json:
               schema:
@@ -2478,16 +2466,10 @@ paths:
         (action, enabled status) without changing the underlying pattern.
       operationId: listStaticPolicyOverrides
       parameters:
-        - name: X-Tenant-ID
-          in: header
-          required: true
-          description: Tenant ID for filtering overrides
-          schema:
-            type: string
-        - name: X-Organization-ID
+        - name: Authorization
           in: header
           required: false
-          description: Organization ID for filtering org-level overrides
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: include_expired
@@ -2505,7 +2487,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PolicyOverridesListResponse'
         '400':
-          description: Missing X-Tenant-ID header
+          description: Invalid request body or parameters
           content:
             application/json:
               schema:
@@ -2523,10 +2505,10 @@ paths:
         not the `policy_id` (human-readable identifier like 'sql_injection_union').
       operationId: getStaticPolicy
       parameters:
-        - name: X-Tenant-ID
+        - name: Authorization
           in: header
-          required: true
-          description: Tenant ID for authorization
+          required: false
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: id
@@ -2544,7 +2526,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StaticPolicy'
         '400':
-          description: Missing or invalid X-Tenant-ID header
+          description: Invalid request body or parameters
           content:
             application/json:
               schema:
@@ -2726,10 +2708,10 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: X-Tenant-ID
+        - name: Authorization
           in: header
           required: false
-          description: Tenant ID for authorization
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
       responses:
@@ -2768,16 +2750,10 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: X-Tenant-ID
-          in: header
-          required: true
-          description: Tenant ID for override scope
-          schema:
-            type: string
-        - name: X-Organization-ID
+        - name: Authorization
           in: header
           required: false
-          description: Organization ID for org-level overrides
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: X-User-ID
@@ -2846,16 +2822,10 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: X-Tenant-ID
-          in: header
-          required: true
-          description: Tenant ID for override scope
-          schema:
-            type: string
-        - name: X-Organization-ID
+        - name: Authorization
           in: header
           required: false
-          description: Organization ID for org-level overrides
+          description: "Basic auth credentials: Basic base64(clientId:clientSecret). Required in evaluation/enterprise mode. Optional in community mode (defaults to community tenant)."
           schema:
             type: string
         - name: X-User-ID

@@ -55,7 +55,6 @@ def test_parameterized_query(agent_url: str) -> bool:
     try:
         response = requests.post(
             f"{agent_url}/mcp/resources/query",
-            headers={"Content-Type": "application/json", "X-Tenant-ID": "default"},
             json=request,
             timeout=30
         )
@@ -118,7 +117,6 @@ def test_determinism(agent_url: str, iterations: int = 10) -> bool:
         try:
             response = requests.post(
                 f"{agent_url}/mcp/resources/query",
-                headers={"Content-Type": "application/json", "X-Tenant-ID": "default"},
                 json=request,
                 timeout=30
             )
@@ -163,7 +161,6 @@ def test_single_param(agent_url: str) -> bool:
     try:
         response = requests.post(
             f"{agent_url}/mcp/resources/query",
-            headers={"Content-Type": "application/json", "X-Tenant-ID": "default"},
             json=request,
             timeout=30
         )
@@ -204,7 +201,6 @@ def test_empty_params(agent_url: str) -> bool:
     try:
         response = requests.post(
             f"{agent_url}/mcp/resources/query",
-            headers={"Content-Type": "application/json", "X-Tenant-ID": "default"},
             json=request,
             timeout=30
         )

@@ -322,13 +322,9 @@ func checkRBIPII(query string, blockOnCritical bool) *rbi.RBIPIICheckResult {
 }
 
 // getGatewayAuditQueue returns the audit queue for Gateway Mode handlers.
-// Uses the global AuditManager (preferred), falling back to DatabasePolicyEngine.
 func getGatewayAuditQueue() *AuditQueue {
 	if auditManager != nil {
 		return auditManager.GetQueue()
-	}
-	if dbPolicyEngine != nil {
-		return dbPolicyEngine.GetAuditQueue()
 	}
 	return nil
 }
@@ -547,12 +543,6 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		policyResult = convertSharedResultToStatic(requestResult)
 		log.Printf("[Gateway] Shared policy engine evaluated %d policies in %dms",
 			requestResult.PoliciesEvaluated, requestResult.ProcessingTimeMs)
-	} else if dbPolicyEngine != nil {
-		// Fallback to database-loaded policy engine
-		policyResult = dbPolicyEngine.EvaluateStaticPolicies(user, req.Query, "llm_chat")
-	} else if staticPolicyEngine != nil {
-		// Fallback to hardcoded static policy engine
-		policyResult = staticPolicyEngine.EvaluateStaticPolicies(user, req.Query, "llm_chat")
 	} else {
 		// No policy engine available - allow by default
 		policyResult = &StaticPolicyResult{

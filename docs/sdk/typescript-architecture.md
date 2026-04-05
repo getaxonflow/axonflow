@@ -93,7 +93,7 @@ interface AxonFlowConfig {
 
 ### Authentication
 
-The SDK sends credentials as an `Authorization: Basic` header using base64-encoded `clientId:clientSecret`. It also sends `X-Tenant-ID` set to the `clientId` value for multi-tenant routing.
+The SDK derives tenant from Basic auth` set to the `clientId` value for multi-tenant routing.
 
 For Community Edition (self-hosted) deployments without authentication, you can omit `clientId` and `clientSecret`. The SDK defaults to `"community"` as the effective client ID.
 

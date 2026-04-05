@@ -26,7 +26,6 @@ docker compose up -d
 
 # Verify services are healthy
 curl http://localhost:8080/health
-curl http://localhost:8081/health
 ```
 
 ## Running the Examples
@@ -129,7 +128,6 @@ All 10 Static Policy SDK methods tested!
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | Agent URL |
-| `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | Orchestrator URL |
 | `AXONFLOW_CLIENT_ID` | `demo-client` | Client ID |
 | `AXONFLOW_CLIENT_SECRET` | `demo-secret` | Client secret |
 

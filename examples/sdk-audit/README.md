@@ -12,7 +12,6 @@ These examples validate all SDK methods work correctly against live AxonFlow ser
 2. Wait for services to be healthy:
    ```bash
    curl http://localhost:8080/health
-   curl http://localhost:8081/health
    ```
 
 ## What's Tested
@@ -98,7 +97,6 @@ Summary: 8 passed, 0 failed
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AXONFLOW_AGENT_URL` | `http://localhost:8080` | Agent service URL |
-| `AXONFLOW_ORCHESTRATOR_URL` | `http://localhost:8081` | Orchestrator service URL |
 | `AXONFLOW_CLIENT_ID` | (empty) | OAuth2 client ID |
 | `AXONFLOW_CLIENT_SECRET` | (empty) | OAuth2 client secret |
 

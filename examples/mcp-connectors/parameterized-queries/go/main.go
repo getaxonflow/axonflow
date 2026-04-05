@@ -295,7 +295,6 @@ func sendRequest(url string, req MCPQueryRequest) (*MCPQueryResponse, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Tenant-ID", "default")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)

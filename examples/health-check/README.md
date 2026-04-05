@@ -20,8 +20,7 @@ Demonstrates how to check the health of AxonFlow Agent and Orchestrator services
 
 2. Verify services are running:
    ```bash
-   curl http://localhost:8080/health   # Agent
-   curl http://localhost:8081/health   # Orchestrator
+   curl http://localhost:8080/health
    ```
 
 ### Run Examples

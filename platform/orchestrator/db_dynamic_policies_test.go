@@ -45,15 +45,7 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 				// Expect ping
 				mock.ExpectPing()
 
-				// Expect schema creation (initializeSchema)
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS dynamic_policies").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("CREATE INDEX IF NOT EXISTS idx_policies_tenant").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("CREATE INDEX IF NOT EXISTS idx_policies_enabled").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("CREATE INDEX IF NOT EXISTS idx_policies_priority").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS policy_metrics").WillReturnResult(sqlmock.NewResult(0, 0))
-				mock.ExpectExec("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp").WillReturnResult(sqlmock.NewResult(0, 0))
-
-				// Expect count query
+				// Expect seedDefaultData: system media policies + count query
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
@@ -118,19 +110,21 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 	}
 }
 
-// TestInitializeSchema tests database schema initialization
-func TestInitializeSchema(t *testing.T) {
+// TestSeedDefaultData tests default data seeding (system media policies + sample policies)
+func TestSeedDefaultData(t *testing.T) {
 	tests := []struct {
 		name        string
 		mockSetup   func(sqlmock.Sqlmock)
 		expectError bool
 	}{
 		{
-			name: "Success - empty database, schema created with sample policies",
+			name: "Success - empty database, seeds sample policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Schema creation - one multi-statement Exec
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(0, 0))
+				// Expect system media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				for i := 0; i < 5; i++ {
+					mock.ExpectExec("INSERT INTO dynamic_policies").
+						WillReturnResult(sqlmock.NewResult(0, 1))
+				}
 
 				// Count query returns 0 (empty table)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -149,9 +143,11 @@ func TestInitializeSchema(t *testing.T) {
 		{
 			name: "Success - table already has data, no sample inserts",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Schema creation - one multi-statement Exec
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(0, 0))
+				// Expect system media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				for i := 0; i < 5; i++ {
+					mock.ExpectExec("INSERT INTO dynamic_policies").
+						WillReturnResult(sqlmock.NewResult(0, 1))
+				}
 
 				// Count query returns 5 (table has data)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -162,20 +158,13 @@ func TestInitializeSchema(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "Error - schema creation fails",
-			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Schema creation fails
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS dynamic_policies").
-					WillReturnError(errors.New("database error"))
-			},
-			expectError: true,
-		},
-		{
 			name: "Error - count query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Schema creation succeeds
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(0, 0))
+				// System media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				for i := 0; i < 5; i++ {
+					mock.ExpectExec("INSERT INTO dynamic_policies").
+						WillReturnResult(sqlmock.NewResult(0, 1))
+				}
 
 				// Count query fails
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -204,8 +193,8 @@ func TestInitializeSchema(t *testing.T) {
 				cacheTimeout: 30 * time.Second,
 			}
 
-			// Test initializeSchema
-			err = engine.initializeSchema()
+			// Test seedDefaultData
+			err = engine.seedDefaultData()
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got nil")

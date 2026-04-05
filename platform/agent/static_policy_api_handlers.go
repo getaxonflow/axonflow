@@ -71,27 +71,33 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 
 	handler := NewStaticPolicyAPIHandler(db)
 
+	// All static policy routes are protected by apiAuthMiddleware.
+	// Tenant identity is derived from OAuth2 client credentials (Basic auth),
+	// not from X-Tenant-ID header. Handlers read tenant via TenantIDFromContext().
+	sub := router.PathPrefix("/api/v1/static-policies").Subrouter()
+	sub.Use(apiAuthMiddleware)
+
 	// List and effective endpoints (must come before {id} routes)
-	router.HandleFunc("/api/v1/static-policies", handler.HandleListStaticPolicies).Methods("GET")
-	router.HandleFunc("/api/v1/static-policies", handler.HandleCreateStaticPolicy).Methods("POST")
-	router.HandleFunc("/api/v1/static-policies/effective", handler.HandleGetEffectivePolicies).Methods("GET")
-	router.HandleFunc("/api/v1/static-policies/test", handler.HandleTestPattern).Methods("POST")
-	router.HandleFunc("/api/v1/static-policies/overrides", handler.HandleListOverrides).Methods("GET")
+	sub.HandleFunc("", handler.HandleListStaticPolicies).Methods("GET")
+	sub.HandleFunc("", handler.HandleCreateStaticPolicy).Methods("POST")
+	sub.HandleFunc("/effective", handler.HandleGetEffectivePolicies).Methods("GET")
+	sub.HandleFunc("/test", handler.HandleTestPattern).Methods("POST")
+	sub.HandleFunc("/overrides", handler.HandleListOverrides).Methods("GET")
 
 	// Single policy operations (must come after literal path routes)
-	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleGetStaticPolicy).Methods("GET")
-	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleUpdateStaticPolicy).Methods("PUT")
-	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleDeleteStaticPolicy).Methods("DELETE")
-	router.HandleFunc("/api/v1/static-policies/{id}", handler.HandleTogglePolicy).Methods("PATCH")
+	sub.HandleFunc("/{id}", handler.HandleGetStaticPolicy).Methods("GET")
+	sub.HandleFunc("/{id}", handler.HandleUpdateStaticPolicy).Methods("PUT")
+	sub.HandleFunc("/{id}", handler.HandleDeleteStaticPolicy).Methods("DELETE")
+	sub.HandleFunc("/{id}", handler.HandleTogglePolicy).Methods("PATCH")
 
 	// Version history
-	router.HandleFunc("/api/v1/static-policies/{id}/versions", handler.HandleGetVersionHistory).Methods("GET")
+	sub.HandleFunc("/{id}/versions", handler.HandleGetVersionHistory).Methods("GET")
 
 	// Override endpoints (Enterprise only)
-	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleCreateOverride).Methods("POST")
-	router.HandleFunc("/api/v1/static-policies/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
+	sub.HandleFunc("/{id}/override", handler.HandleCreateOverride).Methods("POST")
+	sub.HandleFunc("/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
 
-	log.Println("✅ Static Policy API routes registered (12 endpoints)")
+	log.Println("✅ Static Policy API routes registered (12 endpoints, auth-protected)")
 }
 
 // HandleListStaticPolicies handles GET /api/v1/static-policies
@@ -106,11 +112,10 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 //   - search: Search in name and description
 //
 // Headers:
-//   - X-Tenant-ID: Tenant ID for scoping (required in SaaS mode)
-//   - X-Organization-ID: Organization ID for org-level filtering
+//   Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
 func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := TenantIDFromContext(ctx)
 
 	// Parse pagination parameters
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -174,17 +179,16 @@ func (h *StaticPolicyAPIHandler) HandleListStaticPolicies(w http.ResponseWriter,
 // HandleCreateStaticPolicy handles POST /api/v1/static-policies
 // Request body: CreateStaticPolicyRequest
 // Headers:
-//   - X-Tenant-ID: Tenant ID (required)
-//   - X-Organization-ID: Organization ID (required for org-tier policies)
+//   Auth: OAuth2 Client Credentials (Basic auth) — tenant and org derived from authenticated client
 //   - X-User-ID: User ID for audit trail
 func (h *StaticPolicyAPIHandler) HandleCreateStaticPolicy(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tenantID := r.Header.Get("X-Tenant-ID")
-	orgID := r.Header.Get("X-Organization-ID")
+	tenantID := TenantIDFromContext(ctx)
+	orgID := OrgIDFromContext(ctx)
 	userID := r.Header.Get("X-User-ID")
 
 	if tenantID == "" {
-		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 
@@ -409,11 +413,11 @@ func (h *StaticPolicyAPIHandler) HandleTogglePolicy(w http.ResponseWriter, r *ht
 // This is used by the Customer Portal for the unified policy view.
 func (h *StaticPolicyAPIHandler) HandleGetEffectivePolicies(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tenantID := r.Header.Get("X-Tenant-ID")
-	orgIDHeader := r.Header.Get("X-Organization-ID")
+	tenantID := TenantIDFromContext(ctx)
+	orgIDHeader := OrgIDFromContext(ctx)
 
 	if tenantID == "" {
-		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 
@@ -491,7 +495,7 @@ func (h *StaticPolicyAPIHandler) HandleGetVersionHistory(w http.ResponseWriter, 
 	ctx := r.Context()
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := TenantIDFromContext(ctx)
 
 	versions, err := h.policyRepo.GetVersions(ctx, policyID, tenantID)
 	if err != nil {
@@ -520,12 +524,12 @@ func (h *StaticPolicyAPIHandler) HandleCreateOverride(w http.ResponseWriter, r *
 	ctx := r.Context()
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	tenantID := r.Header.Get("X-Tenant-ID")
-	orgID := r.Header.Get("X-Organization-ID")
+	tenantID := TenantIDFromContext(ctx)
+	orgID := OrgIDFromContext(ctx)
 	userID := r.Header.Get("X-User-ID")
 
 	if tenantID == "" {
-		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 
@@ -582,12 +586,12 @@ func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *
 	ctx := r.Context()
 	vars := mux.Vars(r)
 	policyID := vars["id"]
-	tenantIDHeader := r.Header.Get("X-Tenant-ID")
-	orgIDHeader := r.Header.Get("X-Organization-ID")
+	tenantIDHeader := TenantIDFromContext(ctx)
+	orgIDHeader := OrgIDFromContext(ctx)
 	userID := r.Header.Get("X-User-ID")
 
 	if tenantIDHeader == "" {
-		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 
@@ -619,15 +623,14 @@ func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *
 // HandleListOverrides handles GET /api/v1/static-policies/overrides
 // Lists all policy overrides for a tenant
 // Headers:
-//   - X-Tenant-ID: Tenant ID (required)
-//   - X-Organization-ID: Organization ID (optional)
+//   Auth: OAuth2 Client Credentials (Basic auth) — tenant derived from authenticated client
 func (h *StaticPolicyAPIHandler) HandleListOverrides(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tenantIDHeader := r.Header.Get("X-Tenant-ID")
-	orgIDHeader := r.Header.Get("X-Organization-ID")
+	tenantIDHeader := TenantIDFromContext(ctx)
+	orgIDHeader := OrgIDFromContext(ctx)
 
 	if tenantIDHeader == "" {
-		writeJSONError(w, "X-Tenant-ID header required", http.StatusBadRequest)
+		writeJSONError(w, "Authentication required — tenant could not be determined", http.StatusUnauthorized)
 		return
 	}
 

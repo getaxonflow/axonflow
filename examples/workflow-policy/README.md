@@ -30,9 +30,8 @@ configured policies before proceeding.
 
 ## Prerequisites
 
-1. AxonFlow Agent running locally (default: `http://localhost:8080`)
-2. AxonFlow Orchestrator running locally (default: `http://localhost:8081`)
-3. Valid client credentials
+1. AxonFlow running locally (default: `http://localhost:8080`)
+2. Valid client credentials
 
 ## Environment Variables
 
@@ -43,7 +42,7 @@ export AXONFLOW_CLIENT_ID="your-client-id"
 export AXONFLOW_CLIENT_SECRET="your-client-secret"
 
 # Optional (for MAP examples)
-export AXONFLOW_ORCHESTRATOR_URL="http://localhost:8081"
+export AXONFLOW_AGENT_URL="http://localhost:8080"
 ```
 
 ## Running Examples

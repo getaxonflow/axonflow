@@ -10,8 +10,7 @@ set -e
 
 # Configuration
 AGENT_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-secret}"
 
 # Auth header
@@ -22,7 +21,7 @@ echo "Workflow Policy Enforcement - HTTP Examples"
 echo "=========================================="
 echo ""
 echo "Agent URL: ${AGENT_URL}"
-echo "Orchestrator URL: ${ORCHESTRATOR_URL}"
+echo "Agent URL: ${AGENT_URL}"
 echo ""
 
 # ==========================================
@@ -35,7 +34,7 @@ echo ""
 
 # 1.1 Create a plan first
 echo "1.1 Creating a plan..."
-PLAN_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/plan" \
+PLAN_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/plan" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d '{
@@ -58,7 +57,7 @@ echo ""
 
 # 1.2 Execute plan - demonstrates policy_info in response
 echo "1.2 Executing plan (demonstrates policy_info in response)..."
-EXEC_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/plan/execute" \
+EXEC_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/plan/execute" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d "{
@@ -96,7 +95,7 @@ echo ""
 
 # 2.1 Create a workflow
 echo "2.1 Creating workflow..."
-WF_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows" \
+WF_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d '{
@@ -113,7 +112,7 @@ echo ""
 
 # 2.2 Check step gate - demonstrates policies_evaluated and policies_matched
 echo "2.2 Checking step gate (demonstrates policies_evaluated/matched)..."
-GATE_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/step-1/gate" \
+GATE_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/step-1/gate" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d '{
@@ -150,7 +149,7 @@ echo ""
 
 # 2.3 Test with potentially blocked content
 echo "2.3 Testing with potentially sensitive content..."
-GATE_RESPONSE_2=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/step-2/gate" \
+GATE_RESPONSE_2=$(curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/steps/step-2/gate" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d '{
@@ -169,7 +168,7 @@ echo ""
 
 # 2.4 Complete the workflow
 echo "2.4 Completing workflow..."
-curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/workflows/${WORKFLOW_ID}/complete" \
+curl -s -X POST "${AGENT_URL}/api/v1/workflows/${WORKFLOW_ID}/complete" \
   -H "${AUTH_HEADER}" > /dev/null
 echo "   Workflow completed"
 echo ""
@@ -192,7 +191,7 @@ echo "3.1 Searching for workflow audit logs..."
 # Get current timestamp minus 60 seconds in ISO format
 START_TIME=$(date -u -v-60S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '60 seconds ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")
 
-AUDIT_RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/audit/search" \
+AUDIT_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/audit/search" \
   -H "Content-Type: application/json" \
   -H "${AUTH_HEADER}" \
   -d "{

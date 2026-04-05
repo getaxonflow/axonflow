@@ -3,7 +3,7 @@
 MCP Connector Example - Python
 
 Tests and VALIDATES the full MCP connector flow:
-  SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
+  SDK -> Agent (port 8080) -> Connector
 
 VALIDATION: This example exits with code 1 if any assertion fails.
 
@@ -34,18 +34,17 @@ def main() -> int:
     print("=" * 50)
     print()
 
-    orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://localhost:8081")
+    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "mcp-connector-example")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
-    print(f"Orchestrator URL: {orchestrator_url}")
+    print(f"Agent URL: {agent_url}")
     print(f"Client ID: {client_id}")
     print()
 
     # Build auth headers
     headers = {
         "Content-Type": "application/json",
-        "X-Tenant-ID": client_id,
     }
     if client_secret:
         credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -74,7 +73,7 @@ def main() -> int:
 
     try:
         response = requests.post(
-            f"{orchestrator_url}/api/v1/process",
+            f"{agent_url}/api/v1/process",
             json=request,
             headers=headers,
             timeout=30,
@@ -103,8 +102,8 @@ def main() -> int:
                 failures.append(f"MCP query failed: {error}")
 
     except requests.exceptions.ConnectionError:
-        print(f"   Connection error: Cannot connect to {orchestrator_url}")
-        failures.append("Cannot connect to orchestrator")
+        print(f"   Connection error: Cannot connect to {agent_url}")
+        failures.append("Cannot connect to agent")
         return 1
     except Exception as e:
         failures.append(f"MCP query error: {e}")
@@ -117,7 +116,7 @@ def main() -> int:
 
     try:
         response = requests.post(
-            f"{orchestrator_url}/api/v1/process",
+            f"{agent_url}/api/v1/process",
             json=request,
             headers=headers,
             timeout=30,
@@ -142,7 +141,7 @@ def main() -> int:
 
     try:
         response = requests.post(
-            f"{orchestrator_url}/api/v1/process",
+            f"{agent_url}/api/v1/process",
             json=request,
             headers=headers,
             timeout=30,
@@ -166,7 +165,7 @@ def main() -> int:
         print("✓ ALL TESTS PASSED")
         print()
         print("MCP Connector operations validated:")
-        print("  - Orchestrator routing to Agent")
+        print("  - Agent routing to connector")
         print("  - postgres connector query")
         print("  - database alias resolution")
         print("  - SQLi pattern blocking")

@@ -1,10 +1,7 @@
-// MCP Connector Example - Tests Orchestrator-to-Agent Routing
+// MCP Connector Example - Tests Agent Routing
 //
 // This example tests the FULL MCP connector flow:
-//   SDK -> Orchestrator (port 8081) -> Agent (port 8080) -> Connector
-//
-// This is different from direct agent calls and exercises the
-// internal service authentication between orchestrator and agent.
+//   SDK -> Agent (port 8080) -> Connector
 //
 // VALIDATION: This example exits with code 1 if any assertion fails.
 //
@@ -36,8 +33,8 @@ func assertCheck(condition bool, message string) {
 	}
 }
 
-// OrchestratorRequest matches the orchestrator's expected request format
-type OrchestratorRequest struct {
+// AgentRequest matches the agent's expected request format
+type AgentRequest struct {
 	RequestID   string                 `json:"request_id"`
 	Query       string                 `json:"query"`
 	RequestType string                 `json:"request_type"`
@@ -57,7 +54,7 @@ type ClientContext struct {
 	TenantID string `json:"tenant_id"`
 }
 
-type OrchestratorResponse struct {
+type AgentResponse struct {
 	RequestID      string                 `json:"request_id"`
 	Success        bool                   `json:"success"`
 	Data           map[string]interface{} `json:"data"`
@@ -66,21 +63,21 @@ type OrchestratorResponse struct {
 }
 
 func main() {
-	orchestratorURL := os.Getenv("ORCHESTRATOR_URL")
-	if orchestratorURL == "" {
-		orchestratorURL = "http://localhost:8081"
+	agentURL := os.Getenv("AXONFLOW_AGENT_URL")
+	if agentURL == "" {
+		agentURL = "http://localhost:8080"
 	}
 
 	fmt.Println("==============================================")
-	fmt.Println("MCP Connector Example - Orchestrator Routing")
+	fmt.Println("MCP Connector Example - Agent Routing")
 	fmt.Println("==============================================")
-	fmt.Printf("Orchestrator URL: %s\n\n", orchestratorURL)
+	fmt.Printf("Agent URL: %s\n\n", agentURL)
 
-	// Test 1: Query postgres connector through orchestrator
+	// Test 1: Query postgres connector through agent
 	// Note: "postgres" is the default postgres connector registered when DATABASE_URL is set
-	fmt.Println("Test 1: Query postgres connector via orchestrator...")
+	fmt.Println("Test 1: Query postgres connector via agent...")
 
-	req := OrchestratorRequest{
+	req := AgentRequest{
 		RequestID:   fmt.Sprintf("mcp-test-%d", time.Now().UnixNano()),
 		Query:       "SELECT 1 as test_value, 'hello' as test_message",
 		RequestType: "mcp-query",
@@ -99,12 +96,12 @@ func main() {
 		},
 	}
 
-	result, err := sendRequest(orchestratorURL+"/api/v1/process", req)
+	result, err := sendRequest(agentURL+"/api/v1/process", req)
 	if err != nil {
 		fmt.Printf("FAILED: %v\n", err)
 		assertCheck(false, "Test 1: MCP query request succeeded")
 	} else if result.Success {
-		fmt.Println("SUCCESS: MCP query through orchestrator worked!")
+		fmt.Println("SUCCESS: MCP query through agent worked!")
 		fmt.Printf("  Request ID: %s\n", result.RequestID)
 		fmt.Printf("  Processing Time: %s\n", result.ProcessingTime)
 		assertCheck(true, "Test 1: MCP query request succeeded")
@@ -129,7 +126,7 @@ func main() {
 	req.RequestID = fmt.Sprintf("mcp-test-%d", time.Now().UnixNano())
 	req.Query = "SELECT NOW() as current_time, 'AxonFlow MCP' as source"
 
-	result, err = sendRequest(orchestratorURL+"/api/v1/process", req)
+	result, err = sendRequest(agentURL+"/api/v1/process", req)
 	if err != nil {
 		fmt.Printf("FAILED: %v\n", err)
 		assertCheck(false, "Test 2: Timestamp query request succeeded")
@@ -159,7 +156,7 @@ func main() {
 	fmt.Println("==============================================")
 }
 
-func sendRequest(url string, req OrchestratorRequest) (*OrchestratorResponse, error) {
+func sendRequest(url string, req AgentRequest) (*AgentResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -183,7 +180,7 @@ func sendRequest(url string, req OrchestratorRequest) (*OrchestratorResponse, er
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	var result OrchestratorResponse
+	var result AgentResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w (body: %s)", err, string(respBody))
 	}

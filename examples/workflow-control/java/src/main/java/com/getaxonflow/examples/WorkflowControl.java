@@ -462,10 +462,10 @@ public class WorkflowControl {
                 }
 
                 // Stream execution status via HTTP SSE endpoint
-                String orchestratorUrl = getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081");
+                String agentUrl = getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080");
                 String sseClientId = getEnv("AXONFLOW_CLIENT_ID", "workflow-control-java");
                 String sseClientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
-                String streamUrl = orchestratorUrl + "/api/v1/unified/executions/" + sseWorkflow.getWorkflowId() + "/stream";
+                String streamUrl = agentUrl + "/api/v1/unified/executions/" + sseWorkflow.getWorkflowId() + "/stream";
                 System.out.println("   SSE URL: " + streamUrl);
 
                 try {
@@ -477,7 +477,6 @@ public class WorkflowControl {
                     conn.setRequestProperty("Accept", "text/event-stream");
                     conn.setRequestProperty("X-Client-ID", sseClientId);
                     conn.setRequestProperty("X-Client-Secret", sseClientSecret);
-                    conn.setRequestProperty("X-Tenant-ID", sseClientId);
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
                     conn.connect();

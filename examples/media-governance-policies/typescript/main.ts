@@ -9,11 +9,8 @@
  *   - Per-tenant media governance disable/enable (Enterprise only)
  *   - Verifying non-media requests are unaffected by media policies
  *
- * Two client instances are used:
- *   - orchestratorClient: connects to AXONFLOW_ORCHESTRATOR_ENDPOINT (default :8081)
- *     for policy CRUD, media governance config, and status
- *   - agentClient: connects to AXONFLOW_ENDPOINT (default :8080)
- *     for proxyLLMCall requests that trigger media analysis
+ * All requests go through the agent entry point (AXONFLOW_ENDPOINT, default :8080).
+ * The agent proxies policy CRUD, media governance config, and proxyLLMCall requests.
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  * This ensures CI/CD pipelines catch regressions.
@@ -54,15 +51,8 @@ async function main(): Promise<void> {
   console.log('='.repeat(52));
   console.log();
 
-  // Two clients: orchestrator for policy CRUD, agent for LLM proxy requests
-  const orchestratorClient = new AxonFlow({
-    endpoint: getEnv('AXONFLOW_ORCHESTRATOR_ENDPOINT', 'http://localhost:8081'),
-    clientId: getEnv('AXONFLOW_CLIENT_ID', 'demo'),
-    clientSecret: getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
-    debug: getEnv('AXONFLOW_DEBUG', '') === 'true',
-  });
-
-  const agentClient = new AxonFlow({
+  // Single client: all requests go through the agent entry point
+  const client = new AxonFlow({
     endpoint: getEnv('AXONFLOW_ENDPOINT', 'http://localhost:8080'),
     clientId: getEnv('AXONFLOW_CLIENT_ID', 'demo'),
     clientSecret: getEnv('AXONFLOW_CLIENT_SECRET', 'demo'),
@@ -80,7 +70,7 @@ async function main(): Promise<void> {
 
   let systemPolicies: any;
   try {
-    systemPolicies = await orchestratorClient.listDynamicPolicies({
+    systemPolicies = await client.listDynamicPolicies({
       type: 'media',
       limit: 100,
     });
@@ -152,7 +142,7 @@ async function main(): Promise<void> {
 
   let resp2: any;
   try {
-    resp2 = await agentClient.proxyLLMCall({
+    resp2 = await client.proxyLLMCall({
       userToken,
       query: 'Describe this image',
       requestType: 'chat',
@@ -203,7 +193,7 @@ async function main(): Promise<void> {
   let createdPolicyId: string | null = null;
 
   try {
-    const createResp = await orchestratorClient.createDynamicPolicy({
+    const createResp = await client.createDynamicPolicy({
       name: 'test-face-block-ts-example',
       description: 'Blocks images containing faces (TypeScript example test policy)',
       type: 'media',
@@ -243,7 +233,7 @@ async function main(): Promise<void> {
 
   if (createdPolicyId) {
     try {
-      const listResp = await orchestratorClient.listDynamicPolicies({
+      const listResp = await client.listDynamicPolicies({
         type: 'media',
         limit: 100,
       });
@@ -265,7 +255,7 @@ async function main(): Promise<void> {
   console.log('  3c. Sending 1x1 image request (no faces expected)');
 
   try {
-    const processResp = await agentClient.proxyLLMCall({
+    const processResp = await client.proxyLLMCall({
       userToken,
       query: 'Describe this image',
       requestType: 'chat',
@@ -294,7 +284,7 @@ async function main(): Promise<void> {
 
   if (createdPolicyId) {
     try {
-      await orchestratorClient.deleteDynamicPolicy(createdPolicyId);
+      await client.deleteDynamicPolicy(createdPolicyId);
       assertCheck(true, 'Policy deleted successfully');
     } catch (error) {
       console.log(`   FAIL: deleteDynamicPolicy failed: ${error}`);
@@ -318,7 +308,7 @@ async function main(): Promise<void> {
   console.log('  4a. getMediaGovernanceStatus()');
 
   try {
-    statusResp = await orchestratorClient.getMediaGovernanceStatus();
+    statusResp = await client.getMediaGovernanceStatus();
 
     assertCheck(
       statusResp.available !== undefined,
@@ -345,7 +335,7 @@ async function main(): Promise<void> {
   console.log('  4b. getMediaGovernanceConfig()');
 
   try {
-    const configResp = await orchestratorClient.getMediaGovernanceConfig();
+    const configResp = await client.getMediaGovernanceConfig();
 
     assertCheck(
       configResp.tenant_id !== undefined,
@@ -372,7 +362,7 @@ async function main(): Promise<void> {
   let togglePolicyId: string | null = null;
 
   try {
-    const toggleCreateResp = await orchestratorClient.createDynamicPolicy({
+    const toggleCreateResp = await client.createDynamicPolicy({
       name: 'test-nsfw-toggle-ts-example',
       description: 'NSFW threshold policy for toggle lifecycle test',
       type: 'media',
@@ -418,7 +408,7 @@ async function main(): Promise<void> {
 
   if (togglePolicyId) {
     try {
-      const disableResp = await orchestratorClient.updateDynamicPolicy(
+      const disableResp = await client.updateDynamicPolicy(
         togglePolicyId,
         { enabled: false }
       );
@@ -442,7 +432,7 @@ async function main(): Promise<void> {
 
   if (togglePolicyId) {
     try {
-      const enableResp = await orchestratorClient.updateDynamicPolicy(
+      const enableResp = await client.updateDynamicPolicy(
         togglePolicyId,
         { enabled: true }
       );
@@ -466,7 +456,7 @@ async function main(): Promise<void> {
 
   if (togglePolicyId) {
     try {
-      await orchestratorClient.deleteDynamicPolicy(togglePolicyId);
+      await client.deleteDynamicPolicy(togglePolicyId);
       assertCheck(true, 'Policy deleted successfully');
     } catch (error) {
       console.log(`   FAIL: deleteDynamicPolicy failed: ${error}`);
@@ -491,7 +481,7 @@ async function main(): Promise<void> {
     console.log('  6a. Disabling media governance (enabled=false)');
 
     try {
-      const mgDisableResp = await orchestratorClient.updateMediaGovernanceConfig({
+      const mgDisableResp = await client.updateMediaGovernanceConfig({
         enabled: false,
       });
 
@@ -509,7 +499,7 @@ async function main(): Promise<void> {
     console.log('  6b. Sending image request with media governance disabled');
 
     try {
-      const mgOffResp = await agentClient.proxyLLMCall({
+      const mgOffResp = await client.proxyLLMCall({
         userToken,
         query: 'Describe this image',
         requestType: 'chat',
@@ -540,7 +530,7 @@ async function main(): Promise<void> {
     console.log('  6c. Re-enabling media governance (enabled=true)');
 
     try {
-      const mgEnableResp = await orchestratorClient.updateMediaGovernanceConfig({
+      const mgEnableResp = await client.updateMediaGovernanceConfig({
         enabled: true,
       });
 
@@ -558,7 +548,7 @@ async function main(): Promise<void> {
     console.log('  6d. Sending image request with media governance re-enabled');
 
     try {
-      const mgOnResp = await agentClient.proxyLLMCall({
+      const mgOnResp = await client.proxyLLMCall({
         userToken,
         query: 'Describe this image',
         requestType: 'chat',
@@ -602,7 +592,7 @@ async function main(): Promise<void> {
   console.log();
 
   try {
-    const resp7 = await agentClient.proxyLLMCall({
+    const resp7 = await client.proxyLLMCall({
       userToken,
       query: 'What is the capital of France?',
       requestType: 'chat',

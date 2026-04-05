@@ -552,10 +552,10 @@ async function main(): Promise<void> {
   }
 
   if (!sseExecErr && sseExec) {
-    const orchestratorUrl = getEnv('AXONFLOW_ORCHESTRATOR_URL', 'http://localhost:8081');
+    const agentUrl = getEnv('AXONFLOW_AGENT_URL', 'http://localhost:8080');
     const clientId = getEnv('AXONFLOW_CLIENT_ID', 'demo-org');
     const clientSecret = getEnv('AXONFLOW_CLIENT_SECRET', 'demo');
-    const streamUrl = `${orchestratorUrl}/api/v1/unified/executions/${ssePlan.planId}/stream`;
+    const streamUrl = `${agentUrl}/api/v1/unified/executions/${ssePlan.planId}/stream`;
     console.log(`   SSE URL: ${streamUrl}`);
 
     try {
@@ -566,7 +566,6 @@ async function main(): Promise<void> {
           'Accept': 'application/json',
           'X-Client-ID': clientId,
           'X-Client-Secret': clientSecret,
-          'X-Tenant-ID': clientId,
         },
       });
 

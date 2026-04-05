@@ -48,8 +48,8 @@ def main() -> int:
     print("=" * 55)
     print()
 
-    # WCP endpoints are on the orchestrator (port 8081)
-    endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8081")
+    # WCP endpoints go through the agent (port 8080)
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080")
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "demo")
 
@@ -76,7 +76,7 @@ def main() -> int:
         except Exception as e:
             failures.append(f"create_workflow failed: {e}")
             print(f"   Error: {e}")
-            print("   Note: WCP endpoints are on the orchestrator (port 8081)")
+            print("   Note: WCP endpoints go through the agent (port 8080)")
             return 1
         print()
 

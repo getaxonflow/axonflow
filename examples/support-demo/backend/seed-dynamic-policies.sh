@@ -4,11 +4,11 @@
 
 set -e
 
-ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-http://localhost:8081}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 TENANT_ID="${TENANT_ID:-demo-tenant}"
 
 echo "=== Seeding Dynamic Policies for Support Demo ==="
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
+echo "Agent URL: $AGENT_URL"
 echo "Tenant ID: $TENANT_ID"
 echo ""
 
@@ -18,9 +18,8 @@ create_policy() {
     local json_file="$2"
 
     echo "Creating policy: $name"
-    response=$(curl -s -w "\n%{http_code}" -X POST "$ORCHESTRATOR_URL/api/v1/dynamic-policies" \
+    response=$(curl -s -w "\n%{http_code}" -X POST "$AGENT_URL/api/v1/dynamic-policies" \
         -H "Content-Type: application/json" \
-        -H "X-Tenant-ID: $TENANT_ID" \
         -d @"$json_file")
 
     http_code=$(echo "$response" | tail -n1)
@@ -251,4 +250,4 @@ create_policy "India Region - RBI Compliance" "$POLICY_DIR/india-rbi.json"
 echo "=== Policy Seeding Complete ==="
 echo ""
 echo "Verify policies with:"
-echo "  curl -s -H 'X-Tenant-ID: $TENANT_ID' '$ORCHESTRATOR_URL/api/v1/dynamic-policies' | jq '.policies[].name'"
+echo "  curl -s '$AGENT_URL/api/v1/dynamic-policies' | jq '.policies[].name'"

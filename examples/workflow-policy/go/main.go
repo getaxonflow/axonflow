@@ -34,9 +34,9 @@ func main() {
 	fmt.Println("==========================================")
 	fmt.Println()
 
-	// Initialize client - use orchestrator endpoint for workflow APIs
+	// Initialize client - use agent endpoint for workflow APIs
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8081"),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "secret"),
 	})

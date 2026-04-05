@@ -17,12 +17,12 @@
 
 set -e
 
-ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-http://localhost:8081}"
+AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 
 echo "=============================================="
 echo "MCP Connectors - HTTP API Example"
 echo "=============================================="
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
+echo "Agent URL: $AGENT_URL"
 echo ""
 
 PASS=0
@@ -44,7 +44,7 @@ check_result() {
 echo "Test 1: Query postgres connector via orchestrator..."
 echo "----------------------------------------------"
 
-RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/process" \
+RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/process" \
   -H "Content-Type: application/json" \
   -d '{
     "request_id": "mcp-http-test-1",
@@ -80,7 +80,7 @@ echo ""
 echo "Test 2: Query current timestamp..."
 echo "----------------------------------------------"
 
-RESPONSE=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/process" \
+RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/process" \
   -H "Content-Type: application/json" \
   -d '{
     "request_id": "mcp-http-test-2",

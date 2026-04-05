@@ -60,6 +60,6 @@ cd java && mvn compile exec:java
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AXONFLOW_ENDPOINT` | `http://localhost:8081` | AxonFlow Orchestrator URL |
+| `AXONFLOW_ENDPOINT` | `http://localhost:8080` | AxonFlow Agent URL |
 | `AXONFLOW_CLIENT_ID` | `demo-org` | Client ID |
 | `AXONFLOW_CLIENT_SECRET` | `demo` | Client secret |

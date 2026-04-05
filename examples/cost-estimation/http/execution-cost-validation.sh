@@ -15,7 +15,7 @@
 #
 # Environment:
 #   AXONFLOW_AGENT_URL or AXONFLOW_ENDPOINT - Agent URL (default: http://localhost:8080)
-#   AXONFLOW_ORCHESTRATOR_URL - Orchestrator URL (default: http://localhost:8081)
+#   AXONFLOW_AGENT_URL        - Agent URL (default: http://localhost:8080)
 #   AXONFLOW_CLIENT_ID     - Client ID (default: demo-org)
 #   AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
 #   AXONFLOW_USER_TOKEN    - JWT token for MAP operations (optional)
@@ -28,8 +28,7 @@ cleanup() {
 trap cleanup EXIT
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-${AXONFLOW_ENDPOINT:-http://localhost:8080}}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-demo-org}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 
@@ -37,7 +36,6 @@ echo "=============================================="
 echo "Execution Cost Validation - HTTP/cURL Example"
 echo "=============================================="
 echo "Agent URL:        $AGENT_URL"
-echo "Orchestrator URL: $ORCHESTRATOR_URL"
 echo ""
 
 PASS=0
@@ -85,8 +83,7 @@ PLAN_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_plan.json -w "%{http_code}" 
     --max-time 30 \
     -X POST "${AGENT_URL}/api/request" \
     -H "Content-Type: application/json" \
-    -H "X-Client-ID: $CLIENT_ID" \
-    ${CLIENT_SECRET:+-H "X-Client-Secret: $CLIENT_SECRET"} \
+    -H "Authorization: Basic $AUTH_B64" \
     -d "$PLAN_BODY" || echo "000")
 
 PLAN_RESPONSE=$(cat /tmp/axonflow_exec_cost_plan.json 2>/dev/null || echo "{}")
@@ -117,7 +114,7 @@ WAITED=0
 POLL_INTERVAL=5
 
 while [ $WAITED -lt $MAX_WAIT ]; do
-    EXEC_LIST=$(curl -s --max-time 10 "${ORCHESTRATOR_URL}/api/v1/executions?limit=5" 2>/dev/null || echo '{"executions":[]}')
+    EXEC_LIST=$(curl -s --max-time 10 "${AGENT_URL}/api/v1/executions?limit=5" 2>/dev/null || echo '{"executions":[]}')
 
     # Prefer matching our REQUEST_ID, fall back to any completed execution.
     # The executions API returns request_id as the primary identifier.
@@ -163,7 +160,7 @@ echo "4. GET /api/v1/executions/${EXECUTION_ID} - Validate total cost..."
 
 DETAIL_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_detail.json -w "%{http_code}" \
     --max-time 15 \
-    "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}" || echo "000")
+    "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}" || echo "000")
 
 DETAIL_RESPONSE=$(cat /tmp/axonflow_exec_cost_detail.json 2>/dev/null || echo "{}")
 echo "   HTTP Status: $DETAIL_HTTP_CODE"
@@ -191,7 +188,7 @@ echo "5. GET /api/v1/executions/${EXECUTION_ID}/steps - Validate step costs..."
 
 STEPS_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_steps.json -w "%{http_code}" \
     --max-time 15 \
-    "${ORCHESTRATOR_URL}/api/v1/executions/${EXECUTION_ID}/steps" || echo "000")
+    "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps" || echo "000")
 
 STEPS_RESPONSE=$(cat /tmp/axonflow_exec_cost_steps.json 2>/dev/null || echo "{}")
 echo "   HTTP Status: $STEPS_HTTP_CODE"

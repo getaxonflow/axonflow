@@ -35,7 +35,6 @@ The example automatically builds `axonctl` from source before running tests.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AXONFLOW_ENDPOINT` | Agent URL | `http://localhost:8080` |
-| `AXONFLOW_ORCHESTRATOR_URL` | Orchestrator URL | `http://localhost:8081` |
 | `AXONFLOW_CLIENT_ID` | Client ID | `demo-org` |
 | `AXONFLOW_CLIENT_SECRET` | Client secret | `demo` |
 

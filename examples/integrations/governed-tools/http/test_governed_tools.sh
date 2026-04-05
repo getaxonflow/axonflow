@@ -8,7 +8,7 @@
 set -euo pipefail
 
 BASE_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-test-client}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-test-secret}"
 AUTH=$(echo -n "${CLIENT_ID}:${CLIENT_SECRET}" | base64)
 

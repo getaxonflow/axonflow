@@ -20,7 +20,7 @@ set -e
 
 # Configuration
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-pii-detection-demo}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 
 # Colors
@@ -49,8 +49,7 @@ test_pii() {
 
     response=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
         -H "Content-Type: application/json" \
-        -H "X-Client-ID: $CLIENT_ID" \
-        -H "X-Client-Secret: $CLIENT_SECRET" \
+        -H "Authorization: Basic $AUTH_B64" \
         -d "{
             \"query\": \"$query\",
             \"user_token\": \"pii-detection-user\",

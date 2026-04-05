@@ -259,7 +259,7 @@ func main() {
 	// Initialize Orchestrator URL for audit/metrics queries
 	orchestratorURL = os.Getenv("AXONFLOW_ORCHESTRATOR_URL")
 	if orchestratorURL == "" {
-		orchestratorURL = "http://host.docker.internal:8081"
+		orchestratorURL = "http://host.docker.internal:8080"
 	}
 
 	axonflowClient = axonflow.NewClient(axonflow.AxonFlowConfig{

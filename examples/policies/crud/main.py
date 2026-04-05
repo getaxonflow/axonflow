@@ -43,16 +43,13 @@ class PolicyClient:
     def __init__(
         self,
         agent_url: str,
-        orchestrator_url: str,
         client_secret: str,
         tenant_id: str,
     ):
         self.agent_url = agent_url.rstrip("/")
-        self.orchestrator_url = orchestrator_url.rstrip("/")
         self.headers = {
             "Content-Type": "application/json",
             "X-Client-Secret": client_secret,
-            "X-Tenant-ID": tenant_id,
         }
         self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
 
@@ -88,7 +85,7 @@ class PolicyClient:
     async def list_dynamic_policies(self) -> dict:
         """List dynamic policies from Orchestrator."""
         resp = await self.client.get(
-            f"{self.orchestrator_url}/api/v1/dynamic-policies"
+            f"{self.agent_url}/api/v1/dynamic-policies"
         )
         resp.raise_for_status()
         return resp.json()
@@ -96,7 +93,7 @@ class PolicyClient:
     async def list_tenant_policies(self) -> dict:
         """List tenant-specific policies."""
         resp = await self.client.get(
-            f"{self.orchestrator_url}/api/v1/policies"
+            f"{self.agent_url}/api/v1/policies"
         )
         resp.raise_for_status()
         return resp.json()
@@ -104,7 +101,7 @@ class PolicyClient:
     async def create_policy(self, policy: dict) -> dict:
         """Create a new dynamic policy."""
         resp = await self.client.post(
-            f"{self.orchestrator_url}/api/v1/policies",
+            f"{self.agent_url}/api/v1/policies",
             json=policy,
         )
         resp.raise_for_status()
@@ -113,7 +110,7 @@ class PolicyClient:
     async def get_policy(self, policy_id: str) -> dict:
         """Get a specific dynamic policy."""
         resp = await self.client.get(
-            f"{self.orchestrator_url}/api/v1/policies/{policy_id}"
+            f"{self.agent_url}/api/v1/policies/{policy_id}"
         )
         resp.raise_for_status()
         return resp.json()
@@ -121,7 +118,7 @@ class PolicyClient:
     async def update_policy(self, policy_id: str, policy: dict) -> dict:
         """Update an existing dynamic policy."""
         resp = await self.client.put(
-            f"{self.orchestrator_url}/api/v1/policies/{policy_id}",
+            f"{self.agent_url}/api/v1/policies/{policy_id}",
             json=policy,
         )
         resp.raise_for_status()
@@ -130,7 +127,7 @@ class PolicyClient:
     async def delete_policy(self, policy_id: str) -> None:
         """Delete a dynamic policy."""
         resp = await self.client.delete(
-            f"{self.orchestrator_url}/api/v1/policies/{policy_id}"
+            f"{self.agent_url}/api/v1/policies/{policy_id}"
         )
         resp.raise_for_status()
 
@@ -141,7 +138,6 @@ async def main() -> int:
 
     client = PolicyClient(
         agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
-        orchestrator_url=os.getenv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         tenant_id=os.getenv("AXONFLOW_TENANT_ID", "test-org-001"),
     )
@@ -220,7 +216,9 @@ async def main() -> int:
 
         try:
             created = await client.create_policy(new_policy)
-            policy_id = created.get("id") or created.get("policy_id")
+            policy_id = (created.get("policy", {}).get("id")
+                        or created.get("id")
+                        or created.get("policy_id"))
 
             assert_check(created is not None, "Policy creation returned result")
             assert_check(policy_id is not None and policy_id != "", "Created policy has ID")

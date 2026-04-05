@@ -395,7 +395,7 @@ try {
 ### Credential Handling
 
 - Credentials are sent as `Authorization: Basic base64(clientId:clientSecret)` on every request.
-- The SDK also sends `X-Tenant-ID: {clientId}` for multi-tenant routing.
+- The SDK also derives tenant from Basic auth: {clientId}` for multi-tenant routing.
 - Credentials are never logged, even when `debug: true` is enabled.
 - No data is persisted by the SDK; all state lives server-side.
 

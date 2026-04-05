@@ -39,16 +39,16 @@ func getCapabilities() []PlatformCapability {
 func getSDKCompatibility() SDKCompatInfo {
 	return SDKCompatInfo{
 		MinSDKVersion: map[string]string{
-			"python":     "3.0.0",
-			"typescript": "3.0.0",
-			"go":         "3.0.0",
-			"java":       "3.0.0",
+			"python":     "6.0.0",
+			"typescript": "5.0.0",
+			"go":         "5.0.0",
+			"java":       "5.0.0",
 		},
 		RecommendedSDKVersion: map[string]string{
-			"python":     "5.4.0",
-			"typescript": "4.3.1",
-			"go":         "4.3.0",
-			"java":       "4.3.0",
+			"python":     "6.0.0",
+			"typescript": "5.0.0",
+			"go":         "5.0.0",
+			"java":       "5.0.0",
 		},
 	}
 }

@@ -87,7 +87,7 @@ mvn compile exec:java -Dexec.mainClass="com.example.LLMProviderTests"
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ORCHESTRATOR_URL` | Orchestrator endpoint | `http://localhost:8081` |
+| `AXONFLOW_AGENT_URL` | Agent endpoint | `http://localhost:8080` |
 | `OPENAI_API_KEY` | OpenAI API key | - |
 | `ANTHROPIC_API_KEY` | Anthropic API key | - |
 | `GOOGLE_API_KEY` | Google Gemini API key | - |

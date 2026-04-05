@@ -20,8 +20,9 @@
 set -e
 
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
+CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 ORG_ID="${ORG_ID:-demo-org}"
-TENANT_ID="${TENANT_ID:-demo-tenant}"
 
 echo "=== Compliance Policy Examples (HTTP API) ==="
 echo ""
@@ -33,9 +34,9 @@ CREATED_IDS=()
 # 1. GDPR - EU Data Sovereignty
 echo "1. Creating GDPR policy for EU data sovereignty..."
 GDPR_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
+  -u "$CLIENT_ID:${CLIENT_SECRET}" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "gdpr-eu-data-sovereignty",
     "description": "Route EU users to EU-hosted LLMs only (GDPR Article 44)",
@@ -74,9 +75,9 @@ fi
 echo ""
 echo "2. Creating HIPAA policy for PHI protection..."
 HIPAA_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
+  -u "$CLIENT_ID:${CLIENT_SECRET}" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "hipaa-phi-protection",
     "description": "Route PHI queries to local LLM only (HIPAA Safe Harbor)",
@@ -115,9 +116,9 @@ fi
 echo ""
 echo "3. Creating RBI policy for financial data sovereignty..."
 RBI_RESPONSE=$(curl -s -X POST "$ENDPOINT/api/v1/dynamic-policies" \
+  -u "$CLIENT_ID:${CLIENT_SECRET}" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: $ORG_ID" \
-  -H "X-Tenant-ID: $TENANT_ID" \
   -d '{
     "name": "rbi-financial-data-sovereignty",
     "description": "Route banking queries to India-hosted providers (RBI Data Localization)",
@@ -161,8 +162,8 @@ fi
 echo ""
 echo "4. Listing all compliance policies..."
 POLICIES=$(curl -s "$ENDPOINT/api/v1/dynamic-policies?category=dynamic-compliance" \
-  -H "X-Org-ID: $ORG_ID" \
-  -H "X-Tenant-ID: $TENANT_ID")
+  -u "$CLIENT_ID:${CLIENT_SECRET}" \
+  -H "X-Org-ID: $ORG_ID")
 
 echo "$POLICIES" | jq -r '.policies[]? | "   - \(.name): \(.description)"' 2>/dev/null || echo "   No policies found or error parsing response"
 
@@ -174,8 +175,8 @@ echo ""
 echo "5. Cleaning up test policies..."
 for ID in "${CREATED_IDS[@]}"; do
   curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$ID" \
-    -H "X-Org-ID: $ORG_ID" \
-    -H "X-Tenant-ID: $TENANT_ID" > /dev/null
+    -u "$CLIENT_ID:${CLIENT_SECRET}" \
+    -H "X-Org-ID: $ORG_ID" > /dev/null
 done
 echo "   Deleted ${#CREATED_IDS[@]} test policies"
 

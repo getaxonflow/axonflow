@@ -13,10 +13,6 @@
 set -e
 
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-ORCHESTRATOR_PORT="${ORCHESTRATOR_PORT:-8081}"
-
-# Derive orchestrator URL from agent endpoint
-ORCH_ENDPOINT=$(echo "$ENDPOINT" | sed "s/:8080/:$ORCHESTRATOR_PORT/")
 
 echo "=== AxonFlow Health Check Example ==="
 echo ""
@@ -33,17 +29,6 @@ else
 fi
 
 echo ""
-
-# 2. Check Orchestrator health
-echo "2. Checking Orchestrator health..."
-ORCH_HEALTH=$(curl -s "${ORCH_ENDPOINT}/health" || echo '{"error": "connection failed"}')
-echo "   Response: $ORCH_HEALTH"
-
-if echo "$ORCH_HEALTH" | grep -q '"status":"healthy"'; then
-    echo "   Orchestrator: HEALTHY"
-else
-    echo "   Orchestrator: UNHEALTHY"
-fi
 
 echo ""
 echo "=== Health Check Complete ==="

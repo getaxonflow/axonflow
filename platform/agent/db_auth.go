@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"axonflow/platform/agent/license"
@@ -284,11 +285,16 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 			permissions = []string{"query", "llm"} // Default if not specified
 		}
 
+		// Auto-register tenant and org (fire-and-forget, non-blocking)
+		if db != nil {
+			go registerTenantAndOrg(db, clientID, orgID, string(validationResult.Tier), validationResult.MaxNodes)
+		}
+
 		return &Client{
-			ID:            orgID,
+			ID:            clientID,                     // From Basic auth username (tenant identity)
 			Name:          validationResult.ServiceName, // Use service name as display name
-			OrgID:         orgID,
-			TenantID:      orgID,
+			OrgID:         orgID,                        // From license (org entitlement)
+			TenantID:      clientID,                     // From Basic auth username (data isolation)
 			Permissions:   permissions,
 			RateLimit:     rateLimit,
 			Enabled:       true,
@@ -506,4 +512,41 @@ func revokeAPIKey(ctx context.Context, db *sql.DB, apiKeyID, revokedBy, reason s
 	}
 
 	return nil
+}
+
+// registeredTenants tracks which tenant+org pairs have been registered in the DB.
+// Avoids hitting the database on every authenticated request — only on first-seen.
+var registeredTenants sync.Map
+
+// registerTenantAndOrg auto-registers the tenant and org in the database.
+// Called as a fire-and-forget goroutine after successful auth — never blocks the request.
+// Uses the register_tenant() and register_org() SQL functions from migration 062.
+// Skips DB calls if this tenant+org pair has already been registered in this process lifetime.
+func registerTenantAndOrg(db *sql.DB, tenantID, orgID, tier string, maxNodes int) {
+	if db == nil || tenantID == "" || orgID == "" {
+		return
+	}
+
+	// Skip if already registered (in-memory cache — reset on restart)
+	cacheKey := tenantID + "|" + orgID
+	if _, loaded := registeredTenants.LoadOrStore(cacheKey, true); loaded {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Register org first (tenant FK references it) — pass tier and maxNodes from license
+	_, err := db.ExecContext(ctx, "SELECT register_org($1, $2, $3, $4)", orgID, orgID, tier, maxNodes)
+	if err != nil {
+		log.Printf("[AUTH] Failed to auto-register org %s: %v", logutil.Sanitize(orgID), err)
+		registeredTenants.Delete(cacheKey) // Allow retry on next request
+	}
+
+	// Register tenant
+	_, err = db.ExecContext(ctx, "SELECT register_tenant($1, $2)", tenantID, orgID)
+	if err != nil {
+		log.Printf("[AUTH] Failed to auto-register tenant %s: %v", logutil.Sanitize(tenantID), err)
+		registeredTenants.Delete(cacheKey) // Allow retry on next request
+	}
 }

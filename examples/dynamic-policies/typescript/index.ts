@@ -45,7 +45,7 @@ async function main() {
 
   const client = new AxonFlow({
     endpoint,
-    clientId: clientId || "demo-tenant",  // Required for X-Tenant-ID header
+    clientId: clientId || "demo-tenant",  // Required for OAuth2 client credentials
     clientSecret: clientSecret || "",
   });
 

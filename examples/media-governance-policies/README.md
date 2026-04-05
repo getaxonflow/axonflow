@@ -25,12 +25,9 @@ docker compose up -d
 
 # Verify it's running
 curl http://localhost:8080/health
-curl http://localhost:8081/health
 ```
 
-**Two endpoints are required:**
-- **Agent** (default `:8080`) — for proxy LLM calls that trigger media analysis
-- **Orchestrator** (default `:8081`) — for policy CRUD, media governance config, and status
+All API calls (proxy LLM calls, policy CRUD, media governance config) go through the **Agent** (default `:8080`).
 
 ## Run Examples
 
@@ -70,8 +67,7 @@ mvn compile exec:java
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AXONFLOW_ENDPOINT` | `http://localhost:8080` | Agent endpoint for proxy LLM calls |
-| `AXONFLOW_ORCHESTRATOR_ENDPOINT` | `http://localhost:8081` | Orchestrator endpoint for policy CRUD |
+| `AXONFLOW_ENDPOINT` | `http://localhost:8080` | Agent endpoint (all API calls) |
 | `AXONFLOW_CLIENT_ID` | `demo` | Client ID for authentication |
 | `AXONFLOW_CLIENT_SECRET` | `demo` | Client secret for authentication |
 | `AXONFLOW_TENANT` | (same as client ID) | Tenant ID for multi-tenant deployments |

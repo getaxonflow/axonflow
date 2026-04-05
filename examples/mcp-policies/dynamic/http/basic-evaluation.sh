@@ -14,9 +14,8 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-ORCHESTRATOR_URL="${AXONFLOW_ORCHESTRATOR_URL:-http://localhost:8081}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
-TENANT_ID="${AXONFLOW_TENANT_ID:-local-dev-org}"
+TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 
 echo "=== Dynamic Policy Evaluation Example ==="
 echo ""
@@ -24,9 +23,8 @@ echo ""
 # Step 1: Create a test dynamic policy
 echo "Step 1: Creating test dynamic policy..."
 
-policy_response=$(curl -s -X POST "${ORCHESTRATOR_URL}/api/v1/dynamic-policies" \
+policy_response=$(curl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-ID: ${TENANT_ID}" \
   -d '{
     "name": "test-mcp-policy",
     "description": "Test policy for MCP dynamic evaluation demo",
@@ -133,8 +131,8 @@ echo "Step 4: Cleaning up..."
 
 # Delete test policy
 if [ -n "$policy_id" ]; then
-    curl -s -X DELETE "${ORCHESTRATOR_URL}/api/v1/dynamic-policies/${policy_id}" \
-      -H "X-Tenant-ID: ${TENANT_ID}" > /dev/null 2>&1 || true
+    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
+      > /dev/null 2>&1 || true
     echo "✓ Deleted test policy"
 fi
 

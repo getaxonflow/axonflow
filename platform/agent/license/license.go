@@ -147,7 +147,7 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 	result := &ValidationResult{
 		Valid:           true,
 		Tier:            tier,
-		OrgID:           payload.TenantID,
+		OrgID:           payload.OrgID,
 		MaxNodes:        maxNodes,
 		ExpiresAt:       expiry,
 		DaysUntilExpiry: daysUntilExpiry,
@@ -334,7 +334,7 @@ func GenerateLicenseKey(tier Tier, orgID string, expiryDays int) (string, error)
 }
 
 // GenerateServiceLicenseKey is not available in Community builds.
-func GenerateServiceLicenseKey(tier Tier, tenantID, serviceName, serviceType string, permissions []string, expiryDays int) (string, error) {
+func GenerateServiceLicenseKey(tier Tier, orgID, serviceName, serviceType string, permissions []string, expiryDays int) (string, error) {
 	return "", fmt.Errorf("license generation is not available in Community builds - " +
 		"upgrade to Enterprise at https://getaxonflow.com/enterprise for license management")
 }

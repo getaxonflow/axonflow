@@ -406,10 +406,10 @@ async function main() {
       }
 
       // Stream execution status via HTTP SSE endpoint
-      const orchestratorUrl = process.env.AXONFLOW_ORCHESTRATOR_URL || "http://localhost:8081";
+      const agentUrl = process.env.AXONFLOW_AGENT_URL || "http://localhost:8080";
       const sseClientId = process.env.AXONFLOW_CLIENT_ID || "workflow-control-ts";
       const sseClientSecret = process.env.AXONFLOW_CLIENT_SECRET || "";
-      const streamUrl = `${orchestratorUrl}/api/v1/unified/executions/${sseWorkflow.workflow_id}/stream`;
+      const streamUrl = `${agentUrl}/api/v1/unified/executions/${sseWorkflow.workflow_id}/stream`;
       console.log(`   SSE URL: ${streamUrl}`);
 
       try {
@@ -420,7 +420,6 @@ async function main() {
             "Accept": "application/json",
             "X-Client-ID": sseClientId,
             "X-Client-Secret": sseClientSecret,
-            "X-Tenant-ID": sseClientId,
           },
         });
 

@@ -38,7 +38,7 @@ func main() {
 	// Initialize client
 	endpoint := os.Getenv("AXONFLOW_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:8081"
+		endpoint = "http://localhost:8080"
 	}
 
 	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
@@ -66,7 +66,7 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("   ERROR: %v\n", err)
-		fmt.Println("   Note: WCP endpoints are on the orchestrator (port 8081)")
+		fmt.Println("   Note: WCP endpoints go through the agent (port 8080)")
 		assertCheck(false, "CreateWorkflow succeeded")
 		os.Exit(1)
 	}

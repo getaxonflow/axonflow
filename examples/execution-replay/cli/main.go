@@ -61,7 +61,7 @@ func main() {
 	fmt.Println()
 
 	agentEndpoint := getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080")
-	orchestratorEndpoint := getEnv("AXONFLOW_ORCHESTRATOR_URL", "http://localhost:8081")
+	agentEndpoint := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-org")
 	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "demo")
 
@@ -270,7 +270,7 @@ func main() {
 	// 9. ORCHESTRATOR DIRECT (internal verification)
 	// ========================================
 	fmt.Println("9. Orchestrator direct - /ui/executions/ (internal)...")
-	body, statusCode, err = httpGet(orchestratorEndpoint + "/ui/executions/")
+	body, statusCode, err = httpGet(agentEndpoint + "/ui/executions/")
 	if err != nil {
 		fmt.Printf("   ⚠️  Orchestrator not reachable: %v\n", err)
 	} else {

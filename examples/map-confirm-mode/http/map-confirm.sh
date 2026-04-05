@@ -20,9 +20,10 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
-CLIENT_ID="${AXONFLOW_CLIENT_ID:-map-confirm-example}"
+CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
+AUTH_HEADER="Authorization: Basic $(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)"
 
 echo "=============================================="
 echo "MAP Confirm Mode - HTTP API Example (Enterprise)"
@@ -48,7 +49,15 @@ check_result() {
 extract_json() {
     local json="$1"
     local field="$2"
-    echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('$field', ''))" 2>/dev/null || echo ""
+    # Check top-level first, then data.{field} (agent wraps orchestrator response in data)
+    echo "$json" | python3 -c "
+import sys,json
+d = json.load(sys.stdin)
+v = d.get('$field', '')
+if not v and isinstance(d.get('data'), dict):
+    v = d['data'].get('$field', '')
+print(v)
+" 2>/dev/null || echo ""
 }
 
 # ========================================
@@ -59,8 +68,8 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "$AUTH_HEADER" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "Create a plan to search flights, analyze options, and book the best one",
     "user_token": "'"$USER_TOKEN"'",
@@ -117,8 +126,8 @@ echo "----------------------------------------------"
 
 RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET" \
+  -H "$AUTH_HEADER" \
+  -H "Authorization: Basic $AUTH_B64" \
   -d '{
     "query": "",
     "user_token": "'"$USER_TOKEN"'",
@@ -143,8 +152,8 @@ while [ "$STEP_NUM" -le "$TOTAL_STEPS" ]; do
 
     RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/v1/plan/${PLAN_ID}/resume" \
       -H "Content-Type: application/json" \
-      -H "X-Client-ID: $CLIENT_ID" \
-      -H "X-Client-Secret: $CLIENT_SECRET" \
+      -H "$AUTH_HEADER" \
+      -H "Authorization: Basic $AUTH_B64" \
       -d '{"approved": true}')
 
     RESUME_STATUS=$(extract_json "$RESPONSE" "status")
@@ -170,9 +179,22 @@ done
 echo "Final Status Check..."
 echo "----------------------------------------------"
 
+# Wait for async plan status update (WCP completion triggers plan status update)
+# The WCP workflow completion is async — poll for up to 10 seconds
+for i in 1 2 3 4 5; do
+    RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
+      -H "$AUTH_HEADER" \
+      -H "Authorization: Basic $AUTH_B64" \
+)
+    FINAL_STATUS=$(extract_json "$RESPONSE" "status")
+    [ "$FINAL_STATUS" = "completed" ] && break
+    sleep 2
+done
+
 RESPONSE=$(curl -s "${AGENT_URL}/api/v1/plan/${PLAN_ID}" \
-  -H "X-Client-ID: $CLIENT_ID" \
-  -H "X-Client-Secret: $CLIENT_SECRET")
+  -H "$AUTH_HEADER" \
+  -H "Authorization: Basic $AUTH_B64" \
+)
 
 FINAL_STATUS=$(extract_json "$RESPONSE" "status")
 IS_DONE=$([ "$FINAL_STATUS" = "completed" ] || [ "$FINAL_STATUS" = "success" ] && echo "true" || echo "false")

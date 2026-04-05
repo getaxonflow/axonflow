@@ -566,13 +566,13 @@ func TestMCPCheckOutputHandler_EnterpriseMode_InvalidToken(t *testing.T) {
 }
 
 func TestMCPCheckInputHandler_EnterpriseMode_MissingTenantID(t *testing.T) {
-	// Enterprise mode requires tenant_id
+	// Enterprise mode requires auth — missing credentials returns 401 before tenant_id check
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	body, _ := json.Marshal(MCPCheckInputRequest{
 		ConnectorType: "postgres",
 		Statement:     "SELECT 1",
-		// TenantID intentionally omitted
+		// TenantID intentionally omitted, no auth
 	})
 	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -580,20 +580,21 @@ func TestMCPCheckInputHandler_EnterpriseMode_MissingTenantID(t *testing.T) {
 
 	mcpCheckInputHandler(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for missing tenant_id in enterprise mode, got %d: %s", w.Code, w.Body.String())
+	// Without auth, enterprise mode returns 401 (auth checked before tenant_id)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for missing auth in enterprise mode, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
 func TestMCPCheckOutputHandler_EnterpriseMode_MissingTenantID(t *testing.T) {
-	// Enterprise mode requires tenant_id
+	// Enterprise mode requires auth — missing credentials returns 401 before tenant_id check
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	body, _ := json.Marshal(MCPCheckOutputRequest{
 		ConnectorType: "postgres",
 		ResponseData:  []map[string]interface{}{{"id": 1}},
 		RowCount:      1,
-		// TenantID intentionally omitted
+		// TenantID intentionally omitted, no auth
 	})
 	req := httptest.NewRequest("POST", "/api/v1/mcp/check-output", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -601,8 +602,9 @@ func TestMCPCheckOutputHandler_EnterpriseMode_MissingTenantID(t *testing.T) {
 
 	mcpCheckOutputHandler(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for missing tenant_id in enterprise mode, got %d: %s", w.Code, w.Body.String())
+	// Without auth, enterprise mode returns 401 (auth checked before tenant_id)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for missing auth in enterprise mode, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -15,12 +15,14 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"axonflow/platform/agent/license"
+	logutil "axonflow/platform/shared/logger"
 )
 
 // ClientAuth represents authentication configuration for a known client.
@@ -275,4 +277,135 @@ func extractClientID(r *http.Request) string {
 	}
 
 	return ""
+}
+
+// =============================================================================
+// Request Context — Auth-derived tenant identity (RFC 6749 pattern)
+// =============================================================================
+
+// authContextKey is a typed key for storing auth-derived identity in request context.
+// Using a typed key prevents collisions with other context values.
+type authContextKey string
+
+const (
+	// ContextKeyTenantID stores the authenticated tenant ID in request context.
+	ContextKeyTenantID authContextKey = "auth_tenant_id"
+	// ContextKeyOrgID stores the authenticated org ID in request context.
+	ContextKeyOrgID authContextKey = "auth_org_id"
+	// ContextKeyClientID stores the authenticated client ID in request context.
+	ContextKeyClientID authContextKey = "auth_client_id"
+)
+
+// TenantIDFromContext extracts the auth-derived tenant ID from request context.
+// Returns empty string if not set (should not happen if apiAuthMiddleware is applied).
+func TenantIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ContextKeyTenantID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// OrgIDFromContext extracts the auth-derived org ID from request context.
+func OrgIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ContextKeyOrgID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ClientIDFromContext extracts the auth-derived client ID from request context.
+func ClientIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ContextKeyClientID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// apiAuthMiddleware authenticates API requests using OAuth2 Client Credentials
+// (RFC 6749 Section 4.4) and stores the authenticated identity in request context.
+//
+// In community mode: no auth required, defaults to "community" tenant.
+// In enterprise mode: requires Basic auth, derives tenant from authenticated client.
+//
+// All downstream handlers read tenant from context via TenantIDFromContext(),
+// never from X-Tenant-ID header. If the deprecated X-Tenant-ID header is present,
+// a warning is logged but the auth-derived tenant is used.
+func apiAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS preflight passthrough
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var tenantID, orgID, clientID string
+
+		if isCommunityMode() {
+			// Community mode: extract clientId from Basic auth if present, else default
+			cID := extractClientID(r)
+			if cID == "" {
+				cID = "community"
+			}
+			tenantID = cID
+			orgID = getDeploymentOrgID()
+			clientID = cID
+		} else {
+			// Enterprise mode: require Basic auth (OAuth2 Client Credentials)
+			cID := extractClientID(r)
+			cSecret := extractClientSecret(r)
+			if cID == "" || cSecret == "" {
+				writeJSONError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+
+			var client *Client
+			var err error
+			if authDB != nil {
+				client, err = validateClientCredentialsDB(ctx, authDB, cID, cSecret)
+			} else {
+				client, err = validateClientCredentials(ctx, cID, cSecret)
+			}
+			if err != nil || client == nil {
+				msg := "Authentication failed"
+				if err != nil {
+					msg += ": " + err.Error()
+				}
+				writeJSONError(w, msg, http.StatusUnauthorized)
+				return
+			}
+
+			if !client.Enabled {
+				writeJSONError(w, "Client disabled", http.StatusForbidden)
+				return
+			}
+
+			tenantID = client.TenantID
+			orgID = client.OrgID
+			clientID = client.ID
+		}
+
+		// X-Tenant-ID header is deprecated — tenant is derived from auth credentials.
+		// Accept and ignore for transition period while SDKs are updated (Phase 2-3).
+		// Auth-derived tenant always takes precedence.
+		if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+			log.Printf("[API Auth] DEPRECATED: X-Tenant-ID header '%s' ignored — using auth-derived tenant '%s'. Update your SDK to remove this header.",
+				logutil.Sanitize(headerTenant), logutil.Sanitize(tenantID))
+		}
+
+		// Store authenticated identity in request context
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, ContextKeyTenantID, tenantID)
+		ctx = context.WithValue(ctx, ContextKeyOrgID, orgID)
+		ctx = context.WithValue(ctx, ContextKeyClientID, clientID)
+
+		// Inject identity headers so downstream handlers (e.g. circuit breaker)
+		// can read them without context key type coupling across packages.
+		r.Header.Set("X-Tenant-ID", tenantID)
+		r.Header.Set("X-Org-ID", orgID)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

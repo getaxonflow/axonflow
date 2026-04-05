@@ -886,11 +886,7 @@ func TestNewMediaGovernanceConfigStore_Success(t *testing.T) {
 	}
 	defer db.Close()
 
-	// initializeSchema
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	// loadAll returns empty result
+	// Table created by migration 059 — loadAll returns empty result
 	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"tenant_id", "enabled", "allowed_analyzers", "updated_at", "updated_by",
@@ -915,32 +911,6 @@ func TestNewMediaGovernanceConfigStore_Success(t *testing.T) {
 	}
 }
 
-func TestNewMediaGovernanceConfigStore_SchemaError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnError(fmt.Errorf("permission denied"))
-
-	store, err := NewMediaGovernanceConfigStore(db)
-	if err == nil {
-		t.Fatal("expected error when schema initialization fails")
-	}
-	if store != nil {
-		t.Error("expected nil store when schema initialization fails")
-	}
-	if !containsSubstring(err.Error(), "failed to initialize media governance config schema") {
-		t.Errorf("expected error message to mention schema initialization, got: %v", err)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
 func TestNewMediaGovernanceConfigStore_LoadAllError_StillReturnsStore(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -948,11 +918,7 @@ func TestNewMediaGovernanceConfigStore_LoadAllError_StillReturnsStore(t *testing
 	}
 	defer db.Close()
 
-	// initializeSchema succeeds
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	// loadAll fails (logged as warning, does not return error)
+	// Table created by migration 059 — loadAll fails (logged as warning, does not return error)
 	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
 		WillReturnError(fmt.Errorf("connection reset"))
 
@@ -977,9 +943,6 @@ func TestNewMediaGovernanceConfigStore_LoadAllPopulatesCache(t *testing.T) {
 	defer db.Close()
 
 	ts := time.Date(2026, 2, 18, 10, 0, 0, 0, time.UTC)
-
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	mock.ExpectQuery("SELECT tenant_id, enabled, allowed_analyzers, updated_at").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -1020,57 +983,6 @@ func TestNewMediaGovernanceConfigStore_LoadAllPopulatesCache(t *testing.T) {
 	}
 }
 
-// ---------- initializeSchema ----------
-
-func TestInitializeSchema_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	store := &MediaGovernanceConfigStore{
-		db:    db,
-		cache: make(map[string]*MediaGovernanceConfig),
-	}
-
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	err = store.initializeSchema()
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
-
-func TestInitializeSchema_Error(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	store := &MediaGovernanceConfigStore{
-		db:    db,
-		cache: make(map[string]*MediaGovernanceConfig),
-	}
-
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS media_governance_config").
-		WillReturnError(fmt.Errorf("disk full"))
-
-	err = store.initializeSchema()
-	if err == nil {
-		t.Fatal("expected error when CREATE TABLE fails")
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
-}
 
 // ---------- loadAll ----------
 

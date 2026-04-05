@@ -53,29 +53,13 @@ func NewMediaGovernanceConfigStore(db *sql.DB) (*MediaGovernanceConfigStore, err
 		cache: make(map[string]*MediaGovernanceConfig),
 	}
 
-	if err := store.initializeSchema(); err != nil {
-		return nil, fmt.Errorf("failed to initialize media governance config schema: %w", err)
-	}
+	// media_governance_config table created by migration 059_runtime_tables_to_migrations.sql
 
 	if err := store.loadAll(); err != nil {
 		log.Printf("[MediaGovernanceConfig] Warning: failed to load configs: %v", err)
 	}
 
 	return store, nil
-}
-
-func (s *MediaGovernanceConfigStore) initializeSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS media_governance_config (
-		tenant_id VARCHAR(100) PRIMARY KEY,
-		enabled BOOLEAN NOT NULL DEFAULT true,
-		allowed_analyzers JSONB DEFAULT '[]',
-		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-		updated_by VARCHAR(255)
-	);
-	`
-	_, err := s.db.Exec(schema)
-	return err
 }
 
 func (s *MediaGovernanceConfigStore) loadAll() error {

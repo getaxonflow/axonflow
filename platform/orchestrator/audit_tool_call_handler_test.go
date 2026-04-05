@@ -284,7 +284,7 @@ func TestAuditToolCallHandler_MissingAuth(t *testing.T) {
 	}
 }
 
-func TestAuditToolCallHandler_MissingTenantID(t *testing.T) {
+func TestAuditToolCallHandler_TenantDerivedFromBasicAuth(t *testing.T) {
 	origLogger := auditLogger
 	auditLogger = &AuditLogger{
 		auditQueue:   make(chan *AuditEntry, 100),
@@ -299,15 +299,15 @@ func TestAuditToolCallHandler_MissingTenantID(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
-	// Set auth but no X-Tenant-ID
+	// Basic auth but no X-Tenant-ID — tenant should be derived from clientID
 	creds := base64.StdEncoding.EncodeToString([]byte("test-client:test-secret"))
 	req.Header.Set("Authorization", "Basic "+creds)
 
 	rr := httptest.NewRecorder()
 	auditToolCallHandler(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d. Body: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Errorf("Expected status 201 (tenant derived from Basic auth), got %d. Body: %s", rr.Code, rr.Body.String())
 	}
 }
 

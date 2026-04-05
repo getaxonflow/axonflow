@@ -22,7 +22,7 @@ Dynamic policies are **opt-in** and disabled by default.
 | `MCP_DYNAMIC_POLICIES_GRACEFUL` | `true` | Continue if Orchestrator unavailable |
 | `MCP_DYNAMIC_POLICIES_CONNECTORS` | `""` | Comma-separated connectors (empty = all) |
 
-> **Note:** The Orchestrator endpoint is determined automatically using the same logic as other Agent→Orchestrator calls (ORCHESTRATOR_URL env var, Docker detection, or localhost fallback).
+> **Note:** The Orchestrator endpoint is determined automatically by the Agent using internal service discovery (Docker detection or localhost fallback).
 
 ## Response Format
 
