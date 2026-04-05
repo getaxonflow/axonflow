@@ -44,7 +44,7 @@ Choose your language and set up the project.
 ```bash
 mkdir my-first-agent && cd my-first-agent
 go mod init my-first-agent
-go get github.com/getaxonflow/axonflow-sdk-go/v4
+go get github.com/getaxonflow/axonflow-sdk-go/v5
 ```
 
 ### Python
@@ -105,7 +105,7 @@ import (
 	"log"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
 )
 
 func main() {

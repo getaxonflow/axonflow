@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
 )
 
 var failures []string

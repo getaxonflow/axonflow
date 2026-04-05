@@ -12,7 +12,7 @@ import java.util.Map;
 /**
  * LangGraph Per-Tool Governance Example - Java
  *
- * Requires: axonflow-sdk-java v4.2.0+
+ * Requires: axonflow-sdk-java v5.0.0+
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  *
