@@ -1,6 +1,6 @@
 # AxonFlow SDK Telemetry
 
-AxonFlow SDKs send anonymous usage telemetry to help us understand adoption, prioritize features, and detect version compatibility issues. This document describes exactly what is collected, what is never collected, and how to opt out.
+AxonFlow SDKs send anonymous usage telemetry to help us understand adoption, prioritize features, and detect version compatibility issues. This document describes exactly what is collected, what is never collected, how localhost/self-hosted evaluation behaves, and how to opt out.
 
 ## What Is Collected
 
@@ -34,9 +34,9 @@ The instance ID is a random UUID generated fresh each time the client starts. It
 | Mode | Default |
 |------|---------|
 | Sandbox | **Off** |
-| All other modes (production, enterprise, community, etc.) | **On** |
+| All other modes (production, enterprise, community, localhost/self-hosted evaluation, etc.) | **On** |
 
-Telemetry is on by default so we can understand SDK adoption, prioritize features, and detect version compatibility issues. Sandbox mode defaults to off since it's intended for local testing and development. You can always opt out using any of the methods below.
+Telemetry is on by default so we can understand SDK adoption, prioritize features, and detect version compatibility issues. Localhost and self-hosted evaluation environments follow the same default-on behavior unless you explicitly opt out. Sandbox mode defaults to off since it's intended for isolated local testing and development. You can always opt out using any of the methods below.
 
 ## How to Opt Out
 
@@ -81,6 +81,7 @@ AxonFlow client = AxonFlow.builder()
 ## Technical Details
 
 - Telemetry is sent once per client initialization (not per request)
+- Localhost and self-hosted endpoints do not suppress telemetry outside sandbox mode
 - The HTTP call uses a 3-second timeout and runs in a background thread/goroutine
 - SDK initialization is never blocked or delayed by telemetry
 - If the telemetry endpoint is unreachable, the failure is silent

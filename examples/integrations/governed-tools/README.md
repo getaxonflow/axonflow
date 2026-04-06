@@ -1,12 +1,10 @@
 # GovernedTool: Framework-Agnostic Tool Governance
 
-Demonstrates `GovernedTool` — wraps any LangChain `BaseTool` with AxonFlow input/output governance. Works with LangGraph, LangChain AgentExecutor, CrewAI, AutoGen, and any framework that accepts `BaseTool` instances.
+Demonstrates `GovernedTool` -- wraps any tool with AxonFlow input/output governance. Works with LangGraph, LangChain AgentExecutor, CrewAI, AutoGen, Vercel AI SDK, and any framework that accepts tool-shaped objects.
 
 ## Prerequisites
 
 - AxonFlow running locally (`docker compose up -d`)
-- Python 3.10+
-- `pip install axonflow langchain-core`
 
 ## Examples
 
@@ -19,7 +17,7 @@ cd http
 bash test_governed_tools.sh
 ```
 
-### Python: Comprehensive E2E
+### Python
 
 Tests all governance scenarios: clean calls, SQLi blocked, PII detection, output redaction, custom connector types, govern_tools helper:
 
@@ -27,6 +25,34 @@ Tests all governance scenarios: clean calls, SQLi blocked, PII detection, output
 cd python
 pip install -r requirements.txt
 python main.py
+```
+
+### TypeScript
+
+Uses `GovernedTool` and `governTools` from `@axonflow/sdk` with standard `ToolDefinition` objects:
+
+```bash
+cd typescript
+npm install
+npx ts-node src/index.ts
+```
+
+### Go
+
+Uses `GovernTool` and `GovernTools` from the Go SDK with the `axonflow.Tool` interface:
+
+```bash
+cd go
+go run main.go
+```
+
+### Java
+
+Wraps tool calls with `mcpCheckInput`/`mcpCheckOutput` for governed execution:
+
+```bash
+cd java
+mvn compile exec:java
 ```
 
 ## How It Works

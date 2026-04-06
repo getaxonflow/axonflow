@@ -384,6 +384,11 @@ func LoadLLMConfig() LLMRouterConfig {
 	config.GeminiKey = os.Getenv("GOOGLE_API_KEY")
 	config.GeminiModel = os.Getenv("GOOGLE_MODEL")
 
+	// Mistral configuration
+	config.MistralKey = os.Getenv("MISTRAL_API_KEY")
+	config.MistralModel = os.Getenv("MISTRAL_MODEL")
+	config.MistralEndpoint = os.Getenv("MISTRAL_ENDPOINT")
+
 	// Azure OpenAI configuration
 	config.AzureOpenAIEndpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
 	config.AzureOpenAIAPIKey = os.Getenv("AZURE_OPENAI_API_KEY")
@@ -416,6 +421,9 @@ func LoadLLMConfig() LLMRouterConfig {
 	}
 	if config.GeminiKey != "" {
 		log.Printf("  - Gemini: enabled (key: %s..., model: %s)", config.GeminiKey[:min(10, len(config.GeminiKey))], config.GeminiModel)
+	}
+	if config.MistralKey != "" {
+		log.Printf("  - Mistral: enabled (key: %s..., model: %s)", config.MistralKey[:min(10, len(config.MistralKey))], config.MistralModel)
 	}
 	if config.AzureOpenAIEndpoint != "" {
 		log.Printf("  - Azure OpenAI: enabled (endpoint: %s, deployment: %s)", config.AzureOpenAIEndpoint, config.AzureOpenAIDeploymentName)

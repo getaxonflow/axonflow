@@ -501,7 +501,7 @@ if (approval.isApproved()) {
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
 
-> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export DO_NOT_TRACK=1` or `export AXONFLOW_TELEMETRY=off`. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
+> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization, including localhost and self-hosted evaluation environments outside sandbox mode. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export DO_NOT_TRACK=1` or `export AXONFLOW_TELEMETRY=off`. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
 
 ---
 

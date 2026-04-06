@@ -295,10 +295,13 @@ func TestProviderConstants(t *testing.T) {
 	if ProviderAzureOpenAI != "azure-openai" {
 		t.Errorf("ProviderAzureOpenAI = %q, want %q", ProviderAzureOpenAI, "azure-openai")
 	}
+	if ProviderMistral != "mistral" {
+		t.Errorf("ProviderMistral = %q, want %q", ProviderMistral, "mistral")
+	}
 
 	// Verify ValidLLMProviders contains all constants
-	if len(ValidLLMProviders) != 6 {
-		t.Errorf("ValidLLMProviders has %d entries, want 6", len(ValidLLMProviders))
+	if len(ValidLLMProviders) != 7 {
+		t.Errorf("ValidLLMProviders has %d entries, want 7", len(ValidLLMProviders))
 	}
 }
 

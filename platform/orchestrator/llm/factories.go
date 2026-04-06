@@ -26,6 +26,7 @@ import (
 	"axonflow/platform/orchestrator/llm/anthropic"
 	"axonflow/platform/orchestrator/llm/azure"
 	"axonflow/platform/orchestrator/llm/gemini"
+	"axonflow/platform/orchestrator/llm/mistral"
 )
 
 // init registers plain (non-SDK) provider factories as fallbacks.
@@ -39,6 +40,7 @@ func init() {
 	registerIfAbsent(ProviderTypeOllama, NewOllamaProviderFactory)
 	registerIfAbsent(ProviderTypeGemini, NewGeminiProviderFactory)
 	registerIfAbsent(ProviderTypeAzureOpenAI, NewAzureOpenAIProviderFactory)
+	registerIfAbsent(ProviderTypeMistral, NewMistralProviderFactory)
 }
 
 // registerIfAbsent registers a factory only if no factory exists for the given type.
@@ -1122,3 +1124,213 @@ func (a *AzureOpenAIProviderAdapter) EstimateCost(req CompletionRequest) *CostEs
 // Verify interface compliance at compile time.
 var _ Provider = (*AzureOpenAIProviderAdapter)(nil)
 var _ StreamingProvider = (*AzureOpenAIProviderAdapter)(nil)
+
+// Mistral provider implementation
+
+// Mistral pricing constants per 1K tokens (Mistral Small).
+const (
+	mistralInputCostPer1K  = 0.0001 // $0.10/1M input
+	mistralOutputCostPer1K = 0.0003 // $0.30/1M output
+)
+
+// NewMistralProviderFactory creates a Mistral provider from configuration.
+func NewMistralProviderFactory(config ProviderConfig) (Provider, error) {
+	if config.APIKey == "" && config.APIKeySecretARN == "" {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeMistral,
+			Code:         ErrFactoryInvalidConfig,
+			Message:      "API key is required for Mistral provider",
+		}
+	}
+
+	// Default model
+	model := config.Model
+	if model == "" {
+		model = mistral.DefaultModel
+	}
+
+	// Default timeout
+	timeout := mistral.DefaultTimeout
+	if config.TimeoutSeconds > 0 {
+		timeout = time.Duration(config.TimeoutSeconds) * time.Second
+	}
+
+	// Build endpoint
+	endpoint := config.Endpoint
+	if endpoint == "" {
+		endpoint = mistral.DefaultBaseURL
+	}
+
+	provider, err := mistral.NewProvider(mistral.Config{
+		APIKey:  config.APIKey,
+		BaseURL: endpoint,
+		Model:   model,
+		Timeout: timeout,
+	})
+	if err != nil {
+		return nil, &FactoryError{
+			ProviderType: ProviderTypeMistral,
+			Code:         ErrFactoryCreationFailed,
+			Message:      fmt.Sprintf("failed to create Mistral provider: %v", err),
+			Cause:        err,
+		}
+	}
+
+	// Wrap in adapter that implements the unified Provider interface
+	return &MistralProviderAdapter{
+		provider: provider,
+		name:     config.Name,
+		config:   config,
+	}, nil
+}
+
+// MistralProviderAdapter adapts the mistral.Provider to the unified Provider interface.
+type MistralProviderAdapter struct {
+	provider *mistral.Provider
+	name     string
+	config   ProviderConfig
+}
+
+// Name returns the provider instance name.
+func (a *MistralProviderAdapter) Name() string {
+	return a.name
+}
+
+// Type returns the provider type.
+func (a *MistralProviderAdapter) Type() ProviderType {
+	return ProviderTypeMistral
+}
+
+// Complete generates a completion for the given request.
+func (a *MistralProviderAdapter) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
+	// Convert to mistral-specific request
+	mistralReq := mistral.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		Model:         req.Model,
+		StopSequences: req.StopSequences,
+		Stream:        req.Stream,
+	}
+
+	resp, err := a.provider.Complete(ctx, mistralReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider": "mistral",
+		},
+	}, nil
+}
+
+// CompleteStream generates a streaming completion for the given request.
+func (a *MistralProviderAdapter) CompleteStream(ctx context.Context, req CompletionRequest, handler StreamHandler) (*CompletionResponse, error) {
+	// Convert to mistral-specific request
+	mistralReq := mistral.CompletionRequest{
+		Prompt:        req.Prompt,
+		SystemPrompt:  req.SystemPrompt,
+		MaxTokens:     req.MaxTokens,
+		Temperature:   req.Temperature,
+		TopP:          req.TopP,
+		Model:         req.Model,
+		StopSequences: req.StopSequences,
+		Stream:        true,
+	}
+
+	resp, err := a.provider.CompleteStream(ctx, mistralReq, func(chunk mistral.StreamChunk) error {
+		return handler(StreamChunk{
+			Type:    chunk.Type,
+			Content: chunk.Content,
+			Done:    chunk.Done,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompletionResponse{
+		Content: resp.Content,
+		Model:   resp.Model,
+		Usage: UsageStats{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		},
+		Latency:      resp.Latency,
+		FinishReason: resp.StopReason,
+		Metadata: map[string]any{
+			"provider": "mistral",
+			"streamed": true,
+		},
+	}, nil
+}
+
+// HealthCheck verifies the provider is operational.
+func (a *MistralProviderAdapter) HealthCheck(ctx context.Context) (*HealthCheckResult, error) {
+	start := time.Now()
+	healthy := a.provider.IsHealthy()
+
+	status := HealthStatusUnhealthy
+	message := "provider reports unhealthy"
+	if healthy {
+		status = HealthStatusHealthy
+		message = "provider is operational"
+	}
+
+	return &HealthCheckResult{
+		Status:      status,
+		Latency:     time.Since(start),
+		Message:     message,
+		LastChecked: time.Now(),
+	}, nil
+}
+
+// Capabilities returns the list of features this provider supports.
+// Note: Vision (Pixtral) and FunctionCalling require additional message/tool
+// serialization not yet implemented. Will be added in a future release.
+func (a *MistralProviderAdapter) Capabilities() []Capability {
+	return []Capability{
+		CapabilityChat,
+		CapabilityCompletion,
+		CapabilityStreaming,
+		CapabilityCodeGeneration,
+	}
+}
+
+// SupportsStreaming indicates if the provider supports streaming responses.
+func (a *MistralProviderAdapter) SupportsStreaming() bool {
+	return a.provider.SupportsStreaming()
+}
+
+// EstimateCost provides a cost estimate for a given request.
+func (a *MistralProviderAdapter) EstimateCost(req CompletionRequest) *CostEstimate {
+	estimatedInputTokens, estimatedOutputTokens := estimateTokens(req)
+	totalEstimate := calculateCost(estimatedInputTokens, estimatedOutputTokens,
+		mistralInputCostPer1K, mistralOutputCostPer1K)
+
+	return &CostEstimate{
+		InputCostPer1K:        mistralInputCostPer1K,
+		OutputCostPer1K:       mistralOutputCostPer1K,
+		EstimatedInputTokens:  estimatedInputTokens,
+		EstimatedOutputTokens: estimatedOutputTokens,
+		TotalEstimate:         totalEstimate,
+		Currency:              "USD",
+	}
+}
+
+// Verify interface compliance at compile time.
+var _ Provider = (*MistralProviderAdapter)(nil)
+var _ StreamingProvider = (*MistralProviderAdapter)(nil)

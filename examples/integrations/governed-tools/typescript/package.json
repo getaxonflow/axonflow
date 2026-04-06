@@ -1,0 +1,24 @@
+{
+  "name": "axonflow-governed-tools-example",
+  "version": "1.0.0",
+  "description": "GovernedTool framework-agnostic tool governance example",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "dev": "ts-node-dev src/index.ts"
+  },
+  "keywords": ["axonflow", "governed-tool", "governance"],
+  "author": "AxonFlow",
+  "license": "MIT",
+  "dependencies": {
+    "@axonflow/sdk": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0"
+  }
+}

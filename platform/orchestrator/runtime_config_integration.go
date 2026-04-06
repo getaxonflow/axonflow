@@ -32,6 +32,7 @@ const (
 	ProviderOllama      = "ollama"
 	ProviderGemini      = "gemini"
 	ProviderAzureOpenAI = "azure-openai"
+	ProviderMistral     = "mistral"
 )
 
 // ValidLLMProviders is the list of supported LLM provider names.
@@ -42,6 +43,7 @@ var ValidLLMProviders = []string{
 	ProviderOllama,
 	ProviderGemini,
 	ProviderAzureOpenAI,
+	ProviderMistral,
 }
 
 // isValidLLMProvider checks if the given provider name is valid.
@@ -170,6 +172,19 @@ func LLMConfigToProviderConfigs(cfg LLMRouterConfig) []*llm.ProviderConfig {
 		}
 		configs = append(configs, c)
 	}
+	if cfg.MistralKey != "" {
+		c := &llm.ProviderConfig{
+			Name:     "mistral",
+			Type:     llm.ProviderTypeMistral,
+			APIKey:   cfg.MistralKey,
+			Endpoint: cfg.MistralEndpoint,
+			Enabled:  true,
+		}
+		if cfg.MistralModel != "" {
+			c.Model = cfg.MistralModel
+		}
+		configs = append(configs, c)
+	}
 	if cfg.BedrockRegion != "" && cfg.BedrockModel != "" {
 		configs = append(configs, &llm.ProviderConfig{
 			Name:    "bedrock",
@@ -192,6 +207,9 @@ func ApplyLLMConfigToEnv(cfg LLMRouterConfig) {
 	setEnvOrUnset("ANTHROPIC_API_KEY", cfg.AnthropicKey)
 	setEnvOrUnset("GOOGLE_API_KEY", cfg.GeminiKey)
 	setEnvOrUnset("GOOGLE_MODEL", cfg.GeminiModel)
+	setEnvOrUnset("MISTRAL_API_KEY", cfg.MistralKey)
+	setEnvOrUnset("MISTRAL_MODEL", cfg.MistralModel)
+	setEnvOrUnset("MISTRAL_ENDPOINT", cfg.MistralEndpoint)
 	setEnvOrUnset("BEDROCK_REGION", cfg.BedrockRegion)
 	setEnvOrUnset("BEDROCK_MODEL", cfg.BedrockModel)
 	setEnvOrUnset("OLLAMA_ENDPOINT", cfg.OllamaEndpoint)
@@ -295,6 +313,17 @@ func LoadLLMConfigFromService(ctx context.Context, tenantID string) LLMRouterCon
 					routerConfig.GeminiModel = model
 				}
 				log.Printf("[LLM Config] Gemini provider loaded from %s", source)
+			}
+		case ProviderMistral:
+			if apiKey, ok := credentials["api_key"]; ok && apiKey != "" {
+				routerConfig.MistralKey = apiKey
+				if model, hasModel := providerConfig["model"].(string); hasModel && model != "" {
+					routerConfig.MistralModel = model
+				}
+				if endpoint, hasEndpoint := providerConfig["endpoint"].(string); hasEndpoint && endpoint != "" {
+					routerConfig.MistralEndpoint = endpoint
+				}
+				log.Printf("[LLM Config] Mistral provider loaded from %s", source)
 			}
 		case ProviderAzureOpenAI:
 			endpoint, hasEndpoint := providerConfig["endpoint"].(string)

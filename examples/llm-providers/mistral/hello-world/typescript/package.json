@@ -1,0 +1,16 @@
+{
+  "name": "mistral-hello-world",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mistral LLM Provider Hello World Example",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@axonflow/sdk": "^5.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
+  }
+}
