@@ -20,7 +20,7 @@ Rule order (highest priority first):
   6) otherwise                                 => ON
 ```
 
-Environment variables always win. Config flag overrides mode-based defaults but cannot override env vars. No credential-based logic — credentials do not affect telemetry defaults.
+Environment variables always win. Config flag overrides mode-based defaults but cannot override env vars. No credential-based logic — credentials do not affect telemetry defaults. Endpoint host does not affect defaults either: localhost, private-network, and self-hosted evaluation endpoints are still ON unless sandbox mode or an opt-out disables telemetry.
 
 ## Runtime Behavior
 
@@ -74,11 +74,12 @@ Every SDK must have tests covering all of the following scenarios:
 | 6 | No env, no config, sandbox mode | OFF |
 | 7 | No env, no config, production mode | ON |
 | 8 | No env, no config, no credentials, production mode | ON |
-| 9 | Custom `AXONFLOW_CHECKPOINT_URL` is used | Custom URL hit |
-| 10 | Network timeout / connection error | No exception thrown |
-| 11 | Server returns non-200 | No exception thrown |
-| 12 | Payload contains all required fields | Validated |
-| 13 | `instance_id` is unique across calls | Validated |
+| 9 | No env, no config, localhost/self-hosted endpoint, non-sandbox mode | ON |
+| 10 | Custom `AXONFLOW_CHECKPOINT_URL` is used | Custom URL hit |
+| 11 | Network timeout / connection error | No exception thrown |
+| 12 | Server returns non-200 | No exception thrown |
+| 13 | Payload contains all required fields | Validated |
+| 14 | `instance_id` is unique across calls | Validated |
 
 ## Implementation Locations
 

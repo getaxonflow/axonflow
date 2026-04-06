@@ -44,6 +44,9 @@ const (
 	// ProviderTypeAzureOpenAI represents Azure OpenAI Service models.
 	ProviderTypeAzureOpenAI ProviderType = "azure-openai"
 
+	// ProviderTypeMistral represents Mistral AI models.
+	ProviderTypeMistral ProviderType = "mistral"
+
 	// ProviderTypeCustom represents a custom/third-party provider.
 	ProviderTypeCustom ProviderType = "custom"
 )

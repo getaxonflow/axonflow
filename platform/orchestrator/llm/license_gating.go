@@ -29,6 +29,7 @@ var providerTierRequirement = map[ProviderType]license.Tier{
 	ProviderTypeAnthropic:   license.TierCommunity,
 	ProviderTypeGemini:      license.TierCommunity,      // Gemini available in Community edition
 	ProviderTypeAzureOpenAI: license.TierCommunity,      // Azure OpenAI available in Community edition
+	ProviderTypeMistral:     license.TierCommunity,      // Mistral available in Community edition
 
 	// Enterprise providers - require license
 	ProviderTypeBedrock: license.TierProfessional,

@@ -42,6 +42,8 @@ type KnownIntegration struct {
 var knownIntegrations = []KnownIntegration{
 	{ID: "openclaw", DisplayName: "OpenClaw", ConnectorPrefix: "openclaw.", PolicyPrefix: "int_openclaw"},
 	{ID: "claude-code", DisplayName: "Claude Code", ConnectorPrefix: "claude_code.", PolicyPrefix: "int_claude"},
+	{ID: "cursor", DisplayName: "Cursor IDE", ConnectorPrefix: "cursor.", PolicyPrefix: "int_cursor"},
+	{ID: "codex", DisplayName: "OpenAI Codex", ConnectorPrefix: "codex.", PolicyPrefix: "int_codex"},
 }
 
 var (
@@ -123,6 +125,12 @@ func shouldActivateForClient(clientName string) string {
 		"claude code":   "claude-code",
 		"openclaw":      "openclaw",
 		"open-claw":     "openclaw",
+		"cursor":        "cursor",
+		"cursor-ide":    "cursor",
+		"cursor ide":    "cursor",
+		"codex":         "codex",
+		"openai-codex":  "codex",
+		"openai codex":  "codex",
 		"axonflow-test": "",
 		"e2e-test":      "",
 	}

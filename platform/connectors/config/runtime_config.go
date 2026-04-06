@@ -705,6 +705,32 @@ func (s *RuntimeConfigService) loadLLMProvidersFromEnvVars() []*LLMProviderConfi
 		s.logger.Println("Loaded Gemini config from environment variables")
 	}
 
+	// Mistral configuration
+	if apiKey := os.Getenv("MISTRAL_API_KEY"); apiKey != "" {
+		model := os.Getenv("MISTRAL_MODEL")
+		if model == "" {
+			model = "mistral-small-latest"
+		}
+		providerConfig := map[string]interface{}{
+			"model": model,
+		}
+		if endpoint := os.Getenv("MISTRAL_ENDPOINT"); endpoint != "" {
+			providerConfig["endpoint"] = endpoint
+		}
+		configs = append(configs, &LLMProviderConfig{
+			ProviderName: "mistral",
+			DisplayName:  "Mistral AI",
+			Config:       providerConfig,
+			Credentials: map[string]string{
+				"api_key": apiKey,
+			},
+			Priority: 5,
+			Weight:   1.0,
+			Enabled:  true,
+		})
+		s.logger.Println("Loaded Mistral config from environment variables")
+	}
+
 	// Azure OpenAI configuration
 	if endpoint := os.Getenv("AZURE_OPENAI_ENDPOINT"); endpoint != "" {
 		apiKey := os.Getenv("AZURE_OPENAI_API_KEY")

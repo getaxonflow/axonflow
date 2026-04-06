@@ -192,7 +192,7 @@ func ValidateConfig(config ProviderConfig) error {
 
 	// Type-specific validation
 	switch config.Type {
-	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeGemini:
+	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeGemini, ProviderTypeMistral:
 		if config.APIKey == "" && config.APIKeySecretARN == "" {
 			return &FactoryError{
 				ProviderType: config.Type,

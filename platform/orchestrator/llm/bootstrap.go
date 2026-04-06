@@ -53,6 +53,12 @@ const (
 	EnvAzureOpenAIAPIVersion     = "AZURE_OPENAI_API_VERSION"
 	EnvAzureOpenAITimeout        = "AZURE_OPENAI_TIMEOUT_SECONDS"
 
+	// Mistral environment variables
+	EnvMistralAPIKey   = "MISTRAL_API_KEY"
+	EnvMistralModel    = "MISTRAL_MODEL"
+	EnvMistralEndpoint = "MISTRAL_ENDPOINT"
+	EnvMistralTimeout  = "MISTRAL_TIMEOUT_SECONDS"
+
 	// AWS Bedrock environment variables (Enterprise)
 	EnvBedrockRegion = "BEDROCK_REGION"
 	EnvBedrockModel  = "BEDROCK_MODEL"
@@ -189,6 +195,7 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		{"ollama", ProviderTypeOllama, bootstrapOllama},
 		{"gemini", ProviderTypeGemini, bootstrapGemini},
 		{"azure-openai", ProviderTypeAzureOpenAI, bootstrapAzureOpenAI},
+		{"mistral", ProviderTypeMistral, bootstrapMistral},
 	}
 
 	// Add enterprise providers if available (populated by init() in bootstrap_enterprise.go)
@@ -434,6 +441,37 @@ func bootstrapAzureOpenAI() (*ProviderConfig, error) {
 	return config, nil
 }
 
+// bootstrapMistral creates a Mistral provider config from environment variables.
+func bootstrapMistral() (*ProviderConfig, error) {
+	apiKey := os.Getenv(EnvMistralAPIKey)
+	if apiKey == "" {
+		return nil, nil // Not configured
+	}
+
+	config := &ProviderConfig{
+		Name:    "mistral",
+		Type:    ProviderTypeMistral,
+		APIKey:  apiKey,
+		Enabled: true,
+	}
+
+	if model := os.Getenv(EnvMistralModel); model != "" {
+		config.Model = model
+	}
+
+	if endpoint := os.Getenv(EnvMistralEndpoint); endpoint != "" {
+		config.Endpoint = endpoint
+	}
+
+	if timeoutStr := os.Getenv(EnvMistralTimeout); timeoutStr != "" {
+		if timeout, err := strconv.Atoi(timeoutStr); err == nil && timeout > 0 {
+			config.TimeoutSeconds = timeout
+		}
+	}
+
+	return config, nil
+}
+
 // bootstrapFromConfigs registers pre-built ProviderConfigs into the registry.
 // This bypasses env var detection entirely. When enabledFilter is non-empty,
 // only providers whose type is in the filter list are registered.
@@ -565,6 +603,10 @@ func DetectConfiguredProviders() []ProviderType {
 		configured = append(configured, ProviderTypeAzureOpenAI)
 	}
 
+	if os.Getenv(EnvMistralAPIKey) != "" {
+		configured = append(configured, ProviderTypeMistral)
+	}
+
 	if os.Getenv(EnvBedrockRegion) != "" {
 		configured = append(configured, ProviderTypeBedrock)
 	}
@@ -611,6 +653,12 @@ func GetProviderEnvVars(providerType ProviderType) map[string]string {
 		vars[EnvAzureOpenAIDeploymentName] = os.Getenv(EnvAzureOpenAIDeploymentName)
 		vars[EnvAzureOpenAIAPIVersion] = os.Getenv(EnvAzureOpenAIAPIVersion)
 		vars[EnvAzureOpenAITimeout] = os.Getenv(EnvAzureOpenAITimeout)
+
+	case ProviderTypeMistral:
+		vars[EnvMistralAPIKey] = maskAPIKey(os.Getenv(EnvMistralAPIKey))
+		vars[EnvMistralModel] = os.Getenv(EnvMistralModel)
+		vars[EnvMistralEndpoint] = os.Getenv(EnvMistralEndpoint)
+		vars[EnvMistralTimeout] = os.Getenv(EnvMistralTimeout)
 	}
 
 	return vars

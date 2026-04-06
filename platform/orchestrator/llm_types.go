@@ -37,6 +37,9 @@ type LLMRouterConfig struct {
 	AnthropicKey string
 	GeminiKey    string
 	GeminiModel  string
+	MistralKey      string
+	MistralModel    string
+	MistralEndpoint string
 
 	// Azure OpenAI configuration
 	AzureOpenAIEndpoint       string

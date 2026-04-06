@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [6.1.0] - 2026-04-06
+
+### Community
+
+#### Added
+
+- **Mistral AI LLM provider.** Full integration with Mistral's OpenAI-compatible API. Supports `mistral-small-latest` (default), `mistral-large-latest`, `codestral-latest`, and other models. Includes streaming, cost estimation, health checking, and automatic bootstrap from `MISTRAL_API_KEY` environment variable. Six example suites with 42 total assertions.
+- **Cursor IDE plugin launch.** AxonFlow governance for Cursor via `preToolUse`/`postToolUse` hooks. Enforces policy on Shell, Write, Edit, Read, Task, NotebookEdit, and MCP tools. PII detection in file writes with configurable `PII_ACTION` (block, redact, warn, log). 3 skills, 1 governance rule, 6 MCP tools. Plugin at [axonflow-cursor-plugin](https://github.com/getaxonflow/axonflow-cursor-plugin).
+- **OpenAI Codex plugin launch.** Hybrid governance for Codex: enforcement via hooks for terminal commands (`exec_command`), advisory governance for other tools via skills with implicit activation. 6 skills, 6 MCP tools. Plugin at [axonflow-codex-plugin](https://github.com/getaxonflow/axonflow-codex-plugin).
+- **Integration activation for Cursor and Codex.** Auto-detection via connector type prefix (`cursor.*`, `codex.*`) and client name matching. Integration-specific policies enabled on first request (migration 064).
+- **GovernedTool examples for TypeScript, Go, Java.** Framework-agnostic tool governance examples matching the existing Python example, with 8 E2E-verified test cases per language.
+
+#### Changed
+
+- **Telemetry defaults clarified for SDKs and plugins.** Anonymous telemetry remains enabled by default for all endpoints, including localhost/self-hosted evaluation, unless `DO_NOT_TRACK=1`, `AXONFLOW_TELEMETRY=off`, or an explicit SDK/plugin setting disables it. Related docs now also describe plugin timeout tuning for remote or high-latency deployments.
+
+---
+
 ## [6.0.0] - 2026-04-05
 
 > **Upgrade note:** Most users running with default settings are unaffected. If you customized `ORG_ID` or `AXONFLOW_CLIENT_ID` in your docker-compose, verify they still match your deployed identity before upgrading. See [deployment/licensing](https://docs.getaxonflow.com/docs/deployment/licensing) for details.

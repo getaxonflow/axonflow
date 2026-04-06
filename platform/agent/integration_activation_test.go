@@ -263,6 +263,110 @@ func TestShouldActivateForClient_Unknown(t *testing.T) {
 	}
 }
 
+func TestShouldActivateForConnector_Cursor(t *testing.T) {
+	activatedIntegrationsMu.Lock()
+	original := activatedIntegrations
+	activatedIntegrations = make(map[string]bool)
+	activatedIntegrationsMu.Unlock()
+	defer func() {
+		activatedIntegrationsMu.Lock()
+		activatedIntegrations = original
+		activatedIntegrationsMu.Unlock()
+	}()
+
+	id := shouldActivateForConnector("cursor.Bash")
+	if id != "cursor" {
+		t.Errorf("Expected cursor, got %s", id)
+	}
+	id = shouldActivateForConnector("cursor.Write")
+	if id != "cursor" {
+		t.Errorf("Expected cursor for cursor.Write, got %s", id)
+	}
+}
+
+func TestShouldActivateForConnector_Codex(t *testing.T) {
+	activatedIntegrationsMu.Lock()
+	original := activatedIntegrations
+	activatedIntegrations = make(map[string]bool)
+	activatedIntegrationsMu.Unlock()
+	defer func() {
+		activatedIntegrationsMu.Lock()
+		activatedIntegrations = original
+		activatedIntegrationsMu.Unlock()
+	}()
+
+	id := shouldActivateForConnector("codex.Bash")
+	if id != "codex" {
+		t.Errorf("Expected codex, got %s", id)
+	}
+	id = shouldActivateForConnector("codex.mcp__postgres")
+	if id != "codex" {
+		t.Errorf("Expected codex for codex.mcp__postgres, got %s", id)
+	}
+}
+
+func TestShouldActivateForClient_Cursor(t *testing.T) {
+	activatedIntegrationsMu.Lock()
+	original := activatedIntegrations
+	activatedIntegrations = make(map[string]bool)
+	activatedIntegrationsMu.Unlock()
+	defer func() {
+		activatedIntegrationsMu.Lock()
+		activatedIntegrations = original
+		activatedIntegrationsMu.Unlock()
+	}()
+
+	for _, name := range []string{"cursor", "cursor-ide", "Cursor IDE", "CURSOR"} {
+		id := shouldActivateForClient(name)
+		if id != "cursor" {
+			t.Errorf("Expected cursor for %q, got %s", name, id)
+		}
+	}
+}
+
+func TestShouldActivateForClient_Codex(t *testing.T) {
+	activatedIntegrationsMu.Lock()
+	original := activatedIntegrations
+	activatedIntegrations = make(map[string]bool)
+	activatedIntegrationsMu.Unlock()
+	defer func() {
+		activatedIntegrationsMu.Lock()
+		activatedIntegrations = original
+		activatedIntegrationsMu.Unlock()
+	}()
+
+	for _, name := range []string{"codex", "openai-codex", "OpenAI Codex", "CODEX"} {
+		id := shouldActivateForClient(name)
+		if id != "codex" {
+			t.Errorf("Expected codex for %q, got %s", name, id)
+		}
+	}
+}
+
+func TestKnownIntegrations_CursorCodexPrefixes(t *testing.T) {
+	cursor := findKnownIntegration("cursor")
+	if cursor == nil {
+		t.Fatal("cursor integration not found")
+	}
+	if cursor.ConnectorPrefix != "cursor." {
+		t.Errorf("Expected connector prefix 'cursor.', got %s", cursor.ConnectorPrefix)
+	}
+	if cursor.PolicyPrefix != "int_cursor" {
+		t.Errorf("Expected policy prefix 'int_cursor', got %s", cursor.PolicyPrefix)
+	}
+
+	codex := findKnownIntegration("codex")
+	if codex == nil {
+		t.Fatal("codex integration not found")
+	}
+	if codex.ConnectorPrefix != "codex." {
+		t.Errorf("Expected connector prefix 'codex.', got %s", codex.ConnectorPrefix)
+	}
+	if codex.PolicyPrefix != "int_codex" {
+		t.Errorf("Expected policy prefix 'int_codex', got %s", codex.PolicyPrefix)
+	}
+}
+
 func TestGetActiveIntegrations_Empty(t *testing.T) {
 	activatedIntegrationsMu.Lock()
 	original := activatedIntegrations
@@ -317,6 +421,8 @@ func TestKnownIntegrations_PolicyPrefixMatchesPolicyIDs(t *testing.T) {
 	expectedPrefixes := map[string]string{
 		"openclaw":    "int_openclaw",
 		"claude-code": "int_claude",
+		"cursor":      "int_cursor",
+		"codex":       "int_codex",
 	}
 
 	for _, ki := range knownIntegrations {
