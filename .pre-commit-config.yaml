@@ -1,0 +1,14 @@
+# Pre-commit hooks for axonflow-enterprise.
+# Run `pre-commit install` once to enable.
+# CI also runs these on every PR.
+#
+# Issue #1541: gitleaks rule prevents hardcoded Ed25519 signing keys.
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: Detect hardcoded secrets
+        description: Scan for hardcoded keys, tokens, and Ed25519 signing seeds
+        args: ["--config=.gitleaks.toml"]

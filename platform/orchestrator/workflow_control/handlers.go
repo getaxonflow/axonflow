@@ -120,7 +120,10 @@ func (h *Handler) CreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusCreated, workflow.ToCreateResponse())
 }
 
-// GetWorkflow handles GET /api/v1/workflows/{id}
+// GetWorkflow handles GET /api/v1/workflows/{id}.
+// Enforces multi-tenant isolation: only returns workflows belonging to the
+// authenticated caller's tenant and org. Returns 404 (not 403) on mismatch
+// to avoid leaking workflow existence across tenants.
 func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
@@ -133,7 +136,10 @@ func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workflow, err := h.service.GetWorkflow(r.Context(), workflowID)
+	tenantID := h.getClientID(r)
+	orgID := h.getOrgID(r)
+
+	workflow, err := h.service.GetWorkflow(r.Context(), workflowID, tenantID, orgID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
@@ -294,7 +300,7 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 		req = &parsed
 	}
 
-	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req); err != nil {
+	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req, h.getClientID(r), h.getOrgID(r)); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -307,7 +313,9 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// CompleteWorkflow handles POST /api/v1/workflows/{id}/complete
+// CompleteWorkflow handles POST /api/v1/workflows/{id}/complete.
+// Enforces multi-tenant isolation: only completes workflows belonging to the
+// authenticated caller's tenant and org.
 func (h *Handler) CompleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
@@ -320,7 +328,10 @@ func (h *Handler) CompleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.CompleteWorkflow(r.Context(), workflowID); err != nil {
+	tenantID := h.getClientID(r)
+	orgID := h.getOrgID(r)
+
+	if err := h.service.CompleteWorkflow(r.Context(), workflowID, tenantID, orgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -366,7 +377,7 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Failed"
 	}
 
-	if err := h.service.FailWorkflow(r.Context(), workflowID, req.Reason); err != nil {
+	if err := h.service.FailWorkflow(r.Context(), workflowID, req.Reason, h.getClientID(r), h.getOrgID(r)); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -388,7 +399,9 @@ func (h *Handler) FailWorkflow(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// AbortWorkflow handles POST /api/v1/workflows/{id}/abort
+// AbortWorkflow handles POST /api/v1/workflows/{id}/abort.
+// Enforces multi-tenant isolation: only aborts workflows belonging to the
+// authenticated caller's tenant and org.
 func (h *Handler) AbortWorkflow(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		h.handleCORS(w, r)
@@ -410,7 +423,10 @@ func (h *Handler) AbortWorkflow(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Aborted by user"
 	}
 
-	if err := h.service.AbortWorkflow(r.Context(), workflowID, req.Reason); err != nil {
+	tenantID := h.getClientID(r)
+	orgID := h.getOrgID(r)
+
+	if err := h.service.AbortWorkflow(r.Context(), workflowID, req.Reason, tenantID, orgID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -445,7 +461,7 @@ func (h *Handler) ResumeWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.ResumeWorkflow(r.Context(), workflowID); err != nil {
+	if err := h.service.ResumeWorkflow(r.Context(), workflowID, h.getClientID(r), h.getOrgID(r)); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -513,7 +529,7 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, approvedBy, comment); err != nil {
+	if err := h.service.ApproveStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r), approvedBy, comment); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -579,7 +595,7 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.RejectStep(r.Context(), workflowID, stepID, rejectedBy, reason); err != nil {
+	if err := h.service.RejectStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r), rejectedBy, reason); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
