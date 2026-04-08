@@ -6,7 +6,8 @@ This document maps platform versions to minimum SDK versions and the features ea
 
 | Platform Version | Min SDK Version | Recommended SDK | Key Features Added |
 |-----------------|----------------|-----------------|-------------------|
-| v6.0.0 | v5.0.0 (Go/TS/Java), v6.0.0 (Python) | v5.0.0 / v6.0.0 | OAuth2 Basic auth required, legacy engine removed, agent single entry point, Go module v5 |
+| v6.1.0 | v5.0.0 (Go/TS/Java), v6.0.0 (Python) | v5.1.0 / v6.1.0 | Mistral LLM provider, Cursor/Codex integration, GovernedTool adapter (TS/Go/Java), checkToolInput/checkToolOutput aliases |
+| v6.0.0 | v5.0.0 (Go/TS/Java), v6.0.0 (Python) | v5.1.0 / v6.1.0 | OAuth2 Basic auth required, legacy engine removed, agent single entry point, Go module v5 |
 | v5.0.0 | v4.0.0 | v4.1.0 | Removed `total_steps` from create workflow, MCP operation default `"execute"`, Go module v4 |
 | v4.8.0 | v3.8.0 | v3.8.0 | Version discovery, capability registry, User-Agent headers |
 | v4.7.0 | v3.7.0 | v3.7.0 | MCP check-input/check-output endpoints, circuit breaker pipeline |

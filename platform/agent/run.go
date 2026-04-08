@@ -1655,23 +1655,17 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func validateClient(clientID string) (*Client, error) {
-	// In production, this would query a database
-	// For now, return a mock client
-	if clientID == "" {
-		return nil, fmt.Errorf("client ID required")
-	}
-
-	return &Client{
-		ID:          clientID,
-		Name:        "Demo Client",
-		OrgID:       getDeploymentOrgID(),
-		TenantID:    clientID,
-		Permissions: []string{"query", "llm"},
-		RateLimit:   100,
-		Enabled:     true,
-	}, nil
-}
+// validateClient was a legacy mock function that accepted any client_id from
+// the request body and returned a fake "Demo Client" with the deployment's
+// own org_id. It enabled a critical multi-tenant security hole: in enterprise
+// mode, any request without Basic auth but with a client_id in the JSON body
+// was silently authenticated as that client, with every workflow, audit log,
+// and policy decision attributed to the deployment's own org rather than the
+// caller's real identity.
+//
+// Removed in v6.2.0. All handlers now require proper OAuth2 Client Credentials
+// (Basic auth with a cryptographically signed license key) or reject the
+// request with 401 Unauthorized.
 
 func validateUserToken(tokenString string, expectedTenantID string) (*User, error) {
 	// Community mode: Don't require a token for local development
@@ -1792,13 +1786,17 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		return nil, fmt.Errorf("failed to create orchestrator request: %v", err)
 	}
 	orchReq.Header.Set("Content-Type", "application/json")
-	// Forward tenant/org/client context so orchestrator handlers can access them
+	// Forward tenant/org/client context so orchestrator handlers can access them.
+	// X-Org-ID comes from the authenticated client's license (client.OrgID),
+	// matching the Single Entry Point proxy behavior in proxy.go. This enables
+	// multi-tenant SaaS where one deployment serves many orgs, each scoped by
+	// their own cryptographically validated license.
 	if user != nil && user.TenantID != "" {
 		orchReq.Header.Set("X-Tenant-ID", user.TenantID)
 	}
 	if client != nil {
 		if client.OrgID != "" {
-			orchReq.Header.Set("X-Org-ID", getDeploymentOrgID())
+			orchReq.Header.Set("X-Org-ID", client.OrgID)
 		}
 		if (user == nil || user.TenantID == "") && client.TenantID != "" {
 			orchReq.Header.Set("X-Tenant-ID", client.TenantID)

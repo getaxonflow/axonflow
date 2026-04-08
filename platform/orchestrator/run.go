@@ -4015,7 +4015,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	// Handle rejection: abort workflow + fail plan
 	if !approved {
 		log.Printf("[ResumePlan] Plan %s step rejected, aborting workflow %s", logutil.Sanitize(planID), targetWorkflowID)
-		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user")
+		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, "Step rejected by user", r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		_ = planService.MarkPlanFailed(r.Context(), planID, "Step rejected by user")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -4042,7 +4042,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	if pendingStepID != "" {
 		// Approve the pending step in WCP
-		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-User-ID"), "Auto-approved via plan resume"); err != nil {
+		if err := workflowControlService.ApproveStep(r.Context(), targetWorkflowID, pendingStepID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"), r.Header.Get("X-User-ID"), "Auto-approved via plan resume"); err != nil {
 			log.Printf("[ResumePlan] Failed to approve step %s: %v", pendingStepID, err)
 			sendErrorResponse(w, "Failed to approve step: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -4059,7 +4059,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	stepIndex := targetCurrentStep
 	if stepIndex >= len(workflow.Spec.Steps) {
 		// All steps completed — mark plan as completed
-		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
+		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		_ = planService.MarkPlanCompleted(r.Context(), planID, map[string]interface{}{"status": "all_steps_completed"})
 		// Sync unified execution tracker so GetPlanStatus returns correct status
 		if mapExecutionTracker != nil {
@@ -4084,7 +4084,7 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 	stepResult, err := mapWCPExecutor.ExecuteSingleStep(ctx, plan, &workflow, stepIndex, execContext, r.Header.Get("X-User-ID"), workflowEngine)
 	if err != nil {
 		log.Printf("[ResumePlan] Step execution failed: %v", err)
-		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error())
+		_ = workflowControlService.AbortWorkflow(r.Context(), targetWorkflowID, err.Error(), r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		_ = planService.MarkPlanFailed(r.Context(), planID, err.Error())
 		sendErrorResponse(w, "Step execution failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -4092,13 +4092,13 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Mark step as completed in WCP
 	stepID := fmt.Sprintf("step_%d_%s", stepIndex, workflow.Spec.Steps[stepIndex].Name)
-	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID, nil)
+	_ = workflowControlService.MarkStepCompleted(r.Context(), targetWorkflowID, stepID, nil, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 
 	// Check if there are more steps
 	nextStepIndex := stepIndex + 1
 	if nextStepIndex >= len(workflow.Spec.Steps) {
 		// All steps done
-		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID)
+		_ = workflowControlService.CompleteWorkflow(r.Context(), targetWorkflowID, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID"))
 		_ = planService.MarkPlanCompleted(r.Context(), planID, stepResult.Output)
 		if mapExecutionTracker != nil {
 			_ = mapExecutionTracker.SyncPlanStatus(r.Context(), planID, planning.PlanStatusCompleted, "All steps completed via confirm mode")

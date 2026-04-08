@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AxonFlow Demo Client EC2 Instance - Supports SaaS and In-VPC deployment modes'
+
+Parameters:
+  ClientType:
+    Type: String
+    AllowedValues:
+      - ecommerce
+      - travel
+      - healthcare
+      - support
+      - banking
+    Description: Type of demo client to deploy
+
+  Environment:
+    Type: String
+    AllowedValues:
+      - staging
+      - production
+    Default: staging
+    Description: Deployment environment
+
+  DeploymentMode:
+    Type: String
+    AllowedValues:
+      - saas
+      - in-vpc
+    Default: saas
+    Description: 'SaaS: Connect via HTTPS URL | In-VPC: Direct VPC connection with HTTP/2 + TLS 1.3'
+
+  AxonFlowEndpoint:
+    Type: String
+    Description: 'For SaaS mode: HTTPS endpoint (e.g., https://staging-eu.getaxonflow.com). For In-VPC mode: leave empty'
+    Default: ''
+
+  VpcId:
+    Type: String
+    Description: 'For In-VPC mode: VPC ID where AxonFlow backend is deployed. For SaaS mode: use default VPC'
+    Default: ''
+
+  AxonFlowSecurityGroupId:
+    Type: String
+    Description: 'For In-VPC mode: Security group ID of AxonFlow agent to allow traffic. For SaaS mode: leave empty'
+    Default: ''
+
+  SubnetId:
+    Type: String
+    Description: 'For In-VPC mode: Subnet ID to launch EC2 in (must be in the same VPC). For SaaS mode: leave empty'
+    Default: ''
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Description: EC2 instance type
+
+  KeyPairName:
+    Type: String
+    Description: 'SSH key pair name for emergency access (optional but recommended)'
+    Default: ''
+
+Conditions:
+  IsSaaSMode: !Equals [!Ref DeploymentMode, 'saas']
+  IsInVpcMode: !Equals [!Ref DeploymentMode, 'in-vpc']
+  UseCustomVpc: !Not [!Equals [!Ref VpcId, '']]
+  UseCustomSubnet: !Not [!Equals [!Ref SubnetId, '']]
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+
+Mappings:
+  RegionConfig:
+    eu-central-1:
+      AMI: ami-0084a47cc718c111a  # Ubuntu 22.04 LTS
+    us-east-1:
+      AMI: ami-0e2c8caa4b6378d8c  # Ubuntu 22.04 LTS
+    ap-south-1:
+      AMI: ami-0c2af51e265bd5e0e  # Ubuntu 22.04 LTS (Mumbai)
+
+Resources:
+  # Security Group for SaaS mode (internet-facing)
+  SaaSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsSaaSMode
+    Properties:
+      GroupName: !Sub '${ClientType}-${Environment}-sg'
+      GroupDescription: !Sub 'Security group for ${ClientType} ${Environment} demo client'
+      VpcId: !If [UseCustomVpc, !Ref VpcId, !Ref 'AWS::NoValue']
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTP from internet'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTPS from internet'
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: 'SSH for emergency access'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClientType}-${Environment}-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Client
+          Value: !Ref ClientType
+        - Key: DeploymentMode
+          Value: !Ref DeploymentMode
+
+  # Security Group for In-VPC mode
+  # Note: Client apps need BOTH public access (for end users) AND VPC access (for AxonFlow backend)
+  InVpcSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsInVpcMode
+    Properties:
+      GroupName: !Sub '${ClientType}-${Environment}-in-vpc-sg'
+      GroupDescription: !Sub 'In-VPC security group for ${ClientType} ${Environment}'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Public internet access (for end users to access the client application)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTP from internet (end users)'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: 'HTTPS from internet (end users)'
+        # VPC-internal access (for AxonFlow backend connection)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AxonFlowSecurityGroupId
+          Description: 'HTTP from AxonFlow in same VPC'
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref AxonFlowSecurityGroupId
+          Description: 'HTTPS from AxonFlow in same VPC'
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: 'Allow all outbound'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClientType}-${Environment}-in-vpc-sg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Client
+          Value: !Ref ClientType
+        - Key: DeploymentMode
+          Value: !Ref DeploymentMode
+
+  # IAM Role for SSM access (troubleshooting only)
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy'
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                Resource: '*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:axonflow/customers/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClientType}-${Environment}-role'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # Elastic IP for stable public access
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Condition: IsSaaSMode
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClientType}-${Environment}-eip'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Client
+          Value: !Ref ClientType
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionConfig, !Ref 'AWS::Region', AMI]
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      SubnetId: !If [UseCustomSubnet, !Ref SubnetId, !Ref 'AWS::NoValue']
+      SecurityGroupIds:
+        - !If [IsSaaSMode, !Ref SaaSSecurityGroup, !Ref InVpcSecurityGroup]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          # Log all output
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+
+          echo "================================"
+          echo "AxonFlow Demo Client Setup"
+          echo "Client: ${ClientType}"
+          echo "Environment: ${Environment}"
+          echo "Mode: ${DeploymentMode}"
+          echo "================================"
+
+          # Update system
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+          # Install Docker
+          echo "Installing Docker..."
+          apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io
+
+          # Install Docker Compose
+          echo "Installing Docker Compose..."
+          curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+
+          # Install AWS CLI v2. Ubuntu 24.04 (Noble) removed the legacy
+          # 'awscli' package from its repos, so we download the official
+          # installer from AWS.
+          echo "Installing AWS CLI v2..."
+          apt-get install -y unzip
+          cd /tmp
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+          unzip -q -o awscliv2.zip
+          ./aws/install
+          rm -rf aws awscliv2.zip
+          cd -
+
+          # Install nginx and certbot for reverse proxy with SSL
+          echo "Installing nginx and certbot..."
+          apt-get install -y nginx certbot python3-certbot-nginx
+          systemctl enable nginx
+
+          # Install CloudWatch agent
+          echo "Installing CloudWatch agent..."
+          wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+          dpkg -i -E ./amazon-cloudwatch-agent.deb
+
+          # Create deployment directory
+          mkdir -p /opt/axonflow
+          chown -R ubuntu:ubuntu /opt/axonflow
+
+          # Create marker file to indicate setup complete
+          echo "Setup completed at $(date)" > /opt/axonflow/setup-complete.txt
+
+          # Signal completion
+          echo "✅ EC2 instance setup complete"
+          echo "Ready for application deployment"
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClientType}-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Client
+          Value: !Ref ClientType
+        - Key: DeploymentMode
+          Value: !Ref DeploymentMode
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Attach Elastic IP to instance (SaaS mode only)
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: IsSaaSMode
+    Properties:
+      InstanceId: !Ref EC2Instance
+      EIP: !Ref ElasticIP
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  PublicIP:
+    Description: Public IP address (SaaS mode) or Private IP (In-VPC mode)
+    Value: !If
+      - IsSaaSMode
+      - !Ref ElasticIP
+      - !GetAtt EC2Instance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+
+  PrivateIP:
+    Description: Private IP address
+    Value: !GetAtt EC2Instance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateIP'
+
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !If
+      - IsSaaSMode
+      - !Ref SaaSSecurityGroup
+      - !Ref InVpcSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+
+  FrontendURL:
+    Description: Frontend URL (to be configured with DNS)
+    Value: !If
+      - IsSaaSMode
+      - !Sub 'https://${ClientType}-${Environment}-eu.getaxonflow.com'
+      - !Sub 'http://${EC2Instance.PrivateIp}'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendURL'
+
+  HealthCheckURL:
+    Description: Health check endpoint
+    Value: !If
+      - IsSaaSMode
+      - !Sub 'https://${ClientType}-${Environment}-eu.getaxonflow.com/api/health'
+      - !Sub 'http://${EC2Instance.PrivateIp}/api/health'
+    Export:
+      Name: !Sub '${AWS::StackName}-HealthCheckURL'
+
+  DeploymentMode:
+    Description: Deployment mode (SaaS or In-VPC)
+    Value: !Ref DeploymentMode
+
+  AxonFlowEndpoint:
+    Description: AxonFlow backend endpoint this client connects to
+    Value: !Ref AxonFlowEndpoint

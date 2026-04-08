@@ -11,18 +11,19 @@ import (
 )
 
 // TestDefaultDetectionConfig tests the default configuration values.
+// v6.2.0+: defaults are derived from ProfileDefault — see ADR-036.
 func TestDefaultDetectionConfig(t *testing.T) {
 	cfg := DefaultDetectionConfig()
 
-	// Verify defaults match Issue #891 philosophy:
-	// Block high-confidence threats, warn on heuristics, redact PII
+	// v6.2.0 philosophy: warn on PII / SQLi / sensitive data; block only
+	// unambiguously dangerous patterns. Restore strict via AXONFLOW_PROFILE=strict.
 	tests := []struct {
 		name     string
 		got      DetectionAction
 		expected DetectionAction
 	}{
-		{"SQLIAction defaults to block", cfg.SQLIAction, DetectionActionBlock},
-		{"PIIAction defaults to redact", cfg.PIIAction, DetectionActionRedact},
+		{"SQLIAction defaults to warn", cfg.SQLIAction, DetectionActionWarn},
+		{"PIIAction defaults to warn", cfg.PIIAction, DetectionActionWarn},
 		{"SensitiveDataAction defaults to warn", cfg.SensitiveDataAction, DetectionActionWarn},
 		{"HighRiskAction defaults to warn", cfg.HighRiskAction, DetectionActionWarn},
 		{"DangerousQueryAction defaults to block", cfg.DangerousQueryAction, DetectionActionBlock},
@@ -54,13 +55,18 @@ func TestDetectionConfigFromEnv_Defaults(t *testing.T) {
 		}
 	}()
 
+	// Also clear the profile/enforce env vars to test true defaults.
+	os.Unsetenv(EnvProfile)
+	os.Unsetenv(EnvEnforce)
+
 	cfg := DetectionConfigFromEnv()
 
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected %s", cfg.SQLIAction, DetectionActionBlock)
+	// v6.2.0+: default profile relaxes PII/SQLi to warn.
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0)", cfg.SQLIAction)
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected %s", cfg.PIIAction, DetectionActionRedact)
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0)", cfg.PIIAction)
 	}
 	if cfg.SensitiveDataAction != DetectionActionWarn {
 		t.Errorf("SensitiveDataAction: got %s, expected %s", cfg.SensitiveDataAction, DetectionActionWarn)
@@ -234,11 +240,15 @@ func TestDetectionConfigFromEnv_InvalidValues(t *testing.T) {
 		value    string
 		expected DetectionAction
 	}{
-		{"SQLI_ACTION invalid defaults to block", EnvSQLIAction, "invalid", DetectionActionBlock},
-		{"SQLI_ACTION empty defaults to block", EnvSQLIAction, "", DetectionActionBlock},
-		{"PII_ACTION invalid defaults to redact", EnvPIIAction, "invalid", DetectionActionRedact},
-		// Note: "redact" is not valid for SQLI, should fallback
-		{"SQLI_ACTION redact (invalid for sqli) defaults to block", EnvSQLIAction, "redact", DetectionActionBlock},
+		// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default. Invalid values
+		// fall back to the parseDetectionAction hardcoded fallback (block for SQLi,
+		// redact for PII), not to the relaxed profile defaults — this preserves
+		// the "fail to a stricter posture" intuition for malformed input.
+		{"SQLI_ACTION invalid falls back to block", EnvSQLIAction, "invalid", DetectionActionBlock},
+		{"SQLI_ACTION empty inherits profile (warn)", EnvSQLIAction, "", DetectionActionWarn},
+		{"PII_ACTION invalid falls back to redact", EnvPIIAction, "invalid", DetectionActionRedact},
+		// Note: "redact" is not valid for SQLI, should fallback to hardcoded block.
+		{"SQLI_ACTION redact (invalid for sqli) falls back to block", EnvSQLIAction, "redact", DetectionActionBlock},
 	}
 
 	for _, tt := range tests {
@@ -526,11 +536,13 @@ func TestMCPDetectionConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Expected MCP static policies enabled by default")
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
+	// PII and SQLi now default to warn; only dangerous patterns block.
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
 	}
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
 	}
 	if cfg.DangerousQueryAction != DetectionActionBlock {
 		t.Errorf("DangerousQueryAction: got %s, expected block", cfg.DangerousQueryAction)
@@ -651,11 +663,12 @@ func TestGatewayDetectionConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Expected Gateway static policies enabled by default")
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
 	}
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
 	}
 }
 
@@ -885,8 +898,9 @@ func TestMCPAndGatewayIndependentConfig(t *testing.T) {
 	if mcpCfg.SQLIAction != DetectionActionLog {
 		t.Errorf("MCP SQLIAction: got %s, expected log", mcpCfg.SQLIAction)
 	}
-	if gwCfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("Gateway SQLIAction: got %s, expected block (default)", gwCfg.SQLIAction)
+	// v6.2.0+: gateway SQLi default is now warn (not block).
+	if gwCfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("Gateway SQLIAction: got %s, expected warn (v6.2.0 default)", gwCfg.SQLIAction)
 	}
 }
 
