@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [6.2.0] - 2026-04-09
+
+### Community
+
+#### Added — Community SaaS evaluation server (try.getaxonflow.com)
+- `DEPLOYMENT_MODE=community-saas` — new deployment mode for shared evaluation server.
+  Requires self-registration via `POST /api/v1/register`. Rate-limited: 20 req/min +
+  500 req/day per tenant. Ollama is the only LLM provider. No license required.
+- `POST /api/v1/register` — generates UUID tenant_id (prefixed `cs_`) and one-time-display
+  secret (bcrypt-hashed at cost 12). Credentials expire after 30 days. IP-rate-limited
+  to prevent registration abuse (5/hour/IP).
+- Migration 068: `community_saas_registrations` + `community_saas_daily_usage` tables +
+  `increment_csaas_daily()` atomic counter function for daily rate limiting.
+- Community SaaS usage telemetry to dedicated DynamoDB table (`community-saas-telemetry-events`).
+  Records endpoint, method, status_code, platform version, correlation_id per request.
+  Never records request content, query params, or IP addresses. 30-day TTL, PITR enabled,
+  server-side encryption enabled.
+- Ollama EC2 infrastructure template (`infrastructure/cloudformation/ollama-ec2.yaml`)
+  with security-group-scoped port 11434, SSM management, GPU driver auto-install for
+  g4dn/g5 instance types.
+- Docker Compose overlay (`docker-compose.community-saas.yml`) for local E2E testing with
+  bundled Ollama service and automatic model pull.
+- `community-saas` added to deploy-application and deploy-platform workflow dropdowns.
+- Checkpoint telemetry accepts `community-saas` as a valid `endpoint_type` value.
+
+#### Added — Governance profiles and per-category enforce
+
+- **`AXONFLOW_PROFILE` env var** (`dev` | `default` | `strict` | `compliance`). Resolved at agent and orchestrator startup, applied to the policy engine, and logged on boot. A single env var picks the enforcement posture instead of tuning eight individual `*_ACTION` env vars. The matrix is documented in the Governance Profiles guide. Explicit category env vars (`PII_ACTION=block`, `SQLI_ACTION=warn`, etc.) continue to override the profile, so existing automation keeps working.
+
+- **`AXONFLOW_ENFORCE` env var** for per-category opt-in enforcement. Accepts a comma-separated subset of `pii`, `sqli`, `sensitive_data`, `high_risk`, `dangerous_queries`, `dangerous_commands`, plus the sentinels `all` and `none`. `all` is a true alias for the strict profile; `none` is a true alias for the dev profile — both match the documented profile matrices exactly. An explicit category list forces listed categories to `block` while leaving non-listed categories at the active profile's value (non-listed are no longer silently downgraded to `warn`). Unknown tokens are rejected at startup — previously this used `log.Fatalf` which crashed test binaries when developers had stale env vars set; it now returns an error cleanly. Precedence (highest → lowest): explicit `*_ACTION` env vars > `AXONFLOW_ENFORCE` > `AXONFLOW_PROFILE` > built-in defaults.
+
+- **Profile banner at startup.** Both the agent AND the orchestrator now log the active profile and resolved per-category actions on boot, so operators can confirm what posture each component is running in without grepping the env. Example: `[Profile] agent active: dev — PII=log, SQLI=log, SensitiveData=log, HighRisk=log, DangerousQuery=warn, DangerousCommand=warn`.
+
+- **Precedence chain regression tests** — unit tests verify `ProfileDefaults → ApplyEnforce → *_ACTION env var` end-to-end through `DetectionConfigFromEnv`, plus the invalid-value-preserves-profile guarantees under both strict and dev profiles.
+
+#### Changed — Default detection actions relaxed
+
+- **Breaking:** the default `PII_ACTION` is now `warn` (previously `redact`). SQLi and sensitive-data categories also default to `warn`. Compliance categories (HIPAA, GDPR, PCI, RBI, MAS FEAT) default to `log`. Only unambiguously dangerous patterns — reverse shells, `rm -rf /`, SSRF to `169.254.169.254`, `/etc/shadow`, credential files — block by default. Rationale: silent redaction breaks debugging mid-session and teaches evaluators that AxonFlow is "broken". The new posture surfaces the detection signal honestly without mutating the data flow. To restore the previous behavior set `AXONFLOW_PROFILE=strict` or `PII_ACTION=redact`.
+
+- **Database migration for system-default policies.** A migration rewrites system-default policies to match the new defaults: PII policies move from `redact`/`block` to `warn`, SQLi and sensitive-data system policies from `block` to `warn`, compliance system policies (HIPAA / GDPR / PCI / RBI / MAS FEAT) from `block` or `redact` to `log`. Dangerous-command policies stay `block`. The migration uses the `tenant_id IS NULL OR tenant_id = 'global'` discriminator so user-created and tenant-owned policies are untouched. An accompanying down migration restores the previous strict defaults.
+
+#### Fixed — Invalid env var values now preserve the active profile
+
+- **`DetectionConfigFromEnvWithBase` fallback bug.** On a `dev` or `default` deployment, a typo like `PII_ACTION=blok` used to silently tighten behavior back to `redact` — the hardcoded legacy fallback in `parseDetectionAction` ignored the already-resolved profile base and reverted to the v6.1.0 default. Now the fallback preserves the base config's value (`cfg.PIIAction`, `cfg.SQLIAction`, etc.) so an invalid value on a dev profile stays at `log` and on a strict profile stays at `block`. Applies to PII, SQLi, sensitive data, high risk, dangerous queries, and dangerous commands. Regression tests verify the behavior on both strict and dev profiles.
+
+#### Fixed — `AXONFLOW_ENFORCE=all` and `none` now match their documented profile aliases
+
+- **Sentinel semantics corrected.** The comments and docs said `AXONFLOW_ENFORCE=all` was equivalent to `AXONFLOW_PROFILE=strict` and `none` equivalent to `dev`, but the old `ApplyEnforce` implementation turned listed categories into `block` and all others into `warn`. In practice `all` over-blocked `high_risk` (strict leaves it at warn), and `none` produced `warn`-only behavior instead of dev's `log`-only posture for PII/SQLi/sensitive data. `ApplyEnforce` now reads the sentinel and returns `ProfileDefaults(ProfileStrict)` / `ProfileDefaults(ProfileDev)` directly, so the sentinels match the documented profile matrices exactly.
+
+- **Non-listed categories preserved.** When an explicit category list is provided (e.g. `AXONFLOW_ENFORCE=pii,sqli`), listed categories are forced to `block` as before, but non-listed categories now preserve the active profile's value instead of being silently downgraded to `warn`. A dev-profile deployment with `AXONFLOW_ENFORCE=pii` now blocks PII and keeps everything else at `log`, not `warn`.
+
+#### Fixed — `LoadEnforceFromEnv` no longer calls log.Fatalf
+
+- **`LoadEnforceFromEnv` returns an error instead of calling `log.Fatalf`.** Any developer with a stale `AXONFLOW_ENFORCE=garbage` in their shell used to crash the entire test binary at package init. Now the error is returned cleanly and the calling code logs and continues with the profile base.
+
+#### Fixed — `deploy-client.sh` JWT path silent failure
+
+- **`scripts/multi-tenant/deploy-client.sh` no longer silently falls back to a hardcoded Secrets Manager path.** The "Path B" fallback was reading a hardcoded `axonflow/clients/travel/production/user-token` regardless of the client being deployed, swallowing AWS errors with `2>/dev/null || echo ""`, and silently passing an empty `USER_TOKEN` into the container — which the agent then rejected at runtime with a misleading "token signature is invalid" error. The variable `AXONFLOW_STACK_PREFIX_JWT` is now required; the script fails loudly if missing. The generated `USER_TOKEN` is now validated with a structural check: three base64url segments, header that decodes to JSON with an `alg` field, payload that decodes to JSON with an `exp` or `iat` field (previously the check was a regex that accepted any `a.b.c` literal). All client environment files under `configs/environments/clients/` have been updated to declare the variable. A new runbook documents the underlying JWT secret rotation flow.
+
+#### Fixed — Evaluation tier `MaxPendingApprovals` outlier
+
+- **`EvaluationLimits.MaxPendingApprovals` corrected from 100 to 25** to match the rest of the evaluation tier caps (`MaxConcurrentExec`, `MaxSSEConnections`, `MaxVersionsPerPlan`). The previous value of 100 was an outlier that contradicted the tier boundary test and inflated evaluation-tier capacity above what was documented and tested.
+
+### Security
+
+- **Ed25519 enterprise license signing key rotated.** The previous private seed was found embedded in `scripts/setup-e2e-testing.sh`, where it had been since the script was authored. Anyone with read access to the repo could mint valid Enterprise / Professional / Plus licenses for any `org_id`, bypassing tier gating in any deployment. As part of this release the key has been rotated, all active customer and per-stack licenses re-signed under the new key, and the agent's embedded `enterprisePublicKey` byte array updated. The previous public key (first 8 bytes `9a b6 f6 b2`) is no longer accepted. A new internal-only runbook documents the rotation procedure for any future operator.
+
+- **Rotation tool now enumerates secrets dynamically.** The initial rotation tool held a hardcoded list of license secrets, which missed the per-stack `axonflow-<stack>-license-key` boot license secrets and broke running agents mid-rotation. The rewritten tool paginates `ListSecrets` and `DescribeParameters` across all configured regions, filters by name + value prefix, re-signs every enumerated Ed25519 and legacy V2 license, and writes re-signed licenses back to AWS BEFORE rotating the signing-key secret (so a write-back failure never leaves SM in a split-brain state where the new signing key is active but some licenses still hold signatures under the old key).
+
+- **Re-signed V2 licenses preserve both `tenant_id` and `org_id`.** The legacy V2 HMAC format only carried `tenant_id`; the fresh Ed25519 payload now writes both fields so downstream consumers that key off either stay compatible.
+
+- **`scripts/setup-e2e-testing.sh` no longer hardcodes any signing keys.** The eval and dev-only enterprise keys are sourced from the environment (CI uses GitHub Actions secrets) or fetched at runtime from AWS Secrets Manager. A separate dev-only enterprise keypair has been created so local E2E never touches the production signing key. The `.env` file written by the script is `chmod 600` so the signing-key material it contains is not world-readable.
+
+- **Pre-commit `gitleaks` rule** added at `.gitleaks.toml` and wired into `.pre-commit-config.yaml`. The rule blocks any commit that introduces a base64 Ed25519 seed near a `*_SIGNING_KEY` env var assignment. CI runs gitleaks on every PR.
+
+- **Checkpoint telemetry retention bumped from 90 → 180 days.** Evaluation-to-production conversion windows run 2-4 months in observed data, so 90 days was cutting off the tail. 180 days still fits comfortably in DynamoDB free tier at current volume.
+
+#### Fixed — Multi-tenant SaaS correctness and security
+
+- **`X-Org-ID` now derived from the validated client license, not the deployment env var.** The agent's Single Entry Point proxy middleware (`platform/agent/proxy.go`) was forcibly overwriting the authenticated client's `org_id` with the deployment's `ORG_ID` environment variable on every request, preventing a single deployment from serving multiple organizations. Every tenant on a shared stack was being stamped with the same `org_id`, making true multi-tenant workflow scoping impossible. The middleware now forwards `X-Org-ID` from the cryptographically validated client license payload (`client.OrgID`) — matching the behavior of `apiAuthMiddleware` in `auth.go`, which was already correct. The Ed25519 signature on the client license guarantees the `org_id` claim cannot be forged, so trusting it is both safe and required for multi-tenant operation. Deployments with a single org per stack are unaffected; deployments serving multiple orgs now correctly scope workflows, policies, and audit data per-tenant.
+
+- **Internal orchestrator forwarding path fixed.** `platform/agent/run.go` also had the same bug in the direct HTTP forwarding path that bypasses the Single Entry Point mux. It was checking whether the client had an `org_id` and then setting the header to `getDeploymentOrgID()` anyway. Now uses `client.OrgID` directly.
+
+- **MCP check-input and check-output audit log OrgID.** `platform/agent/mcp_handler.go` was writing every MCP audit record with `OrgID: getDeploymentOrgID()` regardless of which client authenticated. Multi-tenant audit trails were structurally broken — all records from all tenants were attributed to the deployment. Both handlers now lift `orgID` into function-level scope alongside `tenantID`, populated from `client.OrgID` in enterprise auth, `X-Org-ID` header in internal-service auth, and `getDeploymentOrgID()` in community mode.
+
+- **Removed `validateClient()` mock authentication fallback.** `platform/agent/run.go` had a `validateClient(clientID)` function that accepted any `client_id` from the request body and returned a fake "Demo Client" with the deployment's own `org_id`, no credential validation. All four MCP handlers (`/api/v1/mcp/query`, `/api/v1/mcp/execute`, `/api/v1/mcp/check-input`, `/api/v1/mcp/check-output`) called this as a fallback when Basic auth was missing. Effectively: in enterprise mode, any request without Basic auth but with a `client_id` field in the JSON body was silently authenticated as that client. Removed the function and all four call sites now reject unauthenticated requests with 401.
+
+- **Orchestrator workflow tenant/org ownership checks.** `platform/orchestrator/workflow_control/service.go` — **nine** service methods now enforce tenant/org ownership before acting on a workflow: `GetWorkflow`, `StepGate`, `MarkStepCompleted`, `ApproveStep`, `RejectStep`, `ResumeWorkflow`, `CompleteWorkflow`, `FailWorkflow`, `AbortWorkflow`. Previously `GetWorkflow` (called from `GET /api/v1/workflows/{id}`) did no tenant/org filtering — any authenticated client that knew a workflow ID could fetch any workflow (classic IDOR). The same gap existed on every other workflow state transition: an attacker could approve, reject, resume, complete, fail, or abort any other tenant's workflow, or inject fake cost/token metrics into another tenant's audit trail by calling `MarkStepCompleted`. All matching HTTP handlers in `handlers.go` extract tenant/org from request headers (`X-Tenant-ID`, `X-Org-ID`) and pass them through. Callers in `run.go` (MAP confirm mode) and `unified_execution_handler.go` also updated. `ListWorkflows` was already filtering correctly.
+
+- **Unified execution handler `checkTenantOwnership` hardened.** `platform/orchestrator/unified_execution_handler.go` previously had permissive fallbacks: requests without `X-Tenant-ID` were allowed through, and executions without a `tenant_id` were accessible to any caller. Both were cross-tenant data leak vectors. The check now:
+  - Requires **both** `X-Tenant-ID` and `X-Org-ID` on every request (401 if missing).
+  - Rejects executions that lack either `tenant_id` or `org_id` (404).
+  - Requires exact match on both fields (404 on any mismatch).
+  - All mismatch responses return 404 (not 403) to prevent cross-tenant existence leakage.
+
+#### Added — Customer portal multi-tenant identity
+
+- **`tenant_id` column on `user_sessions`** (migration 065). The customer portal previously aliased `tenantID := orgID` in `auth.go` with the comment *"organizations table doesn't have tenant_id column"*. That collapsed two concepts and prevented a single portal org from representing multiple tenants (prod, staging, dev). The new column lets a portal session track which tenant within an org the user is currently viewing.
+
+- **`portal_default_tenant_id()` SQL helper** (migration 065). Resolves the default tenant for an org: prefers `tenant_id = org_id` (canonical default) and falls back to the oldest tenant in the `tenants` table, then to `org_id` itself for community deployments. Used at login time to populate the session.
+
+- **Automatic default tenant backfill** for every existing organization (migration 065). Every org gets a canonical tenant row inserted into the `tenants` table if one doesn't already exist, so portal login can deterministically resolve a tenant without schema changes to customer data.
+
+#### Changed — Customer portal auth and proxy
+
+- **`AuthHandler.HandleLogin`** now resolves `defaultTenantID` via `portal_default_tenant_id()` at login time, inserts it into `user_sessions.tenant_id`, and returns both `org_id` and `tenant_id` in the login response. Legacy fallback kicks in if migration 065 hasn't been applied yet.
+
+- **`AuthHandler.HandleCheckSession`** (GET /api/v1/auth/session) now reads and returns `tenant_id` alongside `org_id`.
+
+- **`middleware/dev_auth.go`** stops joining `customers.tenant_id` and reads `user_sessions.tenant_id` directly. The previous `orgID + "_tenant"` fallback is replaced with a deterministic fallback to `org_id` for legacy sessions.
+
+- **`api/orchestrator_proxy.go`** forwards `X-Tenant-ID` from `session.TenantID` (the currently-selected tenant within the org) and `X-Client-ID` from the tenant identifier — previously both collapsed to `session.OrgID`. `X-Org-ID` continues to carry `session.OrgID`. A warning log fires when `session.TenantID` is empty (legacy session, unexpected after migration 065).
+
+- **`ORG_ID` environment variable role clarified.** Previously documented as "canonical org identity (single source of truth)", the env var is now understood as:
+  - **Stack-level deployment label** (used in logs, metrics, startup validation against the stack's own boot license)
+  - **Community mode fallback** (when no client license is present)
+  - **NOT a routing key** for per-request multi-tenant data scoping — that comes from the authenticated client license
+
+#### Fixed — Deployment tooling
+
+- **`deploy-cloudformation.sh` missing required `OrganizationID` parameter.** The script built the `aws cloudformation deploy --parameter-overrides` list without passing `OrganizationID`, so creating a new stack from a clean state failed with `Parameter 'OrganizationID' must have a value`. Existing stack updates worked because CloudFormation falls back to `UsePreviousValue` for parameters not passed explicitly. The script now reads `deployment.organization_id` from the environment yaml config, falling back to the environment name if not set, and passes it on every deploy. This unblocks creating fresh environments from `deploy-platform.yml`.
+
+### Security
+
+- **IDOR on `GET /api/v1/workflows/{id}` closed.** Before v6.2.0, any authenticated client could fetch any workflow by ID regardless of which tenant or org it belonged to. Combined with the `X-Org-ID` deployment-env-var override, this meant a compromised tenant could enumerate workflow IDs and read every other tenant's execution state. Both the header source fix and the service-layer ownership check are required to close the hole end-to-end.
+- **No-auth fallback on MCP handlers closed.** Before v6.2.0, in enterprise mode, any request with a `client_id` field in the JSON body (but no Basic auth credentials) was silently authenticated as that client and attributed to the deployment's own org. Removed entirely.
+- **Permissive cross-tenant fallback on unified execution endpoints closed.** Before v6.2.0, executions without a `tenant_id` were accessible to any caller, and requests without `X-Tenant-ID` were accepted. Both now rejected.
+
+---
+
 ## [6.1.0] - 2026-04-06
 
 ### Community

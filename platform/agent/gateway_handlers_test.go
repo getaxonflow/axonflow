@@ -2752,12 +2752,16 @@ func TestGetRBIPIIDetector(t *testing.T) {
 
 // TestPreCheckHandler_RBIPIIIntegration tests that RBI PII detection is integrated into pre-check flow
 // Both Community and Enterprise editions detect critical India PII (Aadhaar, PAN, UPI, Bank Account).
-// Default action is redact (PII_ACTION=redact), which approves the request but flags for redaction.
+// Sets PII_ACTION=redact explicitly to test the redact path (the v6.2.0 default is warn).
 func TestPreCheckHandler_RBIPIIIntegration(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
+	os.Setenv("PII_ACTION", "redact")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 	defer os.Unsetenv("ENVIRONMENT")
+	defer os.Unsetenv("PII_ACTION")
+	ResetDetectionConfigCache()
+	defer ResetDetectionConfigCache()
 
 	// Policy evaluation uses unified shared engine (legacy engine removed)
 

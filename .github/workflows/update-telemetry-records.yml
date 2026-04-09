@@ -1,0 +1,240 @@
+name: Update Telemetry Records
+
+# SoX-compliant workflow for modifying telemetry DynamoDB records.
+# All mutations go through this workflow — never modify records directly.
+# Every run produces a git-committed audit trail in axonflow-business-docs.
+#
+# Safety controls:
+# - dry_run defaults to true (operator must explicitly set false)
+# - Concurrency lock prevents parallel runs
+# - Separate IAM credentials with UpdateItem-only permissions
+# - 5-second delay before mutations with log output (decision point)
+# - Full JSON audit log committed to git (tamper-evident SHA chain)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - mark-internal
+          - mark-external-confirmed
+          - mark-external
+      select_by:
+        description: 'Selection criteria'
+        required: true
+        type: choice
+        options:
+          - instance-id
+          - date-range
+          - company
+      select_value:
+        description: 'Selection value (instance_id, YYYY-MM-DD start/end comma-separated, or company name)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for this change (required for audit trail)'
+        required: true
+        type: string
+      source_note:
+        description: 'Human context for internal source (e.g., "Greg dev Mac", "GH Actions CI")'
+        required: false
+        type: string
+        default: ''
+      scarf_company:
+        description: 'Scarf attribution when ipapi differs (e.g., "Convex" when ipapi says "Microsoft")'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Dry run — query only, no updates'
+        required: false
+        type: boolean
+        default: true
+
+concurrency: telemetry-update
+
+permissions:
+  contents: read
+
+env:
+  TABLE_NAME: prod-checkpoint-telemetry-events
+  AWS_REGION: us-east-1
+
+jobs:
+  update-records:
+    name: Update telemetry records (${{ inputs.action }})
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout enterprise repo
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ee/platform/checkpoint-service/go.mod
+
+      - name: Build update-telemetry CLI
+        run: |
+          cd ee/platform/checkpoint-service
+          go build -trimpath -o update-telemetry ./cmd/update-telemetry/
+
+      # TODO: Replace with dedicated telemetry-updater IAM credentials once the
+      # aws_iam_policy.telemetry_updater Terraform resource is applied and an IAM
+      # user is created with those permissions. Current credentials have broader
+      # access than the UpdateItem+Query policy requires (segregation of duties
+      # gap until dedicated secrets are provisioned).
+      - name: Configure AWS Credentials (Telemetry Updater)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run update
+        id: update
+        # Pass free-text inputs via env vars, NOT inline ${{ }} substitution,
+        # to prevent shell injection (GitHub Actions template substitution
+        # happens before bash parsing — $() in an input would execute).
+        env:
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_SELECT_BY: ${{ inputs.select_by }}
+          INPUT_SELECT_VALUE: ${{ inputs.select_value }}
+          INPUT_REASON: ${{ inputs.reason }}
+          INPUT_SOURCE_NOTE: ${{ inputs.source_note }}
+          INPUT_SCARF_COMPANY: ${{ inputs.scarf_company }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_UPDATED_BY: ${{ github.actor }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          else
+            DRY_RUN_FLAG="--dry-run=false"
+          fi
+
+          cd ee/platform/checkpoint-service
+
+          # stdout = JSON audit output, stderr = status/progress logs.
+          # Keep them separate so the JSON file is always parseable.
+          ./update-telemetry \
+            --action "$INPUT_ACTION" \
+            --select-by "$INPUT_SELECT_BY" \
+            --select-value "$INPUT_SELECT_VALUE" \
+            --reason "$INPUT_REASON" \
+            --updated-by "$INPUT_UPDATED_BY" \
+            --source-note "$INPUT_SOURCE_NOTE" \
+            --scarf-company "$INPUT_SCARF_COMPANY" \
+            --table "${{ env.TABLE_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            $DRY_RUN_FLAG \
+            > /tmp/audit-output.json 2> /tmp/audit-stderr.log
+
+          EXIT_CODE=$?
+          cat /tmp/audit-stderr.log
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::Update failed (exit code $EXIT_CODE) — see logs above"
+            cat /tmp/audit-output.json
+            exit $EXIT_CODE
+          fi
+
+          # Count records from JSON output.
+          RECORD_COUNT=$(python3 -c "import json,sys; d=json.load(open('/tmp/audit-output.json')); print(len(d) if isinstance(d,list) else 0)" 2>/dev/null || echo "0")
+          echo "record_count=$RECORD_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Commit audit log to business-docs
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.GH_SYNC_TOKEN }}
+        run: |
+          AUDIT_DATE=$(date -u +%Y-%m-%d)
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RECORD_COUNT="${{ steps.update.outputs.record_count }}"
+
+          # Clone business-docs.
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/getaxonflow/axonflow-business-docs.git" /tmp/business-docs
+          cd /tmp/business-docs
+
+          # Create audit log file if it doesn't exist.
+          AUDIT_FILE="metrics/TELEMETRY_AUDIT_LOG.md"
+          if [ ! -f "$AUDIT_FILE" ]; then
+          cat > "$AUDIT_FILE" << 'HEADER'
+          # Telemetry Record Audit Log
+
+          All modifications to DynamoDB telemetry records are logged here.
+          Append-only. Each entry created by `update-telemetry-records.yml` workflow.
+          Never edit manually — the git SHA chain is the tamper-evidence mechanism.
+
+          ---
+          HEADER
+          fi
+
+          # Build audit entry (no leading whitespace — heredoc is not indented).
+          cat >> "$AUDIT_FILE" << EOF
+
+          ## ${AUDIT_DATE}: ${{ inputs.action }} — ${{ inputs.select_by }} = ${{ inputs.select_value }}
+
+          **Workflow run:** ${RUN_URL}
+          **Triggered by:** ${{ github.actor }}
+          **Action:** ${{ inputs.action }}
+          **Selection:** ${{ inputs.select_by }} = \`${{ inputs.select_value }}\`
+          **Reason:** ${{ inputs.reason }}
+          **Records affected:** ${RECORD_COUNT}
+          **Dry run:** false
+
+          EOF
+
+          # Append record table from JSON output.
+          if [ -s /tmp/audit-output.json ]; then
+            echo "| instance_id | timestamp | old_source | new_source |" >> "$AUDIT_FILE"
+            echo "|-------------|-----------|------------|------------|" >> "$AUDIT_FILE"
+          python3 -c "
+          import json
+          data = json.load(open('/tmp/audit-output.json'))
+          if isinstance(data, list):
+              for r in data:
+                  iid = r.get('instance_id','')[:20]
+                  ts = r.get('timestamp','')
+                  old = r.get('old_source','')
+                  new = r.get('new_source','')
+                  print(f'| {iid}... | {ts} | {old} | {new} |')
+          " >> "$AUDIT_FILE" 2>/dev/null || true
+          fi
+
+          # Commit and push with retry on concurrent push.
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "$AUDIT_FILE"
+          git commit -m "audit: telemetry record update (${{ inputs.action }}, ${RECORD_COUNT} records)
+
+          Workflow: ${RUN_URL}
+          Actor: ${{ github.actor }}
+          Reason: ${{ inputs.reason }}" || { echo "No changes to commit"; exit 0; }
+
+          # Retry push with rebase if concurrent push detected (same pattern as
+          # track-github-metrics.yml and track-sdk-metrics.yml).
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Push succeeded (attempt $attempt)"
+              break
+            fi
+            echo "Push failed (attempt $attempt), pulling with rebase..."
+            git pull --rebase origin main
+          done
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "## Telemetry Record Update" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ inputs.action }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Selection | ${{ inputs.select_by }} = \`${{ inputs.select_value }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Reason | ${{ inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ inputs.dry_run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Records | ${{ steps.update.outputs.record_count }} |" >> $GITHUB_STEP_SUMMARY

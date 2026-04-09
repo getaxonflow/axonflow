@@ -39,19 +39,19 @@ const (
 // Environment variable names for detection configuration.
 // These provide unified control over all detection types.
 //
-// TODO(Issue #891 follow-up): Add RBI_COMPLIANCE_MODE=strict env var that always blocks
-// critical India PII (Aadhaar, PAN, UPI, Bank Account) regardless of PII_ACTION setting.
-// This would be useful for organizations that must strictly comply with RBI FREE-AI guidelines.
-// When RBI_COMPLIANCE_MODE=strict, RBI PII detection should override PII_ACTION.
+// Note: for strict RBI / regulated-environment posture, use
+// AXONFLOW_PROFILE=compliance (see ADR-036). That supersedes the earlier
+// proposal for a standalone RBI_COMPLIANCE_MODE flag.
 const (
 	// EnvSQLIAction controls SQL injection detection behavior.
 	// Valid values: "block", "warn", "log"
-	// Default: "block" (high confidence detection)
+	// Default (v6.2.0+): "warn". Set AXONFLOW_PROFILE=strict to block.
 	EnvSQLIAction = "SQLI_ACTION"
 
 	// EnvPIIAction controls PII detection behavior.
 	// Valid values: "block", "warn", "redact", "log"
-	// Default: "redact" (non-blocking, preserves UX)
+	// Default (v6.2.0+): "warn" (honest detection signal, no silent data mutation).
+	// Set AXONFLOW_PROFILE=strict for the previous "redact" behavior.
 	EnvPIIAction = "PII_ACTION"
 
 	// EnvSensitiveDataAction controls sensitive data (credentials, tokens) detection.
@@ -118,31 +118,61 @@ type DetectionConfig struct {
 }
 
 // DefaultDetectionConfig returns the default detection configuration.
-// Philosophy: Block high-confidence threats, warn on heuristics, redact PII.
+// Philosophy (v6.2.0+): block only unambiguously dangerous patterns by default;
+// warn on PII / SQLi / sensitive data so evaluators see honest detection signal
+// without silent data mutation. Equivalent to AXONFLOW_PROFILE=default.
+//
+// To restore the v6.1.0 behavior (PII=redact, SQLi=block), set
+// AXONFLOW_PROFILE=strict or PII_ACTION=redact + SQLI_ACTION=block.
 func DefaultDetectionConfig() DetectionConfig {
-	return DetectionConfig{
-		SQLIAction:           DetectionActionBlock,  // High confidence, real attacks
-		PIIAction:            DetectionActionRedact, // Non-blocking, preserves UX
-		SensitiveDataAction:  DetectionActionWarn,   // May have false positives
-		HighRiskAction:       DetectionActionWarn,   // Composite score needs tuning
-		DangerousQueryAction:   DetectionActionBlock, // Destructive SQL operations
-		DangerousCommandAction: DetectionActionBlock, // Dangerous shell commands
-	}
+	return ProfileDefaults(ProfileDefault)
 }
 
-// DetectionConfigFromEnv creates a detection configuration from environment variables.
-// This function handles both new and deprecated environment variables.
+// DetectionConfigFromEnv creates a detection configuration from environment
+// variables, layered on top of the active profile and per-category enforce set.
 //
-// Precedence:
-//  1. New env vars (SQLI_ACTION, PII_ACTION, etc.) take priority
-//  2. Deprecated env vars are used as fallback with warning
-//  3. Default values are used if no env var is set
+// Precedence (highest → lowest):
+//  1. Explicit category env vars (PII_ACTION, SQLI_ACTION, ...)
+//  2. AXONFLOW_ENFORCE per-category opt-in
+//  3. AXONFLOW_PROFILE built-in posture
+//  4. Built-in defaults (DefaultDetectionConfig)
+//
+// See ADR-036 for the rationale.
 func DetectionConfigFromEnv() DetectionConfig {
-	cfg := DefaultDetectionConfig()
+	profile := ResolveProfile()
+	base := ProfileDefaults(profile)
+	enforce, err := LoadEnforceFromEnv()
+	if err != nil {
+		// Log and keep going with just the profile base. The previous
+		// behaviour (log.Fatalf) made a typo in AXONFLOW_ENFORCE crash
+		// every test run that happened to have the env var set. Fail
+		// loudly in logs so operators notice, but do not abort the
+		// process — the profile base is still a valid, safe config.
+		log.Printf("[Profile] ERROR: invalid AXONFLOW_ENFORCE — ignoring: %v", err)
+	} else {
+		base = ApplyEnforce(base, enforce)
+	}
+	return DetectionConfigFromEnvWithBase(base)
+}
 
-	// Parse SQLI_ACTION (new) or SQLI_BLOCK_MODE (deprecated)
+// DetectionConfigFromEnvWithBase parses explicit category env vars on top of
+// a caller-provided base config. The base is typically the result of
+// ProfileDefaults+ApplyEnforce, but tests may provide arbitrary bases.
+//
+// This is the lowest-level entry point and the only one that touches the
+// individual *_ACTION env vars. It deliberately does NOT read AXONFLOW_PROFILE
+// or AXONFLOW_ENFORCE — those are the caller's responsibility.
+func DetectionConfigFromEnvWithBase(base DetectionConfig) DetectionConfig {
+	cfg := base
+
+	// Parse SQLI_ACTION (new) or SQLI_BLOCK_MODE (deprecated).
+	// On invalid values, fall back to the BASE config's SQLIAction (which is
+	// already the correctly-resolved profile value), NOT the hardcoded legacy
+	// default. This preserves the active profile's posture under typo input.
+	// See v6.2.0 review finding P2 — the previous hardcoded fallback to
+	// DetectionActionBlock silently tightened behavior back to the v6.1.0 default.
 	if action := os.Getenv(EnvSQLIAction); action != "" {
-		cfg.SQLIAction = parseDetectionAction(action, "SQLI_ACTION", DetectionActionBlock,
+		cfg.SQLIAction = parseDetectionAction(action, "SQLI_ACTION", cfg.SQLIAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	} else if deprecated := os.Getenv(EnvSQLIBlockModeDeprecated); deprecated != "" {
 		// Deprecated: convert old format to new
@@ -157,9 +187,11 @@ func DetectionConfigFromEnv() DetectionConfig {
 		}
 	}
 
-	// Parse PII_ACTION (new) or PII_BLOCK_CRITICAL (deprecated)
+	// Parse PII_ACTION (new) or PII_BLOCK_CRITICAL (deprecated).
+	// Same fix as SQLI_ACTION: preserve the base config's PIIAction on invalid
+	// input instead of silently flipping back to the v6.1.0 redact default.
 	if action := os.Getenv(EnvPIIAction); action != "" {
-		cfg.PIIAction = parseDetectionAction(action, "PII_ACTION", DetectionActionRedact,
+		cfg.PIIAction = parseDetectionAction(action, "PII_ACTION", cfg.PIIAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
 	} else if deprecated := os.Getenv(EnvPIIBlockCriticalDeprecated); deprecated != "" {
 		// Deprecated: convert old format to new
@@ -171,27 +203,28 @@ func DetectionConfigFromEnv() DetectionConfig {
 		}
 	}
 
-	// Parse SENSITIVE_DATA_ACTION
+	// Parse SENSITIVE_DATA_ACTION. Fallback preserves base config.
 	if action := os.Getenv(EnvSensitiveDataAction); action != "" {
-		cfg.SensitiveDataAction = parseDetectionAction(action, "SENSITIVE_DATA_ACTION", DetectionActionWarn,
+		cfg.SensitiveDataAction = parseDetectionAction(action, "SENSITIVE_DATA_ACTION", cfg.SensitiveDataAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
-	// Parse HIGH_RISK_ACTION
+	// Parse HIGH_RISK_ACTION. Fallback preserves base config.
 	if action := os.Getenv(EnvHighRiskAction); action != "" {
-		cfg.HighRiskAction = parseDetectionAction(action, "HIGH_RISK_ACTION", DetectionActionWarn,
+		cfg.HighRiskAction = parseDetectionAction(action, "HIGH_RISK_ACTION", cfg.HighRiskAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
-	// Parse DANGEROUS_QUERY_ACTION (SQL: DROP, TRUNCATE)
+	// Parse DANGEROUS_QUERY_ACTION (SQL: DROP, TRUNCATE). Fallback preserves base.
 	if action := os.Getenv(EnvDangerousQueryAction); action != "" {
-		cfg.DangerousQueryAction = parseDetectionAction(action, "DANGEROUS_QUERY_ACTION", DetectionActionBlock,
+		cfg.DangerousQueryAction = parseDetectionAction(action, "DANGEROUS_QUERY_ACTION", cfg.DangerousQueryAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
-	// Parse DANGEROUS_COMMAND_ACTION (shell: rm -rf, reverse shells, curl|bash, SSRF)
+	// Parse DANGEROUS_COMMAND_ACTION (shell: rm -rf, reverse shells, curl|bash, SSRF).
+	// Fallback preserves base.
 	if action := os.Getenv(EnvDangerousCommandAction); action != "" {
-		cfg.DangerousCommandAction = parseDetectionAction(action, "DANGEROUS_COMMAND_ACTION", DetectionActionBlock,
+		cfg.DangerousCommandAction = parseDetectionAction(action, "DANGEROUS_COMMAND_ACTION", cfg.DangerousCommandAction,
 			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
 	}
 
@@ -479,9 +512,18 @@ func (c *ModeDetectionConfig) IsConnectorEnabled(connector string) bool {
 // and GetGatewayDetectionConfig() return the cached values without re-parsing.
 //
 // This follows the same startup-cache pattern as sharedpolicy.InitGlobalDynamicPolicyEvaluator().
+//
+// Also logs a one-line profile banner so operators see what posture the
+// process is running in (relevant after the v6.2.0 default-relax change).
 func InitDetectionConfigs() {
 	detectionConfigMu.Lock()
 	defer detectionConfigMu.Unlock()
+
+	// Resolve global profile + log banner once.
+	profile := ResolveProfile()
+	globalCfg := DetectionConfigFromEnv()
+	LogProfileBanner("agent", profile, globalCfg)
+
 	mcp := MCPDetectionConfigFromEnv()
 	gw := GatewayDetectionConfigFromEnv()
 	cachedMCPConfig = &mcp
