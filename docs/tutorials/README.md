@@ -17,7 +17,7 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python v6.0.0, Go/TypeScript/Java v5.0.0.
+SDK versions: Python v6.1.0, Go/TypeScript/Java v5.1.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|

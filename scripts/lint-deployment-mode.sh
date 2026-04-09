@@ -18,6 +18,7 @@ ALLOWED_FILES=(
   "platform/shared/policy/dynamic_evaluator.go"
   "platform/shared/execution/event_hub.go"
   "platform/agent/migration_helpers.go"
+  "platform/orchestrator/llm/bootstrap.go"  # community-saas Ollama-only guard (#1500)
   "ee/platform/customer-portal/middleware/admin_auth.go"
   "ee/platform/customer-portal/config/deployment.go"
 )

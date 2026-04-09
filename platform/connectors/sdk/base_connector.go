@@ -87,7 +87,7 @@ func (c *BaseConnector) Connect(ctx context.Context, config *base.ConnectorConfi
 	}
 
 	c.connected = true
-	c.logger.Printf("Base connector initialized: %s (type: %s)", config.Name, c.connType)
+	c.Log("Base connector initialized: %s (type: %s)", config.Name, c.connType)
 
 	return nil
 }
@@ -111,7 +111,7 @@ func (c *BaseConnector) Disconnect(ctx context.Context) error {
 	c.connected = false
 
 	if c.config != nil {
-		c.logger.Printf("Disconnected: %s", c.config.Name)
+		c.Log("Disconnected: %s", c.config.Name)
 	}
 
 	return nil

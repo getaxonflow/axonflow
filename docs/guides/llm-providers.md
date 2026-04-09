@@ -310,9 +310,11 @@ Use `EnabledLLMProviders` parameter for these AI model providers:
 
 | Provider ID | Purpose | Secret Name | Fields |
 |-------------|---------|-------------|--------|
-| `openai` | OpenAI GPT models | `openai-api-key` | (plain string) |
-| `anthropic` | Anthropic Claude models | `anthropic-api-key` | (plain string) |
-| `gemini` | Google Gemini models | `gemini-api-key` | (plain string) |
+| `openai` | OpenAI GPT models | `openai-credentials` | `{"api_key": "sk-..."}` |
+| `anthropic` | Anthropic Claude models | `anthropic-credentials` | `{"api_key": "sk-ant-..."}` |
+| `gemini` | Google Gemini models | `google-credentials` | `{"api_key": "AIza..."}` |
+| `azure` | Azure OpenAI | `azure-openai-credentials` | `{"endpoint": "...", "api_key": "...", "deployment": "..."}` |
+| `mistral` | Mistral AI | `mistral-credentials` | `{"api_key": "..."}` |
 | `bedrock` | AWS Bedrock (IAM auth) | N/A | Uses IAM role |
 | `ollama` | Self-hosted Ollama | N/A | Uses endpoint URL |
 

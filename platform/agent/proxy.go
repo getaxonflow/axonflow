@@ -162,14 +162,23 @@ func (h *ReverseProxyHandler) ProxyToPortal(w http.ResponseWriter, r *http.Reque
 // proxyAuthMiddleware wraps a proxy handler with client credential validation.
 // Sets two identity headers for downstream services:
 //   - X-Tenant-ID: from clientId in Basic auth (data isolation + client identity)
-//   - X-Org-ID: from deployment ORG_ID env var (canonical org identity — NOT from license)
+//   - X-Org-ID: from the cryptographically validated client license payload
+//     (client.OrgID, populated by validateViaOrganizations from the signed license).
 //
-// The ORG_ID env var is the single source of truth for org identity, set at deployment time.
-// The license org_id must match ORG_ID (validated at startup), but at runtime the env var
-// is always used — the license only proves entitlement, it doesn't define org identity.
+// The client's license is the authoritative source for org identity because the
+// Ed25519 signature proves the claim can't be forged — only the license issuer
+// holding the signing private key can produce a valid license with any given
+// org_id. Trusting the signed claim enables true multi-tenant SaaS: one deployment
+// can authenticate many clients, each scoped to their own org_id, without
+// cross-contamination.
 //
-// In community mode, auth is skipped but identity headers are still injected
-// (defaulting to "community") so the orchestrator always has tenant context.
+// The deployment ORG_ID env var is still used:
+//   - as a fallback in community mode (no license present), and
+//   - for the stack's own startup-time license validation (defense in depth:
+//     verify the stack was deployed with a boot license matching its env var),
+//   - for logging/metrics as a deployment label.
+//
+// It is NOT the source of truth for per-request org identity.
 func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Skip auth for CORS preflight
@@ -228,10 +237,12 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		// Set identity headers from authenticated client for downstream services
 		// and circuit breaker error tracking (RecordError in proxy ErrorHandler).
-		// X-Org-ID always comes from deployment ORG_ID (single source of truth),
-		// NOT from the license — license org_id was validated at startup to match.
+		// X-Org-ID comes from the validated client license (Ed25519-signed),
+		// matching the behavior of apiAuthMiddleware in auth.go. This enables
+		// multi-tenant SaaS where one deployment serves many orgs, each
+		// authenticated by their own license.
 		r.Header.Set("X-Tenant-ID", client.TenantID)
-		r.Header.Set("X-Org-ID", getDeploymentOrgID())
+		r.Header.Set("X-Org-ID", client.OrgID)
 
 		next(w, r)
 	}
