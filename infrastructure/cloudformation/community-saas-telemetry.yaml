@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Community SaaS telemetry events table — usage tracking for try.getaxonflow.com'
+
+Resources:
+  TelemetryKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encryption key for community-saas telemetry DynamoDB table
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+      Tags:
+        - Key: Purpose
+          Value: community-saas-telemetry-encryption
+
+  TelemetryKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/community-saas-telemetry
+      TargetKeyId: !Ref TelemetryKMSKey
+
+  CommunitySaasTelemetryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: community-saas-telemetry-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: correlation_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: tenant_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: correlation_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: TenantTimestampIndex
+          KeySchema:
+            - AttributeName: tenant_id
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt TelemetryKMSKey.Arn
+      Tags:
+        - Key: Purpose
+          Value: community-saas-usage
+        - Key: DataRetention
+          Value: 30days
+        - Key: ManagedBy
+          Value: deployment-automation
+
+  # Segregation of duties: ECS task role gets PutItem ONLY.
+  # No UpdateItem, no DeleteItem, no Query from the application path.
+  # Read access for analytics is provisioned separately.
+  TelemetryWriterPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: community-saas-telemetry-writer
+      Description: PutItem-only access to community-saas telemetry table
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:PutItem
+            Resource: !GetAtt CommunitySaasTelemetryTable.Arn
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt TelemetryKMSKey.Arn
+
+Outputs:
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref CommunitySaasTelemetryTable
+
+  TableArn:
+    Description: DynamoDB table ARN
+    Value: !GetAtt CommunitySaasTelemetryTable.Arn
+
+  WriterPolicyArn:
+    Description: IAM policy ARN for PutItem-only access (attach to ECS task role)
+    Value: !Ref TelemetryWriterPolicy

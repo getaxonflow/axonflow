@@ -63,12 +63,34 @@ func (h *UnifiedExecutionHandler) SetLicenseChecker(lc LicenseChecker) {
 	}
 }
 
-// checkTenantOwnership validates that the execution belongs to the requesting tenant.
-// Returns true if the request is allowed, false if it should be denied.
+// checkTenantOwnership validates that the execution belongs to the requesting
+// tenant AND org. Returns true if the request is allowed, false if denied.
+//
+// Multi-tenant isolation: returns 404 on mismatch (not 403) to avoid leaking
+// execution existence across tenants. Requires both X-Tenant-ID and X-Org-ID
+// headers to be present on the request when the execution has non-empty
+// tenant_id/org_id — permissive fallback is removed because it was a
+// cross-tenant data leak vector (executions without tenant_id were accessible
+// to any caller).
 func (h *UnifiedExecutionHandler) checkTenantOwnership(w http.ResponseWriter, r *http.Request, exec *execution.ExecutionStatus) bool {
 	tenantID := r.Header.Get("X-Tenant-ID")
-	// If the execution has a tenant ID and the request has a tenant ID, they must match
-	if exec.TenantID != "" && tenantID != "" && exec.TenantID != tenantID {
+	orgID := r.Header.Get("X-Org-ID")
+
+	// Require authenticated identity on every request. The agent's auth
+	// middleware sets these headers from the validated client license; if
+	// they're missing here, the request bypassed auth and should be denied.
+	if tenantID == "" || orgID == "" {
+		h.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Missing tenant or org identity")
+		return false
+	}
+
+	// Enforce strict match. Executions that lack a tenant_id or org_id are
+	// treated as not-owned-by-anyone and returned as 404.
+	if exec.TenantID == "" || exec.OrgID == "" {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
+		return false
+	}
+	if exec.TenantID != tenantID || exec.OrgID != orgID {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Execution not found")
 		return false
 	}
@@ -308,7 +330,7 @@ func (h *UnifiedExecutionHandler) CancelExecution(w http.ResponseWriter, r *http
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "WCP service not available")
 			return
 		}
-		if err := h.wcpTracker.wcpService.AbortWorkflow(ctx, workflowID, req.Reason); err != nil {
+		if err := h.wcpTracker.wcpService.AbortWorkflow(ctx, workflowID, req.Reason, r.Header.Get("X-Tenant-ID"), r.Header.Get("X-Org-ID")); err != nil {
 			h.logger.Printf("[UnifiedExecution] WCP AbortWorkflow error for %s: %v", logutil.Sanitize(workflowID), err)
 			h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to cancel WCP workflow")
 			return

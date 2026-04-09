@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AxonFlow Ollama EC2 Instance — Self-hosted LLM for community-saas evaluation server'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: community-saas
+    Description: Environment name (used in resource naming)
+
+  InstanceType:
+    Type: String
+    AllowedValues:
+      - t3.medium      # CPU only, cheap dev/test (~$0.042/hr)
+      - t3.large       # CPU only, moderate (~$0.083/hr)
+      - g4dn.xlarge    # NVIDIA T4 GPU, production (~$0.526/hr)
+      - g5.xlarge      # NVIDIA A10G GPU, newer (~$1.006/hr)
+    Default: t3.medium
+    Description: 'Instance type. Use t3 for dev/test, g4dn/g5 for production (GPU accelerated)'
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the AxonFlow ECS cluster is deployed (Ollama must be in same VPC)
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet for the Ollama instance (must be in the same VPC)
+
+  AxonFlowSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group of the AxonFlow ECS tasks (for SG-to-SG ingress rule)
+
+  OllamaModel:
+    Type: String
+    Default: llama3.2:latest
+    Description: Ollama model to pull on instance launch
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: 'Optional: EC2 key pair for SSH access (leave empty to disable SSH)'
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  IsGPUInstance: !Or
+    - !Equals [!Select [0, !Split ['.', !Ref InstanceType]], 'g4dn']
+    - !Equals [!Select [0, !Split ['.', !Ref InstanceType]], 'g5']
+
+Mappings:
+  RegionConfig:
+    us-east-1:
+      AMI: ami-0e2c8caa4b6378d8c  # Ubuntu 22.04 LTS
+    eu-central-1:
+      AMI: ami-0084a47cc718c111a  # Ubuntu 22.04 LTS
+    ap-south-1:
+      AMI: ami-0c2af51e265bd5e0e  # Ubuntu 22.04 LTS
+
+Resources:
+  OllamaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub '${Environment} Ollama instance - port 11434 from AxonFlow SG only'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Ollama API: accessible ONLY from AxonFlow ECS tasks (not internet-facing)
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          SourceSecurityGroupId: !Ref AxonFlowSecurityGroupId
+          Description: Ollama API from AxonFlow ECS tasks
+        # No SSH ingress — use SSM Session Manager for management (AmazonSSMManagedInstanceCore policy)
+      SecurityGroupEgress:
+        # trivy:ignore:AVD-AWS-0104 -- Ollama needs HTTPS egress to download models from ollama.com and for SSM/CloudWatch endpoints
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: '0.0.0.0/0'
+          Description: HTTPS outbound (model downloads, apt, CloudWatch, SSM)
+        # trivy:ignore:AVD-AWS-0104 -- HTTP egress needed for apt package repository updates
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+          Description: HTTP outbound (apt repositories)
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-ollama-sg'
+        - Key: Environment
+          Value: !Ref Environment
+
+  OllamaInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Environment}-ollama-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # SSM for management (no SSH key needed)
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        # CloudWatch for monitoring
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  OllamaInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref OllamaInstanceRole
+
+  # trivy:ignore:AVD-AWS-0028 -- IMDSv2 is enforced via MetadataOptions.HttpTokens: required below
+  OllamaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionConfig, !Ref 'AWS::Region', AMI]
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref OllamaSecurityGroup
+      IamInstanceProfile: !Ref OllamaInstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      # Enforce IMDSv2 (instance metadata service) — prevents SSRF token theft
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 50  # GB — room for model files
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Environment}-ollama'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: ollama-llm-server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > /var/log/ollama-setup.log 2>&1
+
+          echo "=== AxonFlow Ollama Instance Setup ==="
+          echo "Instance type: ${InstanceType}"
+          echo "Model: ${OllamaModel}"
+          echo "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # System updates
+          apt-get update -y
+          apt-get install -y curl jq unzip
+
+          # Install AWS CLI v2 (from official installer, not package manager)
+          curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+          cd /tmp && unzip -q awscliv2.zip && ./aws/install && cd /
+          echo "AWS CLI installed: $(aws --version)"
+
+          # Install CloudWatch Agent
+          wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+          dpkg -i -E amazon-cloudwatch-agent.deb
+          rm -f amazon-cloudwatch-agent.deb
+
+          # GPU driver installation (only for g4dn/g5 instances)
+          if echo "${InstanceType}" | grep -qE '^g[45]'; then
+            echo "GPU instance detected — installing NVIDIA drivers"
+            apt-get install -y ubuntu-drivers-common
+            ubuntu-drivers autoinstall
+            echo "NVIDIA driver installed"
+          fi
+
+          # Install Ollama
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          # Configure Ollama to listen on all interfaces (not just localhost)
+          # and set HOME for the ollama CLI (required by newer versions)
+          mkdir -p /etc/systemd/system/ollama.service.d
+          cat > /etc/systemd/system/ollama.service.d/override.conf << 'OLLAMA_OVERRIDE'
+          [Service]
+          Environment="OLLAMA_HOST=0.0.0.0:11434"
+          Environment="HOME=/root"
+          OLLAMA_OVERRIDE
+          # Remove leading whitespace from heredoc (CFN indentation)
+          sed -i 's/^[[:space:]]*//' /etc/systemd/system/ollama.service.d/override.conf
+
+          systemctl daemon-reload
+          systemctl enable ollama
+          systemctl start ollama
+
+          # Wait for Ollama to be ready (now on 0.0.0.0:11434)
+          echo "Waiting for Ollama API to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama API ready after ${!i} seconds"
+              break
+            fi
+            sleep 1
+          done
+
+          # Pull the configured model (HOME must be set for ollama CLI)
+          export HOME=/root
+          echo "Pulling model: ${OllamaModel}"
+          ollama pull "${OllamaModel}"
+          echo "Model pull complete"
+
+          # Verify
+          echo "=== Installed models ==="
+          ollama list
+
+          echo "=== Setup complete ==="
+          echo "Ollama endpoint: http://$(hostname -I | awk '{print $1}'):11434"
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref OllamaInstance
+
+  PrivateIP:
+    Description: Private IP address (use this for OLLAMA_ENDPOINT)
+    Value: !GetAtt OllamaInstance.PrivateIp
+
+  OllamaEndpoint:
+    Description: Ollama API endpoint (private, not internet-facing)
+    Value: !Sub 'http://${OllamaInstance.PrivateIp}:11434'
+
+  SecurityGroupId:
+    Description: Ollama security group ID
+    Value: !Ref OllamaSecurityGroup

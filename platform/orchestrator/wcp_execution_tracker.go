@@ -125,7 +125,11 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 		return nil, fmt.Errorf("workflow %s: %w", workflowID, execution.ErrExecutionNotFound)
 	}
 
-	workflow, err := t.wcpService.GetWorkflow(ctx, workflowID)
+	// Tenant/org scoping is enforced at the handler layer via
+	// checkTenantOwnership after resolveExecution returns. We pass empty
+	// strings here to fetch the raw workflow; the handler then compares
+	// its tenant_id/org_id against the caller's headers.
+	workflow, err := t.wcpService.GetWorkflow(ctx, workflowID, "", "")
 	if err != nil {
 		if isWCPNotFoundError(err) {
 			return nil, fmt.Errorf("workflow %s: %w", workflowID, execution.ErrExecutionNotFound)

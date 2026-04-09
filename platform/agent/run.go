@@ -59,6 +59,14 @@ func isCommunityMode() bool {
 	return mode == "community" || mode == ""
 }
 
+// isCommunitySaasMode returns true when running as the shared community SaaS server.
+// community-saas mode: no Ed25519 license, but DOES require registration credentials.
+// Rate limits are enforced (20/min + 500/day). Ollama LLM only.
+// This is intentionally NOT community mode — isCommunityMode() returns false.
+func isCommunitySaasMode() bool {
+	return os.Getenv("DEPLOYMENT_MODE") == "community-saas"
+}
+
 // getDeploymentOrgID returns the canonical deployment org_id from the ORG_ID env var.
 // This is the single source of truth for org identity — set at deployment time in
 // docker-compose or platform config. License org_id must match this value.
@@ -437,6 +445,11 @@ func Run() {
 	if isCommunityMode() {
 		log.Println("🏠 Community mode - skipping license validation")
 		log.Println("   Perfect for Community contributors and local development")
+	} else if isCommunitySaasMode() {
+		log.Println("🌐 Community SaaS mode — shared evaluation server (try.getaxonflow.com)")
+		log.Println("   Tenants self-register at POST /api/v1/register")
+		log.Println("   LLM: Ollama only. Rate limits: enforced. No license required.")
+		log.Println("   No SLA, no security guarantee, 30-day data retention.")
 	} else if licenseKey == "" {
 		log.Println("⚠️  AXONFLOW_LICENSE_KEY not set - running in central agent mode")
 		log.Println("   Central agents validate client license keys during request processing")
@@ -987,6 +1000,18 @@ func Run() {
 		log.Println("✅ Reverse proxy initialized (ADR-026: Single Entry Point)")
 	}
 
+	// Community SaaS: self-registration endpoint (no auth — bootstrap credential)
+	// and telemetry middleware for usage tracking
+	if isCommunitySaasMode() {
+		RegisterCommunityRegistrationHandler(globalRouter, usageDB)
+		log.Println("✅ Community SaaS registration endpoint enabled: POST /api/v1/register")
+
+		// Usage telemetry middleware (DynamoDB — disabled when table name is empty)
+		telTable := getEnv("COMMUNITY_SAAS_TELEMETRY_TABLE", "")
+		tel := NewCommunitySaaSTelemetry(telTable, GetPlatformVersion())
+		globalRouter.Use(tel.Middleware)
+	}
+
 	// Mark application as ready - /health will now return "healthy"
 	appReady.Store(true)
 	log.Println("✅ All initialization complete - application ready")
@@ -1051,6 +1076,39 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Enabled:     true,
 			LicenseTier: "Community",
 			RateLimit:   0,
+			Permissions: []string{},
+		}
+	} else if isCommunitySaasMode() {
+		// Community-SaaS mode: validate via community_saas_registrations table
+		cID := extractClientID(r)
+		cSecret := extractClientSecret(r)
+		if cID == "" || cSecret == "" {
+			sendErrorResponse(w, "Registration required. POST to /api/v1/register to get credentials.", http.StatusUnauthorized, nil)
+			return
+		}
+		// Per-minute rate limit BEFORE bcrypt
+		minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
+		if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
+			w.Header().Set("Retry-After", "60")
+			sendErrorResponse(w, fmt.Sprintf("Rate limit exceeded (%d req/min)", minuteLimit), http.StatusTooManyRequests, nil)
+			return
+		}
+		authCtx, authCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer authCancel()
+		if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
+			log.Printf("[AUTH] community-saas auth failed for tenant %s: %v", logutil.Sanitize(cID), err)
+			sendErrorResponse(w, "Invalid credentials or registration expired", http.StatusUnauthorized, nil)
+			return
+		}
+		enqueueActivityUpdate(authDB, cID)
+		client = &Client{
+			ID:          cID,
+			Name:        "Community-SaaS",
+			OrgID:       communitySaasOrgID,
+			TenantID:    cID,
+			Enabled:     true,
+			LicenseTier: "Community",
+			RateLimit:   minuteLimit,
 			Permissions: []string{},
 		}
 	} else {
@@ -1655,23 +1713,17 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func validateClient(clientID string) (*Client, error) {
-	// In production, this would query a database
-	// For now, return a mock client
-	if clientID == "" {
-		return nil, fmt.Errorf("client ID required")
-	}
-
-	return &Client{
-		ID:          clientID,
-		Name:        "Demo Client",
-		OrgID:       getDeploymentOrgID(),
-		TenantID:    clientID,
-		Permissions: []string{"query", "llm"},
-		RateLimit:   100,
-		Enabled:     true,
-	}, nil
-}
+// validateClient was a legacy mock function that accepted any client_id from
+// the request body and returned a fake "Demo Client" with the deployment's
+// own org_id. It enabled a critical multi-tenant security hole: in enterprise
+// mode, any request without Basic auth but with a client_id in the JSON body
+// was silently authenticated as that client, with every workflow, audit log,
+// and policy decision attributed to the deployment's own org rather than the
+// caller's real identity.
+//
+// Removed in v6.2.0. All handlers now require proper OAuth2 Client Credentials
+// (Basic auth with a cryptographically signed license key) or reject the
+// request with 401 Unauthorized.
 
 func validateUserToken(tokenString string, expectedTenantID string) (*User, error) {
 	// Community mode: Don't require a token for local development
@@ -1685,6 +1737,17 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 			Role:        "admin",
 			Region:      "local",
 			Permissions: []string{"query", "llm", "mcp_query", "admin"},
+			TenantID:    expectedTenantID,
+		}, nil
+	} else if isCommunitySaasMode() {
+		// Community-SaaS mode: no JWT required — tenant identity comes from Basic auth
+		return &User{
+			ID:          1,
+			Email:       "evaluator@try.getaxonflow.com",
+			Name:        "Evaluation User",
+			Role:        "evaluator",
+			Region:      "us-east-1",
+			Permissions: []string{"query", "llm", "mcp_query"},
 			TenantID:    expectedTenantID,
 		}, nil
 	} else if tokenString == "" {
@@ -1792,13 +1855,17 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		return nil, fmt.Errorf("failed to create orchestrator request: %v", err)
 	}
 	orchReq.Header.Set("Content-Type", "application/json")
-	// Forward tenant/org/client context so orchestrator handlers can access them
+	// Forward tenant/org/client context so orchestrator handlers can access them.
+	// X-Org-ID comes from the authenticated client's license (client.OrgID),
+	// matching the Single Entry Point proxy behavior in proxy.go. This enables
+	// multi-tenant SaaS where one deployment serves many orgs, each scoped by
+	// their own cryptographically validated license.
 	if user != nil && user.TenantID != "" {
 		orchReq.Header.Set("X-Tenant-ID", user.TenantID)
 	}
 	if client != nil {
 		if client.OrgID != "" {
-			orchReq.Header.Set("X-Org-ID", getDeploymentOrgID())
+			orchReq.Header.Set("X-Org-ID", client.OrgID)
 		}
 		if (user == nil || user.TenantID == "") && client.TenantID != "" {
 			orchReq.Header.Set("X-Tenant-ID", client.TenantID)

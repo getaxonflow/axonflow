@@ -280,7 +280,7 @@ func TestHandlerAbortWorkflow(t *testing.T) {
 	}
 
 	// Verify the workflow was aborted
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -505,7 +505,7 @@ func TestHandlerRejectStep(t *testing.T) {
 	}
 
 	// Verify workflow was aborted
-	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID)
+	updated, _ := svc.GetWorkflow(ctx, workflow.WorkflowID, "", "")
 	if updated.Status != WorkflowStatusAborted {
 		t.Errorf("status = %s, want %s", updated.Status, WorkflowStatusAborted)
 	}
@@ -832,7 +832,7 @@ func TestHandlerStepGateTerminalWorkflow(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow first
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID)
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
 
 	body, _ := json.Marshal(StepGateRequest{
 		StepName: "test",
@@ -1058,7 +1058,7 @@ func TestHandlerAbortWorkflowTerminal(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID)
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
 
 	body, _ := json.Marshal(AbortWorkflowRequest{Reason: "test"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/abort", bytes.NewReader(body))
@@ -1109,7 +1109,7 @@ func TestHandlerResumeWorkflowTerminal(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Complete the workflow
-	svc.CompleteWorkflow(ctx, workflow.WorkflowID)
+	svc.CompleteWorkflow(ctx, workflow.WorkflowID, "", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow.WorkflowID+"/resume", nil)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow.WorkflowID})
@@ -1175,7 +1175,7 @@ func TestHandlerResumeWorkflowRejected(t *testing.T) {
 		StepType: StepTypeLLMCall,
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
-	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "user@test.com", "")
+	svc.RejectStep(ctx, workflow2.WorkflowID, "step-1", "", "", "user@test.com", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/"+workflow2.WorkflowID+"/resume", nil)
 	req = mux.SetURLVars(req, map[string]string{"id": workflow2.WorkflowID})
@@ -1265,7 +1265,7 @@ func TestHandlerApproveStepNotPending(t *testing.T) {
 	}, "tenant-1", "org-1", "user-1", "client-1")
 
 	// Approve the step first (via service directly, bypasses handler validation)
-	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "approver@test.com", "Initial approval for testing")
+	svc.ApproveStep(ctx, workflow.WorkflowID, "step-1", "", "", "approver@test.com", "Initial approval for testing")
 
 	// Try to approve again via handler
 	body := strings.NewReader(`{"comment": "Attempting second approval"}`)

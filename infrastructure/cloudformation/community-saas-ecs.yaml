@@ -1,0 +1,2284 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AxonFlow Community SaaS Platform - ECS/Fargate Deployment with Optional Monitoring'
+
+# ========================================
+# VPC INFRASTRUCTURE REQUIREMENTS
+# ========================================
+#
+# Before deploying this template, you must have the following AWS infrastructure:
+#
+# 1. VPC with Internet Gateway attached
+# 2. Two PUBLIC subnets (in different Availability Zones):
+#    - Must have route: 0.0.0.0/0 -> Internet Gateway
+#    - Used for: Application Load Balancer and ECS Fargate tasks
+#
+# 3. Two PRIVATE subnets (in different Availability Zones):
+#    - Must have route: 0.0.0.0/0 -> NAT Gateway
+#    - Used for: RDS database (isolated from internet for security)
+#
+# 4. NAT Gateway(s):
+#    - Minimum: 1 NAT Gateway in one public subnet (for testing)
+#    - Recommended: 2 NAT Gateways (one per AZ) for High Availability
+#
+# ========================================
+
+# ========================================
+# LLM PROVIDER SECRETS (AWS Secrets Manager)
+# ========================================
+#
+# Before enabling LLM providers, create secrets in AWS Secrets Manager.
+#
+# Secret naming convention: axonflow/${ENVIRONMENT}/<provider>
+#
+# Provider-specific secret formats:
+#
+# 1. OpenAI (JSON object):
+#    Secret Name: axonflow/${ENVIRONMENT}/openai-credentials
+#    Value: {"api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+#
+# 2. Anthropic (JSON object):
+#    Secret Name: axonflow/${ENVIRONMENT}/anthropic-credentials
+#    Value: {"api_key": "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx"}
+#
+# 3. Google/Gemini (JSON object):
+#    Secret Name: axonflow/${ENVIRONMENT}/google-credentials
+#    Value: {"api_key": "AIzaXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"}
+#
+# 4. Azure OpenAI (JSON object):
+#    Secret Name: axonflow/${ENVIRONMENT}/azure-openai-credentials
+#    Value: {
+#      "endpoint": "https://your-resource.openai.azure.com",
+#      "api_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+#      "deployment": "gpt-4"
+#    }
+#
+# ========================================
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcId
+          - PublicSubnet1
+          - PublicSubnet2
+          - PrivateSubnet1
+          - PrivateSubnet2
+      - Label:
+          default: "Database Configuration"
+        Parameters:
+          - DBPassword
+          - GrafanaPassword
+          - DBInstanceClass
+          - DBEngineVersion
+          - DBMultiAZ
+      - Label:
+          default: "AxonFlow Configuration"
+        Parameters:
+          - OrganizationID
+          - RedisURL
+          - AgentDesiredCount
+          - OrchestratorDesiredCount
+          - ContainerImageRegistry
+          - AgentImageTag
+          - OrchestratorImageTag
+      - Label:
+          default: "Community SaaS Rate Limits"
+        Parameters:
+          - CommunitySaasMinuteLimit
+          - CommunitySaasDailyLimit
+          - CommunitySaasTelemetryTable
+      - Label:
+          default: "Security Configuration"
+        Parameters:
+          - DomainName
+          - CertificateArn
+          - LoadBalancerScheme
+      - Label:
+          default: "LLM Providers"
+        Parameters:
+          - EnabledLLMProviders
+          - OpenAIAPIKey
+          - OpenAIModel
+          - AnthropicAPIKey
+          - AnthropicModel
+          - GoogleAPIKey
+          - GoogleModel
+          - AzureOpenAIEndpoint
+          - AzureOpenAIKey
+          - AzureOpenAIDeployment
+          - BedrockRegion
+          - BedrockModel
+          - OllamaEndpoint
+          - OllamaModel
+      - Label:
+          default: "Monitoring Configuration"
+        Parameters:
+          - DeployPrometheus
+          - DeployGrafana
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for AxonFlow deployment
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: |
+      Public subnet in AZ1 with internet access.
+      MUST be associated with a route table that has 0.0.0.0/0 -> Internet Gateway.
+      Used for: ALB and ECS Fargate tasks (agent/orchestrator).
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: |
+      Public subnet in AZ2 with internet access (must be in different AZ than PublicSubnet1).
+      MUST be associated with a route table that has 0.0.0.0/0 -> Internet Gateway.
+      Used for: ALB and ECS Fargate tasks (agent/orchestrator).
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: |
+      Private subnet in AZ1 WITHOUT direct internet access.
+      MUST have route: 0.0.0.0/0 -> NAT Gateway (for outbound traffic like RDS updates).
+      Used for: RDS database (isolated from internet for security).
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: |
+      Private subnet in AZ2 WITHOUT direct internet access (must be in different AZ than PrivateSubnet1).
+      MUST have route: 0.0.0.0/0 -> NAT Gateway (for outbound traffic like RDS updates).
+      Used for: RDS database (isolated from internet for security).
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: PostgreSQL master password (min 16 characters)
+    ConstraintDescription: Must be at least 16 characters
+
+  GrafanaPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: |
+      Grafana web UI admin password (min 16 characters).
+      In community-saas mode, Grafana shares the main axonflow DB user
+      (not a separate grafana user) since all data is disposable (30-day TTL).
+      Used to create Grafana database user and authenticate Grafana service.
+      Required if DeployGrafana is 'true'. Use strong password (letters, numbers, symbols).
+    Default: 'not-deployed-change-if-enabling-grafana'
+    ConstraintDescription: Must be at least 16 characters
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.medium
+    AllowedValues:
+      - db.t3.medium
+      - db.t3.large
+      - db.r5.large
+      - db.r5.xlarge
+    Description: RDS instance type
+
+  DBEngineVersion:
+    Type: String
+    Default: '15.14'
+    AllowedValues:
+      - '15.10'
+      - '15.12'
+      - '15.13'
+      - '15.14'
+    Description: PostgreSQL engine version (15.14 recommended - widely available across all AWS regions)
+
+  DBMultiAZ:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: |
+      Enable Multi-AZ deployment for RDS database (automatic failover to standby in different AZ).
+      Recommended settings:
+      - Staging/Dev: false (single-AZ, ~50% cost savings, acceptable downtime)
+      - Production: true (multi-AZ, high availability, 1-2 min automatic failover)
+      Cost impact: Multi-AZ approximately doubles RDS costs.
+    ConstraintDescription: Must be either 'true' or 'false'
+
+  AgentDesiredCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 20
+    Description: Number of Agent tasks to run
+
+  OrchestratorDesiredCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 20
+    Description: Number of Orchestrator tasks to run
+
+  ContainerImageRegistry:
+    Type: String
+    Description: |
+      ECR registry for AxonFlow container images (WITHOUT image name suffix).
+      Format: {account}.dkr.ecr.{region}.amazonaws.com/axonflow
+      Note: Image names (axonflow-agent, axonflow-orchestrator) are added by the template.
+    # No default — deployer must supply their ECR registry
+
+  AgentImageTag:
+    Type: String
+    Description: |
+      AxonFlow Agent container image version tag.
+      Use semantic version (e.g., 7.0.0) or git tag.
+    Default: '7.0.0'
+
+  OrchestratorImageTag:
+    Type: String
+    Description: |
+      AxonFlow Orchestrator container image version tag.
+      Use semantic version (e.g., 7.0.0) or git tag.
+    Default: '7.0.0'
+
+  PrometheusImageTag:
+    Type: String
+    Description: |
+      AxonFlow Prometheus container image version tag (custom config for service discovery).
+      Use semantic version (e.g., 7.0.0) or git tag.
+    Default: '7.0.0'
+
+  GrafanaImageTag:
+    Type: String
+    Description: |
+      AxonFlow Grafana container image version tag (custom config with auto-provisioned dashboards).
+      Use semantic version (e.g., 7.0.0) or git tag.
+    Default: '7.0.0'
+
+  DomainName:
+    Type: String
+    Description: |
+      (Optional) Domain name for HTTPS access (e.g., try.getaxonflow.com).
+      If provided, an ACM certificate will be automatically created and validated via DNS.
+      You must add the DNS validation CNAME record to your DNS provider.
+      Leave empty if providing your own CertificateArn.
+    Default: ''
+
+  CertificateArn:
+    Type: String
+    Description: |
+      (Optional) Existing ACM Certificate ARN for HTTPS.
+      Use this if you already have a certificate. Leave empty to auto-create from DomainName.
+      If both DomainName and CertificateArn are empty, deployment will use HTTP only.
+    Default: ''
+
+  LoadBalancerScheme:
+    Type: String
+    Description: |
+      Load balancer network scheme:
+      - internal: ALB accessible only from within the VPC (default, recommended for same-VPC deployments)
+      - internet-facing: ALB accessible from internet (for multi-VPC, hybrid cloud, or public API access)
+    AllowedValues:
+      - internal
+      - internet-facing
+    Default: internet-facing
+    ConstraintDescription: Must be either 'internal' or 'internet-facing'
+
+  OrganizationID:
+    Type: String
+    Description: |
+      Your organization's unique identifier (e.g., 'community-saas').
+      Used for node tracking. Lowercase alphanumeric with hyphens only.
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$'
+    ConstraintDescription: |
+      Must be 4-64 characters, lowercase letters, numbers, and hyphens.
+      Must start and end with letter or number.
+    MinLength: 4
+    MaxLength: 64
+    Default: 'community-saas'
+
+  RedisURL:
+    Type: String
+    Description: |
+      (Optional) Redis connection URL for distributed rate limiting across multiple agents.
+      Format: redis://hostname:6379
+      Leave empty to use in-memory rate limiting (suitable for <10 agents).
+    Default: ''
+
+  # ========================================
+  # Community SaaS Rate Limit Parameters
+  # ========================================
+
+  CommunitySaasMinuteLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 1000
+    Description: Maximum requests per minute per tenant in community-saas mode
+
+  CommunitySaasDailyLimit:
+    Type: Number
+    Default: 500
+    MinValue: 1
+    MaxValue: 100000
+    Description: Maximum requests per day per tenant in community-saas mode
+
+  CommunitySaasTelemetryTable:
+    Type: String
+    Description: |
+      (Optional) DynamoDB table name for community-saas telemetry events.
+      Leave empty to disable telemetry persistence.
+      Example: community-saas-telemetry-events
+    Default: 'community-saas-telemetry-events'
+
+  # ========================================
+  # LLM Provider Parameters
+  # ========================================
+
+  OpenAIAPIKey:
+    Type: String
+    NoEcho: true
+    Description: |
+      (Optional) OpenAI API key for GPT models.
+      Leave empty if only using Anthropic Claude or local LLMs.
+    Default: ''
+
+  OpenAIModel:
+    Type: String
+    Description: |
+      (Optional) OpenAI model to use.
+      Defaults to gpt-4.1 (cost-effective, strong at coding).
+    Default: 'gpt-4.1'
+    AllowedValues:
+      - ''
+      - 'gpt-5.2'
+      - 'gpt-5'
+      - 'gpt-4.1'
+      - 'gpt-4o'
+      - 'gpt-4o-mini'
+      - 'o4-mini'
+      - 'o3-mini'
+
+  AnthropicAPIKey:
+    Type: String
+    NoEcho: true
+    Description: |
+      (Optional) Anthropic API key for Claude models.
+      Leave empty if only using OpenAI or local LLMs.
+    Default: ''
+
+  AnthropicModel:
+    Type: String
+    Description: |
+      (Optional) Anthropic model to use.
+      Defaults to claude-sonnet-4-20250514 (cost-effective, strong performance).
+    Default: 'claude-sonnet-4-20250514'
+    AllowedValues:
+      - ''
+      - 'claude-sonnet-4-20250514'
+      - 'claude-opus-4-20250514'
+      - 'claude-opus-4-5-20251101'
+      - 'claude-haiku-4-5-20251001'
+
+  GoogleAPIKey:
+    Type: String
+    NoEcho: true
+    Description: |
+      (Optional) Google API key for Gemini models.
+      Leave empty if not using Google AI.
+    Default: ''
+
+  GoogleModel:
+    Type: String
+    Description: |
+      (Optional) Google Gemini model to use.
+      Defaults to gemini-2.5-flash (cost-effective, fast).
+    Default: 'gemini-2.5-flash'
+    AllowedValues:
+      - ''
+      - 'gemini-3-flash'
+      - 'gemini-2.5-flash'
+      - 'gemini-2.5-flash-lite'
+      - 'gemini-2.5-pro'
+      - 'gemini-2.0-flash'
+
+  AzureOpenAIEndpoint:
+    Type: String
+    Description: |
+      (Optional) Azure OpenAI endpoint URL.
+      Example: https://your-resource.openai.azure.com
+      Leave empty if not using Azure OpenAI.
+    Default: ''
+
+  AzureOpenAIKey:
+    Type: String
+    NoEcho: true
+    Description: |
+      (Optional) Azure OpenAI API key.
+      Required if AzureOpenAIEndpoint is set.
+    Default: ''
+
+  AzureOpenAIDeployment:
+    Type: String
+    Description: |
+      (Optional) Azure OpenAI deployment name.
+      Required if AzureOpenAIEndpoint is set.
+    Default: ''
+
+  BedrockRegion:
+    Type: String
+    Description: |
+      (Optional) AWS region for Bedrock service.
+      Leave empty to disable Bedrock.
+    Default: ''
+    AllowedValues:
+      - ''
+      - us-east-1
+      - us-west-2
+      - eu-central-1
+      - eu-west-1
+      - eu-west-3
+      - ap-south-1
+      - ap-southeast-1
+      - ap-northeast-1
+
+  BedrockModel:
+    Type: String
+    Description: |
+      (Optional) Bedrock model ID to use.
+      Only applies if BedrockRegion is set.
+    Default: ''
+    AllowedValues:
+      - ''
+      - 'anthropic.claude-sonnet-4-20250514-v1:0'
+      - 'anthropic.claude-opus-4-20250514-v1:0'
+      - 'anthropic.claude-haiku-4-5-20251001-v1:0'
+      - 'anthropic.claude-sonnet-4-5-20250929-v1:0'
+      - 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0'
+      - 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+      - 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
+
+  OllamaEndpoint:
+    Type: String
+    Description: |
+      (Optional) Ollama endpoint URL for self-hosted LLM.
+      Example: http://ollama.internal:11434
+      Leave empty to disable Ollama.
+    Default: ''
+
+  OllamaModel:
+    Type: String
+    Description: |
+      (Optional) Ollama model name.
+      Only applies if OllamaEndpoint is set.
+    Default: 'llama3.2:latest'
+
+  LLMRoutingStrategy:
+    Type: String
+    Description: |
+      (Optional) Strategy for distributing LLM requests across multiple providers.
+      - round_robin: Simple rotation between providers (even distribution)
+      - weighted: Traffic split based on ProviderWeights parameter
+      - cost_optimized: Routes to cheapest provider first
+    Default: 'round_robin'
+    AllowedValues:
+      - 'round_robin'
+      - 'weighted'
+      - 'cost_optimized'
+
+  ProviderWeights:
+    Type: String
+    Description: |
+      (Optional) Provider weights for weighted routing strategy.
+      Format: provider:weight,provider:weight,...
+      Only applies when LLMRoutingStrategy is 'weighted'.
+    Default: 'openai:50,bedrock:30,ollama:20'
+
+  EnabledLLMProviders:
+    Type: CommaDelimitedList
+    Description: |
+      (Optional) Comma-separated list of LLM providers to enable.
+      Available: openai, anthropic, bedrock, ollama, google, azure
+    Default: ''
+
+  # ========================================
+  # Feature Configuration
+  # ========================================
+
+  MediaGovernanceEnabled:
+    Type: String
+    Description: |
+      Enable media governance (v4.5.0+) for multimodal AI safety.
+    AllowedValues:
+      - 'true'
+      - 'false'
+      - ''
+    Default: ''
+
+  MCPDynamicPoliciesEnabled:
+    Type: String
+    Description: |
+      Enable dynamic policy evaluation for MCP connectors.
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+
+  MCPDynamicPoliciesConnectors:
+    Type: String
+    Description: |
+      Comma-separated list of MCP connector names to apply dynamic policies to.
+      Only applies when MCPDynamicPoliciesEnabled is 'true'.
+    Default: ''
+
+  DeployPrometheus:
+    Type: String
+    Description: |
+      Deploy Prometheus for metrics collection.
+      Default: true (recommended).
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  DeployGrafana:
+    Type: String
+    Description: |
+      Deploy Grafana for metrics visualization.
+      Default: true (recommended).
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+Rules:
+  AzureOpenAICredentialsComplete:
+    RuleCondition: !Not [!Equals [!Ref AzureOpenAIEndpoint, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AzureOpenAIKey, '']]
+        AssertDescription: "AzureOpenAIKey is required when AzureOpenAIEndpoint is specified"
+      - Assert: !Not [!Equals [!Ref AzureOpenAIDeployment, '']]
+        AssertDescription: "AzureOpenAIDeployment is required when AzureOpenAIEndpoint is specified"
+
+Conditions:
+  # Certificate management
+  HasDomainName: !Not [!Equals [!Ref DomainName, '']]
+  HasCertificateArn: !Not [!Equals [!Ref CertificateArn, '']]
+  CreateCertificate: !And
+    - !Condition HasDomainName
+    - !Not [!Condition HasCertificateArn]
+  UseHTTPS: !Or
+    - !Condition HasCertificateArn
+    - !Condition CreateCertificate
+  UseHTTP: !Not [!Condition UseHTTPS]
+
+  # Load balancer scheme
+  IsInternalALB: !Equals [!Ref LoadBalancerScheme, 'internal']
+
+  # LLM Providers - check if each provider is in EnabledLLMProviders list
+  EnableOpenAI: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['openai', !Join [',', !Ref EnabledLLMProviders]]]
+
+  EnableAnthropic: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['anthropic', !Join [',', !Ref EnabledLLMProviders]]]
+
+  EnableBedrockProvider: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['bedrock', !Join [',', !Ref EnabledLLMProviders]]]
+
+  EnableOllamaProvider: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['ollama', !Join [',', !Ref EnabledLLMProviders]]]
+
+  EnableGoogleProvider: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['google', !Join [',', !Ref EnabledLLMProviders]]]
+
+  EnableAzureOpenAIProvider: !Not
+    - !Equals
+      - !Join [',', !Ref EnabledLLMProviders]
+      - !Select [0, !Split ['azure', !Join [',', !Ref EnabledLLMProviders]]]
+
+  # Monitoring
+  ShouldDeployPrometheus: !Equals [!Ref DeployPrometheus, 'true']
+  ShouldDeployGrafana: !Equals [!Ref DeployGrafana, 'true']
+  DeployPrometheusHTTPS: !And [!Equals [!Ref DeployPrometheus, 'true'], !Condition UseHTTPS]
+  DeployPrometheusHTTP: !And [!Equals [!Ref DeployPrometheus, 'true'], !Condition UseHTTP]
+  DeployGrafanaHTTPS: !And [!Equals [!Ref DeployGrafana, 'true'], !Condition UseHTTPS]
+  DeployGrafanaHTTP: !And [!Equals [!Ref DeployGrafana, 'true'], !Condition UseHTTP]
+
+Resources:
+  # ========================================
+  # SSL/TLS Certificate (ACM)
+  # ========================================
+
+  SSLCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CreateCertificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-certificate'
+        - Key: Domain
+          Value: !Ref DomainName
+
+  # ========================================
+  # Security Groups
+  # ========================================
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for AxonFlow Community SaaS Application Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS from internet
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from internet (redirect to HTTPS)
+        # Orchestrator (8081) is internal — reached via ALB target group, not direct internet ingress
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-alb-sg'
+
+  AgentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for AxonFlow Agent tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Agent API from ALB
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-agent-sg'
+
+  OrchestratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for AxonFlow Orchestrator tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Orchestrator health checks from ALB
+        - IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          SourceSecurityGroupId: !Ref AgentSecurityGroup
+          Description: Orchestrator API from Agent
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-orchestrator-sg'
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for AxonFlow RDS PostgreSQL
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AgentSecurityGroup
+          Description: PostgreSQL from Agent
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref OrchestratorSecurityGroup
+          Description: PostgreSQL from Orchestrator
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db-sg'
+
+  # Optional Grafana to Database security group rule
+  DBGrafanaIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: ShouldDeployGrafana
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref GrafanaSecurityGroup
+      Description: PostgreSQL from Grafana
+
+  # ========================================
+  # Security Group Egress Rules (standalone to avoid circular dependencies)
+  # ========================================
+
+  ALBToAgentEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      DestinationSecurityGroupId: !Ref AgentSecurityGroup
+      Description: Agent targets (port 8080)
+
+  ALBToOrchestratorEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8081
+      ToPort: 8081
+      DestinationSecurityGroupId: !Ref OrchestratorSecurityGroup
+      Description: Orchestrator targets (port 8081)
+
+  ALBToGrafanaEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ShouldDeployGrafana
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3000
+      ToPort: 3000
+      DestinationSecurityGroupId: !Ref GrafanaSecurityGroup
+      Description: Grafana targets (port 3000)
+
+  ALBToPrometheusEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ShouldDeployPrometheus
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 9090
+      ToPort: 9090
+      DestinationSecurityGroupId: !Ref PrometheusSecurityGroup
+      Description: Prometheus targets (port 9090)
+
+  # Allow Orchestrator to call Agent for MCP connector queries
+  OrchestratorToAgentIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AgentSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref OrchestratorSecurityGroup
+      Description: MCP connector queries from Orchestrator
+
+  # ========================================
+  # EFS for Persistent Audit Fallback Storage
+  # ========================================
+
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS mount targets
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref AgentSecurityGroup
+          Description: NFS from Agent tasks
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-efs-sg'
+
+  AuditEFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-audit-efs'
+      BackupPolicy:
+        Status: ENABLED
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref AuditEFSFileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref AuditEFSFileSystem
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  AuditEFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref AuditEFSFileSystem
+      # UID/GID 1001 matches the 'axonflow' user in the Agent container (Dockerfile)
+      PosixUser:
+        Uid: '1001'
+        Gid: '1001'
+      RootDirectory:
+        Path: /audit-fallback
+        CreationInfo:
+          OwnerUid: '1001'
+          OwnerGid: '1001'
+          Permissions: '0755'
+      AccessPointTags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-audit-access-point'
+
+  # ========================================
+  # Wait Condition for ALB Security Group
+  # ========================================
+
+  SecurityGroupWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  SecurityGroupWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: ALBSecurityGroup
+    Properties:
+      Handle: !Ref SecurityGroupWaitHandle
+      Timeout: "15"
+      Count: 0
+
+  # ========================================
+  # Service Discovery (AWS Cloud Map)
+  # ========================================
+
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub '${AWS::StackName}.local'
+      Description: Private DNS namespace for AxonFlow service-to-service communication
+      Vpc: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-service-discovery'
+
+  AgentDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: agent
+      Description: Service discovery for Agent containers
+      NamespaceId: !Ref ServiceDiscoveryNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  OrchestratorDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: orchestrator
+      Description: Service discovery for Orchestrator containers
+      NamespaceId: !Ref ServiceDiscoveryNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ========================================
+  # RDS PostgreSQL Database
+  # ========================================
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for AxonFlow database
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db-subnet-group'
+
+  AxonFlowDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-db'
+      Engine: postgres
+      EngineVersion: !Ref DBEngineVersion
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: axonflow
+      MasterUserPassword: !Ref DBPassword
+      DBName: axonflow
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      MultiAZ: !Ref DBMultiAZ
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      PubliclyAccessible: false
+      EnableIAMDatabaseAuthentication: true
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      DeletionProtection: true
+      EnableCloudwatchLogsExports:
+        - postgresql
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-database'
+
+  # ========================================
+  # Application Load Balancer
+  # ========================================
+
+  AxonFlowALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: SecurityGroupWaitCondition
+    Properties:
+      Type: application
+      Scheme: !Ref LoadBalancerScheme
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      LoadBalancerAttributes:
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: "true"
+      Subnets:
+        - !If [IsInternalALB, !Ref PrivateSubnet1, !Ref PublicSubnet1]
+        - !If [IsInternalALB, !Ref PrivateSubnet2, !Ref PublicSubnet2]
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-alb'
+
+  AgentTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 8080
+      Protocol: HTTP
+      ProtocolVersion: HTTP1  # Always use HTTP/1.1 - Go servers don't support HTTP/2 without TLS
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-agent-tg'
+
+  OrchestratorTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 8081
+      Protocol: HTTP
+      ProtocolVersion: HTTP1  # Always use HTTP/1.1 - Go servers don't support HTTP/2 without TLS
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-orch-tg'
+
+  # HTTPS Listeners
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHTTPS
+    Properties:
+      LoadBalancerArn: !Ref AxonFlowALB
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !If
+            - HasCertificateArn
+            - !Ref CertificateArn
+            - !Ref SSLCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AgentTargetGroup
+
+  ALBListenerHTTPRedirect:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHTTPS
+    Properties:
+      LoadBalancerArn: !Ref AxonFlowALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
+
+  # trivy:ignore:AVD-AWS-0069 -- Internal ALB-to-task communication within VPC, encrypted at ALB edge
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHTTP
+    Properties:
+      LoadBalancerArn: !Ref AxonFlowALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AgentTargetGroup
+
+  # trivy:ignore:AVD-AWS-0069 -- Internal ALB-to-task communication within VPC, encrypted at ALB edge
+  OrchestratorListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHTTP
+    Properties:
+      LoadBalancerArn: !Ref AxonFlowALB
+      Port: 8081
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OrchestratorTargetGroup
+
+  OrchestratorListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseHTTPS
+    Properties:
+      LoadBalancerArn: !Ref AxonFlowALB
+      Port: 8081
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !If
+            - HasCertificateArn
+            - !Ref CertificateArn
+            - !Ref SSLCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OrchestratorTargetGroup
+
+  # ========================================
+  # ECS Cluster
+  # ========================================
+
+  AxonFlowCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${AWS::StackName}-cluster'
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          Logging: DEFAULT
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-cluster'
+
+  # ========================================
+  # KMS Key for Encryption (CloudWatch Logs, Secrets Manager)
+  # ========================================
+
+  AxonFlowKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'KMS key for ${AWS::StackName} CloudWatch Logs and Secrets Manager encryption'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-kms-key'
+
+  AxonFlowKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-encryption'
+      TargetKeyId: !Ref AxonFlowKMSKey
+
+  # ========================================
+  # CloudWatch Log Groups
+  # ========================================
+
+  AgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/agent'
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt AxonFlowKMSKey.Arn
+
+  OrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/orchestrator'
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt AxonFlowKMSKey.Arn
+
+  # ========================================
+  # IAM Roles
+  # ========================================
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DBPasswordSecret
+                  - !Ref GrafanaPasswordSecret
+                  - !Ref InternalServiceSecret
+                  - !Ref LLMKeysSecret
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-task-execution-role'
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AxonFlowCommunityTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+                Sid: BedrockInvokePermissions
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:ClientRootAccess
+                Resource: !GetAtt AuditEFSFileSystem.Arn
+                Sid: EFSAuditFallbackPermissions
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CommunitySaasTelemetryTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${CommunitySaasTelemetryTable}/index/*'
+                Sid: CommunitySaasTelemetryPermissions
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-task-role'
+
+  # ========================================
+  # Secrets Manager
+  # ========================================
+
+  DBPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-db-password'
+      KmsKeyId: alias/aws/secretsmanager
+      SecretString: !Sub |
+        {
+          "username": "axonflow",
+          "password": "${DBPassword}",
+          "engine": "postgres",
+          "host": "${AxonFlowDatabase.Endpoint.Address}",
+          "port": 5432,
+          "dbname": "axonflow"
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-db-secret'
+
+  GrafanaPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-grafana-password'
+      Description: Grafana admin and database password
+      KmsKeyId: alias/aws/secretsmanager
+      SecretString: !Ref GrafanaPassword
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-grafana-password'
+
+  # Shared secret for internal service-to-service authentication (auto-generated)
+  # Used for secure communication between Agent and Orchestrator
+  InternalServiceSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-internal-service-secret'
+      Description: Shared secret for Agent-Orchestrator internal service authentication
+      KmsKeyId: alias/aws/secretsmanager
+      GenerateSecretString:
+        ExcludePunctuation: true
+        ExcludeUppercase: false
+        IncludeSpace: false
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-internal-service-secret'
+
+  LLMKeysSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-llm-keys'
+      Description: LLM provider API keys (OpenAI, Anthropic, Google, Azure OpenAI)
+      KmsKeyId: alias/aws/secretsmanager
+      SecretString: !Sub |
+        {
+          "openai": "${OpenAIAPIKey}",
+          "anthropic": "${AnthropicAPIKey}",
+          "google": "${GoogleAPIKey}",
+          "azure_openai_endpoint": "${AzureOpenAIEndpoint}",
+          "azure_openai_api_key": "${AzureOpenAIKey}",
+          "azure_openai_deployment": "${AzureOpenAIDeployment}"
+        }
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-llm-keys'
+
+  # ========================================
+  # ECS Task Definitions
+  # ========================================
+
+  AgentTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${AWS::StackName}-agent'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '1024'  # 1 vCPU
+      Memory: '2048'  # 2 GB
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: agent
+          Image: !Sub '${ContainerImageRegistry}/axonflow-agent:${AgentImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            # Core Configuration
+            - Name: PORT
+              Value: '8080'
+
+            # Database Configuration (12-Factor App - separate env vars)
+            - Name: DATABASE_HOST
+              Value: !GetAtt AxonFlowDatabase.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: '5432'
+            - Name: DATABASE_NAME
+              Value: 'axonflow'
+            - Name: DATABASE_USER
+              Value: 'axonflow'
+            - Name: DATABASE_SSLMODE
+              Value: 'require'
+
+            - Name: ORCHESTRATOR_URL
+              Value: !Sub 'http://orchestrator.${AWS::StackName}.local:8081'
+
+            # Organization & Node Tracking
+            - Name: ORG_ID
+              Value: !Ref OrganizationID
+
+            # Audit Configuration (EFS-backed for Fargate persistence)
+            - Name: AUDIT_FALLBACK_PATH
+              Value: '/mnt/efs/audit/audit_fallback.jsonl'
+
+            # Redis Configuration (Optional)
+            - Name: REDIS_URL
+              Value: !Ref RedisURL
+
+            # Platform Version (reported in /health endpoint)
+            - Name: AXONFLOW_VERSION
+              Value: !Ref AgentImageTag
+
+            # Media Governance (v4.5.0+)
+            - Name: MEDIA_GOVERNANCE_ENABLED
+              Value: !Ref MediaGovernanceEnabled
+
+            # MCP Dynamic Policies
+            - Name: MCP_DYNAMIC_POLICIES_ENABLED
+              Value: !Ref MCPDynamicPoliciesEnabled
+            - Name: MCP_DYNAMIC_POLICIES_CONNECTORS
+              Value: !Ref MCPDynamicPoliciesConnectors
+
+            # Deployment Mode — COMMUNITY SAAS
+            - Name: DEPLOYMENT_MODE
+              Value: 'community-saas'
+
+            # Community SaaS Rate Limits
+            - Name: COMMUNITY_SAAS_MINUTE_LIMIT
+              Value: !Ref CommunitySaasMinuteLimit
+            - Name: COMMUNITY_SAAS_DAILY_LIMIT
+              Value: !Ref CommunitySaasDailyLimit
+
+            # Community SaaS Telemetry
+            - Name: COMMUNITY_SAAS_TELEMETRY_TABLE
+              Value: !Ref CommunitySaasTelemetryTable
+
+            # Ollama Configuration (passed to agent for community proxy mode)
+            - Name: OLLAMA_ENDPOINT
+              Value: !Ref OllamaEndpoint
+            - Name: OLLAMA_MODEL
+              Value: !Ref OllamaModel
+
+            # No enterprise connectors in community-saas
+            - Name: ENABLED_CONNECTORS
+              Value: ''
+
+          Secrets:
+            # DBPasswordSecret contains JSON, so extract the 'password' field
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPasswordSecret}:password::'
+
+            # Internal service authentication (shared secret between agent and orchestrator)
+            - Name: AXONFLOW_INTERNAL_SERVICE_SECRET
+              ValueFrom: !Ref InternalServiceSecret
+
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AgentLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: agent
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8080/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 10
+            StartPeriod: 180
+          MountPoints:
+            - SourceVolume: audit-efs
+              ContainerPath: /mnt/efs/audit
+              ReadOnly: false
+      Volumes:
+        - Name: audit-efs
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref AuditEFSFileSystem
+            RootDirectory: /
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref AuditEFSAccessPoint
+              IAM: ENABLED
+
+  OrchestratorTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${AWS::StackName}-orchestrator'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '1024'  # 1 vCPU
+      Memory: '2048'  # 2 GB
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: orchestrator
+          Image: !Sub '${ContainerImageRegistry}/axonflow-orchestrator:${OrchestratorImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8081
+              Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: '8081'
+
+            # Database Configuration (12-Factor App - separate env vars)
+            - Name: DATABASE_HOST
+              Value: !GetAtt AxonFlowDatabase.Endpoint.Address
+            - Name: DATABASE_PORT
+              Value: '5432'
+            - Name: DATABASE_NAME
+              Value: 'axonflow'
+            - Name: DATABASE_USER
+              Value: 'axonflow'
+            - Name: DATABASE_SSLMODE
+              Value: 'require'
+
+            # Organization
+            - Name: ORG_ID
+              Value: !Ref OrganizationID
+
+            # Deployment Mode — COMMUNITY SAAS
+            - Name: DEPLOYMENT_MODE
+              Value: 'community-saas'
+
+            # OpenAI Configuration
+            - Name: OPENAI_MODEL
+              Value: !Ref OpenAIModel
+
+            # Anthropic Configuration
+            - Name: ANTHROPIC_MODEL
+              Value: !Ref AnthropicModel
+
+            # Google/Gemini Configuration
+            - Name: GOOGLE_MODEL
+              Value: !Ref GoogleModel
+
+            # Bedrock Configuration
+            - Name: BEDROCK_REGION
+              Value: !Ref BedrockRegion
+            - Name: BEDROCK_MODEL
+              Value: !Ref BedrockModel
+
+            # Ollama Configuration
+            - Name: OLLAMA_ENDPOINT
+              Value: !Ref OllamaEndpoint
+            - Name: OLLAMA_MODEL
+              Value: !Ref OllamaModel
+
+            # LLM Routing Configuration
+            - Name: LLM_ROUTING_STRATEGY
+              Value: !Ref LLMRoutingStrategy
+            - Name: PROVIDER_WEIGHTS
+              Value: !Ref ProviderWeights
+
+            # Agent MCP Endpoint - Internal service discovery for MCP query routing
+            - Name: AGENT_MCP_ENDPOINT
+              Value: !Sub 'http://agent.${AWS::StackName}.local:8080'
+
+            # Platform Version
+            - Name: AXONFLOW_VERSION
+              Value: !Ref OrchestratorImageTag
+
+            # Media Governance (v4.5.0+)
+            - Name: MEDIA_GOVERNANCE_ENABLED
+              Value: !Ref MediaGovernanceEnabled
+
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPasswordSecret}:password::'
+
+            # Internal service authentication
+            - Name: AXONFLOW_INTERNAL_SERVICE_SECRET
+              ValueFrom: !Ref InternalServiceSecret
+
+            # LLM API Keys (Conditional based on EnabledLLMProviders)
+            - !If
+              - EnableOpenAI
+              - Name: OPENAI_API_KEY
+                ValueFrom: !Sub '${LLMKeysSecret}:openai::'
+              - !Ref AWS::NoValue
+            - !If
+              - EnableAnthropic
+              - Name: ANTHROPIC_API_KEY
+                ValueFrom: !Sub '${LLMKeysSecret}:anthropic::'
+              - !Ref AWS::NoValue
+            - !If
+              - EnableGoogleProvider
+              - Name: GOOGLE_API_KEY
+                ValueFrom: !Sub '${LLMKeysSecret}:google::'
+              - !Ref AWS::NoValue
+            - !If
+              - EnableAzureOpenAIProvider
+              - Name: AZURE_OPENAI_ENDPOINT
+                ValueFrom: !Sub '${LLMKeysSecret}:azure_openai_endpoint::'
+              - !Ref AWS::NoValue
+            - !If
+              - EnableAzureOpenAIProvider
+              - Name: AZURE_OPENAI_API_KEY
+                ValueFrom: !Sub '${LLMKeysSecret}:azure_openai_api_key::'
+              - !Ref AWS::NoValue
+            - !If
+              - EnableAzureOpenAIProvider
+              - Name: AZURE_OPENAI_DEPLOYMENT_NAME
+                ValueFrom: !Sub '${LLMKeysSecret}:azure_openai_deployment::'
+              - !Ref AWS::NoValue
+
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref OrchestratorLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: orchestrator
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8081/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 10
+            StartPeriod: 180
+
+  # ========================================
+  # ECS Services
+  # ========================================
+
+  AgentService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - AgentTargetGroup
+      - AxonFlowDatabase
+      - AgentDiscoveryService
+      - EFSMountTarget1
+      - EFSMountTarget2
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-agent-service'
+      Cluster: !Ref AxonFlowCluster
+      TaskDefinition: !Ref AgentTaskDefinition
+      DesiredCount: !Ref AgentDesiredCount
+      LaunchType: FARGATE
+      EnableExecuteCommand: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref AgentSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+      LoadBalancers:
+        - ContainerName: agent
+          ContainerPort: 8080
+          TargetGroupArn: !Ref AgentTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt AgentDiscoveryService.Arn
+      HealthCheckGracePeriodSeconds: 600
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-agent-service'
+
+  OrchestratorService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - OrchestratorTargetGroup
+      - AxonFlowDatabase
+      - AgentService  # Wait for Agent to complete migrations
+      - OrchestratorDiscoveryService
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-orchestrator-service'
+      Cluster: !Ref AxonFlowCluster
+      TaskDefinition: !Ref OrchestratorTaskDefinition
+      DesiredCount: !Ref OrchestratorDesiredCount
+      LaunchType: FARGATE
+      EnableExecuteCommand: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref OrchestratorSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+      LoadBalancers:
+        - ContainerName: orchestrator
+          ContainerPort: 8081
+          TargetGroupArn: !Ref OrchestratorTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt OrchestratorDiscoveryService.Arn
+      HealthCheckGracePeriodSeconds: 600
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-orchestrator-service'
+
+  # ========================================
+  # Prometheus Monitoring (Optional)
+  # ========================================
+
+  PrometheusSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldDeployPrometheus
+    Properties:
+      GroupDescription: Security group for Prometheus
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Prometheus UI and API from ALB
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8081
+          CidrIp: 10.0.0.0/8
+          Description: Scrape metrics from Agent/Orchestrator (private VPC)
+        - IpProtocol: tcp
+          # trivy:ignore:AVD-AWS-0104 -- Prometheus requires HTTPS egress for AWS ECS service discovery API
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: AWS APIs for ECS service discovery
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-prometheus-sg'
+
+  # Allow Prometheus to scrape Agent metrics
+  PrometheusToAgentIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: ShouldDeployPrometheus
+    Properties:
+      GroupId: !Ref AgentSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref PrometheusSecurityGroup
+      Description: Prometheus metrics scraping from Agent
+
+  # Allow Prometheus to scrape Orchestrator metrics
+  PrometheusToOrchestratorIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: ShouldDeployPrometheus
+    Properties:
+      GroupId: !Ref OrchestratorSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8081
+      ToPort: 8081
+      SourceSecurityGroupId: !Ref PrometheusSecurityGroup
+      Description: Prometheus metrics scraping from Orchestrator
+
+  PrometheusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldDeployPrometheus
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/prometheus'
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt AxonFlowKMSKey.Arn
+
+  PrometheusTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: ShouldDeployPrometheus
+    Properties:
+      Family: !Sub '${AWS::StackName}-prometheus'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'  # 0.5 vCPU
+      Memory: '1024'  # 1 GB
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: prometheus
+          Image: !Sub '${ContainerImageRegistry}/axonflow-prometheus:${PrometheusImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 9090
+              Protocol: tcp
+          Environment:
+            - Name: STACK_NAME
+              Value: !Ref AWS::StackName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref PrometheusLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: prometheus
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - wget --no-verbose --tries=1 --spider http://localhost:9090/prometheus/-/healthy || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 120
+
+  PrometheusTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: ShouldDeployPrometheus
+    Properties:
+      Port: 9090
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /prometheus/-/healthy
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-prometheus-tg'
+
+  PrometheusListenerRuleHTTP:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployPrometheusHTTP
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTP
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/prometheus*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref PrometheusTargetGroup
+
+  PrometheusListenerRuleHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployPrometheusHTTPS
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTPS
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/prometheus*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref PrometheusTargetGroup
+
+  PrometheusService:
+    Type: AWS::ECS::Service
+    Condition: ShouldDeployPrometheus
+    DependsOn:
+      - PrometheusTargetGroup
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-prometheus-service'
+      Cluster: !Ref AxonFlowCluster
+      TaskDefinition: !Ref PrometheusTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref PrometheusSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet1
+      LoadBalancers:
+        - ContainerName: prometheus
+          ContainerPort: 9090
+          TargetGroupArn: !Ref PrometheusTargetGroup
+      HealthCheckGracePeriodSeconds: 600
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-prometheus-service'
+
+  # ========================================
+  # Grafana Monitoring (Optional)
+  # ========================================
+
+  GrafanaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: ShouldDeployGrafana
+    Properties:
+      GroupDescription: Security group for Grafana
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Grafana UI from ALB
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          DestinationSecurityGroupId: !Ref DBSecurityGroup
+          Description: PostgreSQL database for Grafana storage
+        - IpProtocol: tcp
+          FromPort: 9090
+          ToPort: 9090
+          CidrIp: 10.0.0.0/8
+          Description: Prometheus data source (private VPC)
+        - IpProtocol: tcp
+          # trivy:ignore:AVD-AWS-0104 -- Grafana requires internet access for plugin downloads and AWS Secrets Manager
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: AWS Secrets Manager and plugin downloads
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-grafana-sg'
+
+  GrafanaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ShouldDeployGrafana
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/grafana'
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt AxonFlowKMSKey.Arn
+
+  GrafanaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: ShouldDeployGrafana
+    Properties:
+      Family: !Sub '${AWS::StackName}-grafana'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'  # 0.5 vCPU
+      Memory: '1024'  # 1 GB
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: grafana
+          Image: !Sub '${ContainerImageRegistry}/axonflow-grafana:${GrafanaImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          Environment:
+            - Name: STACK_NAME
+              Value: !Ref AWS::StackName
+            - Name: GF_SERVER_ROOT_URL
+              Value: !If
+                - UseHTTPS
+                - !Sub 'https://${AxonFlowALB.DNSName}/grafana/'
+                - !Sub 'http://${AxonFlowALB.DNSName}/grafana/'
+            - Name: GF_SERVER_SERVE_FROM_SUB_PATH
+              Value: 'true'
+            - Name: GF_DATABASE_TYPE
+              Value: postgres
+            - Name: GF_DATABASE_HOST
+              Value: !Sub '${AxonFlowDatabase.Endpoint.Address}:5432'
+            - Name: GF_DATABASE_NAME
+              Value: axonflow
+            - Name: GF_DATABASE_USER
+              Value: axonflow
+            - Name: GF_DATABASE_SSL_MODE
+              Value: require
+            - Name: GF_INSTALL_PLUGINS
+              Value: ''
+          Secrets:
+            - Name: GF_SECURITY_ADMIN_PASSWORD
+              ValueFrom: !Ref GrafanaPasswordSecret
+            - Name: GF_DATABASE_PASSWORD
+              ValueFrom: !Sub '${DBPasswordSecret}:password::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref GrafanaLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: grafana
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 120
+
+  GrafanaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: ShouldDeployGrafana
+    Properties:
+      Port: 3000
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /grafana/api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-grafana-tg'
+
+  GrafanaListenerRuleHTTP:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployGrafanaHTTP
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTP
+      Priority: 11
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/grafana*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref GrafanaTargetGroup
+
+  GrafanaListenerRuleHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: DeployGrafanaHTTPS
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTPS
+      Priority: 11
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/grafana*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref GrafanaTargetGroup
+
+  GrafanaService:
+    Type: AWS::ECS::Service
+    Condition: ShouldDeployGrafana
+    DependsOn:
+      - GrafanaTargetGroup
+      - AxonFlowDatabase
+      - AgentService  # Wait for Agent to complete DB migrations before Grafana starts
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-grafana-service'
+      Cluster: !Ref AxonFlowCluster
+      TaskDefinition: !Ref GrafanaTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref GrafanaSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet1
+      LoadBalancers:
+        - ContainerName: grafana
+          ContainerPort: 3000
+          TargetGroupArn: !Ref GrafanaTargetGroup
+      HealthCheckGracePeriodSeconds: 600
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-grafana-service'
+
+  # ========================================
+  # Auto Scaling
+  # ========================================
+
+  AgentScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 20
+      MinCapacity: !Ref AgentDesiredCount
+      ResourceId: !Sub 'service/${AxonFlowCluster}/${AgentService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  AgentScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-agent-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AgentScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  OrchestratorScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 20
+      MinCapacity: !Ref OrchestratorDesiredCount
+      ResourceId: !Sub 'service/${AxonFlowCluster}/${OrchestratorService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  OrchestratorScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-orchestrator-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref OrchestratorScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  # ========================================
+  # CloudWatch Alarms & SNS Notifications
+  # ========================================
+
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-alarms'
+      DisplayName: AxonFlow Community SaaS Alarms
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-alarm-topic'
+
+  AgentUnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-agent-unhealthy-hosts'
+      AlarmDescription: Alert when Agent tasks are unhealthy
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt AgentTargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt AxonFlowALB.LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+  OrchestratorUnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-orchestrator-unhealthy-hosts'
+      AlarmDescription: Alert when Orchestrator tasks are unhealthy
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt OrchestratorTargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt AxonFlowALB.LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+  DatabaseConnectionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-database-connections-low'
+      AlarmDescription: Alert when database connections drop below threshold
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref AxonFlowDatabase
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+  High4XXErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-high-4xx-error-rate'
+      AlarmDescription: Alert when 4XX error rate exceeds threshold
+      MetricName: HTTPCode_Target_4XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt AxonFlowALB.LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref AxonFlowCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterName'
+
+  LoadBalancerDNS:
+    Description: Application Load Balancer DNS Name
+    Value: !GetAtt AxonFlowALB.DNSName
+    Export:
+      Name: !Sub '${AWS::StackName}-LoadBalancerDNS'
+
+  AgentEndpoint:
+    Description: AxonFlow Agent API Endpoint
+    Value: !If
+      - UseHTTPS
+      - !Sub 'https://${AxonFlowALB.DNSName}:443'
+      - !Sub 'http://${AxonFlowALB.DNSName}:80'
+    Export:
+      Name: !Sub '${AWS::StackName}-AgentEndpoint'
+
+  DatabaseEndpoint:
+    Description: PostgreSQL Database Endpoint
+    Value: !GetAtt AxonFlowDatabase.Endpoint.Address
+    Export:
+      Name: !Sub '${AWS::StackName}-DatabaseEndpoint'
+
+  AgentServiceName:
+    Description: Agent ECS Service Name
+    Value: !GetAtt AgentService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-AgentServiceName'
+
+  OrchestratorServiceName:
+    Description: Orchestrator ECS Service Name
+    Value: !GetAtt OrchestratorService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-OrchestratorServiceName'
+
+  PrometheusServiceName:
+    Condition: ShouldDeployPrometheus
+    Description: Prometheus ECS Service Name
+    Value: !GetAtt PrometheusService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-PrometheusServiceName'
+
+  GrafanaServiceName:
+    Condition: ShouldDeployGrafana
+    Description: Grafana ECS Service Name
+    Value: !GetAtt GrafanaService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-GrafanaServiceName'
+
+  LoadBalancerProtocol:
+    Description: Load balancer protocol (HTTP or HTTPS)
+    Value: !If [UseHTTPS, 'HTTPS', 'HTTP']
+
+  DeploymentGuide:
+    Description: Next Steps
+    Value: 'Community SaaS deployment complete. Configure LLM providers and visit https://docs.getaxonflow.com for instructions.'
+
+  PrometheusEndpoint:
+    Condition: ShouldDeployPrometheus
+    Description: Prometheus metrics and UI endpoint
+    Value: !If
+      - UseHTTPS
+      - !Sub 'https://${AxonFlowALB.DNSName}/prometheus'
+      - !Sub 'http://${AxonFlowALB.DNSName}/prometheus'
+    Export:
+      Name: !Sub '${AWS::StackName}-PrometheusEndpoint'
+
+  GrafanaEndpoint:
+    Condition: ShouldDeployGrafana
+    Description: "Grafana dashboards endpoint (login: admin / GrafanaPassword from parameters)"
+    Value: !If
+      - UseHTTPS
+      - !Sub 'https://${AxonFlowALB.DNSName}/grafana'
+      - !Sub 'http://${AxonFlowALB.DNSName}/grafana'
+    Export:
+      Name: !Sub '${AWS::StackName}-GrafanaEndpoint'
+
+  MonitoringDeployed:
+    Description: Monitoring stack deployment status
+    Value: !Sub 'Prometheus: ${DeployPrometheus}, Grafana: ${DeployGrafana}'
+
+  AuditEFSFileSystemId:
+    Description: EFS file system ID for audit fallback storage
+    Value: !Ref AuditEFSFileSystem
+    Export:
+      Name: !Sub '${AWS::StackName}-AuditEFSFileSystemId'
