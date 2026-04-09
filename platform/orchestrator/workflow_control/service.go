@@ -282,13 +282,37 @@ func isConcurrentLimitError(err error) bool {
 	return err != nil && err.Error() == "concurrent execution limit reached"
 }
 
-// GetWorkflow retrieves a workflow by ID
-func (s *Service) GetWorkflow(ctx context.Context, workflowID string) (*Workflow, error) {
+// GetWorkflow retrieves a workflow by ID, scoped to the caller's tenant and org.
+// Returns ErrWorkflowNotFound if the workflow exists but belongs to a different
+// tenant or org — 404-style response prevents tenant-existence side-channel leaks.
+func (s *Service) GetWorkflow(ctx context.Context, workflowID, tenantID, orgID string) (*Workflow, error) {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
 	}
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
 	return workflow, nil
+}
+
+// workflowBelongsTo returns true if the workflow is owned by the given tenant+org.
+// Multi-tenant isolation: a workflow created under (tenant_id=A, org_id=X) must
+// not be returned to a caller authenticated as any other (tenant_id, org_id) pair.
+// Community mode and internal-service callers pass empty strings to bypass the
+// check — but the handler layer must only do that for trusted code paths.
+func workflowBelongsTo(workflow *Workflow, tenantID, orgID string) bool {
+	if tenantID == "" && orgID == "" {
+		// Bypass — trusted caller (community, internal service, migration)
+		return true
+	}
+	if tenantID != "" && workflow.TenantID != tenantID {
+		return false
+	}
+	if orgID != "" && workflow.OrgID != orgID {
+		return false
+	}
+	return true
 }
 
 // StepGate checks if a workflow step is allowed to proceed
@@ -298,6 +322,13 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Multi-tenant isolation: reject gate calls for workflows that don't
+	// belong to the caller's tenant/org. Return 404-style error to avoid
+	// leaking existence of other tenants' workflows.
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	// Check if workflow is in a terminal state
@@ -405,7 +436,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	}
 
 	s.logger.Printf("[WorkflowControl] Step gate: workflow=%s step=%s decision=%s reason=%s",
-		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), evaluation.Decision, logutil.Sanitize(evaluation.Reason))
+		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(string(evaluation.Decision)), logutil.Sanitize(evaluation.Reason))
 
 	// Audit log: step gate decision
 	auditMeta := map[string]interface{}{
@@ -454,7 +485,18 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 }
 
 // ApproveStep approves a step that requires approval (Enterprise feature)
-func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, approvedBy string, comment string) error {
+func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID, orgID, approvedBy, comment string) error {
+	// Multi-tenant isolation: verify the workflow belongs to the caller
+	// before allowing approval. Without this check, any authenticated
+	// client could approve any other tenant's pending step.
+	workflow, err := s.repo.GetByID(ctx, workflowID)
+	if err != nil {
+		return err
+	}
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
+
 	step, err := s.repo.GetStep(ctx, workflowID, stepID)
 	if err != nil {
 		return err
@@ -489,7 +531,16 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID string, ap
 }
 
 // RejectStep rejects a step that requires approval (Enterprise feature)
-func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rejectedBy string, reason string) error {
+func (s *Service) RejectStep(ctx context.Context, workflowID, stepID, tenantID, orgID, rejectedBy, reason string) error {
+	// Multi-tenant isolation: verify ownership before allowing rejection.
+	workflow, err := s.repo.GetByID(ctx, workflowID)
+	if err != nil {
+		return err
+	}
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
+
 	step, err := s.repo.GetStep(ctx, workflowID, stepID)
 	if err != nil {
 		return err
@@ -529,10 +580,15 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID string, rej
 }
 
 // ResumeWorkflow attempts to resume a workflow that was waiting for approval
-func (s *Service) ResumeWorkflow(ctx context.Context, workflowID string) error {
+func (s *Service) ResumeWorkflow(ctx context.Context, workflowID, tenantID, orgID string) error {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
+	}
+
+	// Multi-tenant isolation: reject resume on workflows owned by another tenant.
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	if workflow.IsTerminal() {
@@ -556,11 +612,16 @@ func (s *Service) ResumeWorkflow(ctx context.Context, workflowID string) error {
 	return nil
 }
 
-// AbortWorkflow aborts a workflow
-func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason string) error {
+// AbortWorkflow aborts a workflow, scoped to the caller's tenant and org.
+func (s *Service) AbortWorkflow(ctx context.Context, workflowID, reason, tenantID, orgID string) error {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
+	}
+
+	// Multi-tenant isolation: reject abort on workflows owned by another tenant.
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	if workflow.IsTerminal() {
@@ -599,11 +660,16 @@ func (s *Service) AbortWorkflow(ctx context.Context, workflowID string, reason s
 	return nil
 }
 
-// CompleteWorkflow marks a workflow as completed
-func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error {
+// CompleteWorkflow marks a workflow as completed, scoped to the caller's tenant and org.
+func (s *Service) CompleteWorkflow(ctx context.Context, workflowID, tenantID, orgID string) error {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
+	}
+
+	// Multi-tenant isolation: reject complete on workflows owned by another tenant.
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	if workflow.IsTerminal() {
@@ -654,10 +720,15 @@ func (s *Service) CompleteWorkflow(ctx context.Context, workflowID string) error
 }
 
 // FailWorkflow marks a workflow as failed
-func (s *Service) FailWorkflow(ctx context.Context, workflowID string, reason string) error {
+func (s *Service) FailWorkflow(ctx context.Context, workflowID, reason, tenantID, orgID string) error {
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return err
+	}
+
+	// Multi-tenant isolation: reject fail on workflows owned by another tenant.
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	if workflow.IsTerminal() {
@@ -737,11 +808,19 @@ func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (i
 
 // MarkStepCompleted marks a step as completed after the external orchestrator executes it.
 // The optional req carries post-execution metrics (tokens, cost, output) from the SDK.
-func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error {
-	// Get workflow for audit logging
+func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest, tenantID, orgID string) error {
+	// Get workflow for audit logging and ownership check
 	workflow, err := s.repo.GetByID(ctx, workflowID)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow: %w", err)
+	}
+
+	// Multi-tenant isolation: reject step completion on workflows owned
+	// by another tenant. Without this check, any authenticated client
+	// could mark any other tenant's steps as completed (including injecting
+	// fake cost/token metrics into audit logs).
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
 	if err := s.repo.MarkStepCompleted(ctx, workflowID, stepID, req); err != nil {

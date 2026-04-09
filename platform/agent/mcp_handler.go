@@ -982,12 +982,14 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			// Fallback to legacy whitelist validation from request body
-			client, err = validateClient(req.ClientID)
-			if err != nil {
-				sendErrorResponse(w, "Invalid client", http.StatusUnauthorized, nil)
-				return
-			}
+			// No Basic auth credentials provided. In enterprise/SaaS mode we
+			// require proper OAuth2 Client Credentials (clientId + clientSecret
+			// as a signed license key). The previous fallback to a mock
+			// validateClient() was a no-auth security hole — it accepted any
+			// client_id from the request body and attributed everything to the
+			// deployment's own org, breaking multi-tenant isolation.
+			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
+			return
 		}
 
 		if !client.Enabled {
@@ -1366,12 +1368,12 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			// Fallback to legacy whitelist validation from request body
-			client, err = validateClient(req.ClientID)
-			if err != nil {
-				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
-				return
-			}
+			// No Basic auth credentials. Enterprise mode requires proper OAuth2
+			// Client Credentials. Removed the legacy validateClient() fallback
+			// which accepted any client_id from request body without
+			// authentication — a multi-tenant security hole.
+			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
+			return
 		}
 
 		if !client.Enabled {
@@ -1664,12 +1666,16 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Authentication — same three-way pattern as mcpQueryHandler
 	// Note: tenant_id validation moved to after auth since Basic auth derives it from client
-	var tenantID, userID, userRole string
+	// orgID is also derived per-request from the authenticated client's license
+	// (client.OrgID), so multi-tenant deployments correctly scope audit records
+	// by the calling org rather than the deployment's own label.
+	var tenantID, userID, userRole, orgID string
 
 	if isCommunityMode() {
 		tenantID = "community"
 		userID = "0"
 		userRole = "admin"
+		orgID = getDeploymentOrgID() // community mode has no license, use deployment label
 	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		tenantID = req.TenantID
 		if tenantID == "" {
@@ -1677,6 +1683,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		userID = req.UserID
 		userRole = req.UserRole
+		orgID = r.Header.Get("X-Org-ID") // trusted internal service request
 	} else {
 		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
 		var client *Client
@@ -1698,11 +1705,12 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			client, err = validateClient(req.ClientID)
-			if err != nil {
-				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
-				return
-			}
+			// No Basic auth credentials. Enterprise mode requires proper OAuth2
+			// Client Credentials. Removed the legacy validateClient() fallback
+			// which accepted any client_id from request body without
+			// authentication — a multi-tenant security hole.
+			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
+			return
 		}
 		if !client.Enabled {
 			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
@@ -1728,6 +1736,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		tenantID = user.TenantID
 		userID = fmt.Sprintf("%d", user.ID)
 		userRole = user.Role
+		orgID = client.OrgID // from the validated client license (Ed25519-signed)
 	}
 
 	// Validate tenant_id after auth (Basic auth derives it from client)
@@ -1741,7 +1750,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		ConnectorName:  req.ConnectorType,
 		Operation:      "check-input",
 		TenantID:       tenantID,
-		OrgID:          getDeploymentOrgID(),
+		OrgID:          orgID,
 		UserID:         userID,
 		StatementHash:  computeStatementHash(req.Statement),
 		ParametersHash: computeParametersHash(req.Parameters),
@@ -1844,18 +1853,22 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authentication — same three-way pattern as mcpQueryHandler
-	// Note: tenant_id validation moved to after auth since Basic auth derives it from client
-	var tenantID, userID string
+	// Note: tenant_id validation moved to after auth since Basic auth derives it from client.
+	// orgID is derived per-request from the authenticated client's license (client.OrgID),
+	// so multi-tenant deployments correctly scope audit records by the calling org.
+	var tenantID, userID, orgID string
 
 	if isCommunityMode() {
 		tenantID = "community"
 		userID = "0"
+		orgID = getDeploymentOrgID() // community mode has no license, use deployment label
 	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
 		tenantID = req.TenantID
 		if tenantID == "" {
 			tenantID = req.ClientID
 		}
 		userID = req.UserID
+		orgID = r.Header.Get("X-Org-ID") // trusted internal service request
 	} else {
 		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
 		var client *Client
@@ -1877,11 +1890,12 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			client, err = validateClient(req.ClientID)
-			if err != nil {
-				sendErrorResponse(w, "Invalid or disabled client", http.StatusUnauthorized, nil)
-				return
-			}
+			// No Basic auth credentials. Enterprise mode requires proper OAuth2
+			// Client Credentials. Removed the legacy validateClient() fallback
+			// which accepted any client_id from request body without
+			// authentication — a multi-tenant security hole.
+			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
+			return
 		}
 		if !client.Enabled {
 			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
@@ -1906,6 +1920,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		tenantID = user.TenantID
 		userID = fmt.Sprintf("%d", user.ID)
+		orgID = client.OrgID // from the validated client license (Ed25519-signed)
 	}
 
 	// Validate tenant_id after auth (Basic auth derives it from client)
@@ -1919,7 +1934,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		ConnectorName: req.ConnectorType,
 		Operation:     "check-output",
 		TenantID:      tenantID,
-		OrgID:         getDeploymentOrgID(),
+		OrgID:         orgID,
 		UserID:        userID,
 	}
 

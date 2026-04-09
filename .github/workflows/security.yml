@@ -234,6 +234,8 @@ jobs:
           scanners: 'secret'
           format: 'table'
           exit-code: '0'  # Informational (demo tokens trigger false positives)
+          timeout: '15m'  # Default 5m too short — Maven pom.xml resolution can be slow
+          skip-dirs: 'node_modules,vendor,.cache'
 
   # Docker Image Scans - Skip on PRs for speed
   trivy-docker-agent:

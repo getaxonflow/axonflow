@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/shared/serviceauth"
 
 	"github.com/gorilla/mux"
@@ -412,7 +413,7 @@ func handleMCPPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[MCP-Server] → %s (id=%v, session=%s)", req.Method, req.ID, r.Header.Get(mcpSessionHeaderKey))
+	log.Printf("[MCP-Server] → %s (id=%v, session=%s)", logutil.Sanitize(req.Method), req.ID, logutil.Sanitize(r.Header.Get(mcpSessionHeaderKey)))
 
 	switch req.Method {
 	case "initialize":
@@ -486,7 +487,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 	mcpSessions[sessionID] = session
 	mcpSessionsMu.Unlock()
 
-	log.Printf("[MCP-Server] Session created: %s (tenant=%s, client=%s)", sessionID, tenantID, clientID)
+	log.Printf("[MCP-Server] Session created: %s (tenant=%s, client=%s)", logutil.Sanitize(sessionID), logutil.Sanitize(tenantID), logutil.Sanitize(clientID))
 
 	// Parse initialize params for clientInfo and protocolVersion
 	var clientProtocolVersion string
@@ -502,7 +503,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 			clientProtocolVersion = initParams.ProtocolVersion
 			if initParams.ClientInfo.Name != "" {
 				AutoDetectFromClientInfo(usageDB, initParams.ClientInfo.Name)
-				log.Printf("[MCP-Server] Client: %s %s", initParams.ClientInfo.Name, initParams.ClientInfo.Version)
+				log.Printf("[MCP-Server] Client: %s %s", logutil.Sanitize(initParams.ClientInfo.Name), logutil.Sanitize(initParams.ClientInfo.Version))
 			}
 		}
 	}
@@ -658,7 +659,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		if session != nil {
 			// Enforce TTL on lookup
 			if time.Since(session.lastUsed) > mcpSessionTTL {
-				log.Printf("[MCP-Server] Session %s expired (last used %v ago)", sessionID, time.Since(session.lastUsed))
+				log.Printf("[MCP-Server] Session %s expired (last used %v ago)", logutil.Sanitize(sessionID), time.Since(session.lastUsed))
 				mcpSessionsMu.Lock()
 				delete(mcpSessions, sessionID)
 				mcpSessionsMu.Unlock()
@@ -669,7 +670,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 					callerClientID := extractClientID(r)
 					if callerClientID != "" && callerClientID != session.clientID {
 						log.Printf("[MCP-Server] Session %s: client ID mismatch (session=%s, caller=%s)",
-							sessionID, session.clientID, callerClientID)
+							logutil.Sanitize(sessionID), logutil.Sanitize(session.clientID), logutil.Sanitize(callerClientID))
 						return nil
 					}
 				}

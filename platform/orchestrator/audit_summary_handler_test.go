@@ -238,8 +238,13 @@ func TestAuditSummaryHandler_HandleSummary_CORS(t *testing.T) {
 	}
 }
 
-func TestAuditSummaryHandler_HandleSummary_FallbackToOrgID(t *testing.T) {
-	db, mock, err := sqlmock.New()
+// v6.2.0: The X-Org-ID fallback was removed from audit summary because it
+// was a permissive safety net that obscured auth middleware misconfig.
+// X-Tenant-ID is always set by the agent's auth middleware from the
+// authenticated session; its absence means the request bypassed auth
+// and must be rejected.
+func TestAuditSummaryHandler_HandleSummary_MissingTenantHeaderRejected(t *testing.T) {
+	db, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
@@ -247,27 +252,16 @@ func TestAuditSummaryHandler_HandleSummary_FallbackToOrgID(t *testing.T) {
 
 	handler := NewAuditSummaryHandler(db)
 
-	actionRows := sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}).
-		AddRow("llm_call", "allowed", 5)
-	mock.ExpectQuery("SELECT request_type").
-		WithArgs("banking-india", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(actionRows)
-
-	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"})
-	mock.ExpectQuery("SELECT").
-		WithArgs("banking-india", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(policyRows)
-
 	body := `{"start_time":"2026-01-01T00:00:00Z","end_time":"2026-04-01T00:00:00Z"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
-	// No X-Tenant-ID, but X-Org-ID set
+	// Only X-Org-ID set, no X-Tenant-ID. Must be rejected.
 	req.Header.Set("X-Org-ID", "banking-india")
 	rr := httptest.NewRecorder()
 
 	handler.HandleSummary(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
