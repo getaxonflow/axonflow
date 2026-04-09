@@ -116,6 +116,10 @@ func getMigrationPaths(basePath string) []string {
 		paths = append(paths, filepath.Join(basePath, "enterprise"))
 		log.Println("📦 DEPLOYMENT_MODE=in-vpc-enterprise: Running core + enterprise migrations")
 
+	case "community-saas":
+		// Community-SaaS: core migrations only (same as community — no enterprise tables needed)
+		log.Println("📦 DEPLOYMENT_MODE=community-saas: Running core migrations only")
+
 	default:
 		// Unknown mode - default to saas for safety
 		log.Printf("⚠️  Unknown DEPLOYMENT_MODE=%s, defaulting to saas", mode)
