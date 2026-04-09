@@ -198,6 +198,23 @@ func BootstrapFromEnv(cfg *BootstrapConfig) (*BootstrapResult, error) {
 		{"mistral", ProviderTypeMistral, bootstrapMistral},
 	}
 
+	// Community-SaaS mode: only Ollama is permitted. All paid API-key providers are
+	// replaced with no-ops that log an informational skip message. This is a defensive
+	// guard — in practice the stack won't have API keys set, but this prevents accidental
+	// activation if an operator misconfigures the environment.
+	if os.Getenv("DEPLOYMENT_MODE") == "community-saas" {
+		log.Println("[community-saas] Ollama-only mode — skipping all paid LLM providers")
+		for i, p := range providers {
+			if p.ptype != ProviderTypeOllama {
+				skippedName := p.name
+				providers[i].bootstrap = func() (*ProviderConfig, error) {
+					log.Printf("[community-saas] Skipped %s provider (Ollama-only mode)", skippedName)
+					return nil, nil
+				}
+			}
+		}
+	}
+
 	// Add enterprise providers if available (populated by init() in bootstrap_enterprise.go)
 	for _, ep := range additionalBootstrapProviders {
 		providers = append(providers, struct {

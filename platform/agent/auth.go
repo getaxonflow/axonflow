@@ -349,6 +349,53 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 			tenantID = cID
 			orgID = getDeploymentOrgID()
 			clientID = cID
+		} else if isCommunitySaasMode() {
+			// Community-SaaS mode: require Basic auth (tenant_id:secret) validated
+			// against community_saas_registrations table. No Ed25519 license.
+			cID := extractClientID(r)
+			cSecret := extractClientSecret(r)
+			if cID == "" || cSecret == "" {
+				writeJSONError(w, "Registration required. POST to /api/v1/register to get credentials.", http.StatusUnauthorized)
+				return
+			}
+
+			// Per-minute rate limit BEFORE bcrypt validation to protect against
+			// CPU exhaustion attacks. An attacker with a valid tenant_id but invalid
+			// secret would otherwise burn ~400ms of bcrypt per request.
+			minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
+			if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
+				w.Header().Set("Retry-After", "60")
+				writeJSONError(w, fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", minuteLimit), http.StatusTooManyRequests)
+				return
+			}
+
+			// Validate credentials (bcrypt comparison — ~400ms)
+			// Use a detached context so client disconnection doesn't cause a spurious auth failure
+			authCtx, authCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer authCancel()
+
+			if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
+				log.Printf("[AUTH] community-saas auth failed for tenant %s: %v",
+					logutil.Sanitize(cID), err)
+				writeJSONError(w, "Invalid credentials or registration expired", http.StatusUnauthorized)
+				return
+			}
+
+			tenantID = cID
+			orgID = communitySaasOrgID
+			clientID = cID
+
+			// Update last_seen_at + increment request_count via bounded worker channel
+			enqueueActivityUpdate(authDB, cID)
+
+			// Daily cap (use detached context to avoid client disconnect causing false 429)
+			dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer dailyCancel()
+			dailyLimit := getEnvInt("COMMUNITY_SAAS_DAILY_LIMIT", 500)
+			if err := checkCommunityDailyLimit(dailyCtx, tenantID, dailyLimit, authDB); err != nil {
+				writeJSONError(w, "Daily request limit reached. Resets at midnight UTC.", http.StatusTooManyRequests)
+				return
+			}
 		} else {
 			// Enterprise mode: require Basic auth (OAuth2 Client Credentials)
 			cID := extractClientID(r)

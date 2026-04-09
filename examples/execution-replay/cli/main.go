@@ -60,7 +60,6 @@ func main() {
 	fmt.Println("========================================================")
 	fmt.Println()
 
-	agentEndpoint := getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080")
 	agentEndpoint := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
 	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-org")
 	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "demo")

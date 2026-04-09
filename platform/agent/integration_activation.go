@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -201,7 +202,7 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 
 	integration := findKnownIntegration(integrationID)
 	if integration == nil {
-		log.Printf("[Integration] Unknown integration: %s (skipping)", integrationID)
+		log.Printf("[Integration] Unknown integration: %s (skipping)", logutil.Sanitize(integrationID))
 		return
 	}
 
@@ -216,7 +217,7 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 	).Scan(&policyCount)
 
 	if err != nil {
-		log.Printf("[Integration] Failed to activate %s: %v", integrationID, err)
+		log.Printf("[Integration] Failed to activate %s: %v", logutil.Sanitize(integrationID), err)
 		return
 	}
 
@@ -226,7 +227,7 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 
 	if policyCount > 0 {
 		log.Printf("[Integration] ✅ Activated %s: %d policies enabled (by: %s)",
-			integration.DisplayName, policyCount, activatedBy)
+			logutil.Sanitize(integration.DisplayName), policyCount, logutil.Sanitize(activatedBy))
 
 		// Invalidate ALL tenant caches so the newly enabled policies take
 		// effect immediately. Integration policies use tenant_id='global'
@@ -235,9 +236,9 @@ func activateIntegration(db *sql.DB, integrationID, activatedBy string) {
 		// leaving a bypass window until TTL expires.
 		if engine := sharedpolicy.GetGlobalEngine(); engine != nil {
 			engine.InvalidateAllCaches()
-			log.Printf("[Integration] All policy caches invalidated for %s", integration.DisplayName)
+			log.Printf("[Integration] All policy caches invalidated for %s", logutil.Sanitize(integration.DisplayName))
 		}
 	} else {
-		log.Printf("[Integration] ✅ %s already active (0 new policies)", integration.DisplayName)
+		log.Printf("[Integration] ✅ %s already active (0 new policies)", logutil.Sanitize(integration.DisplayName))
 	}
 }

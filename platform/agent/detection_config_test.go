@@ -11,18 +11,19 @@ import (
 )
 
 // TestDefaultDetectionConfig tests the default configuration values.
+// v6.2.0+: defaults are derived from ProfileDefault — see ADR-036.
 func TestDefaultDetectionConfig(t *testing.T) {
 	cfg := DefaultDetectionConfig()
 
-	// Verify defaults match Issue #891 philosophy:
-	// Block high-confidence threats, warn on heuristics, redact PII
+	// v6.2.0 philosophy: warn on PII / SQLi / sensitive data; block only
+	// unambiguously dangerous patterns. Restore strict via AXONFLOW_PROFILE=strict.
 	tests := []struct {
 		name     string
 		got      DetectionAction
 		expected DetectionAction
 	}{
-		{"SQLIAction defaults to block", cfg.SQLIAction, DetectionActionBlock},
-		{"PIIAction defaults to redact", cfg.PIIAction, DetectionActionRedact},
+		{"SQLIAction defaults to warn", cfg.SQLIAction, DetectionActionWarn},
+		{"PIIAction defaults to warn", cfg.PIIAction, DetectionActionWarn},
 		{"SensitiveDataAction defaults to warn", cfg.SensitiveDataAction, DetectionActionWarn},
 		{"HighRiskAction defaults to warn", cfg.HighRiskAction, DetectionActionWarn},
 		{"DangerousQueryAction defaults to block", cfg.DangerousQueryAction, DetectionActionBlock},
@@ -54,13 +55,18 @@ func TestDetectionConfigFromEnv_Defaults(t *testing.T) {
 		}
 	}()
 
+	// Also clear the profile/enforce env vars to test true defaults.
+	os.Unsetenv(EnvProfile)
+	os.Unsetenv(EnvEnforce)
+
 	cfg := DetectionConfigFromEnv()
 
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected %s", cfg.SQLIAction, DetectionActionBlock)
+	// v6.2.0+: default profile relaxes PII/SQLi to warn.
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0)", cfg.SQLIAction)
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected %s", cfg.PIIAction, DetectionActionRedact)
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0)", cfg.PIIAction)
 	}
 	if cfg.SensitiveDataAction != DetectionActionWarn {
 		t.Errorf("SensitiveDataAction: got %s, expected %s", cfg.SensitiveDataAction, DetectionActionWarn)
@@ -222,23 +228,36 @@ func TestDetectionConfigFromEnv_NewOverridesDeprecated(t *testing.T) {
 	}
 }
 
-// TestDetectionConfigFromEnv_InvalidValues tests that invalid values fall back to defaults.
+// TestDetectionConfigFromEnv_InvalidValues tests the fallback behavior for
+// malformed *_ACTION env var values.
+//
+// Post-v6.2.0 fix (review finding P2): invalid values MUST preserve the active
+// profile's value for that category, NOT silently revert to the legacy strict
+// default. Previously a typo like PII_ACTION=blok on a dev profile would flip
+// PII back to redact — silently tightening behavior and inverting the profile.
+// Now it inherits the profile's current PIIAction (warn under default, log
+// under dev, block under strict, etc.).
 func TestDetectionConfigFromEnv_InvalidValues(t *testing.T) {
-	// Clear deprecated vars
+	// Clear deprecated + profile env vars so we're on ProfileDefault (warn).
 	os.Unsetenv(EnvSQLIBlockModeDeprecated)
 	os.Unsetenv(EnvPIIBlockCriticalDeprecated)
+	os.Unsetenv(EnvProfile)
+	os.Unsetenv(EnvEnforce)
 
 	tests := []struct {
 		name     string
 		envVar   string
 		value    string
-		expected DetectionAction
+		expected DetectionAction // should be the ProfileDefault's value for that category
 	}{
-		{"SQLI_ACTION invalid defaults to block", EnvSQLIAction, "invalid", DetectionActionBlock},
-		{"SQLI_ACTION empty defaults to block", EnvSQLIAction, "", DetectionActionBlock},
-		{"PII_ACTION invalid defaults to redact", EnvPIIAction, "invalid", DetectionActionRedact},
-		// Note: "redact" is not valid for SQLI, should fallback
-		{"SQLI_ACTION redact (invalid for sqli) defaults to block", EnvSQLIAction, "redact", DetectionActionBlock},
+		// On ProfileDefault, both PII and SQLi resolve to warn. Any invalid
+		// value must preserve that, not flip to a hardcoded legacy default.
+		{"SQLI_ACTION invalid preserves profile (warn)", EnvSQLIAction, "invalid", DetectionActionWarn},
+		{"SQLI_ACTION empty preserves profile (warn)", EnvSQLIAction, "", DetectionActionWarn},
+		{"PII_ACTION invalid preserves profile (warn)", EnvPIIAction, "invalid", DetectionActionWarn},
+		// "redact" is not a valid SQLi action; it must fall back to the
+		// profile value (warn), NOT to the old hardcoded block.
+		{"SQLI_ACTION redact (invalid for sqli) preserves profile (warn)", EnvSQLIAction, "redact", DetectionActionWarn},
 	}
 
 	for _, tt := range tests {
@@ -266,6 +285,77 @@ func TestDetectionConfigFromEnv_InvalidValues(t *testing.T) {
 				t.Errorf("got %s, expected %s", got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestDetectionConfigFromEnv_InvalidValuesPreserveStrictProfile asserts that
+// invalid values on a strict-profile deployment keep block (not warn).
+// This is the critical fix from the review: invalid values must not silently
+// downgrade the profile.
+func TestDetectionConfigFromEnv_InvalidValuesPreserveStrictProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "strict")
+	os.Unsetenv(EnvEnforce)
+	os.Unsetenv(EnvSQLIAction)
+	os.Unsetenv(EnvPIIAction)
+
+	t.Setenv(EnvPIIAction, "blok") // typo
+	cfg := DetectionConfigFromEnv()
+	if cfg.PIIAction != DetectionActionBlock {
+		t.Errorf("strict + invalid PII_ACTION: got %q, want block (must preserve strict profile, NOT fall through to redact)", cfg.PIIAction)
+	}
+
+	t.Setenv(EnvSQLIAction, "nope") // typo
+	cfg = DetectionConfigFromEnv()
+	if cfg.SQLIAction != DetectionActionBlock {
+		t.Errorf("strict + invalid SQLI_ACTION: got %q, want block", cfg.SQLIAction)
+	}
+}
+
+// TestDetectionConfigFromEnv_InvalidValuesPreserveDevProfile asserts the
+// symmetric case: invalid values on dev profile must keep log, not silently
+// escalate to block/redact.
+func TestDetectionConfigFromEnv_InvalidValuesPreserveDevProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "dev")
+	os.Unsetenv(EnvEnforce)
+	os.Unsetenv(EnvSQLIAction)
+	os.Unsetenv(EnvPIIAction)
+
+	t.Setenv(EnvPIIAction, "redactt") // typo
+	cfg := DetectionConfigFromEnv()
+	if cfg.PIIAction != DetectionActionLog {
+		t.Errorf("dev + invalid PII_ACTION: got %q, want log (must preserve dev profile, NOT silently flip to redact)", cfg.PIIAction)
+	}
+}
+
+// TestPrecedenceChain is the end-to-end integration test for the review
+// finding that each layer was tested independently but the full chain was not.
+// Verifies ProfileDefaults → ApplyEnforce → *_ACTION env var override.
+func TestPrecedenceChain(t *testing.T) {
+	// Base case: dev profile, PII should be log.
+	t.Setenv(EnvProfile, "dev")
+	os.Unsetenv(EnvEnforce)
+	os.Unsetenv(EnvPIIAction)
+	cfg := DetectionConfigFromEnv()
+	if cfg.PIIAction != DetectionActionLog {
+		t.Errorf("dev base: PII = %q, want log", cfg.PIIAction)
+	}
+
+	// Layer 2: ENFORCE=pii adds PII block on top of dev profile.
+	t.Setenv(EnvEnforce, "pii")
+	cfg = DetectionConfigFromEnv()
+	if cfg.PIIAction != DetectionActionBlock {
+		t.Errorf("dev + ENFORCE=pii: PII = %q, want block", cfg.PIIAction)
+	}
+	// Other categories stay at dev values.
+	if cfg.SQLIAction != DetectionActionLog {
+		t.Errorf("dev + ENFORCE=pii: SQLi should stay log (dev profile preserved), got %q", cfg.SQLIAction)
+	}
+
+	// Layer 3: explicit PII_ACTION=warn wins over ENFORCE=pii (block).
+	t.Setenv(EnvPIIAction, "warn")
+	cfg = DetectionConfigFromEnv()
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("dev + ENFORCE=pii + PII_ACTION=warn: got %q, want warn (explicit env wins)", cfg.PIIAction)
 	}
 }
 
@@ -526,11 +616,13 @@ func TestMCPDetectionConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Expected MCP static policies enabled by default")
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
+	// PII and SQLi now default to warn; only dangerous patterns block.
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
 	}
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
 	}
 	if cfg.DangerousQueryAction != DetectionActionBlock {
 		t.Errorf("DangerousQueryAction: got %s, expected block", cfg.DangerousQueryAction)
@@ -651,11 +743,12 @@ func TestGatewayDetectionConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("Expected Gateway static policies enabled by default")
 	}
-	if cfg.PIIAction != DetectionActionRedact {
-		t.Errorf("PIIAction: got %s, expected redact", cfg.PIIAction)
+	// v6.2.0+: defaults relaxed under AXONFLOW_PROFILE=default.
+	if cfg.PIIAction != DetectionActionWarn {
+		t.Errorf("PIIAction: got %s, expected warn (v6.2.0 default)", cfg.PIIAction)
 	}
-	if cfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("SQLIAction: got %s, expected block", cfg.SQLIAction)
+	if cfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("SQLIAction: got %s, expected warn (v6.2.0 default)", cfg.SQLIAction)
 	}
 }
 
@@ -885,8 +978,9 @@ func TestMCPAndGatewayIndependentConfig(t *testing.T) {
 	if mcpCfg.SQLIAction != DetectionActionLog {
 		t.Errorf("MCP SQLIAction: got %s, expected log", mcpCfg.SQLIAction)
 	}
-	if gwCfg.SQLIAction != DetectionActionBlock {
-		t.Errorf("Gateway SQLIAction: got %s, expected block (default)", gwCfg.SQLIAction)
+	// v6.2.0+: gateway SQLi default is now warn (not block).
+	if gwCfg.SQLIAction != DetectionActionWarn {
+		t.Errorf("Gateway SQLIAction: got %s, expected warn (v6.2.0 default)", gwCfg.SQLIAction)
 	}
 }
 

@@ -1,0 +1,30 @@
+# gitleaks configuration for axonflow-enterprise
+# Issue #1541: prevent any future hardcoded Ed25519 signing keys
+
+title = "AxonFlow Gitleaks Rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "axonflow-ed25519-signing-key"
+description = "Hardcoded Ed25519 private seed near a *_SIGNING_KEY env var assignment"
+regex = '''(?i)(ENT|EVAL|ED25519|AXONFLOW_(ENT|EVAL))_SIGNING_KEY[[:space:]]*=[[:space:]]*["'][A-Za-z0-9+/]{42,44}={0,2}["']'''
+tags = ["key", "ed25519", "private-key"]
+keywords = ["SIGNING_KEY"]
+
+# Allow the load_signing_keys() helper which legitimately mentions the env vars
+# without ever assigning a hardcoded value.
+[allowlist]
+description = "Setup script load helpers + tests"
+paths = [
+    '''.*_test\.go$''',
+    '''.*_test\.py$''',
+    '''.*_test\.ts$''',
+    '''.*\.md$''',
+]
+regexes = [
+    '''SIGNING_KEY[[:space:]]*=[[:space:]]*""''',
+    '''SIGNING_KEY=\$\{''',
+    '''SIGNING_KEY=\$\(''',
+]

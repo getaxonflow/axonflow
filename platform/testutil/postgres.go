@@ -20,6 +20,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	dockerclient "github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -134,7 +135,7 @@ func SkipIfNoDocker(t *testing.T) {
 	defer provider.Close()
 
 	// Try to ping Docker
-	if _, err := provider.Client().Ping(ctx); err != nil {
+	if _, err := provider.Client().Ping(ctx, dockerclient.PingOptions{}); err != nil {
 		t.Skipf("Docker daemon not responding: %v", err)
 	}
 }

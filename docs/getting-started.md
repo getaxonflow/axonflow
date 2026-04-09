@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: April 2026** | **Platform: v6.0.0** | **SDKs: Python v6.0.0, Go v5.0.0, TypeScript v5.0.0, Java v5.0.0**
+**Last Updated: April 2026** | **Platform: v6.0.0** | **SDKs: Python v6.1.0, Go v5.1.0, TypeScript v5.1.0, Java v5.1.0**
 
 **Get AxonFlow running locally in about 10 minutes.**
 

@@ -199,11 +199,22 @@ func (m *mockRepo) PurgeOldest(_ context.Context, _ string, _ int) (int64, error
 
 // --- Helper to seed executions ---
 
+// seedExecution creates a normally-scoped test execution with tenant_id and
+// org_id both set to "test-tenant". Tests that need to simulate missing
+// identity should use seedExecutionWithTenantOrg with explicit empty strings.
 func seedExecution(repo *mockRepo, id string, execType execution.ExecutionType, status execution.ExecutionStatusValue, metadata map[string]interface{}) {
-	seedExecutionWithTenant(repo, id, execType, status, metadata, "")
+	seedExecutionWithTenant(repo, id, execType, status, metadata, "test-tenant")
 }
 
 func seedExecutionWithTenant(repo *mockRepo, id string, execType execution.ExecutionType, status execution.ExecutionStatusValue, metadata map[string]interface{}, tenantID string) {
+	// In single-tenant scenarios (most common) tenant_id and org_id are the
+	// same value. The unified handler's checkTenantOwnership requires both
+	// to be set and match the caller's headers, so helpers default org_id
+	// to tenant_id when not explicitly provided.
+	seedExecutionWithTenantOrg(repo, id, execType, status, metadata, tenantID, tenantID)
+}
+
+func seedExecutionWithTenantOrg(repo *mockRepo, id string, execType execution.ExecutionType, status execution.ExecutionStatusValue, metadata map[string]interface{}, tenantID, orgID string) {
 	now := time.Now()
 	exec := &execution.ExecutionStatus{
 		ExecutionID:   id,
@@ -212,6 +223,7 @@ func seedExecutionWithTenant(repo *mockRepo, id string, execType execution.Execu
 		Status:        status,
 		TotalSteps:    3,
 		TenantID:      tenantID,
+		OrgID:         orgID,
 		StartedAt:     now,
 		Steps:         []execution.StepStatus{},
 		Metadata:      metadata,
@@ -234,6 +246,8 @@ func TestUnifiedHandler_ListExecutions_Empty(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -258,6 +272,8 @@ func TestUnifiedHandler_ListExecutions_WithResults(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=10", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -282,6 +298,8 @@ func TestUnifiedHandler_ListExecutions_WithFilters(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?execution_type=wcp_workflow", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -304,6 +322,8 @@ func TestUnifiedHandler_GetExecutionStatus_Found(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -328,6 +348,8 @@ func TestUnifiedHandler_GetExecutionStatus_NotFound(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/nonexistent", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -342,6 +364,8 @@ func TestUnifiedHandler_GetExecutionStatus_EmptyID(t *testing.T) {
 
 	// No mux vars — empty ID
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.GetExecutionStatus(rr, req)
@@ -367,6 +391,8 @@ func TestUnifiedHandler_ResolveExecution_ByWorkflowID(t *testing.T) {
 
 	// Look up by the short workflow ID — should resolve via Strategy 2/4
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_short_123", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -397,6 +423,8 @@ func TestUnifiedHandler_CancelExecution_ByWorkflowID(t *testing.T) {
 	// Cancel by short workflow ID — resolveExecution should find it
 	body := `{"reason":"testing"}`
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/wf_cancel_short/cancel", bytes.NewBufferString(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -422,6 +450,7 @@ func TestUnifiedHandler_StreamExecution_ByWorkflowID(t *testing.T) {
 	// Stream by short workflow ID
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_stream_short/stream", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -442,6 +471,8 @@ func TestUnifiedHandler_CancelExecution_NotFound(t *testing.T) {
 
 	body := `{"reason":"testing"}`
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/nonexistent/cancel", bytes.NewBufferString(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -461,6 +492,8 @@ func TestUnifiedHandler_CancelExecution_AlreadyTerminal(t *testing.T) {
 
 	body := `{"reason":"testing"}`
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-1/cancel", bytes.NewBufferString(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -480,6 +513,8 @@ func TestUnifiedHandler_CancelExecution_EmptyBody(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-1/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -501,6 +536,7 @@ func TestUnifiedHandler_StreamExecutionStatus_SSEHeaders(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1/stream", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -523,20 +559,22 @@ func TestUnifiedHandler_StreamExecutionStatus_SSEHeaders(t *testing.T) {
 
 func TestUnifiedHandler_StreamExecution_MissingTenantHeader(t *testing.T) {
 	repo := newMockRepo()
-	seedExecution(repo, "exec-tenant-test", execution.ExecutionTypeWCP, execution.StatusRunning, nil)
+	seedExecutionWithTenant(repo, "exec-tenant-test", execution.ExecutionTypeWCP, execution.StatusRunning, nil, "tenant-a")
 	hub := execution.NewEventHub()
 	handler := NewUnifiedExecutionHandler(repo, nil, nil, hub, nil)
 
 	router := mux.NewRouter()
 	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
 
-	// No X-Tenant-ID header — should return 400
+	// Intentionally: NO X-Tenant-ID or X-Org-ID header — must be rejected
+	// as unauthorized (401). v6.2.0 tightened this from a permissive
+	// backward-compat fallback to strict authentication enforcement.
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-tenant-test/stream", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d for missing X-Tenant-ID", rr.Code, http.StatusBadRequest)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Status = %d, want %d for missing identity headers", rr.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -549,6 +587,8 @@ func TestUnifiedHandler_StreamExecutionStatus_NotFound(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/nonexistent/stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -566,6 +606,8 @@ func TestUnifiedHandler_StreamExecutionStatus_NoEventHub(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1/stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -598,6 +640,8 @@ func TestUnifiedHandler_CORS(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/unified/executions", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -638,6 +682,7 @@ func TestUnifiedHandler_GetExecutionStatus_SameTenantAllowed(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-Org-ID", "tenant-a")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -656,6 +701,7 @@ func TestUnifiedHandler_GetExecutionStatus_CrossTenantBlocked(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "tenant-b")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -664,7 +710,13 @@ func TestUnifiedHandler_GetExecutionStatus_CrossTenantBlocked(t *testing.T) {
 	}
 }
 
-func TestUnifiedHandler_GetExecutionStatus_NoTenantHeaderAllowed(t *testing.T) {
+// Previously the unified handler's checkTenantOwnership had a permissive
+// fallback: requests without X-Tenant-ID or executions without a tenant_id
+// were allowed through. That was a cross-tenant data leak. v6.2.0 tightens
+// the check to require both X-Tenant-ID and X-Org-ID on every request, and
+// to reject any execution that doesn't have both fields set.
+
+func TestUnifiedHandler_GetExecutionStatus_NoTenantHeaderRejected(t *testing.T) {
 	repo := newMockRepo()
 	seedExecutionWithTenant(repo, "exec-1", execution.ExecutionTypeWCP, execution.StatusRunning, nil, "tenant-a")
 	handler := newTestHandler(repo)
@@ -672,20 +724,21 @@ func TestUnifiedHandler_GetExecutionStatus_NoTenantHeaderAllowed(t *testing.T) {
 	router := mux.NewRouter()
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
-	// No X-Tenant-ID header — should be allowed (backward compat)
+	// Intentionally: NO X-Tenant-ID or X-Org-ID header — should be rejected as unauthorized.
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d (no tenant header should be allowed)", rr.Code, http.StatusOK)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Status = %d, want %d (missing identity headers should be rejected)", rr.Code, http.StatusUnauthorized)
 	}
 }
 
-func TestUnifiedHandler_GetExecutionStatus_NoExecTenantAllowed(t *testing.T) {
+func TestUnifiedHandler_GetExecutionStatus_ExecWithoutTenantRejected(t *testing.T) {
 	repo := newMockRepo()
-	// Execution has no tenant ID set
-	seedExecutionWithTenant(repo, "exec-1", execution.ExecutionTypeWCP, execution.StatusRunning, nil, "")
+	// Execution has no tenant_id/org_id set — should not be returned to
+	// any caller, even one presenting valid identity headers.
+	seedExecutionWithTenantOrg(repo, "exec-1", execution.ExecutionTypeWCP, execution.StatusRunning, nil, "", "")
 	handler := newTestHandler(repo)
 
 	router := mux.NewRouter()
@@ -693,11 +746,12 @@ func TestUnifiedHandler_GetExecutionStatus_NoExecTenantAllowed(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "tenant-b")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d (exec without tenant should be accessible)", rr.Code, http.StatusOK)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d (exec without tenant/org should return 404)", rr.Code, http.StatusNotFound)
 	}
 }
 
@@ -713,6 +767,7 @@ func TestUnifiedHandler_CancelExecution_CrossTenantBlocked(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-1/cancel", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "tenant-b")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -732,6 +787,7 @@ func TestUnifiedHandler_StreamExecutionStatus_CrossTenantBlocked(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1/stream", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "tenant-b")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -763,6 +819,8 @@ func TestUnifiedHandler_GetExecutionStatus_BackendError_Returns500(t *testing.T)
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -784,6 +842,8 @@ func TestUnifiedHandler_CancelExecution_BackendError_Returns500(t *testing.T) {
 
 	body := `{"reason":"testing"}`
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-1/cancel", bytes.NewBufferString(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -806,6 +866,8 @@ func TestUnifiedHandler_StreamExecution_BackendError_Returns500(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-1/stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -823,6 +885,8 @@ func TestUnifiedHandler_GetExecutionStatus_NotFoundStillReturns404(t *testing.T)
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/nonexistent", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -843,6 +907,8 @@ func TestUnifiedHandler_GetExecutionStatus_NotFoundWithTrackersReturns404(t *tes
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_nonexistent", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -872,6 +938,7 @@ func TestUnifiedExecutionHandler_ListExecutions_WithHistoryCap(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=1000", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -921,6 +988,8 @@ func TestUnifiedHandler_CancelExecution_EmptyID(t *testing.T) {
 
 	// Call directly without mux vars — empty ID path
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions//cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.CancelExecution(rr, req)
@@ -935,6 +1004,8 @@ func TestUnifiedHandler_CancelExecution_OptionsCORS(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/unified/executions/exec-1/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.CancelExecution(rr, req)
@@ -961,6 +1032,8 @@ func TestUnifiedHandler_CancelExecution_DefaultReason(t *testing.T) {
 	// Send body with empty reason
 	body := `{"reason":""}`
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-cancel-reason/cancel", bytes.NewBufferString(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -983,6 +1056,8 @@ func TestUnifiedHandler_CancelExecution_WCPMissingWorkflowID(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-no-wfid/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1014,6 +1089,8 @@ func TestUnifiedHandler_CancelExecution_MAPMissingPlanID(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-no-planid/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1033,6 +1110,8 @@ func TestUnifiedHandler_CancelExecution_MAPNilPlanService(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-map-no-svc/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1052,6 +1131,8 @@ func TestUnifiedHandler_CancelExecution_UnknownExecutionType(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-unknown-type/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1077,7 +1158,7 @@ func TestUnifiedHandler_CancelExecution_ResolveAfterCancelFails(t *testing.T) {
 	// Simpler approach: use a repo wrapper that returns not-found on second Get call.
 	callCount := 0
 	countingRepo := &countingGetRepo{
-		mockRepo:     *repo,
+		mockRepo:     repo,
 		getCallCount: &callCount,
 		failAfter:    2, // First two Get calls succeed, third fails
 	}
@@ -1089,6 +1170,8 @@ func TestUnifiedHandler_CancelExecution_ResolveAfterCancelFails(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-resolve-fail/cancel", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1101,7 +1184,7 @@ func TestUnifiedHandler_CancelExecution_ResolveAfterCancelFails(t *testing.T) {
 
 // countingGetRepo tracks Get call count and can be made to fail after N calls.
 type countingGetRepo struct {
-	mockRepo
+	*mockRepo
 	getCallCount *int
 	failAfter    int
 }
@@ -1122,6 +1205,8 @@ func TestUnifiedHandler_StreamExecutionStatus_EmptyID(t *testing.T) {
 
 	// Call directly without mux vars — empty ID
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions//stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.StreamExecutionStatus(rr, req)
@@ -1136,6 +1221,8 @@ func TestUnifiedHandler_StreamExecutionStatus_OptionsCORS(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/unified/executions/exec-1/stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.StreamExecutionStatus(rr, req)
@@ -1160,12 +1247,14 @@ func TestUnifiedHandler_StreamExecutionStatus_SSEConnectionLimitReached(t *testi
 	// First connection should succeed (we won't read from it, just occupy the slot)
 	req1 := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-sse-limit/stream", nil)
 	req1.Header.Set("X-Tenant-ID", "test-tenant")
+	req1.Header.Set("X-Org-ID", "test-tenant")
 	// Manually occupy one connection slot
 	_ = handler.connectionTracker.TryConnect("test-tenant")
 
 	// Second connection should fail
 	req2 := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-sse-limit/stream", nil)
 	req2.Header.Set("X-Tenant-ID", "test-tenant")
+	req2.Header.Set("X-Org-ID", "test-tenant")
 	rr2 := httptest.NewRecorder()
 	router.ServeHTTP(rr2, req2)
 
@@ -1189,6 +1278,7 @@ func TestUnifiedHandler_StreamExecutionStatus_NilConnectionTracker(t *testing.T)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-nil-ct/stream", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1210,6 +1300,7 @@ func TestUnifiedHandler_StreamExecutionStatus_ContextCancellation(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-ctx-cancel/stream", nil).WithContext(ctx)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -1248,6 +1339,7 @@ func TestUnifiedHandler_StreamExecutionStatus_EventHubPublish(t *testing.T) {
 	defer cancel()
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-hub-pub/stream", nil).WithContext(ctx)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -1296,6 +1388,7 @@ func TestUnifiedHandler_StreamExecutionStatus_ChannelClose(t *testing.T) {
 	defer cancel()
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/exec-ch-close/stream", nil).WithContext(ctx)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -1327,6 +1420,8 @@ func TestUnifiedHandler_ListExecutions_OptionsCORS(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/unified/executions", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1344,6 +1439,8 @@ func TestUnifiedHandler_ListExecutions_StatusFilter(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?status=completed", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1369,6 +1466,8 @@ func TestUnifiedHandler_ListExecutions_OffsetPagination(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=2&offset=1", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1394,6 +1493,8 @@ func TestUnifiedHandler_ListExecutions_InvalidLimitIgnored(t *testing.T) {
 
 	// Invalid limit (non-numeric) — should use default of 20
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=abc", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1410,6 +1511,8 @@ func TestUnifiedHandler_ListExecutions_InvalidOffsetIgnored(t *testing.T) {
 
 	// Invalid offset (non-numeric) — should use default of 0
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?offset=xyz", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1426,6 +1529,8 @@ func TestUnifiedHandler_ListExecutions_NegativeLimitIgnored(t *testing.T) {
 
 	// Negative limit — should use default of 20
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=-5", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1442,6 +1547,8 @@ func TestUnifiedHandler_ListExecutions_NegativeOffsetIgnored(t *testing.T) {
 
 	// Negative offset — should use default of 0
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?offset=-1", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1461,6 +1568,8 @@ func TestUnifiedHandler_ListExecutions_LimitExceedsMaxHistory(t *testing.T) {
 
 	// Request limit of 100 — should be capped to 50 (community max)
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=100", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1478,6 +1587,8 @@ func TestUnifiedHandler_ListExecutions_RepoError(t *testing.T) {
 	handler := NewUnifiedExecutionHandler(repo, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1511,6 +1622,8 @@ func TestUnifiedHandler_ListExecutions_ZeroLimit(t *testing.T) {
 
 	// limit=0 should use default (l > 0 check fails)
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions?limit=0", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.ListExecutions(rr, req)
@@ -1527,6 +1640,8 @@ func TestUnifiedHandler_GetExecutionStatus_OptionsCORS(t *testing.T) {
 	handler := newTestHandler(repo)
 
 	req := httptest.NewRequest("OPTIONS", "/api/v1/unified/executions/exec-1", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 
 	handler.GetExecutionStatus(rr, req)
@@ -1551,6 +1666,8 @@ func TestUnifiedHandler_ResolveExecution_WCPPrefixResolution(t *testing.T) {
 
 	// Look up by wcp_ prefixed ID — should trigger Strategy 2 (wcp_ prefix check)
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wcp_my_workflow", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1580,6 +1697,8 @@ func TestUnifiedHandler_ResolveExecution_MAPPrefixResolution(t *testing.T) {
 
 	// Look up by plan_ prefixed ID — should trigger Strategy 3 (plan_ prefix check)
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/plan_my_plan", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1611,6 +1730,8 @@ func TestUnifiedHandler_ResolveExecution_FirstErrPropagation_WCPTracker(t *testi
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_some_id", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1634,6 +1755,8 @@ func TestUnifiedHandler_ResolveExecution_FirstErrPropagation_MAPTracker(t *testi
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/plan_some_id", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1654,6 +1777,8 @@ func TestUnifiedHandler_ResolveExecution_BothTrackersNotFound(t *testing.T) {
 	router.HandleFunc("/api/v1/unified/executions/{id}", handler.GetExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/nonexistent_abc", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1676,6 +1801,8 @@ func TestUnifiedHandler_ResolveExecution_Strategy4_FallbackMetadata(t *testing.T
 
 	// Look up by custom_id_xyz — not prefixed, so skips Strategy 2, goes to Strategy 4
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/custom_id_xyz", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1697,6 +1824,8 @@ func TestUnifiedHandler_ResolveExecution_Strategy4_MAPFallback(t *testing.T) {
 
 	// Look up by custom_plan_xyz — not prefixed with plan_, so Strategy 3 skipped, Strategy 4 finds it
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/custom_plan_xyz", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1901,6 +2030,8 @@ func TestUnifiedHandler_CancelExecution_AlreadyTerminalAllStatuses(t *testing.T)
 			router.HandleFunc("/api/v1/unified/executions/{id}/cancel", handler.CancelExecution)
 
 			req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-terminal/cancel", nil)
+			req.Header.Set("X-Tenant-ID", "test-tenant")
+			req.Header.Set("X-Org-ID", "test-tenant")
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
 
@@ -1922,6 +2053,7 @@ func TestUnifiedHandler_CancelExecution_CrossTenantOnMAP(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/api/v1/unified/executions/exec-map-tenant/cancel", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-Org-ID", "tenant-b")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1947,6 +2079,8 @@ func TestUnifiedHandler_StreamExecution_BackendErrorWithTrackers_Returns500(t *t
 	router.HandleFunc("/api/v1/unified/executions/{id}/stream", handler.StreamExecutionStatus)
 
 	req := httptest.NewRequest("GET", "/api/v1/unified/executions/wf_some_id/stream", nil)
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Org-ID", "test-tenant")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -1956,6 +2090,14 @@ func TestUnifiedHandler_StreamExecution_BackendErrorWithTrackers_Returns500(t *t
 }
 
 // --- checkTenantOwnership direct tests ---
+//
+// v6.2.0 tightened checkTenantOwnership. The previous behavior allowed
+// requests without X-Tenant-ID, and allowed executions without a tenant_id,
+// as permissive backwards compatibility fallbacks. Both were cross-tenant
+// data leak vectors and have been removed. The new rules are:
+//   - Request must present BOTH X-Tenant-ID and X-Org-ID (401 otherwise).
+//   - Execution must have BOTH tenant_id and org_id set (404 otherwise).
+//   - Both must match the request headers exactly (404 otherwise).
 
 func TestUnifiedHandler_CheckTenantOwnership_BothEmpty(t *testing.T) {
 	repo := newMockRepo()
@@ -1963,12 +2105,16 @@ func TestUnifiedHandler_CheckTenantOwnership_BothEmpty(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
-	// Neither execution nor request has tenant ID
-	exec := &execution.ExecutionStatus{TenantID: ""}
+	// Intentionally: NO identity headers on the request — simulating an
+	// unauthenticated call. Must be rejected with 401.
+	exec := &execution.ExecutionStatus{TenantID: "", OrgID: ""}
 
 	result := handler.checkTenantOwnership(rr, req, exec)
-	if !result {
-		t.Error("checkTenantOwnership should return true when both tenant IDs are empty")
+	if result {
+		t.Error("checkTenantOwnership should return false when identity headers are missing")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Status = %d, want %d when request has no identity headers", rr.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -1978,11 +2124,16 @@ func TestUnifiedHandler_CheckTenantOwnership_ExecHasTenantRequestDoesNot(t *test
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
-	exec := &execution.ExecutionStatus{TenantID: "tenant-a"}
+	// Intentionally: NO identity headers on the request. Must be rejected
+	// with 401 even when the execution has a valid tenant/org set.
+	exec := &execution.ExecutionStatus{TenantID: "tenant-a", OrgID: "tenant-a"}
 
 	result := handler.checkTenantOwnership(rr, req, exec)
-	if !result {
-		t.Error("checkTenantOwnership should return true when request has no tenant ID (backward compat)")
+	if result {
+		t.Error("checkTenantOwnership should return false when request has no identity (unauthorized)")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Status = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -1993,11 +2144,15 @@ func TestUnifiedHandler_CheckTenantOwnership_RequestHasTenantExecDoesNot(t *test
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
-	exec := &execution.ExecutionStatus{TenantID: ""}
+	req.Header.Set("X-Org-ID", "tenant-b")
+	exec := &execution.ExecutionStatus{TenantID: "", OrgID: ""}
 
 	result := handler.checkTenantOwnership(rr, req, exec)
-	if !result {
-		t.Error("checkTenantOwnership should return true when execution has no tenant ID")
+	if result {
+		t.Error("checkTenantOwnership should return false when execution has no tenant/org (multi-tenant leak vector)")
+	}
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d for exec without tenant/org", rr.Code, http.StatusNotFound)
 	}
 }
 
@@ -2008,7 +2163,8 @@ func TestUnifiedHandler_CheckTenantOwnership_Mismatch(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-b")
-	exec := &execution.ExecutionStatus{TenantID: "tenant-a"}
+	req.Header.Set("X-Org-ID", "tenant-b")
+	exec := &execution.ExecutionStatus{TenantID: "tenant-a", OrgID: "tenant-a"}
 
 	result := handler.checkTenantOwnership(rr, req, exec)
 	if result {
@@ -2016,5 +2172,20 @@ func TestUnifiedHandler_CheckTenantOwnership_Mismatch(t *testing.T) {
 	}
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d for tenant mismatch", rr.Code, http.StatusNotFound)
+	}
+}
+
+func TestUnifiedHandler_CheckTenantOwnership_Match(t *testing.T) {
+	repo := newMockRepo()
+	handler := newTestHandler(repo)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-Org-ID", "org-a")
+	exec := &execution.ExecutionStatus{TenantID: "tenant-a", OrgID: "org-a"}
+
+	if !handler.checkTenantOwnership(rr, req, exec) {
+		t.Error("checkTenantOwnership should return true when both headers match exec fields")
 	}
 }

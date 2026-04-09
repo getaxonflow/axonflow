@@ -542,35 +542,12 @@ func TestClientRequestHandler_InvalidJSON(t *testing.T) {
 }
 
 // TestValidateClient tests client validation function
-func TestValidateClient(t *testing.T) {
-	tests := []struct {
-		name      string
-		clientID  string
-		wantErr   bool
-	}{
-		{"empty client ID", "", true},
-		{"valid client ID", "test-client", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client, err := validateClient(tt.clientID)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-				if client == nil {
-					t.Error("expected client, got nil")
-				}
-			}
-		})
-	}
-}
+// TestValidateClient was removed in v6.2.0 along with the mock validateClient
+// function. The mock was a multi-tenant security hole: it accepted any
+// client_id from the request body and returned a fake Client with the
+// deployment's own org_id. Enterprise-mode authentication now strictly
+// requires OAuth2 Client Credentials (Basic auth with an Ed25519-signed
+// license key) — see validateClientCredentialsDB and validateViaOrganizations.
 
 // TestValidateUserToken tests user token validation
 func TestValidateUserToken(t *testing.T) {

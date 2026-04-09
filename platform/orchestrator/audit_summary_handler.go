@@ -91,13 +91,14 @@ func (h *AuditSummaryHandler) HandleSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get tenant ID from request headers — reject if missing to prevent cross-tenant data leak
+	// Get tenant ID from request headers — require X-Tenant-ID explicitly.
+	// The agent's auth middleware always sets this header from the authenticated
+	// client's session, so its absence means the request bypassed auth entirely.
+	// v6.2.0 removed the X-Org-ID fallback that was a permissive safety net
+	// because it's not needed in normal operation and obscures misconfig.
 	tenantID := r.Header.Get("X-Tenant-ID")
 	if tenantID == "" {
-		tenantID = r.Header.Get("X-Org-ID")
-	}
-	if tenantID == "" {
-		sendErrorResponse(w, "Missing tenant scope: X-Tenant-ID or X-Org-ID header required", http.StatusBadRequest)
+		sendErrorResponse(w, "Missing tenant scope: X-Tenant-ID header required (set by auth middleware)", http.StatusBadRequest)
 		return
 	}
 
