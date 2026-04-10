@@ -400,6 +400,18 @@ See the full **[Community vs Evaluation vs Enterprise feature matrix](https://do
 
 ---
 
+## Try AxonFlow Online
+
+Skip local setup — try AxonFlow instantly at [**try.getaxonflow.com**](https://docs.getaxonflow.com/docs/deployment/community-saas). No Docker, no installation required.
+
+```bash
+# Register a free trial tenant (30 seconds)
+curl -X POST https://try.getaxonflow.com/api/v1/register \
+  -H "Content-Type: application/json" -d '{"label":"my-trial"}'
+```
+
+Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-limited (20 req/min, 500 req/day). No SLA — for production, deploy self-hosted with `docker compose up -d` or [reach out](mailto:hello@getaxonflow.com) for enterprise SaaS and in-VPC options with enterprise grade SLOs, production guarantees and many additional capabilities.
+
 ## SDKs
 
 ```bash
