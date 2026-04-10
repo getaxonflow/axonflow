@@ -134,7 +134,7 @@ func main() {
 		fmt.Printf("  Query: %s\n", truncate(tc.query, 60))
 
 		result, err := client.GetPolicyApprovedContext(
-			"singapore-user",
+			getEnv("AXONFLOW_USER_TOKEN", "singapore-user"),
 			tc.query,
 			nil,
 			nil,

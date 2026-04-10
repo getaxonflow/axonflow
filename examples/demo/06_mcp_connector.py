@@ -50,7 +50,7 @@ async def demo_postgres_connector():
     print("AxonFlow enforces governance and blocks dangerous operations.")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,
@@ -68,7 +68,7 @@ async def demo_postgres_connector():
             try:
                 # Use proxy_llm_call with connector context
                 response = await client.proxy_llm_call(
-                    user_token="support-agent-demo",
+                    user_token=os.getenv("AXONFLOW_USER_TOKEN", "support-agent-demo"),
                     query=q["query"],
                     request_type="mcp-query",
                     context={
@@ -111,7 +111,7 @@ async def demo_injection_blocking():
     print("Security Test: SQL Injection via Connector")
     print("-" * 60)
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,
@@ -125,7 +125,7 @@ async def demo_injection_blocking():
 
         try:
             response = await client.proxy_llm_call(
-                user_token="support-agent-demo",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "support-agent-demo"),
                 query=malicious_query,
                 request_type="mcp-query",
                 context={"connector": "postgres"},

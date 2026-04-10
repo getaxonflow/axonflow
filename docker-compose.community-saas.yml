@@ -63,6 +63,7 @@ services:
   axonflow-orchestrator:
     environment:
       DEPLOYMENT_MODE: community-saas
+      ORG_ID: community-saas
       OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_MODEL: llama3.2:latest
 

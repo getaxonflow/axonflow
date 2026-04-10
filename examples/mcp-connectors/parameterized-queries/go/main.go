@@ -295,6 +295,9 @@ func sendRequest(url string, req MCPQueryRequest) (*MCPQueryResponse, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if clientID, clientSecret := os.Getenv("AXONFLOW_CLIENT_ID"), os.Getenv("AXONFLOW_CLIENT_SECRET"); clientID != "" && clientSecret != "" {
+		httpReq.SetBasicAuth(clientID, clientSecret)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)

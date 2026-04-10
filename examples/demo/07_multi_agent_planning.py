@@ -24,7 +24,7 @@ async def simple_plan_demo():
     print("with governance applied at every step.")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,

@@ -51,7 +51,7 @@ async def main() -> int:
         return await run_precheck_only()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -171,13 +171,13 @@ async def run_precheck_only() -> int:
     print("--- Running Pre-Check Validation Only ---")
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
 
         pre_check_result = await axonflow.get_policy_approved_context(
-            user_token="test-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "test-user"),
             query="Explain the importance of audit trails in AI systems.",
             context={"provider": "anthropic"},
         )

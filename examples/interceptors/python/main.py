@@ -53,7 +53,7 @@ def main() -> int:
     governed_client = wrap_openai_client(
         openai_client,
         axonflow,
-        user_token="interceptor-test-user"
+        user_token=os.getenv("AXONFLOW_USER_TOKEN", "interceptor-test-user")
     )
 
     # Test 1: Safe query (should pass)

@@ -17,13 +17,20 @@ AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 echo "=== Dynamic Policy Evaluation Example ==="
 echo ""
 
 # Step 1: Create a test dynamic policy
 echo "Step 1: Creating test dynamic policy..."
 
-policy_response=$(curl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
+policy_response=$(acurl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "test-mcp-policy",
@@ -53,7 +60,7 @@ echo ""
 
 # Step 2: Create test data using execute endpoint (write operations)
 echo "Step 2: Creating test data..."
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -63,7 +70,7 @@ curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"user_token\": \"test-setup\"
   }" > /dev/null 2>&1 || true
 
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -79,7 +86,7 @@ echo ""
 echo "Step 3: Querying with dynamic policy evaluation..."
 echo ""
 
-response=$(curl -s -X POST "${AGENT_URL}/mcp/resources/query" \
+response=$(acurl -s -X POST "${AGENT_URL}/mcp/resources/query" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -131,13 +138,13 @@ echo "Step 4: Cleaning up..."
 
 # Delete test policy
 if [ -n "$policy_id" ]; then
-    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
+    acurl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
       > /dev/null 2>&1 || true
     echo "✓ Deleted test policy"
 fi
 
 # Delete test table using execute endpoint
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",

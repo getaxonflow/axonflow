@@ -38,7 +38,10 @@ func assertCheck(condition bool, message string) {
 
 func main() {
 	// Initialize the client (ClientID is used as tenant ID for policy APIs)
-	agentURL := os.Getenv("AXONFLOW_AGENT_URL")
+	agentURL := os.Getenv("AXONFLOW_ENDPOINT")
+	if agentURL == "" {
+		agentURL = os.Getenv("AXONFLOW_AGENT_URL")
+	}
 	if agentURL == "" {
 		agentURL = "http://localhost:8080"
 	}

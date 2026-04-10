@@ -69,15 +69,15 @@ func TestTelemetryMiddleware_CapturesStatusCode(t *testing.T) {
 		version:   "6.2.0",
 	}
 
+	// Inner handler simulates what auth middleware does: populate the
+	// mutable telemetry identity container via SetTelemetryTenantID.
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_test-tenant")
 		w.WriteHeader(http.StatusNotFound)
 	})
 
 	wrapped := tel.Middleware(inner)
 	req := httptest.NewRequest("POST", "/api/request", nil)
-	// Set tenant_id in context
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "cs_test-tenant")
-	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
@@ -112,13 +112,12 @@ func TestTelemetryMiddleware_DropsWhenChannelFull(t *testing.T) {
 	tel.eventChan <- telemetryEvent{}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_overflow")
 		w.WriteHeader(http.StatusOK)
 	})
 
 	wrapped := tel.Middleware(inner)
 	req := httptest.NewRequest("GET", "/test", nil)
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "cs_overflow")
-	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
 	// Should not block
@@ -193,6 +192,7 @@ func TestTelemetryMiddleware_CapturesEndpointPath(t *testing.T) {
 	}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_test")
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -200,8 +200,6 @@ func TestTelemetryMiddleware_CapturesEndpointPath(t *testing.T) {
 
 	// Test that query params are NOT captured (path only)
 	req := httptest.NewRequest("GET", "/api/request?query=secret_data&token=abc123", nil)
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "cs_test")
-	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
@@ -221,13 +219,12 @@ func TestTelemetryMiddleware_DefaultStatusCode(t *testing.T) {
 
 	// Handler that writes body without explicit WriteHeader
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_test")
 		w.Write([]byte("ok"))
 	})
 
 	wrapped := tel.Middleware(inner)
 	req := httptest.NewRequest("GET", "/test", nil)
-	ctx := context.WithValue(req.Context(), ContextKeyTenantID, "cs_test")
-	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
@@ -246,5 +243,53 @@ func TestNewCommunitySaaSTelemetry_WithInvalidAWSConfig(t *testing.T) {
 	// or fail gracefully — either way it should not panic
 	if tel == nil {
 		t.Fatal("NewCommunitySaaSTelemetry should never return nil")
+	}
+}
+
+func TestSetTelemetryTenantID_WithContainer(t *testing.T) {
+	// Verify SetTelemetryTenantID populates the mutable container
+	id := &telemetryIdentity{}
+	ctx := context.WithValue(context.Background(), telemetryIdentityKey, id)
+	SetTelemetryTenantID(ctx, "test-tenant")
+	if id.TenantID != "test-tenant" {
+		t.Errorf("expected TenantID 'test-tenant', got %q", id.TenantID)
+	}
+}
+
+func TestSetTelemetryTenantID_WithoutContainer(t *testing.T) {
+	// SetTelemetryTenantID should be a no-op when no container in context
+	ctx := context.Background()
+	SetTelemetryTenantID(ctx, "test-tenant") // should not panic
+}
+
+func TestTelemetryMiddleware_ContextPropagation(t *testing.T) {
+	// End-to-end test: telemetry middleware (outer) → auth-like handler (inner)
+	// that calls SetTelemetryTenantID, simulating the real middleware chain.
+	tel := &CommunitySaaSTelemetry{
+		enabled:   true,
+		eventChan: make(chan telemetryEvent, 10),
+		version:   "7.0.1",
+	}
+
+	// Inner handler simulates apiAuthMiddleware: sets tenant via SetTelemetryTenantID
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// This is what auth middleware does after authentication
+		SetTelemetryTenantID(r.Context(), "cs_propagated-tenant")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := tel.Middleware(inner)
+	req := httptest.NewRequest("POST", "/api/request", nil)
+
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	if len(tel.eventChan) != 1 {
+		t.Fatalf("Expected 1 event from context propagation, got %d", len(tel.eventChan))
+	}
+
+	event := <-tel.eventChan
+	if event.tenantID != "cs_propagated-tenant" {
+		t.Errorf("Expected tenant 'cs_propagated-tenant', got %q", event.tenantID)
 	}
 }

@@ -130,6 +130,9 @@ func main() {
 	costReq, _ := http.NewRequest("GET", costURL, nil)
 	costReq.Header.Set("X-Client-ID", getEnv("AXONFLOW_CLIENT_ID", "demo-org"))
 	costReq.Header.Set("X-Client-Secret", getEnv("AXONFLOW_CLIENT_SECRET", "demo"))
+	if cID, cSecret := os.Getenv("AXONFLOW_CLIENT_ID"), os.Getenv("AXONFLOW_CLIENT_SECRET"); cID != "" && cSecret != "" {
+		costReq.SetBasicAuth(cID, cSecret)
+	}
 	costResp, costErr := (&http.Client{Timeout: 10 * time.Second}).Do(costReq)
 	if costErr != nil {
 		fmt.Printf("   Warning: Cost estimation failed: %v\n", costErr)
@@ -763,7 +766,7 @@ func main() {
 		fmt.Printf("   Execution status: %s\n", sseExec.Status)
 
 		// Stream execution status via HTTP SSE endpoint
-		agentEndpoint := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+		agentEndpoint := getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 		clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-org")
 		clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "demo")
 		streamURL := fmt.Sprintf("%s/api/v1/unified/executions/%s/stream", agentEndpoint, ssePlan.PlanID)
@@ -777,6 +780,9 @@ func main() {
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("X-Client-ID", clientID)
 		req.Header.Set("X-Client-Secret", clientSecret)
+		if clientID != "" && clientSecret != "" {
+			req.SetBasicAuth(clientID, clientSecret)
+		}
 
 		sseClient := &http.Client{Timeout: 30 * time.Second}
 		resp, respErr := sseClient.Do(req)

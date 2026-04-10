@@ -14,7 +14,7 @@ from axonflow import AxonFlow
 
 
 async def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "workflow-example")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
@@ -40,7 +40,7 @@ async def main():
     try:
         # Send query to AxonFlow (uses MAP for parallelization)
         response = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query=query,
             request_type="multi-agent-plan",  # Use MAP for parallel execution
             context={"provider": "openai"},

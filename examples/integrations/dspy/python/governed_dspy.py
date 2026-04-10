@@ -239,7 +239,7 @@ def run_tests() -> int:
     """Run all governance tests."""
     from axonflow import AxonFlow
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     print("=" * 60)
     print("DSPy + AxonFlow Integration (Python SDK)")
@@ -379,7 +379,7 @@ def test_health_check() -> bool:
     """Check if AxonFlow is running."""
     from axonflow import AxonFlow
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     print(f"Checking AxonFlow at {agent_url}...")
 
     try:

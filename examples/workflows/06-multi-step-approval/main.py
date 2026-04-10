@@ -13,7 +13,7 @@ from axonflow import AxonFlow
 
 
 async def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
@@ -43,7 +43,7 @@ async def main():
         )
 
         manager_resp = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query=manager_query,
             request_type="chat",
             context={"provider": "openai"},
@@ -69,7 +69,7 @@ async def main():
             )
 
             director_resp = await client.proxy_llm_call(
-                user_token="user-123",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
                 query=director_query,
                 request_type="chat",
                 context={"provider": "openai"},
@@ -96,7 +96,7 @@ async def main():
             )
 
             finance_resp = await client.proxy_llm_call(
-                user_token="user-123",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
                 query=finance_query,
                 request_type="chat",
                 context={"provider": "openai"},

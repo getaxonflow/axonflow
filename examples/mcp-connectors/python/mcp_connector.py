@@ -30,7 +30,7 @@ def assert_check(condition: bool, message: str) -> None:
 
 
 def main() -> int:
-    agent_url = os.environ.get("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.environ.get("AXONFLOW_ENDPOINT", os.environ.get("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     print("==============================================")
     print("MCP Connector Example - Agent Routing")

@@ -51,7 +51,7 @@ async def main() -> int:
     print()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "langgraph-tools-example"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", ""),
     ) as client:

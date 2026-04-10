@@ -163,7 +163,7 @@ async def main() -> int:
 
         try:
             resp = await client.proxy_llm_call_with_media(
-                user_token="media-governance-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-governance-user"),
                 query="Describe this image",
                 request_type="chat",
                 media=[
@@ -190,7 +190,7 @@ async def main() -> int:
 
         try:
             resp2 = await client.proxy_llm_call_with_media(
-                user_token="media-governance-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-governance-user"),
                 query="Compare these images",
                 request_type="chat",
                 media=[
@@ -235,7 +235,7 @@ async def main() -> int:
 
         try:
             resp3 = await client.proxy_llm_call_with_media(
-                user_token="media-governance-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-governance-user"),
                 query="Analyze this image from URL",
                 request_type="chat",
                 media=[
@@ -262,7 +262,7 @@ async def main() -> int:
 
         try:
             resp4 = await client.proxy_llm_call(
-                user_token="media-governance-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-governance-user"),
                 query="What is the capital of France?",
                 request_type="chat",
             )

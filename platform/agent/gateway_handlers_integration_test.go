@@ -129,8 +129,9 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		// Create response recorder
 		rr := httptest.NewRecorder()
 
-		// Call handler
-		handlePolicyPreCheck(rr, req)
+		// Call handler through middleware (auth sets context values)
+		handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
+		handler.ServeHTTP(rr, req)
 
 		// Check status
 		if rr.Code != http.StatusOK {
@@ -182,7 +183,7 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		req.Header.Set("X-License-Key", "test-key")
 
 		rr := httptest.NewRecorder()
-		handlePolicyPreCheck(rr, req)
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 
 		var preCheckResp PreCheckResponse
 		json.NewDecoder(rr.Body).Decode(&preCheckResp)
@@ -358,7 +359,7 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
 
 		rr := httptest.NewRecorder()
-		handlePolicyPreCheck(rr, req)
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
@@ -399,7 +400,7 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
 
 		rr := httptest.NewRecorder()
-		handlePolicyPreCheck(rr, req)
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 
 		if rr.Code == http.StatusOK {
 			t.Errorf("Expected non-200 status for invalid JWT, got %d", rr.Code)
@@ -432,7 +433,7 @@ func TestGatewayPreCheckIntegration_EnterpriseMode(t *testing.T) {
 		setOAuth2BasicAuth(req, "test-client-enterprise", testLicenseKey)
 
 		rr := httptest.NewRecorder()
-		handlePolicyPreCheck(rr, req)
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 
 		if rr.Code == http.StatusOK {
 			t.Errorf("Expected non-200 status for expired JWT, got %d", rr.Code)
@@ -498,7 +499,7 @@ func TestGatewayValidationErrors(t *testing.T) {
 			req.Header.Set("X-License-Key", "test-key")
 
 			rr := httptest.NewRecorder()
-			handlePolicyPreCheck(rr, req)
+			apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
 
 			if rr.Code != tc.expectedStatus {
 				t.Errorf("Expected status %d, got %d", tc.expectedStatus, rr.Code)

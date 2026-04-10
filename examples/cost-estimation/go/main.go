@@ -65,6 +65,9 @@ func doRequest(method, url, body string, headers map[string]string) (int, map[st
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	if clientID, clientSecret := os.Getenv("AXONFLOW_CLIENT_ID"), os.Getenv("AXONFLOW_CLIENT_SECRET"); clientID != "" && clientSecret != "" {
+		req.SetBasicAuth(clientID, clientSecret)
+	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)

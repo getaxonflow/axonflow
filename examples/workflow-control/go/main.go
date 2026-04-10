@@ -554,7 +554,7 @@ func main() {
 	}
 
 	// Stream execution status via HTTP SSE endpoint
-	agentEndpoint := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+	agentEndpoint := getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo-org")
 	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "")
 	streamURL := fmt.Sprintf("%s/api/v1/unified/executions/%s/stream", agentEndpoint, sseWorkflow.WorkflowID)
@@ -568,6 +568,9 @@ func main() {
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-Client-ID", clientID)
 	req.Header.Set("X-Client-Secret", clientSecret)
+	if clientID != "" && clientSecret != "" {
+		req.SetBasicAuth(clientID, clientSecret)
+	}
 
 	sseClient := &http.Client{Timeout: 30 * time.Second}
 	resp, respErr := sseClient.Do(req)

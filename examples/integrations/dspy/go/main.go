@@ -355,7 +355,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		Description:  "Answer questions",
 	}
 
-	qa := NewGovernedPredict(qaSig, client, "dspy-user-123")
+	qa := NewGovernedPredict(qaSig, client, getEnv("AXONFLOW_USER_TOKEN", "dspy-user-123"))
 	result1 := qa.Forward(map[string]string{
 		"question": "What are the benefits of renewable energy?",
 	})
@@ -377,7 +377,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		Description:  "Reason step by step",
 	}
 
-	cot := NewGovernedChainOfThought(cotSig, client, "dspy-user-123")
+	cot := NewGovernedChainOfThought(cotSig, client, getEnv("AXONFLOW_USER_TOKEN", "dspy-user-123"))
 	result2 := cot.Forward(map[string]string{
 		"question": "Why is the sky blue?",
 	})
@@ -400,7 +400,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		Description:  "Retrieve and generate",
 	}
 
-	rag := NewGovernedRAG(ragSig, client, "dspy-user-123")
+	rag := NewGovernedRAG(ragSig, client, getEnv("AXONFLOW_USER_TOKEN", "dspy-user-123"))
 	result3 := rag.Forward(map[string]string{
 		"question": "What are best practices for AI safety?",
 	})
@@ -451,7 +451,7 @@ func runTests(client *axonflow.AxonFlowClient) {
 		OutputFields: []string{"summary"},
 		Description:  "Summarize text",
 	}
-	summarize := NewGovernedPredict(summarizeSig, client, "dspy-user-123")
+	summarize := NewGovernedPredict(summarizeSig, client, getEnv("AXONFLOW_USER_TOKEN", "dspy-user-123"))
 
 	// Step 1: QA
 	fmt.Println("\n   Pipeline Step 1: QA")
@@ -500,7 +500,7 @@ func main() {
 	fmt.Println("DSPy + AxonFlow Integration (Go SDK)")
 	fmt.Println(strings.Repeat("=", 60))
 
-	agentURL := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+	agentURL := getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 	fmt.Printf("\nChecking AxonFlow at %s...\n", agentURL)
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{

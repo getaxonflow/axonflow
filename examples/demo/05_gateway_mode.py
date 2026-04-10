@@ -34,7 +34,7 @@ async def gateway_mode_demo():
     print("      (You control the LLM, AxonFlow governs)")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,
@@ -51,7 +51,7 @@ async def gateway_mode_demo():
 
         precheck_start = time.time()
         ctx = await client.get_policy_approved_context(
-            user_token="support-agent-demo",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "support-agent-demo"),
             query=query,
         )
         precheck_ms = int((time.time() - precheck_start) * 1000)

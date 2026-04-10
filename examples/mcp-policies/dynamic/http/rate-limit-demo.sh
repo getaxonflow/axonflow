@@ -18,13 +18,20 @@ CONNECTOR="${MCP_CONNECTOR:-postgres}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 REQUEST_COUNT="${1:-5}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 echo "=== Dynamic Policy: Rate Limit Demo ==="
 echo ""
 
 # Step 1: Create rate limit policy
 echo "Step 1: Creating rate limit policy (3 requests/minute)..."
 
-policy_response=$(curl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
+policy_response=$(acurl -s -X POST "${AGENT_URL}/api/v1/dynamic-policies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "test-rate-limit",
@@ -61,7 +68,7 @@ blocked_count=0
 success_count=0
 
 for i in $(seq 1 $REQUEST_COUNT); do
-    response=$(curl -s -w "\n%{http_code}" -X POST "${AGENT_URL}/mcp/resources/query" \
+    response=$(acurl -s -w "\n%{http_code}" -X POST "${AGENT_URL}/mcp/resources/query" \
       -H "Content-Type: application/json" \
       -d "{
         \"connector\": \"${CONNECTOR}\",
@@ -113,12 +120,12 @@ echo ""
 echo "Step 3: Cleaning up..."
 
 if [ -n "$policy_id" ]; then
-    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
+    acurl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/${policy_id}" \
       > /dev/null 2>&1 || true
     echo "✓ Deleted rate limit policy"
 else
     # Try to delete by name
-    curl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/test-rate-limit" \
+    acurl -s -X DELETE "${AGENT_URL}/api/v1/dynamic-policies/test-rate-limit" \
       > /dev/null 2>&1 || true
 fi
 

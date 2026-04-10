@@ -50,7 +50,7 @@ func main() {
 	searchQuery := "Find round-trip flights from New York to Paris for next week"
 	fmt.Printf("   Query: %s\n", searchQuery)
 
-	searchResponse, err := client.ProxyLLMCall("user-123", searchQuery, "chat", map[string]interface{}{"provider": "openai"})
+	searchResponse, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), searchQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Search query does not return error")
 	if err == nil {
 		assertCheck(searchResponse.Success, "Search response is successful")
@@ -78,7 +78,7 @@ func main() {
 			fmt.Println("   Trying alternative dates...")
 
 			altQuery := "Find flights from New York to Paris for the following week instead"
-			altResponse, err := client.ProxyLLMCall("user-123", altQuery, "chat", map[string]interface{}{"provider": "openai"})
+			altResponse, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), altQuery, "chat", map[string]interface{}{"provider": "openai"})
 			assertCheck(err == nil, "Fallback query does not return error")
 			if err == nil {
 				assertCheck(altResponse.Success, "Fallback response is successful")
@@ -90,7 +90,7 @@ func main() {
 			fmt.Println("   Branch: Success (flights found)")
 
 			bookQuery := "Based on the search results above, what would be the recommended booking?"
-			bookResponse, err := client.ProxyLLMCall("user-123", bookQuery, "chat", map[string]interface{}{"provider": "openai"})
+			bookResponse, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), bookQuery, "chat", map[string]interface{}{"provider": "openai"})
 			assertCheck(err == nil, "Booking recommendation query does not return error")
 			if err == nil {
 				assertCheck(bookResponse.Success, "Booking recommendation response is successful")

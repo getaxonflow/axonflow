@@ -58,7 +58,7 @@ func main() {
 		"Simulate 500 customer transactions."
 	fmt.Printf("   Query: %s\n", truncate(extractQuery, 70))
 
-	extractResp, err := client.ProxyLLMCall("user-123", extractQuery, "chat", map[string]interface{}{"provider": "openai"})
+	extractResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), extractQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Stage 1 (Extract) does not return error")
 	if err == nil {
 		assertCheck(extractResp.Success, "Stage 1 (Extract) is successful")
@@ -78,7 +78,7 @@ func main() {
 		"5. Flag any anomalies (unusually high amounts)"
 	fmt.Printf("   Query: %s\n", truncate(transformQuery, 70))
 
-	transformResp, err := client.ProxyLLMCall("user-123", transformQuery, "chat", map[string]interface{}{"provider": "openai"})
+	transformResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), transformQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Stage 2 (Transform) does not return error")
 	if err == nil {
 		assertCheck(transformResp.Success, "Stage 2 (Transform) is successful")
@@ -97,7 +97,7 @@ func main() {
 		"4. Calculate average order value per segment"
 	fmt.Printf("   Query: %s\n", truncate(enrichQuery, 70))
 
-	enrichResp, err := client.ProxyLLMCall("user-123", enrichQuery, "chat", map[string]interface{}{"provider": "openai"})
+	enrichResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), enrichQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Stage 3 (Enrich) does not return error")
 	if err == nil {
 		assertCheck(enrichResp.Success, "Stage 3 (Enrich) is successful")
@@ -117,7 +117,7 @@ func main() {
 		"5. Recommended actions for each segment"
 	fmt.Printf("   Query: %s\n", truncate(aggregateQuery, 70))
 
-	aggregateResp, err := client.ProxyLLMCall("user-123", aggregateQuery, "chat", map[string]interface{}{"provider": "openai"})
+	aggregateResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), aggregateQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Stage 4 (Aggregate) does not return error")
 	if err == nil {
 		assertCheck(aggregateResp.Success, "Stage 4 (Aggregate) is successful")
@@ -137,7 +137,7 @@ func main() {
 		"Format as a concise business report."
 	fmt.Printf("   Query: %s\n", truncate(reportQuery, 70))
 
-	reportResp, err := client.ProxyLLMCall("user-123", reportQuery, "chat", map[string]interface{}{"provider": "openai"})
+	reportResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), reportQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Stage 5 (Report) does not return error")
 	if err == nil {
 		assertCheck(reportResp.Success, "Stage 5 (Report) is successful")

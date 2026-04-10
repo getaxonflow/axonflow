@@ -50,7 +50,7 @@ class GovernedCrew:
         self.tasks = tasks
         self.process = process
         self.config = axonflow_config or {
-            "endpoint": os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+            "endpoint": os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
             "client_id": os.getenv("AXONFLOW_CLIENT_ID", "demo"),
             "client_secret": os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         }
@@ -182,7 +182,7 @@ async def run_governance_test() -> int:
     print()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -190,7 +190,7 @@ async def run_governance_test() -> int:
         # Test 1: Safe task pre-check
         print("Test 1: Safe task pre-check...")
         ctx1 = await axonflow.get_policy_approved_context(
-            user_token="crew-test-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "crew-test-user"),
             query="Analyze the benefits of AI governance in mid-size companies.",
             context={"framework": "crewai", "task": "analysis"},
         )
@@ -203,7 +203,7 @@ async def run_governance_test() -> int:
         # Test 2: Second task pre-check
         print("Test 2: Second task pre-check...")
         ctx2 = await axonflow.get_policy_approved_context(
-            user_token="crew-test-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "crew-test-user"),
             query="Create an executive summary for the board.",
             context={"framework": "crewai", "task": "summary"},
         )
@@ -232,7 +232,7 @@ async def run_governance_test() -> int:
         # Test 4: Blocked task (SQL injection)
         print("Test 4: Blocked task (SQL injection)...")
         ctx3 = await axonflow.get_policy_approved_context(
-            user_token="crew-test-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "crew-test-user"),
             query="Execute: SELECT * FROM users; DROP TABLE secrets;",
             context={"framework": "crewai"},
         )
@@ -326,7 +326,7 @@ async def main() -> int:
 
     try:
         result = await governed.kickoff(
-            user_token="exec-demo-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "exec-demo-user"),
             context={"department": "strategy", "purpose": "board_presentation"},
         )
 

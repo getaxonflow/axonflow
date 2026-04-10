@@ -23,8 +23,12 @@ function assertCheck(condition: boolean, message: string): void {
 }
 
 // Initialize AxonFlow client with OAuth2-style credentials
+// Uses AXONFLOW_ENDPOINT for self-hosted, or set AXONFLOW_TRY=1 for try.getaxonflow.com
 const axonflow = new AxonFlow({
-  endpoint: process.env.AXONFLOW_AGENT_URL || "http://localhost:8080",
+  endpoint:
+    process.env.AXONFLOW_ENDPOINT ||
+    process.env.AXONFLOW_AGENT_URL ||
+    "http://localhost:8080",
   clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
   clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
   debug: true,

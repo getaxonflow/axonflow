@@ -56,7 +56,7 @@ async def main() -> int:
         print("Note: OPENAI_API_KEY not set, using mock mode")
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:

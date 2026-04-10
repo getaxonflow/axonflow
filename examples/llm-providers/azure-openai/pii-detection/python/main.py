@@ -41,7 +41,7 @@ def main() -> int:
         print("  Start AxonFlow with: PII_ACTION=block docker compose up -d\n")
 
     async_client = AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "azure-pii-demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", ""),
     )
@@ -96,7 +96,7 @@ def main() -> int:
 
         try:
             response = client.proxy_llm_call(
-                user_token="pii-test-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "pii-test-user"),
                 query=tc["query"],
                 request_type="chat",
                 context={"provider": "azure-openai"},

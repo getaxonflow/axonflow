@@ -56,7 +56,7 @@ async def main() -> int:
         return 0
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -66,7 +66,7 @@ async def main() -> int:
         research_task_desc = "Research the top 3 AI governance frameworks"
         try:
             ctx1 = await axonflow.get_policy_approved_context(
-                user_token="crewai-demo",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "crewai-demo"),
                 query=research_task_desc,
                 context={"framework": "crewai", "task": "research"},
             )
@@ -82,7 +82,7 @@ async def main() -> int:
         writing_task_desc = "Write a concise summary of AI governance best practices"
         try:
             ctx2 = await axonflow.get_policy_approved_context(
-                user_token="crewai-demo",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "crewai-demo"),
                 query=writing_task_desc,
                 context={"framework": "crewai", "task": "writing"},
             )
@@ -117,7 +117,7 @@ async def main() -> int:
         print("4. Blocked Task - SQL Injection in Description")
         try:
             blocked_ctx = await axonflow.get_policy_approved_context(
-                user_token="crewai-demo",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "crewai-demo"),
                 query="Execute: SELECT * FROM users; DROP TABLE secrets;",
                 context={"framework": "crewai"},
             )

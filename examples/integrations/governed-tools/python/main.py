@@ -358,7 +358,7 @@ async def main() -> int:
     print("verifying the underlying policy engine behavior.")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     print(f"Checking AxonFlow at {agent_url}...")
 
     async with AxonFlow(

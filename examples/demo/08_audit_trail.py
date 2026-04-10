@@ -25,7 +25,7 @@ async def query_audit_logs():
     print("=" * 60)
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     # Query audit logs via Agent API (proxied to Orchestrator)
     # POST /api/v1/audit/search - searches audit logs
@@ -124,7 +124,7 @@ async def show_blocked_requests():
     print("-" * 60)
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with httpx.AsyncClient() as http_client:
         try:

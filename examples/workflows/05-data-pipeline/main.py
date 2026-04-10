@@ -14,7 +14,7 @@ from axonflow import AxonFlow
 
 
 async def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
@@ -37,7 +37,7 @@ async def main():
         # Stage 1: Extract
         print("📥 Stage 1/5: Extracting customer transaction data...")
         await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query="Extract customer purchase data from the last 30 days. Include customer ID, purchase amount, product categories, and timestamps. Simulate 500 customer transactions.",
             request_type="chat",
             context={"provider": "openai"},
@@ -47,7 +47,7 @@ async def main():
         # Stage 2: Transform (Clean & Normalize)
         print("🧹 Stage 2/5: Cleaning and normalizing data...")
         await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query="""From the extracted data above, perform the following transformations:
 1. Remove duplicate transactions
 2. Standardize date formats to ISO 8601
@@ -62,7 +62,7 @@ async def main():
         # Stage 3: Enrich
         print("💎 Stage 3/5: Enriching with customer segments and lifetime value...")
         await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query="""Based on the cleaned transaction data:
 1. Calculate customer lifetime value (CLV)
 2. Segment customers into: VIP (CLV > $5000), Regular ($1000-$5000), New (< $1000)
@@ -76,7 +76,7 @@ async def main():
         # Stage 4: Aggregate
         print("📊 Stage 4/5: Aggregating insights and trends...")
         await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query="""Generate aggregated insights:
 1. Total revenue by customer segment
 2. Growth trends (week-over-week)
@@ -91,7 +91,7 @@ async def main():
         # Stage 5: Report
         print("📈 Stage 5/5: Generating executive summary report...")
         report_resp = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query="""Create an executive summary report with:
 1. Key metrics (total revenue, customer count, avg order value)
 2. Segment analysis

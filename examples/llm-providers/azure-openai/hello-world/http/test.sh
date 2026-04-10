@@ -4,7 +4,14 @@
 
 set -e
 
-AXONFLOW_URL="${AXONFLOW_URL:-http://localhost:8080}"
+AXONFLOW_URL="${AXONFLOW_ENDPOINT:-${AXONFLOW_AGENT_URL:-${AXONFLOW_URL:-http://localhost:8080}}}"
+
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
 
 # Load Azure credentials from environment
 if [ -z "$AZURE_OPENAI_ENDPOINT" ] || [ -z "$AZURE_OPENAI_API_KEY" ] || [ -z "$AZURE_OPENAI_DEPLOYMENT_NAME" ]; then
@@ -35,7 +42,7 @@ echo "--- Example 1: Gateway Mode ---"
 
 # Step 1: Pre-check with AxonFlow
 echo "Step 1: Pre-checking with AxonFlow..."
-PRECHECK_RESPONSE=$(curl -s -X POST "${AXONFLOW_URL}/api/policy/pre-check" \
+PRECHECK_RESPONSE=$(acurl -s -X POST "${AXONFLOW_URL}/api/policy/pre-check" \
     -H "Content-Type: application/json" \
     -d '{
         "client_id": "azure-openai-example",
@@ -80,7 +87,7 @@ echo "Response: ${CONTENT}..."
 
 # Step 3: Audit the response
 echo "Step 3: Auditing with AxonFlow..."
-AUDIT_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${AXONFLOW_URL}/api/audit/llm-call" \
+AUDIT_RESPONSE=$(acurl -s -w "\n%{http_code}" -X POST "${AXONFLOW_URL}/api/audit/llm-call" \
     -H "Content-Type: application/json" \
     -d '{
         "client_id": "azure-openai-example",
@@ -111,7 +118,7 @@ echo "Sending request through AxonFlow proxy..."
 
 START_TIME=$(python3 -c 'import time; print(int(time.time()*1000))')
 
-PROXY_RESPONSE=$(curl -s -X POST "${AXONFLOW_URL}/api/request" \
+PROXY_RESPONSE=$(acurl -s -X POST "${AXONFLOW_URL}/api/request" \
     -H "Content-Type: application/json" \
     -d '{
         "query": "Explain Azure OpenAI in 2 sentences.",

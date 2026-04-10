@@ -46,7 +46,10 @@ type Result struct {
 }
 
 func main() {
-	baseURL := os.Getenv("AXONFLOW_AGENT_URL")
+	baseURL := os.Getenv("AXONFLOW_ENDPOINT")
+	if baseURL == "" {
+		baseURL = os.Getenv("AXONFLOW_AGENT_URL")
+	}
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}

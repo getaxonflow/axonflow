@@ -53,7 +53,7 @@ async def test_provider(client: AxonFlow, provider_config: dict, query: str):
 
     try:
         response = await client.proxy_llm_call(
-            user_token="demo-user",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "demo-user"),
             query=query,
             request_type="chat",
             context={
@@ -92,7 +92,7 @@ async def multi_model_demo():
     print("Same query, same governance, different providers.")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,
@@ -134,7 +134,7 @@ async def multi_model_demo():
             if os.getenv(provider_config["env_key"]):
                 try:
                     response = await client.proxy_llm_call(
-                        user_token="demo-user",
+                        user_token=os.getenv("AXONFLOW_USER_TOKEN", "demo-user"),
                         query=malicious,
                         request_type="chat",
                         context={

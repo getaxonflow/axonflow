@@ -107,6 +107,9 @@ func main() {
 	}
 	req.Header.Set("X-Client-ID", clientID)
 	req.Header.Set("X-Client-Secret", clientSecret)
+	if clientID != "" && clientSecret != "" {
+		req.SetBasicAuth(clientID, clientSecret)
+	}
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)

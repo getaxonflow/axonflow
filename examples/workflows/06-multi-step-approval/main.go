@@ -63,7 +63,7 @@ func main() {
 		amount, item)
 	fmt.Printf("   Query: %s\n", truncate(managerQuery, 70))
 
-	managerResp, err := client.ProxyLLMCall("user-123", managerQuery, "chat", map[string]interface{}{"provider": "openai"})
+	managerResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), managerQuery, "chat", map[string]interface{}{"provider": "openai"})
 	assertCheck(err == nil, "Manager approval request does not return error")
 	if err == nil {
 		assertCheck(managerResp.Success, "Manager approval response is successful")
@@ -90,7 +90,7 @@ func main() {
 			amount, item)
 		fmt.Printf("   Query: %s\n", truncate(directorQuery, 70))
 
-		directorResp, err := client.ProxyLLMCall("user-123", directorQuery, "chat", map[string]interface{}{"provider": "openai"})
+		directorResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), directorQuery, "chat", map[string]interface{}{"provider": "openai"})
 		assertCheck(err == nil, "Director approval request does not return error")
 		if err == nil {
 			assertCheck(directorResp.Success, "Director approval response is successful")
@@ -121,7 +121,7 @@ func main() {
 			amount, item)
 		fmt.Printf("   Query: %s\n", truncate(financeQuery, 70))
 
-		financeResp, err := client.ProxyLLMCall("user-123", financeQuery, "chat", map[string]interface{}{"provider": "openai"})
+		financeResp, err := client.ProxyLLMCall(getEnv("AXONFLOW_USER_TOKEN", "user-123"), financeQuery, "chat", map[string]interface{}{"provider": "openai"})
 		assertCheck(err == nil, "Finance approval request does not return error")
 		if err == nil {
 			assertCheck(financeResp.Success, "Finance approval response is successful")
