@@ -1114,10 +1114,11 @@ func setOAuth2BasicAuth(r *http.Request, clientID string, clientSecret string) {
 // Helper function to generate valid Ed25519-signed test license keys.
 // Format: AXON-{BASE64URL(JSON_PAYLOAD)}.{BASE64URL(ED25519_SIGNATURE)}
 func generateTestLicenseKey(orgID string, tier string, expiryDate string) string {
-	// Ed25519 private key seeds matching the public keys in license_community.go.
+	// Ed25519 private key seeds matching the public keys in tier.go.
 	// These are TEST keys — the production private keys stay in AWS Secrets Manager.
+	// Enterprise seed rotated 2026-04-09 (issue #1541).
 	evalSeed, _ := base64.StdEncoding.DecodeString("CBHq0cJF49ANZu6wk2c51tXvBp8vcVuT1ogjCpjccvI=")
-	entSeed, _ := base64.StdEncoding.DecodeString("OIetB5h9nOnkoWR+lm8cheeWztyhWIRo2RruofufCd8=")
+	entSeed, _ := base64.StdEncoding.DecodeString("xV0rl8D6oQg7aoVvF6XA3KhN4Qb8PMmLfJyiF4JCkZc=")
 
 	var seed []byte
 	switch tier {

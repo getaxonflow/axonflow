@@ -14,7 +14,7 @@ from axonflow import AxonFlow
 
 async def main():
     # Get AxonFlow configuration from environment
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", os.getenv("AXONFLOW_ENDPOINT", "http://localhost:8080"))
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "workflow-example")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
@@ -34,7 +34,7 @@ async def main():
     try:
         # Send query to AxonFlow (async method)
         response = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query=query,
             request_type="chat",
             context={"provider": "openai"},

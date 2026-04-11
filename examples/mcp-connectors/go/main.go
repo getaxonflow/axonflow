@@ -63,7 +63,10 @@ type AgentResponse struct {
 }
 
 func main() {
-	agentURL := os.Getenv("AXONFLOW_AGENT_URL")
+	agentURL := os.Getenv("AXONFLOW_ENDPOINT")
+	if agentURL == "" {
+		agentURL = os.Getenv("AXONFLOW_AGENT_URL")
+	}
 	if agentURL == "" {
 		agentURL = "http://localhost:8080"
 	}
@@ -167,6 +170,13 @@ func sendRequest(url string, req AgentRequest) (*AgentResponse, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Add Basic auth if credentials are set (required for enterprise/evaluation/community-saas)
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID != "" && clientSecret != "" {
+		httpReq.SetBasicAuth(clientID, clientSecret)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)

@@ -83,7 +83,7 @@ async def run_governance_test() -> int:
     print()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -103,7 +103,7 @@ async def run_governance_test() -> int:
             pre_check_start = time.time()
 
             ctx = await axonflow.get_policy_approved_context(
-                user_token="rag-demo-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "rag-demo-user"),
                 query=question,
                 context={
                     "pipeline": "rag",
@@ -212,7 +212,7 @@ Context:
     )
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as axonflow:
@@ -233,7 +233,7 @@ Context:
             pre_check_start = time.time()
 
             ctx = await axonflow.get_policy_approved_context(
-                user_token="rag-demo-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "rag-demo-user"),
                 query=question,
                 context={
                     "pipeline": "rag",

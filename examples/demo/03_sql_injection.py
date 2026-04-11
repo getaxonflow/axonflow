@@ -64,7 +64,7 @@ async def test_sql_injection(client: AxonFlow) -> None:
 
         try:
             ctx = await client.get_policy_approved_context(
-                user_token="demo-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "demo-user"),
                 query=test["query"],
             )
 
@@ -100,7 +100,7 @@ async def test_safe_sql_like_query(client: AxonFlow) -> None:
     print(f"Query: \"{query}\"")
 
     ctx = await client.get_policy_approved_context(
-        user_token="demo-user",
+        user_token=os.getenv("AXONFLOW_USER_TOKEN", "demo-user"),
         query=query,
     )
 
@@ -115,7 +115,7 @@ async def test_safe_sql_like_query(client: AxonFlow) -> None:
 
 
 async def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,

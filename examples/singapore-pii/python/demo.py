@@ -118,7 +118,7 @@ async def main():
 
         try:
             result = await client.get_policy_approved_context(
-                user_token="singapore-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "singapore-user"),
                 query=tc["query"],
             )
 

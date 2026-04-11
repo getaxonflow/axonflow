@@ -12,6 +12,14 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 PASS=0
 FAIL=0
 
@@ -19,7 +27,7 @@ check() {
     local label="$1" expected_code="$2" body="$3" check_field="$4" check_value="$5"
     echo "--- $label ---"
 
-    http_code=$(curl -s -o /tmp/check-output-resp.json -w "%{http_code}" \
+    http_code=$(acurl -s -o /tmp/check-output-resp.json -w "%{http_code}" \
         -X POST "${AGENT_URL}/api/v1/mcp/check-output" \
         -H "Content-Type: application/json" \
         -d "$body")

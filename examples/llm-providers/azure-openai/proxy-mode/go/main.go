@@ -42,7 +42,7 @@ func main() {
 	// Initialize AxonFlow client
 	// In proxy mode, Azure OpenAI credentials are configured on the server
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", ""),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""),
 	})
@@ -89,8 +89,12 @@ func runQuery(client *axonflow.AxonFlowClient, query string, context map[string]
 
 	startTime := time.Now()
 
+	// AXONFLOW_USER_TOKEN: Set to JWT for enterprise mode
+	// In community mode, SDK defaults to "anonymous" if not set
+	userToken := getEnv("AXONFLOW_USER_TOKEN", "user-azure-proxy")
+
 	response, err := client.ProxyLLMCall(
-		"user-azure-proxy",
+		userToken,
 		query,
 		"chat",
 		context,

@@ -120,7 +120,7 @@ func main() {
 		fmt.Printf("  Query: %s\n", queryPreview)
 
 		result, err := client.GetPolicyApprovedContext(
-			"sqli-detection-user",
+			getEnv("AXONFLOW_USER_TOKEN", "sqli-detection-user"),
 			tc.query,
 			nil,
 			nil,
@@ -163,7 +163,7 @@ func main() {
 	if sqliAction == "warn" {
 		fmt.Println("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked")
 		result, err := client.GetPolicyApprovedContext(
-			"sqli-config-test-user",
+			getEnv("AXONFLOW_USER_TOKEN", "sqli-config-test-user"),
 			"SELECT * FROM users; DROP TABLE users;--",
 			nil,
 			nil,

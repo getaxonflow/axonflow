@@ -75,7 +75,7 @@ func init() {
 // In community mode, license validation is skipped entirely since MCP features are community features.
 // Returns (servicePermissionGranted, error). On error, the HTTP response has already been sent.
 func validateServiceLicense(ctx context.Context, w http.ResponseWriter, licenseKey, connector, operation, fallbackOperation string) (bool, error) {
-	if licenseKey == "" || isCommunityMode() {
+	if licenseKey == "" || isCommunityMode() || isCommunitySaasMode() {
 		return false, nil
 	}
 
@@ -910,101 +910,27 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// 1. Check authentication - with multiple bypass modes
-	// Priority: Community mode > Internal service request > Enterprise validation
-	// Pattern follows PR #97: DEPLOYMENT_MODE == "community" || mode == ""
-	var client *Client
-	var user *User
+	// 1. Authenticate via unified authenticator
+	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
+	auth, authErr := Authenticate(r, hints)
+	if authErr != nil {
+		if authErr.RetryAfter != "" {
+			w.Header().Set("Retry-After", authErr.RetryAfter)
+		}
+		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
+	client := auth.Client
 
-	if isCommunityMode() {
-		// Community mode: Skip client/user authentication
-		// This allows Community deployments to work without client/user registration.
-		// When user upgrades to Enterprise (sets DEPLOYMENT_MODE=enterprise), full validation kicks in.
-		log.Printf("[MCP] Community mode - bypassing client and user token validation")
-		client = &Client{
-			ID:          "community",
-			Name:        "Community Client",
-			TenantID:    "community",
-			Permissions: []string{"query", "execute", "mcp"},
-			RateLimit:   0,
-			Enabled:     true,
-		}
-		user = &User{
-			ID:          0,
-			Email:       "user@community.local",
-			Name:        "Community User",
-			TenantID:    "community",
-			Role:        "admin",
-			Permissions: []string{"query", "execute", "mcp"},
-		}
-	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
-		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
-		// Uses HMAC-signed tokens if AXONFLOW_INTERNAL_SERVICE_SECRET is configured,
-		// with backward compatibility for legacy plain-secret tokens.
-		log.Printf("[MCP] Internal orchestrator request - bypassing client and user token validation")
-		tenantID := req.TenantID
-		if tenantID == "" {
-			tenantID = req.ClientID
-		}
-		client = &Client{
-			ID:          serviceauth.ClientID,
-			Name:        "Orchestrator Internal",
-			TenantID:    tenantID,
-			Permissions: []string{"query", "execute", "mcp"},
-			RateLimit:   0, // No rate limit for internal service
-			Enabled:     true,
-		}
-		user = &User{
-			ID:          0,
-			Email:       "orchestrator@axonflow.internal",
-			Name:        "Orchestrator Internal",
-			TenantID:    tenantID,
-			Role:        "service",
-			Permissions: []string{"query", "execute", "mcp"},
-		}
-	} else {
-		// Enterprise/SaaS mode: try Basic auth first (service license), then whitelist
-		var err error
-		clientID := extractClientID(r)
-		clientSecret := extractClientSecret(r)
+	// Populate telemetry identity for community-saas tracking
+	SetTelemetryTenantID(ctx, auth.TenantID)
 
-		if clientID != "" && clientSecret != "" {
-			// Basic auth present — use the same validation as proxy (DB or whitelist)
-			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer authCancel()
-			if authDB != nil {
-				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
-			} else {
-				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
-			}
-			if err != nil {
-				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
-				return
-			}
-		} else {
-			// No Basic auth credentials provided. In enterprise/SaaS mode we
-			// require proper OAuth2 Client Credentials (clientId + clientSecret
-			// as a signed license key). The previous fallback to a mock
-			// validateClient() was a no-auth security hole — it accepted any
-			// client_id from the request body and attributed everything to the
-			// deployment's own org, breaking multi-tenant isolation.
-			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
-			return
-		}
-
-		if !client.Enabled {
-			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
-			return
-		}
-
-		// Validate user token (optional for Basic auth — derive from client)
-		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil && clientID == "" {
-			// Only fail on user token if no Basic auth was provided
-			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-			return
-		} else if err != nil {
-			// Basic auth present — create a service user from client identity
+	// 1b. Resolve user identity
+	user, userErr := ResolveUser(auth, req.UserToken)
+	if userErr != nil {
+		// Enterprise mode: if user token fails but Basic auth succeeded,
+		// create a service user from client identity (backwards compat)
+		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:          0,
 				Email:       client.ID + "@axonflow.local",
@@ -1013,13 +939,16 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 				Role:        "service",
 				Permissions: client.Permissions,
 			}
-		}
-
-		// Verify tenant isolation
-		if user.TenantID != client.TenantID {
-			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		} else {
+			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
+	}
+
+	// Verify tenant isolation
+	if user.TenantID != client.TenantID {
+		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		return
 	}
 
 	// Update audit entry with authenticated user/client info
@@ -1301,94 +1230,25 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Authentication - same pattern as mcpQueryHandler
-	// Priority: Community mode > Internal service request > Enterprise validation
-	var client *Client
-	var user *User
+	// 1. Authenticate via unified authenticator
+	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
+	auth, authErr := Authenticate(r, hints)
+	if authErr != nil {
+		if authErr.RetryAfter != "" {
+			w.Header().Set("Retry-After", authErr.RetryAfter)
+		}
+		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
+	client := auth.Client
 
-	if isCommunityMode() {
-		// Community mode: Skip client/user authentication
-		log.Printf("[MCP Execute] Community mode - bypassing client and user token validation")
-		client = &Client{
-			ID:          "community",
-			Name:        "Community Client",
-			TenantID:    "community",
-			Permissions: []string{"query", "execute", "mcp"},
-			RateLimit:   0,
-			Enabled:     true,
-		}
-		user = &User{
-			ID:          0,
-			Email:       "user@community.local",
-			Name:        "Community User",
-			TenantID:    "community",
-			Role:        "admin",
-			Permissions: []string{"query", "execute", "mcp"},
-		}
-	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
-		// Internal orchestrator-to-agent routing (used in Enterprise/SaaS deployments)
-		log.Printf("[MCP Execute] Internal orchestrator request - bypassing client and user token validation")
-		tenantID := req.TenantID
-		if tenantID == "" {
-			tenantID = req.ClientID
-		}
-		client = &Client{
-			ID:          serviceauth.ClientID,
-			Name:        "Orchestrator Internal",
-			TenantID:    tenantID,
-			Permissions: []string{"query", "execute", "mcp"},
-			RateLimit:   0,
-			Enabled:     true,
-		}
-		user = &User{
-			ID:          0,
-			Email:       "orchestrator@axonflow.internal",
-			Name:        "Orchestrator Internal",
-			TenantID:    tenantID,
-			Role:        "service",
-			Permissions: []string{"query", "execute", "mcp"},
-		}
-	} else {
-		// Enterprise/SaaS mode: try Basic auth first (service license), then whitelist
-		var err error
-		clientID := extractClientID(r)
-		clientSecret := extractClientSecret(r)
+	// Populate telemetry identity for community-saas tracking
+	SetTelemetryTenantID(ctx, auth.TenantID)
 
-		if clientID != "" && clientSecret != "" {
-			// Basic auth present — use the same validation as proxy (DB or whitelist)
-			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer authCancel()
-			if authDB != nil {
-				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
-			} else {
-				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
-			}
-			if err != nil {
-				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
-				return
-			}
-		} else {
-			// No Basic auth credentials. Enterprise mode requires proper OAuth2
-			// Client Credentials. Removed the legacy validateClient() fallback
-			// which accepted any client_id from request body without
-			// authentication — a multi-tenant security hole.
-			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
-			return
-		}
-
-		if !client.Enabled {
-			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
-			return
-		}
-
-		// Validate user token (optional for Basic auth — derive from client)
-		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil && clientID == "" {
-			// Only fail on user token if no Basic auth was provided
-			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-			return
-		} else if err != nil {
-			// Basic auth present — create a service user from client identity
+	// 1b. Resolve user identity
+	user, userErr := ResolveUser(auth, req.UserToken)
+	if userErr != nil {
+		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:          0,
 				Email:       client.ID + "@axonflow.local",
@@ -1397,18 +1257,21 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 				Role:        "service",
 				Permissions: client.Permissions,
 			}
-		}
-
-		// Verify tenant isolation
-		if user.TenantID != client.TenantID {
-			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		} else {
+			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
 	}
 
+	// Verify tenant isolation
+	if user.TenantID != client.TenantID {
+		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		return
+	}
+
 	// Update audit entry with authenticated user/client info
 	auditEntry.TenantID = user.TenantID
-	auditEntry.OrgID = client.OrgID
+	auditEntry.OrgID = auth.OrgID
 	auditEntry.ClientID = client.ID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
@@ -1664,79 +1527,53 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authentication — same three-way pattern as mcpQueryHandler
-	// Note: tenant_id validation moved to after auth since Basic auth derives it from client
-	// orgID is also derived per-request from the authenticated client's license
-	// (client.OrgID), so multi-tenant deployments correctly scope audit records
-	// by the calling org rather than the deployment's own label.
-	var tenantID, userID, userRole, orgID string
+	// Authenticate via unified authenticator
+	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
+	auth, authErr := Authenticate(r, hints)
+	if authErr != nil {
+		if authErr.RetryAfter != "" {
+			w.Header().Set("Retry-After", authErr.RetryAfter)
+		}
+		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
 
-	if isCommunityMode() {
-		tenantID = "community"
-		userID = "0"
-		userRole = "admin"
-		orgID = getDeploymentOrgID() // community mode has no license, use deployment label
-	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
-		tenantID = req.TenantID
-		if tenantID == "" {
-			tenantID = req.ClientID
-		}
-		userID = req.UserID
-		userRole = req.UserRole
-		orgID = r.Header.Get("X-Org-ID") // trusted internal service request
-	} else {
-		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
-		var client *Client
-		var user *User
-		var err error
-		clientID := extractClientID(r)
-		clientSecret := extractClientSecret(r)
+	// Populate telemetry identity for community-saas tracking
+	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
-		if clientID != "" && clientSecret != "" {
-			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer authCancel()
-			if authDB != nil {
-				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
-			} else {
-				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
-			}
-			if err != nil {
-				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
-				return
-			}
-		} else {
-			// No Basic auth credentials. Enterprise mode requires proper OAuth2
-			// Client Credentials. Removed the legacy validateClient() fallback
-			// which accepted any client_id from request body without
-			// authentication — a multi-tenant security hole.
-			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
-			return
-		}
-		if !client.Enabled {
-			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
-			return
-		}
-		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil && clientID == "" {
-			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-			return
-		} else if err != nil {
+	// Resolve user and extract identity fields
+	user, userErr := ResolveUser(auth, req.UserToken)
+	if userErr != nil {
+		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:       0,
-				Email:    client.ID + "@axonflow.local",
-				Name:     client.Name,
-				TenantID: client.TenantID,
+				Email:    auth.Client.ID + "@axonflow.local",
+				Name:     auth.Client.Name,
+				TenantID: auth.Client.TenantID,
 				Role:     "service",
 			}
-		}
-		if user.TenantID != client.TenantID {
-			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		} else {
+			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
-		tenantID = user.TenantID
-		userID = fmt.Sprintf("%d", user.ID)
-		userRole = user.Role
-		orgID = client.OrgID // from the validated client license (Ed25519-signed)
+	}
+	if user.TenantID != auth.Client.TenantID {
+		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		return
+	}
+
+	tenantID := auth.TenantID
+	userID := fmt.Sprintf("%d", user.ID)
+	userRole := user.Role
+	orgID := auth.OrgID
+	// For internal service requests, use body-supplied user fields if present
+	if auth.Kind == AuthKindInternalService {
+		if req.UserID != "" {
+			userID = req.UserID
+		}
+		if req.UserRole != "" {
+			userRole = req.UserRole
+		}
 	}
 
 	// Validate tenant_id after auth (Basic auth derives it from client)
@@ -1852,75 +1689,47 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authentication — same three-way pattern as mcpQueryHandler
-	// Note: tenant_id validation moved to after auth since Basic auth derives it from client.
-	// orgID is derived per-request from the authenticated client's license (client.OrgID),
-	// so multi-tenant deployments correctly scope audit records by the calling org.
-	var tenantID, userID, orgID string
+	// Authenticate via unified authenticator
+	hints := &AuthHints{ClientID: req.ClientID, UserToken: req.UserToken, TenantID: req.TenantID}
+	auth, authErr := Authenticate(r, hints)
+	if authErr != nil {
+		if authErr.RetryAfter != "" {
+			w.Header().Set("Retry-After", authErr.RetryAfter)
+		}
+		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
+		return
+	}
 
-	if isCommunityMode() {
-		tenantID = "community"
-		userID = "0"
-		orgID = getDeploymentOrgID() // community mode has no license, use deployment label
-	} else if serviceauth.IsValidInternalServiceRequest(req.ClientID, req.UserToken, internalTokenValidator) {
-		tenantID = req.TenantID
-		if tenantID == "" {
-			tenantID = req.ClientID
-		}
-		userID = req.UserID
-		orgID = r.Header.Get("X-Org-ID") // trusted internal service request
-	} else {
-		// Enterprise/SaaS mode: try Basic auth first, then legacy whitelist
-		var client *Client
-		var user *User
-		var err error
-		clientID := extractClientID(r)
-		clientSecret := extractClientSecret(r)
+	// Populate telemetry identity for community-saas tracking
+	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
-		if clientID != "" && clientSecret != "" {
-			authCtx, authCancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer authCancel()
-			if authDB != nil {
-				client, err = validateClientCredentialsDB(authCtx, authDB, clientID, clientSecret)
-			} else {
-				client, err = validateClientCredentials(authCtx, clientID, clientSecret)
-			}
-			if err != nil {
-				sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
-				return
-			}
-		} else {
-			// No Basic auth credentials. Enterprise mode requires proper OAuth2
-			// Client Credentials. Removed the legacy validateClient() fallback
-			// which accepted any client_id from request body without
-			// authentication — a multi-tenant security hole.
-			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
-			return
-		}
-		if !client.Enabled {
-			sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
-			return
-		}
-		user, err = validateUserToken(req.UserToken, client.TenantID)
-		if err != nil && clientID == "" {
-			sendErrorResponse(w, "Invalid user token", http.StatusUnauthorized, nil)
-			return
-		} else if err != nil {
+	user, userErr := ResolveUser(auth, req.UserToken)
+	if userErr != nil {
+		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:       0,
-				Email:    client.ID + "@axonflow.local",
-				Name:     client.Name,
-				TenantID: client.TenantID,
+				Email:    auth.Client.ID + "@axonflow.local",
+				Name:     auth.Client.Name,
+				TenantID: auth.Client.TenantID,
 				Role:     "service",
 			}
-		}
-		if user.TenantID != client.TenantID {
-			sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		} else {
+			sendErrorResponse(w, userErr.Message, userErr.HTTPStatus, nil)
 			return
 		}
-		tenantID = user.TenantID
-		userID = fmt.Sprintf("%d", user.ID)
-		orgID = client.OrgID // from the validated client license (Ed25519-signed)
+	}
+	if user.TenantID != auth.Client.TenantID {
+		sendErrorResponse(w, "Tenant mismatch", http.StatusForbidden, nil)
+		return
+	}
+
+	tenantID := auth.TenantID
+	userID := fmt.Sprintf("%d", user.ID)
+	orgID := auth.OrgID
+	if auth.Kind == AuthKindInternalService {
+		if req.UserID != "" {
+			userID = req.UserID
+		}
 	}
 
 	// Validate tenant_id after auth (Basic auth derives it from client)

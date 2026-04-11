@@ -29,7 +29,7 @@ async def main():
     print("      (Single API call, full governance)")
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     async with AxonFlow(
         endpoint=agent_url,
@@ -49,7 +49,7 @@ async def main():
 
         start = time.time()
         response = await client.proxy_llm_call(
-            user_token="support-agent-demo",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "support-agent-demo"),
             query=query,
             request_type="chat",
             context={"department": "support", "role": "agent"},
@@ -89,7 +89,7 @@ async def main():
 
         try:
             response = await client.proxy_llm_call(
-                user_token="support-agent-demo",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "support-agent-demo"),
                 query=malicious_query,
                 request_type="chat",
             )

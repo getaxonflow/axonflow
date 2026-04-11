@@ -26,9 +26,17 @@ func assertCheck(condition bool, message string) {
 
 func main() {
 	// Create client - SDK talks to Agent which routes to Orchestrator
-	agentURL := os.Getenv("AGENT_URL")
+	agentURL := os.Getenv("AXONFLOW_ENDPOINT")
+	if agentURL == "" {
+		agentURL = os.Getenv("AGENT_URL")
+	}
 	if agentURL == "" {
 		agentURL = "http://localhost:8080"
+	}
+
+	userToken := os.Getenv("AXONFLOW_USER_TOKEN")
+	if userToken == "" {
+		userToken = "test-user@example.com"
 	}
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
@@ -54,7 +62,7 @@ func main() {
 	// Test 2: Execute query with OpenAI preference
 	fmt.Println("Test 2: Per-request selection - OpenAI")
 	resp, err := client.ProxyLLMCall(
-		"test-user@example.com",
+		userToken,
 		"Say hello in 3 words",
 		"chat",
 		map[string]interface{}{"provider": "openai"},
@@ -71,7 +79,7 @@ func main() {
 	// Test 3: Execute query with Anthropic preference
 	fmt.Println("Test 3: Per-request selection - Anthropic")
 	resp, err = client.ProxyLLMCall(
-		"test-user@example.com",
+		userToken,
 		"Say hello in 3 words",
 		"chat",
 		map[string]interface{}{"provider": "anthropic"},
@@ -88,7 +96,7 @@ func main() {
 	// Test 4: Execute query with Gemini preference
 	fmt.Println("Test 4: Per-request selection - Gemini")
 	resp, err = client.ProxyLLMCall(
-		"test-user@example.com",
+		userToken,
 		"Say hello in 3 words",
 		"chat",
 		map[string]interface{}{"provider": "gemini"},
@@ -107,7 +115,7 @@ func main() {
 	successCount := 0
 	for i := 0; i < 5; i++ {
 		resp, err = client.ProxyLLMCall(
-			"test-user@example.com",
+			userToken,
 			"Hello",
 			"chat",
 			nil,

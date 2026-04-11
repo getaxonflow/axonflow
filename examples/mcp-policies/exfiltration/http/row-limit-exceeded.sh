@@ -17,6 +17,13 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 echo "=== Exfiltration Detection: Row Limit Exceeded ==="
 echo ""
 echo "NOTE: This test requires MCP_MAX_ROWS_PER_QUERY=5"
@@ -27,7 +34,7 @@ echo ""
 echo "Step 1: Creating test data (20 rows)..."
 
 # Drop if exists first
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -38,7 +45,7 @@ curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   }" > /dev/null 2>&1 || true
 
 # Create table
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -49,7 +56,7 @@ curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   }" > /dev/null 2>&1 || true
 
 # Insert 20 rows
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -66,7 +73,7 @@ echo ""
 echo "Step 2: Querying all rows (expecting block if limit is 5)..."
 echo ""
 
-response=$(curl -s -w "\n%{http_code}" -X POST "${AGENT_URL}/mcp/resources/query" \
+response=$(acurl -s -w "\n%{http_code}" -X POST "${AGENT_URL}/mcp/resources/query" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -121,7 +128,7 @@ fi
 # Step 4: Cleanup using execute endpoint
 echo ""
 echo "Step 4: Cleaning up test data..."
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",

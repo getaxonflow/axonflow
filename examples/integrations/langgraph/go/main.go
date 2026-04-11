@@ -104,7 +104,7 @@ func inputNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 
 	// Use Proxy Mode (ProxyLLMCall) - works without credentials
 	result, err := client.ProxyLLMCall(
-		"langgraph-user",
+		getEnv("AXONFLOW_USER_TOKEN", "langgraph-user"),
 		query,
 		"chat",
 		map[string]interface{}{
@@ -207,7 +207,7 @@ func searchNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 
 	// Policy check for search operation
 	result, err := client.ProxyLLMCall(
-		"langgraph-user",
+		getEnv("AXONFLOW_USER_TOKEN", "langgraph-user"),
 		fmt.Sprintf("SEARCH: %s", query),
 		"chat",
 		map[string]interface{}{
@@ -279,7 +279,7 @@ func analyzeNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 	fmt.Println("[Analyze Node] Running governed analysis...")
 
 	result, err := client.ProxyLLMCall(
-		"langgraph-user",
+		getEnv("AXONFLOW_USER_TOKEN", "langgraph-user"),
 		fmt.Sprintf("ANALYZE: %s", query),
 		"chat",
 		map[string]interface{}{
@@ -359,7 +359,7 @@ func respondNode(state GraphState, client *axonflow.AxonFlowClient) NodeResult {
 	}
 
 	result, err := client.ProxyLLMCall(
-		"langgraph-user",
+		getEnv("AXONFLOW_USER_TOKEN", "langgraph-user"),
 		fmt.Sprintf("RESPOND: %s", summary),
 		"chat",
 		map[string]interface{}{
@@ -568,7 +568,7 @@ func main() {
 	fmt.Println("LangGraph + AxonFlow Integration Example (Go SDK)")
 	fmt.Println(strings.Repeat("=", 60))
 
-	agentURL := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+	agentURL := getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 	fmt.Printf("\nChecking AxonFlow at %s...\n", agentURL)
 
 	// Initialize AxonFlow client (community mode - no credentials needed for Proxy Mode)

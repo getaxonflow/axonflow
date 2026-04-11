@@ -312,7 +312,7 @@ func TestAuditLLMCallHandler_MissingLicenseKey(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handleAuditLLMCall)
+	handler := apiAuthMiddleware(http.HandlerFunc(handleAuditLLMCall))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -664,7 +664,7 @@ func TestAuditHandler_MissingLicenseKey(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(handleAuditLLMCall)
+	handler := apiAuthMiddleware(http.HandlerFunc(handleAuditLLMCall))
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -816,8 +816,9 @@ func TestAuditHandler_MissingContextID(t *testing.T) {
 	}
 }
 
-// TestAuditHandler_MissingClientID tests audit with missing client_id
-func TestAuditHandler_MissingClientID(t *testing.T) {
+// TestAuditHandler_MissingBodyClientID_CommunityMode tests that body client_id
+// is optional in community mode — auth-derived identity is used instead.
+func TestAuditHandler_MissingBodyClientID_CommunityMode(t *testing.T) {
 	os.Setenv("DEPLOYMENT_MODE", "community")
 	os.Setenv("ENVIRONMENT", "development")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
@@ -827,25 +828,61 @@ func TestAuditHandler_MissingClientID(t *testing.T) {
 		ContextID: "ctx-123",
 		Provider:  "openai",
 		Model:     "gpt-4",
-		// ClientID intentionally missing
+		TokenUsage: TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+		// ClientID intentionally missing — auth-derived "community" identity is used
 	}
 	body, _ := json.Marshal(reqBody)
 
 	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	// Simulate apiAuthMiddleware setting context
+	ctx := context.WithValue(req.Context(), ContextKeyClientID, "community")
+	ctx = context.WithValue(ctx, ContextKeyTenantID, "community")
+	req = req.WithContext(ctx)
 
 	rr := httptest.NewRecorder()
 	handler := http.HandlerFunc(handleAuditLLMCall)
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("Expected status 400, got %d", rr.Code)
+	// In community mode, missing body client_id is OK — succeeds with auth identity
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 (community mode, auth-derived identity), got %d: %s", rr.Code, rr.Body.String())
 	}
+}
 
-	var resp map[string]interface{}
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["error"] != "client_id field is required" {
-		t.Errorf("Expected 'client_id field is required' error, got '%v'", resp["error"])
+// TestAuditHandler_ClientIDMismatch_RejectsOverride tests that non-community mode
+// rejects body client_id that doesn't match auth-derived identity.
+func TestAuditHandler_ClientIDMismatch_RejectsOverride(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "enterprise")
+	os.Setenv("ENVIRONMENT", "development")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+	defer os.Unsetenv("ENVIRONMENT")
+
+	reqBody := AuditLLMCallRequest{
+		ContextID: "ctx-123",
+		ClientID:  "attacker-client",
+		Provider:  "openai",
+		Model:     "gpt-4",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/audit/llm-call", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	// Simulate apiAuthMiddleware having authenticated as "real-client"
+	ctx := context.WithValue(req.Context(), ContextKeyClientID, "real-client")
+	ctx = context.WithValue(ctx, ContextKeyTenantID, "real-tenant")
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(handleAuditLLMCall)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403 for client_id mismatch, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -3068,23 +3105,25 @@ func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
 	defer func() { costService = originalCostService }()
 
 	// Create a mock cost service that returns a blocked budget decision
+	// Use getDeploymentOrgID() to match what the middleware sets in community mode
+	testOrgID := getDeploymentOrgID()
 	mockRepo := &mockCostRepository{
 		budgets: map[string]*cost.Budget{
 			"test-budget-1": {
 				ID:        "test-budget-1",
 				Name:      "Test Budget",
 				Scope:     cost.ScopeOrganization,
-				ScopeID:   "community",
+				ScopeID:   testOrgID,
 				LimitUSD:  100.0,
 				Period:    cost.PeriodMonthly,
 				OnExceed:  cost.OnExceedBlock,
-				OrgID:     "community",
+				OrgID:     testOrgID,
 				TenantID:  "test-client",
 				Enabled:   true,
 			},
 		},
 		usageSum: map[string]float64{
-			"organization:community": 150.0, // Exceeded budget
+			"organization:" + testOrgID: 150.0, // Exceeded budget
 		},
 	}
 	costService = cost.NewService(mockRepo, nil)
@@ -3104,7 +3143,7 @@ func TestPreCheckHandler_BudgetEnforcement(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 
 		rr := httptest.NewRecorder()
-		handler := http.HandlerFunc(handlePolicyPreCheck)
+		handler := apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))
 		handler.ServeHTTP(rr, req)
 
 		// Should return 402 Payment Required
@@ -3326,7 +3365,7 @@ func TestPreCheckHandler_HITLNotTriggeredInCommunityMode(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handlePolicyPreCheck(w, req)
+	apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -3371,7 +3410,7 @@ func TestPreCheckHandler_HITLNotRequired(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handlePolicyPreCheck(w, req)
+	apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -3422,7 +3461,7 @@ func TestPreCheckHandler_RBI_SEBI_HITLNotTriggeredInCommunity(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	handlePolicyPreCheck(w, req)
+	apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

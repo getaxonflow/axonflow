@@ -73,7 +73,7 @@ async def main():
         print("Test 3: Gateway Mode - Safe Query")
         try:
             result = await client.get_policy_approved_context(
-                user_token="audit-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "audit-user"),
                 query="What is the capital of France?",
             )
             if result.approved:
@@ -93,7 +93,7 @@ async def main():
         print("Test 4: Gateway Mode - Blocked Query (SQL Injection)")
         try:
             result = await client.get_policy_approved_context(
-                user_token="audit-user",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "audit-user"),
                 query="SELECT * FROM users; DROP TABLE users;",
             )
             if not result.approved:

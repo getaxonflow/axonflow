@@ -113,7 +113,7 @@ async def main() -> int:
 
             try:
                 result = await client.get_policy_approved_context(
-                    user_token="sqli-detection-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "sqli-detection-user"),
                     query=test["query"],
                 )
             except Exception as e:
@@ -156,7 +156,7 @@ async def main() -> int:
             print("Test (config): SQLI_ACTION=warn - SQLi detected but NOT blocked")
             try:
                 result = await client.get_policy_approved_context(
-                    user_token="sqli-config-test-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "sqli-config-test-user"),
                     query="SELECT * FROM users; DROP TABLE users;--",
                 )
             except Exception as e:

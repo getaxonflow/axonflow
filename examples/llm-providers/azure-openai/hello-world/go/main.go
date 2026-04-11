@@ -28,10 +28,28 @@ func assertCheck(condition bool, message string) {
 	}
 }
 
-const (
-	axonflowURL = "http://localhost:8080"
+var (
+	axonflowURL = getAxonFlowURL()
 	timeout     = 30 * time.Second
 )
+
+func getAxonFlowURL() string {
+	if v := os.Getenv("AXONFLOW_ENDPOINT"); v != "" {
+		return v
+	}
+	if v := os.Getenv("AXONFLOW_AGENT_URL"); v != "" {
+		return v
+	}
+	return "http://localhost:8080"
+}
+
+func setBasicAuthIfConfigured(req *http.Request) {
+	clientID := os.Getenv("AXONFLOW_CLIENT_ID")
+	clientSecret := os.Getenv("AXONFLOW_CLIENT_SECRET")
+	if clientID != "" && clientSecret != "" {
+		req.SetBasicAuth(clientID, clientSecret)
+	}
+}
 
 func main() {
 	// Get Azure OpenAI credentials from environment
@@ -219,6 +237,7 @@ func proxyModeExample() error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	setBasicAuthIfConfigured(req)
 
 	startTime := time.Now()
 	resp, err := http.DefaultClient.Do(req)
@@ -277,6 +296,7 @@ func preCheck(ctx context.Context, prompt, provider, model string) (*preCheckRes
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setBasicAuthIfConfigured(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -326,6 +346,7 @@ func auditLLMCall(ctx context.Context, contextID, response, provider, model stri
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setBasicAuthIfConfigured(req)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

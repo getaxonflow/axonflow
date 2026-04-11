@@ -44,9 +44,17 @@ func main() {
 	fmt.Println()
 
 	// Initialize AxonFlow client
-	agentURL := os.Getenv("AXONFLOW_AGENT_URL")
+	agentURL := os.Getenv("AXONFLOW_ENDPOINT")
+	if agentURL == "" {
+		agentURL = os.Getenv("AXONFLOW_AGENT_URL")
+	}
 	if agentURL == "" {
 		agentURL = "http://localhost:8080"
+	}
+
+	userToken := os.Getenv("AXONFLOW_USER_TOKEN")
+	if userToken == "" {
+		userToken = "user-123"
 	}
 
 	axonflowClient := axonflow.NewClient(axonflow.AxonFlowConfig{
@@ -61,7 +69,7 @@ func main() {
 	wrappedCall := interceptors.WrapOpenAIFunc(
 		mockOpenAICall, // Replace with your actual OpenAI call
 		axonflowClient,
-		"user-123",
+		userToken,
 	)
 
 	fmt.Println("Testing LLM Interceptor with OpenAI")

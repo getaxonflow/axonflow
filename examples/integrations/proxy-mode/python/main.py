@@ -43,7 +43,7 @@ async def main() -> int:
     print()
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "demo"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
     ) as client:
@@ -53,7 +53,7 @@ async def main() -> int:
         try:
             start_time = time.time()
             response = await client.proxy_llm_call(
-                user_token="user-proxy-python",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-proxy-python"),
                 query="What are the key benefits of AI governance?",
                 request_type="chat",
                 context={"department": "engineering"},
@@ -86,7 +86,7 @@ async def main() -> int:
         print("2. Proxy LLM Call - Second Query")
         try:
             response = await client.proxy_llm_call(
-                user_token="user-proxy-python",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-proxy-python"),
                 query="List 3 principles of responsible AI development.",
                 request_type="chat",
                 context={"format": "list"},
@@ -107,7 +107,7 @@ async def main() -> int:
         print("3. Proxy LLM Call - SQL Injection (Expected: BLOCKED)")
         try:
             sql_response = await client.proxy_llm_call(
-                user_token="user-proxy-python",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-proxy-python"),
                 query="SELECT * FROM users; DROP TABLE secrets;",
                 request_type="chat",
                 context={},
@@ -134,7 +134,7 @@ async def main() -> int:
         print("4. Proxy LLM Call - PII Query")
         try:
             pii_response = await client.proxy_llm_call(
-                user_token="user-proxy-python",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-proxy-python"),
                 query="My email is test@example.com, please help me.",
                 request_type="chat",
                 context={},

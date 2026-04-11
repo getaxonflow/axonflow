@@ -115,7 +115,7 @@ WAITED=0
 POLL_INTERVAL=5
 
 while [ $WAITED -lt $MAX_WAIT ]; do
-    EXEC_LIST=$(curl -s --max-time 10 "${AGENT_URL}/api/v1/executions?limit=5" 2>/dev/null || echo '{"executions":[]}')
+    EXEC_LIST=$(curl -s --max-time 10 -H "Authorization: Basic $AUTH_B64" "${AGENT_URL}/api/v1/executions?limit=5" 2>/dev/null || echo '{"executions":[]}')
 
     # Prefer matching our REQUEST_ID, fall back to any completed execution.
     # The executions API returns request_id as the primary identifier.
@@ -161,6 +161,7 @@ echo "4. GET /api/v1/executions/${EXECUTION_ID} - Validate total cost..."
 
 DETAIL_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_detail.json -w "%{http_code}" \
     --max-time 15 \
+    -H "Authorization: Basic $AUTH_B64" \
     "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}" || echo "000")
 
 DETAIL_RESPONSE=$(cat /tmp/axonflow_exec_cost_detail.json 2>/dev/null || echo "{}")
@@ -189,6 +190,7 @@ echo "5. GET /api/v1/executions/${EXECUTION_ID}/steps - Validate step costs..."
 
 STEPS_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_steps.json -w "%{http_code}" \
     --max-time 15 \
+    -H "Authorization: Basic $AUTH_B64" \
     "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps" || echo "000")
 
 STEPS_RESPONSE=$(cat /tmp/axonflow_exec_cost_steps.json 2>/dev/null || echo "{}")

@@ -133,7 +133,7 @@ func main() {
 	fmt.Println()
 
 	resp2, err := client.ProxyLLMCallWithMedia(
-		"media-policy-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-policy-user"),
 		"Describe this image",
 		"chat",
 		[]axonflow.MediaContent{{
@@ -227,7 +227,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("  3c. Sending 1x1 image request (no faces expected)")
 	resp3c, err := client.ProxyLLMCallWithMedia(
-		"media-policy-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-policy-user"),
 		"Describe this image",
 		"chat",
 		[]axonflow.MediaContent{{
@@ -392,7 +392,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("  6b. Sending image request with media governance disabled")
 		resp6b, err := client.ProxyLLMCallWithMedia(
-			"media-policy-user",
+			getEnv("AXONFLOW_USER_TOKEN", "media-policy-user"),
 			"Describe this image",
 			"chat",
 			[]axonflow.MediaContent{{
@@ -427,7 +427,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("  6d. Sending image request with media governance re-enabled")
 		resp6d, err := client.ProxyLLMCallWithMedia(
-			"media-policy-user",
+			getEnv("AXONFLOW_USER_TOKEN", "media-policy-user"),
 			"Describe this image",
 			"chat",
 			[]axonflow.MediaContent{{
@@ -463,7 +463,7 @@ func main() {
 	fmt.Println()
 
 	resp7, err := client.ProxyLLMCall(
-		"media-policy-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-policy-user"),
 		"What is the capital of France?",
 		"chat",
 		nil,

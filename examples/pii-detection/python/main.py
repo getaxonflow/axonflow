@@ -117,7 +117,7 @@ async def main() -> int:
 
             try:
                 result = await client.get_policy_approved_context(
-                    user_token="pii-detection-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "pii-detection-user"),
                     query=test["query"],
                 )
             except Exception as e:
@@ -167,7 +167,7 @@ async def main() -> int:
             print("Test (config): PII_ACTION=block - SSN should be BLOCKED")
             try:
                 result = await client.get_policy_approved_context(
-                    user_token="pii-config-test-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
                     query="Customer SSN is 999-88-7777",
                 )
             except Exception as e:
@@ -186,7 +186,7 @@ async def main() -> int:
             print("Test (config): PII_ACTION=log - SSN should pass through unmodified")
             try:
                 result = await client.get_policy_approved_context(
-                    user_token="pii-config-test-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
                     query="Customer SSN is 999-88-7777",
                 )
             except Exception as e:

@@ -899,8 +899,8 @@ func Run() {
 	globalRouter.HandleFunc("/api/request", clientRequestHandler).Methods("POST")
 
 	// Client management endpoints
-	globalRouter.HandleFunc("/api/clients", listClientsHandler).Methods("GET")
-	globalRouter.HandleFunc("/api/clients", createClientHandler).Methods("POST")
+	globalRouter.Handle("/api/clients", apiAuthMiddleware(http.HandlerFunc(listClientsHandler))).Methods("GET")
+	globalRouter.Handle("/api/clients", apiAuthMiddleware(http.HandlerFunc(createClientHandler))).Methods("POST")
 
 	// Policy testing endpoint — protected by auth middleware (tenant from credentials)
 	globalRouter.Handle("/api/policies/test", apiAuthMiddleware(http.HandlerFunc(policyTestHandler))).Methods("POST")
@@ -933,9 +933,11 @@ func Run() {
 		MaxPendingApprovals: hitlLimits.MaxPendingApprovals,
 	})
 	hitlHandler := hitl.NewHandler(hitlService)
-	hitlHandler.RegisterRoutes(globalRouter)
-	// Note: In community edition, RegisterRoutes registers a single /status endpoint
-	// Auth for HITL is handled by the handler reading X-Org-ID/X-Tenant-ID headers,
+	// HITL routes need apiAuthMiddleware so X-Org-ID/X-Tenant-ID headers are set
+	// from auth credentials (same pattern as circuit breaker).
+	hitlSub := globalRouter.NewRoute().Subrouter()
+	hitlSub.Use(apiAuthMiddleware)
+	hitlHandler.RegisterRoutes(hitlSub)
 	// which are set by proxyAuthMiddleware for proxied requests or directly by clients.
 
 	// Start HITL expiration background job (1-hour ticker)
@@ -1059,97 +1061,38 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("   Request body: ClientID='%s', RequestType='%s', Query='%s'",
 		logutil.Sanitize(req.ClientID), logutil.Sanitize(req.RequestType), logutil.Sanitize(truncateString(req.Query, 50)))
 
-	// 1. Validate client authentication
+	// 1. Validate client authentication via unified authenticator
 	validateClientStart := time.Now()
 
-	var client *Client
-	var err error
-
-	if isCommunityMode() {
-		log.Printf("🏠 Community mode: Skipping authentication for client '%s'", logutil.Sanitize(req.ClientID))
-		// Create a default client for community deployments
-		client = &Client{
-			ID:          req.ClientID,
-			Name:        "Community",
-			OrgID:       getDeploymentOrgID(),
-			TenantID:    req.ClientID,
-			Enabled:     true,
-			LicenseTier: "Community",
-			RateLimit:   0,
-			Permissions: []string{},
+	auth, authErr := Authenticate(r, &AuthHints{ClientID: req.ClientID})
+	if authErr != nil {
+		if authErr.RetryAfter != "" {
+			w.Header().Set("Retry-After", authErr.RetryAfter)
 		}
-	} else if isCommunitySaasMode() {
-		// Community-SaaS mode: validate via community_saas_registrations table
-		cID := extractClientID(r)
-		cSecret := extractClientSecret(r)
-		if cID == "" || cSecret == "" {
-			sendErrorResponse(w, "Registration required. POST to /api/v1/register to get credentials.", http.StatusUnauthorized, nil)
-			return
-		}
-		// Per-minute rate limit BEFORE bcrypt
-		minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
-		if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
-			w.Header().Set("Retry-After", "60")
-			sendErrorResponse(w, fmt.Sprintf("Rate limit exceeded (%d req/min)", minuteLimit), http.StatusTooManyRequests, nil)
-			return
-		}
-		authCtx, authCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer authCancel()
-		if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
-			log.Printf("[AUTH] community-saas auth failed for tenant %s: %v", logutil.Sanitize(cID), err)
-			sendErrorResponse(w, "Invalid credentials or registration expired", http.StatusUnauthorized, nil)
-			return
-		}
-		enqueueActivityUpdate(authDB, cID)
-		client = &Client{
-			ID:          cID,
-			Name:        "Community-SaaS",
-			OrgID:       communitySaasOrgID,
-			TenantID:    cID,
-			Enabled:     true,
-			LicenseTier: "Community",
-			RateLimit:   minuteLimit,
-			Permissions: []string{},
-		}
-	} else {
-		// Production mode: Validate credentials via OAuth2 Basic auth
-		clientSecret := extractClientSecret(r)
-		if clientSecret == "" {
-			log.Printf("❌ Missing authentication - no Authorization header")
-			sendErrorResponse(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized, nil)
-			return
-		}
-		log.Printf("🔐 Validating credentials for client '%s' with secret '%s...'", logutil.Sanitize(req.ClientID), maskString(clientSecret))
-
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		// Use Option 3 (database-backed) if available, otherwise Option 2 (whitelist)
-		if authDB != nil {
-			client, err = validateClientCredentialsDB(ctx, authDB, req.ClientID, clientSecret)
-		} else {
-			client, err = validateClientCredentials(ctx, req.ClientID, clientSecret)
-		}
-		if err != nil {
-			log.Printf("❌ Credentials validation failed for client '%s': %v", logutil.Sanitize(req.ClientID), err)
-			sendErrorResponse(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized, nil)
-			return
-		}
-		log.Printf("✅ Credentials validated successfully for client '%s' (Tier: %s)", logutil.Sanitize(client.ID), logutil.Sanitize(client.LicenseTier))
-	}
-
-	if !client.Enabled {
-		sendErrorResponse(w, "Client disabled", http.StatusForbidden, nil)
+		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
 	}
-	validateClientTime := time.Since(validateClientStart)
-	log.Printf("[TIMING] Client validation: %v", validateClientTime)
+	client := auth.Client
 
-	// 2. Validate and extract user from token
+	validateClientTime := time.Since(validateClientStart)
+	log.Printf("[TIMING] Client validation: %v (mode: %s)", validateClientTime, auth.Kind)
+
+	// Set auth-derived identity in request context for downstream use
+	{
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, ContextKeyTenantID, client.TenantID)
+		ctx = context.WithValue(ctx, ContextKeyOrgID, client.OrgID)
+		ctx = context.WithValue(ctx, ContextKeyClientID, client.ID)
+		// Populate telemetry identity container (set by outer telemetry middleware)
+		SetTelemetryTenantID(ctx, client.TenantID)
+		r = r.WithContext(ctx)
+	}
+
+	// 2. Resolve user identity via unified ResolveUser
 	validateUserStart := time.Now()
-	user, err := validateUserToken(req.UserToken, client.TenantID)
-	if err != nil {
-		sendErrorResponse(w, fmt.Sprintf("Invalid user token: %v", err), http.StatusUnauthorized, nil)
+	user, userAuthErr := ResolveUser(auth, req.UserToken)
+	if userAuthErr != nil {
+		sendErrorResponse(w, userAuthErr.Message, userAuthErr.HTTPStatus, nil)
 		return
 	}
 

@@ -56,7 +56,7 @@ func main() {
 
 	// Send query to AxonFlow (uses MAP for parallelization)
 	response, err := client.ProxyLLMCall(
-		"user-123",
+		getEnv("AXONFLOW_USER_TOKEN", "user-123"),
 		query,
 		"multi-agent-plan", // Use MAP for parallel execution
 		map[string]interface{}{"provider": "openai"},

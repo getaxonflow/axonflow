@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [7.0.1] - 2026-04-11
+
+### Fixed
+
+- **Authentication on all endpoints** — Unified auth handling across gateway,
+  MCP, proxy, and API routes. Fixes 401 errors on community-saas (try.getaxonflow.com)
+  for gateway pre-check, audit, proxy, and MCP endpoints. Proxy routes
+  (dynamic policies, cost controls) were previously inaccessible in
+  community-saas mode.
+- **Community mode tenant isolation** — Requests in community mode now
+  preserve per-tenant scoping. Previously all requests collapsed to a
+  single synthetic client, mixing audit and policy data across tenants.
+- **Telemetry tracking** — All authenticated requests (including MCP and
+  JSON-RPC sessions) now correctly record telemetry in community-saas mode.
+- **Audit identity** — Audit records now use the authenticated client identity
+  instead of trusting the request body, preventing cross-tenant attribution.
+- **MCP server DB auth** — MCP JSON-RPC handler now validates clients
+  registered via database, not just the in-memory whitelist.
+- **Example credentials** — 139 example files updated to read auth credentials
+  from environment variables, fixing failures on authenticated servers.
+- **Deploy workflow** — Stack discovery excludes auxiliary services when
+  deploying community-saas.
+- **Next.js security update** — Customer portal updated to 16.2.3
+  (GHSA-q4gf-8mx6-v5v3).
+
 ## [7.0.0] - 2026-04-09
 
 ### Breaking Changes

@@ -31,9 +31,12 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println()
 
-	// Initialize AxonFlow client (no authentication required for community mode)
+	// Initialize AxonFlow client
+	// Uses AXONFLOW_ENDPOINT for self-hosted, or set AXONFLOW_TRY=1 for try.getaxonflow.com
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint: getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", "http://localhost:8080"),
+		ClientID:     getEnv("AXONFLOW_CLIENT_ID", ""),
+		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""),
 	})
 
 	userToken := getEnv("AXONFLOW_USER_TOKEN", "hello-world-user")

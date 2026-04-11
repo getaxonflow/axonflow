@@ -58,11 +58,13 @@ public class HelloWorld {
         System.out.println();
 
         // Initialize AxonFlow client
+        // Uses AXONFLOW_ENDPOINT for self-hosted, or set AXONFLOW_TRY=1 for try.getaxonflow.com
         String clientId = getEnv("AXONFLOW_CLIENT_ID", "");
         String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+        String endpoint = getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"));
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()
-            .endpoint(getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
+            .endpoint(endpoint)
             .clientId(clientId)
             .clientSecret(clientSecret)
             .build());

@@ -125,7 +125,7 @@ func main() {
 
 		// Check policy approval
 		result, err := client.GetPolicyApprovedContext(
-			"pii-detection-user",
+			getEnv("AXONFLOW_USER_TOKEN", "pii-detection-user"),
 			tc.query,
 			nil,
 			nil,
@@ -175,7 +175,7 @@ func main() {
 	if piiAction == "block" {
 		fmt.Println("Test (config): PII_ACTION=block - SSN should be BLOCKED")
 		result, err := client.GetPolicyApprovedContext(
-			"pii-config-test-user",
+			getEnv("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
 			"Customer SSN is 999-88-7777",
 			nil,
 			nil,
@@ -190,7 +190,7 @@ func main() {
 	} else if piiAction == "log" {
 		fmt.Println("Test (config): PII_ACTION=log - SSN should pass through unmodified")
 		result, err := client.GetPolicyApprovedContext(
-			"pii-config-test-user",
+			getEnv("AXONFLOW_USER_TOKEN", "pii-config-test-user"),
 			"Customer SSN is 999-88-7777",
 			nil,
 			nil,

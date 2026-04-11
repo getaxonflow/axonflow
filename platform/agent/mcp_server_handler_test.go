@@ -1462,8 +1462,8 @@ func TestMCPServer_AuthenticateRequest_MissingHeader(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for missing Authorization header")
 	}
-	if !strings.Contains(err.Error(), "missing Authorization") {
-		t.Errorf("Expected 'missing Authorization' error, got: %v", err)
+	if !strings.Contains(err.Error(), "Authentication required") {
+		t.Errorf("Expected 'Authentication required' error, got: %v", err)
 	}
 }
 
@@ -1491,8 +1491,8 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Community mode should not require auth: %v", err)
 	}
-	if tenantID != "default" {
-		t.Errorf("Expected tenantID 'default', got '%s'", tenantID)
+	if tenantID != "community" {
+		t.Errorf("Expected tenantID 'community', got '%s'", tenantID)
 	}
 	if userID != "0" {
 		t.Errorf("Expected userID '0', got '%s'", userID)

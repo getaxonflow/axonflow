@@ -43,7 +43,7 @@ async def main() -> int:
     print("=" * 55)
     print()
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo-tenant")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret")
 

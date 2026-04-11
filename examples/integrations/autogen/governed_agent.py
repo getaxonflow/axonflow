@@ -50,7 +50,7 @@ def test_proxy_mode():
     print("=" * 60)
 
     # Initialize AxonFlow client (community mode - no auth required)
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     with AxonFlow.sync(endpoint=agent_url) as client:
         # Test 1: Safe query (should be approved and processed)
@@ -187,7 +187,7 @@ def test_health_check():
     """Quick health check to verify AxonFlow is running."""
     from axonflow import AxonFlow
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 
     print(f"Checking AxonFlow at {agent_url}...")
 
@@ -230,7 +230,7 @@ def autogen_with_governance():
     print("Full AutoGen + AxonFlow Integration")
     print("=" * 60)
 
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     openai_key = os.getenv("OPENAI_API_KEY")
 
     if not openai_key:
@@ -294,7 +294,7 @@ def autogen_with_governance():
         governed_agent = GovernedAutoGenAgent(
             axonflow=axonflow,
             agent_name="research_assistant",
-            user_token="demo-user"
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "demo-user")
         )
 
         print("\n[Demo] Governed AutoGen Agent")

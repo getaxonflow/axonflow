@@ -21,6 +21,13 @@ AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 ORG_ID="${ORG_ID:-demo-org}"
 USER_ID="${USER_ID:-admin@company.com}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -44,17 +51,17 @@ api_call() {
     echo -e "${YELLOW}$description${NC}"
 
     if [ "$method" = "GET" ]; then
-        response=$(curl -s -X GET "${AGENT_URL}${endpoint}" \
+        response=$(acurl -s -X GET "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID")
     elif [ "$method" = "DELETE" ]; then
-        response=$(curl -s -X DELETE "${AGENT_URL}${endpoint}" \
+        response=$(acurl -s -X DELETE "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID")
     else
-        response=$(curl -s -X POST "${AGENT_URL}${endpoint}" \
+        response=$(acurl -s -X POST "${AGENT_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "X-Org-ID: $ORG_ID" \
             -H "X-User-ID: $USER_ID" \

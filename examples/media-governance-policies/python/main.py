@@ -145,7 +145,7 @@ async def main() -> int:
 
         try:
             resp2 = await client.proxy_llm_call_with_media(
-                user_token="media-policy-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-policy-user"),
                 query="Describe this image",
                 request_type="chat",
                 media=[
@@ -242,7 +242,7 @@ async def main() -> int:
         print("  3c. Sending 1x1 image request (no faces expected)")
         try:
             resp3c = await client.proxy_llm_call_with_media(
-                user_token="media-policy-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-policy-user"),
                 query="Describe this image",
                 request_type="chat",
                 media=[
@@ -459,7 +459,7 @@ async def main() -> int:
             print("  6b. Sending image request with media governance disabled")
             try:
                 resp6b = await client.proxy_llm_call_with_media(
-                    user_token="media-policy-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "media-policy-user"),
                     query="Describe this image",
                     request_type="chat",
                     media=[
@@ -499,7 +499,7 @@ async def main() -> int:
             print("  6d. Sending image request with media governance re-enabled")
             try:
                 resp6d = await client.proxy_llm_call_with_media(
-                    user_token="media-policy-user",
+                    user_token=get_env("AXONFLOW_USER_TOKEN", "media-policy-user"),
                     query="Describe this image",
                     request_type="chat",
                     media=[
@@ -536,7 +536,7 @@ async def main() -> int:
 
         try:
             resp7 = await client.proxy_llm_call(
-                user_token="media-policy-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "media-policy-user"),
                 query="What is the capital of France?",
                 request_type="chat",
             )

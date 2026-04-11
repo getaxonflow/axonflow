@@ -65,7 +65,7 @@ async def main() -> int:
     print("403/404 responses are EXPECTED and count as PASS.")
     print()
 
-    endpoint = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID", "demo-org")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 

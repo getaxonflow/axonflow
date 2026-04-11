@@ -68,7 +68,7 @@ func main() {
 	fmt.Println("  Query: Describe this image")
 
 	resp, err := client.ProxyLLMCallWithMedia(
-		"media-governance-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-governance-user"),
 		"Describe this image",
 		"chat",
 		[]axonflow.MediaContent{{
@@ -126,7 +126,7 @@ func main() {
 	fmt.Println("  Query: Compare these images")
 
 	resp2, err := client.ProxyLLMCallWithMedia(
-		"media-governance-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-governance-user"),
 		"Compare these images",
 		"chat",
 		[]axonflow.MediaContent{
@@ -184,7 +184,7 @@ func main() {
 	fmt.Println("  Query: Analyze this image from URL")
 
 	resp3, err := client.ProxyLLMCallWithMedia(
-		"media-governance-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-governance-user"),
 		"Analyze this image from URL",
 		"chat",
 		[]axonflow.MediaContent{{
@@ -233,7 +233,7 @@ func main() {
 	fmt.Println("  Query: What is the capital of France?")
 
 	resp4, err := client.ProxyLLMCall(
-		"media-governance-user",
+		getEnv("AXONFLOW_USER_TOKEN", "media-governance-user"),
 		"What is the capital of France?",
 		"chat",
 		nil,

@@ -102,22 +102,52 @@ func (t *CommunitySaaSTelemetry) worker() {
 	}
 }
 
+// telemetryIdentity is a mutable container placed in request context by the
+// telemetry middleware (outer) so that auth middleware (inner) can populate it.
+// This solves the Go context propagation problem: r.WithContext() creates a new
+// *http.Request, so the outer middleware's `r` never sees context values set by
+// inner middleware. By using a shared mutable pointer, the outer middleware can
+// read values set by inner middleware after next.ServeHTTP returns.
+type telemetryIdentity struct {
+	TenantID string
+}
+
+// telemetryIdentityKey is the context key for the mutable telemetry identity container.
+var telemetryIdentityKey = authContextKey("telemetry_identity")
+
+// SetTelemetryTenantID populates the telemetry identity container in the request
+// context, if present. Called by auth middleware after determining tenant identity.
+func SetTelemetryTenantID(ctx context.Context, tenantID string) {
+	if id, ok := ctx.Value(telemetryIdentityKey).(*telemetryIdentity); ok {
+		id.TenantID = tenantID
+	}
+}
+
 // Middleware returns an http.Handler middleware that records usage events.
 // It captures the response status code after the inner handler completes,
 // then enqueues a DynamoDB write via the bounded worker pool.
+//
+// This middleware runs on the global router (outer), while auth middleware runs
+// on sub-routers (inner). To bridge context across the middleware boundary, it
+// places a mutable *telemetryIdentity in the request context. Auth middleware
+// calls SetTelemetryTenantID() to fill it, and this middleware reads it after
+// the inner handler returns.
 func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 	if !t.enabled {
 		return next
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Place mutable identity container in context for auth middleware to fill
+		id := &telemetryIdentity{}
+		r = r.WithContext(context.WithValue(r.Context(), telemetryIdentityKey, id))
+
 		// Wrap response writer to capture status code
 		sw := &statusWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(sw, r)
 
-		// Extract tenant from context (set by apiAuthMiddleware)
-		tenantID, _ := r.Context().Value(ContextKeyTenantID).(string)
-		if tenantID == "" {
+		// Read tenant from the mutable container (populated by auth middleware)
+		if id.TenantID == "" {
 			// Skip unauthenticated requests (e.g., /health, /api/v1/register)
 			return
 		}
@@ -125,7 +155,7 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 		// Enqueue event via bounded channel — drop if full (best-effort)
 		select {
 		case t.eventChan <- telemetryEvent{
-			tenantID:   tenantID,
+			tenantID:   id.TenantID,
 			endpoint:   r.URL.Path, // Path only — no query params (defense in depth against PII)
 			method:     r.Method,
 			statusCode: sw.statusCode,

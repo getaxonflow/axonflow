@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	logutil "axonflow/platform/shared/logger"
+
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/rbi"
 	"axonflow/platform/connectors/base"
@@ -355,38 +357,29 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate credentials from OAuth2 Basic auth header (not required in Community mode)
-	clientSecret := extractClientSecret(r)
-	if clientSecret == "" && !isCommunityMode() {
-		log.Printf("❌ [Pre-check] Missing authentication - no Authorization header")
-		sendGatewayError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
-		return
-	}
-
-	// Validate client
-	var client *Client
-	var err error
+	// Authentication is handled by apiAuthMiddleware — read identity from context.
+	// The auth-derived tenant/client is authoritative. In community mode the
+	// middleware defaults to "community" when no Basic auth is provided, so we
+	// fall back to req.ClientID for backwards compatibility (community users
+	// identify themselves via the body, not credentials).
+	authClientID := ClientIDFromContext(r.Context())
+	tenantID := TenantIDFromContext(r.Context())
+	orgID := OrgIDFromContext(r.Context())
 	ctx := r.Context()
 
-	if isCommunityMode() {
-		client = &Client{
-			ID:          req.ClientID,
-			Name:        "Community",
-			OrgID:       "community",
-			TenantID:    req.ClientID,
-			Enabled:     true,
-			LicenseTier: "Community",
-		}
-	} else if authDB != nil {
-		client, err = validateClientCredentialsDB(ctx, authDB, req.ClientID, clientSecret)
-	} else {
-		client, err = validateClientCredentials(ctx, req.ClientID, clientSecret)
+	effectiveClientID := authClientID
+	if isCommunityMode() && (authClientID == "" || authClientID == "community") {
+		// Community mode: no credentials → use body client_id for context records
+		effectiveClientID = req.ClientID
+		tenantID = req.ClientID
 	}
 
-	if err != nil {
-		log.Printf("❌ [Pre-check] Client validation failed: %v", err)
-		sendGatewayError(w, "Authentication failed: "+err.Error(), http.StatusUnauthorized)
-		return
+	client := &Client{
+		ID:       effectiveClientID,
+		Name:     effectiveClientID,
+		OrgID:    orgID,
+		TenantID: tenantID,
+		Enabled:  true,
 	}
 
 	if !client.Enabled {
@@ -394,11 +387,15 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate user token
-	user, err := validateUserToken(req.UserToken, client.TenantID)
-	if err != nil {
-		log.Printf("❌ [Pre-check] User token validation failed: %v", err)
-		sendGatewayError(w, "Invalid user token", http.StatusUnauthorized)
+	// Resolve user via unified ResolveUser — consistent with all other handlers.
+	// In community/community-saas mode this returns a synthetic user (no JWT needed).
+	// In enterprise/evaluation mode this validates the JWT user token.
+	authKind := AuthKindFromContext(r.Context())
+	authResult := &AuthResult{Kind: authKind, TenantID: tenantID, OrgID: orgID, ClientID: effectiveClientID, Client: client}
+	user, userErr := ResolveUser(authResult, req.UserToken)
+	if userErr != nil {
+		log.Printf("❌ [Pre-check] User resolution failed: %v", userErr.Message)
+		sendGatewayError(w, userErr.Message, userErr.HTTPStatus)
 		return
 	}
 
@@ -723,11 +720,6 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 		sendGatewayError(w, "context_id field is required", http.StatusBadRequest)
 		return
 	}
-	if req.ClientID == "" {
-		log.Printf("❌ [Audit] Missing required field: client_id")
-		sendGatewayError(w, "client_id field is required", http.StatusBadRequest)
-		return
-	}
 	if req.Provider == "" {
 		log.Printf("❌ [Audit] Missing required field: provider")
 		sendGatewayError(w, "provider field is required", http.StatusBadRequest)
@@ -739,16 +731,32 @@ func handleAuditLLMCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate credentials via OAuth2 Basic auth (not required in Community mode)
-	clientSecret := extractClientSecret(r)
-	if clientSecret == "" && !isCommunityMode() {
-		sendGatewayError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
+	// Authentication is handled by apiAuthMiddleware — identity available via context.
+	// Use auth-derived client as the canonical identity for audit records.
+	// Body client_id is match-only: reject if it doesn't match auth identity.
+	authClientID := ClientIDFromContext(r.Context())
+	tenantID := TenantIDFromContext(r.Context())
+
+	effectiveClientID := authClientID
+	if isCommunityMode() && (authClientID == "" || authClientID == "community") {
+		if req.ClientID != "" {
+			effectiveClientID = req.ClientID
+			tenantID = req.ClientID
+		}
+	} else if req.ClientID != "" && req.ClientID != authClientID {
+		log.Printf("❌ [Audit] Body client_id '%s' does not match auth-derived '%s'",
+			logutil.Sanitize(req.ClientID), logutil.Sanitize(authClientID))
+		sendGatewayError(w, "client_id mismatch: body client_id does not match authenticated identity", http.StatusForbidden)
 		return
 	}
 
+	// Override req.ClientID with auth-derived identity for downstream use
+	req.ClientID = effectiveClientID
+	_ = tenantID // used by validateGatewayContext via effectiveClientID
+
 	// Validate context exists and is not expired (if DB available)
 	if authDB != nil {
-		valid, err := validateGatewayContext(authDB, req.ContextID, req.ClientID)
+		valid, err := validateGatewayContext(authDB, req.ContextID, effectiveClientID)
 		if err != nil {
 			log.Printf("⚠️ [Audit] Context validation warning: %v", err)
 		} else if !valid {
@@ -964,10 +972,12 @@ func sendGatewayError(w http.ResponseWriter, message string, statusCode int) {
 	})
 }
 
-// RegisterGatewayHandlers registers the gateway mode endpoints
+// RegisterGatewayHandlers registers the gateway mode endpoints.
+// Both endpoints are wrapped with apiAuthMiddleware so auth is handled
+// centrally — handlers read identity from context via TenantIDFromContext() etc.
 func RegisterGatewayHandlers(r *mux.Router) {
-	r.HandleFunc("/api/policy/pre-check", handlePolicyPreCheck).Methods("POST")
-	r.HandleFunc("/api/audit/llm-call", handleAuditLLMCall).Methods("POST")
+	r.Handle("/api/policy/pre-check", apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck))).Methods("POST")
+	r.Handle("/api/audit/llm-call", apiAuthMiddleware(http.HandlerFunc(handleAuditLLMCall))).Methods("POST")
 	log.Println("✅ Gateway mode endpoints registered: /api/policy/pre-check, /api/audit/llm-call")
 }
 

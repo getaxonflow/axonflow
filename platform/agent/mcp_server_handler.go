@@ -619,34 +619,19 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 	return session
 }
 
-// authenticateMCPServerRequest validates Basic auth credentials using the same
-// validateClientCredentials function used by the proxy auth middleware.
+// authenticateMCPServerRequest validates request credentials using the unified
+// Authenticate() function. Supports all 4 deployment modes.
+// Note: previously only called validateClientCredentials (whitelist) — now uses
+// Authenticate() which also checks authDB (DB-backed), fixing a latent bug
+// where DB-registered enterprise clients couldn't use the MCP server protocol.
 func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userRole, clientID string, err error) {
-	if isCommunityMode() {
-		return "default", "0", "admin", "community", nil
+	auth, authErr := Authenticate(r, nil)
+	if authErr != nil {
+		return "", "", "", "", fmt.Errorf("%s", authErr.Message)
 	}
-
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return "", "", "", "", fmt.Errorf("missing Authorization header")
-	}
-
-	if !strings.HasPrefix(authHeader, "Basic ") {
-		return "", "", "", "", fmt.Errorf("expected Basic auth")
-	}
-
-	client, err := validateClientCredentials(r.Context(), extractClientID(r), extractClientSecret(r))
-	if err != nil {
-		return "", "", "", "", fmt.Errorf("invalid credentials: %w", err)
-	}
-	if !client.Enabled {
-		return "", "", "", "", fmt.Errorf("client is disabled")
-	}
-
-	// TODO(#1484): Extract user identity from JWT or API key metadata
-	// instead of hardcoding admin. For Phase 1, MCP clients authenticate
-	// at the client level (like SDK integrations).
-	return client.TenantID, "0", "admin", client.ID, nil
+	// Populate telemetry identity for community-saas tracking
+	SetTelemetryTenantID(r.Context(), auth.TenantID)
+	return auth.TenantID, "0", "admin", auth.ClientID, nil
 }
 
 // resolveMCPSession resolves auth from session header or credentials.
@@ -665,7 +650,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 				mcpSessionsMu.Unlock()
 				// Fall through to re-auth
 			} else {
-				// In enterprise mode, verify the caller matches the session owner
+				// In enterprise/community-saas mode, verify the caller matches the session owner
 				if !isCommunityMode() {
 					callerClientID := extractClientID(r)
 					if callerClientID != "" && callerClientID != session.clientID {
@@ -678,6 +663,8 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 				mcpSessionsMu.Lock()
 				session.lastUsed = time.Now()
 				mcpSessionsMu.Unlock()
+				// Populate telemetry for cached sessions (container is per-request)
+				SetTelemetryTenantID(r.Context(), session.tenantID)
 				return session
 			}
 		}

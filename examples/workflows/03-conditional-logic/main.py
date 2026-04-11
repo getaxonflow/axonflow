@@ -13,7 +13,7 @@ from axonflow import AxonFlow
 
 
 async def main():
-    agent_url = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    agent_url = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     client_id = os.getenv("AXONFLOW_CLIENT_ID")
     client_secret = os.getenv("AXONFLOW_CLIENT_SECRET")
 
@@ -35,7 +35,7 @@ async def main():
 
     try:
         search_response = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query=search_query,
             request_type="chat",
             context={"provider": "openai"},
@@ -53,7 +53,7 @@ async def main():
 
             alt_query = "Find flights from New York to Paris for the following week instead"
             alt_response = await client.proxy_llm_call(
-                user_token="user-123",
+                user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
                 query=alt_query,
                 request_type="chat",
                 context={"provider": "openai"},
@@ -73,7 +73,7 @@ async def main():
         print("\n📤 Getting booking recommendation...")
 
         book_response = await client.proxy_llm_call(
-            user_token="user-123",
+            user_token=os.getenv("AXONFLOW_USER_TOKEN", "user-123"),
             query=book_query,
             request_type="chat",
             context={"provider": "openai"},

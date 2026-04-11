@@ -73,7 +73,7 @@ func main() {
 	// Test 3: Gateway Mode - Safe Query
 	fmt.Println("Test 3: Gateway Mode - Safe Query")
 	result, err := client.GetPolicyApprovedContext(
-		"audit-user",
+		getEnv("AXONFLOW_USER_TOKEN", "audit-user"),
 		"What is the capital of France?",
 		nil, nil,
 	)
@@ -92,7 +92,7 @@ func main() {
 	// Test 4: Gateway Mode - Blocked Query (SQL Injection)
 	fmt.Println("Test 4: Gateway Mode - Blocked Query (SQL Injection)")
 	result, _ = client.GetPolicyApprovedContext(
-		"audit-user",
+		getEnv("AXONFLOW_USER_TOKEN", "audit-user"),
 		"SELECT * FROM users; DROP TABLE users;",
 		nil, nil,
 	)

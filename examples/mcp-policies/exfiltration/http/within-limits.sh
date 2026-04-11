@@ -16,6 +16,13 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 echo "=== Exfiltration Detection: Query Within Limits ==="
 echo ""
 
@@ -23,7 +30,7 @@ echo ""
 echo "Step 1: Creating test data..."
 
 # Create table
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -34,7 +41,7 @@ curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   }" > /dev/null 2>&1 || true
 
 # Insert test data
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -51,7 +58,7 @@ echo ""
 echo "Step 2: Querying data (LIMIT 10, well within default 10,000 row limit)..."
 echo ""
 
-response=$(curl -s -X POST "${AGENT_URL}/mcp/resources/query" \
+response=$(acurl -s -X POST "${AGENT_URL}/mcp/resources/query" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
@@ -93,7 +100,7 @@ fi
 # Step 3: Cleanup using execute endpoint
 echo ""
 echo "Step 3: Cleaning up test data..."
-curl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
+acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
   -H "Content-Type: application/json" \
   -d "{
     \"connector\": \"${CONNECTOR}\",

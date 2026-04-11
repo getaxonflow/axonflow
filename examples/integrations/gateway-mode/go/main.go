@@ -60,8 +60,8 @@ func main() {
 	}
 	openaiClient := openai.NewClient(openaiKey)
 
-	// Example request
-	userToken := "user-789"
+	// Example request — use JWT from env if available (required in enterprise/evaluation mode)
+	userToken := getEnv("AXONFLOW_USER_TOKEN", "user-789")
 	query := "What are best practices for AI model deployment?"
 	requestContext := map[string]interface{}{
 		"user_role":  "engineer",

@@ -736,7 +736,7 @@ async def main() -> int:
 
             if sse_exec is not None:
                 # Stream execution status via HTTP SSE endpoint
-                agent_endpoint = get_env("AXONFLOW_AGENT_URL", "http://localhost:8080")
+                agent_endpoint = get_env("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
                 stream_url = f"{agent_endpoint}/api/v1/unified/executions/{sse_plan.plan_id}/stream"
                 print(f"   SSE URL: {stream_url}")
 

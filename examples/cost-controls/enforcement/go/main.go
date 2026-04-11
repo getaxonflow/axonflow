@@ -54,7 +54,7 @@ func main() {
 	// Otherwise cached responses bypass budget enforcement
 	// Note: Must set TTL to non-zero to prevent SDK defaults from enabling cache
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+		Endpoint:     getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
 		ClientID:     getEnv("AXONFLOW_CLIENT_ID", "demo-client"),
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
 		Cache:        axonflow.CacheConfig{Enabled: false, TTL: time.Nanosecond},

@@ -384,7 +384,7 @@ func main() {
 	fmt.Println("verifying the underlying policy engine behavior.")
 	fmt.Println()
 
-	agentURL := getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+	agentURL := getEnv("AXONFLOW_ENDPOINT", getEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
 	fmt.Printf("Checking AxonFlow at %s...\n", agentURL)
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{

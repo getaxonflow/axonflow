@@ -78,7 +78,7 @@ async def main() -> int:
         print("-" * 37)
         try:
             result = await client.get_policy_approved_context(
-                user_token="policy-config-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "policy-config-user"),
                 query="What is the current date?",
             )
         except Exception as e:
@@ -98,7 +98,7 @@ async def main() -> int:
 
         try:
             result = await client.get_policy_approved_context(
-                user_token="policy-config-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "policy-config-user"),
                 query="Process refund for SSN 123-45-6789",
             )
         except Exception as e:
@@ -138,7 +138,7 @@ async def main() -> int:
 
         try:
             result = await client.get_policy_approved_context(
-                user_token="policy-config-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "policy-config-user"),
                 query="SELECT name FROM employees UNION SELECT password FROM admin",
             )
         except Exception as e:
@@ -169,7 +169,7 @@ async def main() -> int:
 
         try:
             result = await client.get_policy_approved_context(
-                user_token="policy-config-user",
+                user_token=get_env("AXONFLOW_USER_TOKEN", "policy-config-user"),
                 query="Charge card 4111-1111-1111-1111 for $50",
             )
         except Exception as e:

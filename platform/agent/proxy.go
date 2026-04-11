@@ -12,7 +12,7 @@
 package agent
 
 import (
-	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -187,62 +187,27 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if isCommunityMode() {
-			// In community mode, derive tenant from Basic auth or default to "community".
-			// Always inject identity headers so the orchestrator has consistent context.
-			clientID := extractClientID(r)
-			if clientID == "" {
-				clientID = "community"
+		// Use unified Authenticate() for all deployment modes.
+		// This fixes a latent bug: proxyAuthMiddleware previously had no
+		// isCommunitySaasMode() branch — community-saas users couldn't use proxy routes.
+		auth, authErr := Authenticate(r, nil)
+		if authErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			if authErr.RetryAfter != "" {
+				w.Header().Set("Retry-After", authErr.RetryAfter)
 			}
-			r.Header.Set("X-Tenant-ID", clientID)
-			r.Header.Set("X-Org-ID", getDeploymentOrgID())
-			next(w, r)
-			return
-		}
-
-		// Extract and validate Basic auth credentials
-		clientID := extractClientID(r)
-		clientSecret := extractClientSecret(r)
-		if clientID == "" || clientSecret == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"Authentication required"}`))
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		var client *Client
-		var err error
-		if authDB != nil {
-			client, err = validateClientCredentialsDB(ctx, authDB, clientID, clientSecret)
-		} else {
-			client, err = validateClientCredentials(ctx, clientID, clientSecret)
-		}
-		if err != nil {
-			log.Printf("[Proxy] Auth failed for client '%s': %v", logutil.Sanitize(clientID), err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"Authentication failed"}`))
-			return
-		}
-
-		if !client.Enabled {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":"Client disabled"}`))
+			w.WriteHeader(authErr.HTTPStatus)
+			errBody, _ := json.Marshal(map[string]string{"error": authErr.Message})
+			_, _ = w.Write(errBody)
 			return
 		}
 
 		// Set identity headers from authenticated client for downstream services
-		// and circuit breaker error tracking (RecordError in proxy ErrorHandler).
-		// X-Org-ID comes from the validated client license (Ed25519-signed),
-		// matching the behavior of apiAuthMiddleware in auth.go. This enables
-		// multi-tenant SaaS where one deployment serves many orgs, each
-		// authenticated by their own license.
-		r.Header.Set("X-Tenant-ID", client.TenantID)
-		r.Header.Set("X-Org-ID", client.OrgID)
+		r.Header.Set("X-Tenant-ID", auth.TenantID)
+		r.Header.Set("X-Org-ID", auth.OrgID)
+
+		// Populate telemetry identity container (set by outer telemetry middleware)
+		SetTelemetryTenantID(r.Context(), auth.TenantID)
 
 		next(w, r)
 	}

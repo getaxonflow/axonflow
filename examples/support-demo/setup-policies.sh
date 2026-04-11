@@ -14,6 +14,13 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-support-demo}"
 
+# Auth: include Basic auth if credentials are set
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
+
 echo "🔧 Setting up Support Demo policies..."
 echo "   Agent: $AGENT_URL"
 echo "   Tenant: $TENANT_ID"
@@ -39,7 +46,7 @@ echo ""
 # Agents (support staff) are routed to cost-effective providers (Anthropic/local)
 # This demonstrates role-based LLM governance for cost control
 echo "📋 Creating policy: Agent Role LLM Restriction..."
-curl -s -X POST "$AGENT_URL/api/v1/policies" \
+acurl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Agent Role LLM Restriction",
@@ -79,7 +86,7 @@ curl -s -X POST "$AGENT_URL/api/v1/policies" \
 # Queries containing PII patterns route to local model (data never leaves premises)
 # This demonstrates privacy-preserving LLM governance
 echo "📋 Creating policy: PII Query Routing..."
-curl -s -X POST "$AGENT_URL/api/v1/policies" \
+acurl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "PII Query Routing",
@@ -126,7 +133,7 @@ curl -s -X POST "$AGENT_URL/api/v1/policies" \
 # EU users route to local model (Ollama) to ensure data stays in region
 # This demonstrates GDPR/data sovereignty compliance
 echo "📋 Creating policy: EU Region Data Sovereignty..."
-curl -s -X POST "$AGENT_URL/api/v1/policies" \
+acurl -s -X POST "$AGENT_URL/api/v1/policies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "EU Region Data Sovereignty",

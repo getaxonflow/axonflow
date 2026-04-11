@@ -62,7 +62,6 @@ PRECHECK_START=$(get_ms)
 PRECHECK_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"query\": \"$QUERY\",
         \"user_token\": \"$USER_TOKEN\",
@@ -111,7 +110,6 @@ AUDIT_START=$(get_ms)
 AUDIT_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/audit/llm-call" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"context_id\": \"$CONTEXT_ID\",
         \"client_id\": \"$CLIENT_ID\",
@@ -166,7 +164,6 @@ TOOL_AUDIT_HTTP_CODE=$(curl -s -o /tmp/tool_audit_response.json -w "%{http_code}
     -X POST "$AGENT_URL/api/v1/audit/tool-call" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"tool_name\": \"weather-api\",
         \"tool_type\": \"api\",
@@ -237,7 +234,6 @@ echo ""
 SEARCH_RESPONSE=$(curl -s -X POST "$AGENT_URL/api/v1/audit/search" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADER[@]}" \
-    -H "Authorization: Basic $AUTH_B64" \
     -d "{
         \"client_id\": \"$CLIENT_ID\",
         \"limit\": 5

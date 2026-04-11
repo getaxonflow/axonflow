@@ -20,9 +20,18 @@
 
 set -e
 
-BASE_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+BASE_URL="${AXONFLOW_ENDPOINT:-${AXONFLOW_AGENT_URL:-http://localhost:8080}}"
 ORG_ID="demo-org"
 BUDGET_ID="demo-budget-http-$(date +%s)"
+
+# Build auth args for curl (Basic auth if credentials are set)
+CURL_AUTH=()
+if [ -n "${AXONFLOW_CLIENT_ID:-}" ] && [ -n "${AXONFLOW_CLIENT_SECRET:-}" ]; then
+  CURL_AUTH=(-u "${AXONFLOW_CLIENT_ID}:${AXONFLOW_CLIENT_SECRET}")
+fi
+
+# Wrapper: curl with auth
+acurl() { curl "${CURL_AUTH[@]}" "$@"; }
 
 echo "AxonFlow Cost Controls - HTTP (curl) - Comprehensive"
 echo "====================================================="
@@ -34,7 +43,7 @@ echo ""
 
 # 1. POST /api/v1/budgets - Create a budget
 echo "1. POST /api/v1/budgets - Creating a monthly budget..."
-BUDGET_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/budgets" \
+BUDGET_RESPONSE=$(acurl -s -X POST "${BASE_URL}/api/v1/budgets" \
   -H "Content-Type: application/json" \
   -H "X-Org-ID: ${ORG_ID}" \
   -d '{
@@ -52,14 +61,14 @@ echo ""
 
 # 2. GET /api/v1/budgets/{id} - Get a budget
 echo "2. GET /api/v1/budgets/{id} - Getting budget by ID..."
-GET_RESPONSE=$(curl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}")
+GET_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}")
 echo "   Response: ${GET_RESPONSE}" | head -c 200
 echo ""
 echo ""
 
 # 3. GET /api/v1/budgets - List budgets
 echo "3. GET /api/v1/budgets - Listing all budgets..."
-LIST_RESPONSE=$(curl -s "${BASE_URL}/api/v1/budgets?limit=5" \
+LIST_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/budgets?limit=5" \
   -H "X-Org-ID: ${ORG_ID}")
 echo "   Response: ${LIST_RESPONSE}" | head -c 300
 echo ""
@@ -67,7 +76,7 @@ echo ""
 
 # 4. PUT /api/v1/budgets/{id} - Update a budget
 echo "4. PUT /api/v1/budgets/{id} - Updating budget limit..."
-UPDATE_RESPONSE=$(curl -s -X PUT "${BASE_URL}/api/v1/budgets/${BUDGET_ID}" \
+UPDATE_RESPONSE=$(acurl -s -X PUT "${BASE_URL}/api/v1/budgets/${BUDGET_ID}" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Demo Budget (HTTP) - Updated",
@@ -83,21 +92,21 @@ echo ""
 
 # 5. GET /api/v1/budgets/{id}/status - Get budget status
 echo "5. GET /api/v1/budgets/{id}/status - Checking budget status..."
-STATUS_RESPONSE=$(curl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}/status")
+STATUS_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}/status")
 echo "   Response: ${STATUS_RESPONSE}" | head -c 300
 echo ""
 echo ""
 
 # 6. GET /api/v1/budgets/{id}/alerts - Get budget alerts
 echo "6. GET /api/v1/budgets/{id}/alerts - Getting budget alerts..."
-ALERTS_RESPONSE=$(curl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}/alerts")
+ALERTS_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/budgets/${BUDGET_ID}/alerts")
 echo "   Response: ${ALERTS_RESPONSE}" | head -c 200
 echo ""
 echo ""
 
 # 7. POST /api/v1/budgets/check - Check if request allowed
 echo "7. POST /api/v1/budgets/check - Pre-flight budget check..."
-CHECK_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/budgets/check" \
+CHECK_RESPONSE=$(acurl -s -X POST "${BASE_URL}/api/v1/budgets/check" \
   -H "Content-Type: application/json" \
   -d '{
     "org_id": "'"${ORG_ID}"'"
@@ -111,14 +120,14 @@ echo ""
 
 # 8. GET /api/v1/usage - Get usage summary
 echo "8. GET /api/v1/usage - Getting usage summary..."
-USAGE_RESPONSE=$(curl -s "${BASE_URL}/api/v1/usage?period=monthly" \
+USAGE_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/usage?period=monthly" \
   -H "X-Org-ID: ${ORG_ID}")
 echo "   Response: ${USAGE_RESPONSE}"
 echo ""
 
 # 9. GET /api/v1/usage/breakdown - Get usage breakdown
 echo "9. GET /api/v1/usage/breakdown - Getting usage breakdown by provider..."
-BREAKDOWN_RESPONSE=$(curl -s "${BASE_URL}/api/v1/usage/breakdown?group_by=provider&period=monthly" \
+BREAKDOWN_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/usage/breakdown?group_by=provider&period=monthly" \
   -H "X-Org-ID: ${ORG_ID}")
 echo "   Response: ${BREAKDOWN_RESPONSE}" | head -c 300
 echo ""
@@ -126,7 +135,7 @@ echo ""
 
 # 10. GET /api/v1/usage/records - List usage records
 echo "10. GET /api/v1/usage/records - Listing usage records..."
-RECORDS_RESPONSE=$(curl -s "${BASE_URL}/api/v1/usage/records?limit=5" \
+RECORDS_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/usage/records?limit=5" \
   -H "X-Org-ID: ${ORG_ID}")
 echo "   Response: ${RECORDS_RESPONSE}" | head -c 300
 echo ""
@@ -138,7 +147,7 @@ echo ""
 
 # 11. GET /api/v1/pricing - Get pricing info
 echo "11. GET /api/v1/pricing - Getting model pricing..."
-PRICING_RESPONSE=$(curl -s "${BASE_URL}/api/v1/pricing?provider=anthropic&model=claude-sonnet-4")
+PRICING_RESPONSE=$(acurl -s "${BASE_URL}/api/v1/pricing?provider=anthropic&model=claude-sonnet-4")
 echo "   Response: ${PRICING_RESPONSE}"
 echo ""
 
@@ -148,7 +157,7 @@ echo ""
 
 # 12. DELETE /api/v1/budgets/{id} - Delete a budget
 echo "12. DELETE /api/v1/budgets/{id} - Cleaning up..."
-DELETE_RESPONSE=$(curl -s -X DELETE "${BASE_URL}/api/v1/budgets/${BUDGET_ID}" \
+DELETE_RESPONSE=$(acurl -s -X DELETE "${BASE_URL}/api/v1/budgets/${BUDGET_ID}" \
   -w "HTTP %{http_code}")
 echo "   Response: ${DELETE_RESPONSE}"
 echo ""

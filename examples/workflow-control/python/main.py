@@ -52,7 +52,7 @@ async def main() -> int:
     workflow_id = None
 
     async with AxonFlow(
-        endpoint=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        endpoint=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_id=os.getenv("AXONFLOW_CLIENT_ID", "workflow-control-python"),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", ""),
     ) as client:
@@ -430,7 +430,7 @@ async def main() -> int:
     # ========================================
     print("10. SSE Streaming - Real-time execution status")
     sse_workflow_id = None
-    endpoint = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+    endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
     sse_client_id = os.getenv("AXONFLOW_CLIENT_ID", "workflow-control-python")
     sse_client_secret = os.getenv("AXONFLOW_CLIENT_SECRET", "")
 
@@ -479,7 +479,7 @@ async def main() -> int:
                 assert_check(True, "SSE step completed")
 
             # Stream execution status via HTTP SSE endpoint
-            agent_endpoint = os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")
+            agent_endpoint = os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"))
             stream_url = f"{agent_endpoint}/api/v1/unified/executions/{sse_wf.workflow_id}/stream"
             print(f"   SSE URL: {stream_url}")
 

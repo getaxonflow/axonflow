@@ -55,7 +55,7 @@ func runToolsExample() int {
 	fmt.Println()
 
 	client := axonflow.NewClient(axonflow.AxonFlowConfig{
-		Endpoint:     getToolsEnv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+		Endpoint:     getToolsEnv("AXONFLOW_ENDPOINT", getToolsEnv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
 		ClientID:     getToolsEnv("AXONFLOW_CLIENT_ID", "langgraph-tools-example-go"),
 		ClientSecret: getToolsEnv("AXONFLOW_CLIENT_SECRET", ""),
 	})

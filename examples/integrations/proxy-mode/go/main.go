@@ -48,6 +48,9 @@ func main() {
 		ClientSecret: getEnv("AXONFLOW_CLIENT_SECRET", ""), // Optional for community mode
 	})
 
+	// User token: use JWT from env if available (required in enterprise/evaluation mode)
+	userToken := getEnv("AXONFLOW_USER_TOKEN", "user-proxy-go")
+
 	// Example queries
 	queries := []struct {
 		query       string
@@ -57,13 +60,13 @@ func main() {
 	}{
 		{
 			query:       "What are the key benefits of AI governance?",
-			userToken:   "user-proxy-go",
+			userToken:   userToken,
 			requestType: "chat",
 			context:     map[string]interface{}{"department": "engineering"},
 		},
 		{
 			query:       "List 3 principles of responsible AI development.",
-			userToken:   "user-proxy-go",
+			userToken:   userToken,
 			requestType: "chat",
 			context:     map[string]interface{}{"format": "list"},
 		},
@@ -126,7 +129,7 @@ func main() {
 	fmt.Printf("%s\n", strings.Repeat("─", 60))
 
 	sqlResponse, err := client.ProxyLLMCall(
-		"user-proxy-go",
+		userToken,
 		"SELECT * FROM users; DROP TABLE secrets;",
 		"chat",
 		map[string]interface{}{},

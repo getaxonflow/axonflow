@@ -280,6 +280,74 @@ func extractClientID(r *http.Request) string {
 }
 
 // =============================================================================
+// Shared authentication — single entry point for all handlers
+// =============================================================================
+
+// CommunitySaasAuthError represents a community-saas authentication failure.
+// Callers inspect StatusCode + Message to format an appropriate response for
+// their protocol (REST JSON, JSON-RPC, etc.).
+type CommunitySaasAuthError struct {
+	StatusCode int
+	Message    string
+	RetryAfter string // non-empty → set Retry-After header
+}
+
+func (e *CommunitySaasAuthError) Error() string { return e.Message }
+
+// validateCommunitySaasAuth is a pure function that validates community-saas
+// credentials. It never writes to http.ResponseWriter — callers translate the
+// returned error into their own wire format (REST, JSON-RPC, etc.).
+//
+// This is the single source of truth for community-saas auth logic.
+func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthError) {
+	cID := extractClientID(r)
+	cSecret := extractClientSecret(r)
+	if cID == "" || cSecret == "" {
+		return nil, &CommunitySaasAuthError{
+			StatusCode: http.StatusUnauthorized,
+			Message:    "Registration required. POST to /api/v1/register to get credentials.",
+		}
+	}
+
+	// Per-minute rate limit BEFORE bcrypt to prevent CPU exhaustion attacks
+	minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
+	if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
+		return nil, &CommunitySaasAuthError{
+			StatusCode: http.StatusTooManyRequests,
+			Message:    fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", minuteLimit),
+			RetryAfter: "60",
+		}
+	}
+
+	// Validate credentials (bcrypt — ~400ms). Detached context so client
+	// disconnect doesn't cause spurious auth failure.
+	authCtx, authCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer authCancel()
+
+	if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
+		log.Printf("[AUTH] community-saas auth failed for tenant %s: %v",
+			logutil.Sanitize(cID), err)
+		return nil, &CommunitySaasAuthError{
+			StatusCode: http.StatusUnauthorized,
+			Message:    "Invalid credentials or registration expired",
+		}
+	}
+
+	enqueueActivityUpdate(authDB, cID)
+
+	return &Client{
+		ID:          cID,
+		Name:        "Community-SaaS",
+		OrgID:       communitySaasOrgID,
+		TenantID:    cID,
+		Enabled:     true,
+		LicenseTier: "Community",
+		RateLimit:   minuteLimit,
+		Permissions: []string{},
+	}, nil
+}
+
+// =============================================================================
 // Request Context — Auth-derived tenant identity (RFC 6749 pattern)
 // =============================================================================
 
@@ -294,6 +362,9 @@ const (
 	ContextKeyOrgID authContextKey = "auth_org_id"
 	// ContextKeyClientID stores the authenticated client ID in request context.
 	ContextKeyClientID authContextKey = "auth_client_id"
+	// ContextKeyAuthKind stores the AuthKind in request context so handlers
+	// behind apiAuthMiddleware can call ResolveUser() with the correct kind.
+	ContextKeyAuthKind authContextKey = "auth_kind"
 )
 
 // TenantIDFromContext extracts the auth-derived tenant ID from request context.
@@ -321,6 +392,15 @@ func ClientIDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// AuthKindFromContext extracts the auth kind from request context.
+// Returns AuthKindEnterprise as default (most restrictive) if not set.
+func AuthKindFromContext(ctx context.Context) AuthKind {
+	if v, ok := ctx.Value(ContextKeyAuthKind).(AuthKind); ok {
+		return v
+	}
+	return AuthKindEnterprise
+}
+
 // apiAuthMiddleware authenticates API requests using OAuth2 Client Credentials
 // (RFC 6749 Section 4.4) and stores the authenticated identity in request context.
 //
@@ -338,57 +418,22 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		var tenantID, orgID, clientID string
-
-		if isCommunityMode() {
-			// Community mode: extract clientId from Basic auth if present, else default
-			cID := extractClientID(r)
-			if cID == "" {
-				cID = "community"
+		// Use unified Authenticate() for all deployment modes
+		auth, authErr := Authenticate(r, nil)
+		if authErr != nil {
+			if authErr.RetryAfter != "" {
+				w.Header().Set("Retry-After", authErr.RetryAfter)
 			}
-			tenantID = cID
-			orgID = getDeploymentOrgID()
-			clientID = cID
-		} else if isCommunitySaasMode() {
-			// Community-SaaS mode: require Basic auth (tenant_id:secret) validated
-			// against community_saas_registrations table. No Ed25519 license.
-			cID := extractClientID(r)
-			cSecret := extractClientSecret(r)
-			if cID == "" || cSecret == "" {
-				writeJSONError(w, "Registration required. POST to /api/v1/register to get credentials.", http.StatusUnauthorized)
-				return
-			}
+			writeJSONError(w, authErr.Message, authErr.HTTPStatus)
+			return
+		}
 
-			// Per-minute rate limit BEFORE bcrypt validation to protect against
-			// CPU exhaustion attacks. An attacker with a valid tenant_id but invalid
-			// secret would otherwise burn ~400ms of bcrypt per request.
-			minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
-			if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
-				w.Header().Set("Retry-After", "60")
-				writeJSONError(w, fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", minuteLimit), http.StatusTooManyRequests)
-				return
-			}
+		tenantID := auth.TenantID
+		orgID := auth.OrgID
+		clientID := auth.ClientID
 
-			// Validate credentials (bcrypt comparison — ~400ms)
-			// Use a detached context so client disconnection doesn't cause a spurious auth failure
-			authCtx, authCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer authCancel()
-
-			if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
-				log.Printf("[AUTH] community-saas auth failed for tenant %s: %v",
-					logutil.Sanitize(cID), err)
-				writeJSONError(w, "Invalid credentials or registration expired", http.StatusUnauthorized)
-				return
-			}
-
-			tenantID = cID
-			orgID = communitySaasOrgID
-			clientID = cID
-
-			// Update last_seen_at + increment request_count via bounded worker channel
-			enqueueActivityUpdate(authDB, cID)
-
-			// Daily cap (use detached context to avoid client disconnect causing false 429)
+		// Community-SaaS daily cap (per-request concern, not in Authenticate)
+		if auth.Kind == AuthKindCommunitySaaS {
 			dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer dailyCancel()
 			dailyLimit := getEnvInt("COMMUNITY_SAAS_DAILY_LIMIT", 500)
@@ -396,42 +441,6 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 				writeJSONError(w, "Daily request limit reached. Resets at midnight UTC.", http.StatusTooManyRequests)
 				return
 			}
-		} else {
-			// Enterprise mode: require Basic auth (OAuth2 Client Credentials)
-			cID := extractClientID(r)
-			cSecret := extractClientSecret(r)
-			if cID == "" || cSecret == "" {
-				writeJSONError(w, "Authentication required: provide Authorization header with Basic auth (clientId:clientSecret)", http.StatusUnauthorized)
-				return
-			}
-
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer cancel()
-
-			var client *Client
-			var err error
-			if authDB != nil {
-				client, err = validateClientCredentialsDB(ctx, authDB, cID, cSecret)
-			} else {
-				client, err = validateClientCredentials(ctx, cID, cSecret)
-			}
-			if err != nil || client == nil {
-				msg := "Authentication failed"
-				if err != nil {
-					msg += ": " + err.Error()
-				}
-				writeJSONError(w, msg, http.StatusUnauthorized)
-				return
-			}
-
-			if !client.Enabled {
-				writeJSONError(w, "Client disabled", http.StatusForbidden)
-				return
-			}
-
-			tenantID = client.TenantID
-			orgID = client.OrgID
-			clientID = client.ID
 		}
 
 		// X-Tenant-ID header is deprecated — tenant is derived from auth credentials.
@@ -447,6 +456,10 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ContextKeyTenantID, tenantID)
 		ctx = context.WithValue(ctx, ContextKeyOrgID, orgID)
 		ctx = context.WithValue(ctx, ContextKeyClientID, clientID)
+		ctx = context.WithValue(ctx, ContextKeyAuthKind, auth.Kind)
+
+		// Populate telemetry identity container (set by outer telemetry middleware)
+		SetTelemetryTenantID(ctx, tenantID)
 
 		// Inject identity headers so downstream handlers (e.g. circuit breaker)
 		// can read them without context key type coupling across packages.

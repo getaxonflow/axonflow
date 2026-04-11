@@ -137,7 +137,7 @@ async def main() -> int:
     print("=" * 60)
 
     client = PolicyClient(
-        agent_url=os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080"),
+        agent_url=os.getenv("AXONFLOW_ENDPOINT", os.getenv("AXONFLOW_AGENT_URL", "http://localhost:8080")),
         client_secret=os.getenv("AXONFLOW_CLIENT_SECRET", "demo-secret"),
         tenant_id=os.getenv("AXONFLOW_TENANT_ID", "test-org-001"),
     )
