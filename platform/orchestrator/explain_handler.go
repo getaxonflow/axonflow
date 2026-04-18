@@ -1,0 +1,302 @@
+// Copyright 2025 AxonFlow
+// SPDX-License-Identifier: BUSL-1.1
+
+package orchestrator
+
+import (
+	"database/sql"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+)
+
+// DecisionExplanation is the canonical payload returned by
+// GET /api/v1/decisions/:id/explain. Shape frozen per ADR-043.
+// Additive fields may be added with omitempty; renames/removals require
+// a major version bump.
+type DecisionExplanation struct {
+	DecisionID                string             `json:"decision_id"`
+	Timestamp                 time.Time          `json:"timestamp"`
+	PolicyMatches             []ExplainPolicy    `json:"policy_matches"`
+	MatchedRules              []ExplainRule      `json:"matched_rules,omitempty"`
+	Decision                  string             `json:"decision"` // "allow"|"deny"|"require_approval"
+	Reason                    string             `json:"reason"`
+	RiskLevel                 string             `json:"risk_level,omitempty"`
+	OverrideAvailable         bool               `json:"override_available"`
+	OverrideExistingID        string             `json:"override_existing_id,omitempty"`
+	HistoricalHitCountSession int                `json:"historical_hit_count_session"`
+	PolicySourceLink          string             `json:"policy_source_link,omitempty"`
+	ToolSignature             string             `json:"tool_signature,omitempty"`
+}
+
+// ExplainPolicy is a policy reference returned inside an explanation.
+type ExplainPolicy struct {
+	PolicyID          string `json:"policy_id"`
+	PolicyName        string `json:"policy_name,omitempty"`
+	Action            string `json:"action,omitempty"`
+	RiskLevel         string `json:"risk_level,omitempty"`
+	AllowOverride     bool   `json:"allow_override,omitempty"`
+	PolicyDescription string `json:"policy_description,omitempty"`
+}
+
+// ExplainRule is the rule-level detail for an explanation.
+type ExplainRule struct {
+	PolicyID  string `json:"policy_id"`
+	RuleID    string `json:"rule_id,omitempty"`
+	RuleText  string `json:"rule_text,omitempty"`
+	MatchedOn string `json:"matched_on,omitempty"`
+}
+
+// sessionHitCountWindow is how far back we count "historical hits for this
+// rule this session" (ADR-043). Rolling 24h.
+const sessionHitCountWindow = 24 * time.Hour
+
+// explainDecisionHandler handles GET /api/v1/decisions/:id/explain.
+// Looks up the audit record by decision_id, builds a DecisionExplanation.
+func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	decisionID := strings.TrimSpace(vars["id"])
+	if decisionID == "" {
+		sendErrorResponse(w, "decision_id required", http.StatusBadRequest)
+		return
+	}
+
+	callerEmail := r.Header.Get("X-User-Email")
+	if callerEmail == "" {
+		callerEmail = r.Header.Get("X-User-ID")
+	}
+	callerTenant := r.Header.Get("X-Tenant-ID")
+
+	// Look up the audit entry by decision_id.
+	// policy_details JSONB contains decision_id; we use a functional index.
+	// The reason string is kept inside policy_details → reason, not a direct
+	// audit_logs column, so the SELECT list has five projections and the
+	// reason is parsed out of the details JSON below.
+	var (
+		entryUserEmail sql.NullString
+		entryTenant    sql.NullString
+		entryTime      time.Time
+		entryDecision  sql.NullString
+		entryDetails   sql.NullString // policy_details JSON
+	)
+
+	err := usageDB.QueryRow(`
+		SELECT user_email, tenant_id, timestamp, policy_decision, policy_details
+		FROM audit_logs
+		WHERE policy_details->>'decision_id' = $1
+		ORDER BY timestamp DESC LIMIT 1
+	`, decisionID).Scan(&entryUserEmail, &entryTenant, &entryTime,
+		&entryDecision, &entryDetails)
+
+	if err == sql.ErrNoRows {
+		sendErrorResponse(w, "Decision not found or past retention window", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("explain decision: lookup failed: %v", err)
+		sendErrorResponse(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Authorization: caller can explain only their own decisions unless they
+	// belong to the same tenant (admin authz is out of scope for this handler
+	// and deferred to a dedicated policy adapter).
+	if entryUserEmail.Valid && entryUserEmail.String != callerEmail {
+		if !entryTenant.Valid || entryTenant.String != callerTenant {
+			sendErrorResponse(w, "Not authorized to explain this decision", http.StatusForbidden)
+			return
+		}
+	}
+
+	// Parse policy_details JSON.
+	var details map[string]interface{}
+	if entryDetails.Valid {
+		_ = json.Unmarshal([]byte(entryDetails.String), &details)
+	}
+
+	// Reason lives in policy_details.reason rather than a direct column.
+	var reasonStr string
+	if details != nil {
+		if r, ok := details["reason"].(string); ok {
+			reasonStr = r
+		}
+	}
+
+	exp := buildExplanation(decisionID, entryTime,
+		entryDecision.String, reasonStr, details)
+
+	// Historical hit count for same (policy_id, user_email) in rolling 24h.
+	exp.HistoricalHitCountSession = queryHistoricalHitCount(callerEmail, exp.PolicyMatches, entryTime)
+
+	// Check for existing active override (drives override_available).
+	// Pass the decision's tool_signature so override lookup matches the same
+	// tool-scoped precedence as FindActiveOverride / ApplyOverrideToResult —
+	// otherwise explain could surface an override scoped to tool A when the
+	// user asks about a decision for tool B, which would be stricter than
+	// runtime enforcement and mislead the unblock UX (reviewer-caught).
+	exp.OverrideAvailable, exp.OverrideExistingID = checkOverrideAvailability(
+		callerTenant, callerEmail, exp.ToolSignature, exp.PolicyMatches,
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(exp)
+}
+
+// buildExplanation constructs a DecisionExplanation from a raw audit entry.
+// Exposed for testing.
+func buildExplanation(decisionID string, ts time.Time,
+	decision, reason string, details map[string]interface{}) DecisionExplanation {
+
+	exp := DecisionExplanation{
+		DecisionID: decisionID,
+		Timestamp:  ts,
+		Decision:   decision,
+		Reason:     reason,
+	}
+
+	if details == nil {
+		exp.PolicyMatches = []ExplainPolicy{}
+		return exp
+	}
+
+	if toolSig, ok := details["tool_signature"].(string); ok {
+		exp.ToolSignature = toolSig
+	}
+	if risk, ok := details["risk_level"].(string); ok {
+		exp.RiskLevel = risk
+	}
+
+	// Extract policy_matches if present.
+	if rawMatches, ok := details["policy_matches"].([]interface{}); ok {
+		exp.PolicyMatches = make([]ExplainPolicy, 0, len(rawMatches))
+		for _, raw := range rawMatches {
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ep := ExplainPolicy{}
+			if v, ok := m["policy_id"].(string); ok {
+				ep.PolicyID = v
+			}
+			if v, ok := m["policy_name"].(string); ok {
+				ep.PolicyName = v
+			}
+			if v, ok := m["action"].(string); ok {
+				ep.Action = v
+			}
+			if v, ok := m["risk_level"].(string); ok {
+				ep.RiskLevel = v
+			}
+			if v, ok := m["allow_override"].(bool); ok {
+				ep.AllowOverride = v
+			}
+			if v, ok := m["policy_description"].(string); ok {
+				ep.PolicyDescription = v
+			}
+			exp.PolicyMatches = append(exp.PolicyMatches, ep)
+		}
+	} else {
+		exp.PolicyMatches = []ExplainPolicy{}
+	}
+
+	// Fallback: if no structured matches but policy_ids present, surface IDs.
+	if len(exp.PolicyMatches) == 0 {
+		if ids, ok := details["policy_ids"].([]interface{}); ok {
+			for _, id := range ids {
+				if s, ok := id.(string); ok {
+					exp.PolicyMatches = append(exp.PolicyMatches, ExplainPolicy{PolicyID: s})
+				}
+			}
+		}
+	}
+
+	return exp
+}
+
+// queryHistoricalHitCount returns how many times the same (policy_id,
+// user_email) combination appeared in audit_logs within the session window.
+func queryHistoricalHitCount(userEmail string, matches []ExplainPolicy, anchorTime time.Time) int {
+	if userEmail == "" || len(matches) == 0 {
+		return 0
+	}
+	windowStart := anchorTime.Add(-sessionHitCountWindow)
+
+	policyID := matches[0].PolicyID
+	if policyID == "" {
+		return 0
+	}
+
+	// Count audit entries in the window where policy_details.policy_ids
+	// contains this exact policy_id. Uses the JSONB containment operator
+	// (@>) instead of string LIKE — LIKE would have matched "pol-1" against
+	// records containing "pol-10", which is wrong.
+	var count int
+	err := usageDB.QueryRow(`
+		SELECT COUNT(*) FROM audit_logs
+		WHERE user_email = $1
+		  AND timestamp >= $2
+		  AND (
+		        policy_details->'policy_ids' @> to_jsonb($3::text)
+		        OR policy_details->>'policy_id' = $3
+		      )
+	`, userEmail, windowStart, policyID).Scan(&count)
+	if err != nil {
+		log.Printf("historical hit count: query failed: %v", err)
+		return 0
+	}
+	return count
+}
+
+// checkOverrideAvailability returns (available, existing_override_id) for
+// the given caller, tool signature, and policy matches. Override is available
+// if at least one match has allow_override=true AND risk_level != critical.
+//
+// toolSignature is the tool the decision was scoped to (may be empty if the
+// decision had no tool context). Lookup follows the same scope rules as
+// FindActiveOverride / ApplyOverrideToResult (ADR-044): tool-specific
+// override wins over tool-agnostic when both exist for the same policy;
+// when the decision has no tool context, only tool-agnostic overrides match.
+func checkOverrideAvailability(tenantID, userEmail, toolSignature string, matches []ExplainPolicy) (bool, string) {
+	if userEmail == "" || len(matches) == 0 {
+		return false, ""
+	}
+	any := false
+	for _, m := range matches {
+		if m.RiskLevel != "critical" && m.AllowOverride {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return false, ""
+	}
+
+	// Look for existing active override for first overridable match,
+	// applying the same scope rules as runtime enforcement.
+	for _, m := range matches {
+		if m.RiskLevel == "critical" || !m.AllowOverride {
+			continue
+		}
+		var id string
+		err := usageDB.QueryRow(`
+			SELECT id FROM policy_overrides
+			WHERE policy_id = $1 AND created_by = $2 AND tenant_id = $3
+			  AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())
+			  AND (tool_signature IS NULL OR tool_signature = $4)
+			ORDER BY
+			  CASE WHEN tool_signature = $4 AND $4 <> '' THEN 0
+			       WHEN tool_signature IS NULL THEN 1
+			       ELSE 2 END,
+			  created_at DESC
+			LIMIT 1
+		`, m.PolicyID, userEmail, tenantID, toolSignature).Scan(&id)
+		if err == nil {
+			return true, id
+		}
+	}
+	return true, ""
+}

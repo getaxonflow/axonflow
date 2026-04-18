@@ -13,16 +13,19 @@ import (
 
 // MockRepository is an in-memory implementation of Repository for testing
 type MockRepository struct {
-	mu        sync.RWMutex
-	workflows map[string]*Workflow
-	steps     map[string]map[string]*WorkflowStep // workflowID -> stepID -> step
+	mu          sync.RWMutex
+	workflows   map[string]*Workflow
+	steps       map[string]map[string]*WorkflowStep // workflowID -> stepID -> step
+	checkpoints map[string]map[string]*Checkpoint   // workflowID -> stepID -> checkpoint
+	cpNextID    int64
 }
 
 // NewMockRepository creates a new in-memory mock repository
 func NewMockRepository() *MockRepository {
 	return &MockRepository{
-		workflows: make(map[string]*Workflow),
-		steps:     make(map[string]map[string]*WorkflowStep),
+		workflows:   make(map[string]*Workflow),
+		steps:       make(map[string]map[string]*WorkflowStep),
+		checkpoints: make(map[string]map[string]*Checkpoint),
 	}
 }
 
@@ -263,6 +266,22 @@ func (m *MockRepository) GetStep(ctx context.Context, workflowID, stepID string)
 	return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
 }
 
+// GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
+// Returns nil (not error) when the step has not been evaluated yet.
+func (m *MockRepository) GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if steps, ok := m.steps[workflowID]; ok {
+		if step, ok := steps[stepID]; ok {
+			copy := *step
+			return &copy, nil
+		}
+	}
+
+	return nil, nil
+}
+
 // UpdateStepApproval updates a step's approval status
 func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error {
 	m.mu.Lock()
@@ -387,4 +406,124 @@ func (m *MockRepository) CountPendingApprovals(ctx context.Context, tenantID str
 	}
 
 	return count, nil
+}
+
+// --- Checkpoint mock implementations ---
+
+// CreateCheckpoint stores a checkpoint, upserting on workflow_id+step_id conflict.
+func (m *MockRepository) CreateCheckpoint(ctx context.Context, cp *Checkpoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.checkpoints[cp.WorkflowID] == nil {
+		m.checkpoints[cp.WorkflowID] = make(map[string]*Checkpoint)
+	}
+
+	// Check if exists (upsert)
+	if existing, ok := m.checkpoints[cp.WorkflowID][cp.StepID]; ok {
+		existing.StepIndex = cp.StepIndex
+		existing.CheckpointType = cp.CheckpointType
+		existing.GateDecision = cp.GateDecision
+		existing.GateReason = cp.GateReason
+		existing.PoliciesEvaluated = cp.PoliciesEvaluated
+		existing.PoliciesMatched = cp.PoliciesMatched
+		existing.StepInput = cp.StepInput
+		existing.IsResumable = cp.IsResumable
+		cp.ID = existing.ID
+		cp.CreatedAt = existing.CreatedAt
+		return nil
+	}
+
+	m.cpNextID++
+	cp.ID = m.cpNextID
+	cp.CreatedAt = time.Now()
+	copy := *cp
+	m.checkpoints[cp.WorkflowID][cp.StepID] = &copy
+	return nil
+}
+
+// ListCheckpoints returns all checkpoints for a workflow, sorted by step_index.
+func (m *MockRepository) ListCheckpoints(ctx context.Context, workflowID string) ([]Checkpoint, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	cps, ok := m.checkpoints[workflowID]
+	if !ok {
+		return []Checkpoint{}, nil
+	}
+
+	result := make([]Checkpoint, 0, len(cps))
+	for _, cp := range cps {
+		result = append(result, *cp)
+	}
+
+	// Sort by step_index
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].StepIndex < result[i].StepIndex {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// GetLastResumableCheckpoint returns the checkpoint with the highest step_index that is resumable.
+func (m *MockRepository) GetLastResumableCheckpoint(ctx context.Context, workflowID string) (*Checkpoint, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	cps, ok := m.checkpoints[workflowID]
+	if !ok {
+		return nil, nil
+	}
+
+	var best *Checkpoint
+	for _, cp := range cps {
+		if cp.IsResumable {
+			if best == nil || cp.StepIndex > best.StepIndex {
+				copy := *cp
+				best = &copy
+			}
+		}
+	}
+
+	return best, nil
+}
+
+// GetCheckpointByID returns a checkpoint by its database ID.
+func (m *MockRepository) GetCheckpointByID(ctx context.Context, id int64) (*Checkpoint, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, cps := range m.checkpoints {
+		for _, cp := range cps {
+			if cp.ID == id {
+				copy := *cp
+				return &copy, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+// IncrementResumeCount increments the resume counter and sets last_resumed_at.
+func (m *MockRepository) IncrementResumeCount(ctx context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, cps := range m.checkpoints {
+		for _, cp := range cps {
+			if cp.ID == id {
+				cp.ResumeCount++
+				now := time.Now()
+				cp.LastResumedAt = &now
+				return nil
+			}
+		}
+	}
+
+	return nil
 }

@@ -96,6 +96,9 @@ func TestAuthenticate_CommunityMode(t *testing.T) {
 }
 
 func TestAuthenticate_Enterprise_Whitelist(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	// Save and restore authDB
@@ -392,6 +395,9 @@ func TestAuthKind_String(t *testing.T) {
 // =============================================================================
 
 func TestAuthenticate_Enterprise_ValidAuth_Fields(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 	origDB := authDB
 	authDB = nil
@@ -511,6 +517,9 @@ func TestAuthenticate_CommunityMode_CharacterizationBehavior(t *testing.T) {
 }
 
 func TestAuthenticate_Enterprise_InternalServiceFallthrough(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	origDB := authDB

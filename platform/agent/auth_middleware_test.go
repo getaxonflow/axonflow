@@ -227,6 +227,9 @@ func TestAPIAuthMiddleware_EnterpriseMode_InvalidCredentials(t *testing.T) {
 // TestAPIAuthMiddleware_EnterpriseMode_ValidCredentials verifies enterprise mode
 // with valid credentials from the knownClients whitelist.
 func TestAPIAuthMiddleware_EnterpriseMode_ValidCredentials(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	os.Setenv("DEPLOYMENT_MODE", "enterprise")
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
@@ -364,6 +367,9 @@ func TestExtractClientSecret_EdgeCases(t *testing.T) {
 
 // TestValidateClientCredentials_WhitelistPath tests credential validation.
 func TestValidateClientCredentials_WhitelistPath(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	ctx := context.Background()
 
 	t.Run("valid credentials", func(t *testing.T) {

@@ -29,11 +29,21 @@ type Repository interface {
 	// Step operations
 	AddStep(ctx context.Context, step *WorkflowStep) error
 	GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
+	// GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
+	// Returns nil (not error) if the step has not been evaluated yet.
+	GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
 	UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error
 	MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error
 	GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error)
 	GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error)
 	CountPendingApprovals(ctx context.Context, tenantID string) (int, error)
+
+	// Checkpoint operations — step-gate checkpoints for safe resume
+	CreateCheckpoint(ctx context.Context, cp *Checkpoint) error
+	ListCheckpoints(ctx context.Context, workflowID string) ([]Checkpoint, error)
+	GetLastResumableCheckpoint(ctx context.Context, workflowID string) (*Checkpoint, error)
+	GetCheckpointByID(ctx context.Context, id int64) (*Checkpoint, error)
+	IncrementResumeCount(ctx context.Context, id int64) error
 }
 
 // PostgresRepository implements Repository using PostgreSQL
@@ -445,6 +455,11 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 			tokens_in, tokens_out, cost_usd, gate_checked_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (workflow_id, step_id) DO UPDATE SET
+			step_name = EXCLUDED.step_name,
+			step_type = EXCLUDED.step_type,
+			step_input = EXCLUDED.step_input,
+			model = EXCLUDED.model,
+			provider = EXCLUDED.provider,
 			decision = EXCLUDED.decision,
 			decision_reason = EXCLUDED.decision_reason,
 			policies_evaluated = EXCLUDED.policies_evaluated,
@@ -540,6 +555,84 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if approvalStatus.Valid {
+		as := ApprovalStatus(approvalStatus.String)
+		step.ApprovalStatus = &as
+	}
+	if approvedBy.Valid {
+		step.ApprovedBy = approvedBy.String
+	}
+	if approvedAt.Valid {
+		step.ApprovedAt = &approvedAt.Time
+	}
+	if approvalComment.Valid {
+		step.ApprovalComment = approvalComment.String
+	}
+	if stepCompletedAt.Valid {
+		step.StepCompletedAt = &stepCompletedAt.Time
+	}
+	if stepOutput != nil {
+		step.StepOutput = json.RawMessage(stepOutput)
+	}
+
+	return &step, nil
+}
+
+// GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
+// Unlike GetStep, this returns nil (not error) when the step has not been evaluated yet,
+// making it suitable for the cache-lookup path where "not found" is a normal outcome.
+func (r *PostgresRepository) GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+	query := `
+		SELECT id, workflow_id, step_id, step_index, step_name, step_type,
+			   decision, decision_reason, policies_evaluated, policies_matched,
+			   approval_status, approved_by, approved_at,
+			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
+			   step_output, approval_comment, gate_checked_at, step_completed_at
+		FROM workflow_steps
+		WHERE workflow_id = $1 AND step_id = $2
+	`
+
+	var step WorkflowStep
+	var approvalStatus sql.NullString
+	var approvedBy sql.NullString
+	var approvedAt sql.NullTime
+	var approvalComment sql.NullString
+	var stepCompletedAt sql.NullTime
+	var stepOutput []byte
+
+	err := r.db.QueryRowContext(ctx, query, workflowID, stepID).Scan(
+		&step.ID,
+		&step.WorkflowID,
+		&step.StepID,
+		&step.StepIndex,
+		&step.StepName,
+		&step.StepType,
+		&step.Decision,
+		&step.DecisionReason,
+		&step.PoliciesEvaluated,
+		&step.PoliciesMatched,
+		&approvalStatus,
+		&approvedBy,
+		&approvedAt,
+		&step.StepInput,
+		&step.Model,
+		&step.Provider,
+		&step.TokensIn,
+		&step.TokensOut,
+		&step.CostUSD,
+		&stepOutput,
+		&approvalComment,
+		&step.GateCheckedAt,
+		&stepCompletedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // Not found is normal — means no cached decision
 	}
 	if err != nil {
 		return nil, err

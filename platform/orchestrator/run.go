@@ -330,14 +330,41 @@ type PolicyEvaluationResult struct {
 	Allowed          bool     `json:"allowed"`
 	AppliedPolicies  []string `json:"applied_policies"`
 	RiskScore        float64  `json:"risk_score"`
+	Severity         string   `json:"severity,omitempty"`          // Highest severity of matched policies: critical, high, medium, low
+	SeverityPolicyID string   `json:"severity_policy_id,omitempty"` // Policy that contributed the highest severity
 	RequiredActions  []string `json:"required_actions"`
 	ProcessingTimeMs int64    `json:"processing_time_ms"`
 	DatabaseAccessed bool     `json:"database_accessed,omitempty"`
+
+	// Structured per-policy detail (ADR-044 / ADR-043). Mirror of AppliedPolicies
+	// with risk and override semantics so downstream code (WCP adapter, explain
+	// handler) can decide overridability without re-querying policies.
+	AppliedPoliciesDetail []AppliedPolicyDetail `json:"applied_policies_detail,omitempty"`
+
+	// Override enforcement (ADR-044): when a session override flipped a deny
+	// into an allow, these fields record which override was applied.
+	OverrideApplied    bool   `json:"override_applied,omitempty"`
+	OverrideID         string `json:"override_id,omitempty"`
+	OverrideReason     string `json:"override_reason,omitempty"`
 
 	// LLM Routing overrides from dynamic policies
 	PreferredProvider string   `json:"preferred_provider,omitempty"` // Preferred LLM provider
 	AllowedProviders  []string `json:"allowed_providers,omitempty"`  // Strict list for compliance (failover only within this list)
 	RoutingReason     string   `json:"routing_reason,omitempty"`     // Why routing was changed
+}
+
+// AppliedPolicyDetail is the structured per-policy match carried inside
+// PolicyEvaluationResult for use by the WCP adapter and explain handler.
+// Introduced for ADR-044/ADR-043 — lets consumers decide override eligibility
+// without a second database round-trip.
+type AppliedPolicyDetail struct {
+	PolicyID      string `json:"policy_id"`
+	PolicyName    string `json:"policy_name"`
+	Description   string `json:"description,omitempty"`
+	Action        string `json:"action"`
+	RiskLevel     string `json:"risk_level"`     // low|medium|high|critical
+	AllowOverride bool   `json:"allow_override"` // false iff policy forbids session override
+	MatchedRule   string `json:"matched_rule,omitempty"`
 }
 
 type ProviderInfo struct {
@@ -517,6 +544,13 @@ func Run() {
 	r.HandleFunc("/api/v1/audit/search", auditSearchHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tool-call", auditToolCallHandler).Methods("POST")
 	r.HandleFunc("/api/v1/audit/tenant/{tenant_id}", tenantAuditLogsHandler).Methods("GET")
+
+	// Policy overrides (ADR-044) + explainability (ADR-043) — Plugin Batch 1
+	r.HandleFunc("/api/v1/overrides", createOverrideHandler).Methods("POST")
+	r.HandleFunc("/api/v1/overrides", listOverridesHandler).Methods("GET")
+	r.HandleFunc("/api/v1/overrides/{id}", getOverrideHandler).Methods("GET")
+	r.HandleFunc("/api/v1/overrides/{id}", revokeOverrideHandler).Methods("DELETE")
+	r.HandleFunc("/api/v1/decisions/{id}/explain", explainDecisionHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/summary", auditSummaryRequestHandler).Methods("POST", "OPTIONS")
 
 	// Workflow endpoints
@@ -2295,6 +2329,9 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		StartTime   time.Time `json:"start_time"`
 		EndTime     time.Time `json:"end_time"`
 		RequestType string    `json:"request_type,omitempty"`
+		DecisionID  string    `json:"decision_id,omitempty"` // ADR-043: filter by decision_id in policy_details JSONB
+		PolicyName  string    `json:"policy_name,omitempty"` // ADR-043: filter by policy_name
+		OverrideID  string    `json:"override_id,omitempty"` // ADR-044: filter by override_id in policy_details JSONB
 		Limit       int       `json:"limit,omitempty"`
 	}
 

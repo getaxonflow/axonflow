@@ -64,6 +64,18 @@ func (a *WCPPolicyAdapter) EvaluateStepGate(ctx context.Context, step *workflow_
 	result := a.engine.EvaluateDynamicPolicies(ctx, req)
 	durationMs := time.Since(startTime).Milliseconds()
 
+	// ADR-044: if the result is a deny, check for an active session override
+	// BEFORE converting to a step gate evaluation. Overrides only apply to
+	// denies on non-critical policies with allow_override=true.
+	if !result.Allowed {
+		toolSig := ""
+		if step.ToolContext != nil {
+			toolSig = step.ToolContext.ToolName
+		}
+		_, _ = ApplyOverrideToResult(ctx, usageDB, auditLogger, result,
+			step.TenantID, step.OrgID, step.UserID, toolSig)
+	}
+
 	// Convert PolicyEvaluationResult to StepGateEvaluation
 	evaluation := a.convertToStepGateEvaluation(result, durationMs)
 
@@ -85,12 +97,18 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 		return uuid.Nil
 	}
 
-	// Get first matching policy for context
+	// Determine the triggering policy for the HITL queue entry.
+	// Prefer the policy that contributed the highest severity (SeverityPolicyID),
+	// since that's the policy driving the routing behavior. Fall back to the first
+	// applied policy if no severity attribution is available.
 	policyID := ""
 	policyName := "unknown"
-	if len(result.AppliedPolicies) > 0 {
+	if result.SeverityPolicyID != "" {
+		policyName = result.SeverityPolicyID
+		policyID = policyName
+	} else if len(result.AppliedPolicies) > 0 {
 		policyName = result.AppliedPolicies[0]
-		policyID = policyName // Use name as ID if no separate ID
+		policyID = policyName
 	}
 
 	req := &HITLApprovalRequest{
@@ -104,7 +122,7 @@ func (a *WCPPolicyAdapter) createHITLApproval(ctx context.Context, step *workflo
 		PolicyID:      policyID,
 		PolicyName:    policyName,
 		TriggerReason: "Step requires human approval per policy",
-		Severity:      "high", // Default to high for require_approval
+		Severity:      deriveSeverityFromResult(result),
 		RequestContext: map[string]interface{}{
 			"workflow_id":   step.WorkflowID,
 			"step_id":      step.StepID,
@@ -197,6 +215,32 @@ func toolTypeForContext(step *workflow_control.StepGateContext) string {
 	return ""
 }
 
+// deriveSeverityFromResult determines the severity for an HITL approval request.
+// If the policy explicitly set a severity via the require_approval action config, use it.
+// Otherwise, derive severity from the risk score:
+//   - ≥0.8 → critical
+//   - ≥0.5 → high
+//   - ≥0.3 → medium
+//   - <0.3 → low
+func deriveSeverityFromResult(result *PolicyEvaluationResult) string {
+	// Explicit severity from policy action config takes precedence
+	if result.Severity != "" {
+		return result.Severity
+	}
+
+	// Derive from risk score
+	switch {
+	case result.RiskScore >= 0.8:
+		return "critical"
+	case result.RiskScore >= 0.5:
+		return "high"
+	case result.RiskScore >= 0.3:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
 // convertToStepGateEvaluation converts policy evaluation result to WCP step gate evaluation
 func (a *WCPPolicyAdapter) convertToStepGateEvaluation(result *PolicyEvaluationResult, durationMs int64) *workflow_control.StepGateEvaluation {
 	evaluation := &workflow_control.StepGateEvaluation{
@@ -227,19 +271,42 @@ func (a *WCPPolicyAdapter) convertToStepGateEvaluation(result *PolicyEvaluationR
 		}
 	}
 
-	// Build policy match details
-	for _, policyName := range result.AppliedPolicies {
-		match := workflow_control.PolicyMatch{
-			PolicyID:   policyName, // Use name as ID if no separate ID
-			PolicyName: policyName,
-			Action:     string(evaluation.Decision),
+	// Build policy match details. Prefer the structured AppliedPoliciesDetail
+	// (ADR-044/ADR-043) when populated — falls back to the name-only path for
+	// engines that haven't been upgraded.
+	if len(result.AppliedPoliciesDetail) > 0 {
+		for _, p := range result.AppliedPoliciesDetail {
+			match := workflow_control.PolicyMatch{
+				PolicyID:          p.PolicyID,
+				PolicyName:        p.PolicyName,
+				Action:            string(evaluation.Decision),
+				RiskLevel:         p.RiskLevel,
+				AllowOverride:     p.AllowOverride,
+				MatchedRule:       p.MatchedRule,
+				PolicyDescription: p.Description,
+			}
+			evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
+			if !result.Allowed {
+				evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
+			}
 		}
-		evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
+	} else {
+		for _, policyName := range result.AppliedPolicies {
+			match := workflow_control.PolicyMatch{
+				PolicyID:   policyName, // Use name as ID if no separate ID
+				PolicyName: policyName,
+				Action:     string(evaluation.Decision),
+			}
+			evaluation.PoliciesEvaluated = append(evaluation.PoliciesEvaluated, match)
+			if !result.Allowed {
+				evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
+			}
+		}
+	}
 
-		// If policy contributed to blocking, add to matched list
-		if !result.Allowed {
-			evaluation.PoliciesMatched = append(evaluation.PoliciesMatched, match)
-		}
+	// ADR-044: if a session override was applied, surface it in the reason.
+	if result.OverrideApplied && result.OverrideID != "" {
+		evaluation.Reason = "Allowed by session override " + result.OverrideID
 	}
 
 	return evaluation

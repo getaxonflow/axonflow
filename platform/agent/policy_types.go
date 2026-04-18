@@ -28,6 +28,10 @@ type StaticPolicy struct {
 	Priority    int    `json:"priority" db:"priority"`
 	Enabled     bool   `json:"enabled" db:"enabled"`
 
+	// Risk and override semantics (ADR-044)
+	RiskLevel     string `json:"risk_level" db:"risk_level"`         // low|medium|high|critical. Default "medium".
+	AllowOverride bool   `json:"allow_override" db:"allow_override"` // Session override allowed? Forced false for critical risk.
+
 	// Multi-tenancy
 	OrganizationID *string `json:"organization_id,omitempty" db:"organization_id"`
 	TenantID       string  `json:"tenant_id" db:"tenant_id"`
@@ -103,14 +107,36 @@ type PolicyOverride struct {
 	EnabledOverride *bool           `json:"enabled_override,omitempty" db:"enabled_override"`
 
 	// Governance
-	OverrideReason string     `json:"override_reason" db:"override_reason"`
+	OverrideReason string     `json:"override_reason" db:"override_reason"` // Mandatory free-text justification (ADR-044)
 	ExpiresAt      *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	ToolSignature  *string    `json:"tool_signature,omitempty" db:"tool_signature"` // Optional: restrict override to a specific tool
 
 	// Audit trail
-	CreatedBy string    `json:"created_by,omitempty" db:"created_by"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedBy string    `json:"updated_by,omitempty" db:"updated_by"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	CreatedBy string     `json:"created_by,omitempty" db:"created_by"`
+	CreatedAt time.Time  `json:"created_at" db:"created_at"`
+	UpdatedBy string     `json:"updated_by,omitempty" db:"updated_by"`
+	UpdatedAt time.Time  `json:"updated_at" db:"updated_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty" db:"revoked_at"`
+	RevokedBy *string    `json:"revoked_by,omitempty" db:"revoked_by"`
+}
+
+// IsRevoked returns true if the override has been explicitly revoked.
+func (o *PolicyOverride) IsRevoked() bool {
+	return o.RevokedAt != nil
+}
+
+// IsActive returns true if the override is neither expired nor revoked.
+func (o *PolicyOverride) IsActive() bool {
+	return !o.IsExpired() && !o.IsRevoked()
+}
+
+// MatchesTool returns true if the override applies to the given tool signature.
+// An override with no ToolSignature matches any tool.
+func (o *PolicyOverride) MatchesTool(toolSignature string) bool {
+	if o.ToolSignature == nil {
+		return true
+	}
+	return *o.ToolSignature == toolSignature
 }
 
 // IsExpired returns true if the override has expired.

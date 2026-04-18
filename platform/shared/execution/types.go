@@ -174,10 +174,14 @@ type StepStatus struct {
 
 // PolicyMatch represents a policy that was evaluated/matched during execution.
 type PolicyMatch struct {
-	PolicyID   string `json:"policy_id"`
-	PolicyName string `json:"policy_name"`
-	Action     string `json:"action"`
-	Reason     string `json:"reason,omitempty"`
+	PolicyID          string `json:"policy_id"`
+	PolicyName        string `json:"policy_name"`
+	Action            string `json:"action"`
+	Reason            string `json:"reason,omitempty"`
+	RiskLevel         string `json:"risk_level,omitempty"`         // low|medium|high|critical (ADR-044)
+	AllowOverride     bool   `json:"allow_override,omitempty"`     // false forbids session override (ADR-044)
+	MatchedRule       string `json:"matched_rule,omitempty"`       // human-readable description of what matched (ADR-043)
+	PolicyDescription string `json:"policy_description,omitempty"` // policy description for end-user display (ADR-043)
 }
 
 // --- Helper Methods ---
