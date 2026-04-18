@@ -7,7 +7,7 @@
     "test": "ts-node main.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^5.3.0"
+    "@axonflow/sdk": "^5.4.0"
   },
   "devDependencies": {
     "ts-node": "^10.9.0",
