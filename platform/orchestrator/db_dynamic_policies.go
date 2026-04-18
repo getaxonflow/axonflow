@@ -714,6 +714,18 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				if reason, ok := actionConfig["reason"].(string); ok {
 					result.RequiredActions = append(result.RequiredActions, "approval_reason: "+reason)
 				}
+				// Extract and validate severity from policy action config for risk-tiered routing.
+				// Invalid values are logged and ignored (risk score fallback applies).
+				if severity, ok := actionConfig["severity"].(string); ok {
+					if severity == "low" || severity == "medium" || severity == "high" || severity == "critical" {
+						if result.Severity == "" || severityOrdinal(severity) > severityOrdinal(result.Severity) {
+							result.Severity = severity
+							result.SeverityPolicyID = name
+						}
+					} else {
+						log.Printf("[POLICY] Invalid severity %q in require_approval action for policy %q, ignoring", severity, name)
+					}
+				}
 				log.Printf("[POLICY] Require approval action applied - step will need human approval")
 			}
 		}

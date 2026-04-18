@@ -52,6 +52,28 @@ const (
 	ApprovalStatusRejected ApprovalStatus = "rejected"
 )
 
+// RetryPolicy controls how step gate decisions behave on repeated calls for the
+// same (workflow_id, step_id) pair. The default is idempotent: same step, same
+// boundary, same decision — unless the caller explicitly re-opens it.
+type RetryPolicy string
+
+const (
+	// RetryPolicyIdempotent returns the cached decision from the database if the
+	// step was already evaluated. This is the default and provides consistent
+	// auditability, safe approval semantics, and prevents accidental counter drift.
+	RetryPolicyIdempotent RetryPolicy = "idempotent"
+
+	// RetryPolicyReevaluate forces a fresh policy evaluation even if the step was
+	// previously evaluated. Use when external state has changed and the caller
+	// wants the policy engine to reconsider its decision.
+	RetryPolicyReevaluate RetryPolicy = "reevaluate"
+)
+
+// ValidRetryPolicy returns true if the policy is a known value or empty (defaults to idempotent).
+func ValidRetryPolicy(p RetryPolicy) bool {
+	return p == "" || p == RetryPolicyIdempotent || p == RetryPolicyReevaluate
+}
+
 // StepType represents the type of workflow step
 type StepType string
 
@@ -170,6 +192,10 @@ type StepGateRequest struct {
 	TokensOut   *int                   `json:"tokens_out,omitempty"`
 	CostUSD     *float64               `json:"cost_usd,omitempty"`
 	ToolContext *ToolContext           `json:"tool_context,omitempty"`
+	// RetryPolicy controls behavior on repeated calls for the same (workflow_id, step_id).
+	// Default (empty or "idempotent"): return cached decision from DB.
+	// "reevaluate": force fresh policy evaluation regardless of prior decision.
+	RetryPolicy RetryPolicy `json:"retry_policy,omitempty"`
 	// GateOverride bypasses the policy evaluator and forces a specific decision.
 	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
 	GateOverride *GateDecision `json:"-"`
@@ -194,6 +220,14 @@ type StepGateResponse struct {
 	ApprovalURL       string        `json:"approval_url,omitempty"`
 	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
 	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)
+	// Cached indicates whether this response was served from a prior decision
+	// rather than a fresh policy evaluation. True when retry_policy is "idempotent"
+	// (the default) and the step was previously evaluated.
+	Cached bool `json:"cached"`
+	// DecisionSource indicates how the decision was produced:
+	// "fresh" — policy evaluator ran for this request
+	// "cached" — returned from a prior evaluation stored in the database
+	DecisionSource string `json:"decision_source"`
 }
 
 // WorkflowStatusResponse is the response for workflow status
@@ -253,10 +287,14 @@ type ListWorkflowsResponse struct {
 
 // PolicyMatch represents a matched policy for a step
 type PolicyMatch struct {
-	PolicyID   string `json:"policy_id"`
-	PolicyName string `json:"policy_name"`
-	Action     string `json:"action"`
-	Reason     string `json:"reason,omitempty"`
+	PolicyID          string `json:"policy_id"`
+	PolicyName        string `json:"policy_name"`
+	Action            string `json:"action"`
+	Reason            string `json:"reason,omitempty"`
+	RiskLevel         string `json:"risk_level,omitempty"`         // low|medium|high|critical (ADR-044)
+	AllowOverride     bool   `json:"allow_override,omitempty"`     // false forbids session override (ADR-044)
+	MatchedRule       string `json:"matched_rule,omitempty"`       // human-readable description of what matched (ADR-043)
+	PolicyDescription string `json:"policy_description,omitempty"` // policy description for end-user display (ADR-043)
 }
 
 // --- Helper Functions ---

@@ -260,6 +260,15 @@ For AI agent runtimes, see:
 - [**Anthropic Computer Use**](https://docs.getaxonflow.com/docs/integration/computer-use/) — governed desktop and tool actions
 - [**Claude Agent SDK**](https://docs.getaxonflow.com/docs/integration/claude-agent-sdk/) — MCP tool governance patterns
 
+For coding assistants and developer tools, AxonFlow ships official plugins that enforce the same policy surface on tool calls made inside the IDE or CLI:
+
+- [**OpenClaw plugin**](https://docs.getaxonflow.com/docs/integration/openclaw/) (`@axonflow/openclaw`, npm + ClawHub) — governs OpenClaw tool execution
+- [**Claude Code plugin**](https://docs.getaxonflow.com/docs/integration/claude-code/) — governs Claude Code tool use via MCP hooks
+- [**Cursor plugin**](https://docs.getaxonflow.com/docs/integration/cursor/) — governs Cursor IDE tool calls via pre-/post-tool hooks
+- [**Codex plugin**](https://docs.getaxonflow.com/docs/integration/codex/) — governs OpenAI Codex CLI via Bash hooks and advisory skills
+
+All four plugins talk to the same self-hosted AxonFlow stack — policies and audit trail are shared.
+
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
 
 ### vs LangChain / LangSmith

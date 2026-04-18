@@ -1947,6 +1947,9 @@ func TestValidateServiceLicense_CommunityMode(t *testing.T) {
 // runs license validation (not skipped). In community build, ValidateLicense always returns
 // Valid=true, so we verify it doesn't error and proceeds with validation.
 func TestValidateServiceLicense_EnterpriseMode_LicenseValidated(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community license keys that don't validate with enterprise Ed25519 signing")
+	}
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
@@ -1966,6 +1969,9 @@ func TestValidateServiceLicense_EnterpriseMode_LicenseValidated(t *testing.T) {
 // TestValidateServiceLicense_EnterpriseMode_FakeKey tests that a fake license key
 // is processed through license validation in enterprise mode.
 func TestValidateServiceLicense_EnterpriseMode_FakeKey(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community license keys that don't validate with enterprise Ed25519 signing")
+	}
 	t.Setenv("DEPLOYMENT_MODE", "enterprise")
 
 	w := httptest.NewRecorder()
