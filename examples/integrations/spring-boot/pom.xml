@@ -21,8 +21,8 @@
 
     <properties>
         <java.version>17</java.version>
-        <!-- Override Tomcat version to fix CVE-2026-24734 -->
-        <tomcat.version>10.1.52</tomcat.version>
+        <!-- Override Tomcat version to fix CVE-2026-29145, CVE-2026-29129, CVE-2026-34483, CVE-2026-34487 -->
+        <tomcat.version>10.1.54</tomcat.version>
         <!-- Override Spring Framework to fix CVE-2025-41249 -->
         <spring-framework.version>6.2.17</spring-framework.version>
         <!-- Override Jackson to fix GHSA-72hv-8253-57qq -->

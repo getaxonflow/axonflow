@@ -255,8 +255,16 @@ For Go, Java, Python, and TypeScript applications, we recommend using the **[Axo
 
 All features—policy enforcement, audit logging, MCP connectors, WCP workflows—are available via both SDKs and HTTP.
 
-For AI agent runtimes, see:
-- [**OpenClaw**](https://docs.getaxonflow.com/docs/integration/openclaw/) — policy enforcement, approval gates, and audit trails for OpenClaw tool execution
+AxonFlow ships official plugins for AI agent runtimes, coding assistants, and developer tools. All plugins enforce the same policy surface and share a single audit trail via your self-hosted AxonFlow stack.
+
+| Plugin | Platform | Install | Docs | Repo |
+|--------|----------|---------|------|------|
+| **OpenClaw** | OpenClaw | `openclaw plugins install @axonflow/openclaw` | [Docs](https://docs.getaxonflow.com/docs/integration/openclaw/) | [GitHub](https://github.com/getaxonflow/axonflow-openclaw-plugin) |
+| **Claude Code** | Claude Code CLI | Marketplace or manual hooks | [Docs](https://docs.getaxonflow.com/docs/integration/claude-code/) | [GitHub](https://github.com/getaxonflow/axonflow-claude-plugin) |
+| **Cursor** | Cursor IDE | Pre-/post-tool hooks | [Docs](https://docs.getaxonflow.com/docs/integration/cursor/) | [GitHub](https://github.com/getaxonflow/axonflow-cursor-plugin) |
+| **Codex** | OpenAI Codex CLI | Bash hooks and advisory skills | [Docs](https://docs.getaxonflow.com/docs/integration/codex/) | [GitHub](https://github.com/getaxonflow/axonflow-codex-plugin) |
+
+For AI agent framework integration, see:
 - [**Anthropic Computer Use**](https://docs.getaxonflow.com/docs/integration/computer-use/) — governed desktop and tool actions
 - [**Claude Agent SDK**](https://docs.getaxonflow.com/docs/integration/claude-agent-sdk/) — MCP tool governance patterns
 

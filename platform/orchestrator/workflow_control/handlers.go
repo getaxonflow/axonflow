@@ -55,6 +55,9 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Step gates - the core governance endpoint
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/gate", h.StepGate).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/complete", h.MarkStepCompleted).Methods("POST", "OPTIONS")
+
+	// Checkpoints — available to all tiers (read-only for Community)
+	r.HandleFunc("/api/v1/workflows/{id}/checkpoints", h.GetCheckpoints).Methods("GET", "OPTIONS")
 }
 
 // RegisterEvaluationRoutes registers approval routes available to Evaluation tier and above.
@@ -63,6 +66,9 @@ func (h *Handler) RegisterEvaluationRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/approvals/pending", h.GetPendingApprovals).Methods("GET", "OPTIONS")
+
+	// Checkpoint resume — Evaluation can resume from last checkpoint only
+	r.HandleFunc("/api/v1/workflows/{id}/checkpoints/resume", h.ResumeFromLastCheckpoint).Methods("POST", "OPTIONS")
 }
 
 // RegisterEnterpriseRoutes registers enterprise-only approval routes with a gorilla/mux router.
@@ -71,6 +77,9 @@ func (h *Handler) RegisterEnterpriseRoutes(r *mux.Router) {
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/approve", h.ApproveStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/{id}/steps/{step_id}/reject", h.RejectStep).Methods("POST", "OPTIONS")
 	r.HandleFunc("/api/v1/workflows/approvals/pending", h.GetPendingApprovals).Methods("GET", "OPTIONS")
+
+	// Checkpoint resume — Enterprise can resume from any checkpoint
+	r.HandleFunc("/api/v1/workflows/{id}/checkpoints/{checkpoint_id}/resume", h.ResumeFromCheckpoint).Methods("POST", "OPTIONS")
 }
 
 // CreateWorkflow handles POST /api/v1/workflows
@@ -240,6 +249,12 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 			"code":    "INVALID_TOOL_CONTEXT",
 			"message": "tool_name is required when tool_context is provided",
 		})
+		return
+	}
+
+	if !ValidRetryPolicy(req.RetryPolicy) {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST",
+			"retry_policy must be \"idempotent\" or \"reevaluate\"")
 		return
 	}
 
@@ -759,4 +774,122 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, code, message st
 		Code:    code,
 		Message: message,
 	})
+}
+
+// --- Checkpoint handlers ---
+
+// GetCheckpoints handles GET /api/v1/workflows/{id}/checkpoints
+// Available to all tiers — Community can list checkpoints (read-only visibility).
+func (h *Handler) GetCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	vars := mux.Vars(r)
+	workflowID := vars["id"]
+	if workflowID == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
+		return
+	}
+
+	tenantID := h.getTenantID(r)
+	orgID := h.getOrgID(r)
+
+	resp, err := h.service.GetCheckpoints(r.Context(), workflowID, tenantID, orgID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
+			return
+		}
+		h.logger.Printf("[WorkflowControl] GetCheckpoints error for %s: %v", workflowID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list checkpoints")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// ResumeFromLastCheckpoint handles POST /api/v1/workflows/{id}/checkpoints/resume
+// Evaluation+ — resume from the last resumable checkpoint with fresh policy evaluation.
+func (h *Handler) ResumeFromLastCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	vars := mux.Vars(r)
+	workflowID := vars["id"]
+	if workflowID == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
+		return
+	}
+
+	tenantID := h.getTenantID(r)
+	orgID := h.getOrgID(r)
+
+	resp, err := h.service.ResumeFromLastCheckpoint(r.Context(), workflowID, tenantID, orgID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "no resumable checkpoint") || strings.Contains(err.Error(), "cannot resume") {
+			h.writeError(w, http.StatusConflict, "NOT_RESUMABLE", err.Error())
+			return
+		}
+		h.logger.Printf("[WorkflowControl] ResumeFromLastCheckpoint error for %s: %v", workflowID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resume from checkpoint")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// ResumeFromCheckpoint handles POST /api/v1/workflows/{id}/checkpoints/{checkpoint_id}/resume
+// Enterprise only — resume from a specific checkpoint with fresh policy evaluation.
+func (h *Handler) ResumeFromCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		h.handleCORS(w, r)
+		return
+	}
+
+	vars := mux.Vars(r)
+	workflowID := vars["id"]
+	checkpointIDStr := vars["checkpoint_id"]
+
+	if workflowID == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Workflow ID is required")
+		return
+	}
+	if checkpointIDStr == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Checkpoint ID is required")
+		return
+	}
+
+	checkpointID, err := strconv.ParseInt(checkpointIDStr, 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid checkpoint ID")
+		return
+	}
+
+	tenantID := h.getTenantID(r)
+	orgID := h.getOrgID(r)
+
+	resp, err := h.service.ResumeFromCheckpoint(r.Context(), workflowID, checkpointID, tenantID, orgID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "not resumable") || strings.Contains(err.Error(), "cannot resume") {
+			h.writeError(w, http.StatusConflict, "NOT_RESUMABLE", err.Error())
+			return
+		}
+		h.logger.Printf("[WorkflowControl] ResumeFromCheckpoint error for %s/%d: %v", workflowID, checkpointID, err)
+		h.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resume from checkpoint")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
 }

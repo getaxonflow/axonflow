@@ -7,6 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [7.1.0] - 2026-04-18
+
+Combined release: Workflow State Management & HITL Enhancement +
+Plugin Batch 1 — Governed Overrides & Explainability.
+
+### Added
+
+#### Workflow State Management & HITL Enhancement
+
+- **Execution boundary semantics** — Step gate decisions are now idempotent
+  by default. Calling the same `(workflow_id, step_id)` returns the cached
+  decision without re-running the policy evaluator. Pass
+  `retry_policy: "reevaluate"` to force a fresh evaluation when external state
+  has changed. Responses include `cached` (boolean) and `decision_source`
+  ("fresh" or "cached") so callers always know the provenance of the decision.
+
+- **Workflow checkpoints** — Every step gate evaluation automatically creates
+  a checkpoint capturing the decision, policy context, and full step metadata
+  (model, provider, tool context, actor identity). Checkpoints are
+  governance-aware resume boundaries, not arbitrary snapshots.
+  - Community: list checkpoints via `GET /api/v1/workflows/{id}/checkpoints`
+  - Evaluation: resume from last checkpoint via `POST /api/v1/workflows/{id}/checkpoints/resume`
+  - Enterprise: resume from any checkpoint via `POST /api/v1/workflows/{id}/checkpoints/{id}/resume`
+
+- **Risk-tiered approval routing** — HITL approval requests now carry a
+  severity level (critical, high, medium, low) derived from the triggering
+  policy's action config or the policy evaluation risk score. When multiple
+  policies match, the highest severity wins. The HITL queue can be filtered
+  by severity.
+  - Enterprise: auto-approve low-risk actions after a configurable delay,
+    escalate critical-risk actions past SLA threshold. Configure via
+    `AXONFLOW_RISK_TIER_ENABLED`, `AXONFLOW_RISK_TIER_ORG_ID`,
+    `AXONFLOW_LOW_AUTO_APPROVE_DELAY_MIN`, `AXONFLOW_CRITICAL_ESCALATION_SLA_MIN`.
+
+- **Deterministic approval deduplication** — WCP approval creation uses a
+  deterministic UUID derived from `(workflow_id, step_id)` combined with
+  `ON CONFLICT` to guarantee exactly one approval per execution boundary,
+  even under concurrent first-time calls.
+
+#### Plugin Batch 1 — Governed Overrides & Explainability
+
+- **Governed session overrides** — users can grant themselves a time-bounded,
+  audit-logged override on a policy that would otherwise deny, closing the
+  dev-mode UX gap without weakening governance. TTL is clamped server-side
+  (default 60 minutes, hard cap 24 hours, zero for critical-risk policies).
+  A free-text justification is mandatory on every override. Four new audit
+  event types record the full lifecycle: `override_created`, `override_used`,
+  `override_expired`, `override_revoked`. New endpoints: `POST /api/v1/overrides`,
+  `GET /api/v1/overrides`, `GET /api/v1/overrides/{id}`,
+  `DELETE /api/v1/overrides/{id}`.
+- **Policy risk level + override flag** — every policy now carries an explicit
+  `risk_level` (`low` | `medium` | `high` | `critical`) and an
+  `allow_override` boolean. The combination is enforced as a contract: a
+  database trigger forces `allow_override=false` whenever `risk_level=critical`,
+  and the override creation endpoint rejects with 403 if either condition
+  forbids the override. Existing policies are migrated with sensible defaults
+  (dangerous commands, RCE, and privilege-escalation categories set to
+  `critical`; SQLi, prompt injection, and secret leaks set to `high`).
+- **Richer approval context** — `PolicyMatch` now includes `risk_level`,
+  `allow_override`, `matched_rule`, and `policy_description` fields. Plugins
+  can surface a structured reason on every block rather than a terse string.
+  Existing consumers are unaffected — all new fields use `omitempty`.
+- **Explain-on-demand endpoint** — `GET /api/v1/decisions/{id}/explain`
+  returns a stable `DecisionExplanation` payload: matched policies with
+  descriptions, decision + reason, risk level, override availability and any
+  existing active override, historical hit count for the same rule in the
+  caller's rolling 24-hour session window, and a tool signature. Authorization
+  is scoped to the decision owner or same-tenant callers. Payload shape is
+  frozen — additive fields only until a major version bump.
+- **Audit search filter parity** — `POST /api/v1/audit/search` accepts three
+  new optional filters: `decision_id` for explain flows, `policy_name` for
+  "what did this policy block" queries, and `override_id` to reconstruct the
+  full lifecycle of a single override. Existing filters remain unchanged.
+- **MCP tool surface** — `explain_decision`, `create_override`, `delete_override`,
+  and `list_overrides` are now exposed as MCP tools on the agent's MCP server,
+  alongside the existing `check_policy` / `check_output` / `audit_tool_call`
+  / `list_policies` / `get_policy_stats` / `search_audit_events` tools. Agents
+  running in the plugin ecosystem can drive the full override lifecycle and
+  decision explainability without leaving the MCP surface.
+
+### Changed
+
+- **Step gate upsert** — Re-evaluation (`retry_policy: "reevaluate"`) now
+  updates all step metadata (step_name, step_type, step_input, model,
+  provider) in the persisted step record, not just the decision columns.
+
+- **Concurrent safety** — After upserting a step decision, the service reads
+  back the persisted row to ensure the response matches what actually landed
+  in the database. If a concurrent call won the race with a different
+  decision, the persisted (winning) decision is returned.
+
+- **Feature matrix** — Updated with checkpoint and risk-tiered approval rows
+  across Community, Evaluation, and Enterprise tiers.
+
+- `DynamicPolicy` and `StaticPolicy` structs gained `risk_level` and
+  `allow_override` fields. Policy repositories persist them via migration 070.
+
+### Fixed
+
+- **Severity was hardcoded** — HITL approval severity was always set to
+  "high" regardless of the triggering policy's risk level. Now derived from
+  the policy's `require_approval` action config or the evaluation risk score.
+
+### Database
+
+- Migration `069_*` — workflow state management (#1607).
+- Migration `070_policy_batch1_risk_and_override_extensions.sql` adds
+  `risk_level` and `allow_override` columns (with seeded defaults per category)
+  to `static_policies` and `dynamic_policies`; extends the existing
+  `policy_overrides` table with `tool_signature`, `revoked_at`, `revoked_by`;
+  adds `audit_logs` indexes on `decision_id` for the new filters; installs a
+  trigger that enforces the critical-risk no-override invariant at the
+  database level.
+
+### Plugin ecosystem
+
+The companion plugin releases for Plugin Batch 1 (OpenClaw v1.3.0,
+Claude Code v0.5.0, Cursor v0.5.0, Codex v0.4.0) ship the user-facing
+consumption of the new override, explain, and audit-search endpoints.
+
+---
+
 ## [7.0.1] - 2026-04-11
 
 ### Fixed

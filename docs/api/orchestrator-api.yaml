@@ -3816,6 +3816,92 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/workflows/{workflow_id}/checkpoints:
+    get:
+      tags:
+        - Workflow Control Plane
+      summary: List step-gate checkpoints for a workflow
+      description: |
+        Returns all checkpoints for a workflow, ordered by step_index.
+        Checkpoints are created automatically at each step gate evaluation.
+        Available in all tiers (Community, Evaluation, Enterprise).
+      operationId: getCheckpoints
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of checkpoints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointListResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/workflows/{workflow_id}/checkpoints/resume:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Resume workflow from last checkpoint (Evaluation+)
+      description: |
+        Re-evaluates the step gate at the last resumable checkpoint with
+        current policies. The step gate uses retry_policy=reevaluate internally.
+      operationId: resumeFromLastCheckpoint
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resume result with fresh decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeFromCheckpointResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Workflow not resumable (completed, no checkpoints)
+
+  /api/v1/workflows/{workflow_id}/checkpoints/{checkpoint_id}/resume:
+    post:
+      tags:
+        - Workflow Control Plane
+      summary: Resume workflow from specific checkpoint (Enterprise)
+      description: |
+        Re-evaluates the step gate at a specific checkpoint with current policies.
+        Enterprise only.
+      operationId: resumeFromCheckpoint
+      parameters:
+        - name: workflow_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: checkpoint_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Resume result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumeFromCheckpointResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Checkpoint not resumable
+
   /api/v1/workflows/{workflowId}/steps/{stepId}/approve:
     post:
       tags:
@@ -7209,6 +7295,15 @@ components:
           example: 0.0023
         tool_context:
           $ref: '#/components/schemas/ToolContext'
+        retry_policy:
+          type: string
+          description: |
+            Controls behavior on repeated calls for the same (workflow_id, step_id).
+            Default ("idempotent"): return cached decision from prior evaluation.
+            "reevaluate": force fresh policy evaluation regardless of prior decision.
+          enum: [idempotent, reevaluate]
+          default: idempotent
+          example: "idempotent"
 
     StepGateResponse:
       type: object
@@ -7245,6 +7340,20 @@ components:
           description: Policies that matched and contributed to the decision (Issue #1021)
           items:
             $ref: '#/components/schemas/PolicyMatch'
+        cached:
+          type: boolean
+          description: |
+            Whether this response was served from a prior decision rather than
+            a fresh policy evaluation. True when retry_policy is "idempotent"
+            (the default) and the step was previously evaluated.
+          example: false
+        decision_source:
+          type: string
+          description: |
+            How the decision was produced: "fresh" (policy evaluator ran for
+            this request) or "cached" (returned from prior evaluation in DB).
+          enum: [fresh, cached]
+          example: "fresh"
 
     MarkStepCompletedRequest:
       type: object
@@ -7266,6 +7375,72 @@ components:
           format: double
           description: Actual cost in USD for the step (overrides gate-time estimate)
           example: 0.0023
+
+    Checkpoint:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Database identifier
+        workflow_id:
+          type: string
+        step_id:
+          type: string
+        step_index:
+          type: integer
+        step_type:
+          type: string
+          description: Type of step (llm_call, tool_call, etc.)
+        checkpoint_type:
+          type: string
+          enum: [step_gate, approval_boundary]
+          description: step_gate for standard gates, approval_boundary for require_approval
+        gate_decision:
+          type: string
+          enum: [allow, block, require_approval]
+        gate_reason:
+          type: string
+        is_resumable:
+          type: boolean
+          description: False for blocked steps (no point resuming from a hard block)
+        resume_count:
+          type: integer
+          description: How many times the workflow has been resumed from this checkpoint
+        created_at:
+          type: string
+          format: date-time
+
+    CheckpointListResponse:
+      type: object
+      properties:
+        checkpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Checkpoint'
+        workflow_id:
+          type: string
+
+    ResumeFromCheckpointResponse:
+      type: object
+      properties:
+        workflow_id:
+          type: string
+        resumed_from_checkpoint:
+          type: string
+          description: step_id of the checkpoint
+        resumed_from_index:
+          type: integer
+        new_decision:
+          type: string
+          enum: [allow, block, require_approval]
+        decision_source:
+          type: string
+          description: Always "fresh" since resume forces re-evaluation
+        resume_count:
+          type: integer
+        message:
+          type: string
 
     ListWorkflowsResponse:
       type: object
