@@ -21,6 +21,9 @@ import (
 
 // TestValidateClientCredentials tests the whitelist-based client authentication
 func TestValidateClientCredentials(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	ctx := context.Background()
 
 	tests := []struct {
@@ -132,6 +135,9 @@ func TestValidateClientCredentials(t *testing.T) {
 
 // TestValidateClientCredentialsPermissions tests permission handling
 func TestValidateClientCredentialsPermissions(t *testing.T) {
+	if !isCommunityBuild {
+		t.Skip("uses community whitelist keys that don't validate with enterprise Ed25519 signing")
+	}
 	ctx := context.Background()
 
 	// Test healthcare demo permissions

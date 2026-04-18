@@ -1,0 +1,74 @@
+name: Validate License Server
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'ee/platform/license-server/**'
+      - 'ee/platform/agent/license/**'
+      - 'ee/go.mod'
+      - 'ee/go.sum'
+      - '.github/workflows/validate-license-server.yml'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'ee/platform/license-server/**'
+      - 'ee/platform/agent/license/**'
+      - 'ee/go.mod'
+      - 'ee/go.sum'
+      - '.github/workflows/validate-license-server.yml'
+
+env:
+  SERVICE_DIR: ee/platform/license-server
+
+jobs:
+  validate:
+    name: Build License Server Lambda
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.SERVICE_DIR }}/go.mod
+          cache-dependency-path: ${{ env.SERVICE_DIR }}/go.sum
+
+      # Catch go.mod drift early — the license-server Lambda build fails
+      # hard with "go: updates to go.mod needed" when this drifts, and the
+      # deploy workflow only runs on manual dispatch so drift can sit
+      # invisible for weeks.
+      - name: Verify go.mod is tidy
+        working-directory: ${{ env.SERVICE_DIR }}
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo ""
+            echo "::error::go.mod/go.sum are not tidy. Run 'go mod tidy' in ${{ env.SERVICE_DIR }} and commit."
+            exit 1
+          fi
+
+      # Invoke the Makefile build target directly so the job exercises the
+      # same command that `make deploy` runs via terraform. A divergence
+      # between CI and Makefile is exactly the kind of drift this workflow
+      # is supposed to catch. Enterprise tag is required because
+      # ee/platform/agent/license is guarded by //go:build enterprise.
+      - name: Build Lambda binary (via make)
+        working-directory: ${{ env.SERVICE_DIR }}
+        run: |
+          make build
+          ls -la terraform/lambda.zip
+
+      - name: Vet
+        working-directory: ${{ env.SERVICE_DIR }}
+        run: go vet -tags "lambda.norpc enterprise" ./...
+
+      - name: Test
+        working-directory: ${{ env.SERVICE_DIR }}
+        run: go test -tags "lambda.norpc enterprise" ./...

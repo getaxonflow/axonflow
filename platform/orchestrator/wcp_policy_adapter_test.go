@@ -355,8 +355,97 @@ func TestCreateHITLApproval_Success(t *testing.T) {
 	if mock.lastReq.PolicyName != "high-risk-approval" {
 		t.Errorf("Expected PolicyName=high-risk-approval, got %s", mock.lastReq.PolicyName)
 	}
-	if mock.lastReq.Severity != "high" {
-		t.Errorf("Expected Severity=high, got %s", mock.lastReq.Severity)
+	// RiskScore=0.9 → severity derived as "critical" (≥0.8 threshold)
+	if mock.lastReq.Severity != "critical" {
+		t.Errorf("Expected Severity=critical (risk_score=0.9), got %s", mock.lastReq.Severity)
+	}
+}
+
+func TestCreateHITLApproval_ExplicitSeverityFromPolicy(t *testing.T) {
+	approvalID := uuid.New()
+	mock := &mockHITLApprovalCreator{
+		resp: &HITLApprovalResponse{
+			ApprovalID: approvalID,
+			Status:     "pending",
+		},
+	}
+
+	// Policy explicitly sets severity="low" even with high risk score
+	engine := &mockPolicyEngineForWCP{
+		result: &PolicyEvaluationResult{
+			Allowed:         false,
+			AppliedPolicies: []string{"low-risk-review"},
+			RequiredActions: []string{"require_approval"},
+			RiskScore:       0.9,
+			Severity:        "low", // Explicit from policy config
+		},
+	}
+
+	adapter := NewWCPPolicyAdapter(engine)
+	adapter.SetHITLApproval(mock)
+
+	stepCtx := &workflow_control.StepGateContext{
+		WorkflowID: "wf_sev_1",
+		StepID:     "step_sev_1",
+		StepType:   workflow_control.StepTypeToolCall,
+		TenantID:   "tenant-1",
+		OrgID:      "org-1",
+	}
+
+	adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+	// Explicit severity from policy should override risk score
+	if mock.lastReq.Severity != "low" {
+		t.Errorf("Expected explicit Severity=low, got %s", mock.lastReq.Severity)
+	}
+}
+
+func TestCreateHITLApproval_RiskScoreSeverityMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		risk     float64
+		expected string
+	}{
+		{"low risk", 0.1, "low"},
+		{"medium risk", 0.4, "medium"},
+		{"high risk", 0.6, "high"},
+		{"critical risk", 0.9, "critical"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			approvalID := uuid.New()
+			mock := &mockHITLApprovalCreator{
+				resp: &HITLApprovalResponse{ApprovalID: approvalID, Status: "pending"},
+			}
+
+			engine := &mockPolicyEngineForWCP{
+				result: &PolicyEvaluationResult{
+					Allowed:         false,
+					AppliedPolicies: []string{"test-policy"},
+					RequiredActions: []string{"require_approval"},
+					RiskScore:       tt.risk,
+					// No explicit Severity — use risk score fallback
+				},
+			}
+
+			adapter := NewWCPPolicyAdapter(engine)
+			adapter.SetHITLApproval(mock)
+
+			stepCtx := &workflow_control.StepGateContext{
+				WorkflowID: "wf_risk_1",
+				StepID:     "step_risk_1",
+				StepType:   workflow_control.StepTypeToolCall,
+				TenantID:   "tenant-1",
+				OrgID:      "org-1",
+			}
+
+			adapter.EvaluateStepGate(context.Background(), stepCtx)
+
+			if mock.lastReq.Severity != tt.expected {
+				t.Errorf("risk=%.1f: expected severity=%s, got %s", tt.risk, tt.expected, mock.lastReq.Severity)
+			}
+		})
 	}
 }
 

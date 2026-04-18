@@ -60,18 +60,30 @@ type DynamicPolicyEngine struct {
 // Policy evaluation is performed in priority order (highest first).
 // All conditions must match for a policy to trigger (AND logic).
 type DynamicPolicy struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Type        string            `json:"type"` // "content", "user", "risk", "cost", "media"
-	Category    string            `json:"category,omitempty"`
-	Conditions  []PolicyCondition `json:"conditions"`
-	Actions     []PolicyAction    `json:"actions"`
-	Priority    int               `json:"priority"`
-	Enabled     bool              `json:"enabled"`
-	TenantID    string            `json:"tenant_id,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	Type          string            `json:"type"` // "content", "user", "risk", "cost", "media"
+	Category      string            `json:"category,omitempty"`
+	Conditions    []PolicyCondition `json:"conditions"`
+	Actions       []PolicyAction    `json:"actions"`
+	Priority      int               `json:"priority"`
+	Enabled       bool              `json:"enabled"`
+	TenantID      string            `json:"tenant_id,omitempty"`
+	RiskLevel     string            `json:"risk_level,omitempty"` // low|medium|high|critical (ADR-044). Default "medium".
+	AllowOverride bool              `json:"allow_override"`       // Session override allowed? Forced false for critical risk (ADR-044).
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+// IsOverridable returns true if the policy's deny decision can be overridden
+// by an active session override. Critical-risk policies cannot be overridden
+// regardless of the AllowOverride flag (ADR-044 invariant).
+func (p *DynamicPolicy) IsOverridable() bool {
+	if p.RiskLevel == "critical" {
+		return false
+	}
+	return p.AllowOverride
 }
 
 // PolicyCondition defines when a policy should trigger.
@@ -227,6 +239,25 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 	for _, policy := range applicablePolicies {
 		if e.evaluatePolicy(ctx, policy, req, result) {
 			result.AppliedPolicies = append(result.AppliedPolicies, policy.Name)
+
+			// Capture structured detail for ADR-044/ADR-043 downstream consumers.
+			// Risk level defaults to "medium" if unset (migration 010 backfills).
+			riskLevel := policy.RiskLevel
+			if riskLevel == "" {
+				riskLevel = "medium"
+			}
+			action := "log_only"
+			if len(policy.Actions) > 0 {
+				action = policy.Actions[0].Type
+			}
+			result.AppliedPoliciesDetail = append(result.AppliedPoliciesDetail, AppliedPolicyDetail{
+				PolicyID:      policy.ID,
+				PolicyName:    policy.Name,
+				Description:   policy.Description,
+				Action:        action,
+				RiskLevel:     riskLevel,
+				AllowOverride: policy.IsOverridable(),
+			})
 
 			// Apply policy actions
 			for _, action := range policy.Actions {
@@ -466,6 +497,44 @@ func (e *DynamicPolicyEngine) applyPolicyAction(ctx context.Context, action Poli
 		}
 		log.Printf("[POLICY] Route action applied: preferred=%s, allowed=%v, reason=%s",
 			result.PreferredProvider, result.AllowedProviders, result.RoutingReason)
+	case "require_approval":
+		// Trigger HITL workflow - requires human approval before continuing
+		result.Allowed = false
+		result.RequiredActions = append(result.RequiredActions, "require_approval")
+		if reason, ok := action.Config["reason"].(string); ok {
+			result.RequiredActions = append(result.RequiredActions, "approval_reason: "+reason)
+		}
+		// Extract and validate severity from policy action config for risk-tiered routing.
+		// Keep highest severity when multiple policies match. Invalid values are ignored.
+		if severity, ok := action.Config["severity"].(string); ok {
+			if severity == "low" || severity == "medium" || severity == "high" || severity == "critical" {
+				if result.Severity == "" || severityOrdinal(severity) > severityOrdinal(result.Severity) {
+					result.Severity = severity
+					// Note: applyPolicyAction doesn't have access to the policy name here.
+					// The db_dynamic_policies path sets SeverityPolicyID. For the in-memory
+					// engine, the severity is derived from risk score in deriveSeverityFromResult.
+				}
+			} else {
+				log.Printf("[POLICY] Invalid severity %q in require_approval action, ignoring", severity)
+			}
+		}
+		log.Printf("[POLICY] Require approval action applied - step will need human approval")
+	}
+}
+
+// severityOrdinal returns the ordinal for severity comparison. Higher = more severe.
+func severityOrdinal(s string) int {
+	switch s {
+	case "critical":
+		return 3
+	case "high":
+		return 2
+	case "medium":
+		return 1
+	case "low":
+		return 0
+	default:
+		return -1
 	}
 }
 

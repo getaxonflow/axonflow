@@ -183,13 +183,17 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 		t.Fatalf("Expected tools array, got %T", result["tools"])
 	}
 
-	if len(tools) != 6 {
-		t.Errorf("Expected 6 tools, got %d", len(tools))
+	// 6 pre-existing tools + 4 Plugin Batch 1 tools (explain_decision,
+	// create_override, delete_override, list_overrides) = 10.
+	if len(tools) != 10 {
+		t.Errorf("Expected 10 tools, got %d", len(tools))
 	}
 
 	expectedNames := map[string]bool{
 		"check_policy": false, "check_output": false, "audit_tool_call": false,
 		"list_policies": false, "get_policy_stats": false, "search_audit_events": false,
+		"explain_decision": false, "create_override": false, "delete_override": false,
+		"list_overrides": false,
 	}
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]interface{})
@@ -1294,7 +1298,7 @@ func TestMCPServer_AuthenticateRequest_InvalidBasicAuth(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Basic !!!invalid-base64!!!")
-	_, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for invalid Basic auth")
 	}
@@ -1458,7 +1462,7 @@ func TestMCPServer_AuthenticateRequest_MissingHeader(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	_, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for missing Authorization header")
 	}
@@ -1473,7 +1477,7 @@ func TestMCPServer_AuthenticateRequest_WrongScheme(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Bearer some-token")
-	_, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for non-Basic auth")
 	}
@@ -1487,21 +1491,106 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	tenantID, userID, userRole, clientID, err := authenticateMCPServerRequest(req)
+	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("Community mode should not require auth: %v", err)
 	}
 	if tenantID != "community" {
 		t.Errorf("Expected tenantID 'community', got '%s'", tenantID)
 	}
-	if userID != "0" {
-		t.Errorf("Expected userID '0', got '%s'", userID)
+	// With no X-User-Email header, the handler now falls back to a
+	// client-scoped pseudo-identity rather than shared "0". For community
+	// mode the clientID is "community" so the pseudo-email is deterministic.
+	wantPseudoEmail := "mcp-client:community"
+	if userEmail != wantPseudoEmail {
+		t.Errorf("Expected userEmail %q, got %q", wantPseudoEmail, userEmail)
+	}
+	// userID falls back to the resolved email when no X-User-ID header given.
+	if userID != wantPseudoEmail {
+		t.Errorf("Expected userID %q (fallback to email), got %q", wantPseudoEmail, userID)
 	}
 	if userRole != "admin" {
 		t.Errorf("Expected userRole 'admin', got '%s'", userRole)
 	}
 	if clientID != "community" {
 		t.Errorf("Expected clientID 'community', got '%s'", clientID)
+	}
+}
+
+// TestMCPServer_AuthenticateRequest_PerUserIdentity locks in the Plugin
+// Batch 1 requirement that MCP callers pass their real user identity via
+// X-User-Email (and optionally X-User-ID). Previously every authenticated
+// MCP caller collapsed onto synthetic userID="0", breaking per-user
+// semantics for the new explain + override endpoints (access control,
+// historical hit count scoping, override ownership).
+func TestMCPServer_AuthenticateRequest_PerUserIdentity(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Header.Set("X-User-Email", "alice@example.com")
+	req.Header.Set("X-User-ID", "user-123")
+
+	_, userID, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if userEmail != "alice@example.com" {
+		t.Errorf("userEmail: got %q, want %q", userEmail, "alice@example.com")
+	}
+	if userID != "user-123" {
+		t.Errorf("userID: got %q, want %q", userID, "user-123")
+	}
+}
+
+// TestMCPServer_AuthenticateRequest_EmailOnly ensures a caller that sets
+// only X-User-Email (not X-User-ID) still gets real per-user identity — the
+// Plugin Batch 1 endpoints key primarily on email, and legacy clients
+// shouldn't need to invent a separate user ID.
+func TestMCPServer_AuthenticateRequest_EmailOnly(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	req.Header.Set("X-User-Email", "bob@example.com")
+
+	_, userID, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if userEmail != "bob@example.com" {
+		t.Errorf("userEmail: got %q, want %q", userEmail, "bob@example.com")
+	}
+	// With no X-User-ID header, userID falls back to the email so downstream
+	// audit writers that still key by userID get a stable per-user value.
+	if userID != "bob@example.com" {
+		t.Errorf("userID: got %q, want fallback to email %q", userID, "bob@example.com")
+	}
+}
+
+// TestMCPServer_AuthenticateRequest_PseudoIdentityIsolation verifies that
+// when no user headers are present we fall back to a client-scoped pseudo
+// identity — not a shared "0" — so two different clients do not alias onto
+// the same override owner / explain caller.
+func TestMCPServer_AuthenticateRequest_PseudoIdentityIsolation(t *testing.T) {
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	req := httptest.NewRequest("POST", "/test", nil)
+	// No X-User-Email, no X-User-ID — legacy behavior.
+
+	_, _, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if userEmail == "0" {
+		t.Errorf("pseudo-identity must not be synthetic '0' (broke per-user scoping)")
+	}
+	if userEmail == "" {
+		t.Errorf("pseudo-identity must not be empty")
+	}
+	if !strings.HasPrefix(userEmail, "mcp-client:") {
+		t.Errorf("pseudo-identity should be client-scoped; got %q", userEmail)
 	}
 }
 

@@ -17,12 +17,93 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
 )
+
+// auditSearchCriteria is the normalized shape SearchAuditLogs matches against.
+// It accepts both the tagged HTTP-decoding struct from run.go's handler AND
+// the tag-less struct that pre-Plugin-Batch-1 unit tests use, avoiding a
+// breaking change to test callers while still letting the handler carry the
+// JSON tags it needs for request decoding.
+type auditSearchCriteria struct {
+	UserEmail   string
+	ClientID    string
+	StartTime   time.Time
+	EndTime     time.Time
+	RequestType string
+	DecisionID  string
+	PolicyName  string
+	OverrideID  string
+	Limit       int
+}
+
+// asAuditSearchCriteria is a best-effort adapter from the various anonymous
+// struct shapes callers have passed into SearchAuditLogs over time to the
+// normalized form above. Returns (criteria, true) on success or (zero, false)
+// when the value is not one of the recognised shapes.
+//
+// Using reflection here rather than exhaustive type-assertion branches keeps
+// the handler/test struct definitions decoupled — the test's anonymous
+// struct does not have to match the handler's json tags byte-for-byte.
+func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
+	v := reflect.ValueOf(criteria)
+	if v.Kind() != reflect.Struct {
+		return auditSearchCriteria{}, false
+	}
+
+	out := auditSearchCriteria{}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		name := t.Field(i).Name
+		fv := v.Field(i)
+		switch name {
+		case "UserEmail":
+			if fv.Kind() == reflect.String {
+				out.UserEmail = fv.String()
+			}
+		case "ClientID":
+			if fv.Kind() == reflect.String {
+				out.ClientID = fv.String()
+			}
+		case "StartTime":
+			if ts, ok := fv.Interface().(time.Time); ok {
+				out.StartTime = ts
+			}
+		case "EndTime":
+			if ts, ok := fv.Interface().(time.Time); ok {
+				out.EndTime = ts
+			}
+		case "RequestType":
+			if fv.Kind() == reflect.String {
+				out.RequestType = fv.String()
+			}
+		case "DecisionID":
+			if fv.Kind() == reflect.String {
+				out.DecisionID = fv.String()
+			}
+		case "PolicyName":
+			if fv.Kind() == reflect.String {
+				out.PolicyName = fv.String()
+			}
+		case "OverrideID":
+			if fv.Kind() == reflect.String {
+				out.OverrideID = fv.String()
+			}
+		case "Limit":
+			if fv.Kind() == reflect.Int || fv.Kind() == reflect.Int64 {
+				out.Limit = int(fv.Int())
+			}
+		}
+	}
+	// Must have at least UserEmail as a sentinel that this isn't the
+	// tenant-only shape handled above.
+	return out, true
+}
 
 // AuditLogger handles comprehensive audit logging for all orchestrator activities
 type AuditLogger struct {
@@ -453,15 +534,8 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		if searchReq.Limit > 0 {
 			query += fmt.Sprintf(" LIMIT %d", searchReq.Limit)
 		}
-	} else if searchReq, ok := criteria.(struct {
-		UserEmail   string
-		ClientID    string
-		StartTime   time.Time
-		EndTime     time.Time
-		RequestType string
-		Limit       int
-	}); ok {
-		// Handle general search (from auditSearchHandler)
+	} else if searchReq, ok := asAuditSearchCriteria(criteria); ok {
+		// Handle general search (from auditSearchHandler or via named-type callers).
 		if searchReq.UserEmail != "" {
 			query += fmt.Sprintf(" AND user_email = $%d", argIndex)
 			args = append(args, searchReq.UserEmail)
@@ -485,6 +559,36 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		if searchReq.RequestType != "" {
 			query += fmt.Sprintf(" AND request_type = $%d", argIndex)
 			args = append(args, searchReq.RequestType)
+			argIndex++
+		}
+		// Plugin Batch 1 filters — decision_id + policy_name + override_id.
+		// policy_details is JSONB; filters use ->> operator against the same
+		// field the writers populate. Indexes on audit_logs per migration 010.
+		if searchReq.DecisionID != "" {
+			query += fmt.Sprintf(" AND policy_details->>'decision_id' = $%d", argIndex)
+			args = append(args, searchReq.DecisionID)
+			argIndex++
+		}
+		if searchReq.PolicyName != "" {
+			// Match the policy name against three shapes audit writers use:
+			//   1. top-level policy_details.policy_name (scalar)
+			//   2. top-level policy_details.policy_names (CSV-ish string)
+			//   3. nested policy_details.policy_matches[*].policy_name
+			//      (workflow step gates + decision records)
+			// The third form is the primary one for Plugin Batch 1 and must
+			// be indexed via the GIN index on policy_details for perf.
+			query += fmt.Sprintf(" AND ("+
+				"policy_details->>'policy_name' = $%d "+
+				"OR policy_details->>'policy_names' LIKE '%%' || $%d || '%%' "+
+				"OR EXISTS (SELECT 1 FROM jsonb_array_elements(policy_details->'policy_matches') AS _pm WHERE _pm->>'policy_name' = $%d)"+
+				")", argIndex, argIndex, argIndex)
+			args = append(args, searchReq.PolicyName)
+			argIndex++
+		}
+		if searchReq.OverrideID != "" {
+			query += fmt.Sprintf(" AND policy_details->>'override_id' = $%d", argIndex)
+			args = append(args, searchReq.OverrideID)
+			// argIndex not incremented — this is the last filter.
 		}
 
 		query += " ORDER BY timestamp DESC"

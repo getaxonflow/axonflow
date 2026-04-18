@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,7 @@ type mcpSession struct {
 	lastUsed  time.Time
 	tenantID  string
 	userID    string
+	userEmail string // per-user identity from X-User-Email header; distinct from userID so Plugin Batch 1 endpoints scope by real email, not synthetic "0".
 	userRole  string
 	clientID  string
 }
@@ -331,6 +333,87 @@ func getMCPTools() []mcpTool {
 				},
 			},
 		},
+		// --- Plugin Batch 1 (ADR-044 + ADR-043) ---
+		// These MCP tools proxy to the new platform HTTP endpoints so
+		// agents running in Claude Code / Cursor / Codex / OpenClaw can
+		// drive the override lifecycle + explainability without leaving
+		// the MCP surface.
+		{
+			Name:        "explain_decision",
+			Description: "Explain a previously-made policy decision (ADR-043). Returns matched policies, risk level, reason, override availability, and a rolling 24h hit count. Use this to answer 'why was this blocked?' when a user sees a deny.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"decision_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Global decision identifier returned in the original step gate or policy evaluation response.",
+					},
+				},
+				"required": []string{"decision_id"},
+			},
+		},
+		{
+			Name:        "create_override",
+			Description: "Create a governed session override for a policy that would otherwise deny (ADR-044). Requires a mandatory free-text justification. TTL clamped server-side (default 60m, hard cap 24h, 0 for critical risk). Critical-risk and allow_override=false policies are rejected.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"policy_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Policy to override.",
+					},
+					"policy_type": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"static", "dynamic"},
+						"description": "Policy type.",
+					},
+					"override_reason": map[string]interface{}{
+						"type":        "string",
+						"description": "Mandatory free-text justification (1-500 chars).",
+					},
+					"tool_signature": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional: restrict override to a specific tool name.",
+					},
+					"ttl_seconds": map[string]interface{}{
+						"type":        "number",
+						"description": "Requested TTL in seconds. Clamped server-side (default 3600, min 60, max 86400).",
+					},
+				},
+				"required": []string{"policy_id", "policy_type", "override_reason"},
+			},
+		},
+		{
+			Name:        "delete_override",
+			Description: "Revoke an active session override (ADR-044). Next policy evaluation after revocation will not consult this override. Emits override_revoked audit event.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"override_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Override ID returned by create_override.",
+					},
+				},
+				"required": []string{"override_id"},
+			},
+		},
+		{
+			Name:        "list_overrides",
+			Description: "List active session overrides scoped to the caller's tenant (ADR-044). Use to audit or revoke dangling overrides.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"policy_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter to overrides for a specific policy.",
+					},
+					"include_revoked": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Include already-revoked overrides in results. Default false.",
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -444,7 +527,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the caller has valid credentials for this session's tenant
-	_, _, _, clientID, err := authenticateMCPServerRequest(r)
+	_, _, _, _, clientID, err := authenticateMCPServerRequest(r)
 	if err != nil && !isCommunityMode() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -464,7 +547,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 // --- Method Handlers ---
 
 func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	tenantID, userID, userRole, clientID, err := authenticateMCPServerRequest(r)
+	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		writeJSONRPCAuthError(w, req.ID, err.Error())
 		return
@@ -478,6 +561,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		lastUsed:  now,
 		tenantID:  tenantID,
 		userID:    userID,
+		userEmail: userEmail,
 		userRole:  userRole,
 		clientID:  clientID,
 	}
@@ -580,6 +664,15 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		result, toolErr = mcpToolGetPolicyStats(session, params.Arguments)
 	case "search_audit_events":
 		result, toolErr = mcpToolSearchAuditEvents(session, params.Arguments)
+	// Plugin Batch 1: ADR-044 + ADR-043 governance tools.
+	case "explain_decision":
+		result, toolErr = mcpToolExplainDecision(session, params.Arguments)
+	case "create_override":
+		result, toolErr = mcpToolCreateOverride(session, params.Arguments)
+	case "delete_override":
+		result, toolErr = mcpToolDeleteOverride(session, params.Arguments)
+	case "list_overrides":
+		result, toolErr = mcpToolListOverrides(session, params.Arguments)
 	default:
 		writeJSONRPCError(w, req.ID, jsonRPCInvalidParams, fmt.Sprintf("Unknown tool: %s", params.Name))
 		return
@@ -624,14 +717,43 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 // Note: previously only called validateClientCredentials (whitelist) — now uses
 // Authenticate() which also checks authDB (DB-backed), fixing a latent bug
 // where DB-registered enterprise clients couldn't use the MCP server protocol.
-func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userRole, clientID string, err error) {
+//
+// Plugin Batch 1 (explainability + session overrides) requires per-user
+// identity: the override owner and explain caller must be a real person, not
+// a synthetic user ID. Clients supply the end-user's email via X-User-Email
+// (and optionally X-User-ID). When present, the session carries them forward
+// to the orchestrator so access control and scoping work per-user. Absent —
+// legacy clients — we fall back to a client-scoped pseudo-identity rather
+// than a shared synthetic "0" to avoid cross-user aliasing on the MCP path.
+func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail, userRole, clientID string, err error) {
 	auth, authErr := Authenticate(r, nil)
 	if authErr != nil {
-		return "", "", "", "", fmt.Errorf("%s", authErr.Message)
+		return "", "", "", "", "", fmt.Errorf("%s", authErr.Message)
 	}
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
-	return auth.TenantID, "0", "admin", auth.ClientID, nil
+
+	// Extract per-user identity from request headers (Plugin Batch 1). Plugins
+	// that don't set these headers get a client-scoped pseudo-email — not a
+	// shared "0" — so overrides created by one legacy caller don't leak onto
+	// another legacy caller on the same client.
+	headerEmail := strings.TrimSpace(r.Header.Get("X-User-Email"))
+	headerUserID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+
+	resolvedEmail := headerEmail
+	if resolvedEmail == "" {
+		resolvedEmail = headerUserID
+	}
+	if resolvedEmail == "" {
+		resolvedEmail = fmt.Sprintf("mcp-client:%s", auth.ClientID)
+	}
+
+	resolvedUserID := headerUserID
+	if resolvedUserID == "" {
+		resolvedUserID = resolvedEmail
+	}
+
+	return auth.TenantID, resolvedUserID, resolvedEmail, "admin", auth.ClientID, nil
 }
 
 // resolveMCPSession resolves auth from session header or credentials.
@@ -671,15 +793,16 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	}
 
 	// Fall back to direct auth
-	tenantID, userID, userRole, clientID, err := authenticateMCPServerRequest(r)
+	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		return nil
 	}
 	return &mcpSession{
-		tenantID: tenantID,
-		userID:   userID,
-		userRole: userRole,
-		clientID: clientID,
+		tenantID:  tenantID,
+		userID:    userID,
+		userEmail: userEmail,
+		userRole:  userRole,
+		clientID:  clientID,
 	}
 }
 
@@ -1111,6 +1234,90 @@ func mcpProxyToLocal(session *mcpSession, method, url string) (interface{}, erro
 	return result, nil
 }
 
+// =============================================================================
+// Plugin Batch 1 (ADR-044 + ADR-043) MCP tool handlers.
+// Reviewer-caught: pre-existing PR shipped the HTTP endpoints but forgot to
+// register these MCP tools even though plugin messages point users to them.
+// =============================================================================
+
+// mcpToolExplainDecision proxies to GET /api/v1/decisions/:id/explain.
+func mcpToolExplainDecision(session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	decisionID, _ := args["decision_id"].(string)
+	if decisionID == "" {
+		return nil, fmt.Errorf("decision_id is required")
+	}
+	// url.PathEscape is used here to guard against IDs containing "/".
+	path := "/api/v1/decisions/" + url.PathEscape(decisionID) + "/explain"
+	resp, err := mcpProxyToOrchestrator(session, "GET", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("explain decision failed: %w", err)
+	}
+	return resp, nil
+}
+
+// mcpToolCreateOverride proxies to POST /api/v1/overrides.
+// Mandatory fields (per ADR-044): policy_id, policy_type, override_reason.
+func mcpToolCreateOverride(session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	policyID, _ := args["policy_id"].(string)
+	policyType, _ := args["policy_type"].(string)
+	reason, _ := args["override_reason"].(string)
+	if policyID == "" || policyType == "" || reason == "" {
+		return nil, fmt.Errorf("policy_id, policy_type, and override_reason are required")
+	}
+
+	body := map[string]interface{}{
+		"policy_id":       policyID,
+		"policy_type":     policyType,
+		"override_reason": reason,
+	}
+	if toolSig, ok := args["tool_signature"].(string); ok && toolSig != "" {
+		body["tool_signature"] = toolSig
+	}
+	if ttl, ok := args["ttl_seconds"].(float64); ok {
+		body["ttl_seconds"] = int64(ttl)
+	}
+
+	resp, err := mcpProxyToOrchestrator(session, "POST", "/api/v1/overrides", body)
+	if err != nil {
+		return nil, fmt.Errorf("create override failed: %w", err)
+	}
+	return resp, nil
+}
+
+// mcpToolDeleteOverride proxies to DELETE /api/v1/overrides/:id.
+func mcpToolDeleteOverride(session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	overrideID, _ := args["override_id"].(string)
+	if overrideID == "" {
+		return nil, fmt.Errorf("override_id is required")
+	}
+	path := "/api/v1/overrides/" + url.PathEscape(overrideID)
+	resp, err := mcpProxyToOrchestrator(session, "DELETE", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("delete override failed: %w", err)
+	}
+	return resp, nil
+}
+
+// mcpToolListOverrides proxies to GET /api/v1/overrides with query params.
+func mcpToolListOverrides(session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	query := url.Values{}
+	if policyID, ok := args["policy_id"].(string); ok && policyID != "" {
+		query.Set("policy_id", policyID)
+	}
+	if includeRevoked, ok := args["include_revoked"].(bool); ok && includeRevoked {
+		query.Set("include_revoked", "true")
+	}
+	path := "/api/v1/overrides"
+	if qs := query.Encode(); qs != "" {
+		path += "?" + qs
+	}
+	resp, err := mcpProxyToOrchestrator(session, "GET", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list overrides failed: %w", err)
+	}
+	return resp, nil
+}
+
 // --- Internal Orchestrator Proxy ---
 
 func mcpProxyToOrchestrator(session *mcpSession, method, path string, body interface{}) (interface{}, error) {
@@ -1136,6 +1343,18 @@ func mcpProxyToOrchestrator(session *mcpSession, method, path string, body inter
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", session.tenantID)
+	// Plugin Batch 1 endpoints (/api/v1/overrides, /api/v1/decisions/*)
+	// require an authenticated user identity per ADR-044. Forward the
+	// per-user identity captured at authenticate time — userID and
+	// userEmail are now distinct so the orchestrator can scope explain
+	// access control, historical hit count, and override ownership by
+	// real caller rather than a shared synthetic ID.
+	if session.userID != "" {
+		req.Header.Set("X-User-ID", session.userID)
+	}
+	if session.userEmail != "" {
+		req.Header.Set("X-User-Email", session.userEmail)
+	}
 	// Basic auth required by Orchestrator audit endpoints. Use tenantID as
 	// clientID to pass the Orchestrator's client/tenant scope validation.
 	req.SetBasicAuth(session.tenantID, "internal")

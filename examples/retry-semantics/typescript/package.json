@@ -1,0 +1,8 @@
+{
+  "name": "retry-semantics-ts",
+  "type": "module",
+  "dependencies": {
+    "@axonflow/sdk": "file:///Users/saurabhjain/Development/axonflow-sdk-typescript",
+    "dotenv": "^16.0.0"
+  }
+}

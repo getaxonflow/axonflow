@@ -255,6 +255,13 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// Audit Logs
 	r.PathPrefix("/api/v1/audit").HandlerFunc(orchAuth).Methods("GET", "POST", "OPTIONS")
 
+	// Plugin Batch 1 (ADR-044 + ADR-043): Session overrides + decision explainability.
+	// All plugin + SDK traffic must flow through the agent (never direct to orchestrator)
+	// per CLAUDE.md feedback_no_direct_orchestrator. These prefixes route the new
+	// platform endpoints through the proxy so plugins can reach them at port 8080.
+	r.PathPrefix("/api/v1/overrides").HandlerFunc(orchAuth).Methods("GET", "POST", "DELETE", "OPTIONS")
+	r.PathPrefix("/api/v1/decisions").HandlerFunc(orchAuth).Methods("GET", "OPTIONS")
+
 	// LLM Providers
 	r.PathPrefix("/api/v1/llm-providers").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
