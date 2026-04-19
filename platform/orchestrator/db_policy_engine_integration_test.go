@@ -52,9 +52,14 @@ func setupTestDBEnv(t *testing.T) func() {
 }
 
 // dbPolicyEngineSchema returns the schema needed for policy engine tests.
+//
+// Includes Plugin Batch 1 (ADR-044) columns: id (UUID), risk_level,
+// allow_override. These are populated in-memory by the engine's
+// refreshPolicies SELECT and consumed downstream by override enforcement.
 func dbPolicyEngineSchema() string {
 	return `
 		CREATE TABLE IF NOT EXISTS dynamic_policies (
+			id UUID NOT NULL DEFAULT gen_random_uuid(),
 			policy_id VARCHAR(36) PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
 			description TEXT,
@@ -66,6 +71,8 @@ func dbPolicyEngineSchema() string {
 			tenant_id VARCHAR(255) NOT NULL,
 			priority INTEGER DEFAULT 0,
 			enabled BOOLEAN DEFAULT true,
+			risk_level VARCHAR(20) DEFAULT 'medium',
+			allow_override BOOLEAN DEFAULT false,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)

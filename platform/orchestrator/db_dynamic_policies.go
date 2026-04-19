@@ -290,10 +290,17 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 }
 
 func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
+	// Plugin Batch 1 (ADR-044): also load risk_level + allow_override so
+	// the evaluator can populate AppliedPoliciesDetail for override
+	// enforcement. description + id surface as metadata fields consumed by
+	// the matcher path and downstream richer-context consumers.
 	query := `
-		SELECT name, conditions, actions, tenant_id, priority, policy_id,
+		SELECT id::text, name, COALESCE(description, '') AS description,
+		       conditions, actions, tenant_id, priority, policy_id,
 		       COALESCE(policy_type, 'content') as policy_type,
-		       COALESCE(category, '') as category
+		       COALESCE(category, '') as category,
+		       COALESCE(risk_level, 'medium') as risk_level,
+		       COALESCE(allow_override, false) as allow_override
 		FROM dynamic_policies
 		WHERE enabled = true
 		ORDER BY priority DESC, created_at DESC
@@ -308,11 +315,12 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 	newPolicies := make(map[string]interface{})
 
 	for rows.Next() {
-		var name, conditionsJSON, actionsJSON, policyID, policyType, category string
+		var id, name, description, conditionsJSON, actionsJSON, policyID, policyType, category, riskLevel string
 		var tenantID sql.NullString
 		var priority int
+		var allowOverride bool
 
-		err := rows.Scan(&name, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category)
+		err := rows.Scan(&id, &name, &description, &conditionsJSON, &actionsJSON, &tenantID, &priority, &policyID, &policyType, &category, &riskLevel, &allowOverride)
 		if err != nil {
 			log.Printf("Error scanning policy row: %v", err)
 			continue
@@ -324,24 +332,37 @@ func (e *DatabaseDynamicPolicyEngine) refreshPolicies() error {
 			tenantIDStr = tenantID.String
 		}
 
-		// Create policy data from conditions and actions
-		policyData := map[string]interface{}{
-			"policy_id":  policyID,
-			"name":       name,
-			"type":       policyType,
-			"category":   category,
-			"conditions": json.RawMessage(conditionsJSON),
-			"actions":    json.RawMessage(actionsJSON),
-			"tenant_id":  tenantIDStr,
-			"priority":   priority,
+		// Critical-risk policies can never be overridable (ADR-044 DB trigger
+		// guarantees this but we enforce again in memory to survive stale
+		// cached rows).
+		if riskLevel == "critical" {
+			allowOverride = false
 		}
 
-		// Add metadata
+		// Create policy data from conditions and actions
+		policyData := map[string]interface{}{
+			"policy_id":   policyID,
+			"name":        name,
+			"description": description,
+			"type":        policyType,
+			"category":    category,
+			"conditions":  json.RawMessage(conditionsJSON),
+			"actions":     json.RawMessage(actionsJSON),
+			"tenant_id":   tenantIDStr,
+			"priority":    priority,
+		}
+
+		// Add metadata — plug in the UUID and ADR-044 risk/override flags so
+		// the evaluator can attach them to AppliedPoliciesDetail for
+		// downstream override enforcement.
 		policyData["_metadata"] = map[string]interface{}{
-			"name":      name,
-			"tenant_id": tenantIDStr,
-			"priority":  priority,
-			"loaded_at": time.Now().Unix(),
+			"id":             id,
+			"name":           name,
+			"tenant_id":      tenantIDStr,
+			"priority":       priority,
+			"loaded_at":      time.Now().Unix(),
+			"risk_level":     riskLevel,
+			"allow_override": allowOverride,
 		}
 
 		// Use policy_id as cache key to avoid cross-tenant name collisions.
@@ -604,6 +625,67 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 				continue // Skip this policy - conditions don't match
 			}
 		}
+
+		// Plugin Batch 1 (ADR-044): capture structured policy detail so the
+		// override enforcement layer (ApplyOverrideToResult) has something to
+		// iterate against. The in-memory DynamicPolicyEngine already populates
+		// AppliedPoliciesDetail at this point; the DB-backed engine must
+		// match, or WCP-path overrides never flip deny -> allow.
+		//
+		// Source the policy UUID from _metadata.id when present so it matches
+		// what policy_overrides.policy_id stores; fall back to the cacheKey.
+		policyUUID := cacheKey
+		riskLevel := ""
+		allowOverride := false
+		description, _ := policyMap["description"].(string)
+		if metadata, ok := policyMap["_metadata"].(map[string]interface{}); ok {
+			if id, ok := metadata["id"].(string); ok && id != "" {
+				policyUUID = id
+			}
+			if rl, ok := metadata["risk_level"].(string); ok {
+				riskLevel = rl
+			}
+			if ao, ok := metadata["allow_override"].(bool); ok {
+				allowOverride = ao
+			}
+		}
+		if riskLevel == "" {
+			riskLevel = "medium"
+		}
+		// Critical-risk policies never surface as overridable (ADR-044 invariant).
+		if riskLevel == "critical" {
+			allowOverride = false
+		}
+		// Determine top action for the detail record — "block",
+		// "require_approval", etc. Peek at actions without consuming them
+		// here; the existing loop below still runs.
+		detailAction := "log_only"
+		if actRaw, ok := policyMap["actions"]; ok {
+			var peekActions []interface{}
+			switch av := actRaw.(type) {
+			case []interface{}:
+				peekActions = av
+			case json.RawMessage:
+				_ = json.Unmarshal(av, &peekActions)
+			case []byte:
+				_ = json.Unmarshal(av, &peekActions)
+			}
+			if len(peekActions) > 0 {
+				if am, ok := peekActions[0].(map[string]interface{}); ok {
+					if at, ok := am["type"].(string); ok && at != "" {
+						detailAction = at
+					}
+				}
+			}
+		}
+		result.AppliedPoliciesDetail = append(result.AppliedPoliciesDetail, AppliedPolicyDetail{
+			PolicyID:      policyUUID,
+			PolicyName:    name,
+			Description:   description,
+			Action:        detailAction,
+			RiskLevel:     riskLevel,
+			AllowOverride: allowOverride,
+		})
 
 		// Apply rate limiting if present
 		if rules, ok := policyMap["rules"].(map[string]interface{}); ok {

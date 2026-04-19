@@ -608,6 +608,15 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 	for rows.Next() {
 		entry := &AuditEntry{}
 		var policyDetailsJSON, redactedFieldsJSON, complianceFlagsJSON []byte
+		// provider, model, error_message and the numeric cost/tokens columns
+		// are nullable in audit_logs. Pre-LLM audit entries (MCP check-input,
+		// override_created/used/revoked, workflow step gates) omit those
+		// columns. Scan into nullable types so the loop doesn't abort
+		// mid-iteration on a NULL value — prior to this, NULL provider
+		// dropped ALL rows from every search response.
+		var provider, model, errorMessage sql.NullString
+		var responseTime, tokensUsed sql.NullInt64
+		var cost sql.NullFloat64
 
 		err := rows.Scan(
 			&entry.ID,
@@ -622,19 +631,28 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 			&entry.Query,
 			&entry.PolicyDecision,
 			&policyDetailsJSON,
-			&entry.Provider,
-			&entry.Model,
-			&entry.ResponseTime,
-			&entry.TokensUsed,
-			&entry.Cost,
+			&provider,
+			&model,
+			&responseTime,
+			&tokensUsed,
+			&cost,
 			&redactedFieldsJSON,
-			&entry.ErrorMessage,
+			&errorMessage,
 			&complianceFlagsJSON,
 		)
 		if err != nil {
 			log.Printf("Error scanning audit log: %v", err)
 			continue
 		}
+
+		// Surface nullable columns as Go zero values — callers already
+		// tolerate empty strings + zero-valued numerics.
+		entry.Provider = provider.String
+		entry.Model = model.String
+		entry.ErrorMessage = errorMessage.String
+		entry.ResponseTime = responseTime.Int64
+		entry.TokensUsed = int(tokensUsed.Int64)
+		entry.Cost = cost.Float64
 
 		// Unmarshal JSON fields
 		_ = json.Unmarshal(policyDetailsJSON, &entry.PolicyDetails)

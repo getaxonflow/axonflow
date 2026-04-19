@@ -50,9 +50,9 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
 				// Expect policy load (refreshPolicies)
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category"}).
-					AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1", "content", "dynamic-security")
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override"}).
+					AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false)
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			mockDBErr: false,
@@ -222,12 +222,12 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - load multiple policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category"}).
-					AddRow("policy1", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", 10, "pol1", "content", "dynamic-security").
-					AddRow("policy2", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", 5, "pol2", "rate-limit", "dynamic-risk").
-					AddRow("policy3", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, 1, "pol3", "content", "")
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override"}).
+					AddRow("00000000-0000-0000-0000-000000000001", "policy1", "", `{"field": "value"}`, `{"action": "allow"}`, "tenant1", 10, "pol1", "content", "dynamic-security", "medium", false).
+					AddRow("00000000-0000-0000-0000-000000000002", "policy2", "", `{"field": "value2"}`, `{"action": "deny"}`, "tenant2", 5, "pol2", "rate-limit", "dynamic-risk", "medium", false).
+					AddRow("00000000-0000-0000-0000-000000000003", "policy3", "", `{"field": "value3"}`, `{"action": "log"}`, sql.NullString{}, 1, "pol3", "content", "", "medium", false)
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -236,9 +236,9 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - empty result",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category"})
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override"})
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -247,7 +247,7 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Error - query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnError(errors.New("database connection lost"))
 			},
 			expectError: true,
@@ -256,10 +256,10 @@ func TestRefreshPolicies(t *testing.T) {
 		{
 			name: "Success - handles NULL tenant_id",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category"}).
-					AddRow("global_policy", `{}`, `{}`, sql.NullString{Valid: false}, 0, "global1", "content", "")
+				rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override"}).
+					AddRow("00000000-0000-0000-0000-000000000004", "global_policy", "", `{}`, `{}`, sql.NullString{Valid: false}, 0, "global1", "content", "", "medium", false)
 
-				mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+				mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 					WillReturnRows(rows)
 			},
 			expectError: false,
@@ -800,10 +800,10 @@ func TestBackgroundRefresh(t *testing.T) {
 	}
 
 	// Expect policy refresh query to be called
-	rows := sqlmock.NewRows([]string{"name", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category"}).
-		AddRow("test_policy", "{}", "{}", "tenant1", 10, "policy1", "content", "dynamic-security")
+	rows := sqlmock.NewRows([]string{"id", "name", "description", "conditions", "actions", "tenant_id", "priority", "policy_id", "policy_type", "category", "risk_level", "allow_override"}).
+		AddRow("00000000-0000-0000-0000-000000000001", "test_policy", "", "{}", "{}", "tenant1", 10, "policy1", "content", "dynamic-security", "medium", false)
 
-	mock.ExpectQuery("SELECT name, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
+	mock.ExpectQuery("SELECT id::text, name, COALESCE\\(description, ''\\) AS description, conditions, actions, tenant_id, priority, policy_id, COALESCE\\(policy_type, 'content'\\) as policy_type, COALESCE\\(category, ''\\) as category, COALESCE\\(risk_level, 'medium'\\) as risk_level, COALESCE\\(allow_override, false\\) as allow_override FROM dynamic_policies WHERE enabled = true ORDER BY priority DESC, created_at DESC").
 		WillReturnRows(rows)
 
 	// Start background refresh in a goroutine

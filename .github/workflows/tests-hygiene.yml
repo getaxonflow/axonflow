@@ -1,0 +1,92 @@
+name: Tests Hygiene
+
+# Enforces docs/test-visibility-policy.md on every PR that touches tests/.
+# The top-level tests/ directory is PUBLIC (syncs to the community mirror),
+# so it must never contain internal hostnames, AWS account IDs, real
+# credentials, or references to private sibling repos.
+#
+# If a test genuinely needs any of the above, put it under ee/**/tests/
+# instead (that path is excluded from community sync).
+
+on:
+  pull_request:
+    paths:
+      - 'tests/**'
+      - '.github/workflows/tests-hygiene.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/**'
+      - '.github/workflows/tests-hygiene.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Public tests hygiene scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Scan tests/ for forbidden patterns
+        shell: bash
+        run: |
+          set -uo pipefail
+          errors=0
+          fail() {
+            echo "::error file=$1::$2"
+            errors=$((errors + 1))
+          }
+
+          # 1) Private sibling repos — these are internal-only and their
+          # paths don't exist in the public community mirror. Reference
+          # public ADRs, public CHANGELOG entries, or inline self-contained
+          # explanations instead.
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line references private sibling repo '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'. Move to ee/**/tests/ or inline the reference."
+          done < <(grep -rnE "axonflow-business-docs|axonflow-operations|axonflow-secrets|axonflow-internal" tests/ 2>/dev/null)
+
+          # 2) Internal hostnames — .internal, RDS endpoints, staging
+          # subdomains that aren't publicly documented. Localhost and
+          # public github.com / docs.getaxonflow.com URLs are fine.
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line has an internal hostname: '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'."
+          done < <(grep -rnE '\.internal\b|[a-z0-9-]+\.([a-z0-9-]+\.)?rds\.amazonaws\.com|amazonaws\.com/[0-9]{12}|[a-z0-9-]+\.elb\.amazonaws\.com' tests/ 2>/dev/null)
+
+          # 3) AWS account IDs — 12-digit patterns in arns / role refs.
+          # Exclude obvious false positives (test UUIDs, timestamps, line
+          # numbers).
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            # Filter: arn:aws: or account-id surroundings
+            if echo "$rest" | grep -qE 'arn:aws|account[-_ ]?id|iam::[0-9]{12}'; then
+              fail "$file" "Line $line looks like it contains an AWS account id: '$(echo "$rest" | tr -d '[:space:]' | head -c 80)'."
+            fi
+          done < <(grep -rnE 'arn:aws:|iam::[0-9]{12}|account[-_ ]?id["]?\s*[:=]\s*["]?[0-9]{12}' tests/ 2>/dev/null)
+
+          # 4) Real-looking credentials. Demo credentials (demo-client,
+          # demo-secret, demo-*) are the documented defaults and fine.
+          # Flag: long hex/base64-ish secrets, bearer tokens, GitHub PATs,
+          # AWS access keys, SSH keys.
+          #   - ghp_... / gho_... / ghs_... — GitHub PATs
+          #   - AKIA... / ASIA... — AWS access key IDs
+          #   - private key headers
+          while IFS=: read -r file line rest; do
+            [ -z "$file" ] && continue
+            fail "$file" "Line $line looks like a real credential: '$(echo "$rest" | head -c 80)'."
+          done < <(grep -rnE 'ghp_[a-zA-Z0-9]{30,}|gho_[a-zA-Z0-9]{30,}|ghs_[a-zA-Z0-9]{30,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----' tests/ 2>/dev/null)
+
+          if [ $errors -gt 0 ]; then
+            echo ""
+            echo "❌ tests/ hygiene scan failed with $errors issue(s)."
+            echo "   Public tests must not contain internal hostnames, AWS account IDs,"
+            echo "   real credentials, or references to private sibling repos."
+            echo "   See docs/test-visibility-policy.md."
+            echo "   For sensitive tests, use ee/**/tests/ instead (excluded from community sync)."
+            exit 1
+          fi
+          echo "✅ tests/ hygiene scan passed."
