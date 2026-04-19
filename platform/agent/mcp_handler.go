@@ -1474,11 +1474,34 @@ type MCPCheckInputRequest struct {
 }
 
 // MCPCheckInputResponse is the response body for POST /api/v1/mcp/check-input.
+//
+// Plugin Batch 1 (ADR-043/044): block responses carry a stable decision_id,
+// risk_level + policy_matches, and override availability so the caller can
+// (1) surface a useful reason to the end user and (2) call explainDecision
+// or createOverride without another round-trip. Fields are omitempty so
+// pre-batch callers see the old shape byte-for-byte.
 type MCPCheckInputResponse struct {
-	Allowed           bool                     `json:"allowed"`
-	BlockReason       string                   `json:"block_reason,omitempty"`
-	PoliciesEvaluated int                      `json:"policies_evaluated"`
-	PolicyInfo        *sharedpolicy.PolicyInfo `json:"policy_info,omitempty"`
+	Allowed            bool                     `json:"allowed"`
+	BlockReason        string                   `json:"block_reason,omitempty"`
+	PoliciesEvaluated  int                      `json:"policies_evaluated"`
+	PolicyInfo         *sharedpolicy.PolicyInfo `json:"policy_info,omitempty"`
+	DecisionID         string                   `json:"decision_id,omitempty"`
+	RiskLevel          string                   `json:"risk_level,omitempty"`
+	PolicyMatches      []RicherPolicyMatch      `json:"policy_matches,omitempty"`
+	OverrideAvailable  *bool                    `json:"override_available,omitempty"`
+	OverrideExistingID string                   `json:"override_existing_id,omitempty"`
+}
+
+// RicherPolicyMatch is the plugin-facing shape of a matched policy. Kept
+// local to the agent so we don't entangle shared/policy with platform/agent
+// concerns — the plugin only needs policy_id, policy_name, risk_level, and
+// allow_override to surface a useful block reason and decide whether to
+// offer an override CTA.
+type RicherPolicyMatch struct {
+	PolicyID      string `json:"policy_id"`
+	PolicyName    string `json:"policy_name,omitempty"`
+	RiskLevel     string `json:"risk_level,omitempty"`
+	AllowOverride bool   `json:"allow_override"`
 }
 
 // MCPCheckOutputRequest is the request body for POST /api/v1/mcp/check-output.
@@ -1582,6 +1605,19 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-caller identity for Plugin Batch 1 override scoping. Falls back
+	// to the authenticated user's email when the client hasn't supplied
+	// X-User-Email (e.g. a legacy SDK caller).
+	userEmail := r.Header.Get("X-User-Email")
+	if userEmail == "" {
+		userEmail = user.Email
+	}
+
+	// Generate a stable decision_id up front so it can be attached to both
+	// the audit entry and the response body. The explain endpoint
+	// (GET /api/v1/decisions/:id/explain) resolves by this id.
+	decisionID := uuid.New().String()
+
 	auditEntry := MCPQueryAuditEntry{
 		AuditID:        uuid.New().String(),
 		ConnectorName:  req.ConnectorType,
@@ -1592,6 +1628,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		StatementHash:  computeStatementHash(req.Statement),
 		ParametersHash: computeParametersHash(req.Parameters),
 		ParameterCount: len(req.Parameters),
+		DecisionID:     decisionID,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -1623,6 +1660,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
 			Allowed:     false,
 			BlockReason: outcome.DynamicBlockReason,
+			DecisionID:  decisionID,
 		})
 		return
 	}
@@ -1637,12 +1675,66 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			auditEntry.RequestBlockReason = outcome.StaticResult.BlockReason
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 			logMCPQueryAudit(auditEntry)
+
+			// Plugin Batch 1: enrich the block response with decision_id,
+			// risk_level, policy_matches, override_available.
+			matches, topRisk, overrideAvail, overrideExistingID :=
+				buildRicherCheckInputBlock(ctx, usageDB, tenantID, userEmail,
+					outcome.StaticResult.MatchedPolicies)
+
+			// ADR-044: if the caller has an active session override on any
+			// of the matched policies, flip deny -> allow and emit an
+			// override_used audit event. Must run before the block audit
+			// write so we don't record a denied decision that didn't
+			// actually fire.
+			if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+				ctx, usageDB, tenantID, userEmail, matches,
+			); applied {
+				writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
+					decisionID, tenantID, orgID, auth.Client.ID, userEmail)
+				log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
+					usedOverrideID, decisionID)
+				// Fall through to the non-block success path below by
+				// clearing the StaticResult.Blocked condition. We can't
+				// mutate outcome in place cleanly; instead encode the
+				// allowed response directly here and return.
+				auditEntry.RequestBlocked = false
+				auditEntry.RequestBlockReason = ""
+				auditEntry.Success = true
+				auditEntry.DurationMs = time.Since(startTime).Milliseconds()
+				logMCPQueryAudit(auditEntry)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
+					Allowed:            true,
+					PoliciesEvaluated:  policiesEvaluated,
+					DecisionID:         decisionID,
+					OverrideExistingID: usedOverrideID,
+				})
+				return
+			}
+
+			// Dual-write to audit_logs so explainDecision(id) can resolve
+			// this decision. mcp_query_audits is the legacy per-connector
+			// audit table; audit_logs is what the explain/override/audit-
+			// search endpoints read.
+			writeExplainableAuditLog(ctx, usageDB,
+				decisionID, auditEntry.AuditID,
+				tenantID, orgID, auth.Client.ID, userEmail,
+				userID, userRole,
+				"mcp_check_input", req.Statement, auditEntry.StatementHash,
+				outcome.StaticResult.BlockReason, topRisk, matches)
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_ = json.NewEncoder(w).Encode(MCPCheckInputResponse{
-				Allowed:           false,
-				BlockReason:       outcome.StaticResult.BlockReason,
-				PoliciesEvaluated: policiesEvaluated,
+				Allowed:            false,
+				BlockReason:        outcome.StaticResult.BlockReason,
+				PoliciesEvaluated:  policiesEvaluated,
+				DecisionID:         decisionID,
+				RiskLevel:          topRisk,
+				PolicyMatches:      matches,
+				OverrideAvailable:  overrideAvail,
+				OverrideExistingID: overrideExistingID,
 			})
 			return
 		}

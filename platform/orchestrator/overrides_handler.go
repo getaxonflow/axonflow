@@ -15,7 +15,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 )
+
+// pqArray wraps a Go string slice as a PostgreSQL text[] for parameterised
+// queries using ANY($n::text[]).
+func pqArray(v []string) interface{} { return pq.Array(v) }
 
 // Override TTL bounds per ADR-044.
 // These are hard platform-level constants. Plugins may suggest shorter TTLs;
@@ -76,7 +81,14 @@ func clampOverrideTTL(requestedSeconds int64) (time.Duration, bool, string) {
 // policy, looking up static_policies or dynamic_policies based on policy_type.
 // Returns sql.ErrNoRows when the policy does not exist so callers can
 // distinguish "not found" (404) from "database error" (500).
-func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, bool, error) {
+//
+// Accepts either the UUID id or the human-readable slug/policy_id, so
+// plugin callers can pass whichever they have without a side-channel
+// lookup. MCP check-input block responses carry the slug in
+// `policy_matches[].policy_id`; an end-user who calls
+// `createOverride({ policyId: that })` would otherwise get a 404 even
+// though the policy exists.
+func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, bool, string, error) {
 	var table string
 	switch policyType {
 	case "static":
@@ -84,23 +96,77 @@ func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, boo
 	case "dynamic":
 		table = "dynamic_policies"
 	default:
-		return "", false, fmt.Errorf("invalid policy_type: %s", policyType)
+		return "", false, "", fmt.Errorf("invalid policy_type: %s", policyType)
 	}
 
 	//nolint:gosec // table name is validated via switch above; value side is parameterized.
-	// Lookup by the UUID id column, since policy_overrides.policy_id is UUID-
-	// typed and the caller identifies the policy by its stable UUID — not the
-	// human-readable slug stored in static_policies.policy_id. The ::text cast
-	// lets callers pass either the raw UUID string or a slug-style id; the
-	// cast will fail (no rows) for non-UUID input, producing a clean 404.
-	query := fmt.Sprintf("SELECT risk_level, allow_override FROM %s WHERE id::text = $1 LIMIT 1", table)
-	var riskLevel string
-	var allowOverride bool
-	err := db.QueryRow(query, policyID).Scan(&riskLevel, &allowOverride)
-	if err != nil {
-		return "", false, err
+	// Match on either id (UUID) or policy_id (slug for static; absent for
+	// dynamic, where id IS the identifier). Dynamic_policies has no
+	// policy_id slug column historically, but SELECT '' AS policy_id is
+	// included in the UNION so the query shape works for both tables.
+	//
+	// REQUIRES migration 070 (ships with v7.1.0): both static_policies and
+	// dynamic_policies must have risk_level + allow_override columns. COALESCE
+	// only guards NULL values, not missing columns — running v7.1.1 binaries
+	// against a pre-v7.1.0 schema will produce "column does not exist" SQL
+	// errors surfaced to the caller as 500. This is intentional; partial
+	// schema upgrades shouldn't silently degrade override semantics.
+	var query string
+	if table == "static_policies" {
+		query = fmt.Sprintf(`
+			SELECT risk_level, allow_override, id::text
+			FROM %s
+			WHERE id::text = $1 OR policy_id = $1
+			LIMIT 1`, table)
+	} else {
+		query = fmt.Sprintf(`
+			SELECT COALESCE(risk_level, 'medium') AS risk_level,
+			       COALESCE(allow_override, false) AS allow_override,
+			       id::text
+			FROM %s
+			WHERE id::text = $1 OR name = $1
+			LIMIT 1`, table)
 	}
-	return riskLevel, allowOverride, nil
+	var riskLevel, canonicalUUID string
+	var allowOverride bool
+	err := db.QueryRow(query, policyID).Scan(&riskLevel, &allowOverride, &canonicalUUID)
+	if err != nil {
+		return "", false, "", err
+	}
+	return riskLevel, allowOverride, canonicalUUID, nil
+}
+
+// resolvePolicyUUID returns the canonical UUID id for a policy given the
+// UUID, the static_policies slug, or the dynamic_policies name. Returns
+// an empty string (no error) when no match is found.
+func resolvePolicyUUID(ctx context.Context, db *sql.DB, policyID string) (string, error) {
+	if db == nil || policyID == "" {
+		return "", nil
+	}
+	var uuid string
+	err := db.QueryRowContext(ctx, `
+		SELECT id::text FROM static_policies
+		WHERE id::text = $1 OR policy_id = $1
+		LIMIT 1
+	`, policyID).Scan(&uuid)
+	if err == nil {
+		return uuid, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	err = db.QueryRowContext(ctx, `
+		SELECT id::text FROM dynamic_policies
+		WHERE id::text = $1 OR name = $1
+		LIMIT 1
+	`, policyID).Scan(&uuid)
+	if err == nil {
+		return uuid, nil
+	}
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return "", err
 }
 
 // invalidateCachedDeniedDecisions deletes workflow_steps cache rows that
@@ -113,6 +179,12 @@ func policyRiskAndOverride(db *sql.DB, policyID, policyType string) (string, boo
 // Best-effort: a logged error on failure is preferable to failing the
 // override create (the override record itself is durable; the cache is a
 // performance optimisation). Returns no error on purpose.
+//
+// policyID can be either the UUID (what policy_overrides.policy_id stores)
+// or the human-readable slug/name. The WCP adapter currently writes the
+// policy NAME into workflow_steps.policies_matched[i].policy_id, so cache
+// invalidation has to match either shape. We resolve all known identifiers
+// for the policy (UUID, slug, name) and match any of them.
 func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, userEmail, policyID string) {
 	if db == nil || policyID == "" {
 		return
@@ -123,10 +195,47 @@ func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, 
 		return
 	}
 
-	// Scope by workflows owned by this tenant/user. Match policy_id either in
-	// policies_matched (array of PolicyMatch rows) or policies_evaluated (for
-	// require_approval decisions where the blocking rule lives there).
-	// @> is JSONB containment — the array contains an element with this id.
+	// Resolve all synonyms for the policy so the match survives WCP's
+	// policy_id=name convention. Checks both static_policies and
+	// dynamic_policies; collects unique non-empty values.
+	synonyms := map[string]struct{}{policyID: {}}
+	addRow := func(rows *sql.Rows) {
+		for rows.Next() {
+			var slug, name sql.NullString
+			if err := rows.Scan(&slug, &name); err == nil {
+				if slug.Valid && slug.String != "" {
+					synonyms[slug.String] = struct{}{}
+				}
+				if name.Valid && name.String != "" {
+					synonyms[name.String] = struct{}{}
+				}
+			}
+		}
+	}
+	if rows, err := db.QueryContext(ctx,
+		"SELECT policy_id, name FROM static_policies WHERE id::text = $1 OR policy_id = $1 OR name = $1",
+		policyID,
+	); err == nil {
+		addRow(rows)
+		_ = rows.Close()
+	}
+	if rows, err := db.QueryContext(ctx,
+		"SELECT '' AS policy_id, name FROM dynamic_policies WHERE id::text = $1 OR name = $1",
+		policyID,
+	); err == nil {
+		addRow(rows)
+		_ = rows.Close()
+	}
+
+	synArr := make([]string, 0, len(synonyms))
+	for k := range synonyms {
+		synArr = append(synArr, k)
+	}
+
+	// JSONB match: any entry with policy_id matching any synonym OR
+	// policy_name matching any synonym. We use jsonb_array_elements +
+	// EXISTS so we can match on either key across a variadic set of
+	// candidate values.
 	result, err := db.ExecContext(ctx, `
 		DELETE FROM workflow_steps
 		WHERE id IN (
@@ -137,18 +246,27 @@ func invalidateCachedDeniedDecisions(ctx context.Context, db *sql.DB, tenantID, 
 			  AND ($2 = '' OR w.user_id = $2)
 			  AND ws.decision IN ('block', 'require_approval')
 			  AND (
-			    ws.policies_matched @> jsonb_build_array(jsonb_build_object('policy_id', $3::text))
-			    OR ws.policies_evaluated @> jsonb_build_array(jsonb_build_object('policy_id', $3::text))
+			    EXISTS (
+			      SELECT 1 FROM jsonb_array_elements(ws.policies_matched) AS m
+			      WHERE m->>'policy_id' = ANY($3::text[])
+			         OR m->>'policy_name' = ANY($3::text[])
+			    )
+			    OR EXISTS (
+			      SELECT 1 FROM jsonb_array_elements(ws.policies_evaluated) AS m
+			      WHERE m->>'policy_id' = ANY($3::text[])
+			         OR m->>'policy_name' = ANY($3::text[])
+			    )
 			  )
 		)
-	`, tenantID, userEmail, policyID)
+	`, tenantID, userEmail, pqArray(synArr))
 	if err != nil {
-		log.Printf("override create: cache invalidation failed (tenant=%s user=%s policy=%s): %v",
-			tenantID, userEmail, policyID, err)
+		log.Printf("override create: cache invalidation failed (tenant=%s user=%s policy=%s synonyms=%v): %v",
+			tenantID, userEmail, policyID, synArr, err)
 		return
 	}
 	if n, _ := result.RowsAffected(); n > 0 {
-		log.Printf("override create: invalidated %d cached denied decisions for policy=%s", n, policyID)
+		log.Printf("override create: invalidated %d cached denied decisions for policy=%s (synonyms=%v)",
+			n, policyID, synArr)
 	}
 }
 
@@ -206,7 +324,9 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ADR-044: critical risk policies cannot be overridden.
-	riskLevel, allowOverride, err := policyRiskAndOverride(usageDB, req.PolicyID, req.PolicyType)
+	// policyRiskAndOverride accepts either the UUID or the human-readable
+	// slug/name and returns the canonical UUID to store in policy_overrides.
+	riskLevel, allowOverride, canonicalUUID, err := policyRiskAndOverride(usageDB, req.PolicyID, req.PolicyType)
 	if err == sql.ErrNoRows {
 		sendErrorResponse(w, "Policy not found", http.StatusNotFound)
 		return
@@ -243,7 +363,7 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 			id, policy_id, policy_type, organization_id, tenant_id, tool_signature,
 			action_override, override_reason, expires_at, created_by, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'allow', $7, $8, $9, $10, $10)
-	`, overrideID, req.PolicyID, req.PolicyType,
+	`, overrideID, canonicalUUID, req.PolicyType,
 		nullableUUID(orgID), nullableString(tenantID), toolSig,
 		req.OverrideReason, expiresAt, userEmail, now)
 	if err != nil {
@@ -260,7 +380,7 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	// Scope: only the tenant+user who created the override, only denied
 	// decisions (allow/approved decisions were never blocked by P), and only
 	// workflow_steps whose policies_matched references this policy_id.
-	invalidateCachedDeniedDecisions(r.Context(), usageDB, tenantID, userEmail, req.PolicyID)
+	invalidateCachedDeniedDecisions(r.Context(), usageDB, tenantID, userEmail, canonicalUUID)
 
 	// Audit event.
 	if auditLogger != nil {
@@ -429,27 +549,45 @@ func getOverrideHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // listOverridesHandler handles GET /api/v1/overrides.
-// Filters: policy_id, tenant_id (header-driven), include_revoked (bool).
+// Filters: policy_id (UUID or slug/name), tenant_id (header-driven),
+// include_revoked (bool).
 func listOverridesHandler(w http.ResponseWriter, r *http.Request) {
 	tenantID := r.Header.Get("X-Tenant-ID")
-	policyID := r.URL.Query().Get("policy_id")
+	policyIDParam := r.URL.Query().Get("policy_id")
 	includeRevoked := r.URL.Query().Get("include_revoked") == "true"
+
+	// Accept either the UUID or the human-readable slug/name on the filter,
+	// matching the createOverride semantic. Users who grab policy_id from
+	// a block response's policy_matches[] should be able to pass that
+	// straight through to listOverrides without a side-channel lookup.
+	// On resolve error we fall back to the raw param so a transient DB hiccup
+	// doesn't surface as "no overrides" to the caller — but log it so the
+	// degradation is visible in the orchestrator logs.
+	policyUUID := policyIDParam
+	if policyIDParam != "" {
+		if uuid, err := resolvePolicyUUID(r.Context(), usageDB, policyIDParam); err != nil {
+			log.Printf("override list: resolvePolicyUUID(%q) failed, using raw param: %v",
+				policyIDParam, err)
+		} else if uuid != "" {
+			policyUUID = uuid
+		}
+	}
 
 	var rows *sql.Rows
 	var err error
 	switch {
-	case policyID != "" && tenantID != "":
+	case policyUUID != "" && tenantID != "":
 		if includeRevoked {
 			rows, err = usageDB.Query(`
 				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE policy_id = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100
-			`, policyID, tenantID)
+				FROM policy_overrides WHERE policy_id::text = $1 AND tenant_id = $2 ORDER BY created_at DESC LIMIT 100
+			`, policyUUID, tenantID)
 		} else {
 			rows, err = usageDB.Query(`
 				SELECT id, policy_id, policy_type, tenant_id, override_reason, expires_at, revoked_at, created_at
-				FROM policy_overrides WHERE policy_id = $1 AND tenant_id = $2 AND revoked_at IS NULL
+				FROM policy_overrides WHERE policy_id::text = $1 AND tenant_id = $2 AND revoked_at IS NULL
 				ORDER BY created_at DESC LIMIT 100
-			`, policyID, tenantID)
+			`, policyUUID, tenantID)
 		}
 	case tenantID != "":
 		if includeRevoked {

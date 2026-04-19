@@ -268,8 +268,19 @@ func TestInvalidateCachedDeniedDecisions_Scopes(t *testing.T) {
 	}
 	defer db.Close()
 
+	// The helper first resolves policy synonyms via two SELECT queries
+	// against static_policies + dynamic_policies so cache rows that store
+	// the policy name can still be matched. Return empty rows so only the
+	// caller-supplied policy_id is used as a synonym.
+	mock.ExpectQuery("SELECT policy_id, name FROM static_policies").
+		WithArgs("pol-uuid").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
+	mock.ExpectQuery("SELECT '' AS policy_id, name FROM dynamic_policies").
+		WithArgs("pol-uuid").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_id", "name"}))
+
 	mock.ExpectExec("DELETE FROM workflow_steps").
-		WithArgs("tenant-x", "dev@example.com", "pol-uuid").
+		WithArgs("tenant-x", "dev@example.com", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
 	invalidateCachedDeniedDecisions(context.Background(), db, "tenant-x", "dev@example.com", "pol-uuid")
