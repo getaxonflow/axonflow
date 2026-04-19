@@ -1,6 +1,6 @@
 # Codex Plugin Install E2E
 
-Install-and-use tests for `axonflow-codex-plugin@v0.4.0` from its GitHub
+Install-and-use tests for `axonflow-codex-plugin@v0.4.1` from its GitHub
 release. Exercises `pre-tool-check.sh` end-to-end against the live stack.
 
 ## Preconditions
@@ -8,8 +8,8 @@ release. Exercises `pre-tool-check.sh` end-to-end against the live stack.
 Plugin fetched via:
 
 ```bash
-mkdir /tmp/codex-plugin-v0.4.0-e2e && cd /tmp/codex-plugin-v0.4.0-e2e
-curl -sL https://github.com/getaxonflow/axonflow-codex-plugin/archive/refs/tags/v0.4.0.tar.gz | tar xz
+mkdir /tmp/codex-plugin-v0.4.1-e2e && cd /tmp/codex-plugin-v0.4.1-e2e
+curl -sL https://github.com/getaxonflow/axonflow-codex-plugin/archive/refs/tags/v0.4.1.tar.gz | tar xz
 mv axonflow-codex-plugin-0.4.0 plugin
 ```
 

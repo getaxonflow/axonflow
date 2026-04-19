@@ -7,13 +7,13 @@
 # print, even when a jq filter happens to exit non-zero mid-script.
 set -uo pipefail
 
-SCRIPT="/tmp/claude-plugin-v0.5.0-e2e/plugin/scripts/pre-tool-check.sh"
+SCRIPT="/tmp/claude-plugin-v0.5.1-e2e/plugin/scripts/pre-tool-check.sh"
 export AXONFLOW_ENDPOINT=http://localhost:8080
 # AXONFLOW_AUTH is the base64 of "client:secret" — the hook prepends
 # "Basic " verbatim (see pre-tool-check.sh's AUTH_HEADER construction).
 export AXONFLOW_AUTH="$(echo -n 'demo-client:demo-secret' | base64)"
 # The Claude Code plugin hook script doesn't currently forward per-user
-# identity. We test what a user experiences on v0.5.0 with v7.1.1 server.
+# identity. We test what a user experiences on v0.5.1 with v7.1.1 server.
 
 INPUT='{"tool_name":"Bash","tool_input":{"command":"psql -c \"SELECT * FROM users WHERE id='"'"'1'"'"' OR 1=1--\""}}'
 

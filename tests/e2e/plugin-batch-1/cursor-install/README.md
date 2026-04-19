@@ -1,6 +1,6 @@
 # Cursor Plugin Install E2E
 
-Install-and-use tests for `axonflow-cursor-plugin@v0.5.0` from its GitHub
+Install-and-use tests for `axonflow-cursor-plugin@v0.5.1` from its GitHub
 release. Exercises `pre-tool-check.sh` end-to-end against the live stack.
 
 ## Preconditions
@@ -8,8 +8,8 @@ release. Exercises `pre-tool-check.sh` end-to-end against the live stack.
 Plugin fetched via:
 
 ```bash
-mkdir /tmp/cursor-plugin-v0.5.0-e2e && cd /tmp/cursor-plugin-v0.5.0-e2e
-curl -sL https://github.com/getaxonflow/axonflow-cursor-plugin/archive/refs/tags/v0.5.0.tar.gz | tar xz
+mkdir /tmp/cursor-plugin-v0.5.1-e2e && cd /tmp/cursor-plugin-v0.5.1-e2e
+curl -sL https://github.com/getaxonflow/axonflow-cursor-plugin/archive/refs/tags/v0.5.1.tar.gz | tar xz
 mv axonflow-cursor-plugin-0.5.0 plugin
 ```
 
@@ -32,5 +32,5 @@ The scenario asserts exit 2 plus stderr containing
 ## Why this matters
 
 Same platform fix as Claude Code (v7.1.1 extends `mcpToolCheckPolicy`
-with richer context). Cursor plugin v0.5.0 already consumes the fields;
+with richer context). Cursor plugin v0.5.1 already consumes the fields;
 this scenario verifies the end-to-end path.

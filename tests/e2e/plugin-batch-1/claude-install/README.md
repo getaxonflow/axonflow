@@ -1,6 +1,6 @@
 # Claude Code Plugin Install E2E
 
-Install-and-use tests for `axonflow-claude-plugin@v0.5.0` from its GitHub
+Install-and-use tests for `axonflow-claude-plugin@v0.5.1` from its GitHub
 release. Exercises the `pre-tool-check.sh` hook end-to-end against the
 live stack.
 
@@ -9,8 +9,8 @@ live stack.
 1. Stack up via `./scripts/setup-e2e-testing.sh evaluation`.
 2. Plugin fetched via:
    ```bash
-   mkdir /tmp/claude-plugin-v0.5.0-e2e && cd /tmp/claude-plugin-v0.5.0-e2e
-   curl -sL https://github.com/getaxonflow/axonflow-claude-plugin/archive/refs/tags/v0.5.0.tar.gz | tar xz
+   mkdir /tmp/claude-plugin-v0.5.1-e2e && cd /tmp/claude-plugin-v0.5.1-e2e
+   curl -sL https://github.com/getaxonflow/axonflow-claude-plugin/archive/refs/tags/v0.5.1.tar.gz | tar xz
    mv axonflow-claude-plugin-0.5.0 plugin
    ```
 3. Default credentials: `demo-client:demo-secret`.
@@ -31,7 +31,7 @@ bash scenario-1-block-context.sh
 
 ## Why this matters
 
-Claude Code plugin v0.5.0 is already parsing these fields from the MCP
+Claude Code plugin v0.5.1 is already parsing these fields from the MCP
 server response. The first post-release E2E run against platform v7.1.0
 (before the six-bug patch) showed the response arriving without the
 fields — resulting in a terse deny with no explain/override affordance.
