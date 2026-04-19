@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [7.1.1] - 2026-04-19
+
+Patch release: closes ten Plugin Batch 1 gaps surfaced across two rounds
+of post-release install-and-use E2E testing — first with
+`@axonflow/openclaw@1.3.0` (six HTTP-path gaps), then with Claude Code /
+Cursor / Codex plugins (four MCP-tool-path gaps the first round missed).
+All features from v7.1.0 are unchanged in scope; this release makes them
+actually work end-to-end for plugin consumers across both the HTTP and
+MCP JSON-RPC surfaces.
+
+### Fixed
+
+- **MCP check-input responses now carry richer context.** Block responses
+  include `decision_id`, `risk_level`, `policy_matches`, and
+  `override_available`/`override_existing_id` when the caller provides
+  `X-User-Email`. Previously the agent returned only the legacy
+  `allowed`/`block_reason`/`policies_evaluated` trio, so plugins could
+  not surface a useful reason on a block or offer an override CTA.
+- **`explainDecision` resolves MCP-path decisions.** MCP
+  check-input/check-output decisions are now dual-written to
+  `audit_logs` with the decision id in `policy_details`, so the
+  existing explain endpoint returns the full `DecisionExplanation`
+  rather than 404.
+- **MCP check-input now consults active overrides.** Previously the
+  handler surfaced `override_available: true` but still returned
+  `allowed: false` because override enforcement was wired into the WCP
+  path only. A flip-to-allow emits an `override_used` audit event
+  mirroring the WCP path.
+- **Audit search tolerates NULL columns.** `SearchAuditLogs` previously
+  aborted the row scan on a NULL `provider`/`model`/`error_message`/`cost`/
+  `response_time_ms`/`tokens_used` and dropped the entire result set,
+  hiding every Plugin Batch 1 audit row. The scan now uses nullable
+  types and maps to zero values for the caller's `AuditEntry`.
+- **Cache invalidation on override create matches WCP cache shape.**
+  `invalidateCachedDeniedDecisions` previously matched the policy UUID
+  against `workflow_steps.policies_matched[].policy_id`, but the WCP
+  adapter writes the policy NAME in that slot. The helper now resolves
+  UUID + slug + name synonyms and matches any of them, so overrides
+  actually flush the WCP cache.
+- **WCP-path overrides now apply.**
+  `DatabaseDynamicPolicyEngine.EvaluateDynamicPolicies` (used by the WCP
+  step gate) now populates `result.AppliedPoliciesDetail`. Previously
+  only the in-memory engine did, so `ApplyOverrideToResult` iterated an
+  empty slice on the WCP path and no override ever flipped a deny.
+- **MCP `tools/call` path now emits richer-context on blocks.** Same
+  fix as the HTTP check-input path, mirrored into `mcpToolCheckPolicy`
+  and `mcpToolCheckOutput`. Pre-fix, Claude Code / Cursor / Codex
+  plugins (which use the MCP server's JSON-RPC surface rather than the
+  HTTP endpoint OpenClaw uses) saw a terse "blocked" string with no
+  `decision_id` / `risk_level` / `policy_matches` / `override_available`.
+  Override apply + audit dual-write are now mirrored identically across
+  both surfaces.
+- **`createOverride` / `listOverrides` accept UUID *or* slug/name for
+  `policy_id`.** Plugins read `policy_id` from a check-input response's
+  `policy_matches[]` (where static policies carry the slug, not the
+  UUID) and pass that straight to the override endpoints. Pre-fix, the
+  orchestrator required the UUID and returned 404 for slug callers.
+  `policyRiskAndOverride` now resolves either and stores the canonical
+  UUID in `policy_overrides.policy_id`.
+- **`DatabaseDynamicPolicyEngine` schema covers the new columns.**
+  `dbPolicyEngineSchema()` now includes `id UUID`, `risk_level`, and
+  `allow_override` so integration tests and fresh clusters match
+  migration 070's shape.
+- **`policy_override_repository.policyRiskAndOverride` returns the
+  canonical UUID.** Callers can no longer store the user-supplied
+  value (which may be a slug) in `policy_overrides.policy_id`.
+
+### Changed
+
+- **Workflow handler `getUserID` falls back to `X-User-Email`.** Matches
+  the Plugin Batch 1 convention of per-user identity via the email
+  header, so WCP workflows capture per-user scoping and the cache
+  invalidation query finds the right rows.
+
+### Internal
+
+- New `platform/agent/mcp_richer_context.go` helper module.
+- New install-E2E scenario scripts at
+  `tests/e2e/plugin-batch-1/{openclaw,claude,cursor,codex}-install/`
+  covering the post-release "install from npm / GitHub release and use
+  as a real user would" layer that caught these ten gaps across both
+  the HTTP check-input path and the MCP tools/call path.
+  `PLUGIN_E2E_TESTING_WORKFLOW.md` now mandates both paths as separate
+  install-E2E layers for every future plugin batch.
+
+---
+
 ## [7.1.0] - 2026-04-18
 
 Combined release: Workflow State Management & HITL Enhancement +

@@ -710,10 +710,19 @@ func (h *Handler) getOrgID(r *http.Request) string {
 	return ""
 }
 
-// getUserID extracts user ID from request
+// getUserID extracts user ID from request.
+//
+// Plugin Batch 1 convention (ADR-043/044): plugins carry per-user identity
+// via X-User-Email. Treat that as the canonical user ID when no numeric
+// X-User-ID is supplied — so the workflows row captures the email and
+// cache invalidation on override create (which scopes by workflows.user_id)
+// matches correctly.
 func (h *Handler) getUserID(r *http.Request) string {
 	if userID := r.Header.Get("X-User-ID"); userID != "" {
 		return userID
+	}
+	if email := r.Header.Get("X-User-Email"); email != "" {
+		return email
 	}
 	if userID, ok := r.Context().Value("user_id").(string); ok {
 		return userID

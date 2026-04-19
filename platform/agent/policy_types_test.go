@@ -321,3 +321,48 @@ func TestPolicyOverride_PolicyType(t *testing.T) {
 		t.Errorf("PolicyType = %s, want %s", dynamicOverride.PolicyType, TypeDynamic)
 	}
 }
+
+func TestPolicyOverride_IsRevoked(t *testing.T) {
+	live := PolicyOverride{}
+	if live.IsRevoked() {
+		t.Error("unrevoked override should not be IsRevoked")
+	}
+	now := time.Now()
+	revoked := PolicyOverride{RevokedAt: &now}
+	if !revoked.IsRevoked() {
+		t.Error("revoked override must be IsRevoked")
+	}
+}
+
+func TestPolicyOverride_IsActive(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+	now := time.Now()
+
+	if !(&PolicyOverride{ExpiresAt: &future}).IsActive() {
+		t.Error("future-expiry non-revoked override must be active")
+	}
+	if (&PolicyOverride{ExpiresAt: &past}).IsActive() {
+		t.Error("expired override must not be active")
+	}
+	if (&PolicyOverride{RevokedAt: &now}).IsActive() {
+		t.Error("revoked override must not be active")
+	}
+}
+
+func TestPolicyOverride_MatchesTool(t *testing.T) {
+	unscoped := PolicyOverride{}
+	if !unscoped.MatchesTool("any-tool") {
+		t.Error("nil ToolSignature must match any tool")
+	}
+	sig := "bash:rm"
+	scoped := PolicyOverride{ToolSignature: &sig}
+	if !scoped.MatchesTool("bash:rm") {
+		t.Error("matching tool signature should match")
+	}
+	if scoped.MatchesTool("bash:ls") {
+		t.Error("non-matching tool signature must not match")
+	}
+}
+
+

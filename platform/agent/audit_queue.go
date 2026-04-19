@@ -107,6 +107,11 @@ type MCPQueryAuditEntry struct {
 	ParametersHash string `json:"parameters_hash,omitempty"`
 	ParameterCount int    `json:"parameter_count"`
 
+	// Plugin Batch 1 (ADR-043): stable decision identifier attached to
+	// every check-input/check-output audit entry so the explain endpoint
+	// (GET /api/v1/decisions/:id/explain) can resolve by this id.
+	DecisionID string `json:"decision_id,omitempty"`
+
 	// Request phase (pre-execution policy evaluation)
 	RequestBlocked          bool     `json:"request_blocked"`
 	RequestBlockReason      string   `json:"request_block_reason,omitempty"`
@@ -298,6 +303,7 @@ func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
 		UserID:    mcpEntry.UserID,
 		Details: map[string]interface{}{
 			"audit_id":                   mcpEntry.AuditID,
+			"decision_id":                mcpEntry.DecisionID,
 			"tenant_id":                  mcpEntry.TenantID,
 			"org_id":                     mcpEntry.OrgID,
 			"connector_name":             mcpEntry.ConnectorName,

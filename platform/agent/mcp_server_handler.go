@@ -18,6 +18,8 @@ import (
 	"time"
 
 	logutil "axonflow/platform/shared/logger"
+
+	"github.com/google/uuid"
 	"axonflow/platform/shared/serviceauth"
 
 	"github.com/gorilla/mux"
@@ -815,6 +817,13 @@ func getSessionByID(id string) *mcpSession {
 // --- Tool Implementations ---
 
 // check_policy: uses Agent-internal evaluateInputPolicies() directly.
+//
+// Plugin Batch 1 parity: the response includes decision_id + risk_level +
+// policy_matches + override_available/override_existing_id on blocks, and
+// consults active session overrides to flip deny -> allow. Claude Code /
+// Cursor / Codex plugins all read these fields from the MCP tool response
+// to render a useful block message; without them every plugin block comes
+// back as a terse 'blocked' string.
 func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[string]interface{}) (interface{}, error) {
 	connectorType, _ := args["connector_type"].(string)
 	statement, _ := args["statement"].(string)
@@ -855,6 +864,24 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		"allowed": !blocked,
 	}
 
+	if outcome.StaticResult != nil {
+		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
+	}
+	if outcome.DynamicInfo != nil {
+		resp["dynamic_info"] = outcome.DynamicInfo
+	}
+
+	// Allowed — no richer-context fields needed, nothing to explain.
+	if !blocked {
+		return resp, nil
+	}
+
+	// Block path. Build richer context + dual-write audit_logs + apply any
+	// active override. Same helpers the HTTP /api/v1/mcp/check-input handler
+	// uses, so plugin-visible shape is consistent across the two surfaces.
+	decisionID := uuid.New().String()
+	resp["decision_id"] = decisionID
+
 	if outcome.DynamicBlocked {
 		resp["block_reason"] = outcome.DynamicBlockReason
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
@@ -862,11 +889,52 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		resp["blocked_by"] = outcome.StaticResult.BlockedBy.PolicyID
 	}
 
-	if outcome.StaticResult != nil {
-		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
+	// Only static matches carry richer policy metadata; dynamic block
+	// reasons don't produce MatchedPolicies.
+	var matches []RicherPolicyMatch
+	var topRisk string
+	var overrideAvail *bool
+	var overrideExistingID string
+	if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
+		matches, topRisk, overrideAvail, overrideExistingID =
+			buildRicherCheckInputBlock(ctx, usageDB, session.tenantID, session.userEmail,
+				outcome.StaticResult.MatchedPolicies)
+
+		// ADR-044: if the caller has an active session override on any
+		// overridable matched policy, flip deny -> allow and emit an
+		// override_used event. Consistent with the HTTP path.
+		if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+			ctx, usageDB, session.tenantID, session.userEmail, matches,
+		); applied {
+			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
+				decisionID, session.tenantID, "", session.clientID, session.userEmail)
+			resp["allowed"] = true
+			resp["override_existing_id"] = usedOverrideID
+			delete(resp, "block_reason")
+			delete(resp, "blocked_by")
+			return resp, nil
+		}
+
+		// Dual-write so explainDecision(id) resolves against audit_logs.
+		writeExplainableAuditLog(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, "", session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_policy", statement, computeStatementHash(statement),
+			outcome.StaticResult.BlockReason, topRisk, matches)
 	}
-	if outcome.DynamicInfo != nil {
-		resp["dynamic_info"] = outcome.DynamicInfo
+
+	if topRisk != "" {
+		resp["risk_level"] = topRisk
+	}
+	if len(matches) > 0 {
+		resp["policy_matches"] = matches
+	}
+	if overrideAvail != nil {
+		resp["override_available"] = *overrideAvail
+	}
+	if overrideExistingID != "" {
+		resp["override_existing_id"] = overrideExistingID
 	}
 
 	return resp, nil
@@ -911,12 +979,6 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		"allowed": !blocked,
 	}
 
-	if outcome.SQLiBlocked {
-		resp["block_reason"] = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
-	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
-		resp["block_reason"] = outcome.StaticResult.BlockReason
-	}
-
 	if outcome.StaticResult != nil {
 		resp["policies_evaluated"] = outcome.StaticResult.PoliciesEvaluated
 		if outcome.RedactedRows != nil {
@@ -929,6 +991,70 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 
 	if outcome.ExfilInfo != nil {
 		resp["exfiltration_info"] = outcome.ExfilInfo
+	}
+
+	// Allowed — no richer context or override flow needed.
+	if !blocked {
+		return resp, nil
+	}
+
+	// Block path. Mirror mcpToolCheckPolicy's richer-context + override-
+	// apply + audit dual-write so check_output behaves consistently with
+	// check_policy across the MCP surface.
+	decisionID := uuid.New().String()
+	resp["decision_id"] = decisionID
+	if outcome.SQLiBlocked {
+		resp["block_reason"] = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
+	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
+		resp["block_reason"] = outcome.StaticResult.BlockReason
+	}
+
+	var matches []RicherPolicyMatch
+	var topRisk string
+	var overrideAvail *bool
+	var overrideExistingID string
+	if outcome.StaticResult != nil && outcome.StaticResult.Blocked {
+		matches, topRisk, overrideAvail, overrideExistingID =
+			buildRicherCheckInputBlock(ctx, usageDB, session.tenantID, session.userEmail,
+				outcome.StaticResult.MatchedPolicies)
+
+		if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+			ctx, usageDB, session.tenantID, session.userEmail, matches,
+		); applied {
+			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
+				decisionID, session.tenantID, "", session.clientID, session.userEmail)
+			resp["allowed"] = true
+			resp["override_existing_id"] = usedOverrideID
+			delete(resp, "block_reason")
+			return resp, nil
+		}
+
+		// Dual-write for explainability. Use the message (or a stable
+		// marker) as the query text since check_output has no single
+		// statement to hash.
+		query := message
+		if query == "" {
+			query = fmt.Sprintf("(rows=%d)", rowCount)
+		}
+		writeExplainableAuditLog(ctx, usageDB,
+			decisionID, uuid.New().String(),
+			session.tenantID, "", session.clientID, session.userEmail,
+			session.userID, session.userRole,
+			"mcp_check_output", query, computeStatementHash(query),
+			outcome.StaticResult.BlockReason, topRisk, matches)
+	}
+
+	if topRisk != "" {
+		resp["risk_level"] = topRisk
+	}
+	if len(matches) > 0 {
+		resp["policy_matches"] = matches
+	}
+	if overrideAvail != nil {
+		resp["override_available"] = *overrideAvail
+	}
+	if overrideExistingID != "" {
+		resp["override_existing_id"] = overrideExistingID
 	}
 
 	return resp, nil
