@@ -1,6 +1,6 @@
 # OpenClaw Plugin Install E2E Scenarios
 
-These scenarios exercise `@axonflow/openclaw` v1.3.0+ (installed from npm,
+These scenarios exercise `@axonflow/openclaw` v1.3.1+ (installed from npm,
 not a local build) against a live orchestrator + agent stack. They are the
 post-release "does it actually work when a real user installs it" harness —
 the sibling `run-scenarios.sh` in the parent directory exercises the

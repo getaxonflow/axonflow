@@ -3,7 +3,7 @@
 # Assert exit 2 + stderr contains richer context (decision_id, risk, override).
 set -uo pipefail
 
-SCRIPT="/tmp/cursor-plugin-v0.5.0-e2e/plugin/scripts/pre-tool-check.sh"
+SCRIPT="/tmp/cursor-plugin-v0.5.1-e2e/plugin/scripts/pre-tool-check.sh"
 export AXONFLOW_ENDPOINT=http://localhost:8080
 # AXONFLOW_AUTH is the base64 of "client:secret" — the hook prepends
 # "Basic " verbatim (see pre-tool-check.sh's AUTH_HEADER construction).

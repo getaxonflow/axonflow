@@ -3,7 +3,7 @@
 # Assert exit 2 + stderr contains richer context.
 set -uo pipefail
 
-SCRIPT="/tmp/codex-plugin-v0.4.0-e2e/plugin/scripts/pre-tool-check.sh"
+SCRIPT="/tmp/codex-plugin-v0.4.1-e2e/plugin/scripts/pre-tool-check.sh"
 export AXONFLOW_ENDPOINT=http://localhost:8080
 # AXONFLOW_AUTH is the base64 of "client:secret" — the hook prepends
 # "Basic " verbatim (see pre-tool-check.sh's AUTH_HEADER construction).

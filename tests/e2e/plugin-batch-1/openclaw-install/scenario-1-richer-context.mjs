@@ -53,4 +53,4 @@ if (errors.length) {
 }
 console.log('\nPASS: scenario 1');
 // Export decision_id for chained scenarios
-await import('fs').then(m => m.writeFileSync('/tmp/openclaw-v1.3.0-e2e/.scenario1-decision-id', result.decision_id));
+await import('fs').then(m => m.writeFileSync('/tmp/openclaw-v1.3.1-e2e/.scenario1-decision-id', result.decision_id));
