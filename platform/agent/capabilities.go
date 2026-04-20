@@ -48,7 +48,7 @@ func getSDKCompatibility() SDKCompatInfo {
 			"python":     "6.4.0",
 			"typescript": "5.4.0",
 			"go":         "5.4.0",
-			"java":       "5.4.0",
+			"java":       "5.5.0",
 		},
 	}
 }
