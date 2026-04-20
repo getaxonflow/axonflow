@@ -180,3 +180,78 @@ func TestGetActionForPhase(t *testing.T) {
 		})
 	}
 }
+
+func TestValidActionTypes(t *testing.T) {
+	if len(ValidActionTypes) == 0 {
+		t.Fatal("ValidActionTypes must not be empty")
+	}
+
+	mustHave := []string{
+		"block", "redact", "log", "warn",
+		"alert", "route", "modify_risk", "require_approval",
+	}
+	for _, want := range mustHave {
+		if !IsValidActionType(want) {
+			t.Errorf("ValidActionTypes is missing %q", want)
+		}
+	}
+
+	if IsValidActionType("allow") {
+		t.Error("ValidActionTypes must not include 'allow' — it is an implicit default, not a policy action type")
+	}
+	if IsValidActionType("nonsense") {
+		t.Error("IsValidActionType returned true for 'nonsense'")
+	}
+	if IsValidActionType("") {
+		t.Error("IsValidActionType returned true for empty string")
+	}
+
+	seen := make(map[string]bool, len(ValidActionTypes))
+	for _, a := range ValidActionTypes {
+		if seen[a] {
+			t.Errorf("duplicate entry in ValidActionTypes: %q", a)
+		}
+		seen[a] = true
+	}
+}
+
+func TestValidOverrideActions(t *testing.T) {
+	if len(ValidOverrideActions) == 0 {
+		t.Fatal("ValidOverrideActions must not be empty")
+	}
+
+	mustHave := []string{"block", "require_approval", "redact", "warn", "log"}
+	for _, want := range mustHave {
+		if !IsValidOverrideAction(want) {
+			t.Errorf("ValidOverrideActions is missing %q", want)
+		}
+	}
+
+	// Authoring-only actions must NOT be in the override list — they have no
+	// terminal-action meaning. Adding them would silently widen what overrides
+	// can do at the customer-portal boundary while the agent's override
+	// repository would still reject them downstream.
+	for _, mustReject := range []string{"alert", "route", "modify_risk", "allow"} {
+		if IsValidOverrideAction(mustReject) {
+			t.Errorf("ValidOverrideActions must NOT include authoring-only action %q", mustReject)
+		}
+	}
+
+	if IsValidOverrideAction("Block") {
+		t.Error("IsValidOverrideAction must be case-sensitive: 'Block' rejected")
+	}
+	if IsValidOverrideAction(" block") {
+		t.Error("IsValidOverrideAction must reject leading whitespace")
+	}
+	if IsValidOverrideAction("") {
+		t.Error("IsValidOverrideAction must reject empty string")
+	}
+
+	seen := make(map[string]bool, len(ValidOverrideActions))
+	for _, a := range ValidOverrideActions {
+		if seen[a] {
+			t.Errorf("duplicate entry in ValidOverrideActions: %q", a)
+		}
+		seen[a] = true
+	}
+}

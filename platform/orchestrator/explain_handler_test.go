@@ -4,8 +4,14 @@
 package orchestrator
 
 import (
+	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/gorilla/mux"
 )
 
 func TestBuildExplanation_EmptyDetails(t *testing.T) {
@@ -151,5 +157,73 @@ func TestBuildExplanation_ExtractsReason(t *testing.T) {
 	}
 	if exp.Decision != "require_approval" {
 		t.Errorf("Decision = %q", exp.Decision)
+	}
+}
+
+func TestExplainDecision_RequiresTenantHeader(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
+	// Deliberately no X-Tenant-ID
+	req.Header.Set("X-User-Email", "alice@example.com")
+	w := httptest.NewRecorder()
+
+	explainDecisionHandler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when X-Tenant-ID missing, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestExplainDecision_RequiresDecisionID(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/decisions//explain", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": ""})
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.Header.Set("X-User-Email", "alice@example.com")
+	w := httptest.NewRecorder()
+
+	explainDecisionHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when decision_id missing, got %d", w.Code)
+	}
+}
+
+func TestExplainDecision_CrossTenantReturns404(t *testing.T) {
+	// Setup mock DB. The explain handler uses the package-level usageDB; swap it
+	// for a sqlmock instance for the duration of this test.
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	origDB := usageDB
+	usageDB = mockDB
+	defer func() { usageDB = origDB }()
+
+	// The fix: tenant_id filter is in the SELECT. A request for decision dec-1
+	// from tenant-b must not return rows that belong to tenant-a — the SQL must
+	// receive both decisionID and tenantID as positional args, and the mock
+	// responds with ErrNoRows. The handler must surface that as 404 (not 403)
+	// so attackers cannot enumerate decision_id existence across tenants.
+	mock.ExpectQuery(`SELECT user_email, tenant_id, timestamp, policy_decision, policy_details`).
+		WithArgs("dec-1", "tenant-b").
+		WillReturnError(sql.ErrNoRows)
+
+	req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
+	req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
+	req.Header.Set("X-Tenant-ID", "tenant-b")
+	req.Header.Set("X-User-Email", "bob@example.com")
+	w := httptest.NewRecorder()
+
+	explainDecisionHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when decision belongs to different tenant, got %d: %s",
+			w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
 	}
 }

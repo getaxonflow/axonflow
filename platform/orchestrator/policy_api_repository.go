@@ -175,6 +175,15 @@ func (r *PolicyRepository) List(ctx context.Context, tenantID string, params Lis
 		argIndex++
 	}
 
+	// Tier filter (system / organization / tenant). The handler only sets
+	// params.Tier when the caller supplied ?tier=... in the query string,
+	// so a nil pointer means "no tier filter" rather than "tier=''".
+	if params.Tier != nil && *params.Tier != "" {
+		whereConditions = append(whereConditions, fmt.Sprintf("tier = $%d", argIndex))
+		args = append(args, string(*params.Tier))
+		argIndex++
+	}
+
 	if params.Search != "" {
 		whereConditions = append(whereConditions, fmt.Sprintf("(name ILIKE $%d OR description ILIKE $%d)", argIndex, argIndex))
 		args = append(args, "%"+params.Search+"%")

@@ -411,6 +411,15 @@ func TestIsProxiedPath(t *testing.T) {
 		{"/api/v1/executions/123", true},
 		{"/api/v1/llm-providers", true},
 		{"/api/v1/llm-providers/openai", true},
+		// Compliance modules — all four must proxy. Missing any one here
+		// is how #1646 (EU AI Act conformity 404) happened: euaiact was
+		// left out of IsProxiedPath while rbi/sebi/masfeat were listed.
+		{"/api/v1/euaiact/conformity", true},
+		{"/api/v1/euaiact/accuracy", true},
+		{"/api/v1/euaiact/export", true},
+		{"/api/v1/masfeat/registry", true},
+		{"/api/v1/rbi/ai-systems", true},
+		{"/api/v1/sebi/dashboard", true},
 		// Portal paths - auth
 		{"/api/v1/auth/login", true},
 		{"/api/v1/auth/logout", true},

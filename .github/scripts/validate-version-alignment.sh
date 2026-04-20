@@ -7,8 +7,12 @@ set -euo pipefail
 
 ERRORS=0
 
-# Extract latest version from CHANGELOG.md (first ## [x.y.z] line)
-LATEST_VERSION=$(grep -m1 '^## \[' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/')
+# Extract latest *released* version from CHANGELOG.md (first ## [x.y.z] line that
+# isn't the Keep-a-Changelog "Unreleased" placeholder). The Unreleased section
+# accumulates in-flight changes between tags and must not be used as the
+# expected-version target — version defaults across the repo only get bumped
+# when we actually cut a tag.
+LATEST_VERSION=$(grep -m1 -E '^## \[[0-9]' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/')
 
 if [ -z "$LATEST_VERSION" ]; then
     echo "❌ Could not extract version from CHANGELOG.md"

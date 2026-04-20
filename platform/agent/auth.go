@@ -418,8 +418,24 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Internal-service auth via headers — used by the customer-portal
+		// to call agent endpoints (e.g. /static-policies/effective) without
+		// holding a customer license. The portal signs each request with
+		// AXONFLOW_INTERNAL_SERVICE_SECRET and supplies the tenant scope it
+		// has resolved from the user's session. Authenticate() looks for the
+		// signed credentials in `hints` only, so we have to lift them off the
+		// request headers ourselves before calling it.
+		var hints *AuthHints
+		if svcID := r.Header.Get("X-Internal-Service-ID"); svcID != "" {
+			hints = &AuthHints{
+				ClientID:  svcID,
+				UserToken: r.Header.Get("X-Internal-Service-Token"),
+				TenantID:  r.Header.Get("X-Tenant-ID"),
+			}
+		}
+
 		// Use unified Authenticate() for all deployment modes
-		auth, authErr := Authenticate(r, nil)
+		auth, authErr := Authenticate(r, hints)
 		if authErr != nil {
 			if authErr.RetryAfter != "" {
 				w.Header().Set("Retry-After", authErr.RetryAfter)
@@ -446,7 +462,10 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// X-Tenant-ID header is deprecated — tenant is derived from auth credentials.
 		// Accept and ignore for transition period while SDKs are updated (Phase 2-3).
 		// Auth-derived tenant always takes precedence.
-		if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" {
+		// Skip the warning for internal-service callers (the customer-portal
+		// intentionally supplies the tenant scope via X-Tenant-ID and the
+		// Authenticate() internal-service path already consumes it).
+		if headerTenant := r.Header.Get("X-Tenant-ID"); headerTenant != "" && auth.Kind != AuthKindInternalService {
 			log.Printf("[API Auth] DEPRECATED: X-Tenant-ID header '%s' ignored — using auth-derived tenant '%s'. Update your SDK to remove this header.",
 				logutil.Sanitize(headerTenant), logutil.Sanitize(tenantID))
 		}

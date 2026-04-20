@@ -153,15 +153,34 @@ func (v *TokenValidator) ValidateToken(token string) (valid bool, isLegacy bool,
 }
 
 // IsValidInternalServiceRequest checks if the request is from a trusted internal service.
-// Supports HMAC tokens, legacy plain-secret tokens (with deprecation warning), and
-// fallback tokens for community/dev environments.
-func IsValidInternalServiceRequest(clientID, userToken string, validator *TokenValidator) bool {
+//
+// Authentication paths, in order:
+//  1. HMAC-signed token (preferred; requires non-nil validator)
+//  2. Legacy plain-secret token (requires non-nil validator; deprecated)
+//  3. Static fallback token (ONLY when validator is nil AND allowFallback is true)
+//
+// The fallback path exists so single-node Community/dev deployments work without
+// any secret configuration. Production/Enterprise deployments MUST set
+// AXONFLOW_INTERNAL_SERVICE_SECRET (so the caller passes a non-nil validator)
+// AND MUST pass allowFallback=false. If allowFallback=true ever leaks into a
+// deployment that lacks a configured secret, any caller knowing the literal
+// constant TokenFallback could authenticate as the orchestrator and impersonate
+// arbitrary tenants via X-Tenant-ID/X-Org-ID injection.
+//
+// Callers should gate allowFallback on `isCommunityMode() || isCommunitySaasMode()`
+// — never hard-code true.
+func IsValidInternalServiceRequest(clientID, userToken string, validator *TokenValidator, allowFallback bool) bool {
 	if clientID != ClientID {
 		return false
 	}
 
-	// No validator means no secret configured (community/dev mode)
+	// No validator means no secret configured. Only the static fallback token
+	// can satisfy this branch, and only when the caller explicitly allows it.
 	if validator == nil {
+		if !allowFallback {
+			logFallbackRejection()
+			return false
+		}
 		return userToken == TokenFallback
 	}
 
@@ -193,6 +212,7 @@ func GetInternalServiceToken(generator *TokenGenerator) string {
 var (
 	authWarningOnce       sync.Once
 	legacyDeprecationOnce sync.Once
+	fallbackRejectionOnce sync.Once
 )
 
 // LogAuthWarning logs a one-time startup warning about security configuration.
@@ -218,10 +238,24 @@ func logLegacyDeprecationWarning() {
 	})
 }
 
+// logFallbackRejection logs a one-time warning when an internal-service auth attempt
+// is rejected because no validator is configured and the caller did not allow the
+// fallback path. This usually means the deployment is missing
+// AXONFLOW_INTERNAL_SERVICE_SECRET in a non-Community mode.
+func logFallbackRejection() {
+	fallbackRejectionOnce.Do(func() {
+		log.Printf("[SECURITY] Internal service auth rejected: %s is not set in this deployment. "+
+			"Fallback token is disabled outside Community/Community-SaaS mode. "+
+			"Configure %s on every service (agent, orchestrator, customer-portal) so HMAC-signed tokens can be issued and validated.",
+			SecretEnvVar, SecretEnvVar)
+	})
+}
+
 // ResetWarnings resets the warning flags. Only for use in tests.
 func ResetWarnings() {
 	authWarningOnce = sync.Once{}
 	legacyDeprecationOnce = sync.Once{}
+	fallbackRejectionOnce = sync.Once{}
 }
 
 // computeSignature computes the first SignatureLength hex chars of HMAC-SHA256(secret, "orchestrator-internal:{timestamp}").

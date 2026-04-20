@@ -47,6 +47,82 @@ const (
 	ActionWarn Action = "warn"
 )
 
+// ValidActionTypes is the canonical list of action `type` strings accepted by
+// the policy CRUD API and by override requests. It is the union of:
+//   - core engine actions defined above (block, redact, log, warn, require_approval)
+//   - dynamic-policy executor actions handled in db_dynamic_policies.go
+//     (alert, route, modify_risk)
+//
+// "allow" is excluded — it is an implicit default, not a policy `type`.
+//
+// This is the single source of truth. Both
+// `platform/orchestrator/policy_api_types.go` (POST /api/v1/policies) and
+// `ee/platform/customer-portal/api/policy_overrides.go` (override validator)
+// reference this list. Adding a new action type requires updating only this
+// slice.
+var ValidActionTypes = []string{
+	"alert",
+	"block",
+	"log",
+	"modify_risk",
+	"redact",
+	"require_approval",
+	"route",
+	"warn",
+}
+
+// IsValidActionType reports whether action is in ValidActionTypes.
+func IsValidActionType(action string) bool {
+	for _, a := range ValidActionTypes {
+		if action == a {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidOverrideActions is the canonical list of action `type` strings that are
+// valid as the *target* of a policy override (i.e. what an operator can replace
+// the policy's existing action with). It is a deliberately narrower set than
+// ValidActionTypes:
+//
+//   - Override semantics only make sense for the engine's terminal actions
+//     (block / require_approval / redact / warn / log). Each of these decides
+//     what happens to the request once a policy fires.
+//   - alert / route / modify_risk are dynamic-policy *authoring* actions
+//     (POST /api/v1/policies). They configure a policy's side effects (LLM
+//     routing rules, risk-score deltas, alerter wiring) and have no meaning
+//     as an override of a different policy's terminal action — the agent's
+//     override repository would reject them with ErrInvalidOverrideAction.
+//
+// The agent's `AllOverrideActions` (`platform/agent/policy_categories.go`)
+// historically duplicated this list; the canonical source now lives here so
+// the customer-portal override validator and the agent override repository
+// stay in sync. Adding a new override action requires updating only this
+// slice (and likely ActionRestrictiveness in the agent for ordering).
+// Order is intentional — most restrictive first, matching
+// agent.ActionRestrictiveness so callers iterating the list see actions in
+// "block weakest-allowed override last" order.
+var ValidOverrideActions = []string{
+	"block",
+	"require_approval",
+	"redact",
+	"warn",
+	"log",
+}
+
+// IsValidOverrideAction reports whether action can be the target of a policy
+// override. See ValidOverrideActions for the rationale on which actions are in
+// scope.
+func IsValidOverrideAction(action string) bool {
+	for _, a := range ValidOverrideActions {
+		if action == a {
+			return true
+		}
+	}
+	return false
+}
+
 // PolicyCategory classifies policies for filtering and organization.
 type PolicyCategory string
 
@@ -532,13 +608,13 @@ type DynamicPolicyConfig struct {
 // Dynamic policies are disabled by default for backward compatibility.
 func DefaultDynamicPolicyConfig() DynamicPolicyConfig {
 	return DynamicPolicyConfig{
-		Enabled:                       false,
-		OrchestratorEndpoint:          "http://localhost:8081",
-		Timeout:                       5 * time.Second,
-		GracefulDegradation:           true,
-		EnabledConnectors:             nil, // All connectors when enabled
-		MaxCustomPolicyConnectorsCommunity:  2, // Community: max connectors with custom policies
-		MaxCustomPolicyConnectorsEvaluation: 5, // Evaluation: max connectors with custom policies
+		Enabled:                             false,
+		OrchestratorEndpoint:                "http://localhost:8081",
+		Timeout:                             5 * time.Second,
+		GracefulDegradation:                 true,
+		EnabledConnectors:                   nil, // All connectors when enabled
+		MaxCustomPolicyConnectorsCommunity:  2,   // Community: max connectors with custom policies
+		MaxCustomPolicyConnectorsEvaluation: 5,   // Evaluation: max connectors with custom policies
 	}
 }
 

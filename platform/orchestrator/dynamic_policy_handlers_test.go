@@ -18,6 +18,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,7 +321,10 @@ func TestDynamicPolicyAPI_GetDynamicPolicy_InvalidID(t *testing.T) {
 	r := mux.NewRouter()
 	handler.RegisterRoutes(r)
 
-	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/not-a-uuid", nil)
+	// "BAD_ID!" — uppercase + bang — fails UUID parse, sys_* prefix, AND the
+	// legacy snake-case regex (^[a-z][a-z0-9_-]+$). Plain "not-a-uuid" is now
+	// a legitimate legacy ID (e.g. sensitive_data_control from migration 010).
+	req := httptest.NewRequest("GET", "/api/v1/dynamic-policies/BAD_ID%21", nil)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
@@ -1670,4 +1674,92 @@ func TestDynamicPolicyAPI_Effective_Options(t *testing.T) {
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Expected status 204, got %d", w.Code)
 	}
+}
+
+// TestIsValidPolicyID locks in the three ID shapes the handler must accept
+// and the shapes it must reject. Without the legacy snake_case branch, every
+// Test / Edit / Delete / Versions action on policies seeded by
+// migrations/core/010_policy_tables.sql (e.g. sensitive_data_control,
+// high_risk_block, sql_injection_union) 400s with "Invalid policy ID format".
+// These tests exist so the next refactor can't silently bring that
+// regression back.
+func TestIsValidPolicyID(t *testing.T) {
+	t.Run("accepts valid UUIDs", func(t *testing.T) {
+		for _, id := range []string{
+			"550e8400-e29b-41d4-a716-446655440000",
+			"00000000-0000-0000-0000-000000000000",
+			"AABBCCDD-AABB-CCDD-AABB-CCDDEEFF0011", // uppercase hex accepted by uuid.Parse
+		} {
+			if !isValidPolicyID(id) {
+				t.Errorf("UUID %q should be valid", id)
+			}
+		}
+	})
+
+	t.Run("accepts sys_* prefix", func(t *testing.T) {
+		for _, id := range []string{
+			"sys_pii_ssn",
+			"sys_dyn_tenant_isolation", // seeded in a later migration
+			"sys_media_pii",
+		} {
+			if !isValidPolicyID(id) {
+				t.Errorf("sys_* id %q should be valid", id)
+			}
+		}
+	})
+
+	t.Run("accepts legacy snake_case seed IDs (migration 010)", func(t *testing.T) {
+		// Exact identifiers seeded by migrations/core/010_policy_tables.sql.
+		// Verified against the SQL INSERT statements — do not replace with
+		// synthetic names; these are the real IDs users will click on.
+		for _, id := range []string{
+			// dynamic_policies seeds
+			"high_risk_block",
+			"sensitive_data_control",
+			// static_policies seeds
+			"sql_injection_union",
+			"sql_injection_or",
+			"drop_table_prevention",
+			"truncate_prevention",
+			"pii_ssn_detection",
+			// shape coverage (not real seeds, but within the regex)
+			"a-b-c",      // hyphens allowed
+			"policy_1_2", // digits allowed
+		} {
+			if !isValidPolicyID(id) {
+				t.Errorf("legacy seed id %q should be valid (accepted by ^[a-z][a-z0-9_-]{1,127}$)", id)
+			}
+		}
+	})
+
+	t.Run("accepts 128-char legacy ID boundary", func(t *testing.T) {
+		// Regex is ^[a-z][a-z0-9_-]{1,127}$ — total length 2..128. Confirm
+		// the upper bound explicitly so a future tweak to the quantifier
+		// surfaces immediately.
+		boundary := "a" + strings.Repeat("b", 127) // 128 chars total
+		if !isValidPolicyID(boundary) {
+			t.Errorf("128-char legacy id should be valid; got rejection for len=%d", len(boundary))
+		}
+	})
+
+	t.Run("rejects obviously invalid inputs", func(t *testing.T) {
+		for _, id := range []string{
+			"",                             // empty
+			"a",                            // single char — regex requires min length 2 (first char + at least 1 more)
+			"UPPERCASE_ID",                 // caps forbidden — prevents accidental matches on arbitrary headers
+			"123leading_digit",             // must start with letter
+			"name with spaces",             // space forbidden
+			"name\nwith\nnewline",          // newline forbidden
+			"name;drop_table",              // semicolon forbidden
+			"_leading_underscore",          // must start with [a-z]
+			"-leading-hyphen",              // must start with [a-z]
+			"' OR 1=1 --",                  // SQLi-ish; SQL is parameterized but the validator is the outer guard
+			"a" + strings.Repeat("b", 128), // 129 chars — over the 128 cap
+			"café",                         // non-ASCII outside [a-z0-9_-]
+		} {
+			if isValidPolicyID(id) {
+				t.Errorf("invalid id %q (len %d) should be rejected", id, len(id))
+			}
+		}
+	})
 }

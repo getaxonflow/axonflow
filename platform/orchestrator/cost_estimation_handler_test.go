@@ -38,6 +38,7 @@ func TestEstimatePlanCostHandler_Success(t *testing.T) {
 
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/plans/estimate", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -75,6 +76,7 @@ func TestEstimatePlanCostHandler_EmptySteps(t *testing.T) {
 	body := CostEstimateRequest{Steps: []WorkflowStep{}}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/plans/estimate", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	estimatePlanCostHandler(w, req)
@@ -95,6 +97,7 @@ func TestEstimatePlanCostHandler_NoPlanningEngine(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/plans/estimate", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	estimatePlanCostHandler(w, req)
@@ -126,6 +129,7 @@ func TestEstimatePlanCostHandler_DefaultProviderFromRequest(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest("POST", "/api/v1/plans/estimate", bytes.NewReader(bodyBytes))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
 	w := httptest.NewRecorder()
 
 	estimatePlanCostHandler(w, req)

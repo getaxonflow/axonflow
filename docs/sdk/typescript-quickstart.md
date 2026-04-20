@@ -356,6 +356,11 @@ const client = new AxonFlow({
 });
 ```
 
+> **MAP plans with 5+ steps**: the platform's front-door ALB and orchestrator
+> plan budget are both set to 300 seconds. The SDK default of 120s will cut
+> off a 5-step plan before the server does — pass `mapTimeout: 300000` to let
+> the full plan complete.
+
 ## Deployment
 
 The SDK works in any Node.js 18+ environment:

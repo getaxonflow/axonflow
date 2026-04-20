@@ -402,7 +402,10 @@ func TestPolicyAPIHandler_HandlePolicyByID_InvalidUUID(t *testing.T) {
 	mock := &mockPolicyService{}
 	handler := NewPolicyAPIHandler(mock)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/not-a-uuid", nil)
+	// "Bad ID!" — uppercase + space + bang — fails UUID parse, sys_* prefix,
+	// AND the legacy snake-case regex. Plain "not-a-uuid" is now a legitimate
+	// legacy ID (e.g. sensitive_data_control from migration 010).
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/policies/Bad%20ID%21", nil)
 	req.Header.Set("X-Tenant-ID", "tenant-123")
 	w := httptest.NewRecorder()
 

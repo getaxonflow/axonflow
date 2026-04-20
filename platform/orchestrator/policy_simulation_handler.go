@@ -110,11 +110,9 @@ func (h *PolicySimulationHandler) SimulatePolicies(w http.ResponseWriter, r *htt
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := resolveTenantOrFail(w, r, "policy/simulate")
 	if tenantID == "" {
-		if tid, ok := r.Context().Value("tenant_id").(string); ok {
-			tenantID = tid
-		}
+		return // resolveTenantOrFail already wrote a 401
 	}
 
 	// Rate limit check
@@ -223,11 +221,9 @@ func (h *PolicySimulationHandler) ImpactReport(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := resolveTenantOrFail(w, r, "policy/impact-report")
 	if tenantID == "" {
-		if tid, ok := r.Context().Value("tenant_id").(string); ok {
-			tenantID = tid
-		}
+		return // resolveTenantOrFail already wrote a 401
 	}
 
 	if h.policyService == nil {

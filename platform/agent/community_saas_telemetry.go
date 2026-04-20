@@ -16,6 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 const (
@@ -28,7 +30,41 @@ const (
 
 	// telemetryTTLDays is the TTL for telemetry events in DynamoDB.
 	telemetryTTLDays = 30
+
+	// telemetryCanaryTimeout bounds the startup write used to verify DynamoDB
+	// + KMS permissions. Kept short so a transient AWS slowdown at startup
+	// does not delay agent readiness.
+	telemetryCanaryTimeout = 5 * time.Second
 )
+
+// telemetryWritesTotal counts DynamoDB PutItem outcomes so silent-failure
+// periods (e.g. missing kms:Decrypt on the task role) are visible in Grafana
+// and can be alerted on. The label distinguishes "success", "failure", and
+// the canary equivalents for the startup probe.
+var telemetryWritesTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "axonflow_community_saas_telemetry_writes_total",
+		Help: "Total community SaaS telemetry write attempts by outcome.",
+	},
+	[]string{"result"},
+)
+
+// telemetryInitFailuresTotal is incremented when the startup canary PutItem
+// fails. A nonzero value after an agent restart means the task cannot write
+// telemetry — almost always an IAM/KMS policy drift on the task role.
+var telemetryInitFailuresTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "axonflow_community_saas_telemetry_init_failures_total",
+		Help: "Count of community SaaS telemetry startup canary PutItem failures.",
+	},
+)
+
+// dynamodbPutter is the minimal surface of the DynamoDB client this package
+// needs. Narrowing the dependency lets tests inject a fake without pulling
+// the full SDK Client.
+type dynamodbPutter interface {
+	PutItem(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+}
 
 // CommunitySaaSTelemetry records per-request usage events to DynamoDB.
 // Active only when DEPLOYMENT_MODE=community-saas AND COMMUNITY_SAAS_TELEMETRY_TABLE is set.
@@ -38,7 +74,7 @@ const (
 //
 // Does NOT record: request/response body, query params, IP addresses, auth headers.
 type CommunitySaaSTelemetry struct {
-	client    *dynamodb.Client
+	client    dynamodbPutter
 	tableName string
 	version   string
 	enabled   bool
@@ -55,6 +91,11 @@ type telemetryEvent struct {
 // NewCommunitySaaSTelemetry creates a new telemetry middleware.
 // Returns a no-op instance if tableName is empty (local dev without DynamoDB).
 // Starts a bounded worker pool for writing events to DynamoDB.
+//
+// On successful construction, runs a synchronous canary PutItem to verify the
+// DynamoDB + KMS permission chain end-to-end. The canary failure is logged at
+// ERROR and surfaced through the init-failures Prometheus counter, but never
+// blocks agent startup — telemetry is best-effort by design.
 func NewCommunitySaaSTelemetry(tableName, platformVersion string) *CommunitySaaSTelemetry {
 	if tableName == "" {
 		log.Println("[CSAAS-TELEMETRY] Disabled (COMMUNITY_SAAS_TELEMETRY_TABLE is empty)")
@@ -75,6 +116,12 @@ func NewCommunitySaaSTelemetry(tableName, platformVersion string) *CommunitySaaS
 	}
 
 	client := dynamodb.NewFromConfig(cfg)
+	return newWithClient(client, tableName, platformVersion)
+}
+
+// newWithClient assembles the struct and starts workers, separated from
+// NewCommunitySaaSTelemetry so tests can inject a fake dynamodbPutter.
+func newWithClient(client dynamodbPutter, tableName, platformVersion string) *CommunitySaaSTelemetry {
 	eventChan := make(chan telemetryEvent, telemetryEventBufferSize)
 
 	t := &CommunitySaaSTelemetry{
@@ -91,7 +138,57 @@ func NewCommunitySaaSTelemetry(tableName, platformVersion string) *CommunitySaaS
 	}
 
 	log.Printf("[CSAAS-TELEMETRY] Enabled — writing to table %s (%d workers)", tableName, telemetryWorkers)
+
+	// Synchronous startup probe. Runs inline so the first line of CloudWatch
+	// after "[CSAAS-TELEMETRY] Enabled —" is either a success confirmation or
+	// a loud failure. Never blocks on error — agent keeps running.
+	t.runStartupCanary(context.Background())
+
 	return t
+}
+
+// runStartupCanary writes a synthetic telemetry record to verify the full
+// DynamoDB + KMS + IAM chain at startup. A failure here means subsequent
+// real writes will also fail, and should trigger an oncall alert through
+// the init-failures counter.
+//
+// Does not block or unwind on failure: telemetry stays "enabled" so the app
+// does not crash, but the operator-visible signal (log + counter) catches
+// the misconfiguration within seconds of deploy.
+func (t *CommunitySaaSTelemetry) runStartupCanary(ctx context.Context) {
+	canaryCtx, cancel := context.WithTimeout(ctx, telemetryCanaryTimeout)
+	defer cancel()
+
+	now := time.Now().UTC()
+	correlationID := "canary-" + uuid.NewString()
+	ttl := now.Add(telemetryTTLDays * 24 * time.Hour).Unix()
+
+	item := map[string]types.AttributeValue{
+		"correlation_id":   &types.AttributeValueMemberS{Value: correlationID},
+		"timestamp":        &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
+		"tenant_id":        &types.AttributeValueMemberS{Value: "__canary__"},
+		"endpoint":         &types.AttributeValueMemberS{Value: "__startup_canary__"},
+		"method":           &types.AttributeValueMemberS{Value: "CANARY"},
+		"status_code":      &types.AttributeValueMemberN{Value: "0"},
+		"platform_version": &types.AttributeValueMemberS{Value: t.version},
+		"source":           &types.AttributeValueMemberS{Value: "community-saas"},
+		"ttl":              &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+	}
+
+	_, err := t.client.PutItem(canaryCtx, &dynamodb.PutItemInput{
+		TableName: aws.String(t.tableName),
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("[CSAAS-TELEMETRY] STARTUP CANARY FAILED — real telemetry writes will also fail. "+
+			"Check task role has kms:Decrypt + kms:GenerateDataKey on the telemetry table's KMS key. Error: %v", err)
+		telemetryInitFailuresTotal.Inc()
+		telemetryWritesTotal.WithLabelValues("canary_failure").Inc()
+		return
+	}
+
+	log.Printf("[CSAAS-TELEMETRY] Startup canary OK — DynamoDB + KMS permissions verified")
+	telemetryWritesTotal.WithLabelValues("canary_success").Inc()
 }
 
 // worker drains the event channel and writes to DynamoDB.
@@ -168,6 +265,7 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 
 // writeEvent writes a single usage event to DynamoDB.
 // Errors are logged but never propagated — telemetry must not affect request flow.
+// Every call bumps the writes_total counter so silent failures surface in metrics.
 func (t *CommunitySaaSTelemetry) writeEvent(event telemetryEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -194,7 +292,10 @@ func (t *CommunitySaaSTelemetry) writeEvent(event telemetryEvent) {
 	})
 	if err != nil {
 		log.Printf("[CSAAS-TELEMETRY] DynamoDB PutItem failed (non-fatal): %v", err)
+		telemetryWritesTotal.WithLabelValues("failure").Inc()
+		return
 	}
+	telemetryWritesTotal.WithLabelValues("success").Inc()
 }
 
 // statusWriter wraps http.ResponseWriter to capture the status code.

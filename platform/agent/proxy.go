@@ -285,6 +285,9 @@ func (h *ReverseProxyHandler) RegisterProxyRoutes(r *mux.Router) {
 	// MAS FEAT Compliance (Singapore) - Enterprise feature
 	r.PathPrefix("/api/v1/masfeat").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
+	// EU AI Act Compliance (Europe) - Enterprise feature
+	r.PathPrefix("/api/v1/euaiact").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
 	// Workflow Control Plane (#834)
 	r.PathPrefix("/api/v1/workflows").HandlerFunc(orchAuth).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
 
@@ -364,6 +367,7 @@ func IsProxiedPath(path string) bool {
 		strings.HasPrefix(path, "/api/v1/executions") ||
 		strings.HasPrefix(path, "/api/v1/audit") ||
 		strings.HasPrefix(path, "/api/v1/llm-providers") ||
+		strings.HasPrefix(path, "/api/v1/euaiact") ||
 		strings.HasPrefix(path, "/api/v1/masfeat") ||
 		strings.HasPrefix(path, "/api/v1/rbi") ||
 		strings.HasPrefix(path, "/api/v1/sebi") ||

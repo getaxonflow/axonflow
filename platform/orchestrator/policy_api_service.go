@@ -403,7 +403,7 @@ func (s *PolicyService) validateCreateRequest(req *CreatePolicyRequest) error {
 	} else if !s.isValidPolicyType(string(req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost, media, rate-limit, budget, time-access, role-access, mcp, connector",
+			Message: "Type must be one of: content, user, risk, cost, context_aware, media, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 
@@ -474,7 +474,7 @@ func (s *PolicyService) validateUpdateRequest(req *UpdatePolicyRequest) error {
 	if req.Type != nil && !s.isValidPolicyType(string(*req.Type)) {
 		errors = append(errors, PolicyFieldError{
 			Field:   "type",
-			Message: "Type must be one of: content, user, risk, cost, media, rate-limit, budget, time-access, role-access, mcp, connector",
+			Message: "Type must be one of: content, user, risk, cost, context_aware, media, rate-limit, budget, time-access, role-access, mcp, connector",
 		})
 	}
 
