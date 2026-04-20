@@ -29,13 +29,10 @@ caller keeps working without changes.
 - **`AXONFLOW_MAP_MAX_TIMEOUT_SECONDS` orchestrator env.** Caps the
   MAP plan-execution budget without a binary rebuild. Clamped to
   60..1800 seconds; default 300. The effective value is logged at
-  startup when non-default. Pairs with the new
-  `AlbIdleTimeoutSeconds` CFN parameter on the community-saas
-  template (default 300, same 60..1800 range), wired via `!Ref` so
-  operators can tune the ALB's `idle_timeout.timeout_seconds` at
-  `update-stack` time. Raise both together — the ALB must be
-  greater than or equal to the orchestrator cap or long plans 504
-  at the front door before the orchestrator finishes.
+  startup when non-default. If you front the orchestrator with a
+  reverse proxy or load balancer, set its idle / read timeout to
+  at least the orchestrator cap — otherwise long plans will be
+  cut off at the proxy before the orchestrator finishes.
 
 #### Enterprise
 
@@ -102,21 +99,16 @@ caller keeps working without changes.
   `starting`) is now surfaced on the health response. Operators
   querying `curl /health | jq .tier` used to get `"unknown"`
   because the field was not present.
-- **Front-door ALB idle timeout 60s → 300s; orchestrator plan
-  budget capped to match.** MAP plans chain multiple LLM calls
-  (~15s each); a typical 5-step plan routinely ran past the
-  default 60s idle timeout, the ALB killed the connection, and
-  the caller saw `HTTP 504 Gateway Time-out` mid-stream even
-  though the orchestrator was still working. Aligned the
-  end-to-end chain so no link is shorter than the plan budget:
-  the ALB idle timeout is 300s by default (non-disruptive
-  attribute change; `update-stack` applies without ECS task
-  churn), the orchestrator's plan-execution timeout caps at the
-  same value, and the trip-planner demo backend's write timeout
-  is raised from 120s to 300s. SDK note: the TypeScript SDK's
-  default `mapTimeout` is 120s; clients relying on the default
-  will cut off at 120s before the server cap takes effect. Pass
-  `mapTimeout: 300000` on the SDK client config to match.
+- **Orchestrator MAP plan-execution budget now caps at 300s by
+  default.** MAP plans chain multiple LLM calls (~15s each); a
+  typical 5-step plan routinely ran past the old 60s server-side
+  default and truncated mid-stream even though the orchestrator
+  was still working. The cap is now 300s out of the box and
+  tunable via `AXONFLOW_MAP_MAX_TIMEOUT_SECONDS`. SDK note: the
+  TypeScript SDK's default `mapTimeout` is 120s; clients relying
+  on the default will cut off at 120s before the server cap
+  takes effect. Pass `mapTimeout: 300000` on the SDK client
+  config to match.
 - **Orchestrator policy type allowlist accepts `context_aware`.**
   Three seeded system policies (Tenant Isolation, Debug Mode
   Restriction, Sensitive Data Control) ship with
@@ -147,17 +139,12 @@ caller keeps working without changes.
   handler boundary even though the repo supported them. Without
   this every Tier / Category dropdown in the Portal's
   `/policies` page returned the full unfiltered list.
-- **Legacy V1 HMAC license format purged from active code and
-  deploy scripts.** The V2 Ed25519 format has been the only
-  accepted key for months; stale HMAC references across deploy
-  scripts, CFN, the marketplace license-validator Lambda, the
-  marketplace README, and test compose files would have produced
-  confusing failures in a clean shell. The rejection-path code
-  that returns `"V1 license format no longer supported"` is kept
-  so an old key ever surfacing gets a clear error, not silent
-  acceptance. Technical docs that still treated V1 as a live
-  format now carry a deprecation banner pointing readers at the
-  V2 keygen invocation.
+- **Legacy V1 HMAC license format purged from active code.** The
+  V2 Ed25519 format has been the only accepted key for months;
+  stale HMAC references would have produced confusing failures
+  in a clean shell. The rejection-path code that returns `"V1
+  license format no longer supported"` is kept so an old key
+  ever surfacing gets a clear error, not silent acceptance.
 
 #### Enterprise
 
