@@ -33,6 +33,7 @@ import (
 type auditSearchCriteria struct {
 	UserEmail   string
 	ClientID    string
+	TenantID    string
 	StartTime   time.Time
 	EndTime     time.Time
 	RequestType string
@@ -69,6 +70,10 @@ func asAuditSearchCriteria(criteria interface{}) (auditSearchCriteria, bool) {
 		case "ClientID":
 			if fv.Kind() == reflect.String {
 				out.ClientID = fv.String()
+			}
+		case "TenantID":
+			if fv.Kind() == reflect.String {
+				out.TenantID = fv.String()
 			}
 		case "StartTime":
 			if ts, ok := fv.Interface().(time.Time); ok {
@@ -544,6 +549,16 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 		if searchReq.ClientID != "" {
 			query += fmt.Sprintf(" AND client_id = $%d", argIndex)
 			args = append(args, searchReq.ClientID)
+			argIndex++
+		}
+		// Tenant scoping. The handler force-injects this from the trusted
+		// X-Tenant-ID header; without it the search returned every tenant's
+		// audit logs to any caller (cross-tenant data leak: a portal user
+		// for tenant A could read tenant B's audit history simply by
+		// posting to /api/v1/audit/search).
+		if searchReq.TenantID != "" {
+			query += fmt.Sprintf(" AND tenant_id = $%d", argIndex)
+			args = append(args, searchReq.TenantID)
 			argIndex++
 		}
 		if !searchReq.StartTime.IsZero() {

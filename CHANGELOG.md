@@ -5,7 +5,426 @@ All notable changes to AxonFlow will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Each entry is grouped by edition: **Community** changes also ship in the
+community mirror, **Enterprise** changes are EE-only.
+
 ---
+
+## [7.2.0] - 2026-04-20 — The Bug Bash Bonanza 🪲🔨
+
+A focused hardening release: a full sweep across the Customer Portal
+HTTP surface, tenant-scope fail-closed enforcement on every
+read-and-action endpoint, three new public platform knobs for the
+MAP plan-execution budget, dedicated HTTP examples for every route
+the Portal calls, a login-endpoint fix that closes an
+org-enumeration leak via both response body and timing, and fixes
+to make MAP plans run the full 5 minutes the server is happy to
+give them. MINOR per semver — additive surface only; every 7.1.x
+caller keeps working without changes.
+
+### Added
+
+#### Community
+
+- **`AXONFLOW_MAP_MAX_TIMEOUT_SECONDS` orchestrator env.** Caps the
+  MAP plan-execution budget without a binary rebuild. Clamped to
+  60..1800 seconds; default 300. The effective value is logged at
+  startup when non-default. Pairs with the new
+  `AlbIdleTimeoutSeconds` CFN parameter on the community-saas
+  template (default 300, same 60..1800 range), wired via `!Ref` so
+  operators can tune the ALB's `idle_timeout.timeout_seconds` at
+  `update-stack` time. Raise both together — the ALB must be
+  greater than or equal to the orchestrator cap or long plans 504
+  at the front door before the orchestrator finishes.
+
+#### Enterprise
+
+- **`AlbIdleTimeoutSeconds` CloudFormation parameter on the
+  AWS Marketplace template.** Mirror of the Community knob.
+- **`middleware.MaxBodyBytesMiddleware` exported on the Customer
+  Portal.** Caps every POST/PUT/PATCH request body at 1 MiB by
+  default; `MaxBodyBytesMiddlewareWithLimit(n int64)` returns a
+  variant for routes that legitimately need a larger ceiling (SAML
+  metadata, future file uploads). GET/HEAD are not wrapped.
+- **Per-feature HTTP examples for every route the Portal UI
+  calls.** Each example is runnable against a local Docker Compose
+  stack and covers one topic end-to-end:
+    - Full RBI AI-system lifecycle: register → validate → incident
+      → kill-switch → board report → audit export.
+    - SEBI dashboard, retention, readiness, and audit export.
+    - EU AI Act conformity, accuracy/bias, and async export jobs.
+    - Compliance evidence bundle (summary + stream-download).
+    - Decision explainability with the cross-tenant 404 guard
+      asserted.
+    - License, deployment, nodes, and session metadata.
+    - Policy bundle export/import with `overwrite_mode` semantics.
+    - Full `/api/v1/auth/*` walkthrough: login, session, logout,
+      SSO availability, forgot-password, reset-password,
+      change-password — including the auth-enum identical-body
+      assertions.
+  A curl-based smoke runner covers every Portal API route (44
+  total) without needing a browser, pairing with the Playwright
+  health spec so CI and demo-freeze runs have a Playwright-free
+  verification path. Every script passes `shellcheck` and runs
+  green against local compose.
+- **Compliance → Evidence Export Download button.** The Compliance
+  page showed per-type record counts (audit logs, workflow steps,
+  HITL approvals) but had no way to actually download the bundle.
+  Added a Download Evidence button that streams the JSON bundle as
+  a blob with a 30-day default window (the backend caps by tier)
+  and saves as `axonflow-evidence-<start>-to-<end>.json`. Disabled
+  with a tooltip explanation when counts are zero. Surfaces any
+  backend error (tier / license / quota) as an inline alert
+  instead of silently doing nothing.
+
+### Fixed
+
+#### Community
+
+- **Agent now proxies `/api/v1/euaiact/*` to the orchestrator.**
+  The single-entry-point mux listed `/rbi`, `/sebi`, and
+  `/masfeat` alongside the rest of the compliance family but
+  omitted `/euaiact`, so every EU AI Act call that landed on the
+  front-door ALB returned `404 page not found` and the Portal's
+  Compliance page reported the module as "not enabled for this
+  tenant" even though peer modules rendered fine. Added the prefix
+  to both the router and the proxy-allow-list.
+- **Canonical `/api/v1/policy-overrides` alias on the agent.** The
+  Portal's overrides handler proxies to this path, matching the
+  `policy-categories` / `static-policies` / `dynamic-policies`
+  naming pattern; the agent previously only exposed the tenant
+  override list under `/api/v1/static-policies/overrides`.
+  Callers using the canonical path hit 404 and the Portal's
+  Policies → Overrides tab rendered empty. Same handler, new
+  path, auth unchanged.
+- **Agent `/health` includes `tier`.** The validated license tier
+  (`Community` / `Evaluation` / `Professional` / `Enterprise` /
+  `starting`) is now surfaced on the health response. Operators
+  querying `curl /health | jq .tier` used to get `"unknown"`
+  because the field was not present.
+- **Front-door ALB idle timeout 60s → 300s; orchestrator plan
+  budget capped to match.** MAP plans chain multiple LLM calls
+  (~15s each); a typical 5-step plan routinely ran past the
+  default 60s idle timeout, the ALB killed the connection, and
+  the caller saw `HTTP 504 Gateway Time-out` mid-stream even
+  though the orchestrator was still working. Aligned the
+  end-to-end chain so no link is shorter than the plan budget:
+  the ALB idle timeout is 300s by default (non-disruptive
+  attribute change; `update-stack` applies without ECS task
+  churn), the orchestrator's plan-execution timeout caps at the
+  same value, and the trip-planner demo backend's write timeout
+  is raised from 120s to 300s. SDK note: the TypeScript SDK's
+  default `mapTimeout` is 120s; clients relying on the default
+  will cut off at 120s before the server cap takes effect. Pass
+  `mapTimeout: 300000` on the SDK client config to match.
+- **Orchestrator policy type allowlist accepts `context_aware`.**
+  Three seeded system policies (Tenant Isolation, Debug Mode
+  Restriction, Sensitive Data Control) ship with
+  `policy_type=context_aware`; any update through
+  `PUT /api/v1/policies/{id}` returned 400 because that type was
+  missing from the allowlist.
+- **`POST /api/v1/policies/{id}/overrides` accepts
+  `require_approval` (HITL).** The override validator's allow-list
+  was hand-written as `{block, redact, warn, log}`, silently
+  dropping the HITL action even though the rest of the stack
+  accepted it end-to-end. Standardised on a single canonical list
+  of valid actions:
+    - Policy authoring — `alert`, `block`, `log`, `modify_risk`,
+      `redact`, `require_approval`, `route`, `warn`.
+    - Override endpoint (terminal-action subset) — `block`,
+      `require_approval`, `redact`, `warn`, `log`. Authoring-only
+      actions are deliberately excluded — they have no
+      terminal-action meaning and the agent's override repository
+      would reject them anyway.
+- **Test / Edit / Delete / Versions of legacy-named policies no
+  longer 400.** The policy-ID validator only accepted UUIDs and
+  the `sys_*` prefix, so seeded policies like
+  `sensitive_data_control` and `tenant_isolation` failed every
+  per-policy action with "Invalid policy ID format". Allowlist now
+  also accepts the legacy snake-case form.
+- **`GET /api/v1/policies` honours the `tier` and `category` query
+  params.** The orchestrator's list handler dropped both at the
+  handler boundary even though the repo supported them. Without
+  this every Tier / Category dropdown in the Portal's
+  `/policies` page returned the full unfiltered list.
+- **Legacy V1 HMAC license format purged from active code and
+  deploy scripts.** The V2 Ed25519 format has been the only
+  accepted key for months; stale HMAC references across deploy
+  scripts, CFN, the marketplace license-validator Lambda, the
+  marketplace README, and test compose files would have produced
+  confusing failures in a clean shell. The rejection-path code
+  that returns `"V1 license format no longer supported"` is kept
+  so an old key ever surfacing gets a clear error, not silent
+  acceptance. Technical docs that still treated V1 as a live
+  format now carry a deprecation banner pointing readers at the
+  V2 keygen invocation.
+
+#### Enterprise
+
+- **RBI FREE-AI: registering an AI system no longer 500s.** The
+  repository's INSERT listed `board_approval_required`, but that
+  column is a stored-generated column computed from
+  `risk_category`. PostgreSQL rejected every write with
+  `cannot insert a non-DEFAULT value into column
+  board_approval_required`, so the Portal's RBI compliance page
+  could never progress past step 1. Removed the column from the
+  INSERT and UPDATE statements; the Go struct field is still
+  populated at read time.
+- **RBI FREE-AI: generating a board report no longer 500s.** The
+  service layer set `generation_method = "automated"` but the
+  database check constraint only accepts `'automatic'` or
+  `'manual'`. Fixed the literal.
+- **Marketplace CloudFormation: Agent security group can reach the
+  Customer Portal.** Per the single-entry-point architecture,
+  every public request funnels through the Agent, which then
+  proxies `/api/v1/auth/*`, `/api/v1/portal/*`,
+  `/api/v1/code-governance/*`, and `/api/v1/git-providers/*` to
+  the Customer Portal over Cloud Map. The security group allowed
+  ALB → Portal and Portal → Agent but nothing allowed Agent →
+  Portal, so every auth call hitting the raw stack domain timed
+  out after 30 seconds and fell back to `503 Backend service
+  unavailable`. The vanity-domain host-header rule routed
+  directly to the UI and masked the issue during demo prep; only
+  requests on the raw stack domain surfaced it. Applies on
+  `update-stack` without recycling ECS tasks.
+- **Usage & Billing no longer returns zeros for every tenant.**
+  The daily rollup was defined but never invoked — no scheduler,
+  no goroutine, no on-demand call — so the rollup table stayed
+  empty forever and the Portal's summary and time-series queries
+  returned zeros even when the underlying events had rows. The
+  aggregator is now idempotent (re-running an overlapping window
+  recomputes the bucket rather than adding to it) and is called
+  on-demand from the Usage handlers before they query the
+  rollup — self-healing, no scheduler required. A pre-existing
+  latent bug that surfaced once rollups populated
+  (`COALESCE(AVG())` returns numeric, the scan target was int)
+  is fixed in the same change.
+- **`GET /api/v1/export/usage` no longer 500s.** The handler
+  queried columns that didn't exist (`policy_id`, `latency_ms`,
+  `success` — the real columns are `policy_decision`,
+  `response_time_ms`, and a derived success flag), constructed
+  `INTERVAL '$2 days'` which is not valid PostgreSQL
+  parameterization (the `$2` inside a string literal is treated
+  as literal characters, not a placeholder), and ignored the
+  `start` / `end` query params the UI sends (only honouring a
+  legacy `days=` param). Rewritten against the per-request
+  metering table with correct columns, proper date-range handling
+  for RFC3339 timestamps or `YYYY-MM-DD` dates, and surfaced DB
+  errors in the server log instead of swallowing them behind the
+  generic `"Database error"` response.
+- **`GET /api/v1/license/status` no longer 500s for orgs without
+  an `expires_at`.** The handler scanned the column into a
+  non-nullable type; NULL expiry blew up inside `Scan`. Switched
+  to a nullable target and treats NULL as ACTIVE.
+- **`GET /api/v1/admin/organizations/{id}` no longer 500s.** The
+  join against the SSO configuration table used the wrong join
+  column; every org detail page 500'd with `pq: column
+  s.org_id does not exist`.
+- **Admin org list queries fixed against the heartbeat schema.**
+  Both the list and detail endpoints joined `agent_heartbeats` on
+  column names that don't exist (`organization_id`,
+  `last_heartbeat_at`); the real columns are `org_id` and
+  `last_heartbeat`. Both endpoints returned 500 with
+  `pq: column "organization_id" does not exist`.
+- **Customer Portal Docker image builds with the Enterprise Go
+  tag.** The Portal Dockerfile previously hard-coded a Community
+  build, so `license.GenerateLicenseKey` always returned the
+  Community stub and admin onboarding 500'd on every call,
+  leaving the orgs table empty and the SaaS deployment with no
+  orgs to log in as.
+- **Dashboard "Workflows Run" counts MAP plans too.** The
+  dashboard summary queried the WCP-only execution endpoint, so
+  MAP-only tenants saw `Workflows Run: 0` even after running
+  plans. Now queries the cross-type unified executions endpoint
+  with a fallback to the legacy shape for older server builds.
+- **Dashboard no longer renders "Welcome," with an empty name.**
+  The page mounted before `AuthContext.checkSession()` resolved,
+  so the heading printed "Welcome," and the License Status card
+  printed an empty Organization ID. The dashboard now waits on
+  the session-loading gate.
+- **Sidebar pending-approvals badge no longer fires a console
+  401 on first paint.** The poll fired from a `useEffect` on
+  mount without a user guard; on a hard refresh the first poll
+  raced the session check and hit the catch-all orchestrator
+  proxy without an authenticated session. The poll now waits
+  for the user to be non-null and re-runs when the user
+  changes.
+- **`setup-vanity-domain` workflow overwrites stale CFN-managed
+  ALB private-DNS aliases.** When a stack is rebuilt the old ALB
+  DNS goes away; the workflow used to refuse to touch the
+  existing record, leaving the Portal UI's API backend URL
+  resolving to a deleted ALB inside the VPC — surfaced as 503
+  "Backend service unavailable" on the login page. The workflow
+  now upserts when the existing target matches the CFN naming
+  pattern, and continues to skip operator-managed records.
+- **Policy editor accepts `context_aware` and exposes
+  `require_approval`.** Mirrors the orchestrator allowlist change
+  above; users can now author HITL policies end-to-end without
+  the request-level 400 that previously dropped the action at
+  the Portal boundary.
+- **Policy modal interactions no longer swallowed by the
+  backdrop.** A CSS stacking-context bug made Save Changes,
+  Cancel, and every form input unclickable; the Edit-policy
+  flow looked broken. Promoted the dialog content to a higher
+  z-index.
+- **Modal form inputs readable in OS dark mode.** A leftover
+  `prefers-color-scheme: dark` block from the create-next-app
+  template repointed form text to near-white over a hardcoded
+  white modal, so field values looked empty. The block is
+  removed and native controls (checkboxes, scrollbars) now
+  follow the light color scheme.
+- **`/export` page no longer logs a React hydration error.** The
+  date-range hint rendered `new Date().toLocaleDateString()`
+  directly in JSX, producing different output on the SSR pass
+  vs the client. Deferred the dates behind a `mounted` flag.
+- **`POST /api/v1/admin/onboard-customer` accepts an optional
+  `license_key`.** Lets operators register an org against an
+  already-minted license (Lambda bootstrap, key-rotation
+  scripts, existing SDK customers) without forcing the Portal
+  to re-key. When set, in-process generation is skipped and
+  the existing Secrets Manager entry is left untouched.
+- **Marketplace CloudFormation: orchestrator connector secrets
+  resolve under the per-stack environment name.** Fourteen
+  connector secret paths used the wrong path component; on any
+  non-default stack every connector came up with empty
+  credentials. The `TaskExecutionRole` IAM grant now matches
+  the per-stack path as well, with an `AllowedPattern` on
+  `EnvironmentName` so typos fail at `CreateChangeSet` time
+  rather than at runtime.
+
+### Security
+
+#### Community
+
+- **Internal-service auth no longer accepts a static fallback
+  token in non-Community deployments.** When the
+  internal-service secret was unset, the agent fell through to
+  a literal-string compare against a constant. Any caller
+  knowing that constant could supply internal-service headers
+  and impersonate the orchestrator, injecting arbitrary
+  `X-Tenant-ID` / `X-Org-ID` for cross-tenant access. The
+  fallback path is now gated to Community / Community-SaaS
+  modes only; outside those a one-time security warning is
+  logged at startup. HMAC and legacy plain-secret paths are
+  unchanged.
+- **Orchestrator audit handler fails closed when proxy auth is
+  missing in non-Community deployments.** The handler
+  previously skipped the proxy-auth validation entirely when
+  the token validator was nil — the same misconfiguration
+  shape that enabled the agent fallback bypass above. An
+  attacker reaching the orchestrator directly could spoof
+  `X-Org-ID` for cross-tenant audit attribution. The handler
+  now returns 403 if the validator is nil and the deployment
+  mode is not Community.
+- **`GET /api/v1/decisions/{id}/explain` filters tenant in the
+  SELECT clause.** The handler used to look up the audit entry
+  by `decision_id` only and post-check the tenant; the
+  short-circuit on email failed open whenever the user-email
+  column was NULL, and the email check itself was bypassable
+  by an attacker who happened to share an email with the
+  decision owner across tenants. Now: `X-Tenant-ID` is
+  required, the SELECT binds on `(decisionID, callerTenant)`,
+  and cross-tenant requests return 404 (not 403) so the
+  response shape doesn't leak whether `decision_id` exists in
+  another tenant. The post-fetch tenant comparison is kept as
+  defense-in-depth.
+- **`POST /api/v1/evidence/export` and `GET /api/v1/evidence/summary`
+  fail closed when the tenant scope is missing.** Both endpoints
+  previously fell back to an empty-string tenant when neither
+  `X-Tenant-ID` nor a context-stored `tenant_id` was set, then
+  ran SQL with `WHERE tenant_id = ''` — zero rows in practice
+  but silently burned a daily-export quota slot for an empty
+  bucket and would have leaked data the moment a downstream
+  query stopped filtering. Both now return 401
+  `TENANT_REQUIRED` when neither source provides a scope.
+- **`POST /api/v1/policies/simulate` and
+  `POST /api/v1/policies/{id}/impact-report` adopt the same
+  fail-closed tenant resolution.** Same header-then-context-
+  then-fall-through-to-empty pattern as evidence/export; would
+  have shared a global empty-tenant rate-limit bucket when
+  called without `X-Tenant-ID`.
+- **`POST /api/v1/cost/estimate` and
+  `GET /api/v1/plans/{id}/cost` reject anonymous callers.**
+  Both substituted a `"_default"` literal for an empty
+  `X-Tenant-ID`, so every unauthenticated caller drained the
+  same daily quota. Both now return 401 `TENANT_REQUIRED`.
+- **`GET /api/v1/audit/tenant/{tenant_id}` requires
+  `X-Tenant-ID`.** The URL-vs-session tenant mismatch check
+  was gated on a non-empty session tenant, so omitting the
+  header bypassed the cross-check entirely. The header is now
+  required; mismatches still return 403.
+- **`/api/v1/audit/search` enforces tenant scoping from the
+  trusted header.** The handler ignored the proxy-injected
+  tenant header and only filtered on caller-supplied criteria,
+  so a Portal user for tenant A could read tenant B's audit
+  logs by POSTing to `/api/v1/audit/search`. The header is now
+  required and decoded into a JSON-tag-ignored field so a
+  malicious payload cannot override it. The same path also
+  silently-disabled tenant filtering on
+  `/api/v1/audit/tenant/{id}` because the tenant-only struct
+  shape no longer matched after a `StartTime` field was added;
+  the new SQL filter fixes that too.
+- **`/api/v1/audit/tenant/{tenant_id}` rejects URL paths that
+  don't match the session tenant.** Without the cross-check a
+  Portal user for tenant A could read tenant B's audit history
+  by browsing to `/api/v1/audit/tenant/B`.
+
+#### Enterprise
+
+- **Customer Portal login no longer leaks org existence or auth
+  mode.** `POST /api/v1/auth/login` returned three
+  distinguishable failure responses that together let an
+  unauthenticated caller enumerate valid org IDs and classify
+  each org by auth mode:
+    - Unknown org: `401 "Invalid credentials"` (no bcrypt work).
+    - Known org with no password set (SSO-only): `401 "Password
+      authentication not enabled for this organization"` (no
+      bcrypt work).
+    - Known org, bad password: `401 "Invalid credentials"`
+      (full bcrypt compare).
+  The distinct no-password body outed which orgs existed and
+  which were password-backed; even with a uniform body the
+  missing bcrypt on the first two branches leaked the same bit
+  through response timing. Every failure now returns `"Invalid
+  credentials"`; the no-password branch runs a throwaway
+  bcrypt compare against a fixed placeholder hash so the
+  timing profile matches a real check. SSO-only orgs cannot
+  log in through this path — they are simply indistinguishable
+  from wrong-password attempts to an external caller.
+- **Customer Portal request-body size capped at 1 MiB.** The
+  Portal had no upstream bound on JSON-decode; a single
+  multi-GB POST could pin goroutines and memory. The new
+  middleware caps POST/PUT/PATCH bodies at 1 MiB by default
+  and is wired into the Portal's outer chain so SCIM, admin,
+  and session-protected handlers all inherit it.
+- **System policies visible in the Customer Portal.** The
+  Portal's fetch-static-policies call landed on the agent
+  without internal-service credentials and was denied 401, so
+  the Static (Read-only) count showed 0 next to a Total
+  Policies of 17 — the 80+ PII / SQLi / dangerous-commands
+  rules were invisible. Three paired changes restore
+  visibility: the agent accepts internal-service credentials
+  from headers alongside the hint-based path, the Portal
+  signs every agent call with the internal-service secret,
+  and CloudFormation injects that secret into the Portal task
+  definition. Missing-secret deployments log a startup
+  warning and continue with empty static policies so dev
+  environments degrade gracefully.
+- **`POST /api/v1/admin/onboard-customer` is no longer
+  unauthenticated, and supplied `license_key` payloads are
+  verified.** The route was registered on the bare router
+  with a "legacy / no auth for backward compatibility"
+  comment; anyone reachable on the Portal could hit it,
+  write rows into the orgs table, mint license keys, and
+  overwrite Secrets Manager entries. Two paired fixes close
+  the gap: the route now lives under the admin subrouter
+  that runs the admin auth middleware (API key required in
+  SaaS production; optional otherwise), and when the request
+  supplies `license_key` the handler validates the Ed25519
+  signature, expiry, and signed org/tier match before
+  accepting. The signed payload's `expires_at` and
+  `max_nodes` win over the request body — the body cannot
+  widen what the license actually grants.
 
 ## [7.1.1] - 2026-04-19
 

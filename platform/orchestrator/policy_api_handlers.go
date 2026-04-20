@@ -156,11 +156,19 @@ func (h *PolicyAPIHandler) createPolicy(w http.ResponseWriter, r *http.Request, 
 func (h *PolicyAPIHandler) listPolicies(w http.ResponseWriter, r *http.Request, tenantID string) {
 	params := ListPoliciesParams{
 		Type:     r.URL.Query().Get("type"),
+		Category: r.URL.Query().Get("category"),
 		Search:   r.URL.Query().Get("search"),
 		SortBy:   r.URL.Query().Get("sort_by"),
 		SortDir:  r.URL.Query().Get("sort_dir"),
 		Page:     1,
 		PageSize: 20,
+	}
+
+	// Tier filter: query string -> *PolicyTier (only set when caller asked,
+	// so the repo can distinguish "filter by tier=system" from "no tier filter").
+	if tierStr := r.URL.Query().Get("tier"); tierStr != "" {
+		t := PolicyTier(tierStr)
+		params.Tier = &t
 	}
 
 	if pageStr := r.URL.Query().Get("page"); pageStr != "" {

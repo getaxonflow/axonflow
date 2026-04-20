@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -612,10 +613,23 @@ func (h *DynamicPolicyAPIHandler) handleCORS(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// isValidPolicyID accepts UUIDs and system policy IDs (sys_* prefix).
+// isValidPolicyID accepts UUIDs, system policy IDs (sys_* prefix), and the
+// legacy snake_case identifiers used by migration 010_policy_tables.sql
+// (e.g. "sensitive_data_control") that pre-date the sys_* convention.
+// Without the legacy form every Test / Edit / Delete / Versions action on
+// those policies 400s with "Invalid policy ID format".
+//
+// The pattern is intentionally narrow — letters, digits, underscores, hyphens —
+// to keep the validator a defense-in-depth check; the actual SQL lookups are
+// parameterized.
+var legacyPolicyIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,127}$`)
+
 func isValidPolicyID(id string) bool {
 	if _, err := uuid.Parse(id); err == nil {
 		return true
 	}
-	return strings.HasPrefix(id, "sys_")
+	if strings.HasPrefix(id, "sys_") {
+		return true
+	}
+	return legacyPolicyIDPattern.MatchString(id)
 }

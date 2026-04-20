@@ -125,8 +125,8 @@ type LocalConfig struct {
 }
 
 // NewStorageConfigFromEnv builds a StorageConfig from AUDIT_EXPORT_* environment variables.
-// This centralises the env-to-config mapping so that both platform/orchestrator/run.go
-// and ee/platform/orchestrator/compliance_init.go use the same logic.
+// Centralises the env-to-config mapping for every orchestrator caller that needs
+// a storage backend.
 func NewStorageConfigFromEnv() StorageConfig {
 	var gcsCredentialsJSON []byte
 	if v := os.Getenv("AUDIT_EXPORT_GCS_CREDENTIALS_JSON"); v != "" {

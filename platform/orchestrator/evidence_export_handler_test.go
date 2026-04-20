@@ -863,3 +863,70 @@ func TestEvalDisclaimer(t *testing.T) {
 		t.Errorf("Unexpected disclaimer: %s", evalDisclaimer)
 	}
 }
+
+func TestExportEvidence_RequiresTenant(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{
+		tier:                     license.TierEvaluation,
+		evidenceExportEnabled:    true,
+		maxEvidenceExportsPerDay: 3,
+		maxEvidenceExportRecords: 5000,
+		maxEvidenceWindowDays:    14,
+	}
+	handler := NewEvidenceExportHandler(nil, checker)
+	handler.rateLimiter = &exportRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: nextUTCMidnight(),
+	}
+
+	body, _ := json.Marshal(EvidenceExportRequest{StartDate: "2026-02-01"})
+	req := httptest.NewRequest("POST", "/api/v1/evidence/export", bytes.NewReader(body))
+	// Deliberately do NOT set X-Tenant-ID and do NOT seed tenant_id in context.
+	w := httptest.NewRecorder()
+
+	handler.ExportEvidence(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 when tenant scope is missing, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var errResp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp["code"] != "TENANT_REQUIRED" {
+		t.Errorf("Expected error code TENANT_REQUIRED, got %q", errResp["code"])
+	}
+
+	// Confirm rate limiter was NOT bumped — would have cost the empty bucket
+	// a slot under the old behavior.
+	if got := handler.rateLimiter.counts[""]; got != 0 {
+		t.Errorf("Expected empty-tenant bucket to remain at 0, got %d", got)
+	}
+}
+
+func TestGetEvidenceSummary_RequiresTenant(t *testing.T) {
+	checker := &mockLicenseCheckerForSim{
+		tier:                  license.TierEvaluation,
+		evidenceExportEnabled: true,
+		maxEvidenceWindowDays: 14,
+	}
+	handler := NewEvidenceExportHandler(nil, checker)
+
+	req := httptest.NewRequest("GET", "/api/v1/evidence/summary", nil)
+	// Deliberately no tenant header, no context.
+	w := httptest.NewRecorder()
+
+	handler.GetEvidenceSummary(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 when tenant scope is missing, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var errResp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp["code"] != "TENANT_REQUIRED" {
+		t.Errorf("Expected error code TENANT_REQUIRED, got %q", errResp["code"])
+	}
+}

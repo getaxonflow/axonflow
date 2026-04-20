@@ -145,7 +145,9 @@ func TestValidActionTypes_NotEmpty(t *testing.T) {
 }
 
 func TestValidActionTypes_ContainsExpected(t *testing.T) {
-	expected := []string{"block", "redact", "alert", "log", "route", "modify_risk", "require_approval"}
+	// Includes "warn" since the policy engine emits it (shared/policy/types.go),
+	// and the customer-portal override validator now mirrors this list.
+	expected := []string{"block", "redact", "alert", "log", "route", "modify_risk", "require_approval", "warn"}
 	for _, exp := range expected {
 		found := false
 		for _, at := range ValidActionTypes {

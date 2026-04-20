@@ -62,6 +62,34 @@ func (rl *exportRateLimiter) tryConsume(tenantID string, limit int) (bool, int) 
 	return true, current + 1
 }
 
+// resolveTenantOrFail resolves the tenant scope for a compliance/evidence
+// request. The X-Tenant-ID header is the trusted, proxy-injected value (set by
+// apiAuthMiddleware after authentication); the request context is a
+// belt-and-braces fallback for paths that don't traverse the proxy.
+//
+// If neither produces a non-empty tenant, the function writes a 401 to w and
+// returns "". Callers MUST early-return on the empty result. We fail closed:
+// the alternative (running the SQL with `tenant_id = ”`) currently happens to
+// return zero rows but quietly burns the daily export quota for an empty
+// tenant bucket and would silently leak data the moment a downstream query
+// stops filtering on tenant_id. Per #1623 retro: explicit 401, no implicit
+// degrade.
+func resolveTenantOrFail(w http.ResponseWriter, r *http.Request, endpoint string) string {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		if tid, ok := r.Context().Value("tenant_id").(string); ok {
+			tenantID = tid
+		}
+	}
+	if tenantID == "" {
+		log.Printf("[%s] BLOCKED: tenant scope missing from X-Tenant-ID header and request context", endpoint)
+		writeJSONError(w, http.StatusUnauthorized, "TENANT_REQUIRED",
+			"X-Tenant-ID header is required for this endpoint (set by the AxonFlow Agent gateway).")
+		return ""
+	}
+	return tenantID
+}
+
 // NewEvidenceExportHandler creates a new evidence export handler.
 func NewEvidenceExportHandler(db *sql.DB, tierChecker LicenseChecker) *EvidenceExportHandler {
 	return &EvidenceExportHandler{
@@ -102,11 +130,9 @@ func (h *EvidenceExportHandler) ExportEvidence(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := resolveTenantOrFail(w, r, "evidence/export")
 	if tenantID == "" {
-		if tid, ok := r.Context().Value("tenant_id").(string); ok {
-			tenantID = tid
-		}
+		return // resolveTenantOrFail already wrote a 401
 	}
 
 	// Rate limit
@@ -237,11 +263,9 @@ func (h *EvidenceExportHandler) GetEvidenceSummary(w http.ResponseWriter, r *htt
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := resolveTenantOrFail(w, r, "evidence/summary")
 	if tenantID == "" {
-		if tid, ok := r.Context().Value("tenant_id").(string); ok {
-			tenantID = tid
-		}
+		return // resolveTenantOrFail already wrote a 401
 	}
 
 	windowDays := h.tierChecker.MaxEvidenceWindowDays()

@@ -874,12 +874,25 @@ func TestIsValidInternalServiceRequest_FallbackToken(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, nil)
+			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, nil, true)
 			if got != tt.want {
-				t.Errorf("IsValidInternalServiceRequest(%q, %q, nil) = %v, want %v",
+				t.Errorf("IsValidInternalServiceRequest(%q, %q, nil, true) = %v, want %v",
 					tt.clientID, tt.token, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsValidInternalServiceRequest_FallbackRejectedInStrictMode(t *testing.T) {
+	serviceauth.ResetWarnings()
+
+	// In strict mode (allowFallback=false, validator nil) every request must be rejected.
+	// This guards Enterprise deployments where a missing AXONFLOW_INTERNAL_SERVICE_SECRET
+	// must NOT silently let the literal TokenFallback through.
+	for _, tok := range []string{serviceauth.TokenFallback, "anything", ""} {
+		if serviceauth.IsValidInternalServiceRequest(serviceauth.ClientID, tok, nil, false) {
+			t.Errorf("expected rejection for token %q with nil validator + allowFallback=false", tok)
+		}
 	}
 }
 
@@ -932,9 +945,9 @@ func TestIsValidInternalServiceRequest_WithHMACToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			serviceauth.ResetWarnings()
-			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, val)
+			got := serviceauth.IsValidInternalServiceRequest(tt.clientID, tt.token, val, false)
 			if got != tt.want {
-				t.Errorf("IsValidInternalServiceRequest(%q, token, val) = %v, want %v",
+				t.Errorf("IsValidInternalServiceRequest(%q, token, val, false) = %v, want %v",
 					tt.clientID, got, tt.want)
 			}
 		})
@@ -956,7 +969,7 @@ func TestIsValidInternalServiceRequest_LegacyDeprecation(t *testing.T) {
 	val := serviceauth.NewTokenValidator(testSecret, clock, serviceauth.DefaultClockSkew)
 
 	// Sending the raw secret (legacy path) should be accepted but triggers deprecation warning
-	got := serviceauth.IsValidInternalServiceRequest(serviceauth.ClientID, testSecret, val)
+	got := serviceauth.IsValidInternalServiceRequest(serviceauth.ClientID, testSecret, val, false)
 	if !got {
 		t.Error("legacy plain-secret token should be accepted for backward compatibility")
 	}

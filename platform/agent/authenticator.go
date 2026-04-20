@@ -118,7 +118,12 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 	// orchestrator doesn't have community-saas bcrypt credentials or enterprise
 	// license keys — it uses its own HMAC token for authentication.
 	if hints != nil && hints.ClientID != "" && hints.UserToken != "" {
-		if serviceauth.IsValidInternalServiceRequest(hints.ClientID, hints.UserToken, internalTokenValidator) {
+		// Allow the static fallback token only in Community / Community-SaaS deployments,
+		// where shipping with no shared secret is part of the dev experience. Enterprise
+		// deployments must always validate against a configured HMAC secret — otherwise
+		// the literal TokenFallback could be used to impersonate the orchestrator.
+		allowFallback := isCommunityMode() || isCommunitySaasMode()
+		if serviceauth.IsValidInternalServiceRequest(hints.ClientID, hints.UserToken, internalTokenValidator, allowFallback) {
 			tenantID := hints.TenantID
 			if tenantID == "" {
 				tenantID = hints.ClientID

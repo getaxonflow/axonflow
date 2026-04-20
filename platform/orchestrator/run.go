@@ -38,24 +38,24 @@ import (
 
 	"axonflow/platform/agent"
 	"axonflow/platform/agent/license"
-	"axonflow/platform/shared/serviceauth"
-	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/orchestrator/cloudstorage" // Cloud storage backends for audit exports (#589)
 	"axonflow/platform/orchestrator/cost"         // Cost controls & budget management (#764)
 	"axonflow/platform/orchestrator/euaiact"      // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
-	"axonflow/platform/orchestrator/media"   // Media governance analysis pipeline
-	"axonflow/platform/orchestrator/masfeat"          // MAS FEAT module - Community stub or EE impl
-	"axonflow/platform/orchestrator/planning"         // MAP two-step execution (#927)
-	"axonflow/platform/orchestrator/rbi"              // RBI FREE-AI module - Community stub or EE impl
-	"axonflow/platform/orchestrator/replay"           // Execution replay/debug mode (#763)
-	"axonflow/platform/orchestrator/sebi"             // SEBI AI/ML module - Community stub or EE impl
-	"axonflow/platform/orchestrator/ui"               // Embedded execution viewer UI
+	"axonflow/platform/orchestrator/masfeat"  // MAS FEAT module - Community stub or EE impl
+	"axonflow/platform/orchestrator/media"    // Media governance analysis pipeline
+	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
+	"axonflow/platform/orchestrator/rbi"      // RBI FREE-AI module - Community stub or EE impl
+	"axonflow/platform/orchestrator/replay"   // Execution replay/debug mode (#763)
+	"axonflow/platform/orchestrator/sebi"     // SEBI AI/ML module - Community stub or EE impl
+	"axonflow/platform/orchestrator/ui"       // Embedded execution viewer UI
 	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
 	logutil "axonflow/platform/shared/logger"
+	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/serviceauth"
 )
 
 // AxonFlow Orchestrator - Dynamic Policy Enforcement & LLM Routing Engine
@@ -128,10 +128,10 @@ var (
 	unifiedExecutionHandler *UnifiedExecutionHandler // Unified execution status API
 
 	// Media Governance Pipeline
-	mediaPipeline      *media.Pipeline              // Media analysis pipeline (image governance)
+	mediaPipeline       *media.Pipeline              // Media analysis pipeline (image governance)
 	mediaGovConfigStore *MediaGovernanceConfigStore  // Per-tenant media governance config
-	mediaGovHandler    *MediaGovernanceHandler       // Media governance API handler
-	mediaAuditHandler  *MediaGovernanceAuditHandler  // Media audit export handler (Enterprise)
+	mediaGovHandler     *MediaGovernanceHandler      // Media governance API handler
+	mediaAuditHandler   *MediaGovernanceAuditHandler // Media audit export handler (Enterprise)
 
 	// Tier enforcement
 	tierChecker         LicenseChecker       // Global tier-aware license checker
@@ -263,7 +263,7 @@ type OrchestratorRequest struct {
 
 // MediaContentRequest represents a media item in the API request.
 type MediaContentRequest struct {
-	Source     string `json:"source"`               // "base64" or "url"
+	Source     string `json:"source"`                // "base64" or "url"
 	Base64Data string `json:"base64_data,omitempty"` // Base64-encoded image data
 	URL        string `json:"url,omitempty"`         // Image URL
 	MIMEType   string `json:"mime_type"`             // e.g., "image/jpeg"
@@ -300,9 +300,9 @@ type OrchestratorResponse struct {
 
 // MediaAnalysisResponse contains aggregated media analysis results in the API response.
 type MediaAnalysisResponse struct {
-	Results          []MediaAnalysisItemResponse `json:"results"`
-	TotalCostUSD     float64                     `json:"total_cost_usd"`
-	AnalysisTimeMs   int64                       `json:"analysis_time_ms"`
+	Results        []MediaAnalysisItemResponse `json:"results"`
+	TotalCostUSD   float64                     `json:"total_cost_usd"`
+	AnalysisTimeMs int64                       `json:"analysis_time_ms"`
 }
 
 // MediaAnalysisItemResponse contains analysis results for a single media item.
@@ -330,7 +330,7 @@ type PolicyEvaluationResult struct {
 	Allowed          bool     `json:"allowed"`
 	AppliedPolicies  []string `json:"applied_policies"`
 	RiskScore        float64  `json:"risk_score"`
-	Severity         string   `json:"severity,omitempty"`          // Highest severity of matched policies: critical, high, medium, low
+	Severity         string   `json:"severity,omitempty"`           // Highest severity of matched policies: critical, high, medium, low
 	SeverityPolicyID string   `json:"severity_policy_id,omitempty"` // Policy that contributed the highest severity
 	RequiredActions  []string `json:"required_actions"`
 	ProcessingTimeMs int64    `json:"processing_time_ms"`
@@ -343,9 +343,9 @@ type PolicyEvaluationResult struct {
 
 	// Override enforcement (ADR-044): when a session override flipped a deny
 	// into an allow, these fields record which override was applied.
-	OverrideApplied    bool   `json:"override_applied,omitempty"`
-	OverrideID         string `json:"override_id,omitempty"`
-	OverrideReason     string `json:"override_reason,omitempty"`
+	OverrideApplied bool   `json:"override_applied,omitempty"`
+	OverrideID      string `json:"override_id,omitempty"`
+	OverrideReason  string `json:"override_reason,omitempty"`
 
 	// LLM Routing overrides from dynamic policies
 	PreferredProvider string   `json:"preferred_provider,omitempty"` // Preferred LLM provider
@@ -562,13 +562,13 @@ func Run() {
 	r.HandleFunc("/api/v1/workflows/executions/{id}/hitl-status", getHITLExecutionStatusHandler).Methods("GET")
 
 	// Multi-Agent Planning endpoints (v0.1 + v1.0)
-	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")                // GeneratePlan (stores plan)
-	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")        // ExecutePlan (executes stored plan)
-	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")          // GetPlanStatus (retrieve plan)
-	r.HandleFunc("/api/v1/plan/{id}/cancel", cancelPlanHandler).Methods("POST")     // CancelPlan (MAP v1.0)
-	r.HandleFunc("/api/v1/plan/{id}/versions", getPlanVersionsHandler).Methods("GET") // GetPlanVersions (MAP v1.0)
-	r.HandleFunc("/api/v1/plan/{id}", updatePlanHandler).Methods("PUT")             // UpdatePlan (MAP v1.0)
-	r.HandleFunc("/api/v1/plan/{id}/resume", resumePlanHandler).Methods("POST")     // ResumePlan (MAP v1.0, Enterprise)
+	r.HandleFunc("/api/v1/plan", planRequestHandler).Methods("POST")                                 // GeneratePlan (stores plan)
+	r.HandleFunc("/api/v1/plan/execute", executePlanHandler).Methods("POST")                         // ExecutePlan (executes stored plan)
+	r.HandleFunc("/api/v1/plan/{id}", getPlanStatusHandler).Methods("GET")                           // GetPlanStatus (retrieve plan)
+	r.HandleFunc("/api/v1/plan/{id}/cancel", cancelPlanHandler).Methods("POST")                      // CancelPlan (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}/versions", getPlanVersionsHandler).Methods("GET")                // GetPlanVersions (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}", updatePlanHandler).Methods("PUT")                              // UpdatePlan (MAP v1.0)
+	r.HandleFunc("/api/v1/plan/{id}/resume", resumePlanHandler).Methods("POST")                      // ResumePlan (MAP v1.0, Enterprise)
 	r.HandleFunc("/api/v1/plan/{id}/rollback/{version:[0-9]+}", rollbackPlanHandler).Methods("POST") // RollbackPlan (MAP v1.0, Enterprise)
 
 	// MAP step approval endpoints (v4.3.0, Enterprise — #1076)
@@ -576,8 +576,8 @@ func Run() {
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/reject", mapStepRejectHandler).Methods("POST")
 
 	// Cost Estimation endpoints (v4.3.0)
-	r.HandleFunc("/api/v1/plans/estimate", estimatePlanCostHandler).Methods("POST")  // EstimatePlanCost
-	r.HandleFunc("/api/v1/plans/{id}/cost", getPlanCostHandler).Methods("GET")       // GetPlanCost
+	r.HandleFunc("/api/v1/plans/estimate", estimatePlanCostHandler).Methods("POST") // EstimatePlanCost
+	r.HandleFunc("/api/v1/plans/{id}/cost", getPlanCostHandler).Methods("GET")      // GetPlanCost
 
 	// MCP Connector Marketplace endpoints (v0.2)
 	r.HandleFunc("/api/v1/connectors", listConnectorsHandler).Methods("GET")
@@ -998,9 +998,9 @@ func initializeComponents() {
 	// Create registry with tier-aware provider count limit
 	llmRegistry := llm.NewRegistry(llm.WithMaxProviders(tierChecker.MaxLLMProviders()))
 	bootstrapResult, err := llm.BootstrapFromEnv(&llm.BootstrapConfig{
-		SkipHealthCheck:  false, // Perform health checks on startup
-		ProviderConfigs:  providerConfigs,
-		Registry:         llmRegistry,
+		SkipHealthCheck: false, // Perform health checks on startup
+		ProviderConfigs: providerConfigs,
+		Registry:        llmRegistry,
 	})
 	if err != nil {
 		log.Printf("⚠️  LLM bootstrap error: %v (LLM features may be unavailable)", err)
@@ -1551,13 +1551,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	health := map[string]interface{}{
-		"status":             "healthy",
-		"service":            "axonflow-orchestrator",
-		"version":            getPlatformVersion(),
-		"timestamp":          time.Now().UTC(),
-		"components":         components,
-		"capabilities":       getCapabilities(),
-		"sdk_compatibility":  getSDKCompatibility(),
+		"status":            "healthy",
+		"service":           "axonflow-orchestrator",
+		"version":           getPlatformVersion(),
+		"timestamp":         time.Now().UTC(),
+		"components":        components,
+		"capabilities":      getCapabilities(),
+		"sdk_compatibility": getSDKCompatibility(),
 		"features": map[string]bool{
 			"multi_agent_planning": planningEngine != nil && resultAggregator != nil,
 			"sebi_compliance":      sebiModule != nil && sebiModule.IsHealthy(),
@@ -2326,6 +2326,7 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 	var searchReq struct {
 		UserEmail   string    `json:"user_email,omitempty"`
 		ClientID    string    `json:"client_id,omitempty"`
+		TenantID    string    `json:"-"` // force-set from X-Tenant-ID; never client-controlled
 		StartTime   time.Time `json:"start_time"`
 		EndTime     time.Time `json:"end_time"`
 		RequestType string    `json:"request_type,omitempty"`
@@ -2337,6 +2338,18 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&searchReq); err != nil {
 		sendErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Force tenant scoping from the proxy-injected header. Anyone reaching this
+	// handler over the customer-portal proxy carries the session's tenant_id;
+	// without this filter the query returned every tenant's audit logs to any
+	// caller. The header is JSON-tag-ignored on the decoder so a malicious
+	// payload can't override it.
+	searchReq.TenantID = r.Header.Get("X-Tenant-ID")
+	if searchReq.TenantID == "" {
+		log.Printf("[audit/search] BLOCKED: missing X-Tenant-ID header from %s", r.RemoteAddr)
+		sendErrorResponse(w, "tenant scoping required", http.StatusUnauthorized)
 		return
 	}
 
@@ -2396,6 +2409,29 @@ func tenantAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	if tenantID == "" {
 		sendErrorResponse(w, "Tenant ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Reject any URL-supplied tenant that doesn't match the proxy-injected
+	// session tenant. Without this check a portal user for tenant A could
+	// read tenant B's audit logs by browsing to /api/v1/audit/tenant/B.
+	//
+	// Fail-closed on missing session tenant too (#1623 retro): the previous
+	// `sessionTenant != ""` gate let callers bypass the cross-check by
+	// omitting the X-Tenant-ID header — the AxonFlow Agent gateway always
+	// sets it after authentication, so a missing header means an unauthenticated
+	// request reached the orchestrator directly.
+	sessionTenant := r.Header.Get("X-Tenant-ID")
+	if sessionTenant == "" {
+		log.Printf("[audit/tenant] BLOCKED: missing X-Tenant-ID header for URL tenant %q from %s",
+			logutil.Sanitize(tenantID), r.RemoteAddr)
+		sendErrorResponse(w, "X-Tenant-ID header is required", http.StatusUnauthorized)
+		return
+	}
+	if sessionTenant != tenantID {
+		log.Printf("[audit/tenant] BLOCKED: URL tenant %q does not match session tenant %q from %s",
+			logutil.Sanitize(tenantID), logutil.Sanitize(sessionTenant), r.RemoteAddr)
+		sendErrorResponse(w, "tenant scope mismatch", http.StatusForbidden)
 		return
 	}
 
@@ -2461,7 +2497,19 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	// Verify request came through the Agent gateway (not direct access).
 	// The Agent proxy injects X-Axonflow-Proxy-Auth with an HMAC-signed token.
 	// When AXONFLOW_INTERNAL_SERVICE_SECRET is configured, reject unverified requests.
+	//
+	// In Community mode the secret is optional, so an unset validator is
+	// expected and the proxy-auth check is skipped. In any non-Community mode
+	// (Enterprise, Community-SaaS) an unset validator means the deployment is
+	// misconfigured — fail closed rather than silently accepting unauthenticated
+	// requests that could spoof X-Tenant-ID / X-Org-ID for cross-tenant audit
+	// attribution.
 	proxyToken := r.Header.Get("X-Axonflow-Proxy-Auth")
+	if proxyTokenValidator == nil && !isCommunityMode() {
+		log.Printf("[AuditToolCall] BLOCKED: %s not configured in non-Community deployment — proxy-auth validation cannot run", serviceauth.SecretEnvVar)
+		sendErrorResponse(w, "Unauthorized: internal-service auth not configured", http.StatusForbidden)
+		return
+	}
 	if proxyTokenValidator != nil {
 		if proxyToken == "" {
 			log.Printf("[AuditToolCall] BLOCKED: missing proxy auth header (direct access attempt)")
@@ -2675,12 +2723,72 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 // planExecutionTimeout returns the context timeout for MAP plan execution.
 // Scales to 30s per step (matching single-step resume timeout), minimum 60s.
 // Balanced mode groups steps but each LLM call can take 10-20s.
+//
+// The cap defaults to 300s to stay within the front-door ALB's default
+// idle_timeout (configured at 300s in the marketplace and community-saas
+// CFN templates). Going above the ALB timeout would let the orchestrator
+// keep computing after the client connection was already killed — the
+// caller sees a 504 mid-stream and the work is wasted. 300s covers a
+// 10-step plan at the scaling rate above.
+//
+// Operators running long plans (high-step-count MAP workflows) can raise
+// the cap by setting AXONFLOW_MAP_MAX_TIMEOUT_SECONDS. The cap is clamped
+// to [60s, 1800s] — below 60s would shorten non-plan code paths that
+// don't need the env var, above 30 minutes crosses into WCP/human-in-
+// the-loop territory where a synchronous HTTP round-trip is the wrong
+// model. When bumping the cap, also raise `AlbIdleTimeoutSeconds` on
+// the CFN stack (default 300) so the front-door doesn't cut off first.
 func planExecutionTimeout(stepCount int) time.Duration {
 	timeout := time.Duration(stepCount) * 30 * time.Second
 	if timeout < 60*time.Second {
 		timeout = 60 * time.Second
 	}
+	maxTimeout := mapMaxTimeoutFromEnv()
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
 	return timeout
+}
+
+// mapMaxTimeoutFromEnv reads AXONFLOW_MAP_MAX_TIMEOUT_SECONDS, clamps
+// it to [60s, 1800s], and falls back to 300s when unset/invalid. Logs
+// once-per-process at startup when a non-default value is chosen.
+var (
+	mapMaxTimeoutOnce   sync.Once
+	mapMaxTimeoutCached time.Duration
+)
+
+func mapMaxTimeoutFromEnv() time.Duration {
+	mapMaxTimeoutOnce.Do(func() {
+		const defaultTimeout = 300 * time.Second
+		const minTimeout = 60 * time.Second
+		const maxTimeout = 1800 * time.Second
+		raw := os.Getenv("AXONFLOW_MAP_MAX_TIMEOUT_SECONDS")
+		if raw == "" {
+			mapMaxTimeoutCached = defaultTimeout
+			return
+		}
+		secs, err := strconv.Atoi(raw)
+		if err != nil || secs <= 0 {
+			log.Printf("[MAP] AXONFLOW_MAP_MAX_TIMEOUT_SECONDS=%q is not a positive integer — using default %s", raw, defaultTimeout)
+			mapMaxTimeoutCached = defaultTimeout
+			return
+		}
+		chosen := time.Duration(secs) * time.Second
+		if chosen < minTimeout {
+			log.Printf("[MAP] AXONFLOW_MAP_MAX_TIMEOUT_SECONDS=%d below 60s floor — clamping to 60s", secs)
+			chosen = minTimeout
+		}
+		if chosen > maxTimeout {
+			log.Printf("[MAP] AXONFLOW_MAP_MAX_TIMEOUT_SECONDS=%d above 1800s ceiling — clamping to 1800s. Also raise AlbIdleTimeoutSeconds on the CFN stack or the front-door will 504 first.", secs)
+			chosen = maxTimeout
+		}
+		if chosen != defaultTimeout {
+			log.Printf("[MAP] planExecutionTimeout cap set to %s via AXONFLOW_MAP_MAX_TIMEOUT_SECONDS", chosen)
+		}
+		mapMaxTimeoutCached = chosen
+	})
+	return mapMaxTimeoutCached
 }
 
 // isCommunityMode returns true when running in Community mode.
@@ -4152,11 +4260,11 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"plan_id":      planID,
-			"workflow_id":  targetWorkflowID,
-			"status":       "completed",
-			"step_result":  stepResult,
-			"message":      "All steps completed",
+			"plan_id":     planID,
+			"workflow_id": targetWorkflowID,
+			"status":      "completed",
+			"step_result": stepResult,
+			"message":     "All steps completed",
 		})
 		return
 	}
@@ -4174,13 +4282,13 @@ func resumePlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"plan_id":         planID,
-		"workflow_id":     targetWorkflowID,
-		"status":          "awaiting_approval",
-		"step_result":     stepResult,
-		"next_step":       nextStepIndex,
-		"next_step_name":  nextStep.Name,
-		"total_steps":     len(workflow.Spec.Steps),
+		"plan_id":        planID,
+		"workflow_id":    targetWorkflowID,
+		"status":         "awaiting_approval",
+		"step_result":    stepResult,
+		"next_step":      nextStepIndex,
+		"next_step_name": nextStep.Name,
+		"total_steps":    len(workflow.Spec.Steps),
 	})
 }
 

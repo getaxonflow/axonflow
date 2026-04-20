@@ -227,8 +227,11 @@ func TestIsValidRequest_HMACToken(t *testing.T) {
 	val := NewTokenValidator(testSecret, clock, DefaultClockSkew)
 
 	token := gen.GenerateToken()
-	if !IsValidInternalServiceRequest(ClientID, token, val) {
-		t.Error("valid HMAC token should be accepted")
+	if !IsValidInternalServiceRequest(ClientID, token, val, false) {
+		t.Error("valid HMAC token should be accepted (allowFallback=false)")
+	}
+	if !IsValidInternalServiceRequest(ClientID, token, val, true) {
+		t.Error("valid HMAC token should be accepted (allowFallback=true)")
 	}
 }
 
@@ -237,22 +240,36 @@ func TestIsValidRequest_LegacyFallback(t *testing.T) {
 	clock := newMockClock(time.Now())
 	val := NewTokenValidator(testSecret, clock, DefaultClockSkew)
 
-	// Pass the raw secret as token (legacy behavior)
-	if !IsValidInternalServiceRequest(ClientID, testSecret, val) {
+	// Pass the raw secret as token (legacy behavior); allowFallback irrelevant when validator non-nil
+	if !IsValidInternalServiceRequest(ClientID, testSecret, val, false) {
 		t.Error("legacy plain-secret token should be accepted for backward compatibility")
 	}
 }
 
 func TestIsValidRequest_CommunityMode(t *testing.T) {
 	ResetWarnings()
-	// No validator = community/dev mode
-	if !IsValidInternalServiceRequest(ClientID, TokenFallback, nil) {
-		t.Error("fallback token should be accepted in community mode (nil validator)")
+	// No validator + allowFallback=true = community/dev mode
+	if !IsValidInternalServiceRequest(ClientID, TokenFallback, nil, true) {
+		t.Error("fallback token should be accepted in community mode (nil validator, allowFallback=true)")
 	}
 
 	// Wrong token in community mode
-	if IsValidInternalServiceRequest(ClientID, "wrong-token", nil) {
+	if IsValidInternalServiceRequest(ClientID, "wrong-token", nil, true) {
 		t.Error("wrong token should be rejected even in community mode")
+	}
+}
+
+func TestIsValidRequest_FallbackRejectedWhenNotAllowed(t *testing.T) {
+	ResetWarnings()
+	// No validator + allowFallback=false = enterprise misconfig — must reject
+	// even when the caller supplies the literal TokenFallback.
+	if IsValidInternalServiceRequest(ClientID, TokenFallback, nil, false) {
+		t.Error("fallback token MUST be rejected when allowFallback=false (enterprise mode without configured secret)")
+	}
+
+	// Anything else also rejected
+	if IsValidInternalServiceRequest(ClientID, "anything", nil, false) {
+		t.Error("arbitrary token MUST be rejected when validator is nil and allowFallback=false")
 	}
 }
 
@@ -263,13 +280,16 @@ func TestIsValidRequest_WrongClientID(t *testing.T) {
 	val := NewTokenValidator(testSecret, clock, DefaultClockSkew)
 
 	token := gen.GenerateToken()
-	if IsValidInternalServiceRequest("wrong-client", token, val) {
+	if IsValidInternalServiceRequest("wrong-client", token, val, false) {
 		t.Error("wrong client ID should always be rejected")
 	}
 
-	// Also test with nil validator
-	if IsValidInternalServiceRequest("wrong-client", TokenFallback, nil) {
+	// Also test with nil validator (both fallback values)
+	if IsValidInternalServiceRequest("wrong-client", TokenFallback, nil, true) {
 		t.Error("wrong client ID should be rejected in community mode too")
+	}
+	if IsValidInternalServiceRequest("wrong-client", TokenFallback, nil, false) {
+		t.Error("wrong client ID should be rejected in strict mode too")
 	}
 }
 
@@ -344,7 +364,7 @@ func TestIsValidRequest_ExpiredHMACToken(t *testing.T) {
 	valClock := newMockClock(time.Unix(1700000360, 0))
 	val := NewTokenValidator(testSecret, valClock, DefaultClockSkew)
 
-	if IsValidInternalServiceRequest(ClientID, token, val) {
+	if IsValidInternalServiceRequest(ClientID, token, val, false) {
 		t.Error("expired HMAC token should be rejected")
 	}
 }
@@ -355,7 +375,7 @@ func TestIsValidRequest_WrongLegacySecret(t *testing.T) {
 	val := NewTokenValidator(testSecret, clock, DefaultClockSkew)
 
 	// Wrong plain secret
-	if IsValidInternalServiceRequest(ClientID, "wrong-secret", val) {
+	if IsValidInternalServiceRequest(ClientID, "wrong-secret", val, false) {
 		t.Error("wrong legacy secret should be rejected")
 	}
 }

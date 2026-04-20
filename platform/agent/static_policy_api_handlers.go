@@ -98,6 +98,15 @@ func RegisterStaticPolicyHandlers(router *mux.Router, db *sql.DB) {
 	sub.HandleFunc("/{id}/override", handler.HandleDeleteOverride).Methods("DELETE")
 
 	log.Println("✅ Static Policy API routes registered (12 endpoints, auth-protected)")
+
+	// Canonical policy-overrides alias — customer-portal (and any external
+	// client looking for a tenant-wide override list) expects this path.
+	// Previously only /api/v1/static-policies/overrides was reachable, and
+	// the portal was hitting this path and getting 404s.
+	overridesAlias := router.PathPrefix("/api/v1/policy-overrides").Subrouter()
+	overridesAlias.Use(apiAuthMiddleware)
+	overridesAlias.HandleFunc("", handler.HandleListOverrides).Methods("GET")
+	log.Println("✅ Canonical /api/v1/policy-overrides alias registered (GET, auth-protected)")
 }
 
 // HandleListStaticPolicies handles GET /api/v1/static-policies

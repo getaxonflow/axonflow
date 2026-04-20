@@ -209,7 +209,7 @@ func TestCreateOverrideHandler_RejectsCriticalRisk(t *testing.T) {
 		mock.ExpectQuery("SELECT risk_level, allow_override, id::text").
 			WithArgs("pol-crit").
 			WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "id"}).
-			AddRow("critical", false, "00000000-0000-0000-0000-000000000001"))
+				AddRow("critical", false, "00000000-0000-0000-0000-000000000001"))
 
 		body, _ := json.Marshal(CreateOverrideRequest{
 			PolicyID: "pol-crit", PolicyType: "static", OverrideReason: "test",
@@ -231,7 +231,7 @@ func TestCreateOverrideHandler_RejectsAllowOverrideFalse(t *testing.T) {
 		mock.ExpectQuery("SELECT COALESCE\\(risk_level").
 			WithArgs("pol-1").
 			WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "id"}).
-			AddRow("medium", false, "00000000-0000-0000-0000-000000000001"))
+				AddRow("medium", false, "00000000-0000-0000-0000-000000000001"))
 
 		body, _ := json.Marshal(CreateOverrideRequest{
 			PolicyID: "pol-1", PolicyType: "dynamic", OverrideReason: "test",
@@ -304,8 +304,9 @@ func TestExplainDecisionHandler_RequiresID(t *testing.T) {
 
 func TestExplainDecisionHandler_NotFound(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
+		// SELECT now binds (decisionID, callerTenant) — see #1623 retro fix.
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
-			WithArgs("dec-missing").
+			WithArgs("dec-missing", "tenant-x").
 			WillReturnError(sql.ErrNoRows)
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-missing/explain", nil)
@@ -328,7 +329,7 @@ func TestExplainDecisionHandler_HappyPath(t *testing.T) {
 		ts := time.Now().UTC()
 		details := `{"policy_matches":[{"policy_id":"p-1","policy_name":"Test","risk_level":"medium","allow_override":true}],"tool_signature":"Bash"}`
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
-			WithArgs("dec-1").
+			WithArgs("dec-1", "tenant-x").
 			WillReturnRows(sqlmock.NewRows([]string{
 				"user_email", "tenant_id", "timestamp", "policy_decision", "policy_details",
 			}).AddRow("dev@x.com", "tenant-x", ts, "blocked", details))
@@ -369,14 +370,17 @@ func TestExplainDecisionHandler_HappyPath(t *testing.T) {
 	})
 }
 
-func TestExplainDecisionHandler_CrossTenantForbidden(t *testing.T) {
+// TestExplainDecisionHandler_CrossTenantReturnsNoOracle is the post-fix
+// equivalent of the old _CrossTenantForbidden test. With tenant_id baked into
+// the SELECT, an attacker in tenant-x simply cannot SELECT a row from
+// tenant-other — the SQL returns ErrNoRows and the handler responds 404 so
+// the existence of dec-1 in another tenant cannot be inferred from the
+// response code.
+func TestExplainDecisionHandler_CrossTenantReturnsNoOracle(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		ts := time.Now().UTC()
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
-			WithArgs("dec-1").
-			WillReturnRows(sqlmock.NewRows([]string{
-				"user_email", "tenant_id", "timestamp", "policy_decision", "policy_details",
-			}).AddRow("owner@other.com", "tenant-other", ts, "blocked", "{}"))
+			WithArgs("dec-1", "tenant-x").
+			WillReturnError(sql.ErrNoRows)
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
@@ -385,8 +389,8 @@ func TestExplainDecisionHandler_CrossTenantForbidden(t *testing.T) {
 		rr := httptest.NewRecorder()
 		explainDecisionHandler(rr, req)
 
-		if rr.Code != http.StatusForbidden {
-			t.Errorf("status = %d, want 403", rr.Code)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 (no enumeration oracle)", rr.Code)
 		}
 	})
 }
@@ -916,7 +920,7 @@ func TestListOverridesHandler_QueryError(t *testing.T) {
 func TestExplainDecisionHandler_LookupError(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
-			WithArgs("dec-1").
+			WithArgs("dec-1", "tenant-x").
 			WillReturnError(sql.ErrConnDone)
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
@@ -932,28 +936,29 @@ func TestExplainDecisionHandler_LookupError(t *testing.T) {
 	})
 }
 
-// TestExplainDecisionHandler_ForbiddenCrossTenant locks in the access
-// control: a caller whose email and tenant both differ from the owning
-// audit entry cannot explain someone else's decision.
-func TestExplainDecisionHandler_ForbiddenCrossTenant(t *testing.T) {
+// TestExplainDecisionHandler_CrossTenantReturns404 locks in the access
+// control: a caller from tenant-b who asks about a decision that lives in
+// tenant-a gets 404 (not 403). The fix moved tenant filtering into the SELECT
+// (was previously a post-fetch comparison), so cross-tenant requests return
+// no rows and surface as 404 — denying an enumeration oracle that 403 would
+// otherwise leak ("this ID exists, but not for you").
+func TestExplainDecisionHandler_CrossTenantReturns404(t *testing.T) {
 	withUsageDB(t, func(mock sqlmock.Sqlmock) {
-		rows := sqlmock.NewRows([]string{
-			"user_email", "tenant_id", "timestamp", "policy_decision", "policy_details",
-		}).AddRow("alice@a.com", "tenant-a", time.Now(), "deny", `{"reason":"pol blocked"}`)
-
+		// SELECT now takes (decisionID, callerTenant). Caller is tenant-b, so
+		// tenant-a's row is structurally unreachable — sqlmock returns ErrNoRows.
 		mock.ExpectQuery("SELECT user_email.+FROM audit_logs WHERE").
-			WithArgs("dec-1").
-			WillReturnRows(rows)
+			WithArgs("dec-1", "tenant-b").
+			WillReturnError(sql.ErrNoRows)
 
 		req := httptest.NewRequest("GET", "/api/v1/decisions/dec-1/explain", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "dec-1"})
-		req.Header.Set("X-Tenant-ID", "tenant-b")       // different tenant
-		req.Header.Set("X-User-Email", "bob@b.com")    // different caller
+		req.Header.Set("X-Tenant-ID", "tenant-b")   // different tenant
+		req.Header.Set("X-User-Email", "bob@b.com") // different caller
 		rr := httptest.NewRecorder()
 		explainDecisionHandler(rr, req)
 
-		if rr.Code != http.StatusForbidden {
-			t.Errorf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404; body=%s", rr.Code, rr.Body.String())
 		}
 	})
 }
@@ -994,5 +999,3 @@ func TestApplyOverrideToResult_HappyPath(t *testing.T) {
 		}
 	})
 }
-
-

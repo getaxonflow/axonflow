@@ -14,6 +14,8 @@ package orchestrator
 import (
 	"context"
 	"time"
+
+	sharedpolicy "axonflow/platform/shared/policy"
 )
 
 // PolicyTier represents the tier level in the policy hierarchy.
@@ -45,34 +47,34 @@ const (
 
 // PolicyResource represents a policy for the API (extends DynamicPolicy with API-specific fields)
 type PolicyResource struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Type        string            `json:"type"` // content, user, risk, cost
-	Category    string            `json:"category,omitempty"` // dynamic-risk, dynamic-compliance, etc.
-	Tier        PolicyTier        `json:"tier"`               // system, organization, tenant
-	Conditions  []PolicyCondition `json:"conditions"`
-	Actions     []PolicyAction    `json:"actions"`
-	Priority    int               `json:"priority"`
-	Enabled     bool              `json:"enabled"`
-	Version     int               `json:"version"`
-	TenantID    string            `json:"tenant_id"`
-	OrganizationID string         `json:"organization_id,omitempty"` // For org-tier policies
-	Tags        []string          `json:"tags,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	CreatedBy   string            `json:"created_by,omitempty"`
-	UpdatedBy   string            `json:"updated_by,omitempty"`
-	DeletedAt   *time.Time        `json:"deleted_at,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description,omitempty"`
+	Type           string            `json:"type"`               // content, user, risk, cost
+	Category       string            `json:"category,omitempty"` // dynamic-risk, dynamic-compliance, etc.
+	Tier           PolicyTier        `json:"tier"`               // system, organization, tenant
+	Conditions     []PolicyCondition `json:"conditions"`
+	Actions        []PolicyAction    `json:"actions"`
+	Priority       int               `json:"priority"`
+	Enabled        bool              `json:"enabled"`
+	Version        int               `json:"version"`
+	TenantID       string            `json:"tenant_id"`
+	OrganizationID string            `json:"organization_id,omitempty"` // For org-tier policies
+	Tags           []string          `json:"tags,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	CreatedBy      string            `json:"created_by,omitempty"`
+	UpdatedBy      string            `json:"updated_by,omitempty"`
+	DeletedAt      *time.Time        `json:"deleted_at,omitempty"`
 }
 
 // CreatePolicyRequest for POST /api/v1/policies
 type CreatePolicyRequest struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
-	Type        string            `json:"type"` // content, user, risk, cost
+	Type        string            `json:"type"`               // content, user, risk, cost
 	Category    string            `json:"category,omitempty"` // dynamic-risk, dynamic-compliance, etc.
-	Tier        PolicyTier        `json:"tier,omitempty"` // Only 'organization' or 'tenant' allowed via API
+	Tier        PolicyTier        `json:"tier,omitempty"`     // Only 'organization' or 'tenant' allowed via API
 	Conditions  []PolicyCondition `json:"conditions"`
 	Actions     []PolicyAction    `json:"actions"`
 	Priority    int               `json:"priority"`
@@ -158,10 +160,10 @@ type TriggeredAction struct {
 
 // ImportPoliciesResponse for bulk import
 type ImportPoliciesResponse struct {
-	Created  int      `json:"created"`
-	Updated  int      `json:"updated"`
-	Skipped  int      `json:"skipped"`
-	Errors   []string `json:"errors,omitempty"`
+	Created int      `json:"created"`
+	Updated int      `json:"updated"`
+	Skipped int      `json:"skipped"`
+	Errors  []string `json:"errors,omitempty"`
 }
 
 // ExportPoliciesResponse for bulk export
@@ -208,10 +210,11 @@ type PolicyFieldError struct {
 // Note: MCP-specific types (rate-limit, budget, time-access, role-access, mcp, connector)
 // are used by the MCP Dynamic Policy Handler for connector-level policy enforcement.
 var ValidPolicyTypes = []string{
-	"content", "user", "risk", "cost",        // Standard policy types
-	"media",                                   // Media governance policies
-	"rate-limit", "budget", "time-access",    // MCP rate/budget controls
-	"role-access", "mcp", "connector",        // MCP access controls
+	"content", "user", "risk", "cost", // Standard policy types
+	"context_aware",                       // Context-aware (tenant isolation, debug restrict, sensitive-data control — see system_policies_seed.go)
+	"media",                               // Media governance policies
+	"rate-limit", "budget", "time-access", // MCP rate/budget controls
+	"role-access", "mcp", "connector", // MCP access controls
 }
 
 // ValidPolicyOperators for condition validation
@@ -255,9 +258,13 @@ var ValidPolicyFields = []string{
 	"media.extracted_text_length",
 }
 
-// Valid action types
-// Issue #1082: Added require_approval for WCP HITL integration
-var ValidActionTypes = []string{"block", "redact", "alert", "log", "route", "modify_risk", "require_approval"}
+// Valid action types — re-exported from platform/shared/policy as the single
+// source of truth (also consumed by the customer-portal override validator).
+// Adding a new action type requires updating sharedpolicy.ValidActionTypes only.
+//
+// Copied (not aliased) so callers cannot mutate the shared backing array via
+// append; treat as READ-ONLY.
+var ValidActionTypes = append([]string(nil), sharedpolicy.ValidActionTypes...)
 
 // PolicyServicer defines the interface for policy service operations
 // This interface enables dependency injection and testability

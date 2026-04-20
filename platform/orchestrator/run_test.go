@@ -215,10 +215,10 @@ func TestLoadLLMConfig(t *testing.T) {
 
 func TestHealthHandler(t *testing.T) {
 	tests := []struct {
-		name                   string
-		setupPlanningEngine    bool
-		setupResultAggregator  bool
-		expectedFeature        bool
+		name                  string
+		setupPlanningEngine   bool
+		setupResultAggregator bool
+		expectedFeature       bool
 	}{
 		{
 			name:                  "with planning engine and result aggregator",
@@ -410,15 +410,15 @@ func TestSendErrorResponse(t *testing.T) {
 
 func TestSimpleMetricsHandler(t *testing.T) {
 	tests := []struct {
-		name                      string
-		setupOrchestratorMetrics  bool
-		setupWithRequestTypes     bool
-		setupWithProviders        bool
-		setupHealthCheckPassed    bool
-		expectedFields            []string
-		expectedRequestTypes      bool
-		expectedProviders         bool
-		description               string
+		name                     string
+		setupOrchestratorMetrics bool
+		setupWithRequestTypes    bool
+		setupWithProviders       bool
+		setupHealthCheckPassed   bool
+		expectedFields           []string
+		expectedRequestTypes     bool
+		expectedProviders        bool
+		description              string
 	}{
 		{
 			name:                     "With orchestrator metrics",
@@ -433,15 +433,15 @@ func TestSimpleMetricsHandler(t *testing.T) {
 			description:              "Should return basic metrics when orchestratorMetrics is nil",
 		},
 		{
-			name:                      "With request types and providers",
-			setupOrchestratorMetrics:  true,
-			setupWithRequestTypes:     true,
-			setupWithProviders:        true,
-			setupHealthCheckPassed:    true,
-			expectedFields:            []string{"total_requests", "success_rate", "error_rate_per_sec"},
-			expectedRequestTypes:      true,
-			expectedProviders:         true,
-			description:               "Should include request_types and providers when populated",
+			name:                     "With request types and providers",
+			setupOrchestratorMetrics: true,
+			setupWithRequestTypes:    true,
+			setupWithProviders:       true,
+			setupHealthCheckPassed:   true,
+			expectedFields:           []string{"total_requests", "success_rate", "error_rate_per_sec"},
+			expectedRequestTypes:     true,
+			expectedProviders:        true,
+			description:              "Should include request_types and providers when populated",
 		},
 	}
 
@@ -1499,52 +1499,52 @@ func TestPlanRequestHandler(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name               string
+		name                string
 		setupPlanningEngine bool
 		setupWorkflowEngine bool
-		setupPlanService   bool
-		requestBody        string
-		expectedStatus     int
+		setupPlanService    bool
+		requestBody         string
+		expectedStatus      int
 	}{
 		{
-			name:               "Error - planning engine not initialized",
+			name:                "Error - planning engine not initialized",
 			setupPlanningEngine: false,
 			setupWorkflowEngine: true,
-			setupPlanService:   true,
-			requestBody:        `{"query":"test"}`,
-			expectedStatus:     http.StatusServiceUnavailable,
+			setupPlanService:    true,
+			requestBody:         `{"query":"test"}`,
+			expectedStatus:      http.StatusServiceUnavailable,
 		},
 		{
-			name:               "Error - plan service not initialized",
+			name:                "Error - plan service not initialized",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
-			setupPlanService:   false,
-			requestBody:        `{"query":"test"}`,
-			expectedStatus:     http.StatusServiceUnavailable,
+			setupPlanService:    false,
+			requestBody:         `{"query":"test"}`,
+			expectedStatus:      http.StatusServiceUnavailable,
 		},
 		{
-			name:               "Error - invalid JSON",
+			name:                "Error - invalid JSON",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
-			setupPlanService:   true,
-			requestBody:        `{invalid json}`,
-			expectedStatus:     http.StatusBadRequest,
+			setupPlanService:    true,
+			requestBody:         `{invalid json}`,
+			expectedStatus:      http.StatusBadRequest,
 		},
 		{
-			name:               "Error - missing user authentication",
+			name:                "Error - missing user authentication",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
-			setupPlanService:   true,
-			requestBody:        `{"query":"test query"}`,
-			expectedStatus:     http.StatusUnauthorized,
+			setupPlanService:    true,
+			requestBody:         `{"query":"test query"}`,
+			expectedStatus:      http.StatusUnauthorized,
 		},
 		{
-			name:               "Error - empty query",
+			name:                "Error - empty query",
 			setupPlanningEngine: true,
 			setupWorkflowEngine: true,
-			setupPlanService:   true,
-			requestBody:        `{"query":"","user":{"id":1,"email":"test@example.com"}}`,
-			expectedStatus:     http.StatusBadRequest,
+			setupPlanService:    true,
+			requestBody:         `{"query":"","user":{"id":1,"email":"test@example.com"}}`,
+			expectedStatus:      http.StatusBadRequest,
 		},
 	}
 
@@ -1844,9 +1844,9 @@ func TestTenantWorkflowExecutionsHandler(t *testing.T) {
 // TestGetOutputKeys tests the getOutputKeys utility function
 func TestGetOutputKeys(t *testing.T) {
 	tests := []struct {
-		name     string
-		output   map[string]interface{}
-		wantLen  int
+		name    string
+		output  map[string]interface{}
+		wantLen int
 	}{
 		{
 			name: "non-empty map",
@@ -1942,32 +1942,32 @@ func TestGetResultLength(t *testing.T) {
 // TestEncodePostgreSQLPassword tests URL password encoding
 func TestEncodePostgreSQLPassword(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
+		name  string
+		input string
 	}{
 		{
-			name:     "Simple password",
-			input:    "postgresql://user:pass@localhost:5432/db",
+			name:  "Simple password",
+			input: "postgresql://user:pass@localhost:5432/db",
 		},
 		{
-			name:     "Password with @ symbol",
-			input:    "postgresql://user:test@123@host:5432/db",
+			name:  "Password with @ symbol",
+			input: "postgresql://user:test@123@host:5432/db",
 		},
 		{
-			name:     "Password with special characters",
-			input:    "postgresql://user:p@ss!w0rd@localhost:5432/db",
+			name:  "Password with special characters",
+			input: "postgresql://user:p@ss!w0rd@localhost:5432/db",
 		},
 		{
-			name:     "No password",
-			input:    "postgresql://user@localhost:5432/db",
+			name:  "No password",
+			input: "postgresql://user@localhost:5432/db",
 		},
 		{
-			name:     "Missing scheme",
-			input:    "user:pass@localhost:5432/db",
+			name:  "Missing scheme",
+			input: "user:pass@localhost:5432/db",
 		},
 		{
-			name:     "Missing @ separator",
-			input:    "postgresql://userpass",
+			name:  "Missing @ separator",
+			input: "postgresql://userpass",
 		},
 	}
 
@@ -2401,7 +2401,6 @@ func TestListWorkflowExecutionsHandler_WithLimit(t *testing.T) {
 		})
 	}
 }
-
 
 // TestMetricsHandler_EmptyMetrics tests metrics handler with no data
 func TestMetricsHandler_EmptyMetrics(t *testing.T) {
@@ -3175,6 +3174,12 @@ func TestPlanExecutionTimeout(t *testing.T) {
 		{"three steps scales", 3, 90 * time.Second},
 		{"five steps scales", 5, 150 * time.Second},
 		{"ten steps scales", 10, 300 * time.Second},
+		// Cap at 300s to stay within the ALB idle_timeout. 11+ steps must
+		// not exceed the cap — otherwise the orchestrator would keep
+		// computing after the front-door ALB had already terminated the
+		// connection and the caller saw a 504 mid-stream.
+		{"eleven steps is capped at 300s", 11, 300 * time.Second},
+		{"thirty steps is capped at 300s", 30, 300 * time.Second},
 	}
 
 	for _, tt := range tests {
@@ -3187,3 +3192,20 @@ func TestPlanExecutionTimeout(t *testing.T) {
 	}
 }
 
+// TestTenantAuditLogsHandler_RequiresSessionTenant locks in the #1623 retro
+// follow-up: the URL-vs-session tenant mismatch check used to be gated on
+// sessionTenant != "", which let a caller bypass the cross-check by simply
+// omitting X-Tenant-ID. The header is now required (the AxonFlow Agent
+// gateway always sets it after authentication).
+func TestTenantAuditLogsHandler_RequiresSessionTenant(t *testing.T) {
+	req := httptest.NewRequest("GET", "/audit/tenant/test-tenant", nil)
+	req = mux.SetURLVars(req, map[string]string{"tenant_id": "test-tenant"})
+	// Deliberately no X-Tenant-ID header.
+	w := httptest.NewRecorder()
+
+	tenantAuditLogsHandler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 when X-Tenant-ID is missing, got %d: %s", w.Code, w.Body.String())
+	}
+}

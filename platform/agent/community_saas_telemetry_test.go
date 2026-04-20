@@ -5,10 +5,31 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// fakePutter is a test double for dynamodbPutter. It records every PutItem
+// call and returns err (if set) on every call.
+type fakePutter struct {
+	calls []*dynamodb.PutItemInput
+	err   error
+}
+
+func (f *fakePutter) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	f.calls = append(f.calls, input)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &dynamodb.PutItemOutput{}, nil
+}
 
 func TestNewCommunitySaaSTelemetry_Disabled(t *testing.T) {
 	tel := NewCommunitySaaSTelemetry("", "6.2.0")
@@ -260,6 +281,115 @@ func TestSetTelemetryTenantID_WithoutContainer(t *testing.T) {
 	// SetTelemetryTenantID should be a no-op when no container in context
 	ctx := context.Background()
 	SetTelemetryTenantID(ctx, "test-tenant") // should not panic
+}
+
+// getStringAttr extracts a string value from an aws-sdk-go-v2 DynamoDB item map.
+// Fails the test if the field is missing or not of type AttributeValueMemberS.
+func getStringAttr(t *testing.T, item map[string]types.AttributeValue, field string) string {
+	t.Helper()
+	v, ok := item[field]
+	if !ok {
+		t.Fatalf("missing field %q in item", field)
+	}
+	s, ok := v.(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf("field %q is not a string attribute, got %T", field, v)
+	}
+	return s.Value
+}
+
+func TestStartupCanary_Success(t *testing.T) {
+	before := testutil.ToFloat64(telemetryInitFailuresTotal)
+	beforeSuccess := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("canary_success"))
+
+	fake := &fakePutter{}
+	tel := newWithClient(fake, "test-table", "7.1.0")
+	defer close(tel.eventChan)
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 canary PutItem, got %d", len(fake.calls))
+	}
+	if v := testutil.ToFloat64(telemetryInitFailuresTotal); v != before {
+		t.Errorf("init-failures counter moved on success: was %v, now %v", before, v)
+	}
+	if v := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("canary_success")); v != beforeSuccess+1 {
+		t.Errorf("canary_success counter did not bump: was %v, now %v", beforeSuccess, v)
+	}
+}
+
+func TestStartupCanary_FailureSurfacesInMetrics(t *testing.T) {
+	// A PutItem error at startup must bump both init-failures and
+	// canary_failure counters, and the agent must still come up (enabled=true).
+	beforeInit := testutil.ToFloat64(telemetryInitFailuresTotal)
+	beforeFail := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("canary_failure"))
+
+	fake := &fakePutter{err: errors.New("AccessDeniedException: kms:Decrypt not authorized")}
+	tel := newWithClient(fake, "test-table", "7.1.0")
+	defer close(tel.eventChan)
+
+	if !tel.enabled {
+		t.Error("canary failure must NOT disable telemetry (best-effort design)")
+	}
+	if v := testutil.ToFloat64(telemetryInitFailuresTotal); v != beforeInit+1 {
+		t.Errorf("init-failures counter did not bump on canary failure: was %v, now %v", beforeInit, v)
+	}
+	if v := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("canary_failure")); v != beforeFail+1 {
+		t.Errorf("canary_failure counter did not bump: was %v, now %v", beforeFail, v)
+	}
+}
+
+func TestWriteEvent_SuccessBumpsCounter(t *testing.T) {
+	before := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("success"))
+
+	fake := &fakePutter{}
+	tel := &CommunitySaaSTelemetry{client: fake, tableName: "test-table", version: "7.1.0", enabled: true, eventChan: make(chan telemetryEvent, 1)}
+	tel.writeEvent(telemetryEvent{tenantID: "cs_x", endpoint: "/api/request", method: "POST", statusCode: 200})
+
+	if v := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("success")); v != before+1 {
+		t.Errorf("success counter did not bump: was %v, now %v", before, v)
+	}
+}
+
+func TestWriteEvent_FailureBumpsCounter(t *testing.T) {
+	before := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("failure"))
+
+	fake := &fakePutter{err: errors.New("ThrottlingException")}
+	tel := &CommunitySaaSTelemetry{client: fake, tableName: "test-table", version: "7.1.0", enabled: true, eventChan: make(chan telemetryEvent, 1)}
+	tel.writeEvent(telemetryEvent{tenantID: "cs_x", endpoint: "/api/request", method: "POST", statusCode: 200})
+
+	if v := testutil.ToFloat64(telemetryWritesTotal.WithLabelValues("failure")); v != before+1 {
+		t.Errorf("failure counter did not bump: was %v, now %v", before, v)
+	}
+}
+
+func TestStartupCanary_RecordShape(t *testing.T) {
+	// The canary record must be identifiable so reporting can exclude it
+	// from real-usage counts: tenant_id="__canary__", correlation_id prefixed
+	// with "canary-", method="CANARY", endpoint="__startup_canary__".
+	fake := &fakePutter{}
+	tel := newWithClient(fake, "test-table", "7.1.0")
+	defer close(tel.eventChan)
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 canary call, got %d", len(fake.calls))
+	}
+	item := fake.calls[0].Item
+
+	if id := getStringAttr(t, item, "correlation_id"); !strings.HasPrefix(id, "canary-") {
+		t.Errorf("correlation_id should start with canary-, got %q", id)
+	}
+	if v := getStringAttr(t, item, "tenant_id"); v != "__canary__" {
+		t.Errorf("tenant_id want __canary__, got %q", v)
+	}
+	if v := getStringAttr(t, item, "method"); v != "CANARY" {
+		t.Errorf("method want CANARY, got %q", v)
+	}
+	if v := getStringAttr(t, item, "endpoint"); v != "__startup_canary__" {
+		t.Errorf("endpoint want __startup_canary__, got %q", v)
+	}
+	if v := getStringAttr(t, item, "source"); v != "community-saas" {
+		t.Errorf("source want community-saas, got %q", v)
+	}
 }
 
 func TestTelemetryMiddleware_ContextPropagation(t *testing.T) {

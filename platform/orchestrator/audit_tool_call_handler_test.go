@@ -449,6 +449,7 @@ func TestAuditToolCallHandler_ProxyAuthTenantDiffers(t *testing.T) {
 func TestAuditToolCallHandler_NoProxyAuthNeededWithoutSecret(t *testing.T) {
 	// When proxyTokenValidator is nil (no AXONFLOW_INTERNAL_SERVICE_SECRET), proxy auth is skipped.
 	// This is the community/dev mode where orchestrator is accessed directly.
+	t.Setenv("DEPLOYMENT_MODE", "community")
 	origLogger := auditLogger
 	auditLogger = &AuditLogger{
 		auditQueue:   make(chan *AuditEntry, 100),
@@ -476,6 +477,43 @@ func TestAuditToolCallHandler_NoProxyAuthNeededWithoutSecret(t *testing.T) {
 
 	if rr.Code != http.StatusCreated {
 		t.Errorf("Expected status 201 in community mode without proxy auth, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAuditToolCallHandler_FailsClosedWhenSecretMissingInEnterpriseMode(t *testing.T) {
+	// When proxyTokenValidator is nil AND we are NOT in Community mode, every
+	// request must be rejected. Otherwise an Enterprise/SaaS rollout that forgot
+	// to set AXONFLOW_INTERNAL_SERVICE_SECRET would silently accept any caller
+	// who can reach the orchestrator directly, letting them spoof X-Org-ID for
+	// audit attribution against another tenant.
+	for _, mode := range []string{"enterprise", "community-saas", "in-vpc-enterprise"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("DEPLOYMENT_MODE", mode)
+			origLogger := auditLogger
+			auditLogger = &AuditLogger{
+				auditQueue:   make(chan *AuditEntry, 100),
+				shutdownChan: make(chan struct{}),
+			}
+			origValidator := proxyTokenValidator
+			proxyTokenValidator = nil // simulate missing secret
+			defer func() {
+				auditLogger = origLogger
+				proxyTokenValidator = origValidator
+			}()
+
+			body, _ := json.Marshal(map[string]interface{}{"tool_name": "getUserInfo"})
+			req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			setBasicAuth(req)
+
+			rr := httptest.NewRecorder()
+			auditToolCallHandler(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("expected 403 when proxyTokenValidator is nil in %s mode, got %d. Body: %s",
+					mode, rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 

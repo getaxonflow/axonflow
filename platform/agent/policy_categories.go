@@ -3,6 +3,10 @@
 
 package agent
 
+import (
+	sharedpolicy "axonflow/platform/shared/policy"
+)
+
 // PolicyCategory represents the category classification for policies.
 // Categories are used for organizing and filtering policies in the UI and API.
 type PolicyCategory string
@@ -202,25 +206,24 @@ const (
 	ActionLog OverrideAction = "log"
 )
 
-// AllOverrideActions returns all valid override actions.
+// AllOverrideActions returns all valid override actions. The canonical list
+// lives in platform/shared/policy.ValidOverrideActions; this function is a
+// typed view for callers using the local OverrideAction string-newtype. Both
+// the customer-portal override validator and this agent-side repository now
+// agree on the same set.
 func AllOverrideActions() []OverrideAction {
-	return []OverrideAction{
-		ActionBlock,
-		ActionRequireApproval,
-		ActionRedact,
-		ActionWarn,
-		ActionLog,
+	out := make([]OverrideAction, 0, len(sharedpolicy.ValidOverrideActions))
+	for _, a := range sharedpolicy.ValidOverrideActions {
+		out = append(out, OverrideAction(a))
 	}
+	return out
 }
 
-// IsValidOverrideAction returns true if the action is valid.
+// IsValidOverrideAction returns true if the action is valid. Delegates to the
+// canonical list in platform/shared/policy so the agent and the customer-portal
+// override validator can never drift.
 func IsValidOverrideAction(action OverrideAction) bool {
-	for _, a := range AllOverrideActions() {
-		if a == action {
-			return true
-		}
-	}
-	return false
+	return sharedpolicy.IsValidOverrideAction(string(action))
 }
 
 // ActionRestrictiveness returns the restrictiveness level of an action.

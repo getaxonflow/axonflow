@@ -355,6 +355,14 @@ func substituteGrafanaPassword(sqlContent string) (string, error) {
 // This allows the health endpoint to respond immediately while initialization happens
 var appReady atomic.Bool
 
+// licenseTier is captured at license-validation time and surfaced in
+// /health so operators (and the setup-e2e-testing script's `jq .tier`
+// check) can distinguish Community / Evaluation / Professional /
+// Enterprise without hitting a separate license endpoint. Empty string
+// means "license not yet validated" (startup phase) or "community
+// build" (no license required).
+var licenseTier atomic.Value // string
+
 // Global router and server - allows health checks to pass immediately while initialization happens
 var (
 	globalRouter *mux.Router
@@ -404,6 +412,7 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":             status,
 		"service":            "axonflow-agent",
+		"tier":               currentLicenseTier(),
 		"timestamp":          time.Now().UTC(),
 		"version":            GetPlatformVersion(),
 		"capabilities":       getCapabilities(),
@@ -411,6 +420,23 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
+}
+
+// currentLicenseTier returns the tier captured at license validation, or
+// "community" for builds that ran without a license (community mode).
+// Safe to call before initialization — returns "starting".
+func currentLicenseTier() string {
+	v := licenseTier.Load()
+	if v == nil {
+		if appReady.Load() {
+			return "community"
+		}
+		return "starting"
+	}
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return "community"
 }
 
 // Run is the exported entry point for the agent service.
@@ -480,6 +506,7 @@ func Run() {
 
 		log.Printf("✅ License validated successfully")
 		log.Printf("   Tier: %s", result.Tier)
+		licenseTier.Store(string(result.Tier))
 		log.Printf("   Org: %s", deploymentOrgID)
 		log.Printf("   Max Nodes: %d", result.MaxNodes)
 		log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
@@ -1029,6 +1056,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":             "healthy",
 		"service":            "axonflow-agent",
+		"tier":               currentLicenseTier(),
 		"timestamp":          time.Now().UTC(),
 		"version":            GetPlatformVersion(),
 		"capabilities":       getCapabilities(),

@@ -19,18 +19,18 @@ import (
 // Additive fields may be added with omitempty; renames/removals require
 // a major version bump.
 type DecisionExplanation struct {
-	DecisionID                string             `json:"decision_id"`
-	Timestamp                 time.Time          `json:"timestamp"`
-	PolicyMatches             []ExplainPolicy    `json:"policy_matches"`
-	MatchedRules              []ExplainRule      `json:"matched_rules,omitempty"`
-	Decision                  string             `json:"decision"` // "allow"|"deny"|"require_approval"
-	Reason                    string             `json:"reason"`
-	RiskLevel                 string             `json:"risk_level,omitempty"`
-	OverrideAvailable         bool               `json:"override_available"`
-	OverrideExistingID        string             `json:"override_existing_id,omitempty"`
-	HistoricalHitCountSession int                `json:"historical_hit_count_session"`
-	PolicySourceLink          string             `json:"policy_source_link,omitempty"`
-	ToolSignature             string             `json:"tool_signature,omitempty"`
+	DecisionID                string          `json:"decision_id"`
+	Timestamp                 time.Time       `json:"timestamp"`
+	PolicyMatches             []ExplainPolicy `json:"policy_matches"`
+	MatchedRules              []ExplainRule   `json:"matched_rules,omitempty"`
+	Decision                  string          `json:"decision"` // "allow"|"deny"|"require_approval"
+	Reason                    string          `json:"reason"`
+	RiskLevel                 string          `json:"risk_level,omitempty"`
+	OverrideAvailable         bool            `json:"override_available"`
+	OverrideExistingID        string          `json:"override_existing_id,omitempty"`
+	HistoricalHitCountSession int             `json:"historical_hit_count_session"`
+	PolicySourceLink          string          `json:"policy_source_link,omitempty"`
+	ToolSignature             string          `json:"tool_signature,omitempty"`
 }
 
 // ExplainPolicy is a policy reference returned inside an explanation.
@@ -70,8 +70,22 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		callerEmail = r.Header.Get("X-User-ID")
 	}
 	callerTenant := r.Header.Get("X-Tenant-ID")
+	if callerTenant == "" {
+		// Fail closed (#1623 retro): without a trusted tenant scope on the
+		// request, post-fetch authorization could be bypassed by simply
+		// omitting the header — the entryUserEmail==callerEmail short-circuit
+		// would also pass for an attacker spoofing X-User-Email. Require the
+		// header explicitly; the AxonFlow Agent gateway always sets it after
+		// authentication.
+		sendErrorResponse(w, "X-Tenant-ID header is required", http.StatusUnauthorized)
+		return
+	}
 
-	// Look up the audit entry by decision_id.
+	// Look up the audit entry by (decision_id, tenant_id). Filtering tenant in
+	// the SELECT makes cross-tenant reads structurally impossible — earlier
+	// the WHERE was decision_id only and authorization was a post-fetch
+	// comparison, which silently failed open whenever entryUserEmail was NULL
+	// (no .Valid skip path) or whenever the same email existed across tenants.
 	// policy_details JSONB contains decision_id; we use a functional index.
 	// The reason string is kept inside policy_details → reason, not a direct
 	// audit_logs column, so the SELECT list has five projections and the
@@ -88,11 +102,15 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		SELECT user_email, tenant_id, timestamp, policy_decision, policy_details
 		FROM audit_logs
 		WHERE policy_details->>'decision_id' = $1
+		  AND tenant_id = $2
 		ORDER BY timestamp DESC LIMIT 1
-	`, decisionID).Scan(&entryUserEmail, &entryTenant, &entryTime,
+	`, decisionID, callerTenant).Scan(&entryUserEmail, &entryTenant, &entryTime,
 		&entryDecision, &entryDetails)
 
 	if err == sql.ErrNoRows {
+		// 404 (rather than 403) so the response shape is identical for
+		// "decision doesn't exist in your tenant" and "decision exists in a
+		// different tenant" — denies an enumeration oracle.
 		sendErrorResponse(w, "Decision not found or past retention window", http.StatusNotFound)
 		return
 	}
@@ -102,14 +120,25 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authorization: caller can explain only their own decisions unless they
-	// belong to the same tenant (admin authz is out of scope for this handler
-	// and deferred to a dedicated policy adapter).
+	// Per-user authorization within the tenant: a caller can explain only their
+	// own decisions, or any decision in the same tenant if they're a peer.
+	// (Admin authz is deferred to a dedicated policy adapter.) The SELECT above
+	// already guarantees same-tenant; this block is the additional within-
+	// tenant scoping. Defense in depth: also reject if entryTenant somehow
+	// disagrees with callerTenant (should be impossible after the WHERE clause,
+	// but guards against a future SELECT change).
+	if entryTenant.Valid && entryTenant.String != callerTenant {
+		log.Printf("explain decision: SELECT/auth mismatch: entry_tenant=%q caller_tenant=%q",
+			entryTenant.String, callerTenant)
+		sendErrorResponse(w, "Not authorized to explain this decision", http.StatusForbidden)
+		return
+	}
 	if entryUserEmail.Valid && entryUserEmail.String != callerEmail {
-		if !entryTenant.Valid || entryTenant.String != callerTenant {
-			sendErrorResponse(w, "Not authorized to explain this decision", http.StatusForbidden)
-			return
-		}
+		// Different user inside the same tenant — for now treat as allowed
+		// (peer visibility within a tenant is the existing contract).
+		// Hook for stricter future enforcement: enforce here when the policy
+		// adapter is wired.
+		_ = entryUserEmail.String
 	}
 
 	// Parse policy_details JSON.

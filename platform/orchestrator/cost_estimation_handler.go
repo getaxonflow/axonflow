@@ -99,10 +99,13 @@ func estimatePlanCostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce daily rate limit per tenant (after validation)
-	tenantID := r.Header.Get("X-Tenant-ID")
+	// Enforce daily rate limit per tenant (after validation). Fail closed on
+	// missing tenant scope rather than sharing a `_default` global bucket
+	// across all unauthenticated callers (#1623 retro): every legitimate
+	// caller flows through the AxonFlow Agent gateway which sets X-Tenant-ID.
+	tenantID := resolveTenantOrFail(w, r, "cost/estimate")
 	if tenantID == "" {
-		tenantID = "_default"
+		return // resolveTenantOrFail already wrote a 401
 	}
 	if tierChecker != nil {
 		limit := tierChecker.MaxCostEstimatesPerDay()
@@ -184,10 +187,11 @@ func getPlanCostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce daily rate limit per tenant (after input validation)
-	tenantID := r.Header.Get("X-Tenant-ID")
+	// Enforce daily rate limit per tenant (after input validation). See
+	// resolveTenantOrFail rationale at the parallel call site above.
+	tenantID := resolveTenantOrFail(w, r, "cost/estimate-plan")
 	if tenantID == "" {
-		tenantID = "_default"
+		return // resolveTenantOrFail already wrote a 401
 	}
 	if tierChecker != nil {
 		limit := tierChecker.MaxCostEstimatesPerDay()
