@@ -573,6 +573,51 @@ func (m *MockApprovalPolicyEvaluator) EvaluateStepGate(ctx context.Context, step
 	}
 }
 
+// MockApprovalPolicyEvaluatorWithApprovalID simulates the HITL-integrated adapter
+// that populates ApprovalID alongside the require_approval decision.
+type MockApprovalPolicyEvaluatorWithApprovalID struct {
+	ApprovalID string
+}
+
+func (m *MockApprovalPolicyEvaluatorWithApprovalID) EvaluateStepGate(ctx context.Context, step *StepGateContext) *StepGateEvaluation {
+	return &StepGateEvaluation{
+		Decision:   GateDecisionRequireApproval,
+		Reason:     "Human approval required",
+		PolicyIDs:  []string{"policy-approval-1"},
+		ApprovalID: m.ApprovalID,
+	}
+}
+
+func TestStepGate_RequireApproval_SurfacesApprovalID(t *testing.T) {
+	// Regression: StepGateResponse previously dropped the ApprovalID populated
+	// by the HITL adapter, so SDK clients saw approval_id: null even though the
+	// HITL queue entry existed. Caught in banking-demo VC demo verification
+	// 2026-04-21.
+	repo := NewMockRepository()
+	svc := NewService(repo, &MockApprovalPolicyEvaluatorWithApprovalID{
+		ApprovalID: "approval-uuid-1234",
+	}, &ServiceConfig{BaseURL: "https://portal.getaxonflow.com"})
+	ctx := context.Background()
+
+	workflow, _ := svc.CreateWorkflow(ctx, &CreateWorkflowRequest{
+		WorkflowName: "payment-processing",
+	}, "tenant-1", "org-1", "user-1", "client-1")
+
+	response, err := svc.StepGate(ctx, workflow.WorkflowID, "step-1", &StepGateRequest{
+		StepName: "Initiate Wire",
+		StepType: StepTypeToolCall,
+	}, "tenant-1", "org-1", "user-1", "client-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if response.Decision != GateDecisionRequireApproval {
+		t.Fatalf("decision = %s, want require_approval", response.Decision)
+	}
+	if response.ApprovalID != "approval-uuid-1234" {
+		t.Errorf("approval_id = %q, want approval-uuid-1234", response.ApprovalID)
+	}
+}
+
 func TestStepGate_RequireApproval(t *testing.T) {
 	repo := NewMockRepository()
 	svc := NewService(repo, &MockApprovalPolicyEvaluator{}, &ServiceConfig{

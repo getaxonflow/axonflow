@@ -568,6 +568,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		DecisionID:        fmt.Sprintf("dec_%s_%s", workflowID, stepID),
 		PolicyIDs:         evaluation.PolicyIDs,
 		Reason:            evaluation.Reason,
+		ApprovalID:        evaluation.ApprovalID,
 		PoliciesEvaluated: evaluation.PoliciesEvaluated,
 		PoliciesMatched:   evaluation.PoliciesMatched,
 		Cached:            false,
