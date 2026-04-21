@@ -217,6 +217,7 @@ type StepGateResponse struct {
 	DecisionID        string        `json:"decision_id,omitempty"`
 	PolicyIDs         []string      `json:"policy_ids,omitempty"`
 	Reason            string        `json:"reason,omitempty"`
+	ApprovalID        string        `json:"approval_id,omitempty"`  // HITL queue entry UUID when Decision is require_approval
 	ApprovalURL       string        `json:"approval_url,omitempty"`
 	PoliciesEvaluated []PolicyMatch `json:"policies_evaluated,omitempty"` // All policies checked (Issue #1021)
 	PoliciesMatched   []PolicyMatch `json:"policies_matched,omitempty"`   // Policies that matched and contributed to decision (Issue #1021)
@@ -252,6 +253,8 @@ type StepInfo struct {
 	StepType       StepType        `json:"step_type,omitempty"`
 	Decision       GateDecision    `json:"decision"`
 	ApprovalStatus *ApprovalStatus `json:"approval_status,omitempty"`
+	ApprovedBy     string          `json:"approved_by,omitempty"`
+	ApprovedAt     *time.Time      `json:"approved_at,omitempty"`
 	GateCheckedAt  time.Time       `json:"gate_checked_at"`
 }
 
@@ -323,6 +326,8 @@ func (w *Workflow) ToStatusResponse() WorkflowStatusResponse {
 				StepType:       step.StepType,
 				Decision:       step.Decision,
 				ApprovalStatus: step.ApprovalStatus,
+				ApprovedBy:     step.ApprovedBy,
+				ApprovedAt:     step.ApprovedAt,
 				GateCheckedAt:  step.GateCheckedAt,
 			}
 		}

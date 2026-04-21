@@ -10,6 +10,51 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [7.2.1] - 2026-04-21
+
+PATCH: surface the HITL approval metadata that was already being captured
+internally but dropped on the way out of the API. No schema changes, no
+breaking changes — callers that previously handled `null` simply start
+seeing real values.
+
+### Community
+
+#### Fixed
+
+- **`/api/v1/workflows/{id}` now surfaces `approved_by` and `approved_at` on
+  each step.** The `StepInfo` DTO used by the workflow-detail response was
+  missing both fields, so callers polling for approval completion saw
+  `approval_status: "approved"` but no approver identity or timestamp.
+  Both fields were already captured by `ApproveStep` and persisted on the
+  `WorkflowStep` row — the DTO just wasn't copying them over. Portal and
+  SDK consumers now get the full provenance without a second round-trip
+  to the audit log.
+- **`StepGateResponse.approval_id` populated on `require_approval`
+  decisions.** The HITL adapter was creating the approval queue entry and
+  setting `StepGateEvaluation.ApprovalID`, but the API response struct
+  didn't carry the field. SDK clients that want to correlate a paused
+  step with its HITL queue row (for Slack/PagerDuty routing, direct
+  portal deep-links, or programmatic approval) now get `approval_id` on
+  the same response that reports the `require_approval` decision.
+
+### Enterprise
+
+#### Fixed
+
+- **Customer Portal `/approvals` page no longer crashes on expand.** The
+  `PendingApproval.policies_matched` TypeScript type declared the field
+  as `string[]`, but the `/api/v1/workflows/approvals/pending` endpoint
+  returns an array of `PolicyMatch` objects (`{policy_id, policy_name,
+  action, risk_level, allow_override, policy_description}`). React
+  tried to render the object directly and threw error #31 ("Objects
+  are not valid as a React child"), dumping the approver into the
+  ErrorBoundary fallback the moment they clicked a row to expand the
+  detail panel. The approvals page now accepts either shape, extracts
+  `policy_name` when given an object, and surfaces `policy_description`
+  as a tooltip on the matched-policy chip.
+
+---
+
 ## [7.2.0] - 2026-04-20 — The Bug Bash Bonanza 🪲🔨
 
 A focused hardening release: a full sweep across the Customer Portal

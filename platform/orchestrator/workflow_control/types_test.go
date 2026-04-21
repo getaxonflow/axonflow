@@ -217,6 +217,51 @@ func TestWorkflowToStatusResponse(t *testing.T) {
 	}
 }
 
+func TestWorkflowToStatusResponseSurfacesApproverIdentity(t *testing.T) {
+	// Regression: StepInfo previously dropped ApprovedBy / ApprovedAt on the way
+	// from WorkflowStep to the response, so /api/v1/workflows/{id} always rendered
+	// approved_by as null even after approval landed. Caught in banking-demo VC
+	// demo verification 2026-04-21.
+	now := time.Now()
+	approvedAt := now.Add(2 * time.Minute)
+	approved := ApprovalStatusApproved
+
+	workflow := &Workflow{
+		WorkflowID:   "wf_test",
+		WorkflowName: "test",
+		Source:       WorkflowSourceLangGraph,
+		Status:       WorkflowStatusInProgress,
+		StartedAt:    now,
+		Steps: []WorkflowStep{
+			{
+				StepID:         "step-wire",
+				StepIndex:      2,
+				StepName:       "Initiate Wire Transfer",
+				StepType:       StepTypeToolCall,
+				Decision:       GateDecisionRequireApproval,
+				ApprovalStatus: &approved,
+				ApprovedBy:     "sarah.thompson@fraud.example.com",
+				ApprovedAt:     &approvedAt,
+				GateCheckedAt:  now,
+			},
+		},
+	}
+
+	response := workflow.ToStatusResponse()
+
+	if len(response.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(response.Steps))
+	}
+	if response.Steps[0].ApprovedBy != "sarah.thompson@fraud.example.com" {
+		t.Errorf("approved_by = %q, want sarah.thompson@fraud.example.com", response.Steps[0].ApprovedBy)
+	}
+	if response.Steps[0].ApprovedAt == nil {
+		t.Error("approved_at should not be nil when approval landed")
+	} else if !response.Steps[0].ApprovedAt.Equal(approvedAt) {
+		t.Errorf("approved_at = %v, want %v", response.Steps[0].ApprovedAt, approvedAt)
+	}
+}
+
 func TestWorkflowToStatusResponseNoSteps(t *testing.T) {
 	now := time.Now()
 
