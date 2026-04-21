@@ -3648,6 +3648,13 @@ paths:
         Returns a decision (allow/block/require_approval) based on policy evaluation.
 
         Call this BEFORE executing each step in your external orchestrator.
+
+        The response always includes a `retry_context` block (Issue #1673 Phase 1)
+        carrying first-class retry state: gate count, prior completion status,
+        first/last attempt timestamps, last decision, and the idempotency_key.
+        Callers that need to unambiguously detect retries or uncertain-territory
+        scenarios should prefer `retry_context` over the deprecated `cached`
+        boolean.
       operationId: checkStepGate
       parameters:
         - name: workflow_id
@@ -3664,6 +3671,18 @@ paths:
           schema:
             type: string
           example: "step-1"
+        - name: include_prior_output
+          in: query
+          required: false
+          description: |
+            Opt-in (Issue #1673 Phase 1) — when `true` and a prior /complete
+            landed for this step, `retry_context.prior_output` is populated
+            with the stored output so the agent can short-circuit re-execution.
+            Default `false` because prior output may be large or sensitive.
+          schema:
+            type: boolean
+            default: false
+          example: true
       requestBody:
         required: true
         content:
@@ -3705,8 +3724,32 @@ paths:
                     step_id: "step-1"
                     reason: "Human approval required for deployment steps"
                     approval_url: "https://portal.axonflow.com/approvals/abc123"
+        '400':
+          description: |
+            Bad request — missing step_type, invalid retry_policy, or
+            idempotency_key exceeds 255 characters.
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `IDEMPOTENCY_KEY_MISMATCH` (Issue #1673 Phase 2) — the supplied
+            `idempotency_key` does not match the one recorded on the step's
+            earlier /gate call. `expected_idempotency_key` and
+            `received_idempotency_key` are always present, empty string when
+            one side is absent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIErrorResponse'
+              example:
+                error:
+                  code: "IDEMPOTENCY_KEY_MISMATCH"
+                  message: "idempotency_key does not match the key recorded on gate"
+                  details:
+                    workflow_id: "wf_41231a72"
+                    step_id: "step-1"
+                    expected_idempotency_key: "payment:wire:invoice-7721"
+                    received_idempotency_key: "payment:wire:invoice-9999"
 
   /api/v1/workflows/{workflow_id}/steps/{step_id}/complete:
     post:
@@ -3742,8 +3785,19 @@ paths:
       responses:
         '204':
           description: Step marked completed
+        '400':
+          description: idempotency_key exceeds 255 characters
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `IDEMPOTENCY_KEY_MISMATCH` (Issue #1673 Phase 2) — the supplied
+            `idempotency_key` does not match the one recorded on the step's
+            earlier /gate call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIErrorResponse'
 
   /api/v1/workflows/{workflow_id}/complete:
     post:
@@ -7304,6 +7358,103 @@ components:
           enum: [idempotent, reevaluate]
           default: idempotent
           example: "idempotent"
+        idempotency_key:
+          type: string
+          maxLength: 255
+          description: |
+            Optional caller-supplied opaque business-level key (Issue #1673 Phase 2).
+            Recorded on the first /gate call that sets it; immutable for the step's
+            lifetime. Subsequent /gate and /complete calls MUST pass the same key
+            or receive 409 IDEMPOTENCY_KEY_MISMATCH. Use business-meaningful values
+            like `payment:wire:invoice-7721`, not request IDs.
+          example: "payment:wire:invoice-7721"
+
+    RetryContext:
+      type: object
+      description: |
+        First-class retry and execution state (Issue #1673 Phase 1). Always
+        present on every `StepGateResponse`, including the first gate call.
+        Replaces the ambiguous `cached: bool` signal with unambiguous state
+        the agent and policy engine can reason about.
+      required:
+        - gate_count
+        - completion_count
+        - prior_completion_status
+        - prior_output_available
+        - prior_output
+        - prior_completion_at
+        - first_attempt_at
+        - last_attempt_at
+        - last_decision
+        - idempotency_key
+      properties:
+        gate_count:
+          type: integer
+          minimum: 1
+          description: |
+            Number of /gate calls for this (workflow_id, step_id), including
+            the current call. First call returns 1.
+          example: 2
+        completion_count:
+          type: integer
+          minimum: 0
+          description: |
+            Number of /complete calls for this (workflow_id, step_id). Normally
+            0 on first gate, 1 after the step completes.
+          example: 1
+        prior_completion_status:
+          type: string
+          enum: [none, completed, gated_not_completed]
+          description: |
+            "none" on first gate call. "completed" when a prior /gate + /complete
+            both landed. "gated_not_completed" when a prior /gate landed but no
+            /complete followed — uncertain territory the agent needs to reconcile
+            against the downstream system before re-executing.
+          example: "completed"
+        prior_output_available:
+          type: boolean
+          description: |
+            True iff prior_completion_status == "completed". Mirrors whether
+            prior_output *could* be returned if include_prior_output=true.
+          example: true
+        prior_output:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            Always present in the schema. Populated only when the caller set
+            ?include_prior_output=true AND prior_output_available is true.
+            Otherwise null.
+        prior_completion_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the prior /complete call, if any.
+        first_attempt_at:
+          type: string
+          format: date-time
+          description: |
+            Timestamp of the first /gate call for this step. On the first call,
+            equals last_attempt_at.
+        last_attempt_at:
+          type: string
+          format: date-time
+          description: Timestamp of this /gate call.
+        last_decision:
+          type: string
+          enum: [allow, block, require_approval]
+          description: |
+            Decision of the immediately prior /gate call. On the first call
+            (gate_count == 1), equals the current decision (first-call
+            invariant).
+          example: "allow"
+        idempotency_key:
+          type: string
+          description: |
+            The caller-supplied business-level key recorded on this step
+            (Issue #1673 Phase 2). Always present in the schema — empty
+            string `""` if the caller never supplied one.
+          example: "payment:wire:invoice-7721"
 
     StepGateResponse:
       type: object
@@ -7342,18 +7493,27 @@ components:
             $ref: '#/components/schemas/PolicyMatch'
         cached:
           type: boolean
+          deprecated: true
           description: |
-            Whether this response was served from a prior decision rather than
-            a fresh policy evaluation. True when retry_policy is "idempotent"
-            (the default) and the step was previously evaluated.
+            **Deprecated (Issue #1673).** Whether this response was served from
+            a prior decision rather than a fresh policy evaluation. Use
+            `retry_context.gate_count > 1` instead — `cached` conflates
+            first-call-no vs many-retries-yes into a single bit. Kept
+            populated on every response for back-compat; removal planned
+            for a future major version.
           example: false
         decision_source:
           type: string
+          deprecated: true
           description: |
-            How the decision was produced: "fresh" (policy evaluator ran for
-            this request) or "cached" (returned from prior evaluation in DB).
+            **Deprecated (Issue #1673).** "fresh" or "cached". Use
+            `retry_context.prior_completion_status` for the distinction
+            agents and policies actually need. Kept populated on every
+            response for back-compat; removal planned for a future major.
           enum: [fresh, cached]
           example: "fresh"
+        retry_context:
+          $ref: '#/components/schemas/RetryContext'
 
     MarkStepCompletedRequest:
       type: object
@@ -7375,6 +7535,57 @@ components:
           format: double
           description: Actual cost in USD for the step (overrides gate-time estimate)
           example: 0.0023
+        idempotency_key:
+          type: string
+          maxLength: 255
+          description: |
+            Optional caller-supplied key (Issue #1673 Phase 2). Must match the
+            key recorded on the step's earlier /gate call. Mismatch returns
+            409 IDEMPOTENCY_KEY_MISMATCH.
+          example: "payment:wire:invoice-7721"
+
+    APIErrorDetails:
+      type: object
+      description: Structured error details used by typed SDK exceptions.
+      properties:
+        workflow_id:
+          type: string
+        step_id:
+          type: string
+        expected_idempotency_key:
+          type: string
+          description: |
+            The key recorded on the step's /gate call. Empty string when the
+            gate call had no key but the /complete call supplied one.
+        received_idempotency_key:
+          type: string
+          description: |
+            The key the caller just passed. Empty string when the /complete
+            call omitted a key that the /gate call had set.
+
+    APIError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code (e.g. IDEMPOTENCY_KEY_MISMATCH).
+        message:
+          type: string
+          description: Human-readable error description.
+        details:
+          $ref: '#/components/schemas/APIErrorDetails'
+
+    APIErrorResponse:
+      type: object
+      description: Structured error response envelope used by WCP endpoints.
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/APIError'
 
     Checkpoint:
       type: object

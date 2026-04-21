@@ -1,0 +1,14 @@
+{
+  "name": "wcp-retry-idempotency-evaluation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@axonflow/sdk": "file:../../../../../axonflow-sdk-typescript-1673"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

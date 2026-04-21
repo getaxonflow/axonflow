@@ -222,7 +222,16 @@ func (m *MockRepository) List(ctx context.Context, opts ListWorkflowsOptions) ([
 	return result[offset:end], total, nil
 }
 
-// AddStep records a new step
+// AddStep records a new step gate decision. Issue #1673: also maintains
+// gate_count / completion_count / last_decision / first_attempt_at /
+// idempotency_key so tests exercise the same invariants as the Postgres
+// implementation. Semantics:
+//   - First-time insert: gate_count=1, completion_count=0, last_decision=decision,
+//     first_attempt_at=now, idempotency_key=step.IdempotencyKey.
+//   - Re-gate (existing row): gate_count++, last_decision=OLD decision
+//     (snapshot before overwrite), first_attempt_at preserved,
+//     idempotency_key preserved (immutable once set; caller-supplied value
+//     only used when the existing key is nil).
 func (m *MockRepository) AddStep(ctx context.Context, step *WorkflowStep) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -235,20 +244,68 @@ func (m *MockRepository) AddStep(ctx context.Context, step *WorkflowStep) error 
 		m.steps[step.WorkflowID] = make(map[string]*WorkflowStep)
 	}
 
-	step.ID = len(m.steps[step.WorkflowID]) + 1
-	step.GateCheckedAt = time.Now()
+	now := time.Now()
+	step.GateCheckedAt = now
 
-	m.steps[step.WorkflowID][step.StepID] = step
+	existing := m.steps[step.WorkflowID][step.StepID]
+	if existing == nil {
+		// First-call insert
+		step.ID = len(m.steps[step.WorkflowID]) + 1
+		step.GateCount = 1
+		step.CompletionCount = 0
+		step.LastDecision = step.Decision
+		first := now
+		step.FirstAttemptAt = &first
+		// step.IdempotencyKey already set by caller; keep as-is
+		m.steps[step.WorkflowID][step.StepID] = step
+	} else {
+		// Re-gate UPSERT: preserve immutable fields, bump counter, snapshot OLD decision
+		step.ID = existing.ID
+		step.GateCount = existing.GateCount + 1
+		step.CompletionCount = existing.CompletionCount
+		step.LastDecision = existing.Decision // OLD decision becomes last_decision
+		step.FirstAttemptAt = existing.FirstAttemptAt
+		// idempotency_key is immutable once set: keep existing, else take new
+		if existing.IdempotencyKey != nil {
+			step.IdempotencyKey = existing.IdempotencyKey
+		}
+		m.steps[step.WorkflowID][step.StepID] = step
+	}
 
 	// Update workflow's current step index
 	if workflow, ok := m.workflows[step.WorkflowID]; ok {
 		if step.StepIndex > workflow.CurrentStepIndex {
 			workflow.CurrentStepIndex = step.StepIndex
-			workflow.UpdatedAt = time.Now()
+			workflow.UpdatedAt = now
 		}
 	}
 
 	return nil
+}
+
+// BumpGateCountCached increments gate_count and snapshots last_decision without
+// changing decision. Used by the cached-hit path of StepGate (Issue #1673).
+func (m *MockRepository) BumpGateCountCached(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	steps, ok := m.steps[workflowID]
+	if !ok {
+		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+	step, ok := steps[stepID]
+	if !ok {
+		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+
+	step.GateCount++
+	// last_decision = decision snapshots the current (cached) decision so the
+	// NEXT call's retry_context.last_decision reflects this call's outcome.
+	step.LastDecision = step.Decision
+	step.GateCheckedAt = time.Now()
+
+	copy := *step
+	return &copy, nil
 }
 
 // GetStep retrieves a specific step
@@ -301,7 +358,9 @@ func (m *MockRepository) UpdateStepApproval(ctx context.Context, workflowID, ste
 	return fmt.Errorf("step not found: %s/%s", workflowID, stepID)
 }
 
-// MarkStepCompleted marks a step as completed, optionally applying post-execution metrics
+// MarkStepCompleted marks a step as completed, optionally applying post-execution metrics.
+// Issue #1673: also increments completion_count so retry_context on subsequent
+// gate calls reflects that a prior /complete landed.
 func (m *MockRepository) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -310,6 +369,7 @@ func (m *MockRepository) MarkStepCompleted(ctx context.Context, workflowID, step
 		if step, ok := steps[stepID]; ok {
 			now := time.Now()
 			step.StepCompletedAt = &now
+			step.CompletionCount++
 			if req != nil {
 				if req.TokensIn != nil {
 					step.TokensIn = req.TokensIn

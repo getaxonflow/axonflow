@@ -424,6 +424,22 @@ func (e *DynamicPolicyEngine) getFieldValue(field string, req OrchestratorReques
 			return req.Context[key]
 		}
 		return nil
+	case "step":
+		// Retry-aware step fields (Issue #1673 Phase 1 + 2). Populated by
+		// WCPPolicyAdapter.convertToOrchestratorRequest as "step.gate_count",
+		// "step.completion_count", "step.prior_completion_status",
+		// "step.prior_output_available", "step.last_decision",
+		// "step.first_attempt_age_seconds", and "step.idempotency_key".
+		//
+		// Note: policy semantics for step.last_decision differ from the
+		// response-side first-call invariant — it is empty on the first
+		// gate call so policies can distinguish "no prior call" from
+		// "prior allow" without a separate step.gate_count check.
+		if len(parts) > 1 && req.Context != nil {
+			key := strings.Join(parts, ".")
+			return req.Context[key]
+		}
+		return nil
 	case "media":
 		// Media governance fields — resolved from context["media_analysis"]
 		// These are populated by the media analysis pipeline before policy evaluation.

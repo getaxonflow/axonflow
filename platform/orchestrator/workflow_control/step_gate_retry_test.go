@@ -546,7 +546,7 @@ func TestBuildCachedResponse_Allow(t *testing.T) {
 		}),
 	}
 
-	resp := buildCachedResponse(step, "wf-1", "https://portal.test")
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
 
 	if resp.Decision != GateDecisionAllow {
 		t.Errorf("expected allow, got %s", resp.Decision)
@@ -579,7 +579,7 @@ func TestBuildCachedResponse_RequireApproval_Approved(t *testing.T) {
 		PoliciesMatched:   mustMarshal([]PolicyMatch{}),
 	}
 
-	resp := buildCachedResponse(step, "wf-1", "https://portal.test")
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
 
 	if resp.Decision != GateDecisionAllow {
 		t.Errorf("approved step should resolve to allow, got %s", resp.Decision)
@@ -600,7 +600,7 @@ func TestBuildCachedResponse_RequireApproval_Rejected(t *testing.T) {
 		PoliciesMatched:   mustMarshal([]PolicyMatch{}),
 	}
 
-	resp := buildCachedResponse(step, "wf-1", "https://portal.test")
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
 
 	if resp.Decision != GateDecisionBlock {
 		t.Errorf("rejected step should resolve to block, got %s", resp.Decision)
@@ -618,7 +618,7 @@ func TestBuildCachedResponse_RequireApproval_Pending(t *testing.T) {
 		PoliciesMatched:   mustMarshal([]PolicyMatch{}),
 	}
 
-	resp := buildCachedResponse(step, "wf-1", "https://portal.test")
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
 
 	if resp.Decision != GateDecisionRequireApproval {
 		t.Errorf("pending step should stay require_approval, got %s", resp.Decision)
@@ -637,7 +637,7 @@ func TestBuildCachedResponse_Block(t *testing.T) {
 		PoliciesMatched:   mustMarshal([]PolicyMatch{}),
 	}
 
-	resp := buildCachedResponse(step, "wf-1", "https://portal.test")
+	resp := buildCachedResponse(step, "wf-1", "https://portal.test", false)
 
 	if resp.Decision != GateDecisionBlock {
 		t.Errorf("expected block, got %s", resp.Decision)

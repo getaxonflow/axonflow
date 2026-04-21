@@ -87,8 +87,19 @@ func workflowControlSchema() string {
 			approval_comment TEXT,
 			gate_checked_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			step_completed_at TIMESTAMP WITH TIME ZONE,
+			-- Issue #1673 Phase 1 (migration 071)
+			gate_count INTEGER NOT NULL DEFAULT 0,
+			completion_count INTEGER NOT NULL DEFAULT 0,
+			last_decision VARCHAR(50),
+			first_attempt_at TIMESTAMP WITH TIME ZONE,
+			-- Issue #1673 Phase 2 (migration 072)
+			idempotency_key VARCHAR(255),
 			UNIQUE(workflow_id, step_id)
 		);
+
+		CREATE INDEX IF NOT EXISTS idx_workflow_steps_idempotency_key
+			ON workflow_steps(idempotency_key)
+			WHERE idempotency_key IS NOT NULL;
 	`
 }
 

@@ -163,6 +163,19 @@ func (s *PolicyService) UpdatePolicy(ctx context.Context, tenantID, policyID str
 		return nil, err
 	}
 
+	// Issue #1673: retry-aware step.* conditions require Evaluation tier on
+	// every mutation path, not just create. Without this check a Community
+	// tenant could create a benign policy, then PATCH its conditions to
+	// retry-aware fields. UpdatePolicyRequest.Conditions is optional — if
+	// nil the caller isn't changing conditions and there's nothing to
+	// re-gate. Runs BEFORE validateTierForModify so a quick reject path
+	// doesn't roundtrip to the DB just to return a tier error.
+	if len(req.Conditions) > 0 {
+		if err := s.validateRetryAwareTier(req.Conditions); err != nil {
+			return nil, err
+		}
+	}
+
 	// Tier validation: system tier policies cannot be modified (except system media policies)
 	if err := s.validateTierForModify(ctx, tenantID, policyID); err != nil {
 		return nil, err
@@ -292,6 +305,13 @@ func (s *PolicyService) ImportPolicies(ctx context.Context, tenantID string, req
 	for i, p := range req.Policies {
 		if err := s.validateCreateRequest(&p); err != nil {
 			return nil, fmt.Errorf("policy %d validation failed: %w", i, err)
+		}
+		// Issue #1673: retry-aware step.* conditions require Evaluation tier
+		// on the import path too, not just direct create. Reject the whole
+		// import if any policy in the batch has retry-aware fields on a
+		// non-Evaluation-or-higher license.
+		if err := s.validateRetryAwareTier(p.Conditions); err != nil {
+			return nil, fmt.Errorf("policy %d: %w", i, err)
 		}
 	}
 
@@ -730,6 +750,15 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID stri
 		}
 	}
 
+	// Issue #1673: retry-aware step.* condition fields are an Evaluation-tier
+	// capability per the edition split. Reject at create time so the edition
+	// table maps to enforceable code, not just documentation. Checked BEFORE
+	// the tenant policy-count query so Community users attempting a retry-aware
+	// policy see the right error immediately without the count roundtrip.
+	if err := s.validateRetryAwareTier(req.Conditions); err != nil {
+		return err
+	}
+
 	// Tenant tier: check policy limit for non-paid tiers
 	if tier == TierTenant && !license.IsPaidTier(licenseTier) {
 		count, err := s.repo.CountByTenant(ctx, tenantID)
@@ -751,6 +780,47 @@ func (s *PolicyService) validateTierForCreate(ctx context.Context, tenantID stri
 		}
 	}
 
+	return nil
+}
+
+// firstRetryAwareField returns the first step.* condition field in the
+// given slice, or "" if none. Retry-aware fields (step.gate_count,
+// step.completion_count, step.prior_completion_status, etc.) are the
+// Phase 1 + Phase 2 additions from Issue #1673; policies using any of
+// them require Evaluation tier or higher. Shared by create, update,
+// and import paths so the edition boundary cannot be bypassed via a
+// different entry point.
+func firstRetryAwareField(conditions []PolicyCondition) string {
+	for _, c := range conditions {
+		if strings.HasPrefix(c.Field, "step.") {
+			return c.Field
+		}
+	}
+	return ""
+}
+
+// retryAwareTierError returns the standard TierValidationError for a
+// retry-aware policy condition on a non-Evaluation-or-higher license.
+// Used by every code path that accepts policy conditions (create,
+// update, import) so the error message stays consistent.
+func retryAwareTierError(field string) error {
+	return NewTierValidationError(
+		fmt.Sprintf("Retry-aware policy condition %q requires Evaluation or Enterprise license. "+
+			"Get a free Evaluation license at https://getaxonflow.com/evaluation-license", field),
+		ErrCodeFeatureRequiresEvaluation,
+	)
+}
+
+// validateRetryAwareTier enforces the Evaluation-tier gate for retry-aware
+// step.* condition fields across every policy-mutation entry point. Call
+// this before writing any policy with caller-supplied conditions.
+func (s *PolicyService) validateRetryAwareTier(conditions []PolicyCondition) error {
+	if license.IsEvaluationOrHigher(s.licenseChecker.Tier()) {
+		return nil
+	}
+	if field := firstRetryAwareField(conditions); field != "" {
+		return retryAwareTierError(field)
+	}
 	return nil
 }
 

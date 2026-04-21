@@ -184,6 +184,28 @@ func (a *WCPPolicyAdapter) convertToOrchestratorRequest(step *workflow_control.S
 		}
 	}
 
+	// Issue #1673 Phase 1: retry-aware condition fields. Policies can match
+	// on `step.gate_count`, `step.completion_count`,
+	// `step.prior_completion_status`, `step.prior_output_available`,
+	// `step.last_decision`, `step.first_attempt_age_seconds`, and
+	// `step.idempotency_key`. Values reflect the projected post-bump state
+	// at evaluation time (so `gate_count > 1` matches on the second call,
+	// not the third). Populated by service.applyRetryContextToGate.
+	contextData["step.gate_count"] = step.GateCount
+	contextData["step.completion_count"] = step.CompletionCount
+	contextData["step.prior_completion_status"] = string(step.PriorCompletionStatus)
+	contextData["step.prior_output_available"] = step.PriorOutputAvailable
+	contextData["step.last_decision"] = string(step.LastDecision)
+	contextData["step.first_attempt_age_seconds"] = step.FirstAttemptAgeSeconds
+	// Phase 2: business-level key for policy-authored equals/regex matching.
+	// Always populate — empty string signals "no key supplied" so policy
+	// authors can govern both the presence and absence of keys:
+	//   step.idempotency_key == ""       → no key supplied
+	//   step.idempotency_key regex "..."  → pattern match against key
+	// Matches the wire contract which surfaces the same empty string on
+	// retry_context.idempotency_key when unset.
+	contextData["step.idempotency_key"] = step.IdempotencyKey
+
 	return OrchestratorRequest{
 		RequestID:   step.WorkflowID + "_" + step.StepID,
 		RequestType: "workflow_step_gate",

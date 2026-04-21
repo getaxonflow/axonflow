@@ -32,6 +32,10 @@ type Repository interface {
 	// GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
 	// Returns nil (not error) if the step has not been evaluated yet.
 	GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
+	// BumpGateCountCached is called by the cached-hit path of StepGate to
+	// increment gate_count and snapshot last_decision without changing the
+	// stored decision (Issue #1673 Phase 1). Returns the updated row.
+	BumpGateCountCached(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error)
 	UpdateStepApproval(ctx context.Context, workflowID, stepID string, status ApprovalStatus, approvedBy string, comment string) error
 	MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error
 	GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error)
@@ -429,7 +433,24 @@ func (r *PostgresRepository) List(ctx context.Context, opts ListWorkflowsOptions
 	return workflows, total, nil
 }
 
-// AddStep records a new step gate decision
+// AddStep records a new step gate decision and atomically maintains the
+// retry_context counters (Issue #1673 Phase 1).
+//
+// On fresh insert: gate_count = 1, completion_count = 0, last_decision = decision
+// (first-call invariant), first_attempt_at = now, idempotency_key = caller value
+// or NULL.
+//
+// On ON CONFLICT (a re-gate on an existing step, usually when retry_policy =
+// reevaluate): gate_count = existing + 1, last_decision = existing.decision
+// (snapshot OLD before overwrite), decision = NEW decision,
+// first_attempt_at preserved, idempotency_key preserved (immutable once set).
+//
+// RETURNING populates step.ID, step.GateCount, step.CompletionCount,
+// step.LastDecision, step.FirstAttemptAt, step.IdempotencyKey so callers can
+// build retry_context without a follow-up read.
+//
+// Idempotency-key validation (mismatch ⇒ 409) lives in the service layer —
+// repository only enforces immutability via COALESCE.
 func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) error {
 	now := time.Now()
 	step.GateCheckedAt = now
@@ -447,19 +468,38 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 		stepInput = json.RawMessage("{}")
 	}
 
+	// idempotency_key: convert pointer to sql.NullString so nil maps to SQL NULL.
+	var idempotencyKey sql.NullString
+	if step.IdempotencyKey != nil && *step.IdempotencyKey != "" {
+		idempotencyKey = sql.NullString{String: *step.IdempotencyKey, Valid: true}
+	}
+
 	query := `
 		INSERT INTO workflow_steps (
 			workflow_id, step_id, step_index, step_name, step_type,
 			decision, decision_reason, policies_evaluated, policies_matched,
 			approval_status, step_input, model, provider,
-			tokens_in, tokens_out, cost_usd, gate_checked_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			tokens_in, tokens_out, cost_usd, gate_checked_at,
+			gate_count, completion_count, last_decision, first_attempt_at,
+			idempotency_key
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9,
+			$10, $11, $12, $13,
+			$14, $15, $16, $17,
+			1, 0, $6, $17,
+			$18
+		)
 		ON CONFLICT (workflow_id, step_id) DO UPDATE SET
 			step_name = EXCLUDED.step_name,
 			step_type = EXCLUDED.step_type,
 			step_input = EXCLUDED.step_input,
 			model = EXCLUDED.model,
 			provider = EXCLUDED.provider,
+			-- Snapshot OLD decision as last_decision BEFORE we overwrite decision.
+			-- This is the value the next gate response will report as
+			-- retry_context.last_decision (= "decision of the prior gate call").
+			last_decision = workflow_steps.decision,
 			decision = EXCLUDED.decision,
 			decision_reason = EXCLUDED.decision_reason,
 			policies_evaluated = EXCLUDED.policies_evaluated,
@@ -468,9 +508,18 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 			tokens_in = EXCLUDED.tokens_in,
 			tokens_out = EXCLUDED.tokens_out,
 			cost_usd = EXCLUDED.cost_usd,
-			gate_checked_at = EXCLUDED.gate_checked_at
-		RETURNING id
+			gate_checked_at = EXCLUDED.gate_checked_at,
+			gate_count = workflow_steps.gate_count + 1,
+			-- completion_count is preserved (this is a gate, not a complete).
+			-- first_attempt_at is preserved (it's the *first* gate, not the latest).
+			-- idempotency_key is immutable once set: keep existing, else take new.
+			idempotency_key = COALESCE(workflow_steps.idempotency_key, EXCLUDED.idempotency_key)
+		RETURNING id, gate_count, completion_count, last_decision, first_attempt_at, idempotency_key
 	`
+
+	var lastDecisionStr sql.NullString
+	var firstAttemptAt sql.NullTime
+	var returnedIdempotencyKey sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query,
 		step.WorkflowID,
@@ -490,10 +539,31 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 		step.TokensOut,
 		step.CostUSD,
 		step.GateCheckedAt,
-	).Scan(&step.ID)
+		idempotencyKey,
+	).Scan(
+		&step.ID,
+		&step.GateCount,
+		&step.CompletionCount,
+		&lastDecisionStr,
+		&firstAttemptAt,
+		&returnedIdempotencyKey,
+	)
 
 	if err != nil {
 		return err
+	}
+
+	if lastDecisionStr.Valid {
+		step.LastDecision = GateDecision(lastDecisionStr.String)
+	}
+	if firstAttemptAt.Valid {
+		step.FirstAttemptAt = &firstAttemptAt.Time
+	}
+	if returnedIdempotencyKey.Valid {
+		k := returnedIdempotencyKey.String
+		step.IdempotencyKey = &k
+	} else {
+		step.IdempotencyKey = nil
 	}
 
 	// Update workflow's current step index
@@ -507,18 +577,54 @@ func (r *PostgresRepository) AddStep(ctx context.Context, step *WorkflowStep) er
 	return nil
 }
 
-// GetStep retrieves a specific step
-func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+// BumpGateCountCached is called from the cached-hit path of StepGate (Issue
+// #1673 Phase 1). When /gate returns a cached decision (the step was already
+// evaluated and retry_policy is idempotent), we still want to track that the
+// gate was called: gate_count increments, last_decision is snapshotted from
+// the current decision so the NEXT call can surface it as
+// retry_context.last_decision, and gate_checked_at moves to now.
+//
+// The stored decision is NOT changed — this is purely a counter/timestamp
+// bump. If the row doesn't exist (shouldn't happen on the cached path),
+// returns an error so the service layer can fall through to AddStep.
+func (r *PostgresRepository) BumpGateCountCached(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+	now := time.Now()
 	query := `
-		SELECT id, workflow_id, step_id, step_index, step_name, step_type,
-			   decision, decision_reason, policies_evaluated, policies_matched,
-			   approval_status, approved_by, approved_at,
-			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
-			   step_output, approval_comment, gate_checked_at, step_completed_at
-		FROM workflow_steps
-		WHERE workflow_id = $1 AND step_id = $2
+		UPDATE workflow_steps
+		SET gate_count = gate_count + 1,
+		    last_decision = decision,
+		    gate_checked_at = $1
+		WHERE workflow_id = $2 AND step_id = $3
+		RETURNING ` + stepSelectColumns + `
 	`
+	row := r.db.QueryRowContext(ctx, query, now, workflowID, stepID)
+	step, err := scanWorkflowStepRow(row)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+	return step, err
+}
 
+// stepSelectColumns is the canonical column list for reading a workflow_steps row.
+// Kept as a constant so GetStep / GetStepDecision / GetStepsForWorkflow /
+// BumpGateCountCached stay in sync when new columns are added.
+const stepSelectColumns = `
+	id, workflow_id, step_id, step_index, step_name, step_type,
+	decision, decision_reason, policies_evaluated, policies_matched,
+	approval_status, approved_by, approved_at,
+	step_input, model, provider, tokens_in, tokens_out, cost_usd,
+	step_output, approval_comment, gate_checked_at, step_completed_at,
+	gate_count, completion_count, last_decision, first_attempt_at,
+	idempotency_key
+`
+
+// scanWorkflowStepRow reads one row into a WorkflowStep. Assumes the SELECT
+// column order matches stepSelectColumns. Used by GetStep / GetStepDecision
+// / BumpGateCountCached / GetStepsForWorkflow so nullable-column handling is
+// consistent.
+func scanWorkflowStepRow(row interface {
+	Scan(dest ...interface{}) error
+}) (*WorkflowStep, error) {
 	var step WorkflowStep
 	var approvalStatus sql.NullString
 	var approvedBy sql.NullString
@@ -526,8 +632,11 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 	var approvalComment sql.NullString
 	var stepCompletedAt sql.NullTime
 	var stepOutput []byte
+	var lastDecisionStr sql.NullString
+	var firstAttemptAt sql.NullTime
+	var idempotencyKey sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, workflowID, stepID).Scan(
+	err := row.Scan(
 		&step.ID,
 		&step.WorkflowID,
 		&step.StepID,
@@ -551,11 +660,12 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 		&approvalComment,
 		&step.GateCheckedAt,
 		&stepCompletedAt,
+		&step.GateCount,
+		&step.CompletionCount,
+		&lastDecisionStr,
+		&firstAttemptAt,
+		&idempotencyKey,
 	)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -579,86 +689,42 @@ func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID str
 	if stepOutput != nil {
 		step.StepOutput = json.RawMessage(stepOutput)
 	}
+	if lastDecisionStr.Valid {
+		step.LastDecision = GateDecision(lastDecisionStr.String)
+	}
+	if firstAttemptAt.Valid {
+		step.FirstAttemptAt = &firstAttemptAt.Time
+	}
+	if idempotencyKey.Valid {
+		k := idempotencyKey.String
+		step.IdempotencyKey = &k
+	}
 
 	return &step, nil
+}
+
+// GetStep retrieves a specific step
+func (r *PostgresRepository) GetStep(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
+	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 AND step_id = $2`
+	row := r.db.QueryRowContext(ctx, query, workflowID, stepID)
+	step, err := scanWorkflowStepRow(row)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("step not found: %s/%s", workflowID, stepID)
+	}
+	return step, err
 }
 
 // GetStepDecision retrieves a step's cached decision for idempotent retry support (#1414).
 // Unlike GetStep, this returns nil (not error) when the step has not been evaluated yet,
 // making it suitable for the cache-lookup path where "not found" is a normal outcome.
 func (r *PostgresRepository) GetStepDecision(ctx context.Context, workflowID, stepID string) (*WorkflowStep, error) {
-	query := `
-		SELECT id, workflow_id, step_id, step_index, step_name, step_type,
-			   decision, decision_reason, policies_evaluated, policies_matched,
-			   approval_status, approved_by, approved_at,
-			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
-			   step_output, approval_comment, gate_checked_at, step_completed_at
-		FROM workflow_steps
-		WHERE workflow_id = $1 AND step_id = $2
-	`
-
-	var step WorkflowStep
-	var approvalStatus sql.NullString
-	var approvedBy sql.NullString
-	var approvedAt sql.NullTime
-	var approvalComment sql.NullString
-	var stepCompletedAt sql.NullTime
-	var stepOutput []byte
-
-	err := r.db.QueryRowContext(ctx, query, workflowID, stepID).Scan(
-		&step.ID,
-		&step.WorkflowID,
-		&step.StepID,
-		&step.StepIndex,
-		&step.StepName,
-		&step.StepType,
-		&step.Decision,
-		&step.DecisionReason,
-		&step.PoliciesEvaluated,
-		&step.PoliciesMatched,
-		&approvalStatus,
-		&approvedBy,
-		&approvedAt,
-		&step.StepInput,
-		&step.Model,
-		&step.Provider,
-		&step.TokensIn,
-		&step.TokensOut,
-		&step.CostUSD,
-		&stepOutput,
-		&approvalComment,
-		&step.GateCheckedAt,
-		&stepCompletedAt,
-	)
-
+	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 AND step_id = $2`
+	row := r.db.QueryRowContext(ctx, query, workflowID, stepID)
+	step, err := scanWorkflowStepRow(row)
 	if err == sql.ErrNoRows {
 		return nil, nil // Not found is normal — means no cached decision
 	}
-	if err != nil {
-		return nil, err
-	}
-
-	if approvalStatus.Valid {
-		as := ApprovalStatus(approvalStatus.String)
-		step.ApprovalStatus = &as
-	}
-	if approvedBy.Valid {
-		step.ApprovedBy = approvedBy.String
-	}
-	if approvedAt.Valid {
-		step.ApprovedAt = &approvedAt.Time
-	}
-	if approvalComment.Valid {
-		step.ApprovalComment = approvalComment.String
-	}
-	if stepCompletedAt.Valid {
-		step.StepCompletedAt = &stepCompletedAt.Time
-	}
-	if stepOutput != nil {
-		step.StepOutput = json.RawMessage(stepOutput)
-	}
-
-	return &step, nil
+	return step, err
 }
 
 // UpdateStepApproval updates the approval status of a step
@@ -690,6 +756,12 @@ func (r *PostgresRepository) UpdateStepApproval(ctx context.Context, workflowID,
 }
 
 // MarkStepCompleted marks a step as completed, optionally updating post-execution metrics.
+// Also increments completion_count (Issue #1673 Phase 1) so retry_context on
+// subsequent gate calls reflects that a prior /complete landed.
+//
+// Idempotency-key validation happens in the service layer before this is
+// called; if the key on the complete request doesn't match the stored key,
+// the service returns 409 IDEMPOTENCY_KEY_MISMATCH and never reaches here.
 func (r *PostgresRepository) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest) error {
 	now := time.Now()
 
@@ -716,7 +788,8 @@ func (r *PostgresRepository) MarkStepCompleted(ctx context.Context, workflowID, 
 		    tokens_in = COALESCE($4, tokens_in),
 		    tokens_out = COALESCE($5, tokens_out),
 		    cost_usd = COALESCE($6, cost_usd),
-		    step_output = COALESCE($7, step_output)
+		    step_output = COALESCE($7, step_output),
+		    completion_count = completion_count + 1
 		WHERE workflow_id = $2 AND step_id = $3
 	`
 	result, err := r.db.ExecContext(ctx, query, now, workflowID, stepID, tokensIn, tokensOut, costUSD, stepOutput)
@@ -737,16 +810,7 @@ func (r *PostgresRepository) MarkStepCompleted(ctx context.Context, workflowID, 
 
 // GetStepsForWorkflow retrieves all steps for a workflow
 func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error) {
-	query := `
-		SELECT id, workflow_id, step_id, step_index, step_name, step_type,
-			   decision, decision_reason, policies_evaluated, policies_matched,
-			   approval_status, approved_by, approved_at,
-			   step_input, model, provider, tokens_in, tokens_out, cost_usd,
-			   step_output, approval_comment, gate_checked_at, step_completed_at
-		FROM workflow_steps
-		WHERE workflow_id = $1
-		ORDER BY step_index ASC
-	`
+	query := `SELECT ` + stepSelectColumns + ` FROM workflow_steps WHERE workflow_id = $1 ORDER BY step_index ASC`
 
 	rows, err := r.db.QueryContext(ctx, query, workflowID)
 	if err != nil {
@@ -756,64 +820,11 @@ func (r *PostgresRepository) GetStepsForWorkflow(ctx context.Context, workflowID
 
 	var steps []WorkflowStep
 	for rows.Next() {
-		var step WorkflowStep
-		var approvalStatus sql.NullString
-		var approvedBy sql.NullString
-		var approvedAt sql.NullTime
-		var approvalComment sql.NullString
-		var stepCompletedAt sql.NullTime
-		var stepOutput []byte
-
-		err := rows.Scan(
-			&step.ID,
-			&step.WorkflowID,
-			&step.StepID,
-			&step.StepIndex,
-			&step.StepName,
-			&step.StepType,
-			&step.Decision,
-			&step.DecisionReason,
-			&step.PoliciesEvaluated,
-			&step.PoliciesMatched,
-			&approvalStatus,
-			&approvedBy,
-			&approvedAt,
-			&step.StepInput,
-			&step.Model,
-			&step.Provider,
-			&step.TokensIn,
-			&step.TokensOut,
-			&step.CostUSD,
-			&stepOutput,
-			&approvalComment,
-			&step.GateCheckedAt,
-			&stepCompletedAt,
-		)
-		if err != nil {
-			return nil, err
+		step, scanErr := scanWorkflowStepRow(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-
-		if approvalStatus.Valid {
-			as := ApprovalStatus(approvalStatus.String)
-			step.ApprovalStatus = &as
-		}
-		if approvedBy.Valid {
-			step.ApprovedBy = approvedBy.String
-		}
-		if approvedAt.Valid {
-			step.ApprovedAt = &approvedAt.Time
-		}
-		if approvalComment.Valid {
-			step.ApprovalComment = approvalComment.String
-		}
-		if stepCompletedAt.Valid {
-			step.StepCompletedAt = &stepCompletedAt.Time
-		}
-		if stepOutput != nil {
-			step.StepOutput = json.RawMessage(stepOutput)
-		}
-
-		steps = append(steps, step)
+		steps = append(steps, *step)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate step rows: %w", err)

@@ -40,6 +40,29 @@ type StepGateContext struct {
 	UserID       string
 	ClientID     string
 	ToolContext  *ToolContext
+
+	// Retry-aware policy fields (Issue #1673 Phase 1).
+	// Populated by the service layer from the existing workflow_steps row
+	// BEFORE policy evaluation runs, so policies can condition on retry state.
+	// Semantics match response retry_context with one exception: LastDecision
+	// here is empty on first call (no prior decision to report) rather than
+	// equal to the current decision — policies need "was there a prior?" not
+	// response's first-call invariant.
+	//
+	//   - GateCount: projected post-bump (1 on first call, existing+1 on retry)
+	//   - CompletionCount: existing.CompletionCount (0 if no prior /complete)
+	//   - PriorCompletionStatus: derived from counters
+	//   - PriorOutputAvailable: CompletionCount >= 1
+	//   - LastDecision: existing.Decision (empty string on first call)
+	//   - FirstAttemptAgeSeconds: now - first_attempt_at (0 on first call)
+	//   - IdempotencyKey: effective key (existing's, else caller-supplied)
+	GateCount              int
+	CompletionCount        int
+	PriorCompletionStatus  PriorCompletionStatus
+	PriorOutputAvailable   bool
+	LastDecision           GateDecision
+	FirstAttemptAgeSeconds int
+	IdempotencyKey         string
 }
 
 // StepGateEvaluation is the result of policy evaluation
@@ -315,6 +338,164 @@ func workflowBelongsTo(workflow *Workflow, tenantID, orgID string) bool {
 	return true
 }
 
+// buildRetryContext computes the retry_context response block from a persisted
+// step row (Issue #1673 Phase 1). The step argument must reflect post-write
+// state — i.e. after AddStep or BumpGateCountCached has run — so counters,
+// timestamps, and last_decision are fresh.
+//
+// includePriorOutput controls whether prior_output is populated. Even when
+// true, prior_output is only populated if a prior /complete actually landed
+// (PriorCompletionStatus == completed). Otherwise nil, which JSON-marshals as
+// null — matching the contract at technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §3.
+func buildRetryContext(step *WorkflowStep, includePriorOutput bool) RetryContext {
+	// Derive prior_completion_status from counter state.
+	// After any successful AddStep or BumpGateCountCached, GateCount >= 1.
+	// On a first-call fresh INSERT, GateCount == 1 and CompletionCount == 0,
+	// which we map to "none" because there were no *prior* gate calls before
+	// this one.
+	var priorStatus PriorCompletionStatus
+	switch {
+	case step.GateCount <= 1:
+		priorStatus = PriorCompletionStatusNone
+	case step.CompletionCount >= 1:
+		priorStatus = PriorCompletionStatusCompleted
+	default:
+		priorStatus = PriorCompletionStatusGatedNotCompleted
+	}
+
+	// Always present fields
+	rc := RetryContext{
+		GateCount:             step.GateCount,
+		CompletionCount:       step.CompletionCount,
+		PriorCompletionStatus: priorStatus,
+		PriorOutputAvailable:  priorStatus == PriorCompletionStatusCompleted,
+		PriorOutput:           nil,
+		PriorCompletionAt:     step.StepCompletedAt,
+		LastAttemptAt:         step.GateCheckedAt,
+		LastDecision:          step.LastDecision,
+	}
+	if step.FirstAttemptAt != nil {
+		rc.FirstAttemptAt = *step.FirstAttemptAt
+	} else {
+		// Backstop: if somehow the column is null (shouldn't happen post-migration),
+		// fall back to gate_checked_at so the field is always populated.
+		rc.FirstAttemptAt = step.GateCheckedAt
+	}
+	if step.IdempotencyKey != nil {
+		rc.IdempotencyKey = *step.IdempotencyKey
+	}
+	// Opt-in prior_output inclusion (contract §3): only populate if caller
+	// asked AND a completed prior exists.
+	if includePriorOutput && rc.PriorOutputAvailable && step.StepOutput != nil {
+		var out map[string]interface{}
+		if err := json.Unmarshal(step.StepOutput, &out); err == nil {
+			rc.PriorOutput = out
+		}
+	}
+	return rc
+}
+
+// applyRetryContextToGate populates the retry-context fields on a
+// StepGateContext from the existing workflow_steps row (may be nil) so policy
+// conditions see projected post-bump state at evaluation time. Called on the
+// fresh-eval path only — the cached path never runs policy.
+//
+// "Projected" means: the values reflect what the row will look like after the
+// upcoming AddStep bumps the counters, so a policy condition like
+// `step.gate_count > 1` correctly matches on the second gate call, not the
+// third.
+func applyRetryContextToGate(gateCtx *StepGateContext, existing *WorkflowStep, suppliedKey string) {
+	if existing == nil {
+		// First call — counters start at 1 (this call) / 0 (no prior complete),
+		// prior_completion_status is "none", last_decision is empty (policy
+		// semantics: "no prior decision to report"), age is 0.
+		gateCtx.GateCount = 1
+		gateCtx.CompletionCount = 0
+		gateCtx.PriorCompletionStatus = PriorCompletionStatusNone
+		gateCtx.PriorOutputAvailable = false
+		gateCtx.LastDecision = ""
+		gateCtx.FirstAttemptAgeSeconds = 0
+		gateCtx.IdempotencyKey = suppliedKey
+		return
+	}
+	gateCtx.GateCount = existing.GateCount + 1
+	gateCtx.CompletionCount = existing.CompletionCount
+	// Mirror buildRetryContext's derivation for consistency.
+	switch {
+	case gateCtx.GateCount <= 1:
+		gateCtx.PriorCompletionStatus = PriorCompletionStatusNone
+	case gateCtx.CompletionCount >= 1:
+		gateCtx.PriorCompletionStatus = PriorCompletionStatusCompleted
+	default:
+		gateCtx.PriorCompletionStatus = PriorCompletionStatusGatedNotCompleted
+	}
+	gateCtx.PriorOutputAvailable = gateCtx.CompletionCount >= 1
+	gateCtx.LastDecision = existing.Decision
+	if existing.FirstAttemptAt != nil {
+		age := time.Since(*existing.FirstAttemptAt)
+		if age < 0 {
+			age = 0
+		}
+		gateCtx.FirstAttemptAgeSeconds = int(age.Seconds())
+	}
+	// Effective key: caller-supplied value wins if existing has none
+	// (COALESCE semantics at the repo level — immutability enforced by the
+	// repo's UPSERT on subsequent writes).
+	if existing.IdempotencyKey != nil && *existing.IdempotencyKey != "" {
+		gateCtx.IdempotencyKey = *existing.IdempotencyKey
+	} else {
+		gateCtx.IdempotencyKey = suppliedKey
+	}
+}
+
+// IdempotencyKeyMismatchError is returned by the service when a /gate or
+// /complete request supplies an idempotency_key that does not match the key
+// recorded on the step's earlier /gate call (Issue #1673 Phase 2). Handler
+// layer maps this to HTTP 409 with APIError.Code == ErrorCodeIdempotencyKeyMismatch.
+type IdempotencyKeyMismatchError struct {
+	WorkflowID  string
+	StepID      string
+	ExpectedKey string // "" if the step had no prior key
+	ReceivedKey string // "" if the caller didn't supply one
+}
+
+func (e *IdempotencyKeyMismatchError) Error() string {
+	return fmt.Sprintf("idempotency_key mismatch on %s/%s: expected %q, received %q",
+		e.WorkflowID, e.StepID, e.ExpectedKey, e.ReceivedKey)
+}
+
+// validateIdempotencyKeyMatch implements the strict rules in technical-docs/
+// WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §5. existing is the row loaded via
+// GetStepDecision (may be nil = no prior gate). suppliedKey is the key the
+// caller passed on this /gate or /complete (empty string = omitted).
+//
+// Returns a non-nil *IdempotencyKeyMismatchError when the strict rules would
+// reject, nil otherwise. No existing row ⇒ always OK (first gate call).
+func validateIdempotencyKeyMatch(existing *WorkflowStep, suppliedKey, workflowID, stepID string) error {
+	if existing == nil {
+		return nil
+	}
+	var storedKey string
+	if existing.IdempotencyKey != nil {
+		storedKey = *existing.IdempotencyKey
+	}
+	// Both absent → match.
+	if storedKey == "" && suppliedKey == "" {
+		return nil
+	}
+	// Both present and equal → match.
+	if storedKey != "" && storedKey == suppliedKey {
+		return nil
+	}
+	// Any other combination: mismatch (prior had, now absent; prior absent, now has; different values).
+	return &IdempotencyKeyMismatchError{
+		WorkflowID:  workflowID,
+		StepID:      stepID,
+		ExpectedKey: storedKey,
+		ReceivedKey: suppliedKey,
+	}
+}
+
 // buildCachedResponse constructs a StepGateResponse from a previously persisted step decision.
 // This supports idempotent retry semantics (#1414): same (workflow_id, step_id) returns the
 // same decision without re-running the policy evaluator.
@@ -322,7 +503,11 @@ func workflowBelongsTo(workflow *Workflow, tenantID, orgID string) bool {
 // Special case: if the original decision was require_approval but the step has since been
 // approved, we return "allow" — the approval resolved the gate and the step can proceed.
 // If rejected, we return "block" since the workflow was aborted.
-func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string) *StepGateResponse {
+//
+// step must be the post-bump row (after BumpGateCountCached) so retry_context
+// reflects the just-bumped counters. includePriorOutput is the caller's opt-in
+// query param for Issue #1673 Phase 1.
+func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string, includePriorOutput bool) *StepGateResponse {
 	decision := step.Decision
 	reason := step.DecisionReason
 
@@ -363,6 +548,7 @@ func buildCachedResponse(step *WorkflowStep, workflowID, baseURL string) *StepGa
 		PoliciesMatched:   policiesMatched,
 		Cached:            true,
 		DecisionSource:    "cached",
+		RetryContext:      buildRetryContext(step, includePriorOutput),
 	}
 
 	// Include approval URL for pending require_approval decisions
@@ -406,19 +592,36 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		retryPolicy = RetryPolicyIdempotent
 	}
 
+	// Always load existing step row up front (Issue #1673) so we can:
+	//   1. Validate idempotency_key match before doing any work.
+	//   2. Decide whether this is a first-call fresh eval or a retry.
+	// Legacy behavior under retry_policy=idempotent called GetStepDecision
+	// conditionally; with first-class retry_context we need the row anyway.
+	existing, err := s.repo.GetStepDecision(ctx, workflowID, stepID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check cached decision: %w", err)
+	}
+
+	// Phase 2: idempotency_key validation. Strict rules per contract §5 —
+	// supplied key must equal stored key (or both be absent). Handler maps
+	// *IdempotencyKeyMismatchError to HTTP 409.
+	if err := validateIdempotencyKeyMatch(existing, req.IdempotencyKey, workflowID, stepID); err != nil {
+		return nil, err
+	}
+
 	// Idempotent cache lookup: return prior decision if step was already evaluated.
 	// This MUST run before the pending-approval guard so that retrying the same
 	// step that has a pending approval returns the cached require_approval decision
 	// instead of an error. GateOverride (MAP confirm/step modes) bypasses the cache
 	// because those modes have their own evaluator-level caching via sync.Map.
-	if retryPolicy == RetryPolicyIdempotent && req.GateOverride == nil {
-		cached, err := s.repo.GetStepDecision(ctx, workflowID, stepID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check cached decision: %w", err)
+	if retryPolicy == RetryPolicyIdempotent && req.GateOverride == nil && existing != nil {
+		// Bump gate_count + snapshot last_decision before returning the cached
+		// response so retry_context reflects this call (Issue #1673 Phase 1).
+		bumped, bumpErr := s.repo.BumpGateCountCached(ctx, workflowID, stepID)
+		if bumpErr != nil {
+			return nil, fmt.Errorf("failed to bump gate_count on cached retry: %w", bumpErr)
 		}
-		if cached != nil {
-			return buildCachedResponse(cached, workflowID, s.baseURL), nil
-		}
+		return buildCachedResponse(bumped, workflowID, s.baseURL, req.IncludePriorOutput), nil
 	}
 
 	// Check for pending approval on a DIFFERENT step.
@@ -459,6 +662,10 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		ClientID:     clientID,
 		ToolContext:  req.ToolContext,
 	}
+	// Issue #1673 Phase 1: populate retry-context fields on the gate context
+	// so policy conditions like step.gate_count > 1 work correctly on the
+	// FRESH-eval path (including retry_policy=reevaluate and first-call).
+	applyRetryContextToGate(gateCtx, existing, req.IdempotencyKey)
 
 	// Evaluate policies (or use override for MAP confirm/step modes)
 	var evaluation *StepGateEvaluation
@@ -484,7 +691,15 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		approvalStatus = &pending
 	}
 
-	// Record the step decision
+	// Record the step decision. AddStep atomically bumps gate_count and
+	// snapshots last_decision (Issue #1673), returning the post-write counter
+	// state via its RETURNING clause so we can populate retry_context without
+	// a follow-up read.
+	var idempotencyKeyPtr *string
+	if req.IdempotencyKey != "" {
+		k := req.IdempotencyKey
+		idempotencyKeyPtr = &k
+	}
 	step := &WorkflowStep{
 		WorkflowID:        workflowID,
 		StepID:            stepID,
@@ -502,6 +717,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		TokensIn:          req.TokensIn,
 		TokensOut:         req.TokensOut,
 		CostUSD:           req.CostUSD,
+		IdempotencyKey:    idempotencyKeyPtr,
 	}
 
 	if err := s.repo.AddStep(ctx, step); err != nil {
@@ -521,7 +737,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		s.logger.Printf("[WorkflowControl] Concurrent race detected: workflow=%s step=%s evaluated=%s persisted=%s (returning persisted)",
 			logutil.Sanitize(workflowID), logutil.Sanitize(stepID),
 			logutil.Sanitize(string(evaluation.Decision)), logutil.Sanitize(string(persisted.Decision)))
-		return buildCachedResponse(persisted, workflowID, s.baseURL), nil
+		return buildCachedResponse(persisted, workflowID, s.baseURL, req.IncludePriorOutput), nil
 	}
 
 	// Create step-gate checkpoint for safe resume.
@@ -561,7 +777,20 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 			workflowID, stepID, cpErr)
 	}
 
-	// Build response (Issue #1021: Include policy info in response)
+	// Build response (Issue #1021: Include policy info in response;
+	// Issue #1673 Phase 1: include retry_context from post-write state).
+	//
+	// Prefer `persisted` over `step` for retry_context so counters reflect
+	// the actual DB state under concurrent-race conditions. `persisted` is
+	// loaded after AddStep via GetStepDecision (above) and will include any
+	// counter increments that landed from a racing call. In the common
+	// non-race case `persisted` and `step` are equivalent. Falls back to
+	// `step` defensively if `persisted` is nil (shouldn't happen — we just
+	// wrote the row — but guards against transient read failure).
+	rcStep := step
+	if persisted != nil {
+		rcStep = persisted
+	}
 	response := &StepGateResponse{
 		Decision:          evaluation.Decision,
 		StepID:            stepID,
@@ -573,6 +802,7 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		PoliciesMatched:   evaluation.PoliciesMatched,
 		Cached:            false,
 		DecisionSource:    "fresh",
+		RetryContext:      buildRetryContext(rcStep, req.IncludePriorOutput),
 	}
 
 	// Add approval URL for require_approval decisions
@@ -591,10 +821,17 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 		"provider":           req.Provider,
 		"policies_evaluated": len(evaluation.PoliciesEvaluated),
 		"policies_matched":   len(evaluation.PoliciesMatched),
+		// Issue #1673: retry_context fields on audit trail.
+		"gate_count":      step.GateCount,
+		"completion_count": step.CompletionCount,
 	}
 	if req.ToolContext != nil {
 		auditMeta["tool_name"] = req.ToolContext.ToolName
 		auditMeta["tool_type"] = req.ToolContext.ToolType
+	}
+	// Issue #1673 Phase 2: record idempotency_key on every gate audit event.
+	if step.IdempotencyKey != nil && *step.IdempotencyKey != "" {
+		auditMeta["idempotency_key"] = *step.IdempotencyKey
 	}
 	s.logAudit(ctx, &WorkflowAuditEntry{
 		WorkflowID:   workflowID,
@@ -954,6 +1191,8 @@ func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (i
 
 // MarkStepCompleted marks a step as completed after the external orchestrator executes it.
 // The optional req carries post-execution metrics (tokens, cost, output) from the SDK.
+// Validates idempotency_key match before writing (Issue #1673 Phase 2); mismatch returns
+// *IdempotencyKeyMismatchError which handlers map to HTTP 409.
 func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID string, req *StepCompleteRequest, tenantID, orgID string) error {
 	// Get workflow for audit logging and ownership check
 	workflow, err := s.repo.GetByID(ctx, workflowID)
@@ -969,6 +1208,21 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 		return fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
 	}
 
+	// Issue #1673 Phase 2: idempotency_key validation. Strict rules per
+	// contract §5 — key on complete must match key recorded on gate, or
+	// both must be absent.
+	suppliedKey := ""
+	if req != nil {
+		suppliedKey = req.IdempotencyKey
+	}
+	existing, err := s.repo.GetStepDecision(ctx, workflowID, stepID)
+	if err != nil {
+		return fmt.Errorf("failed to load step for idempotency check: %w", err)
+	}
+	if err := validateIdempotencyKeyMatch(existing, suppliedKey, workflowID, stepID); err != nil {
+		return err
+	}
+
 	if err := s.repo.MarkStepCompleted(ctx, workflowID, stepID, req); err != nil {
 		return fmt.Errorf("failed to mark step completed: %w", err)
 	}
@@ -982,7 +1236,13 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 		}
 	}
 
-	// Audit log: step completed
+	// Audit log: step completed (Issue #1673 Phase 2: include idempotency_key).
+	// If we got past validateIdempotencyKeyMatch with a non-empty key, it
+	// matches the stored key by construction — we just need to record it.
+	auditMeta := map[string]interface{}{}
+	if suppliedKey != "" {
+		auditMeta["idempotency_key"] = suppliedKey
+	}
 	s.logAudit(ctx, &WorkflowAuditEntry{
 		WorkflowID:   workflowID,
 		WorkflowName: workflow.WorkflowName,
@@ -992,6 +1252,7 @@ func (s *Service) MarkStepCompleted(ctx context.Context, workflowID, stepID stri
 		TenantID:     workflow.TenantID,
 		ClientID:     workflow.ClientID,
 		UserID:       workflow.UserID,
+		Metadata:     auditMeta,
 	})
 
 	// Unified execution tracking

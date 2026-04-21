@@ -256,6 +256,15 @@ var ValidPolicyFields = []string{
 	"media.pii_types",
 	"media.has_extracted_text",
 	"media.extracted_text_length",
+	// Retry-aware step fields for WCP policies (Issue #1673 Phase 1 + 2).
+	// See technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md for semantics.
+	"step.gate_count",
+	"step.completion_count",
+	"step.prior_completion_status",
+	"step.prior_output_available",
+	"step.last_decision",
+	"step.first_attempt_age_seconds",
+	"step.idempotency_key",
 }
 
 // Valid action types — re-exported from platform/shared/policy as the single
