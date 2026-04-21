@@ -5,10 +5,12 @@ package workflow_control
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gorilla/mux"
 
@@ -258,6 +260,26 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issue #1673 Phase 2: idempotency_key max-length validation (matches DB
+	// column length). Reject oversized keys early with a clear 400 so callers
+	// don't get a less-helpful DB error downstream.
+	// Rune count, not byte count — Postgres VARCHAR(N) is N characters, not
+	// N bytes, and a 255-char UTF-8 string can exceed 255 bytes with
+	// multi-byte characters. Matches the convention used by CreateWorkflow's
+	// trace_id validation.
+	if utf8.RuneCountInString(req.IdempotencyKey) > 255 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST",
+			"idempotency_key must be at most 255 characters")
+		return
+	}
+
+	// Issue #1673 Phase 1: include_prior_output is an opt-in query param.
+	// Parse into the request struct so the service layer can pass it through
+	// to buildRetryContext.
+	if r.URL.Query().Get("include_prior_output") == "true" {
+		req.IncludePriorOutput = true
+	}
+
 	// Get tenant/org context
 	tenantID := h.getTenantID(r)
 	orgID := h.getOrgID(r)
@@ -266,6 +288,12 @@ func (h *Handler) StepGate(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.service.StepGate(r.Context(), workflowID, stepID, &req, tenantID, orgID, userID, clientID)
 	if err != nil {
+		// Issue #1673 Phase 2: 409 IDEMPOTENCY_KEY_MISMATCH
+		var mismatchErr *IdempotencyKeyMismatchError
+		if errors.As(err, &mismatchErr) {
+			h.writeIdempotencyKeyMismatch(w, mismatchErr)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Workflow not found")
 			return
@@ -315,7 +343,26 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 		req = &parsed
 	}
 
-	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req, h.getClientID(r), h.getOrgID(r)); err != nil {
+	// Issue #1673 Phase 2: idempotency_key max-length validation.
+	// Rune count, not byte count — see StepGate for rationale.
+	if req != nil && utf8.RuneCountInString(req.IdempotencyKey) > 255 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST",
+			"idempotency_key must be at most 255 characters")
+		return
+	}
+
+	// Inconsistency fix (Issue #1673 drive-by): this handler previously passed
+	// getClientID as the service's tenantID parameter, while StepGate passes
+	// getTenantID. That meant a real X-Tenant-ID header worked for gate but
+	// broke complete on the isolation check. Align with StepGate — tenantID
+	// is the proper parameter.
+	if err := h.service.MarkStepCompleted(r.Context(), workflowID, stepID, req, h.getTenantID(r), h.getOrgID(r)); err != nil {
+		// Issue #1673 Phase 2: 409 IDEMPOTENCY_KEY_MISMATCH
+		var mismatchErr *IdempotencyKeyMismatchError
+		if errors.As(err, &mismatchErr) {
+			h.writeIdempotencyKeyMismatch(w, mismatchErr)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.writeError(w, http.StatusNotFound, "NOT_FOUND", "Step not found")
 			return
@@ -326,6 +373,27 @@ func (h *Handler) MarkStepCompleted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeIdempotencyKeyMismatch emits the structured 409 response for
+// *IdempotencyKeyMismatchError (Issue #1673 Phase 2). Wire shape matches
+// technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §5.
+func (h *Handler) writeIdempotencyKeyMismatch(w http.ResponseWriter, e *IdempotencyKeyMismatchError) {
+	resp := APIErrorResponse{
+		Error: APIError{
+			Code:    ErrorCodeIdempotencyKeyMismatch,
+			Message: "idempotency_key does not match the key recorded on gate",
+			Details: APIErrorDetails{
+				WorkflowID:             e.WorkflowID,
+				StepID:                 e.StepID,
+				ExpectedIdempotencyKey: e.ExpectedKey,
+				ReceivedIdempotencyKey: e.ReceivedKey,
+			},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // CompleteWorkflow handles POST /api/v1/workflows/{id}/complete.

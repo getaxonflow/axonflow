@@ -10,6 +10,99 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [7.3.0] - 2026-04-21 — Retry Semantics & Idempotency
+
+MINOR: first-class retry and idempotency surfaces on the Workflow Control
+Plane. The `cached: bool` signal every gate response has been returning is
+now a deprecated alias — responses carry a `retry_context` block that
+answers "how many gate calls?", "did any prior attempt complete?", and
+"what was the prior decision?" unambiguously. A new caller-supplied
+`idempotency_key` on gate + complete anchors a workflow step to a
+business-level identity (payment intent, invoice, claim reference), with
+strict match validation between the two endpoints.
+
+No breaking changes. Purely additive.
+
+### Community
+
+#### Added
+
+- **`retry_context` on every `StepGateResponse`** — always present, including
+  on the first gate call (where counters are 1/0 and
+  `prior_completion_status` is `"none"`). Fields: `gate_count`,
+  `completion_count`, `prior_completion_status` (enum `none` / `completed` /
+  `gated_not_completed`), `prior_output_available`, `prior_output`,
+  `prior_completion_at`, `first_attempt_at`, `last_attempt_at`,
+  `last_decision`, `idempotency_key`. Counter bookkeeping is atomic inside
+  the repository UPSERT; a separate cached-hit update keeps counters
+  accurate across idempotent retries without re-evaluating policy.
+- **`?include_prior_output=true` query param on `/gate`** — opt-in inclusion
+  of the prior `/complete` payload in `retry_context.prior_output`. Default
+  is `false` (null) because output may be large and/or contain sensitive
+  data. When the opt-in is set AND a prior completion exists, the full
+  output is returned so agents can safely short-circuit re-execution.
+- **Caller-supplied `idempotency_key` on `/gate` and `/complete`** —
+  optional opaque string up to 255 chars. Recorded on the first gate call
+  that sets it; immutable for the step's lifetime. Surfaced on every
+  subsequent `retry_context.idempotency_key`. Audit log records the key
+  on every `step_gate` and `step_completed` event.
+- **`HTTP 409 IDEMPOTENCY_KEY_MISMATCH`** returned when `/complete` (or a
+  subsequent `/gate`) passes a different key than the one recorded on the
+  first gate, or when one side supplies a key and the other omits it.
+  Response envelope includes `expected_idempotency_key` and
+  `received_idempotency_key` so SDKs can build typed errors.
+- **`cached` and `decision_source` fields remain on every response** so
+  existing SDK versions continue working unchanged. Both are marked
+  deprecated in the wire docs; `retry_context.gate_count > 1` replaces
+  `cached: true` and `retry_context.prior_completion_status` replaces the
+  string-typed `decision_source`.
+
+#### Changed
+
+- **`MarkStepCompleted` HTTP handler** now reads tenant identity from
+  `X-Tenant-ID` consistently with `StepGate` rather than from
+  `X-Client-ID`. A real multi-tenant caller setting the tenant header now
+  works on both endpoints; previously the complete path rejected the
+  request as "workflow not found" because the isolation check compared
+  against the wrong attribute. No behavior change for callers using
+  empty headers.
+
+### Evaluation
+
+#### Added
+
+- **Retry-aware dynamic policy conditions** — the policy engine now
+  resolves seven new `step.*` fields: `step.gate_count`,
+  `step.completion_count`, `step.prior_completion_status` (enum `none` /
+  `completed` / `gated_not_completed`), `step.prior_output_available`,
+  `step.last_decision`, `step.first_attempt_age_seconds`, and
+  `step.idempotency_key`. Policy authors can write rules like
+  "retry on un-completed payment requires approval", "more than three
+  attempts = block", or "rapid retry within 30 seconds escalates severity"
+  without custom code. These fields are added to `ValidPolicyFields` so
+  the create/update policy APIs accept them.
+- **Tier-gated create:** attempting to author a dynamic policy with any
+  `step.*` condition on a Community license is rejected at create time
+  with `FEATURE_REQUIRES_EVALUATION_LICENSE`. Evaluation and Enterprise
+  tiers accept. Enforcement sits in `PolicyService.validateTierForCreate`
+  before the tenant policy-count check, so the rejection fires cleanly
+  without a DB roundtrip.
+- **UX note for policy authors:** retry-aware policies only fire when
+  callers pass `retry_policy: "reevaluate"` on subsequent `/gate` calls.
+  Default-idempotent retries hit the cache and bypass the policy engine,
+  consistent with the existing cache semantics. Documented in the
+  bundled Evaluation-tier example.
+
+### Enterprise
+
+No Enterprise-exclusive additions in this release. Cross-workflow
+idempotency lookup, windowed operators like `idempotency_key_seen_within`,
+retry-pattern correlation across workflows, and compliance-grade
+audit/reporting for duplicate prevention are on the roadmap for a
+later release.
+
+---
+
 ## [7.2.1] - 2026-04-21
 
 PATCH: surface the HITL approval metadata that was already being captured

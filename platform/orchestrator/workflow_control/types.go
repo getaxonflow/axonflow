@@ -52,6 +52,59 @@ const (
 	ApprovalStatusRejected ApprovalStatus = "rejected"
 )
 
+// PriorCompletionStatus describes whether a prior execution of this
+// (workflow_id, step_id) landed a /complete call. Returned inside
+// StepGateResponse.RetryContext (Issue #1673 Phase 1).
+//
+//   - PriorCompletionStatusNone               — no prior gate call on this step (first attempt)
+//   - PriorCompletionStatusCompleted          — prior /gate + prior /complete both landed
+//   - PriorCompletionStatusGatedNotCompleted  — prior /gate landed but no /complete followed (uncertain territory)
+type PriorCompletionStatus string
+
+const (
+	PriorCompletionStatusNone              PriorCompletionStatus = "none"
+	PriorCompletionStatusCompleted         PriorCompletionStatus = "completed"
+	PriorCompletionStatusGatedNotCompleted PriorCompletionStatus = "gated_not_completed"
+)
+
+// ErrorCode constants returned in the `error.code` field of structured error
+// responses. Kept stable because SDKs match on these strings to construct
+// typed exceptions.
+const (
+	// ErrorCodeIdempotencyKeyMismatch is returned with HTTP 409 when the
+	// idempotency_key on a /complete (or repeat /gate) call does not match
+	// the key recorded on the step's earlier /gate (Issue #1673 Phase 2).
+	ErrorCodeIdempotencyKeyMismatch = "IDEMPOTENCY_KEY_MISMATCH"
+)
+
+// APIErrorDetails carries structured fields for debugging / typed SDK errors.
+//
+// ExpectedIdempotencyKey and ReceivedIdempotencyKey deliberately omit
+// `omitempty` — the contract (WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §5)
+// states they must be emitted even when empty ("... will be the empty
+// string ..."), so SDK typed errors always see both fields and can render
+// them side-by-side.
+type APIErrorDetails struct {
+	WorkflowID             string `json:"workflow_id,omitempty"`
+	StepID                 string `json:"step_id,omitempty"`
+	ExpectedIdempotencyKey string `json:"expected_idempotency_key"`
+	ReceivedIdempotencyKey string `json:"received_idempotency_key"`
+}
+
+// APIError is the structured error payload returned on 4xx/5xx from WCP
+// endpoints that need machine-readable detail. The contract is documented in
+// technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §5.
+type APIError struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details APIErrorDetails `json:"details,omitempty"`
+}
+
+// APIErrorResponse is the wrapper envelope: {"error": {...}}.
+type APIErrorResponse struct {
+	Error APIError `json:"error"`
+}
+
 // RetryPolicy controls how step gate decisions behave on repeated calls for the
 // same (workflow_id, step_id) pair. The default is idempotent: same step, same
 // boundary, same decision — unless the caller explicitly re-opens it.
@@ -139,6 +192,22 @@ type WorkflowStep struct {
 	ApprovalComment   string          `json:"approval_comment,omitempty" db:"approval_comment"`
 	GateCheckedAt     time.Time       `json:"gate_checked_at" db:"gate_checked_at"`
 	StepCompletedAt   *time.Time      `json:"step_completed_at,omitempty" db:"step_completed_at"`
+	// GateCount is the number of /gate calls for this step (Issue #1673).
+	// Incremented atomically on every gate call.
+	GateCount int `json:"gate_count" db:"gate_count"`
+	// CompletionCount is the number of /complete calls (Issue #1673).
+	// Normally 0 or 1.
+	CompletionCount int `json:"completion_count" db:"completion_count"`
+	// LastDecision is the decision of the prior gate call (Issue #1673).
+	// On first gate call, equals Decision.
+	LastDecision GateDecision `json:"last_decision,omitempty" db:"last_decision"`
+	// IdempotencyKey is the caller-supplied business-level key, if any
+	// (Issue #1673 Phase 2). Immutable once set on a step.
+	IdempotencyKey *string `json:"idempotency_key,omitempty" db:"idempotency_key"`
+	// FirstAttemptAt is the timestamp of the first /gate call on this step
+	// (Issue #1673). Preserved across UPSERTs so retry_context.first_attempt_at
+	// can surface the original gate time even after many retries.
+	FirstAttemptAt *time.Time `json:"first_attempt_at,omitempty" db:"first_attempt_at"`
 }
 
 // PendingApprovalResponse is the shape returned by the pending approvals API.
@@ -196,9 +265,19 @@ type StepGateRequest struct {
 	// Default (empty or "idempotent"): return cached decision from DB.
 	// "reevaluate": force fresh policy evaluation regardless of prior decision.
 	RetryPolicy RetryPolicy `json:"retry_policy,omitempty"`
+	// IdempotencyKey is an optional caller-supplied opaque business-level key
+	// (Issue #1673 Phase 2). Max 255 chars. Recorded on the first /gate call
+	// that sets it; subsequent /gate and /complete calls must pass the same
+	// key or receive 409 IDEMPOTENCY_KEY_MISMATCH.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	// GateOverride bypasses the policy evaluator and forces a specific decision.
 	// Used by MAP confirm/step modes to enforce require_approval regardless of policies.
 	GateOverride *GateDecision `json:"-"`
+	// IncludePriorOutput is set by the handler from the ?include_prior_output
+	// query param (Issue #1673 Phase 1). When true, RetryContext.PriorOutput
+	// is populated if a prior /complete landed. Opt-in because prior output
+	// may be large and/or contain sensitive data.
+	IncludePriorOutput bool `json:"-"`
 }
 
 // StepCompleteRequest is the optional request body for marking a step as completed.
@@ -208,6 +287,70 @@ type StepCompleteRequest struct {
 	TokensIn  *int                   `json:"tokens_in,omitempty"`
 	TokensOut *int                   `json:"tokens_out,omitempty"`
 	CostUSD   *float64               `json:"cost_usd,omitempty"`
+	// IdempotencyKey must match the key recorded on the step's earlier /gate
+	// call (Issue #1673 Phase 2). Mismatch returns 409 IDEMPOTENCY_KEY_MISMATCH.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// RetryContext surfaces first-class same-workflow execution state for a step
+// gate evaluation (Issue #1673 Phase 1). Returned on every StepGateResponse,
+// including the very first gate call on a step.
+//
+// Replaces the ambiguous `cached: bool` signal — which conflated "agent crashed
+// between gate and complete, now retrying" with "upstream orchestrator retried
+// the whole workflow after a clean completion" — with unambiguous execution
+// state the agent and policy engine can reason about.
+//
+// See technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md §3 for the full
+// field-by-field wire contract.
+type RetryContext struct {
+	// GateCount is the number of times /gate has been called for this
+	// (workflow_id, step_id), including the current call. First call returns 1.
+	GateCount int `json:"gate_count"`
+
+	// CompletionCount is the number of times /complete has been successfully
+	// called for this (workflow_id, step_id). Normally 0 or 1.
+	CompletionCount int `json:"completion_count"`
+
+	// PriorCompletionStatus directly answers "did a prior execution finish,
+	// or are we in uncertain territory?" without arithmetic on the counters.
+	PriorCompletionStatus PriorCompletionStatus `json:"prior_completion_status"`
+
+	// PriorOutputAvailable is true iff PriorCompletionStatus == "completed".
+	// Mirrors whether PriorOutput *could* be returned if include_prior_output
+	// was requested.
+	PriorOutputAvailable bool `json:"prior_output_available"`
+
+	// PriorOutput is always present in the schema. Populated only when the
+	// caller set ?include_prior_output=true AND PriorOutputAvailable is true.
+	// Otherwise nil (emits as `null` in JSON).
+	PriorOutput map[string]interface{} `json:"prior_output"`
+
+	// PriorCompletionAt is the timestamp of the prior /complete, if any.
+	PriorCompletionAt *time.Time `json:"prior_completion_at"`
+
+	// FirstAttemptAt is the timestamp of the first /gate call on this step.
+	// On the first call, equals LastAttemptAt.
+	FirstAttemptAt time.Time `json:"first_attempt_at"`
+
+	// LastAttemptAt is the timestamp of the current /gate call (the one that
+	// produced this response).
+	LastAttemptAt time.Time `json:"last_attempt_at"`
+
+	// LastDecision is the decision of the immediately prior /gate call.
+	// On the first call (GateCount == 1), equals the current Decision.
+	LastDecision GateDecision `json:"last_decision"`
+
+	// IdempotencyKey is the caller-supplied business-level key recorded on
+	// this step (Issue #1673 Phase 2). Empty string when the caller never
+	// supplied one. Once set on a step, it is immutable for the step's
+	// lifetime — subsequent /gate and /complete calls must pass the same key
+	// or receive 409 IDEMPOTENCY_KEY_MISMATCH.
+	//
+	// Deliberately no `omitempty` — the wire contract §3 says this field is
+	// always in the schema (empty string when not supplied) so SDK
+	// deserializers can rely on it always being present.
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 // StepGateResponse is the response for a step gate check
@@ -224,11 +367,24 @@ type StepGateResponse struct {
 	// Cached indicates whether this response was served from a prior decision
 	// rather than a fresh policy evaluation. True when retry_policy is "idempotent"
 	// (the default) and the step was previously evaluated.
+	//
+	// Deprecated: Use RetryContext.GateCount > 1 to detect retry; use
+	// RetryContext.PriorCompletionStatus to reason about prior completion.
+	// Cached remains populated for backward compatibility; removal is planned
+	// for a future major version.
 	Cached bool `json:"cached"`
 	// DecisionSource indicates how the decision was produced:
 	// "fresh" — policy evaluator ran for this request
 	// "cached" — returned from a prior evaluation stored in the database
+	//
+	// Deprecated: Use RetryContext fields instead. Kept for back-compat.
 	DecisionSource string `json:"decision_source"`
+	// RetryContext is first-class retry / execution state for this step gate
+	// call (Issue #1673 Phase 1). Always present on every response, including
+	// the first gate call (in which case GateCount == 1, PriorCompletionStatus
+	// == "none"). See RetryContext doc and
+	// technical-docs/WCP_RETRY_IDEMPOTENCY_WIRE_CONTRACT.md for the full shape.
+	RetryContext RetryContext `json:"retry_context"`
 }
 
 // WorkflowStatusResponse is the response for workflow status
