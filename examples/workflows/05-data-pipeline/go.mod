@@ -2,4 +2,4 @@ module github.com/getaxonflow/axonflow/examples/workflows/05-data-pipeline
 
 go 1.23
 
-require github.com/getaxonflow/axonflow-sdk-go/v5 v5.3.1
+require github.com/getaxonflow/axonflow-sdk-go/v5 v5.5.0

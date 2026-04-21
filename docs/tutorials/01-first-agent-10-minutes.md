@@ -51,7 +51,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v5
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==6.4.0
+pip3 install axonflow==6.5.0
 ```
 
 ### TypeScript
