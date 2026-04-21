@@ -33,7 +33,7 @@ SDK versions: Python v6.1.0, Go/TypeScript/Java v5.1.0.
 go get github.com/getaxonflow/axonflow-sdk-go/v5
 
 # Python
-pip3 install axonflow==6.4.0
+pip3 install axonflow==6.5.0
 
 # Java (Maven)
 # Add to pom.xml:
