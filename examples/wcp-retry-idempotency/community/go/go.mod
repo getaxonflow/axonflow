@@ -5,7 +5,7 @@ go 1.23
 // Phase 1 + Phase 2 of Issue #1673 land in Go SDK v5.6.0.
 // Update this require line and delete the `replace` below once v5.6.0
 // publishes to the Go module proxy.
-require github.com/getaxonflow/axonflow-sdk-go/v5 v5.5.0
+require github.com/getaxonflow/axonflow-sdk-go/v5 v5.6.0
 
 // Temporary local replace — resolves to the sibling SDK worktree where
 // feat/1673-retry-context-and-idempotency-key is checked out. Remove
