@@ -32,8 +32,11 @@ func (m *mockPolicyEngineForHITL) IsHealthy() bool {
 	return true
 }
 
-func TestMapStepApproveHandler_CommunityMode(t *testing.T) {
+func TestMapStepApproveHandler_CommunityNoLicense(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
+	origTier := tierChecker
+	tierChecker = nil // no license — community + no eval = rejected
+	defer func() { tierChecker = origTier }()
 
 	r := mux.NewRouter()
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
@@ -43,12 +46,15 @@ func TestMapStepApproveHandler_CommunityMode(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403 for community mode, got %d", w.Code)
+		t.Errorf("expected 403 for community mode without license, got %d", w.Code)
 	}
 }
 
-func TestMapStepRejectHandler_CommunityMode(t *testing.T) {
+func TestMapStepRejectHandler_CommunityNoLicense(t *testing.T) {
 	t.Setenv("DEPLOYMENT_MODE", "community")
+	origTier := tierChecker
+	tierChecker = nil
+	defer func() { tierChecker = origTier }()
 
 	r := mux.NewRouter()
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/reject", mapStepRejectHandler).Methods("POST")
@@ -59,7 +65,42 @@ func TestMapStepRejectHandler_CommunityMode(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403 for community mode, got %d", w.Code)
+		t.Errorf("expected 403 for community mode without license, got %d", w.Code)
+	}
+}
+
+// TestMapStepApproveHandler_CommunityWithEvalLicenseBypassesTierCheck asserts
+// that community mode + Evaluation license passes the tier check (matching
+// WCP's /approve behavior). The handler then falls through to the HITL
+// availability check, which returns 503 because hitlEnabled is false in
+// these tests — that's fine; what we're pinning here is that the tier gate
+// no longer 403s on Evaluation callers.
+func TestMapStepApproveHandler_CommunityWithEvalLicenseBypassesTierCheck(t *testing.T) {
+	t.Setenv("DEPLOYMENT_MODE", "community")
+
+	origTier := tierChecker
+	origEnabled := hitlEnabled
+	tierChecker = &mockLicenseCheckerForSim{hitlEnabled: true}
+	hitlEnabled = false // ensure we stop at the HITL-enabled check, not the tier check
+	defer func() {
+		tierChecker = origTier
+		hitlEnabled = origEnabled
+	}()
+
+	r := mux.NewRouter()
+	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
+
+	req := httptest.NewRequest("POST", "/api/v1/plans/plan-123/steps/step-1/approve", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Not 403 — that would mean the tier gate rejected Evaluation.
+	if w.Code == http.StatusForbidden {
+		t.Errorf("community + eval license should bypass tier gate, got 403: %s", w.Body.String())
+	}
+	// Expect 503 because hitlEnabled is false — tier gate already passed by here.
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 HITL-disabled, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

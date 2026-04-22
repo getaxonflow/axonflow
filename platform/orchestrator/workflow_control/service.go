@@ -867,6 +867,38 @@ func (s *Service) StepGate(ctx context.Context, workflowID string, stepID string
 	return response, nil
 }
 
+// GetStep fetches a workflow_steps row with tenant-isolation enforced. Returns
+// ErrWorkflowNotFound when the workflow exists but belongs to a different
+// tenant / org — preventing existence side-channel leaks. Used by the approve
+// handlers after a mutation to build a rich StepGateHTTPResponse (Issue #1677).
+func (s *Service) GetStep(ctx context.Context, workflowID, stepID, tenantID, orgID string) (*WorkflowStep, error) {
+	workflow, err := s.repo.GetByID(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return nil, fmt.Errorf("%s: %w", workflowID, ErrWorkflowNotFound)
+	}
+	return s.repo.GetStep(ctx, workflowID, stepID)
+}
+
+// GetWorkflowByPlanID resolves the WCP workflow backing a MAP plan. MAP confirm /
+// step execution stores plan_id in workflow metadata so the plan-level HITL
+// endpoints (/api/v1/plans/{id}/steps/{step_id}/approve|reject) can find the
+// underlying WCP workflow and project rich responses (Issue #1677 Phase 1).
+// Returns ErrWorkflowNotFound when no WCP workflow matches — callers can then
+// fall back to the legacy in-memory MAP HITL flow.
+func (s *Service) GetWorkflowByPlanID(ctx context.Context, planID, tenantID, orgID string) (*Workflow, error) {
+	workflow, err := s.repo.GetByPlanID(ctx, planID)
+	if err != nil {
+		return nil, err
+	}
+	if !workflowBelongsTo(workflow, tenantID, orgID) {
+		return nil, fmt.Errorf("%s: %w", planID, ErrWorkflowNotFound)
+	}
+	return workflow, nil
+}
+
 // ApproveStep approves a step that requires approval (Enterprise feature)
 func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID, orgID, approvedBy, comment string) error {
 	// Multi-tenant isolation: verify the workflow belongs to the caller
@@ -1187,6 +1219,19 @@ func (s *Service) GetPendingApprovals(ctx context.Context, tenantID string, limi
 // CountPendingApprovals returns the total number of pending approvals for a tenant
 func (s *Service) CountPendingApprovals(ctx context.Context, tenantID string) (int, error) {
 	return s.repo.CountPendingApprovals(ctx, tenantID)
+}
+
+// GetPendingPlanApprovals returns MAP-backed pending approvals for a tenant,
+// optionally scoped to a specific plan_id. Each entry has PlanID populated.
+// Issue #1680 — the MAP-plane counterpart to GetPendingApprovals.
+func (s *Service) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
+	return s.repo.GetPendingPlanApprovals(ctx, tenantID, planIDFilter, limit)
+}
+
+// CountPendingPlanApprovals returns the count of MAP-backed pending approvals
+// for a tenant, optionally scoped to a specific plan_id.
+func (s *Service) CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error) {
+	return s.repo.CountPendingPlanApprovals(ctx, tenantID, planIDFilter)
 }
 
 // MarkStepCompleted marks a step as completed after the external orchestrator executes it.

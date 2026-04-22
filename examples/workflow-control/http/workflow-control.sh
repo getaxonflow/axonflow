@@ -376,10 +376,10 @@ else
         echo -e "   ${GREEN}Approval status: $approve_status${NC}"
     fi
 
-    # Check pending approvals
-    echo "   Checking pending approvals..."
+    # Check pending approvals (WCP plane)
+    echo "   Checking pending approvals (WCP plane)..."
     pending_response=$(curl -s -w "\n%{http_code}" \
-        "$AGENT_URL/api/v1/workflows/pending-approvals" \
+        "$AGENT_URL/api/v1/workflows/approvals/pending" \
         -H "Authorization: Basic $AUTH_B64" \
 )
 
@@ -387,12 +387,28 @@ else
     pending_http=$(echo "$pending_response" | tail -n 1)
 
     if [ "$pending_http" = "403" ] || [ "$pending_http" = "404" ] || echo "$pending_body" | jq -r '.error // ""' 2>/dev/null | grep -qi "enterprise\|license\|not available"; then
-        echo -e "   ${YELLOW}SKIPPED: Pending approvals is an enterprise feature${NC}"
+        echo -e "   ${YELLOW}SKIPPED: Pending approvals is an Evaluation+ feature${NC}"
     else
-        pending_count=$(echo "$pending_body" | jq -r '.items | length // 0')
-        pending_total=$(echo "$pending_body" | jq -r '.total // 0')
+        pending_count=$(echo "$pending_body" | jq -r '.pending_approvals | length // 0')
+        pending_total=$(echo "$pending_body" | jq -r '.count // 0')
         echo "   Pending approvals count: $pending_count"
         echo "   Total pending: $pending_total"
+    fi
+
+    # Check pending approvals (MAP plane) — counterpart endpoint for plan-scoped
+    # reviewer integrations. Every entry carries plan_id populated (#1680).
+    echo "   Checking pending approvals (MAP plane)..."
+    map_pending=$(curl -s -w "\n%{http_code}" \
+        "$AGENT_URL/api/v1/plans/approvals/pending" \
+        -H "Authorization: Basic $AUTH_B64" \
+)
+    map_pending_body=$(echo "$map_pending" | sed '$d')
+    map_pending_http=$(echo "$map_pending" | tail -n 1)
+    if [ "$map_pending_http" = "403" ] || [ "$map_pending_http" = "404" ]; then
+        echo -e "   ${YELLOW}SKIPPED: MAP-plane pending listing requires Evaluation+${NC}"
+    else
+        map_pending_count=$(echo "$map_pending_body" | jq -r '.count // 0')
+        echo "   MAP-plane pending count: $map_pending_count"
     fi
 fi
 echo ""
@@ -474,7 +490,7 @@ echo -e "${BLUE}Step 9: Get Pending Approvals${NC}"
 echo "   Fetching pending approvals list..."
 
 all_pending_response=$(curl -s -w "\n%{http_code}" \
-    "$AGENT_URL/api/v1/workflows/pending-approvals" \
+    "$AGENT_URL/api/v1/workflows/approvals/pending" \
     -H "Authorization: Basic $AUTH_B64" \
 )
 
@@ -482,12 +498,31 @@ all_pending_body=$(echo "$all_pending_response" | sed '$d')
 all_pending_http=$(echo "$all_pending_response" | tail -n 1)
 
 if [ "$all_pending_http" = "403" ] || [ "$all_pending_http" = "404" ] || echo "$all_pending_body" | jq -r '.error // ""' 2>/dev/null | grep -qi "enterprise\|license\|not available"; then
-    echo -e "   ${YELLOW}SKIPPED: Pending approvals is an enterprise feature${NC}"
+    echo -e "   ${YELLOW}SKIPPED: Pending approvals is an Evaluation+ feature${NC}"
 else
-    items_count=$(echo "$all_pending_body" | jq -r '.items | length // 0')
-    total_count=$(echo "$all_pending_body" | jq -r '.total // 0')
+    items_count=$(echo "$all_pending_body" | jq -r '.pending_approvals | length // 0')
+    total_count=$(echo "$all_pending_body" | jq -r '.count // 0')
     echo "   Items count: $items_count"
     echo "   Total: $total_count"
+fi
+echo ""
+
+# Step 9b: Get Pending Plan Approvals (MAP plane, #1680)
+echo -e "${BLUE}Step 9b: Get Pending Plan Approvals (MAP plane)${NC}"
+echo "   Fetching MAP-plane pending approvals (plan_id populated on every entry)..."
+
+map_all_pending=$(curl -s -w "\n%{http_code}" \
+    "$AGENT_URL/api/v1/plans/approvals/pending" \
+    -H "Authorization: Basic $AUTH_B64" \
+)
+map_all_pending_body=$(echo "$map_all_pending" | sed '$d')
+map_all_pending_http=$(echo "$map_all_pending" | tail -n 1)
+if [ "$map_all_pending_http" = "403" ] || [ "$map_all_pending_http" = "404" ]; then
+    echo -e "   ${YELLOW}SKIPPED: MAP-plane pending listing requires Evaluation+${NC}"
+else
+    map_items=$(echo "$map_all_pending_body" | jq -r '.pending_approvals | length // 0')
+    map_total=$(echo "$map_all_pending_body" | jq -r '.count // 0')
+    echo "   MAP-plane items: $map_items, total: $map_total"
 fi
 echo ""
 

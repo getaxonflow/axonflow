@@ -27,28 +27,36 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// Test getConnectorMetadata returns all 4 connectors
+// Test getConnectorMetadata returns at least the 4 baseline community connectors.
+// The enterprise edition adds more (slack, salesforce, mongodb), so we assert on
+// the community baseline by ID rather than an exact count — community tests stay
+// stable and enterprise additions don't silently regress either.
 func TestConnectorMarketplace_GetConnectorMetadata(t *testing.T) {
 	metadata := getConnectorMetadata()
 
-	if len(metadata) != 4 {
-		t.Fatalf("Expected 4 connectors, got %d", len(metadata))
+	if len(metadata) < 4 {
+		t.Fatalf("Expected at least 4 connectors, got %d", len(metadata))
 	}
 
-	// Verify each connector has required fields
-	expectedIDs := []string{"amadeus-travel", "redis-cache", "http-rest", "postgresql"}
-	for i, expected := range expectedIDs {
-		if metadata[i].ID != expected {
-			t.Errorf("Expected connector %d to have ID %s, got %s", i, expected, metadata[i].ID)
+	wantCommunity := []string{"amadeus-travel", "redis-cache", "http-rest", "postgresql"}
+	byID := map[string]*ConnectorMetadata{}
+	for i := range metadata {
+		byID[metadata[i].ID] = &metadata[i]
+	}
+	for _, id := range wantCommunity {
+		m, ok := byID[id]
+		if !ok {
+			t.Errorf("Community connector %s missing from metadata", id)
+			continue
 		}
-		if metadata[i].Name == "" {
-			t.Errorf("Connector %s missing name", metadata[i].ID)
+		if m.Name == "" {
+			t.Errorf("Connector %s missing name", m.ID)
 		}
-		if metadata[i].Type == "" {
-			t.Errorf("Connector %s missing type", metadata[i].ID)
+		if m.Type == "" {
+			t.Errorf("Connector %s missing type", m.ID)
 		}
-		if len(metadata[i].Capabilities) == 0 {
-			t.Errorf("Connector %s has no capabilities", metadata[i].ID)
+		if len(m.Capabilities) == 0 {
+			t.Errorf("Connector %s has no capabilities", m.ID)
 		}
 	}
 }
@@ -111,8 +119,8 @@ func TestConnectorMarketplace_ListConnectorsHandler_Empty(t *testing.T) {
 		t.Fatal("Response missing 'connectors' array")
 	}
 
-	if len(connectors) != 4 {
-		t.Errorf("Expected 4 connectors in catalog, got %d", len(connectors))
+	if len(connectors) < 4 {
+		t.Errorf("Expected at least 4 connectors in catalog, got %d", len(connectors))
 	}
 
 	// Verify none are installed

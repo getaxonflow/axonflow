@@ -126,6 +126,17 @@ Paste benchmark results here
 - [ ] All tests pass locally (`go test ./...`)
 - [ ] Manual testing completed
 
+### Cross-plane parity (ADR-046)
+- [ ] If this PR extends `StepGateResponse`, `StepGateHTTPResponse`, or any
+      `workflow_steps` / `hitl_approval_queue` field: the projection through
+      `workflow_control.ProjectStepGateToHTTP` fires on both the WCP plane
+      (`/api/v1/workflows/{id}/steps/{step_id}/<verb>`) and the MAP plane
+      (`/api/v1/plans/{id}/steps/{step_id}/<verb>`).
+- [ ] If a field is intentionally WCP-only or MAP-only, it is annotated with
+      a `// WCP-only:` or `// MAP-only:` doc comment and noted in
+      `HITLResponseFieldSet` accordingly. `TestHITLResponseParity` must still
+      pass.
+
 ### Documentation
 - [ ] Code is self-documenting with clear function/variable names
 - [ ] Comments added for complex logic

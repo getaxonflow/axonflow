@@ -849,3 +849,163 @@ func TestPostgresRepository_Integration_Concurrency(t *testing.T) {
 		t.Errorf("Workflows count = %d, want 10", len(workflows))
 	}
 }
+
+// === Plan-Plane Pending Approvals (Issue #1680) ===
+
+// TestPostgresRepository_Integration_PlanApprovals exercises the real
+// `metadata->>'plan_id'` JSONB filter against Postgres. Mocking this path
+// silently hides Postgres-specific behavior (index usage, sql.NullString
+// wiring, NULL vs empty-string handling), so the DB is the only honest test.
+func TestPostgresRepository_Integration_PlanApprovals(t *testing.T) {
+	db := getTestDB(t)
+	defer db.Close()
+
+	repo := NewPostgresRepository(db)
+	tenantID := fmt.Sprintf("test-tenant-planapprovals-%d", time.Now().UnixNano())
+	otherTenantID := fmt.Sprintf("test-tenant-other-%d", time.Now().UnixNano())
+	defer cleanupTestWorkflows(t, db, tenantID)
+	defer cleanupTestWorkflows(t, db, otherTenantID)
+
+	ctx := context.Background()
+
+	mkPending := func(workflowID, workflowName, planID, stepID string, tenant string) {
+		t.Helper()
+		var meta json.RawMessage
+		if planID != "" {
+			meta, _ = json.Marshal(map[string]interface{}{
+				"plan_id":        planID,
+				"execution_mode": "confirm",
+			})
+		} else {
+			meta = json.RawMessage("{}")
+		}
+		wf := &Workflow{
+			WorkflowID:   workflowID,
+			WorkflowName: workflowName,
+			Source:       WorkflowSourceExternal,
+			Status:       WorkflowStatusInProgress,
+			TenantID:     tenant,
+			Metadata:     meta,
+		}
+		if err := repo.Create(ctx, wf); err != nil {
+			t.Fatalf("Create(%s): %v", workflowID, err)
+		}
+		pending := ApprovalStatusPending
+		step := &WorkflowStep{
+			WorkflowID:     workflowID,
+			StepID:         stepID,
+			StepIndex:      0,
+			StepName:       "step-" + stepID,
+			StepType:       StepTypeToolCall,
+			Decision:       GateDecisionRequireApproval,
+			ApprovalStatus: &pending,
+		}
+		if err := repo.AddStep(ctx, step); err != nil {
+			t.Fatalf("AddStep(%s/%s): %v", workflowID, stepID, err)
+		}
+	}
+
+	// Two MAP-backed workflows on the target tenant (both have plan_id)
+	mkPending(fmt.Sprintf("wf_map_a_%d", time.Now().UnixNano()), "map-confirm-plan-a", "plan-a", "step_0_a", tenantID)
+	// Small gap so the DESC ordering is deterministic and tests can inspect it
+	time.Sleep(2 * time.Millisecond)
+	mkPending(fmt.Sprintf("wf_map_b_%d", time.Now().UnixNano()), "map-confirm-plan-b", "plan-b", "step_0_b", tenantID)
+	// Native WCP workflow on the target tenant (no plan_id)
+	mkPending(fmt.Sprintf("wf_wcp_c_%d", time.Now().UnixNano()), "wcp-native", "", "step_0_c", tenantID)
+	// A MAP-backed workflow on a different tenant — must never appear in the target tenant's list
+	mkPending(fmt.Sprintf("wf_other_%d", time.Now().UnixNano()), "other-tenant-plan", "plan-other", "step_0_other", otherTenantID)
+
+	t.Run("filters to MAP-backed only and populates plan_id", func(t *testing.T) {
+		got, err := repo.GetPendingPlanApprovals(ctx, tenantID, "", 10)
+		if err != nil {
+			t.Fatalf("GetPendingPlanApprovals: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("want 2 MAP-backed rows, got %d: %+v", len(got), got)
+		}
+		seen := map[string]bool{}
+		for _, row := range got {
+			if row.PlanID == "" {
+				t.Errorf("plan_id unpopulated on MAP-backed row: %+v", row)
+			}
+			if row.WorkflowName == "" {
+				t.Errorf("workflow_name unpopulated on MAP-backed row: %+v", row)
+			}
+			if row.ApprovalStatus == nil || *row.ApprovalStatus != ApprovalStatusPending {
+				t.Errorf("approval_status wrong on MAP-backed row: %+v", row)
+			}
+			seen[row.PlanID] = true
+		}
+		if !seen["plan-a"] || !seen["plan-b"] {
+			t.Errorf("expected plan-a and plan-b in results; got %+v", seen)
+		}
+		if seen[""] {
+			t.Errorf("native WCP workflow leaked through MAP-plane filter")
+		}
+	})
+
+	t.Run("plan_id filter scopes to one plan", func(t *testing.T) {
+		got, err := repo.GetPendingPlanApprovals(ctx, tenantID, "plan-a", 10)
+		if err != nil {
+			t.Fatalf("GetPendingPlanApprovals: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("filter=plan-a: want 1, got %d", len(got))
+		}
+		if got[0].PlanID != "plan-a" {
+			t.Errorf("plan_id = %q, want plan-a", got[0].PlanID)
+		}
+	})
+
+	t.Run("tenant isolation blocks other-tenant MAP workflows", func(t *testing.T) {
+		got, err := repo.GetPendingPlanApprovals(ctx, tenantID, "", 10)
+		if err != nil {
+			t.Fatalf("GetPendingPlanApprovals: %v", err)
+		}
+		for _, row := range got {
+			if row.PlanID == "plan-other" {
+				t.Errorf("leaked other-tenant row: %+v", row)
+			}
+		}
+	})
+
+	t.Run("CountPendingPlanApprovals matches filter semantics", func(t *testing.T) {
+		all, err := repo.CountPendingPlanApprovals(ctx, tenantID, "")
+		if err != nil {
+			t.Fatalf("CountPendingPlanApprovals: %v", err)
+		}
+		if all != 2 {
+			t.Errorf("unfiltered count: want 2, got %d", all)
+		}
+		scoped, err := repo.CountPendingPlanApprovals(ctx, tenantID, "plan-a")
+		if err != nil {
+			t.Fatalf("CountPendingPlanApprovals filter: %v", err)
+		}
+		if scoped != 1 {
+			t.Errorf("filter=plan-a count: want 1, got %d", scoped)
+		}
+		missing, err := repo.CountPendingPlanApprovals(ctx, tenantID, "plan-does-not-exist")
+		if err != nil {
+			t.Fatalf("CountPendingPlanApprovals missing: %v", err)
+		}
+		if missing != 0 {
+			t.Errorf("missing-plan count: want 0, got %d", missing)
+		}
+	})
+
+	t.Run("resolved approvals do not surface", func(t *testing.T) {
+		// Approve one of the MAP rows and assert the list shrinks by 1.
+		before, _ := repo.CountPendingPlanApprovals(ctx, tenantID, "")
+		rows, _ := repo.GetPendingPlanApprovals(ctx, tenantID, "plan-a", 1)
+		if len(rows) != 1 {
+			t.Fatalf("pre-approve fixture broken")
+		}
+		if err := repo.UpdateStepApproval(ctx, rows[0].WorkflowID, rows[0].StepID, ApprovalStatusApproved, "approver@example.com", "Approved for integration test"); err != nil {
+			t.Fatalf("UpdateStepApproval: %v", err)
+		}
+		after, _ := repo.CountPendingPlanApprovals(ctx, tenantID, "")
+		if after != before-1 {
+			t.Errorf("count after approve: want %d, got %d", before-1, after)
+		}
+	})
+}

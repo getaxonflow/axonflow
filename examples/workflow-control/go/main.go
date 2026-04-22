@@ -323,7 +323,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: ApproveStep not available (enterprise feature): %v\n", err)
+			fmt.Printf("   SKIP: ApproveStep not available (Evaluation+ feature): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: ApproveStep returned unexpected error: %v\n", err)
 			failCount++
@@ -390,7 +390,7 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: RejectStep not available (enterprise feature): %v\n", err)
+			fmt.Printf("   SKIP: RejectStep not available (Evaluation+ feature): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: RejectStep returned unexpected error: %v\n", err)
 			failCount++
@@ -415,16 +415,16 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: GetPendingApprovals not available (enterprise feature): %v\n", err)
+			fmt.Printf("   SKIP: GetPendingApprovals not available (Evaluation+ feature): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: GetPendingApprovals returned unexpected error: %v\n", err)
 			failCount++
 		}
 	} else {
-		assert(pendingResp.Approvals != nil, "PendingApprovals has Approvals array")
-		assert(pendingResp.Total >= 0, fmt.Sprintf("PendingApprovals Total is non-negative (got: %d)", pendingResp.Total))
-		fmt.Printf("   Total pending approvals: %d\n", pendingResp.Total)
-		fmt.Printf("   Approvals in response: %d\n", len(pendingResp.Approvals))
+		assert(pendingResp.PendingApprovals != nil, "PendingApprovals has PendingApprovals array")
+		assert(pendingResp.Count >= 0, fmt.Sprintf("PendingApprovals Count is non-negative (got: %d)", pendingResp.Count))
+		fmt.Printf("   Total pending approvals: %d\n", pendingResp.Count)
+		fmt.Printf("   Approvals in response: %d\n", len(pendingResp.PendingApprovals))
 	}
 
 	// Also test with options
@@ -436,15 +436,63 @@ func main() {
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
 			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
 			strings.Contains(errStr, "404") {
-			fmt.Printf("   SKIP: GetPendingApprovals with options not available (enterprise feature): %v\n", err)
+			fmt.Printf("   SKIP: GetPendingApprovals with options not available (Evaluation+ feature): %v\n", err)
 		} else {
 			fmt.Printf("   FAIL: GetPendingApprovals with options returned unexpected error: %v\n", err)
 			failCount++
 		}
 	} else {
-		assert(pendingRespWithOpts.Approvals != nil, "PendingApprovals (with opts) has Approvals array")
-		assert(pendingRespWithOpts.Total >= 0, fmt.Sprintf("PendingApprovals (with opts) Total is non-negative (got: %d)", pendingRespWithOpts.Total))
-		fmt.Printf("   With Limit=10: Total=%d, Approvals=%d\n", pendingRespWithOpts.Total, len(pendingRespWithOpts.Approvals))
+		assert(pendingRespWithOpts.PendingApprovals != nil, "PendingApprovals (with opts) has PendingApprovals array")
+		assert(pendingRespWithOpts.Count >= 0, fmt.Sprintf("PendingApprovals (with opts) Count is non-negative (got: %d)", pendingRespWithOpts.Count))
+		fmt.Printf("   With Limit=10: Count=%d, Approvals=%d\n", pendingRespWithOpts.Count, len(pendingRespWithOpts.PendingApprovals))
+	}
+	fmt.Println()
+
+	// ========================================
+	// Test 6a-MAP: GetPendingPlanApprovals (MAP plane, Issue #1680)
+	// ========================================
+	// MAP-plane counterpart of GetPendingApprovals. Returns only MAP-backed
+	// workflows (those with plan_id in metadata). Every entry has PlanID
+	// populated — the one intentional asymmetry with the WCP listing.
+	fmt.Println("Test 6a-MAP: GetPendingPlanApprovals (MAP plane — #1680)")
+	fmt.Println("---------------------------------------------------------")
+
+	mapPending, err := client.GetPendingPlanApprovals(nil)
+	if err != nil {
+		errStr := fmt.Sprintf("%v", err)
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
+			strings.Contains(errStr, "not available") || strings.Contains(errStr, "not supported") ||
+			strings.Contains(errStr, "404") || strings.Contains(errStr, "license") {
+			fmt.Printf("   SKIP: GetPendingPlanApprovals not available (Evaluation+ feature): %v\n", err)
+		} else {
+			fmt.Printf("   FAIL: GetPendingPlanApprovals returned unexpected error: %v\n", err)
+			failCount++
+		}
+	} else {
+		assert(mapPending.PendingApprovals != nil, "GetPendingPlanApprovals returns PendingApprovals array")
+		assert(mapPending.Count >= 0, fmt.Sprintf("GetPendingPlanApprovals Count non-negative (got: %d)", mapPending.Count))
+		// Every MAP-plane entry must carry plan_id populated
+		for i, entry := range mapPending.PendingApprovals {
+			assert(entry.PlanID != "", fmt.Sprintf("MAP entry %d must populate plan_id (got %q)", i, entry.PlanID))
+		}
+		fmt.Printf("   MAP-plane pending count: %d\n", mapPending.Count)
+	}
+
+	// With plan_id filter
+	_, err = client.GetPendingPlanApprovals(&axonflow.PendingApprovalsOptions{
+		PlanID: "plan-does-not-exist-for-this-test",
+		Limit:  5,
+	})
+	if err != nil {
+		errStr := fmt.Sprintf("%v", err)
+		if strings.Contains(errStr, "403") || strings.Contains(errStr, "404") {
+			fmt.Printf("   SKIP: plan_id filter not available: %v\n", err)
+		} else {
+			fmt.Printf("   FAIL: GetPendingPlanApprovals plan_id filter: %v\n", err)
+			failCount++
+		}
+	} else {
+		assert(true, "GetPendingPlanApprovals with plan_id filter returned cleanly")
 	}
 	fmt.Println()
 

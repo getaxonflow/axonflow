@@ -33,6 +33,7 @@ func getCapabilities() []PlatformCapability {
 		{Name: "mcp_check_endpoints", Since: "4.7.0", Description: "Standalone MCP policy check-input/check-output"},
 		{Name: "circuit_breaker", Since: "4.7.0", Description: "Circuit breaker pipeline enforcement"},
 		{Name: "version_discovery", Since: "4.8.0", Description: "Version and capability discovery"},
+		{Name: "hitl_response_parity", Since: "7.4.0", Description: "WCP + MAP approve/reject responses share retry_context, approver metadata, policies_matched (ADR-046)"},
 	}
 }
 
@@ -45,10 +46,10 @@ func getSDKCompatibility() SDKCompatInfo {
 			"java":       "5.0.0",
 		},
 		RecommendedSDKVersion: map[string]string{
-			"python":     "6.4.0",
-			"typescript": "5.4.0",
-			"go":         "5.4.0",
-			"java":       "5.5.0",
+			"python":     "6.6.0",
+			"typescript": "5.6.0",
+			"go":         "5.6.0",
+			"java":       "5.7.0",
 		},
 	}
 }

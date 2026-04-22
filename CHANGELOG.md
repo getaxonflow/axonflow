@@ -10,6 +10,110 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [7.4.0] - 2026-04-22 — HITL Response Parity
+
+MINOR: both HITL planes now return the same rich response shape, MAP's
+plan-scoped approve/reject endpoints are now available at **Evaluation** tier
+(previously Enterprise-only), and MAP gains a plane-scoped pending-approvals
+listing symmetric with the existing WCP endpoint. `decision` resolves to
+`"allow"` / `"block"` once the mutation lands, `retry_context` mirrors the
+gate response retry state, approver metadata comes from the same persisted
+row, `approval_id` surfaces the HITL queue entry UUID, and `policies_matched`
+reconstructs the governance trail. Contract tests in CI lock the two planes'
+response shapes together so future additions surface on both endpoints by
+default — both for approve/reject and for the plane-scoped pending listings.
+
+No breaking changes. Purely additive — the legacy `workflow_id` / `step_id` /
+`status` / `approval_status` / `approved_by` / `message` fields existing
+callers rely on are unchanged.
+
+### Community
+
+#### Added
+
+- **Shared HITL response projection helper** in the community codebase —
+  `workflow_control.ProjectStepGateToHTTP` and `DeriveHITLApprovalID`. Both
+  planes' handlers use it, so the wire shape stays consistent and the
+  deterministic HITL queue UUID reappears on every response where the
+  backing workflow_steps row exists.
+- **Plan-to-workflow lookup** — `GetWorkflowByPlanID` service method +
+  PostgreSQL repository implementation (index on `metadata->>'plan_id'`).
+  Enables plan-scoped HITL endpoints to project from the same
+  `workflow_steps` row that /gate and /complete use.
+
+#### Deprecated
+
+- `DO_NOT_TRACK=1` as an AxonFlow SDK telemetry opt-out — scheduled for
+  removal after 2026-05-05 in the next major release. Use
+  `AXONFLOW_TELEMETRY=off` instead. All 4 SDKs emit a one-line migration
+  warning when `DO_NOT_TRACK=1` is the active control and
+  `AXONFLOW_TELEMETRY=off` is not also set. See the SDK CHANGELOGs for
+  per-language notes.
+
+### Evaluation
+
+#### Added
+
+- **Rich WCP approve/reject responses.** `POST /api/v1/workflows/{id}/steps/{step_id}/approve`
+  and `.../reject` now return `decision`, `reason`, `retry_context`,
+  `approval_id`, `approved_by` / `approved_at` (or `rejected_by` /
+  `rejected_at`), `policies_matched`, `status`, and `message`. Documented
+  in OpenAPI as `ApprovalResponse`; mirrors the step-gate response field set.
+- **Rich MAP approve/reject responses** at the `/api/v1/plans/{id}/steps/{step_id}/approve|reject`
+  endpoints. Same shape as WCP plus a `plan_id` field. Two underlying flows —
+  confirm/step mode (WCP-backed) and legacy policy-driven pause/resume —
+  now surface a uniform shape so clients don't branch on which mode the
+  plan ran in.
+- **Plane-scoped pending-approvals listing** — new
+  `GET /api/v1/plans/approvals/pending` endpoint (Evaluation+), the MAP
+  counterpart of the existing `GET /api/v1/workflows/approvals/pending`.
+  Returns `{pending_approvals, count}` with every entry carrying `plan_id`
+  (populated from `workflows.metadata->>'plan_id'`). Optional `?plan_id=`
+  query param scopes the listing to a single plan so reviewer tools can
+  render per-plan context without filtering client-side. Tier-gated on
+  `IsHITLApprovalEnabled()` — same gate as the plane-scoped approve/reject.
+
+#### Changed
+
+- **MAP plan-scoped HITL tier gate lowered to Evaluation+** (was Enterprise-only
+  pre-v7.4.0). Tier check now matches WCP: community + Evaluation license →
+  accepted; community + no license → 403; enterprise mode → accepted. Error
+  message updated from "requires Enterprise license" to "requires Evaluation
+  or Enterprise license."
+- **Cross-plane contract test** in CI asserts the WCP and MAP response field
+  sets stay aligned modulo the intentional `plan_id` asymmetry. Guards
+  against silent future drift when either plane grows a new field. A sibling
+  `TestPendingApprovalsPlaneParity` does the same for the plane-scoped
+  pending-approvals listings — the intentional `plan_id` asymmetry is
+  enforced: populated on every MAP entry, never on WCP entries.
+
+### SDKs
+
+- **Go SDK v5.6.0** — `ApproveStepResponse` / `RejectStepResponse` gain
+  `Decision`, `Reason`, `ApprovalStatus`, `ApprovalID`, `ApprovedBy` /
+  `ApprovedAt` / `RejectedBy` / `RejectedAt`, `PoliciesMatched`,
+  `RetryContext`, `Message`, `PlanID`. New `GetPendingPlanApprovals` method
+  covers the MAP-plane listing. `PendingApproval` extended with `PlanID`,
+  `StepIndex`, `Decision`, `DecisionReason`, `PoliciesMatched`, `StepInput`,
+  `ApprovalStatus`. Also fixes three pre-existing URL bugs on
+  `ApproveStep` / `RejectStep` / `GetPendingApprovals` (they were hitting
+  non-existent `/api/v1/workflow-control/` paths) and renames the response
+  wire shape to match the server (`PendingApprovals` / `Count`).
+- **TypeScript SDK v5.6.0** — same rich fields on `ApproveStepResponse` /
+  `RejectStepResponse` interfaces, new `getPendingPlanApprovals`, extended
+  `PendingApproval` interface, and the same WCP URL / response-shape fixes.
+- **Python SDK v6.6.0** — rich optional fields on the pydantic
+  `ApproveStepResponse` / `RejectStepResponse` models, new
+  `get_pending_plan_approvals` method (sync wrapper included), extended
+  `PendingApproval` model, and the same WCP URL / response-shape fixes.
+- **Java SDK v5.7.0** — rich fields on `WorkflowTypes.ApproveStepResponse`
+  and `.RejectStepResponse`, plus back-compat 3-arg constructors so existing
+  test fixtures keep compiling. New `getPendingPlanApprovals` + async
+  variant. Extended `PendingApproval` class with back-compat 6-arg
+  constructor. Same WCP URL / response-getter fixes.
+
+---
+
 ## [7.3.0] - 2026-04-21 — Retry Semantics & Idempotency
 
 MINOR: first-class retry and idempotency surfaces on the Workflow Control

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	gcsstorage "cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 )
 
 // mockGCSBucket implements gcsBucketHandle for testing.
@@ -130,7 +131,9 @@ type mockGCSIterator struct {
 
 func (it *mockGCSIterator) Next() (*gcsstorage.ObjectAttrs, error) {
 	if it.idx >= len(it.items) {
-		return nil, fmt.Errorf("no more items")
+		// GCS callers (see GCSBackend.List) break on iterator.Done — using a
+		// generic error here short-circuits List with "gcs list: no more items".
+		return nil, iterator.Done
 	}
 	item := it.items[it.idx]
 	it.idx++

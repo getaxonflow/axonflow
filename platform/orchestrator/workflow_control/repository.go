@@ -20,6 +20,11 @@ type Repository interface {
 	Create(ctx context.Context, workflow *Workflow) error
 	Delete(ctx context.Context, workflowID string) error
 	GetByID(ctx context.Context, workflowID string) (*Workflow, error)
+	// GetByPlanID looks up a WCP workflow by MAP plan id (metadata->>'plan_id').
+	// MAP's plan-level HITL endpoints use this to surface rich step-gate state
+	// on the plan-scoped /approve and /reject paths (Issue #1677 Phase 1).
+	// Returns "workflow not found" style error when no workflow matches.
+	GetByPlanID(ctx context.Context, planID string) (*Workflow, error)
 	UpdateStatus(ctx context.Context, workflowID string, status WorkflowStatus) error
 	Complete(ctx context.Context, workflowID string) error
 	Abort(ctx context.Context, workflowID string, reason string) error
@@ -41,6 +46,15 @@ type Repository interface {
 	GetStepsForWorkflow(ctx context.Context, workflowID string) ([]WorkflowStep, error)
 	GetPendingApprovals(ctx context.Context, tenantID string, limit int) ([]PendingApprovalResponse, error)
 	CountPendingApprovals(ctx context.Context, tenantID string) (int, error)
+	// GetPendingPlanApprovals returns steps awaiting approval for MAP-backed
+	// workflows only (workflows.metadata->>'plan_id' IS NOT NULL). Each entry
+	// has PlanID populated from the metadata. Optionally filter to a specific
+	// plan via planIDFilter — empty string means all MAP-backed plans.
+	// Issue #1680: the MAP-plane equivalent of GetPendingApprovals.
+	GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error)
+	// CountPendingPlanApprovals counts MAP-backed pending approvals for a tenant,
+	// optionally scoped to a specific plan_id. See GetPendingPlanApprovals.
+	CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error)
 
 	// Checkpoint operations — step-gate checkpoints for safe resume
 	CreateCheckpoint(ctx context.Context, cp *Checkpoint) error
@@ -181,6 +195,77 @@ func (r *PostgresRepository) GetByID(ctx context.Context, workflowID string) (*W
 
 	// Fetch steps
 	steps, err := r.GetStepsForWorkflow(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	workflow.Steps = steps
+
+	return &workflow, nil
+}
+
+// GetByPlanID resolves a WCP workflow from a MAP plan id. MAP's confirm / step
+// executor stores plan_id in metadata when creating the workflow; this lookup
+// reverses that association so the plan-scoped HITL endpoints can surface
+// rich step-gate state (Issue #1677).
+//
+// If multiple workflows carry the same plan_id (shouldn't happen — MAP creates
+// one workflow per plan execution mode) the most recent workflow wins, so a
+// stale terminal workflow doesn't mask an active one.
+func (r *PostgresRepository) GetByPlanID(ctx context.Context, planID string) (*Workflow, error) {
+	query := `
+		SELECT workflow_id, workflow_name, source, status,
+			   current_step_index, total_steps,
+			   org_id, tenant_id, user_id, client_id,
+			   trace_id, metadata, started_at, completed_at, created_at, updated_at
+		FROM workflows
+		WHERE metadata->>'plan_id' = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var workflow Workflow
+	var totalSteps sql.NullInt64
+	var completedAt sql.NullTime
+	var traceID sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, planID).Scan(
+		&workflow.WorkflowID,
+		&workflow.WorkflowName,
+		&workflow.Source,
+		&workflow.Status,
+		&workflow.CurrentStepIndex,
+		&totalSteps,
+		&workflow.OrgID,
+		&workflow.TenantID,
+		&workflow.UserID,
+		&workflow.ClientID,
+		&traceID,
+		&workflow.Metadata,
+		&workflow.StartedAt,
+		&completedAt,
+		&workflow.CreatedAt,
+		&workflow.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("plan %s: %w", planID, ErrWorkflowNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if totalSteps.Valid {
+		ts := int(totalSteps.Int64)
+		workflow.TotalSteps = &ts
+	}
+	if completedAt.Valid {
+		workflow.CompletedAt = &completedAt.Time
+	}
+	if traceID.Valid {
+		workflow.TraceID = traceID.String
+	}
+
+	steps, err := r.GetStepsForWorkflow(ctx, workflow.WorkflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -901,5 +986,100 @@ func (r *PostgresRepository) CountPendingApprovals(ctx context.Context, tenantID
 		`SELECT COUNT(*) FROM workflow_steps ws
 		 JOIN workflows w ON ws.workflow_id = w.workflow_id
 		 WHERE ws.approval_status = 'pending' AND w.tenant_id = $1`, tenantID).Scan(&count)
+	return count, err
+}
+
+// GetPendingPlanApprovals retrieves MAP-backed pending approvals — workflows
+// that have a plan_id in metadata (Issue #1680). Each result has PlanID
+// populated so reviewer tools can render plan context without a second lookup.
+// When planIDFilter is non-empty, results are scoped to that specific plan.
+func (r *PostgresRepository) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	query := `
+		SELECT ws.workflow_id, ws.step_id, ws.step_index, ws.step_name, ws.step_type,
+			   ws.decision, ws.decision_reason, ws.policies_matched,
+			   ws.approval_status, ws.step_input, ws.gate_checked_at,
+			   w.workflow_name, w.metadata->>'plan_id'
+		FROM workflow_steps ws
+		JOIN workflows w ON ws.workflow_id = w.workflow_id
+		WHERE ws.approval_status = 'pending'
+		  AND w.tenant_id = $1
+		  AND w.metadata->>'plan_id' IS NOT NULL
+	`
+	args := []interface{}{tenantID}
+	if planIDFilter != "" {
+		query += ` AND w.metadata->>'plan_id' = $2 ORDER BY ws.gate_checked_at DESC LIMIT $3`
+		args = append(args, planIDFilter, limit)
+	} else {
+		query += ` ORDER BY ws.gate_checked_at DESC LIMIT $2`
+		args = append(args, limit)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []PendingApprovalResponse
+	for rows.Next() {
+		var item PendingApprovalResponse
+		var approvalStatus sql.NullString
+		var planID sql.NullString
+
+		err := rows.Scan(
+			&item.WorkflowID,
+			&item.StepID,
+			&item.StepIndex,
+			&item.StepName,
+			&item.StepType,
+			&item.Decision,
+			&item.DecisionReason,
+			&item.PoliciesMatched,
+			&approvalStatus,
+			&item.StepInput,
+			&item.CreatedAt,
+			&item.WorkflowName,
+			&planID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if approvalStatus.Valid {
+			as := ApprovalStatus(approvalStatus.String)
+			item.ApprovalStatus = &as
+		}
+		if planID.Valid {
+			item.PlanID = planID.String
+		}
+
+		results = append(results, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending plan approval rows: %w", err)
+	}
+
+	return results, nil
+}
+
+// CountPendingPlanApprovals returns the total number of MAP-backed pending
+// approvals for a tenant, optionally scoped to a specific plan_id.
+func (r *PostgresRepository) CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM workflow_steps ws
+			  JOIN workflows w ON ws.workflow_id = w.workflow_id
+			  WHERE ws.approval_status = 'pending'
+			    AND w.tenant_id = $1
+			    AND w.metadata->>'plan_id' IS NOT NULL`
+	args := []interface{}{tenantID}
+	if planIDFilter != "" {
+		query += ` AND w.metadata->>'plan_id' = $2`
+		args = append(args, planIDFilter)
+	}
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }

@@ -271,12 +271,12 @@ async function main() {
         pendingResp !== null && pendingResp !== undefined,
         "getPendingApprovals returned a response"
       );
-      if (pendingResp?.approvals) {
-        assertCheck(Array.isArray(pendingResp.approvals), "Pending approvals has approvals array");
-        console.log(`   Pending approvals count: ${pendingResp.approvals.length}`);
+      if (pendingResp?.pending_approvals) {
+        assertCheck(Array.isArray(pendingResp.pending_approvals), "Pending approvals has pending_approvals array");
+        console.log(`   Pending approvals count: ${pendingResp.pending_approvals.length}`);
       }
-      if (pendingResp?.total !== undefined) {
-        console.log(`   Total pending: ${pendingResp.total}`);
+      if (pendingResp?.count !== undefined) {
+        console.log(`   Total pending: ${pendingResp.count}`);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -351,18 +351,63 @@ async function main() {
         allPending !== null && allPending !== undefined,
         "getPendingApprovals returned a response"
       );
-      if (allPending?.approvals) {
-        assertCheck(Array.isArray(allPending.approvals), "Response has approvals array");
-        console.log(`   Approvals count: ${allPending.approvals.length}`);
+      if (allPending?.pending_approvals) {
+        assertCheck(Array.isArray(allPending.pending_approvals), "Response has pending_approvals array");
+        console.log(`   Approvals count: ${allPending.pending_approvals.length}`);
       }
-      if (allPending?.total !== undefined) {
-        assertCheck(typeof allPending.total === "number", "Response has numeric total count");
-        console.log(`   Total: ${allPending.total}`);
+      if (allPending?.count !== undefined) {
+        assertCheck(typeof allPending.count === "number", "Response has numeric count");
+        console.log(`   Total: ${allPending.count}`);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("403") || msg.includes("404") || msg.includes("enterprise") || msg.includes("not available") || msg.includes("license")) {
-        console.log("   SKIPPED: Pending approvals is an enterprise feature");
+        console.log("   SKIPPED: Pending approvals is an Evaluation+ feature");
+        console.log(`   (${msg})`);
+      } else {
+        throw error;
+      }
+    }
+    console.log();
+
+    // Step 9b: Get Pending Plan Approvals (MAP plane — Issue #1680)
+    // MAP-plane counterpart of getPendingApprovals. Returns only MAP-backed
+    // workflows (metadata has plan_id). Every entry carries plan_id
+    // populated — the one intentional asymmetry with the WCP listing.
+    console.log("Step 9b: Get Pending Plan Approvals (MAP plane — #1680)");
+    console.log("   Fetching MAP-plane pending approvals (plan_id populated on every entry)...");
+    try {
+      const mapPending = await axonflow.getPendingPlanApprovals();
+      assertCheck(
+        mapPending !== null && mapPending !== undefined,
+        "getPendingPlanApprovals returned a response"
+      );
+      if (mapPending?.pending_approvals) {
+        assertCheck(Array.isArray(mapPending.pending_approvals), "MAP-plane has pending_approvals array");
+        // Every MAP-plane entry must carry plan_id populated
+        for (let i = 0; i < mapPending.pending_approvals.length; i++) {
+          const entry = mapPending.pending_approvals[i];
+          assertCheck(
+            typeof entry.plan_id === "string" && entry.plan_id.length > 0,
+            `MAP entry ${i} must populate plan_id (got: ${JSON.stringify(entry.plan_id)})`
+          );
+        }
+        console.log(`   MAP-plane count: ${mapPending.pending_approvals.length}`);
+      }
+
+      // With plan_id filter
+      const filtered = await axonflow.getPendingPlanApprovals({
+        plan_id: "plan-does-not-exist-for-this-test",
+        limit: 5,
+      });
+      assertCheck(
+        filtered !== null && filtered !== undefined,
+        "getPendingPlanApprovals with plan_id filter returned cleanly"
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("403") || msg.includes("404") || msg.includes("enterprise") || msg.includes("not available") || msg.includes("license")) {
+        console.log("   SKIPPED: MAP-plane pending approvals is an Evaluation+ feature");
         console.log(`   (${msg})`);
       } else {
         throw error;
