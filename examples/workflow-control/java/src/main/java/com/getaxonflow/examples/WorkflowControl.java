@@ -35,8 +35,8 @@ import java.util.Map;
  * 2. Check step gates before each step
  * 3. Mark steps as completed
  * 4. Complete the workflow
- * 5. Approve/reject steps (enterprise feature)
- * 6. List pending approvals (enterprise feature)
+ * 5. Approve/reject steps (Evaluation+ feature)
+ * 6. List pending approvals (Evaluation+ feature)
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
@@ -309,12 +309,12 @@ public class WorkflowControl {
                 System.out.println("   Checking pending approvals...");
                 PendingApprovalsResponse pendingResp = client.getPendingApprovals();
                 assertCheck(pendingResp != null, "getPendingApprovals returned a response");
-                if (pendingResp.getApprovals() != null) {
+                if (pendingResp.getPendingApprovals() != null) {
                     assertCheck(true, "Pending approvals has items list");
-                    System.out.println("   Pending approvals count: " + pendingResp.getApprovals().size());
+                    System.out.println("   Pending approvals count: " + pendingResp.getPendingApprovals().size());
                 }
-                if (pendingResp.getTotal() >= 0) {
-                    System.out.println("   Total pending: " + pendingResp.getTotal());
+                if (pendingResp.getCount() >= 0) {
+                    System.out.println("   Total pending: " + pendingResp.getCount());
                 }
             } catch (Exception approvalEx) {
                 String approvalMsg = approvalEx.getMessage() != null ? approvalEx.getMessage() : "";
@@ -394,13 +394,13 @@ public class WorkflowControl {
             try {
                 PendingApprovalsResponse allPending = client.getPendingApprovals();
                 assertCheck(allPending != null, "getPendingApprovals returned a response");
-                if (allPending.getApprovals() != null) {
+                if (allPending.getPendingApprovals() != null) {
                     assertCheck(true, "Response has items list");
-                    System.out.println("   Items count: " + allPending.getApprovals().size());
+                    System.out.println("   Items count: " + allPending.getPendingApprovals().size());
                 }
-                if (allPending.getTotal() >= 0) {
-                    assertCheck(true, "Response has total count");
-                    System.out.println("   Total: " + allPending.getTotal());
+                if (allPending.getCount() >= 0) {
+                    assertCheck(true, "Response has count");
+                    System.out.println("   Total: " + allPending.getCount());
                 }
             } catch (Exception pendingEx) {
                 String pendingMsg = pendingEx.getMessage() != null ? pendingEx.getMessage() : "";
@@ -408,10 +408,53 @@ public class WorkflowControl {
                         || pendingMsg.contains("enterprise")
                         || pendingMsg.contains("not available") || pendingMsg.contains("license")
                         || pendingMsg.contains("not found")) {
-                    System.out.println("   SKIPPED: Pending approvals is an enterprise feature");
+                    System.out.println("   SKIPPED: Pending approvals is an Evaluation+ feature");
                     System.out.println("   (" + pendingMsg + ")");
                 } else {
                     throw pendingEx;
+                }
+            }
+            System.out.println();
+
+            // Test 9b: Get Pending Plan Approvals (MAP plane — Issue #1680)
+            // MAP-plane counterpart of getPendingApprovals. Returns only
+            // MAP-backed workflows (metadata has plan_id). Every entry carries
+            // planId populated — the one intentional asymmetry with the WCP
+            // listing.
+            System.out.println("Step 9b: Get Pending Plan Approvals (MAP plane — #1680)");
+            System.out.println("   Fetching MAP-plane pending approvals (planId populated on every entry)...");
+            try {
+                PendingApprovalsResponse mapPending = client.getPendingPlanApprovals();
+                assertCheck(mapPending != null, "getPendingPlanApprovals returned a response");
+                if (mapPending.getPendingApprovals() != null) {
+                    assertCheck(true, "MAP-plane has pendingApprovals list");
+                    // Every MAP-plane entry must carry planId populated
+                    for (int i = 0; i < mapPending.getPendingApprovals().size(); i++) {
+                        String planId = mapPending.getPendingApprovals().get(i).getPlanId();
+                        assertCheck(
+                            planId != null && !planId.isEmpty(),
+                            "MAP entry " + i + " must populate planId (got: " + planId + ")");
+                    }
+                    System.out.println("   MAP-plane items: " + mapPending.getPendingApprovals().size());
+                }
+                if (mapPending.getCount() >= 0) {
+                    System.out.println("   MAP-plane count: " + mapPending.getCount());
+                }
+
+                // With planId filter
+                PendingApprovalsResponse filtered =
+                    client.getPendingPlanApprovals(5, "plan-does-not-exist-for-this-test");
+                assertCheck(filtered != null, "getPendingPlanApprovals with planId filter returned cleanly");
+            } catch (Exception mapPendingEx) {
+                String mapMsg = mapPendingEx.getMessage() != null ? mapPendingEx.getMessage() : "";
+                if (mapMsg.contains("403") || mapMsg.contains("404")
+                        || mapMsg.contains("enterprise")
+                        || mapMsg.contains("not available") || mapMsg.contains("license")
+                        || mapMsg.contains("not found")) {
+                    System.out.println("   SKIPPED: MAP-plane pending approvals is an Evaluation+ feature");
+                    System.out.println("   (" + mapMsg + ")");
+                } else {
+                    throw mapPendingEx;
                 }
             }
             System.out.println();

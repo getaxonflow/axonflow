@@ -89,6 +89,44 @@ func (m *MockRepository) GetByID(ctx context.Context, workflowID string) (*Workf
 	return &copy, nil
 }
 
+// GetByPlanID looks up a workflow by metadata.plan_id — the in-memory mirror
+// of the Postgres metadata->>'plan_id' lookup used by the MAP HITL endpoints
+// (Issue #1677).
+func (m *MockRepository) GetByPlanID(ctx context.Context, planID string) (*Workflow, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var match *Workflow
+	for _, workflow := range m.workflows {
+		if len(workflow.Metadata) == 0 {
+			continue
+		}
+		var md map[string]interface{}
+		if err := json.Unmarshal(workflow.Metadata, &md); err != nil {
+			continue
+		}
+		if pid, _ := md["plan_id"].(string); pid == planID {
+			// Pick the most recently created workflow if multiple match.
+			if match == nil || workflow.CreatedAt.After(match.CreatedAt) {
+				match = workflow
+			}
+		}
+	}
+
+	if match == nil {
+		return nil, fmt.Errorf("plan %s: %w", planID, ErrWorkflowNotFound)
+	}
+
+	copy := *match
+	copy.Steps = make([]WorkflowStep, 0)
+	if steps, ok := m.steps[match.WorkflowID]; ok {
+		for _, step := range steps {
+			copy.Steps = append(copy.Steps, *step)
+		}
+	}
+	return &copy, nil
+}
+
 // UpdateStatus updates a workflow's status
 func (m *MockRepository) UpdateStatus(ctx context.Context, workflowID string, status WorkflowStatus) error {
 	m.mu.Lock()
@@ -456,6 +494,101 @@ func (m *MockRepository) CountPendingApprovals(ctx context.Context, tenantID str
 	for workflowID, steps := range m.steps {
 		workflow, ok := m.workflows[workflowID]
 		if !ok || (tenantID != "" && workflow.TenantID != tenantID) {
+			continue
+		}
+		for _, step := range steps {
+			if step.ApprovalStatus != nil && *step.ApprovalStatus == ApprovalStatusPending {
+				count++
+			}
+		}
+	}
+
+	return count, nil
+}
+
+// workflowPlanID extracts plan_id from a workflow's metadata, returning ""
+// when the field is absent or the metadata is not an object. In-memory mirror
+// of the Postgres `metadata->>'plan_id'` expression (Issue #1680).
+func workflowPlanID(w *Workflow) string {
+	if len(w.Metadata) == 0 {
+		return ""
+	}
+	var md map[string]interface{}
+	if err := json.Unmarshal(w.Metadata, &md); err != nil {
+		return ""
+	}
+	if pid, _ := md["plan_id"].(string); pid != "" {
+		return pid
+	}
+	return ""
+}
+
+// GetPendingPlanApprovals returns MAP-backed pending approvals (workflows
+// carrying a plan_id in metadata). Each entry has PlanID populated. When
+// planIDFilter is non-empty, results are scoped to that specific plan.
+func (m *MockRepository) GetPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string, limit int) ([]PendingApprovalResponse, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []PendingApprovalResponse
+
+	for workflowID, steps := range m.steps {
+		workflow, ok := m.workflows[workflowID]
+		if !ok || (tenantID != "" && workflow.TenantID != tenantID) {
+			continue
+		}
+		planID := workflowPlanID(workflow)
+		if planID == "" {
+			continue
+		}
+		if planIDFilter != "" && planID != planIDFilter {
+			continue
+		}
+
+		for _, step := range steps {
+			if step.ApprovalStatus != nil && *step.ApprovalStatus == ApprovalStatusPending {
+				result = append(result, PendingApprovalResponse{
+					WorkflowID:      step.WorkflowID,
+					WorkflowName:    workflow.WorkflowName,
+					PlanID:          planID,
+					StepID:          step.StepID,
+					StepIndex:       step.StepIndex,
+					StepName:        step.StepName,
+					StepType:        step.StepType,
+					Decision:        step.Decision,
+					DecisionReason:  step.DecisionReason,
+					PoliciesMatched: step.PoliciesMatched,
+					StepInput:       step.StepInput,
+					ApprovalStatus:  step.ApprovalStatus,
+					CreatedAt:       step.GateCheckedAt,
+				})
+				if limit > 0 && len(result) >= limit {
+					return result, nil
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// CountPendingPlanApprovals counts MAP-backed pending approvals for a tenant,
+// optionally scoped to a specific plan_id.
+func (m *MockRepository) CountPendingPlanApprovals(ctx context.Context, tenantID, planIDFilter string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for workflowID, steps := range m.steps {
+		workflow, ok := m.workflows[workflowID]
+		if !ok || (tenantID != "" && workflow.TenantID != tenantID) {
+			continue
+		}
+		planID := workflowPlanID(workflow)
+		if planID == "" {
+			continue
+		}
+		if planIDFilter != "" && planID != planIDFilter {
 			continue
 		}
 		for _, step := range steps {

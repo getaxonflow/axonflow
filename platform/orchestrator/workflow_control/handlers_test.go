@@ -1794,3 +1794,26 @@ func TestHandlerStepGateToolContextEmptyToolName(t *testing.T) {
 		t.Errorf("code = %v, want INVALID_TOOL_CONTEXT", response["code"])
 	}
 }
+
+// TestHandlerGetPendingApprovalsEmptyListSerialisesAsArray asserts that when
+// no pending approvals exist the WCP listing returns `pending_approvals: []`
+// rather than `pending_approvals: null`. Reviewer UIs rely on the array
+// shape; returning null forces defensive client code in every consumer.
+// Regression guard for the fix that aligns WCP with the MAP plane-scoped
+// listing (Issue #1680).
+func TestHandlerGetPendingApprovalsEmptyListSerialisesAsArray(t *testing.T) {
+	handler, _, _ := setupTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workflows/approvals/pending", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-empty")
+	rr := httptest.NewRecorder()
+	handler.GetPendingApprovals(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"pending_approvals":[]`) {
+		t.Errorf("empty result must serialise as [], not null; body = %s", body)
+	}
+}

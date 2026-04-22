@@ -295,7 +295,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: approve_step not available (enterprise feature): {e}")
+                        print(f"   SKIP: approve_step not available (Evaluation+ feature): {e}")
                     else:
                         failures.append(f"approve_step failed: {e}")
 
@@ -303,7 +303,7 @@ async def main() -> int:
                 try:
                     pending = await client.get_pending_approvals()
                     # After approval, this step should not be pending
-                    pending_step_ids = [item.step_id for item in pending.items] if pending.items else []
+                    pending_step_ids = [item.step_id for item in pending.pending_approvals]
                     assert_check(
                         "approval-step-1" not in pending_step_ids,
                         "Approved step not in pending approvals",
@@ -313,7 +313,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: get_pending_approvals not available (enterprise feature): {e}")
+                        print(f"   SKIP: get_pending_approvals not available (Evaluation+ feature): {e}")
                     else:
                         failures.append(f"get_pending_approvals after approve failed: {e}")
 
@@ -377,7 +377,7 @@ async def main() -> int:
                     if "403" in err_str or "enterprise" in err_str.lower() or \
                        "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                        "404" in err_str:
-                        print(f"   SKIP: reject_step not available (enterprise feature): {e}")
+                        print(f"   SKIP: reject_step not available (Evaluation+ feature): {e}")
                     else:
                         failures.append(f"reject_step failed: {e}")
 
@@ -399,27 +399,67 @@ async def main() -> int:
             try:
                 # Test with no options
                 pending_resp = await client.get_pending_approvals()
-                assert_check(pending_resp.items is not None, "PendingApprovals has items list")
-                assert_check(pending_resp.total >= 0, f"PendingApprovals total is non-negative (got: {pending_resp.total})")
-                print(f"   Total pending approvals: {pending_resp.total}")
-                print(f"   Items in response: {len(pending_resp.items)}")
+                assert_check(pending_resp.pending_approvals is not None, "PendingApprovals has pending_approvals list")
+                assert_check(pending_resp.count >= 0, f"PendingApprovals count is non-negative (got: {pending_resp.count})")
+                print(f"   Total pending approvals: {pending_resp.count}")
+                print(f"   Items in response: {len(pending_resp.pending_approvals)}")
 
-                # Test with limit and offset
-                pending_resp_opts = await client.get_pending_approvals(limit=10, offset=0)
-                assert_check(pending_resp_opts.items is not None, "PendingApprovals (with opts) has items list")
+                # Test with limit
+                pending_resp_opts = await client.get_pending_approvals(limit=10)
+                assert_check(pending_resp_opts.pending_approvals is not None, "PendingApprovals (with opts) has pending_approvals list")
                 assert_check(
-                    pending_resp_opts.total >= 0,
-                    f"PendingApprovals (with opts) total is non-negative (got: {pending_resp_opts.total})",
+                    pending_resp_opts.count >= 0,
+                    f"PendingApprovals (with opts) count is non-negative (got: {pending_resp_opts.count})",
                 )
-                print(f"   With limit=10, offset=0: total={pending_resp_opts.total}, items={len(pending_resp_opts.items)}")
+                print(f"   With limit=10: count={pending_resp_opts.count}, items={len(pending_resp_opts.pending_approvals)}")
             except Exception as e:
                 err_str = str(e)
                 if "403" in err_str or "enterprise" in err_str.lower() or \
                    "not available" in err_str.lower() or "not supported" in err_str.lower() or \
                    "404" in err_str:
-                    print(f"   SKIP: get_pending_approvals not available (enterprise feature): {e}")
+                    print(f"   SKIP: get_pending_approvals not available (Evaluation+ feature): {e}")
                 else:
                     failures.append(f"get_pending_approvals failed: {e}")
+            print()
+
+            # ========================================
+            # Test 9b: Get Pending Plan Approvals (MAP plane — Issue #1680)
+            # ========================================
+            # MAP-plane counterpart of get_pending_approvals. Returns only
+            # MAP-backed workflows (metadata has plan_id). Every entry carries
+            # plan_id populated — the one intentional asymmetry with WCP.
+            print("9b. Get Pending Plan Approvals (MAP plane — #1680)")
+            try:
+                map_pending = await client.get_pending_plan_approvals()
+                assert_check(
+                    map_pending.pending_approvals is not None,
+                    "get_pending_plan_approvals returns pending_approvals list",
+                )
+                assert_check(
+                    map_pending.count >= 0,
+                    f"MAP-plane count non-negative (got: {map_pending.count})",
+                )
+                # Every MAP-plane entry must carry plan_id populated
+                for i, entry in enumerate(map_pending.pending_approvals):
+                    assert_check(
+                        bool(entry.plan_id),
+                        f"MAP entry {i} must populate plan_id (got: {entry.plan_id!r})",
+                    )
+                print(f"   MAP-plane pending count: {map_pending.count}")
+
+                # With plan_id filter
+                _ = await client.get_pending_plan_approvals(
+                    limit=5, plan_id="plan-does-not-exist-for-this-test"
+                )
+                assert_check(True, "get_pending_plan_approvals with plan_id filter returned cleanly")
+            except Exception as e:
+                err_str = str(e)
+                if "403" in err_str or "enterprise" in err_str.lower() or \
+                   "not available" in err_str.lower() or "not supported" in err_str.lower() or \
+                   "404" in err_str or "license" in err_str.lower():
+                    print(f"   SKIP: get_pending_plan_approvals not available (Evaluation+ feature): {e}")
+                else:
+                    failures.append(f"get_pending_plan_approvals failed: {e}")
             print()
 
         except Exception as e:

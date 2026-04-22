@@ -571,9 +571,15 @@ func Run() {
 	r.HandleFunc("/api/v1/plan/{id}/resume", resumePlanHandler).Methods("POST")                      // ResumePlan (MAP v1.0, Enterprise)
 	r.HandleFunc("/api/v1/plan/{id}/rollback/{version:[0-9]+}", rollbackPlanHandler).Methods("POST") // RollbackPlan (MAP v1.0, Enterprise)
 
-	// MAP step approval endpoints (v4.3.0, Enterprise — #1076)
+	// MAP step approval endpoints (v4.3.0, Enterprise — #1076; tier lowered
+	// to Evaluation+ in v7.4.0 — #1677).
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/approve", mapStepApproveHandler).Methods("POST")
 	r.HandleFunc("/api/v1/plans/{id}/steps/{step_id}/reject", mapStepRejectHandler).Methods("POST")
+	// MAP plane-scoped pending approvals listing — the MAP counterpart of the
+	// WCP /api/v1/workflows/approvals/pending endpoint (Issue #1680). Tier
+	// gate is enforced inside the handler (IsHITLApprovalEnabled) to match
+	// approve/reject semantics.
+	r.HandleFunc("/api/v1/plans/approvals/pending", mapPendingApprovalsHandler).Methods("GET", "OPTIONS")
 
 	// Cost Estimation endpoints (v4.3.0)
 	r.HandleFunc("/api/v1/plans/estimate", estimatePlanCostHandler).Methods("POST") // EstimatePlanCost

@@ -4009,9 +4009,28 @@ paths:
               example:
                 workflow_id: "wf_abc123"
                 step_id: "step-2"
-                decision: "approved"
-                decided_by: "user-456"
-                decided_at: "2026-01-17T10:05:00Z"
+                status: "approved"
+                decision: "allow"
+                reason: "Approved: High-value transfer requires oversight"
+                approval_status: "approved"
+                approval_id: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
+                approved_by: "fraud.analyst@banking.example"
+                approved_at: "2026-04-22T10:05:00Z"
+                policies_matched:
+                  - policy_id: "high-value-wire-oversight"
+                    policy_name: "High-Value Wire Transfer Oversight"
+                    action: "require_approval"
+                retry_context:
+                  gate_count: 1
+                  completion_count: 0
+                  prior_completion_status: "none"
+                  prior_output_available: false
+                  prior_output: null
+                  idempotency_key: "payment-intent-123"
+                  last_decision: "require_approval"
+                  first_attempt_at: "2026-04-22T10:00:00Z"
+                  last_attempt_at: "2026-04-22T10:00:00Z"
+                message: "Step approved"
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -4077,10 +4096,28 @@ paths:
               example:
                 workflow_id: "wf_abc123"
                 step_id: "step-2"
-                decision: "rejected"
-                reason: "Output contains PII that was not redacted"
-                decided_by: "user-456"
-                decided_at: "2026-01-17T10:05:00Z"
+                status: "rejected"
+                decision: "block"
+                reason: "Rejected: Output contains PII that was not redacted"
+                approval_status: "rejected"
+                approval_id: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
+                rejected_by: "fraud.analyst@banking.example"
+                rejected_at: "2026-04-22T10:05:00Z"
+                policies_matched:
+                  - policy_id: "pii-output-redaction"
+                    policy_name: "PII Redaction Required"
+                    action: "require_approval"
+                retry_context:
+                  gate_count: 1
+                  completion_count: 0
+                  prior_completion_status: "none"
+                  prior_output_available: false
+                  prior_output: null
+                  idempotency_key: ""
+                  last_decision: "require_approval"
+                  first_attempt_at: "2026-04-22T10:00:00Z"
+                  last_attempt_at: "2026-04-22T10:00:00Z"
+                message: "Step rejected, workflow aborted"
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -4093,35 +4130,174 @@ paths:
                 success: false
                 error: "Step step-2 is not awaiting approval"
 
+  /api/v1/plans/{planId}/steps/{stepId}/approve:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Approve a MAP plan step (HITL parity with WCP)
+      description: |
+        Plan-scoped approval endpoint. Returns the same `ApprovalResponse`
+        shape as the WCP endpoint (`/api/v1/workflows/{id}/steps/{step_id}/approve`)
+        plus a `plan_id` field — see ADR-046 (HITL response parity).
+
+        Two underlying flows, identical response:
+        - MAP **confirm** / **step** modes — backed by a WCP workflow; the
+          handler delegates to the WCP service and projects the full
+          `retry_context`, approver metadata, and `policies_matched`.
+        - MAP **legacy** in-memory flow (policy-driven pause/resume, no WCP
+          workflow registered) — handler falls back to the in-memory
+          execution store and projects a minimal response with
+          `retry_context` zero-valued and `approval_id` from the execution
+          record.
+      operationId: approveMAPPlanStep
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          description: MAP plan ID
+          schema:
+            type: string
+          example: "plan-abc123"
+        - name: stepId
+          in: path
+          required: true
+          description: Step ID awaiting approval
+          schema:
+            type: string
+          example: "step_0_analyze"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                approved_by:
+                  type: string
+                  description: Identity approving the step (overrides X-User-ID header)
+                comment:
+                  type: string
+                  description: Audit justification. Required on WCP-backed plans (min 10 chars); if shorter, the handler auto-fills a generated audit message.
+            example:
+              approved_by: "fraud.analyst@banking.example"
+              comment: "Approved after full audit review of the payment intent"
+      responses:
+        '200':
+          description: Step approved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+              example:
+                workflow_id: "wf_abc123"
+                plan_id: "plan-abc123"
+                step_id: "step_0_analyze"
+                status: "approved"
+                decision: "allow"
+                reason: "Approved: High-value transfer requires oversight"
+                approval_status: "approved"
+                approval_id: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
+                approved_by: "fraud.analyst@banking.example"
+                approved_at: "2026-04-22T10:05:00Z"
+                policies_matched:
+                  - policy_id: "high-value-wire-oversight"
+                    policy_name: "High-Value Wire Transfer Oversight"
+                    action: "require_approval"
+                retry_context:
+                  gate_count: 1
+                  completion_count: 0
+                  prior_completion_status: "none"
+                  prior_output_available: false
+                  prior_output: null
+                  idempotency_key: "payment-intent-123"
+                  last_decision: "require_approval"
+                  first_attempt_at: "2026-04-22T10:00:00Z"
+                  last_attempt_at: "2026-04-22T10:00:00Z"
+                message: "Step approved"
+        '403':
+          description: MAP step approval requires Enterprise license (community mode)
+        '404':
+          description: No paused execution / plan step found
+        '503':
+          description: HITL is not enabled in the orchestrator configuration
+
+  /api/v1/plans/{planId}/steps/{stepId}/reject:
+    post:
+      tags:
+        - Multi-Agent Planning
+      summary: Reject a MAP plan step (HITL parity with WCP)
+      description: |
+        Plan-scoped rejection endpoint. Symmetric with the WCP endpoint
+        (`/api/v1/workflows/{id}/steps/{step_id}/reject`) — same response
+        shape (`ApprovalResponse`) plus `plan_id`. See ADR-046.
+
+        Rejection aborts the workflow / plan. On WCP-backed plans the WCP
+        service's `RejectStep` handles the abort; on the legacy in-memory
+        flow, the HITL workflow engine's `AbortExecution` handles it.
+      operationId: rejectMAPPlanStep
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: stepId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rejected_by:
+                  type: string
+                reason:
+                  type: string
+                  description: Audit justification. Required on WCP-backed plans (min 10 chars); auto-filled otherwise.
+            example:
+              rejected_by: "fraud.analyst@banking.example"
+              reason: "Output contains PII that was not redacted"
+      responses:
+        '200':
+          description: Step rejected successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+        '403':
+          description: MAP step rejection requires Enterprise license
+        '404':
+          description: No paused execution / plan step found
+        '503':
+          description: HITL is not enabled
+
   /api/v1/workflows/approvals/pending:
     get:
       tags:
         - Workflow Control Plane
-      summary: List pending approvals
+      summary: List pending approvals (WCP plane)
       description: |
-        List all workflow steps that are currently awaiting human approval.
-        Returns steps across all active workflows for the current tenant.
+        List workflow steps currently awaiting human approval for the caller's
+        tenant (all planes). Cross-reference the MAP-plane equivalent at
+        `/api/v1/plans/approvals/pending`, which scopes to MAP-backed
+        workflows and populates `plan_id` on every entry.
+
+        Available on Evaluation+ licenses. Community without an Evaluation
+        license has no approval queue to list.
       operationId: listPendingApprovals
       parameters:
-        - name: workflow_id
-          in: query
-          description: Filter by workflow ID
-          schema:
-            type: string
         - name: limit
           in: query
           description: Maximum number of results to return
           schema:
             type: integer
-            default: 50
+            default: 20
             minimum: 1
             maximum: 100
-        - name: offset
-          in: query
-          description: Number of results to skip
-          schema:
-            type: integer
-            default: 0
       responses:
         '200':
           description: List of pending approvals
@@ -4130,22 +4306,86 @@ paths:
               schema:
                 $ref: '#/components/schemas/PendingApprovalsResponse'
               example:
-                approvals:
+                pending_approvals:
                   - workflow_id: "wf_abc123"
                     workflow_name: "code-review-pipeline"
                     step_id: "step-2"
+                    step_index: 1
                     step_name: "Deploy to Production"
                     step_type: "action"
-                    requested_at: "2026-01-17T10:00:00Z"
-                    reason: "Human approval required for deployment steps"
-                  - workflow_id: "wf_def456"
-                    workflow_name: "data-processing"
-                    step_id: "step-1"
-                    step_name: "Export Customer Data"
-                    step_type: "connector_call"
-                    requested_at: "2026-01-17T09:45:00Z"
-                    reason: "Customer data export requires approval"
-                total: 2
+                    decision: "require_approval"
+                    decision_reason: "Human approval required for deployment steps"
+                    approval_status: "pending"
+                    created_at: "2026-04-22T10:00:00Z"
+                count: 1
+        '400':
+          description: Tenant ID missing from request
+        '403':
+          description: Tier does not permit approval listing
+
+  /api/v1/plans/approvals/pending:
+    get:
+      tags:
+        - MAP
+        - Workflow Control Plane
+      summary: List pending approvals (MAP plane)
+      description: |
+        List steps currently awaiting human approval for MAP-backed workflows —
+        workflows whose metadata carries a `plan_id` (MAP confirm / step mode).
+        Every returned entry has `plan_id` populated; this is the intentional
+        asymmetry with the WCP-plane listing at
+        `/api/v1/workflows/approvals/pending`, mirroring the approve/reject
+        asymmetry established in Issue #1677 / ADR-046.
+
+        Reviewer integrators that need to render plan context can read
+        `plan_id` directly without a second lookup; clients that want a
+        plane-neutral view can use `/api/v1/hitl/queue` instead.
+
+        Available on Evaluation+ licenses (same tier gate as the MAP
+        `/steps/{step_id}/approve` and `/steps/{step_id}/reject` endpoints).
+      operationId: listPendingPlanApprovals
+      parameters:
+        - name: plan_id
+          in: query
+          description: Filter to a single plan_id — returns only steps waiting on that plan.
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: List of pending plan approvals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingApprovalsResponse'
+              example:
+                pending_approvals:
+                  - workflow_id: "wf_map_abc"
+                    workflow_name: "map-confirm-plan-abc123"
+                    plan_id: "plan-abc123"
+                    step_id: "step_0_analyze"
+                    step_index: 0
+                    step_name: "Analyze customer transaction"
+                    step_type: "tool_call"
+                    decision: "require_approval"
+                    decision_reason: "High-value transaction requires review"
+                    approval_status: "pending"
+                    created_at: "2026-04-22T10:00:00Z"
+                count: 1
+        '400':
+          description: Tenant ID missing from request
+        '403':
+          description: License tier does not permit approval listing (community without Evaluation license)
+        '503':
+          description: Workflow control plane unavailable
 
   /api/v1/connectors:
     get:
@@ -7671,78 +7911,179 @@ components:
     # WCP Approval Schemas
     ApprovalResponse:
       type: object
-      description: Response after approving or rejecting a workflow step
+      description: |
+        Rich response returned by the WCP `/approve` and `/reject` endpoints
+        and by the MAP plan-scoped equivalents
+        (`/api/v1/plans/{id}/steps/{step_id}/approve|reject`). Both planes
+        project through the same helper — see ADR-046 (HITL response parity)
+        and ADR-045 (retry_context wire contract).
+
+        `decision` resolves to `allow` on a successful approval (the step can
+        now proceed) or `block` on rejection (workflow aborted). `plan_id` is
+        populated only on MAP-plane responses; on WCP-plane responses it is
+        omitted. `retry_context` is always present and mirrors the StepGate
+        `retry_context` shape.
       properties:
         workflow_id:
           type: string
-          description: Workflow identifier
+          description: Underlying WCP workflow identifier
           example: "wf_abc123"
+        plan_id:
+          type: string
+          description: |
+            MAP plan id — present on MAP-plane responses. Omitted on WCP-plane
+            responses (WCP has no plan concept).
+          example: "plan-42"
         step_id:
           type: string
           description: Step that was approved or rejected
           example: "step-2"
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+          description: |
+            Flat string alias of `approval_status`. Both fields always carry
+            the same value — `status` is convenient for loggers, dashboards,
+            and clients that prefer a simple string; `approval_status` is the
+            typed source of truth. First-class on both the WCP and MAP
+            response shapes so existing clients reading either field keep
+            working without branching.
+          example: "approved"
         decision:
           type: string
-          enum: [approved, rejected]
-          description: The approval decision
-          example: "approved"
+          enum: [allow, block, require_approval]
+          description: |
+            Post-approval decision. Approved `require_approval` steps resolve
+            to `allow`; rejected to `block`. `require_approval` on an
+            approve/reject response means the step is still pending.
+          example: "allow"
         reason:
           type: string
-          description: Reason for the decision (primarily for rejections)
-        decided_by:
+          description: |
+            Decision reason text. Approved / rejected responses prefix the
+            original policy reason with `Approved:` or `Rejected:`.
+          example: "Approved: High-value transfer requires oversight"
+        approval_status:
           type: string
-          description: User ID who made the decision
-          example: "user-456"
-        decided_at:
+          enum: [pending, approved, rejected]
+          description: Terminal approval status after the mutation landed
+          example: "approved"
+        approval_id:
+          type: string
+          format: uuid
+          description: |
+            Deterministic HITL queue entry UUID (UUID v5 over
+            `(workflow_id, step_id)`). Matches the queue row written by the
+            WCP HITL adapter. Empty on the legacy in-memory MAP flow when no
+            queue row exists.
+          example: "318a270f-7b42-5c56-a191-8dbd1bf2e1e4"
+        approved_by:
+          type: string
+          description: Identity (X-User-ID, typically email) that approved the step
+          example: "fraud.analyst@banking.example"
+        approved_at:
           type: string
           format: date-time
-          description: When the decision was made
+          description: Timestamp when the approval was persisted
+        rejected_by:
+          type: string
+          description: Identity that rejected the step (rejection path only)
+          example: "fraud.analyst@banking.example"
+        rejected_at:
+          type: string
+          format: date-time
+          description: Timestamp when the rejection was persisted
+        policies_matched:
+          type: array
+          description: Policies that triggered the original `require_approval` decision
+          items:
+            $ref: '#/components/schemas/PolicyMatch'
+        retry_context:
+          $ref: '#/components/schemas/RetryContext'
+        message:
+          type: string
+          description: Human-readable status summary
+          example: "Step approved"
 
     PendingApproval:
       type: object
-      description: A workflow step awaiting human approval
+      description: |
+        A workflow step awaiting human approval. Returned by both
+        `/api/v1/workflows/approvals/pending` (WCP plane) and
+        `/api/v1/plans/approvals/pending` (MAP plane). The `plan_id` field is
+        the one intentional asymmetry between the two planes — populated on
+        MAP-plane responses, omitted on WCP-plane responses.
       properties:
         workflow_id:
           type: string
-          description: Workflow identifier
+          description: WCP workflow identifier.
           example: "wf_abc123"
         workflow_name:
           type: string
-          description: Human-readable workflow name
+          description: Human-readable workflow name.
           example: "code-review-pipeline"
+        plan_id:
+          type: string
+          description: |
+            MAP plan identifier. Populated on the MAP-plane listing
+            (`/api/v1/plans/approvals/pending`); omitted (omitempty) on the
+            WCP-plane listing.
+          example: "plan-abc123"
         step_id:
           type: string
-          description: Step awaiting approval
+          description: Step awaiting approval.
           example: "step-2"
+        step_index:
+          type: integer
+          description: Zero-based index of the step within the workflow.
+          example: 1
         step_name:
           type: string
-          description: Human-readable step name
+          description: Human-readable step name.
           example: "Deploy to Production"
         step_type:
           type: string
           enum: [llm_call, tool_call, connector_call, human_task, synthesis, action, gate]
-          description: Type of step operation
+          description: Type of step operation.
           example: "action"
-        requested_at:
+        decision:
+          type: string
+          enum: [allow, block, require_approval]
+          description: Gate decision that paused the step — always `require_approval` for pending entries.
+          example: "require_approval"
+        decision_reason:
+          type: string
+          description: Why approval is required.
+          example: "Human approval required for deployment steps"
+        policies_matched:
+          type: array
+          description: Policies that triggered the approval requirement.
+          items:
+            type: object
+        step_input:
+          type: object
+          description: Step input payload (may be redacted by PII rules).
+        approval_status:
+          type: string
+          enum: [pending, approved, rejected]
+          description: Current approval state — `pending` for listed entries.
+          example: "pending"
+        created_at:
           type: string
           format: date-time
-          description: When approval was requested
-        reason:
-          type: string
-          description: Why approval is required
-          example: "Human approval required for deployment steps"
+          description: Time of the first /gate call that paused the step.
 
     PendingApprovalsResponse:
       type: object
-      description: List of pending approvals across workflows
+      description: List of pending approvals across workflows for the caller's tenant.
       properties:
-        approvals:
+        pending_approvals:
           type: array
           items:
             $ref: '#/components/schemas/PendingApproval'
-        total:
+        count:
           type: integer
-          description: Total number of pending approvals
+          description: Total number of pending approvals matching the scope.
 
     # Webhook Schemas
     CreateWebhookRequest:

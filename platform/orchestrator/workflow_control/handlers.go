@@ -630,13 +630,19 @@ func (h *Handler) ApproveStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"workflow_id":     workflowID,
-		"step_id":         stepID,
-		"approval_status": ApprovalStatusApproved,
-		"approved_by":     approvedBy,
-		"message":         "Step approved",
-	})
+	// Project the rich StepGateHTTPResponse — same helper that MAP calls, so
+	// cross-plane parity is structural rather than hand-maintained (Issue #1677).
+	step, err := h.service.GetStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r))
+	if err != nil {
+		// Post-approval fetch failure shouldn't fail the approval; surface the
+		// minimal response but log loudly so it's observable.
+		h.logger.Printf("[WorkflowControl] ApproveStep post-fetch error for %s/%s: %v", workflowID, stepID, err)
+		h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", nil, ApproverMeta{}, "Step approved", false))
+		return
+	}
+
+	approver := ApproverMeta{ApprovalID: deriveHITLApprovalID(workflowID, stepID)}
+	h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", step, approver, "Step approved", false))
 }
 
 // RejectStep handles POST /api/v1/workflows/{id}/steps/{step_id}/reject (Enterprise)
@@ -696,13 +702,17 @@ func (h *Handler) RejectStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, map[string]interface{}{
-		"workflow_id":     workflowID,
-		"step_id":         stepID,
-		"approval_status": ApprovalStatusRejected,
-		"rejected_by":     rejectedBy,
-		"message":         "Step rejected, workflow aborted",
-	})
+	// Rich response via the shared projector — same shape as ApproveStep so
+	// cross-plane parity stays structural (Issue #1677).
+	step, err := h.service.GetStep(r.Context(), workflowID, stepID, h.getClientID(r), h.getOrgID(r))
+	if err != nil {
+		h.logger.Printf("[WorkflowControl] RejectStep post-fetch error for %s/%s: %v", workflowID, stepID, err)
+		h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", nil, ApproverMeta{}, "Step rejected, workflow aborted", false))
+		return
+	}
+
+	approver := ApproverMeta{ApprovalID: deriveHITLApprovalID(workflowID, stepID)}
+	h.writeJSON(w, http.StatusOK, ProjectStepGateToHTTP(workflowID, "", step, approver, "Step rejected, workflow aborted", false))
 }
 
 // GetPendingApprovals handles GET /api/v1/workflows/approvals/pending (Enterprise)
@@ -737,6 +747,13 @@ func (h *Handler) GetPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		h.logger.Printf("[WorkflowControl] CountPendingApprovals error: %v", countErr)
 		// Fall back to len(steps) if count query fails
 		totalCount = len(steps)
+	}
+
+	// Emit an empty list instead of nil so JSON stays `[]` not `null` —
+	// reviewer UIs rely on the array shape. Matches the MAP plane-scoped
+	// listing's behavior (Issue #1680).
+	if steps == nil {
+		steps = []PendingApprovalResponse{}
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]interface{}{

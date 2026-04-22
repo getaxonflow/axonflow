@@ -212,9 +212,17 @@ type WorkflowStep struct {
 
 // PendingApprovalResponse is the shape returned by the pending approvals API.
 // It extends WorkflowStep with workflow-level fields needed for UI display.
+//
+// The plan_id field is the single intentional asymmetry between the WCP and
+// MAP pending-approvals endpoints (Issue #1680). WCP's
+// /api/v1/workflows/approvals/pending emits entries with plan_id unset
+// (omitempty suppresses it on the wire); MAP's /api/v1/plans/approvals/pending
+// emits entries with plan_id populated from workflows.metadata->>'plan_id'.
+// This mirrors the approve/reject asymmetry codified in ADR-046.
 type PendingApprovalResponse struct {
 	WorkflowID      string          `json:"workflow_id"`
 	WorkflowName    string          `json:"workflow_name"`
+	PlanID          string          `json:"plan_id,omitempty"`
 	StepID          string          `json:"step_id"`
 	StepIndex       int             `json:"step_index"`
 	StepName        string          `json:"step_name,omitempty"`
