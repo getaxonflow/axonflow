@@ -7,7 +7,7 @@
     "start": "npx tsx provider-routing.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^5.5.0"
+    "@axonflow/sdk": "^5.6.0"
   },
   "devDependencies": {
     "typescript": "^5.3.0",
