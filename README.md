@@ -96,7 +96,9 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **[Full Documentation](https://docs.getaxonflow.com)** · **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · **[API Reference](./docs/api/)**
 
-**2-minute demo:** See AxonFlow enforcing runtime policies and execution control in a real workflow — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
+**Community Quickstart Demo (Code + Terminal, 2.5 min):** Governed calls, PII block, Gateway Mode with LangChain/CrewAI, and MAP from YAML — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
+
+**Runtime Control Demo (Portal + Workflow, 3 min):** Want the product/runtime view? See approvals, retry safety, execution state, and the audit viewer in action — [Watch on YouTube](https://youtu.be/6UatGpn7KwE)
 
 **Architecture deep dive (12 min):** How the control plane works, policy enforcement flow, and multi-agent planning — [Watch on YouTube](https://youtu.be/Q2CZ1qnquhg)
 
@@ -139,7 +141,7 @@ This creates a WCP workflow, runs step-level gate checks, records a step ledger,
 
 ## Quick Start
 
-If you want to see how this looks before setting it up, here's a short demo: [2-minute walkthrough](https://youtu.be/BSqU1z0xxCo)
+If you want to see how this looks before setting it up, here's a short demo: [Community Quickstart walkthrough (2.5 min)](https://youtu.be/BSqU1z0xxCo)
 
 **Prerequisites:** [Docker Desktop](https://docs.docker.com/get-docker/) installed and running.
 
