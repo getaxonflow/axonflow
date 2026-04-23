@@ -145,10 +145,17 @@ type StepStatus struct {
 	DecisionReason  string       `json:"decision_reason,omitempty"`
 	PoliciesMatched []string     `json:"policies_matched,omitempty"`
 
-	// Approval (WCP-specific, but included for unified schema)
+	// Approval (WCP-specific, but included for unified schema).
+	// approved_by / approved_at are populated on the approval path; rejected_by
+	// / rejected_at on the rejection path. The two pairs are mutually exclusive
+	// at projection time even though the underlying workflow_steps row stores
+	// the reviewer identity in a single shared column — the split mirrors
+	// workflow_control.ProjectStepGateToHTTP so UIs can key off approval_status.
 	ApprovalStatus *ApprovalStatus `json:"approval_status,omitempty"`
 	ApprovedBy     string          `json:"approved_by,omitempty"`
 	ApprovedAt     *time.Time      `json:"approved_at,omitempty"`
+	RejectedBy     string          `json:"rejected_by,omitempty"`
+	RejectedAt     *time.Time      `json:"rejected_at,omitempty"`
 
 	// LLM/Provider info
 	Model    string `json:"model,omitempty"`

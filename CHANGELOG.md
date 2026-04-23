@@ -10,6 +10,137 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [7.4.1] - 2026-04-23 — Portal HITL + audit trail fixes
+
+PATCH: portal-visible bugs fixed around human approval visibility —
+approver identity on the execution timeline, Compliance Summary card
+aggregates, HITL audit trail row emission, workflow-level aborted
+status propagation, stale-snapshot reconciliation for pre-patch
+workflows, and a sidebar badge refresh on approve/reject. Platform-only
+release — no SDK or plugin changes. All fixes hit the same HITL audit
+and approval visibility story so operators can answer "who approved
+what, when, and did the compliance summary count it?" without joining
+three tables.
+
+### Community
+
+#### Fixed
+
+- **Unified execution step now distinguishes approver from rejector.**
+  The unified execution API (`/api/v1/unified/executions/{id}`)
+  populated `approved_by` with the rejector's email on rejected steps
+  because the serializer projected `workflow_steps.approved_by`
+  verbatim regardless of terminal state. The step serializer now
+  splits into `approved_by` / `approved_at` on the approval path and
+  `rejected_by` / `rejected_at` on the rejection path, mirroring the
+  split already done by `workflow_control.ProjectStepGateToHTTP` on
+  the WCP HTTP response. `execution.StepStatus` gains two new fields
+  (`RejectedBy`, `RejectedAt`).
+- **`/api/v1/audit/summary` returns six card-view aggregates.** The
+  response previously emitted `total_events` / `by_severity` /
+  `by_action` / `top_policies` / `compliance_score` — the handler
+  now additionally computes and returns `total_requests`,
+  `allowed_requests`, `blocked_requests`, `modified_requests`,
+  `block_rate_percent`, `avg_latency_ms`. Legacy fields retained for
+  back-compat. Block rate is derived from the allowed/blocked/modified
+  counts; average latency is a separate query over `response_time_ms`
+  excluding rows where latency wasn't measured (HITL decisions,
+  workflow-lifecycle events).
+- **Compliance Summary arithmetic always closes.** The summary
+  handler previously only counted `allowed` / `blocked` / `redacted`
+  decisions explicitly; `pending_approval` (from `workflow_step_gate`
+  rows where HITL fires require_approval) and `error` decisions were
+  dropped between the buckets, so `total_requests` could exceed
+  `allowed_requests + blocked_requests + modified_requests` by the
+  number of orphan rows. Now every non-blocked, non-redacted decision
+  rolls into Allowed — Total = Allowed + Blocked + Modified is
+  always true. `pending_approval` counts as allowed because the
+  policy didn't block; the subsequent human decision writes its own
+  `workflow_step_approved` / `workflow_step_rejected` row.
+- **Historical workflows decided before v7.4.1 deployed now render
+  their terminal approval state.** The unified-execution cache was
+  written at `/gate` time (approval_status=pending) and pre-v7.4.1
+  approve/reject paths did not re-sync it — so any workflow decided
+  before the fix deployed would forever show "Approval: pending" on
+  the execution API. `GetWorkflowStatus` now reconciles cached step
+  snapshots against current `workflow_steps` state on every read via
+  a new `reconcileStepApprovals` helper. Steps present in the cache
+  but absent from the fresh rows are left untouched so partial WCP
+  state can't clobber the cache; WCP fetch failure falls back to the
+  cached snapshot.
+
+### Evaluation
+
+#### Fixed
+
+- **WCP step approve + reject now emit rows in `audit_logs`.** The
+  WCP step-approve/reject endpoints
+  (`/api/v1/workflows/{id}/steps/{step_id}/approve|reject`, Evaluation+)
+  previously updated `workflow_steps.approval_status` and fired a
+  webhook but never wrote to `audit_logs`, so any audit pipeline that
+  reads `audit_logs` had no trace of approvals or rejections — rejected
+  steps never appeared as "Blocked" rows, compliance summaries ignored
+  the events, and operator dashboards showed "N/A" under user. Both
+  paths now write an `audit_logs` row via the existing
+  `WorkflowAuditEntry` pipeline with `request_type="workflow_step_approved"`
+  / `"workflow_step_rejected"`, `policy_decision="allowed"` on approve
+  / `"blocked"` on reject, and the reviewer's `X-User-Email` populated
+  on `user_email`. `WorkflowAuditEntry` gains `UserEmail` / `UserRole`
+  so reviewer identity carries through the audit adapter end-to-end.
+- **Reject propagates the aborted status to the unified execution
+  tracker.** `RejectStep` flipped `workflow_steps.approval_status`
+  and called `repo.Abort(...)` on the workflow, but never notified
+  `executionTracker.OnWorkflowAborted(...)`. `GetWorkflowStatus`
+  prefers the cached unified execution when one exists, so
+  `/api/v1/unified/executions/{id}` kept reporting the overall
+  execution as running/pending even though the rejection had already
+  aborted the workflow. Now calls `OnWorkflowAborted` after the abort
+  succeeds — only when the abort actually landed, so we don't lie
+  about workflow state on an abort failure.
+
+### Enterprise
+
+#### Fixed
+
+- **HITL queue approve + reject now emit rows in `audit_logs`.** The
+  Enterprise HITL queue endpoints
+  (`/api/v1/hitl/queue/{id}/approve|reject`) previously wrote only to
+  `hitl_approval_history` (the immutable compliance audit trail), so
+  the audit-logs-based portal audit page had no trace of queue-driven
+  approvals/rejections — the USER / TENANT column showed "N/A" and
+  rejections never appeared as "Blocked" rows. Both paths now write
+  an `audit_logs` row via a new `Repository.WriteHITLAuditEvent`
+  helper with `request_type="workflow_step_gate"`,
+  `policy_decision="allowed"` on approve / `"blocked"` on reject,
+  the reviewer's email and role populated, and `workflow_id` /
+  `step_id` / `request_id` / `policy_name` in `policy_details`. Write
+  is best-effort — a DB failure does not fail the mutation because
+  `hitl_approval_history` remains the authoritative record.
+- **Portal execution timeline renders rejector identity correctly.**
+  The portal execution page already read `approved_by` and
+  `rejected_by` as separate fields, but the Community-side serializer
+  only populated `approved_by` — so a rejected step appeared as
+  "approved by \<rejector\>". Paired with the Community-side split
+  above, the timeline now renders "Approval: rejected by \<email\>
+  on \<date\>" when `approval_status=rejected` and the approved
+  variant when approved, suppressing the other field in each case.
+  `ExecutionStep` on the portal API client gains `rejected_by` /
+  `rejected_at`.
+- **Sidebar approvals badge refreshes immediately after approve or
+  reject in the same tab.** The Navigation component polls
+  `getPendingApprovals` every 30 s. When a reviewer approved or
+  rejected from the side panel, the approvals list removed the row
+  optimistically but the `1` badge next to "Approvals" in the sidebar
+  lingered until the next poll — visually making the queue look
+  unreclaimed. The approvals page now dispatches an
+  `approvals:updated` CustomEvent on success; Navigation listens and
+  re-fetches immediately. Event listener cleaned up on unmount
+  alongside the polling interval. Cross-tab approvals (second browser
+  window, SDK, or CLI) still fall back to the 30 s poll — same-tab
+  only is the scope of this fix.
+
+---
+
 ## [7.4.0] - 2026-04-22 — HITL Response Parity
 
 MINOR: both HITL planes now return the same rich response shape, MAP's

@@ -45,7 +45,9 @@ func (t *WCPExecutionTracker) SetCostEstimator(ce PlanCostEstimator) {
 func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workflow *workflow_control.Workflow) (*execution.ExecutionStatus, error) {
 	// Create steps from workflow steps if available
 	steps := make([]execution.StepStatus, len(workflow.Steps))
-	for i, step := range workflow.Steps {
+	for i := range workflow.Steps {
+		step := workflow.Steps[i]
+		approvedBy, approvedAt, rejectedBy, rejectedAt := projectApproverIdentity(&step)
 		steps[i] = execution.StepStatus{
 			StepID:          step.StepID,
 			StepIndex:       step.StepIndex,
@@ -56,7 +58,10 @@ func (t *WCPExecutionTracker) StartWorkflowExecution(ctx context.Context, workfl
 			DecisionReason:  step.DecisionReason,
 			PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
 			ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
-			ApprovedBy:      step.ApprovedBy,
+			ApprovedBy:      approvedBy,
+			ApprovedAt:      approvedAt,
+			RejectedBy:      rejectedBy,
+			RejectedAt:      rejectedAt,
 			Model:           step.Model,
 			Provider:        step.Provider,
 			TokensIn:        step.TokensIn,
@@ -114,7 +119,23 @@ func (t *WCPExecutionTracker) GetWorkflowStatus(ctx context.Context, workflowID 
 	// Look up execution by workflow_id metadata (indexed lookup)
 	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
 	if err == nil {
-		return t.GetStatus(ctx, exec.ExecutionID)
+		status, gerr := t.GetStatus(ctx, exec.ExecutionID)
+		if gerr != nil {
+			return nil, gerr
+		}
+		// Reconcile cached step snapshots against the current workflow_steps
+		// state on every read. The cache was written at /gate time
+		// (approval_status=pending) and pre-v7.4.1 approve/reject paths did
+		// not re-sync it. Without this merge, historical workflows
+		// approved/rejected before the fix deployed would forever show
+		// "Approval: pending" on the portal timeline. Best-effort — a WCP
+		// fetch failure falls back to the cached snapshot.
+		if t.wcpService != nil && len(status.Steps) > 0 {
+			if wf, werr := t.wcpService.GetWorkflow(ctx, workflowID, "", ""); werr == nil && wf != nil {
+				reconcileStepApprovals(status.Steps, wf.Steps)
+			}
+		}
+		return status, nil
 	}
 	if !errors.Is(err, execution.ErrExecutionNotFound) {
 		return nil, err
@@ -195,6 +216,14 @@ func (t *WCPExecutionTracker) OnWorkflowCreated(ctx context.Context, workflow *w
 	return err
 }
 
+// OnStepApproval implements WorkflowExecutionTracker.OnStepApproval. Updates
+// the step in place rather than appending — the gate already appended a
+// snapshot with approval_status=pending; approve/reject needs to overwrite
+// that, not create a second entry.
+func (t *WCPExecutionTracker) OnStepApproval(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {
+	return t.SyncStepApproval(ctx, workflowID, step)
+}
+
 // OnStepGate implements WorkflowExecutionTracker.OnStepGate
 func (t *WCPExecutionTracker) OnStepGate(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {
 	return t.SyncStepGate(ctx, workflowID, step)
@@ -252,6 +281,53 @@ func (t *WCPExecutionTracker) syncStepCompleted(ctx context.Context, workflowID 
 }
 
 // SyncStepGate updates the unified execution tracker when a step gate is checked.
+// SyncStepApproval updates the approval status + approver identity on the
+// unified execution record in place (does not append a new step). Called
+// from workflow_control.Service.ApproveStep / RejectStep so
+// `/api/v1/unified/executions/{id}` reflects the post-terminal state
+// instead of the stale "pending" snapshot AddStep recorded when /gate
+// first fired. Without this the portal timeline keeps showing "Approval:
+// pending" even after the approver clicks Approve.
+func (t *WCPExecutionTracker) SyncStepApproval(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {
+	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
+	if err != nil {
+		if errors.Is(err, execution.ErrExecutionNotFound) {
+			return nil
+		}
+		return err
+	}
+	fresh, err := t.GetStatus(ctx, exec.ExecutionID)
+	if err != nil {
+		return err
+	}
+
+	approvedBy, approvedAt, rejectedBy, rejectedAt := projectApproverIdentity(step)
+	newStatus := mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus)
+
+	found := false
+	for i := range fresh.Steps {
+		if fresh.Steps[i].StepID != step.StepID {
+			continue
+		}
+		fresh.Steps[i].ApprovalStatus = mapWCPApprovalStatus(step.ApprovalStatus)
+		fresh.Steps[i].ApprovedBy = approvedBy
+		fresh.Steps[i].ApprovedAt = approvedAt
+		fresh.Steps[i].RejectedBy = rejectedBy
+		fresh.Steps[i].RejectedAt = rejectedAt
+		fresh.Steps[i].Status = newStatus
+		found = true
+		break
+	}
+	if !found {
+		// Step not present yet (edge case — approval without a prior gate
+		// sync). Fall back to AddStep so the portal still sees something.
+		return t.SyncStepGate(ctx, workflowID, step)
+	}
+
+	fresh.UpdatedAt = time.Now()
+	return t.GetRepo().UpdateSteps(ctx, exec.ExecutionID, fresh.Steps)
+}
+
 func (t *WCPExecutionTracker) SyncStepGate(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {
 	exec, err := t.findExecutionByWorkflowID(ctx, workflowID)
 	if err != nil {
@@ -263,6 +339,7 @@ func (t *WCPExecutionTracker) SyncStepGate(ctx context.Context, workflowID strin
 
 	executionID := exec.ExecutionID
 
+	approvedBy, approvedAt, rejectedBy, rejectedAt := projectApproverIdentity(step)
 	// Add the step to the execution
 	stepStatus := execution.StepStatus{
 		StepID:          step.StepID,
@@ -274,7 +351,10 @@ func (t *WCPExecutionTracker) SyncStepGate(ctx context.Context, workflowID strin
 		DecisionReason:  step.DecisionReason,
 		PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
 		ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
-		ApprovedBy:      step.ApprovedBy,
+		ApprovedBy:      approvedBy,
+		ApprovedAt:      approvedAt,
+		RejectedBy:      rejectedBy,
+		RejectedAt:      rejectedAt,
 		Model:           step.Model,
 		Provider:        step.Provider,
 		TokensIn:        step.TokensIn,
@@ -395,6 +475,62 @@ func mapWCPGateDecision(d workflow_control.GateDecision) execution.GateDecision 
 	}
 }
 
+// projectApproverIdentity splits the shared workflow_steps.approved_by /
+// approved_at column into the unified (ApprovedBy, ApprovedAt, RejectedBy,
+// RejectedAt) tuple based on terminal approval status. Mirrors
+// workflow_control.ProjectStepGateToHTTP so the portal execution timeline
+// and the WCP HTTP response agree on which field carries the reviewer
+// identity. Returns zero values when approval status is nil or pending.
+// reconcileStepApprovals merges fresh workflow_steps approval state into a
+// cached unified-execution step slice. Updates approval_status,
+// approved_by/approved_at, rejected_by/rejected_at, and step status in place.
+// Called on every /api/v1/unified/executions read so historical workflows
+// approved/rejected before v7.4.1 shipped reflect their terminal state —
+// without this, cached pending snapshots never update. Matches on step_id;
+// steps present in the cache but absent from the fresh rows are left
+// untouched (protects against partial WCP state).
+func reconcileStepApprovals(cached []execution.StepStatus, fresh []workflow_control.WorkflowStep) {
+	if len(cached) == 0 || len(fresh) == 0 {
+		return
+	}
+	freshByID := make(map[string]*workflow_control.WorkflowStep, len(fresh))
+	for i := range fresh {
+		freshByID[fresh[i].StepID] = &fresh[i]
+	}
+	for i := range cached {
+		fs, ok := freshByID[cached[i].StepID]
+		if !ok || fs == nil {
+			continue
+		}
+		approvedBy, approvedAt, rejectedBy, rejectedAt := projectApproverIdentity(fs)
+		cached[i].ApprovalStatus = mapWCPApprovalStatus(fs.ApprovalStatus)
+		cached[i].ApprovedBy = approvedBy
+		cached[i].ApprovedAt = approvedAt
+		cached[i].RejectedBy = rejectedBy
+		cached[i].RejectedAt = rejectedAt
+		// Preserve StepStatusCompleted when a step has already finished so
+		// the cached completion timestamps don't get clobbered.
+		if cached[i].Status != execution.StepStatusCompleted {
+			cached[i].Status = mapWCPStepDecisionToStatus(fs.Decision, fs.ApprovalStatus)
+		}
+	}
+}
+
+func projectApproverIdentity(step *workflow_control.WorkflowStep) (approvedBy string, approvedAt *time.Time, rejectedBy string, rejectedAt *time.Time) {
+	if step == nil || step.ApprovalStatus == nil {
+		return
+	}
+	switch *step.ApprovalStatus {
+	case workflow_control.ApprovalStatusApproved:
+		approvedBy = step.ApprovedBy
+		approvedAt = step.ApprovedAt
+	case workflow_control.ApprovalStatusRejected:
+		rejectedBy = step.ApprovedBy
+		rejectedAt = step.ApprovedAt
+	}
+	return
+}
+
 // mapWCPApprovalStatus converts a WCP approval status to the unified ApprovalStatus type.
 func mapWCPApprovalStatus(s *workflow_control.ApprovalStatus) *execution.ApprovalStatus {
 	if s == nil {
@@ -454,11 +590,13 @@ func workflowToExecutionStatus(workflow *workflow_control.Workflow) *execution.E
 
 	// Convert workflow steps to execution steps
 	steps := make([]execution.StepStatus, len(workflow.Steps))
-	for i, step := range workflow.Steps {
+	for i := range workflow.Steps {
+		step := workflow.Steps[i]
 		stepStatus := mapWCPStepDecisionToStatus(step.Decision, step.ApprovalStatus)
 		if step.StepCompletedAt != nil {
 			stepStatus = execution.StepStatusCompleted
 		}
+		approvedBy, approvedAt, rejectedBy, rejectedAt := projectApproverIdentity(&step)
 
 		steps[i] = execution.StepStatus{
 			StepID:          step.StepID,
@@ -470,7 +608,10 @@ func workflowToExecutionStatus(workflow *workflow_control.Workflow) *execution.E
 			DecisionReason:  step.DecisionReason,
 			PoliciesMatched: extractPolicyNames(step.PoliciesMatched),
 			ApprovalStatus:  mapWCPApprovalStatus(step.ApprovalStatus),
-			ApprovedBy:      step.ApprovedBy,
+			ApprovedBy:      approvedBy,
+			ApprovedAt:      approvedAt,
+			RejectedBy:      rejectedBy,
+			RejectedAt:      rejectedAt,
 			Model:           step.Model,
 			Provider:        step.Provider,
 			TokensIn:        step.TokensIn,

@@ -289,13 +289,15 @@ type WorkflowAuditEntry struct {
 	WorkflowName string
 	StepID       string
 	StepName     string
-	Operation    string // workflow_created, step_gate, step_completed, workflow_completed, workflow_aborted
+	Operation    string // workflow_created, step_gate, step_completed, step_approved, step_rejected, workflow_completed, workflow_aborted
 	Decision     string // allow, block, require_approval (for step_gate)
 	Reason       string
 	TenantID     string
 	OrgID        string
 	ClientID     string
 	UserID       string
+	UserEmail    string // v7.4.1+: reviewer email for step_approved/step_rejected
+	UserRole     string // v7.4.1+: reviewer role
 	Metadata     map[string]interface{}
 }
 
@@ -344,7 +346,9 @@ func (l *AuditLogger) LogWorkflowOperation(ctx context.Context, entry *WorkflowA
 		ID:             generateAuditID(),
 		RequestID:      entry.WorkflowID,
 		Timestamp:      time.Now().UTC(),
-		UserID:         0, // Workflow operations may not have user context
+		UserID:         0, // Workflow operations may not have a numeric user ID
+		UserEmail:      entry.UserEmail,
+		UserRole:       entry.UserRole,
 		ClientID:       entry.ClientID,
 		TenantID:       entry.TenantID,
 		OrgID:          entry.OrgID,
