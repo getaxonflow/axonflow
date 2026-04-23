@@ -103,6 +103,13 @@ type WorkflowExecutionTracker interface {
 	OnWorkflowCreated(ctx context.Context, workflow *Workflow) error
 	// OnStepGate is called when a step gate check is performed
 	OnStepGate(ctx context.Context, workflowID string, step *WorkflowStep) error
+	// OnStepApproval is called after ApproveStep / RejectStep lands on
+	// workflow_steps — the tracker is expected to UPDATE IN PLACE so the
+	// unified execution record reflects the terminal approval_status +
+	// reviewer identity. Implementations that can't update in place may
+	// fall back to OnStepGate (which appends) but will then duplicate the
+	// step on the read path. v7.4.1+.
+	OnStepApproval(ctx context.Context, workflowID string, step *WorkflowStep) error
 	// OnStepCompleted is called when a step execution completes
 	OnStepCompleted(ctx context.Context, workflowID string, stepID string, metrics *StepCompleteRequest) error
 	// OnWorkflowCompleted is called when a workflow completes successfully
@@ -119,13 +126,20 @@ type WorkflowAuditEntry struct {
 	WorkflowName string
 	StepID       string
 	StepName     string
-	Operation    string // created, step_gate, step_completed, completed, aborted
+	Operation    string // created, step_gate, step_completed, step_approved, step_rejected, completed, aborted
 	Decision     string // allow, block, require_approval (for step_gate)
 	Reason       string
 	TenantID     string
+	OrgID        string
 	ClientID     string
 	UserID       string
-	Metadata     map[string]interface{}
+	// UserEmail / UserRole (v7.4.1+): reviewer identity for step_approved /
+	// step_rejected. Populated from the HTTP caller's X-User-Email / user
+	// context; surfaces in audit_logs.user_email so the portal audit page
+	// shows the reviewer instead of "N/A".
+	UserEmail string
+	UserRole  string
+	Metadata  map[string]interface{}
 }
 
 // WebhookNotifier fires webhook notifications for WCP events.
@@ -932,6 +946,42 @@ func (s *Service) ApproveStep(ctx context.Context, workflowID, stepID, tenantID,
 	s.logger.Printf("[WorkflowControl] Step approved: workflow=%s step=%s by=%s",
 		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(approvedBy))
 
+	// v7.4.1 (Bug 1): re-sync the step to the unified execution tracker so
+	// `/api/v1/unified/executions/{id}` reflects the terminal approval_status
+	// + approved_by instead of the stale "pending" state that was recorded
+	// when /gate first fired. Reads workflow_steps fresh via OnStepGate —
+	// the tracker's AddStep is upsert on (execution_id, step_id).
+	if s.executionTracker != nil {
+		if freshStep, serr := s.repo.GetStep(ctx, workflowID, stepID); serr == nil {
+			if terr := s.executionTracker.OnStepApproval(ctx, workflowID, freshStep); terr != nil {
+				s.logger.Printf("[WorkflowControl] Warning: sync step approval to execution tracker failed: %v", terr)
+			}
+		}
+	}
+
+	// v7.4.1 (Bug 3): emit a workflow_step_approved row to audit_logs so the
+	// portal audit page can surface the approver and the Compliance Summary
+	// card counts the approval as allowed traffic. Prior releases only
+	// logged to stdout + fired a webhook, which left the audit trail silent
+	// on approve/reject decisions. Best-effort — a logger failure must not
+	// fail the approval.
+	// audit_logger maps UserEmail + UserRole into audit_logs columns and
+	// pins UserID to 0 (workflow ops have no numeric user context). Don't
+	// duplicate approvedBy into UserID — the email is the only identity.
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		StepID:       stepID,
+		StepName:     step.StepName,
+		Operation:    "step_approved",
+		Decision:     "allow",
+		Reason:       comment,
+		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID,
+		ClientID:     workflow.ClientID,
+		UserEmail:    approvedBy,
+	})
+
 	// Webhook notification (best-effort — get workflow for tenant context)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {
 		s.fireWebhook(ctx, "step.approved", map[string]interface{}{
@@ -974,12 +1024,59 @@ func (s *Service) RejectStep(ctx context.Context, workflowID, stepID, tenantID, 
 	}
 
 	// When a step is rejected, abort the workflow
-	if err := s.repo.Abort(ctx, workflowID, fmt.Sprintf("Step %s rejected by %s", stepID, rejectedBy)); err != nil {
-		s.logger.Printf("[WorkflowControl] Warning: failed to abort workflow after rejection: %v", err)
+	abortErr := s.repo.Abort(ctx, workflowID, fmt.Sprintf("Step %s rejected by %s", stepID, rejectedBy))
+	if abortErr != nil {
+		s.logger.Printf("[WorkflowControl] Warning: failed to abort workflow after rejection: %v", abortErr)
 	}
 
 	s.logger.Printf("[WorkflowControl] Step rejected: workflow=%s step=%s by=%s",
 		logutil.Sanitize(workflowID), logutil.Sanitize(stepID), logutil.Sanitize(rejectedBy))
+
+	// v7.4.1 (Bug 1): re-sync to unified execution tracker — same rationale as
+	// the approve path. workflow_steps now has approval_status=rejected and
+	// the (shared) approved_by column holds the rejector identity that
+	// projectApproverIdentity will route into rejected_by on read.
+	if s.executionTracker != nil {
+		if freshStep, serr := s.repo.GetStep(ctx, workflowID, stepID); serr == nil {
+			if terr := s.executionTracker.OnStepApproval(ctx, workflowID, freshStep); terr != nil {
+				s.logger.Printf("[WorkflowControl] Warning: sync step rejection to execution tracker failed: %v", terr)
+			}
+		}
+		// v7.4.1 code-review fix: the step-level snapshot is now correct, but
+		// `GetWorkflowStatus()` prefers the cached unified execution when one
+		// exists, so the portal would still see the overall execution as
+		// running/pending even though `repo.Abort(...)` just flipped the
+		// workflow to aborted. Notify the tracker so execution_history /
+		// execution_summaries catch up with the workflow-level status. Only
+		// when the abort actually succeeded — otherwise we'd lie about the
+		// workflow state in the unified view.
+		if abortErr == nil {
+			if terr := s.executionTracker.OnWorkflowAborted(ctx, workflowID,
+				fmt.Sprintf("Step %s rejected by %s", stepID, rejectedBy)); terr != nil {
+				s.logger.Printf("[WorkflowControl] Warning: sync workflow abort to execution tracker failed: %v", terr)
+			}
+		}
+	}
+
+	// v7.4.1 (Bug 3): emit a workflow_step_rejected row to audit_logs with
+	// policy_decision=blocked so the portal audit log surfaces the rejector
+	// identity and the row shows as Blocked traffic. See ApproveStep comment
+	// above for the full rationale.
+	// See ApproveStep comment above — UserID stays empty, identity lives in
+	// UserEmail so audit_logs.user_email carries it.
+	s.logAudit(ctx, &WorkflowAuditEntry{
+		WorkflowID:   workflowID,
+		WorkflowName: workflow.WorkflowName,
+		StepID:       stepID,
+		StepName:     step.StepName,
+		Operation:    "step_rejected",
+		Decision:     "block",
+		Reason:       reason,
+		TenantID:     workflow.TenantID,
+		OrgID:        workflow.OrgID,
+		ClientID:     workflow.ClientID,
+		UserEmail:    rejectedBy,
+	})
 
 	// Webhook notification (best-effort)
 	if wf, wfErr := s.repo.GetByID(ctx, workflowID); wfErr == nil {

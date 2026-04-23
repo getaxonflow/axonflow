@@ -362,8 +362,11 @@ func (a *WCPAuditAdapter) LogWorkflowOperation(ctx context.Context, entry *workf
 		Decision:     entry.Decision,
 		Reason:       entry.Reason,
 		TenantID:     entry.TenantID,
+		OrgID:        entry.OrgID,
 		ClientID:     entry.ClientID,
 		UserID:       entry.UserID,
+		UserEmail:    entry.UserEmail,
+		UserRole:     entry.UserRole,
 		Metadata:     entry.Metadata,
 	}
 

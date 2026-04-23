@@ -27,8 +27,26 @@ type AuditSummaryRequest struct {
 	EndTime   string `json:"end_time"`   // RFC3339
 }
 
-// ComplianceSummary is the response for POST /api/v1/audit/summary
+// ComplianceSummary is the response for POST /api/v1/audit/summary.
+//
+// The card-view fields (total_requests / allowed_requests / blocked_requests /
+// modified_requests / block_rate_percent / avg_latency_ms) power the
+// "Compliance Summary" strip at the top of the audit logs page. They were
+// added in v7.4.1 — prior versions only emitted total_events / by_severity /
+// by_action / top_policies / compliance_score, which the portal UI did not
+// read, producing a visibly all-zero summary even on tenants with heavy
+// traffic. The legacy fields are retained so existing API consumers aren't
+// broken.
 type ComplianceSummary struct {
+	// Card-view aggregates (v7.4.1+). Primary contract with the portal UI.
+	TotalRequests    int     `json:"total_requests"`
+	AllowedRequests  int     `json:"allowed_requests"`
+	BlockedRequests  int     `json:"blocked_requests"`
+	ModifiedRequests int     `json:"modified_requests"`
+	BlockRatePercent float64 `json:"block_rate_percent"`
+	AvgLatencyMs     float64 `json:"avg_latency_ms"`
+
+	// Legacy aggregates retained for backward compatibility.
 	TotalEvents     int                `json:"total_events"`
 	BySeverity      map[string]int     `json:"by_severity"`
 	ByAction        map[string]int     `json:"by_action"`
@@ -149,7 +167,9 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 	defer rows.Close()
 
 	totalEvents := 0
+	allowedCount := 0
 	blockedCount := 0
+	modifiedCount := 0
 	for rows.Next() {
 		var requestType, policyDecision string
 		var cnt int
@@ -160,18 +180,23 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		if requestType != "" {
 			summary.ByAction[requestType] += cnt
 		}
-		if policyDecision == "blocked" {
-			blockedCount += cnt
-		}
-		// Map policy_decision to severity buckets
+		// Triage for the card view. Two explicit blocking categories
+		// (`blocked`, `redacted=modified`); everything else rolls into
+		// "allowed" so Total = Allowed + Blocked + Modified always closes.
+		// `pending_approval` (emitted when workflow_step_gate fires
+		// require_approval) and `error` are "not blocked" outcomes — the
+		// HITL decision that follows writes its own workflow_step_approved /
+		// workflow_step_rejected row. Unknown values also fall through to
+		// allowed; we err on the side of not inflating the blocked count.
 		switch policyDecision {
 		case "blocked":
+			blockedCount += cnt
 			summary.BySeverity["critical"] += cnt
 		case "redacted":
+			modifiedCount += cnt
 			summary.BySeverity["warning"] += cnt
-		case "allowed":
-			summary.BySeverity["info"] += cnt
 		default:
+			allowedCount += cnt
 			summary.BySeverity["info"] += cnt
 		}
 	}
@@ -180,12 +205,39 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 	}
 
 	summary.TotalEvents = totalEvents
+	summary.TotalRequests = totalEvents
+	summary.AllowedRequests = allowedCount
+	summary.BlockedRequests = blockedCount
+	summary.ModifiedRequests = modifiedCount
 
 	// Compliance score: ratio of non-blocked events
 	if totalEvents > 0 {
 		summary.ComplianceScore = float64(totalEvents-blockedCount) / float64(totalEvents) * 100
+		summary.BlockRatePercent = float64(blockedCount) / float64(totalEvents) * 100
 	} else {
 		summary.ComplianceScore = 100 // No events = fully compliant
+		summary.BlockRatePercent = 0
+	}
+
+	// Query 2a: average response time. Separate query because we need AVG
+	// not COUNT, and we want to skip NULL / zero values that represent
+	// events with no measured latency (HITL approvals, workflow lifecycle
+	// events). COALESCE guards empty result sets.
+	latencyQuery := `
+		SELECT COALESCE(AVG(response_time_ms), 0)
+		FROM audit_logs
+		WHERE tenant_id = $1
+		  AND timestamp >= $2
+		  AND timestamp <= $3
+		  AND response_time_ms IS NOT NULL
+		  AND response_time_ms > 0
+	`
+	var avgLatency sql.NullFloat64
+	if err := h.db.QueryRow(latencyQuery, tenantID, startTime, endTime).Scan(&avgLatency); err != nil {
+		// Non-fatal: leave avg_latency_ms at zero and log.
+		log.Printf("[AuditSummary] latency query failed: %v", err)
+	} else if avgLatency.Valid {
+		summary.AvgLatencyMs = avgLatency.Float64
 	}
 
 	// Query 2: Top policies by trigger count

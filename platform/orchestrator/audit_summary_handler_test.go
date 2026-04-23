@@ -40,6 +40,12 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(actionRows)
 
+	// Mock latency query (v7.4.1+: powers the Avg Latency card)
+	latencyRows := sqlmock.NewRows([]string{"avg"}).AddRow(150.5)
+	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+		WithArgs("travel-us", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(latencyRows)
+
 	// Mock policy query
 	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
 		AddRow("demo-block-bulk-email", 8, 8).
@@ -87,6 +93,28 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 	}
 	if summary.BySeverity["warning"] != 5 {
 		t.Errorf("expected 5 warning (redacted) events, got %d", summary.BySeverity["warning"])
+	}
+
+	// v7.4.1+ card-view aggregates (Bug 2): portal UI reads these directly.
+	// total=100 (80+10+5+5), allowed=85 (80+5), blocked=10, modified=5,
+	// block_rate=10%, avg_latency=150.5ms.
+	if summary.TotalRequests != 100 {
+		t.Errorf("expected total_requests=100, got %d", summary.TotalRequests)
+	}
+	if summary.AllowedRequests != 85 {
+		t.Errorf("expected allowed_requests=85, got %d", summary.AllowedRequests)
+	}
+	if summary.BlockedRequests != 10 {
+		t.Errorf("expected blocked_requests=10, got %d", summary.BlockedRequests)
+	}
+	if summary.ModifiedRequests != 5 {
+		t.Errorf("expected modified_requests=5, got %d", summary.ModifiedRequests)
+	}
+	if summary.BlockRatePercent != 10.0 {
+		t.Errorf("expected block_rate_percent=10.0, got %f", summary.BlockRatePercent)
+	}
+	if summary.AvgLatencyMs != 150.5 {
+		t.Errorf("expected avg_latency_ms=150.5, got %f", summary.AvgLatencyMs)
 	}
 }
 
@@ -346,5 +374,158 @@ func TestNewAuditSummaryHandler(t *testing.T) {
 	}
 	if handler.db != nil {
 		t.Error("expected nil db")
+	}
+}
+
+// TestAuditSummaryHandler_CardAggregates_EmptyTenant exercises the
+// zero-traffic case: total_requests should be 0, block_rate should NOT
+// explode into NaN, and avg_latency should be 0 — the bug we shipped in
+// v7.4.0 was the *opposite* (dashboard card showed zeros even when there
+// WAS data). This test pins the no-data path so we don't regress either way.
+func TestAuditSummaryHandler_CardAggregates_EmptyTenant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	handler := NewAuditSummaryHandler(db)
+
+	mock.ExpectQuery("SELECT request_type, policy_decision, COUNT").
+		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}))
+	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+	mock.ExpectQuery("SELECT").
+		WithArgs("empty-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+
+	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "empty-tenant")
+	rr := httptest.NewRecorder()
+
+	handler.HandleSummary(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var summary ComplianceSummary
+	if err := json.NewDecoder(rr.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if summary.TotalRequests != 0 {
+		t.Errorf("total_requests = %d, want 0", summary.TotalRequests)
+	}
+	if summary.BlockRatePercent != 0.0 {
+		t.Errorf("block_rate_percent = %f, want 0 (no NaN on empty set)", summary.BlockRatePercent)
+	}
+	if summary.AvgLatencyMs != 0.0 {
+		t.Errorf("avg_latency_ms = %f, want 0", summary.AvgLatencyMs)
+	}
+	if summary.ComplianceScore != 100.0 {
+		t.Errorf("compliance_score = %f, want 100 (no events = fully compliant)", summary.ComplianceScore)
+	}
+}
+
+// TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed
+// pins the arithmetic invariant: total_requests == allowed + blocked +
+// modified. Any policy_decision that isn't 'blocked' or 'redacted' rolls
+// into allowed (including 'pending_approval' from HITL step_gates and
+// 'error' from failed requests). Prior to this fix the handler dropped
+// pending_approval, leaving a visible gap on the portal card between
+// Total and Allowed+Blocked+Modified.
+func TestAuditSummaryHandler_CardAggregates_PendingApprovalCountsAsAllowed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	handler := NewAuditSummaryHandler(db)
+
+	mock.ExpectQuery("SELECT request_type, policy_decision, COUNT").
+		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}).
+			AddRow("llm_call", "allowed", 369).
+			AddRow("workflow_step_gate", "pending_approval", 12).
+			AddRow("llm_call", "error", 4))
+	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+	mock.ExpectQuery("SELECT").
+		WithArgs("banking-demo", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+
+	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "banking-demo")
+	rr := httptest.NewRecorder()
+	handler.HandleSummary(rr, req)
+
+	var summary ComplianceSummary
+	_ = json.NewDecoder(rr.Body).Decode(&summary)
+
+	if summary.TotalRequests != 385 {
+		t.Errorf("total_requests = %d, want 385", summary.TotalRequests)
+	}
+	if summary.AllowedRequests != 385 {
+		t.Errorf("allowed_requests = %d, want 385 (pending_approval + error roll into allowed)", summary.AllowedRequests)
+	}
+	if summary.BlockedRequests != 0 {
+		t.Errorf("blocked_requests = %d, want 0", summary.BlockedRequests)
+	}
+	if summary.ModifiedRequests != 0 {
+		t.Errorf("modified_requests = %d, want 0", summary.ModifiedRequests)
+	}
+	// Core invariant: math always closes.
+	if summary.AllowedRequests+summary.BlockedRequests+summary.ModifiedRequests != summary.TotalRequests {
+		t.Errorf("allowed(%d)+blocked(%d)+modified(%d)=%d != total(%d)",
+			summary.AllowedRequests, summary.BlockedRequests, summary.ModifiedRequests,
+			summary.AllowedRequests+summary.BlockedRequests+summary.ModifiedRequests,
+			summary.TotalRequests)
+	}
+}
+
+// TestAuditSummaryHandler_CardAggregates_AllBlocked pins the edge of the
+// block_rate computation: 100% blocked should produce 100.0, not overflow
+// or divide-by-zero.
+func TestAuditSummaryHandler_CardAggregates_AllBlocked(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	handler := NewAuditSummaryHandler(db)
+
+	mock.ExpectQuery("SELECT request_type, policy_decision, COUNT").
+		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}).
+			AddRow("workflow_step_gate", "blocked", 7))
+	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"avg"}).AddRow(0.0))
+	mock.ExpectQuery("SELECT").
+		WithArgs("blocked-tenant", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}))
+
+	body := `{"start_time":"2026-04-22T00:00:00Z","end_time":"2026-04-23T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "blocked-tenant")
+	rr := httptest.NewRecorder()
+	handler.HandleSummary(rr, req)
+
+	var summary ComplianceSummary
+	_ = json.NewDecoder(rr.Body).Decode(&summary)
+
+	if summary.BlockedRequests != 7 {
+		t.Errorf("blocked_requests = %d, want 7", summary.BlockedRequests)
+	}
+	if summary.BlockRatePercent != 100.0 {
+		t.Errorf("block_rate_percent = %f, want 100", summary.BlockRatePercent)
+	}
+	if summary.ComplianceScore != 0.0 {
+		t.Errorf("compliance_score = %f, want 0 (everything blocked)", summary.ComplianceScore)
 	}
 }

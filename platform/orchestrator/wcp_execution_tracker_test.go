@@ -1133,3 +1133,85 @@ func TestIsWCPNotFoundError(t *testing.T) {
 		}
 	})
 }
+
+// --- v7.4.1: projectApproverIdentity (BUG-1) -------------------------------
+
+// TestProjectApproverIdentity_Approved verifies the shared
+// workflow_steps.approved_by column projects into ApprovedBy/ApprovedAt on
+// the approved path and leaves RejectedBy/RejectedAt empty.
+func TestProjectApproverIdentity_Approved(t *testing.T) {
+	approvedAt := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	status := workflow_control.ApprovalStatusApproved
+	step := &workflow_control.WorkflowStep{
+		ApprovalStatus: &status,
+		ApprovedBy:     "ops-lead@banking.example",
+		ApprovedAt:     &approvedAt,
+	}
+
+	by, at, rby, rat := projectApproverIdentity(step)
+	if by != "ops-lead@banking.example" {
+		t.Errorf("ApprovedBy = %q, want ops-lead@banking.example", by)
+	}
+	if at == nil || !at.Equal(approvedAt) {
+		t.Errorf("ApprovedAt = %v, want %v", at, approvedAt)
+	}
+	if rby != "" || rat != nil {
+		t.Errorf("Rejected* should be empty on approved path, got by=%q at=%v", rby, rat)
+	}
+}
+
+// TestProjectApproverIdentity_Rejected verifies the same shared column
+// projects into RejectedBy/RejectedAt on the rejected path — this is the
+// Bug 1 fix: the portal UI reads from split fields and needs the backend
+// to do the projection. Prior to v7.4.1 both paths populated only
+// ApprovedBy, making rejected steps appear as if approved-by the rejector.
+func TestProjectApproverIdentity_Rejected(t *testing.T) {
+	rejectedAt := time.Date(2026, 4, 23, 11, 0, 0, 0, time.UTC)
+	status := workflow_control.ApprovalStatusRejected
+	step := &workflow_control.WorkflowStep{
+		ApprovalStatus: &status,
+		ApprovedBy:     "ops-lead@banking.example", // column is reused on reject
+		ApprovedAt:     &rejectedAt,
+	}
+
+	by, at, rby, rat := projectApproverIdentity(step)
+	if by != "" || at != nil {
+		t.Errorf("Approved* should be empty on rejected path, got by=%q at=%v", by, at)
+	}
+	if rby != "ops-lead@banking.example" {
+		t.Errorf("RejectedBy = %q, want ops-lead@banking.example", rby)
+	}
+	if rat == nil || !rat.Equal(rejectedAt) {
+		t.Errorf("RejectedAt = %v, want %v", rat, rejectedAt)
+	}
+}
+
+// TestProjectApproverIdentity_Pending covers the pending state — no terminal
+// action has occurred, so neither pair should populate.
+func TestProjectApproverIdentity_Pending(t *testing.T) {
+	status := workflow_control.ApprovalStatusPending
+	step := &workflow_control.WorkflowStep{ApprovalStatus: &status}
+
+	by, at, rby, rat := projectApproverIdentity(step)
+	if by != "" || at != nil || rby != "" || rat != nil {
+		t.Errorf("pending step should leave all fields empty, got by=%q at=%v rby=%q rat=%v",
+			by, at, rby, rat)
+	}
+}
+
+// TestProjectApproverIdentity_NilStep + NilStatus guard against panics from
+// defensive callers. Both must return zero values, no panic.
+func TestProjectApproverIdentity_NilStep(t *testing.T) {
+	by, at, rby, rat := projectApproverIdentity(nil)
+	if by != "" || at != nil || rby != "" || rat != nil {
+		t.Errorf("nil step should yield all zero values, got by=%q rby=%q", by, rby)
+	}
+}
+
+func TestProjectApproverIdentity_NilStatus(t *testing.T) {
+	step := &workflow_control.WorkflowStep{ApprovalStatus: nil}
+	by, at, rby, rat := projectApproverIdentity(step)
+	if by != "" || at != nil || rby != "" || rat != nil {
+		t.Errorf("nil approval_status should yield all zero values, got by=%q rby=%q", by, rby)
+	}
+}
