@@ -12,6 +12,18 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.4.4] - 2026-04-25 — `CreateOverrideResponse` schema split
+
+PATCH: documentation-grade correction — no platform behaviour change. Splits the `POST /api/v1/policies/{id}/overrides` create-response shape from the at-rest `PolicyOverride` entity, matching what the platform server has been emitting all along and the precedent established by `CreateWorkflowResponse` (orchestrator-api.yaml). Code-generated clients written against the prior spec would have read `undefined` for the create-time TTL clamping fields (`ttl_seconds`, `requested_ttl`, `clamped`, `clamped_reason`) and looked for at-rest fields (`action_override`, `enabled_override`, `tool_signature`) that the create response doesn't carry.
+
+### Community
+
+#### Fixed
+
+- **`CreateOverrideResponse` schema added** to `docs/api/agent-api.yaml`. The `createStaticPolicyOverride: 201` response now references this dedicated schema instead of the at-rest `PolicyOverride`. Carries `id`, `policy_id`, `policy_type`, `expires_at`, `ttl_seconds`, optional `requested_ttl` / `clamped` / `clamped_reason` (populated when server-side TTL clamping kicked in), and `created_at`. The at-rest `PolicyOverride` schema retains its role on `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`. Source of truth: `platform/orchestrator/overrides_handler.go` (`CreateOverrideResponse`).
+
+  AxonFlow's hand-written OpenClaw plugin already implements `CreateOverrideResult` matching the actual server shape — this fix aligns the spec with the plugin's reality and unblocks code-generated clients. Surfaced via the OpenClaw plugin's wire-shape contract gate (axonflow-openclaw-plugin#57).
+
 ## [7.4.3] - 2026-04-25 — Plugin Batch 1 / ADR-043 spec corrections
 
 PATCH: documentation-grade corrections — no platform behaviour change. Companion to the 4 plugin wire-shape contract gates landing alongside (parity with the four SDK gates per ADR-047). Auto-resolves the bulk of those plugins' initial baseline drift entries.
