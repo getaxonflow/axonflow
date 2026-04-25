@@ -20,22 +20,22 @@ PATCH: documentation-grade correction — no platform behaviour change. Splits t
 
 #### Fixed
 
-- **`CreateOverrideResponse` schema added** to `docs/api/agent-api.yaml`. The `createStaticPolicyOverride: 201` response now references this dedicated schema instead of the at-rest `PolicyOverride`. Carries `id`, `policy_id`, `policy_type`, `expires_at`, `ttl_seconds`, optional `requested_ttl` / `clamped` / `clamped_reason` (populated when server-side TTL clamping kicked in), and `created_at`. The at-rest `PolicyOverride` schema retains its role on `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`. Source of truth: `platform/orchestrator/overrides_handler.go` (`CreateOverrideResponse`).
+- **`CreateOverrideResponse` schema added** to `docs/api/agent-api.yaml`. The `createStaticPolicyOverride: 201` response now references this dedicated schema instead of the at-rest `PolicyOverride`. Carries `id`, `policy_id`, `policy_type`, `expires_at`, `ttl_seconds`, optional `requested_ttl` / `clamped` / `clamped_reason` (populated when server-side TTL clamping kicked in), and `created_at`. The at-rest `PolicyOverride` schema retains its role on `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`.
 
-  AxonFlow's hand-written OpenClaw plugin already implements `CreateOverrideResult` matching the actual server shape — this fix aligns the spec with the plugin's reality and unblocks code-generated clients. Surfaced via the OpenClaw plugin's wire-shape contract gate (axonflow-openclaw-plugin#57).
+  AxonFlow's hand-written OpenClaw plugin already implements `CreateOverrideResult` matching the actual server shape — this fix aligns the spec with the plugin's reality and unblocks code-generated clients.
 
-## [7.4.3] - 2026-04-25 — Plugin Batch 1 / ADR-043 spec corrections
+## [7.4.3] - 2026-04-25 — Plugin Batch 1 spec corrections
 
-PATCH: documentation-grade corrections — no platform behaviour change. Companion to the 4 plugin wire-shape contract gates landing alongside (parity with the four SDK gates per ADR-047). Auto-resolves the bulk of those plugins' initial baseline drift entries.
+PATCH: documentation-grade corrections — no platform behaviour change. Companion to the 4 plugin wire-shape contract gates landing alongside (parity with the four SDK gates). Auto-resolves the bulk of those plugins' initial baseline drift entries.
 
 ### Community
 
 #### Fixed
 
-- **OpenAPI spec corrections — Plugin Batch 1 / ADR-043 explainability fields.** Two MCP-response schemas have been stale relative to what the agent has emitted since Plugin Batch 1 / ADR-042 / ADR-043 shipped. The fix unblocks code-generated clients and auto-resolves baseline drift entries on every AxonFlow plugin's wire-shape contract gate.
-  - **`MCPCheckInputResponse`** gains the five Plugin Batch 1 fields the agent has emitted since v7.1.0 (`decision_id`, `risk_level`, `policy_matches`, `override_available`, `override_existing_id`). Source of truth: `platform/agent/mcp_server_handler.go:880-940`.
-  - **`MCPCheckOutputResponse`** gains `redacted_message` (text-redaction counterpart to `redacted_data`), `decision_id`, and `policy_matches`. Source of truth: `platform/agent/mcp_server_handler.go:988, 1005, 1051`.
-  - **`ExplainPolicy`**, **`ExplainRule`**, **`DecisionExplanation`** schemas added — these are the ADR-043 explainability shapes returned by the `explain_decision` MCP tool. Hand-written SDKs and plugins are already aligned with what the agent emits; this just documents the wire contract.
+- **OpenAPI spec corrections — Plugin Batch 1 explainability fields.** Two MCP-response schemas have been stale relative to what the agent has emitted since Plugin Batch 1 shipped. The fix unblocks code-generated clients and auto-resolves baseline drift entries on every AxonFlow plugin's wire-shape contract gate.
+  - **`MCPCheckInputResponse`** gains the five Plugin Batch 1 fields the agent has emitted since v7.1.0 (`decision_id`, `risk_level`, `policy_matches`, `override_available`, `override_existing_id`).
+  - **`MCPCheckOutputResponse`** gains `redacted_message` (text-redaction counterpart to `redacted_data`), `decision_id`, and `policy_matches`.
+  - **`ExplainPolicy`**, **`ExplainRule`**, **`DecisionExplanation`** schemas added — these are the explainability shapes returned by the `explain_decision` MCP tool. Hand-written SDKs and plugins are already aligned with what the agent emits; this just documents the wire contract.
 
 ## [7.4.2] - 2026-04-25 — OpenAPI spec corrections
 
@@ -54,13 +54,11 @@ spec artefacts.
 - **`AISystemRegistry.materiality` → `materiality_classification`**
   in `docs/api/masfeat-api.yaml`. Server has emitted
   `materiality_classification` since the 3-dimensional risk rating
-  refactor for MAS AI Risk Management Guidelines 2025
-  (`platform/orchestrator/masfeat/types.go`).
+  refactor for MAS AI Risk Management Guidelines 2025.
 - **`DynamicPolicyInfo`** in `docs/api/agent-api.yaml` rewritten from
   8 aspirational fields to the 4 actual server fields
   (`policies_evaluated`, `matched_policies`, `orchestrator_reachable`,
-  `processing_time_ms`). Source of truth is
-  `platform/shared/policy/types.go`.
+  `processing_time_ms`).
 
 ## [7.4.1] - 2026-04-23 — Portal HITL + audit trail fixes
 
