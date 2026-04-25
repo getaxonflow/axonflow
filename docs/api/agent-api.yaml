@@ -3753,6 +3753,105 @@ components:
         dynamic_policy_info:
           $ref: '#/components/schemas/DynamicPolicyInfo'
 
+    ExplainPolicy:
+      type: object
+      description: |
+        Per-policy explainability record (ADR-043). Surfaced in
+        MCPCheckInputResponse.policy_matches and MCPCheckOutputResponse.policy_matches
+        when dynamic policy evaluation produces non-empty matches.
+      properties:
+        policy_id:
+          type: string
+          description: Unique policy identifier.
+        policy_name:
+          type: string
+          description: Human-readable policy name.
+        action:
+          type: string
+          description: Action taken for this policy match (e.g. "block", "redact", "warn").
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+          description: Risk level configured on this policy.
+        allow_override:
+          type: boolean
+          description: Whether this policy permits a session override.
+        policy_description:
+          type: string
+          description: Optional description text shown to operators.
+
+    ExplainRule:
+      type: object
+      description: |
+        Per-rule explainability record (ADR-043). Surfaced in
+        DecisionExplanation.matched_rules to attribute a decision to the
+        specific rule that fired.
+      properties:
+        policy_id:
+          type: string
+          description: Parent policy identifier.
+        rule_id:
+          type: string
+          description: Unique rule identifier within the policy.
+        rule_text:
+          type: string
+          description: The rule text or pattern that matched.
+        matched_on:
+          type: string
+          description: The portion of the input/output that matched the rule.
+
+    DecisionExplanation:
+      type: object
+      description: |
+        Full explainability payload (ADR-043). Returned by the
+        explain_decision MCP tool given a decision_id.
+      properties:
+        decision_id:
+          type: string
+          description: Unique audit correlator (matches MCPCheck*Response.decision_id).
+        timestamp:
+          type: string
+          format: date-time
+          description: When the decision was made.
+        policy_matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExplainPolicy'
+          description: All policies that matched in this decision.
+        matched_rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExplainRule'
+          description: All specific rules that fired (sub-policy level).
+        decision:
+          type: string
+          enum: [allow, block, redact, warn]
+          description: Final decision applied to the request.
+        reason:
+          type: string
+          description: Human-readable explanation of the decision.
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+          description: Highest risk level across all matches.
+        override_available:
+          type: boolean
+          description: Whether a session override is available for this decision.
+        override_existing_id:
+          type: string
+          description: ID of an active override consumed by this decision (if any).
+        historical_hit_count_session:
+          type: integer
+          description: |
+            Number of times this decision-class has fired in the current
+            session — useful for surfacing repeat-offender context.
+        policy_source_link:
+          type: string
+          description: Optional URL pointing to the policy definition source.
+        tool_signature:
+          type: string
+          description: Optional signature identifying the calling tool/connector.
+
     ExfiltrationCheckInfo:
       type: object
       description: Information about exfiltration limit checks (v3.2.0+)
@@ -3948,6 +4047,40 @@ components:
           description: Total number of policies evaluated
         policy_info:
           $ref: '#/components/schemas/PolicyInfo'
+        # Plugin Batch 1 / ADR-042 / ADR-043 — richer governance context
+        # surfaced when the platform is v7.1.0+. Source of truth:
+        # platform/agent/mcp_server_handler.go, lines ~880-940.
+        decision_id:
+          type: string
+          description: |
+            Unique audit correlator for this policy decision. Links the gate
+            response to its row in the audit log; surfaceable to end users
+            for explainability ("decision: dec_abc123").
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+          description: |
+            Highest risk level across all matched policies. Plugins use this
+            to map the block reason to severity (warning vs hard error).
+        policy_matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExplainPolicy'
+          description: |
+            Per-policy explainability records (ADR-043). Surfaced when
+            dynamic policy evaluation produces non-empty matches.
+        override_available:
+          type: boolean
+          description: |
+            Whether at least one matched policy permits a session override.
+            Used by plugins to render an "override via explain_decision"
+            hint when the block is overrideable.
+        override_existing_id:
+          type: string
+          description: |
+            ID of an active override consumed by this decision (if any).
+            Distinguishes "you already have an override" from "you can
+            request one".
 
     MCPCheckOutputRequest:
       type: object
@@ -3999,7 +4132,18 @@ components:
           type: string
           description: Human-readable reason if blocked (omitted when allowed)
         redacted_data:
-          description: Response data with PII fields masked (omitted if no redaction needed)
+          description: |
+            Tabular response data with PII fields masked (used when the
+            connector returned rows; e.g. SQL/CSV results). Omitted if no
+            redaction was needed or if the response was a text message.
+        redacted_message:
+          type: string
+          description: |
+            Text message with PII fields masked (used when the connector
+            returned a string message rather than tabular rows; e.g.
+            execute-style responses). Omitted if no redaction was needed
+            or if the response was tabular. Source of truth:
+            `platform/agent/mcp_server_handler.go:988`.
         policies_evaluated:
           type: integer
           description: Total number of policies evaluated
@@ -4007,6 +4151,16 @@ components:
           $ref: '#/components/schemas/ExfiltrationCheckInfo'
         policy_info:
           $ref: '#/components/schemas/PolicyInfo'
+        # Plugin Batch 1 / ADR-043 — explainability context (matches the
+        # MCPCheckInputResponse fields on the same call site).
+        decision_id:
+          type: string
+          description: Unique audit correlator for this policy decision.
+        policy_matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExplainPolicy'
+          description: Per-policy explainability records (ADR-043).
 
     ConnectorRefreshResponse:
       type: object

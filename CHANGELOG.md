@@ -12,6 +12,19 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.4.3] - 2026-04-25 — Plugin Batch 1 / ADR-043 spec corrections
+
+PATCH: documentation-grade corrections — no platform behaviour change. Companion to the 4 plugin wire-shape contract gates landing alongside (parity with the four SDK gates per ADR-047). Auto-resolves the bulk of those plugins' initial baseline drift entries.
+
+### Community
+
+#### Fixed
+
+- **OpenAPI spec corrections — Plugin Batch 1 / ADR-043 explainability fields.** Two MCP-response schemas have been stale relative to what the agent has emitted since Plugin Batch 1 / ADR-042 / ADR-043 shipped. The fix unblocks code-generated clients and auto-resolves baseline drift entries on every AxonFlow plugin's wire-shape contract gate.
+  - **`MCPCheckInputResponse`** gains the five Plugin Batch 1 fields the agent has emitted since v7.1.0 (`decision_id`, `risk_level`, `policy_matches`, `override_available`, `override_existing_id`). Source of truth: `platform/agent/mcp_server_handler.go:880-940`.
+  - **`MCPCheckOutputResponse`** gains `redacted_message` (text-redaction counterpart to `redacted_data`), `decision_id`, and `policy_matches`. Source of truth: `platform/agent/mcp_server_handler.go:988, 1005, 1051`.
+  - **`ExplainPolicy`**, **`ExplainRule`**, **`DecisionExplanation`** schemas added — these are the ADR-043 explainability shapes returned by the `explain_decision` MCP tool. Hand-written SDKs and plugins are already aligned with what the agent emits; this just documents the wire contract.
+
 ## [7.4.2] - 2026-04-25 — OpenAPI spec corrections
 
 PATCH: documentation-grade corrections — no platform behavior change.

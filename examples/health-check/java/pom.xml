@@ -32,7 +32,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>5.7.0</version>
+            <version>6.0.0</version>
         </dependency>
         <!-- Override transitive jackson for GHSA-72hv-8253-57qq -->
         <dependency>

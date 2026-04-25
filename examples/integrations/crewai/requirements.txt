@@ -1,5 +1,5 @@
 # AxonFlow SDK
-axonflow>=6.6.0
+axonflow>=6.7.0
 
 # CrewAI
 crewai>=0.5.0
