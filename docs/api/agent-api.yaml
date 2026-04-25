@@ -2782,11 +2782,18 @@ paths:
                   override_reason: "Regulatory requirement to warn instead of block"
       responses:
         '201':
-          description: Override created successfully
+          description: |
+            Override created successfully. Returns `CreateOverrideResponse`
+            with the effective `ttl_seconds` (post server-side clamping)
+            and, when applicable, the `requested_ttl` / `clamped` /
+            `clamped_reason` metadata so callers can surface clamping
+            decisions in their UX. The at-rest `PolicyOverride` entity
+            is returned by `GET /api/v1/policy-overrides` /
+            `GET /api/v1/policy-overrides/{id}`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PolicyOverride'
+                $ref: '#/components/schemas/CreateOverrideResponse'
         '400':
           description: Invalid request body or missing required fields
           content:
@@ -3217,6 +3224,68 @@ components:
           type: string
           format: date-time
           description: Optional expiration for the override
+
+    CreateOverrideResponse:
+      type: object
+      description: |
+        Response returned by `POST /api/v1/policies/{id}/overrides` on
+        successful create. Carries the create-time-only TTL clamping
+        metadata (`requested_ttl`, `clamped`, `clamped_reason`) that
+        is not present on the at-rest `PolicyOverride` entity returned
+        by `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`.
+        Source of truth: `platform/orchestrator/overrides_handler.go`
+        (`CreateOverrideResponse`). Mirrors the `CreateWorkflowResponse`
+        precedent (orchestrator-api.yaml) — create-time concerns split
+        from at-rest concerns rather than overloaded onto one schema.
+      required:
+        - id
+        - policy_id
+        - policy_type
+        - expires_at
+        - ttl_seconds
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Unique override identifier
+        policy_id:
+          type: string
+          description: ID of the policy being overridden
+        policy_type:
+          type: string
+          enum: [static, dynamic]
+          description: Type of policy being overridden
+        expires_at:
+          type: string
+          format: date-time
+          description: Override expiration timestamp (clamped server-side per ADR-044)
+        ttl_seconds:
+          type: integer
+          format: int64
+          description: |
+            Effective time-to-live in seconds, after server-side clamping.
+            Default 60m, hard cap 24h, minimum 60s.
+        requested_ttl:
+          type: integer
+          format: int64
+          description: |
+            The TTL the caller originally requested, included only when it
+            differs from `ttl_seconds` (i.e. when `clamped: true`). Lets
+            callers detect and surface clamping in their UX.
+        clamped:
+          type: boolean
+          description: |
+            `true` if the requested TTL was adjusted by server-side
+            clamping. Omitted when no clamping occurred.
+        clamped_reason:
+          type: string
+          enum: [exceeds_hard_cap, below_minimum]
+          description: |
+            Why the TTL was clamped. Present only when `clamped: true`.
+        created_at:
+          type: string
+          format: date-time
+          description: When the override was created.
 
     TestPatternRequest:
       type: object
