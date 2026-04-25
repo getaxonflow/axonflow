@@ -18,6 +18,12 @@ jobs:
           # Get list of files added/modified in this PR (exclude deletions)
           FILES=$(git diff --name-only --diff-filter=ACM origin/main...HEAD)
 
+          # Official docs that match broad forbidden-file patterns but are allowed.
+          ALLOWED_FILES=(
+            "technical-docs/runbooks/RUNBOOK_CLAUDE_CODE_PLUGIN_E2E.md"
+            "technical-docs/runbooks/RUNBOOK_CODEX_PLUGIN_E2E.md"
+          )
+
           # Patterns that should never be committed
           FORBIDDEN_PATTERNS=(
             "^\.claude/"
@@ -31,6 +37,18 @@ jobs:
           FORBIDDEN_FOUND=()
 
           for file in $FILES; do
+            ALLOWED=false
+            for allowed_file in "${ALLOWED_FILES[@]}"; do
+              if [ "$file" = "$allowed_file" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+
+            if [ "$ALLOWED" = true ]; then
+              continue
+            fi
+
             for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
               if echo "$file" | grep -qE "$pattern"; then
                 FORBIDDEN_FOUND+=("$file")

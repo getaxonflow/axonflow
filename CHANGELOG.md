@@ -10,6 +10,33 @@ community mirror, **Enterprise** changes are EE-only.
 
 ---
 
+## [Unreleased]
+
+## [7.4.2] - 2026-04-25 — OpenAPI spec corrections
+
+PATCH: documentation-grade corrections — no platform behavior change.
+Two OpenAPI schemas were stale relative to what the server has been
+emitting. Code-generated clients written against the prior spec would
+have read `undefined` for the affected fields. AxonFlow's hand-written
+SDKs (TS, Python, Go, Java) are correct against the server and gain
+no functional change from this release; the fix lives entirely in the
+spec artefacts.
+
+### Community
+
+#### Fixed
+
+- **`AISystemRegistry.materiality` → `materiality_classification`**
+  in `docs/api/masfeat-api.yaml`. Server has emitted
+  `materiality_classification` since the 3-dimensional risk rating
+  refactor for MAS AI Risk Management Guidelines 2025
+  (`platform/orchestrator/masfeat/types.go`).
+- **`DynamicPolicyInfo`** in `docs/api/agent-api.yaml` rewritten from
+  8 aspirational fields to the 4 actual server fields
+  (`policies_evaluated`, `matched_policies`, `orchestrator_reachable`,
+  `processing_time_ms`). Source of truth is
+  `platform/shared/policy/types.go`.
+
 ## [7.4.1] - 2026-04-23 — Portal HITL + audit trail fixes
 
 PATCH: portal-visible bugs fixed around human approval visibility —

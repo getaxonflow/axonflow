@@ -3779,37 +3779,25 @@ components:
 
     DynamicPolicyInfo:
       type: object
-      description: Information about dynamic policy evaluation via Orchestrator (v3.2.0+)
+      description: |
+        Information about dynamic policy evaluation via Orchestrator (v3.2.0+).
+        Source of truth: `platform/shared/policy/types.go` (`DynamicPolicyInfo`).
       properties:
-        enabled:
-          type: boolean
-          description: Whether dynamic policy evaluation was enabled
-        evaluated:
-          type: boolean
-          description: Whether policies were actually evaluated (may skip if disabled or error)
-        policies_checked:
+        policies_evaluated:
           type: integer
-          description: Number of dynamic policies checked
-        policies_matched:
-          type: integer
-          description: Number of policies that matched
-        blocked:
-          type: boolean
-          description: Whether request was blocked by a dynamic policy
-        block_reason:
-          type: string
-          description: Reason for block (if blocked)
+          description: Number of dynamic policies evaluated
         matched_policies:
           type: array
           items:
             $ref: '#/components/schemas/DynamicPolicyMatch'
-          description: Details of matched dynamic policies
-        evaluation_time_ms:
+          description: Details of matched dynamic policies (omitted when empty)
+        orchestrator_reachable:
+          type: boolean
+          description: Whether the Orchestrator was reachable for dynamic policy evaluation
+        processing_time_ms:
           type: integer
+          format: int64
           description: Time spent evaluating dynamic policies in milliseconds
-        error:
-          type: string
-          description: Error message if evaluation failed (only present on error)
 
     DynamicPolicyMatch:
       type: object

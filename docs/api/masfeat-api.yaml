@@ -979,9 +979,12 @@ components:
           type: integer
         human_reliance:
           type: integer
-        materiality:
+        materiality_classification:
           type: string
           enum: [high, medium, low]
+          description: |
+            Materiality classification computed from the 3-dimensional risk rating
+            (impact, complexity, reliance) per MAS AI Risk Management Guidelines 2025.
         status:
           type: string
           enum: [draft, active, suspended, retired]
