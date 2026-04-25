@@ -1,5 +1,5 @@
 # AxonFlow SDK
-axonflow>=6.7.0
+axonflow>=6.8.0
 
 # HTTP client for direct API calls
 httpx>=0.25.0

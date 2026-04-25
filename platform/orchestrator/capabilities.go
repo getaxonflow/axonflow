@@ -62,10 +62,10 @@ func getSDKCompatibility() SDKCompatInfo {
 			"java":       "3.0.0",
 		},
 		RecommendedSDKVersion: map[string]string{
-			"python":     "6.6.0",
-			"typescript": "5.6.0",
-			"go":         "5.6.0",
-			"java":       "5.7.0",
+			"python":     "6.8.0",
+			"typescript": "6.1.0",
+			"go":         "5.8.0",
+			"java":       "6.1.0",
 		},
 	}
 }

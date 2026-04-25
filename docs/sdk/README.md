@@ -110,7 +110,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>3.5.0</version>
+    <version>6.1.0</version>
 </dependency>
 ```
 
