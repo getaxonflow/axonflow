@@ -17,7 +17,7 @@ import os
 import sys
 import time
 
-from axonflow import AxonFlow, AxonFlowConfig
+from axonflow import AxonFlow
 
 failures = []
 
@@ -42,8 +42,12 @@ def main() -> None:
     client_id = os.environ.get("AXONFLOW_CLIENT_ID", "test-client")
     client_secret = os.environ.get("AXONFLOW_CLIENT_SECRET", "test-secret")
 
-    config = AxonFlowConfig.builder().endpoint(endpoint).client_id(client_id).client_secret(client_secret).build()
-    client = AxonFlow.create(config)
+    client = AxonFlow.sync(
+        endpoint=endpoint,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    user_token = os.environ.get("AXONFLOW_USER_TOKEN", "cloud-storage-demo-user")
 
     test_key = f"test-object-{int(time.time() * 1000)}.txt"
     test_content = f"Hello from AxonFlow Python SDK cloud storage example - {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
@@ -74,9 +78,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        put_resp = client.mcp_execute(
-            connector="s3",
-            action="put_object",
+        put_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="put_object",
             params={"bucket": bucket, "key": test_key, "content": test_content, "content_type": "text/plain"},
         )
         assert_check(put_resp.success, "Put object succeeded")
@@ -90,9 +94,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        get_resp = client.mcp_query(
-            connector="s3",
-            statement="get_object",
+        get_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="get_object",
             params={"bucket": bucket, "key": test_key},
         )
         rows = data_to_rows(get_resp.data)
@@ -113,9 +117,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        list_resp = client.mcp_query(
-            connector="s3",
-            statement="list_objects",
+        list_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="list_objects",
             params={"bucket": bucket, "prefix": "test-object-"},
         )
         rows = data_to_rows(list_resp.data)
@@ -133,9 +137,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        head_resp = client.mcp_query(
-            connector="s3",
-            statement="head_object",
+        head_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="head_object",
             params={"bucket": bucket, "key": test_key},
         )
         rows = data_to_rows(head_resp.data)
@@ -157,9 +161,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        del_resp = client.mcp_execute(
-            connector="s3",
-            action="delete_object",
+        del_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="delete_object",
             params={"bucket": bucket, "key": test_key},
         )
         assert_check(del_resp.success, "Delete object succeeded")
@@ -173,9 +177,9 @@ def main() -> None:
     print("----------------------------------------------")
 
     try:
-        verify_resp = client.mcp_query(
-            connector="s3",
-            statement="list_objects",
+        verify_resp = client.query_connector(
+            user_token=user_token, connector_name="s3",
+            operation="list_objects",
             params={"bucket": bucket, "prefix": test_key},
         )
         rows = data_to_rows(verify_resp.data)

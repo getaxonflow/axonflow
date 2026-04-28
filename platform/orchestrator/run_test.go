@@ -2877,10 +2877,12 @@ func TestGetPlanStatusHandler_ResponseFormat(t *testing.T) {
 
 // mockPolicyEngineForMAP implements the dynamicPolicyEngine interface for testing
 type mockPolicyEngineForMAP struct {
-	result *PolicyEvaluationResult
+	result   *PolicyEvaluationResult
+	captured []OrchestratorRequest // captures every request passed to EvaluateDynamicPolicies
 }
 
 func (m *mockPolicyEngineForMAP) EvaluateDynamicPolicies(ctx context.Context, req OrchestratorRequest) *PolicyEvaluationResult {
+	m.captured = append(m.captured, req)
 	if m.result != nil {
 		return m.result
 	}
@@ -3074,6 +3076,113 @@ func TestExecutePlanHandler_PolicyAllowed(t *testing.T) {
 				t.Error("Expected PolicyInfo.Allowed=true for allowed request")
 			}
 		}
+	}
+}
+
+// TestExecutePlanHandler_HeaderOrgWinsOverBody verifies that X-Org-ID and
+// X-Tenant-ID set by the agent's auth chain are the authoritative identity
+// across BOTH req.User AND req.Client["org_id"]/["tenant_id"], not just one
+// surface. Without this, a direct-orchestrator caller could send a body with
+// `client.org_id = "evil"` while the agent's header said `X-Org-ID: real`,
+// and the policy-evaluation path (which builds policyClient from req.Client)
+// would run under "evil" while replay tracking (which reads req.User.OrgID)
+// would run under "real". Regression test for the post-#1741 review finding.
+func TestExecutePlanHandler_HeaderOrgWinsOverBody(t *testing.T) {
+	oldPlanService := planService
+	oldPolicyEngine := dynamicPolicyEngine
+	oldWorkflowEngine := workflowEngine
+	oldAuditLogger := auditLogger
+	defer func() {
+		planService = oldPlanService
+		dynamicPolicyEngine = oldPolicyEngine
+		workflowEngine = oldWorkflowEngine
+		auditLogger = oldAuditLogger
+	}()
+
+	const realOrg = "real-org"
+	const realTenant = "real-tenant"
+	const evilOrg = "evil-org"
+	const evilTenant = "evil-tenant"
+
+	// Plan is owned by the real org (matches the header). The body's evil-org
+	// must NOT be used as the lookup key — if it were, the lookup would 404.
+	mockRepo := planning.NewMockRepository()
+	testPlan := &planning.Plan{
+		PlanID:             "plan_hdr_wins",
+		Status:             planning.PlanStatusPending,
+		StepCount:          1,
+		Query:              "harmless query",
+		Domain:             "generic",
+		OrgID:              realOrg,
+		WorkflowDefinition: json.RawMessage(`{"metadata":{"name":"test"},"spec":{"steps":[]}}`),
+		ExpiresAt:          time.Now().Add(time.Hour),
+		CreatedAt:          time.Now(),
+	}
+	if err := mockRepo.SavePlan(context.Background(), testPlan); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	planService = planning.NewService(mockRepo)
+
+	// Capturing policy engine — we want to read what Client.OrgID it received
+	capturingEngine := &mockPolicyEngineForMAP{
+		result: &PolicyEvaluationResult{
+			Allowed:         false, // block to short-circuit the rest of the handler cleanly
+			AppliedPolicies: []string{"test-block"},
+		},
+	}
+	dynamicPolicyEngine = capturingEngine
+
+	workflowEngine = NewWorkflowEngine()
+	auditLogger = NewAuditLogger("")
+
+	// Body claims evil-org and evil-tenant; headers say real-org / real-tenant.
+	reqBody := PlanRequest{
+		Query: "test",
+		User: UserContext{
+			ID:       1,
+			Email:    "user@example.com",
+			TenantID: evilTenant,
+			OrgID:    evilOrg,
+		},
+		Client: map[string]interface{}{
+			"id":        "evil-client",
+			"org_id":    evilOrg,
+			"tenant_id": evilTenant,
+		},
+		Context: map[string]interface{}{
+			"plan_id": "plan_hdr_wins",
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/api/v1/plan/execute", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Org-ID", realOrg)
+	req.Header.Set("X-Tenant-ID", realTenant)
+	w := httptest.NewRecorder()
+
+	executePlanHandler(w, req)
+
+	// Plan must have been resolved under realOrg — if the handler had used
+	// the body's evil-org as the lookup key the response would be 404 plan
+	// not found, never reaching policy evaluation.
+	if len(capturingEngine.captured) == 0 {
+		t.Fatalf("policy engine was not called — plan lookup likely used the wrong org (status=%d, body=%s)", w.Code, w.Body.String())
+	}
+	got := capturingEngine.captured[0]
+
+	if got.Client.OrgID != realOrg {
+		t.Errorf("policy evaluation saw Client.OrgID=%q, want %q (body claimed %q; header said %q)",
+			got.Client.OrgID, realOrg, evilOrg, realOrg)
+	}
+	if got.Client.TenantID != realTenant {
+		t.Errorf("policy evaluation saw Client.TenantID=%q, want %q (body claimed %q; header said %q)",
+			got.Client.TenantID, realTenant, evilTenant, realTenant)
+	}
+	if got.User.OrgID != realOrg {
+		t.Errorf("policy evaluation saw User.OrgID=%q, want %q", got.User.OrgID, realOrg)
+	}
+	if got.User.TenantID != realTenant {
+		t.Errorf("policy evaluation saw User.TenantID=%q, want %q", got.User.TenantID, realTenant)
 	}
 }
 

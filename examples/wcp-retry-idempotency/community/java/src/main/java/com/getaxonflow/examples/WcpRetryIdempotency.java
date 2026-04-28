@@ -25,8 +25,8 @@ public class WcpRetryIdempotency {
 
     public static void main(String[] args) {
         String endpoint = envOrDefault("AXONFLOW_BASE_URL", "http://localhost:8080");
-        String clientId = mustEnv("AXONFLOW_CLIENT_ID");
-        String clientSecret = mustEnv("AXONFLOW_CLIENT_SECRET");
+        String clientId = envOrDefault("AXONFLOW_CLIENT_ID", "demo");
+        String clientSecret = envOrDefault("AXONFLOW_CLIENT_SECRET", "demo-secret");
 
         AxonFlow client = AxonFlow.create(
                 AxonFlowConfig.builder()

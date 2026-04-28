@@ -1,15 +1,19 @@
 /**
  * AxonFlow Hello World - TypeScript
  *
- * The simplest example of using AxonFlow SDK with Gateway Mode.
- * Gateway Mode: Pre-check policies, make your own LLM call, then audit.
+ * The simplest example of using AxonFlow SDK. Tests policy evaluation
+ * (no LLM call): safe query is approved, SQL injection is blocked,
+ * PII (SSN) is approved with redaction. Mirrors the Go/Python/Java
+ * hello-world variants.
+ *
+ * For Gateway Mode (pre-check + LLM call + audit), see
+ *   examples/integrations/gateway-mode/typescript/
  *
  * VALIDATION: This example exits with code 1 if any assertion fails.
  */
 
 import "dotenv/config";
 import { AxonFlow } from "@axonflow/sdk";
-import OpenAI from "openai";
 
 const failures: string[] = [];
 
@@ -22,8 +26,6 @@ function assertCheck(condition: boolean, message: string): void {
   }
 }
 
-// Initialize AxonFlow client with OAuth2-style credentials
-// Uses AXONFLOW_ENDPOINT for self-hosted, or set AXONFLOW_TRY=1 for try.getaxonflow.com
 const axonflow = new AxonFlow({
   endpoint:
     process.env.AXONFLOW_ENDPOINT ||
@@ -31,97 +33,70 @@ const axonflow = new AxonFlow({
     "http://localhost:8080",
   clientId: process.env.AXONFLOW_CLIENT_ID || "demo",
   clientSecret: process.env.AXONFLOW_CLIENT_SECRET || "demo-secret",
-  debug: true,
 });
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || "",
-});
+const userToken = process.env.AXONFLOW_USER_TOKEN || "hello-world-user";
 
 async function main() {
-  const query = "What is the capital of France?";
+  console.log("AxonFlow Hello World - TypeScript");
+  console.log("========================================\n");
 
-  console.log("AxonFlow Hello World - Gateway Mode\n");
-  console.log(`Query: "${query}"\n`);
-
+  // Test 1: Safe Query - should be approved
+  console.log("Test 1: Safe Query");
+  console.log("------------------");
   try {
-    // Step 1: Pre-check with AxonFlow policies
-    console.log("Step 1: Policy pre-check...");
-    const preCheck = await axonflow.getPolicyApprovedContext({
-      userToken: process.env.AXONFLOW_USER_TOKEN || "demo-user",
-      query,
-      context: { example: "hello-world" },
+    const r = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "What is the weather today?",
     });
-
-    assertCheck(preCheck.contextId !== "", "contextId is not empty");
-
-    if (!preCheck.approved) {
-      console.log(`BLOCKED: ${preCheck.blockReason}`);
-      assertCheck(preCheck.blockReason !== "", "blockReason provided for blocked request");
-      console.log(`Policies: ${preCheck.policies?.join(", ")}`);
-    } else {
-      console.log(`   Approved! Context ID: ${preCheck.contextId}\n`);
-      assertCheck(preCheck.approved === true, "Pre-check approved for safe query");
-
-      // Step 2: Make your own LLM call
-      console.log("Step 2: Calling OpenAI...");
-      const startTime = Date.now();
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: query }],
-        max_tokens: 100,
-      });
-      const latencyMs = Date.now() - startTime;
-
-      const response = completion.choices[0]?.message?.content || "";
-      assertCheck(response !== "", "OpenAI response is not empty");
-      console.log(`   Response received in ${latencyMs}ms\n`);
-
-      // Step 3: Audit the call
-      console.log("Step 3: Auditing...");
-      await axonflow.auditLLMCall({
-        contextId: preCheck.contextId,
-        responseSummary: response.substring(0, 100),
-        provider: "openai",
-        model: "gpt-4o-mini",
-        tokenUsage: {
-          promptTokens: completion.usage?.prompt_tokens || 0,
-          completionTokens: completion.usage?.completion_tokens || 0,
-          totalTokens: completion.usage?.total_tokens || 0,
-        },
-        latencyMs,
-      });
-      console.log("   Audit logged!\n");
-      assertCheck(true, "Audit call completed successfully");
-
-      // Display result
-      console.log("=".repeat(50));
-      console.log("Result:");
-      console.log("=".repeat(50));
-      console.log(response);
-    }
-
-    // Summary
-    console.log("\n" + "=".repeat(50));
-    if (failures.length === 0) {
-      console.log("✓ ALL ASSERTIONS PASSED");
-    } else {
-      console.log(`❌ ${failures.length} ASSERTION(S) FAILED:`);
-      failures.forEach((f) => console.log(`   - ${f}`));
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    if (errorMessage.includes("blocked") || errorMessage.includes("Policy")) {
-      console.log("Request blocked by policy:", errorMessage);
-    } else {
-      console.error("Error:", errorMessage);
-      failures.push(`Unexpected error: ${errorMessage}`);
-    }
+    assertCheck(r.approved === true, "Safe query is approved");
+    assertCheck(typeof r.contextId === "string" && r.contextId !== "", "Safe query returns context ID");
+  } catch (err) {
+    failures.push(`Safe query unexpected error: ${err instanceof Error ? err.message : String(err)}`);
   }
+  console.log();
 
-  process.exit(failures.length > 0 ? 1 : 0);
+  // Test 2: SQL Injection - should be blocked
+  console.log("Test 2: SQL Injection");
+  console.log("---------------------");
+  try {
+    const r = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "SELECT * FROM users; DROP TABLE users;",
+    });
+    assertCheck(r.approved === false, "SQLi query is blocked");
+    assertCheck(typeof r.blockReason === "string" && r.blockReason !== "", "SQLi query has block reason");
+    if (r.blockReason) console.log(`   Block reason: ${r.blockReason}`);
+  } catch (err) {
+    failures.push(`SQLi query unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  console.log();
+
+  // Test 3: PII (SSN) - should be approved (redact mode)
+  console.log("Test 3: PII (SSN)");
+  console.log("-----------------");
+  try {
+    const r = await axonflow.getPolicyApprovedContext({
+      userToken,
+      query: "Process payment for SSN 123-45-6789",
+    });
+    assertCheck(r.approved === true, "PII query is approved (redact mode)");
+    assertCheck(Array.isArray(r.policies) && r.policies.length > 0, "PII query triggers policy detection");
+    if (r.policies?.length) console.log(`   Policies: ${r.policies.join(", ")}`);
+  } catch (err) {
+    failures.push(`PII query unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  console.log();
+
+  console.log("========================================");
+  if (failures.length === 0) {
+    console.log("✓ ALL TESTS PASSED");
+    process.exit(0);
+  } else {
+    console.log(`❌ ${failures.length} TEST(S) FAILED:`);
+    failures.forEach((f) => console.log(`   - ${f}`));
+    process.exit(1);
+  }
 }
 
 main();

@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v5"
+	"github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 var failures []string

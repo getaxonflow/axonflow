@@ -17,7 +17,7 @@ import asyncio
 import os
 import sys
 
-from axonflow import AxonFlowClient
+from axonflow import AxonFlow
 
 failures: list[str] = []
 
@@ -40,7 +40,11 @@ async def main() -> int:
     print(f"Target: {endpoint}")
     print()
 
-    client = AxonFlowClient(endpoint=endpoint)
+    client = AxonFlow(
+        endpoint=endpoint,
+        client_id=os.environ.get("AXONFLOW_CLIENT_ID", "demo"),
+        client_secret=os.environ.get("AXONFLOW_CLIENT_SECRET", "demo-secret"),
+    )
 
     try:
         # Test 1: List providers
@@ -60,7 +64,8 @@ async def main() -> int:
         # Test 2: Per-request OpenAI
         print("2. Process - Per-request provider selection (OpenAI)")
         try:
-            resp = await client.process(
+            resp = await client.proxy_llm_call(
+                user_token="test-user",
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "openai"},
@@ -85,7 +90,8 @@ async def main() -> int:
         # Test 3: Per-request Anthropic
         print("3. Process - Per-request provider selection (Anthropic)")
         try:
-            resp = await client.process(
+            resp = await client.proxy_llm_call(
+                user_token="test-user",
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "anthropic"},
@@ -104,7 +110,8 @@ async def main() -> int:
         # Test 4: Per-request Gemini
         print("4. Process - Per-request provider selection (Gemini)")
         try:
-            resp = await client.process(
+            resp = await client.proxy_llm_call(
+                user_token="test-user",
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "gemini"},
@@ -125,10 +132,10 @@ async def main() -> int:
         providers_used: dict[str, int] = {}
         for i in range(5):
             try:
-                resp = await client.process(
+                resp = await client.proxy_llm_call(
+                    user_token="test-user",
                     query="Hello",
                     request_type="chat",
-                    user={"email": "test@example.com", "role": "user"},
                 )
                 if hasattr(resp, "provider_info") and resp.provider_info:
                     provider = resp.provider_info.provider

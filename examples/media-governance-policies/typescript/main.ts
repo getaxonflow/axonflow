@@ -338,12 +338,12 @@ async function main(): Promise<void> {
     const configResp = await client.getMediaGovernanceConfig();
 
     assertCheck(
-      configResp.tenant_id !== undefined,
-      `Response contains 'tenant_id' field (tenant_id=${configResp.tenant_id})`
+      configResp.tenantId !== undefined,
+      `Response contains 'tenantId' field (tenantId=${configResp.tenantId})`
     );
 
     console.log(
-      `   Tenant: ${configResp.tenant_id} | Enabled: ${configResp.enabled}`
+      `   Tenant: ${configResp.tenantId} | Enabled: ${configResp.enabled}`
     );
   } catch (error) {
     console.log(`   FAIL: getMediaGovernanceConfig failed: ${error}`);

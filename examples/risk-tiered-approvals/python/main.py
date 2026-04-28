@@ -11,7 +11,12 @@ VALIDATION: This example exits with code 1 if any assertion fails.
 
 Prerequisites:
   - AxonFlow Agent running on localhost:8080
-  - Evaluation or Enterprise license (HITL requires Evaluation+)
+  - Tests 1, 2, 4 (workflow + step gate + complete) run on any tier
+  - Test 3 (HITL queue listing) requires the Enterprise build — the
+    /api/v1/hitl/queue endpoint is registered only in the enterprise build
+    (see platform/agent/hitl/hitl_community.go for the Community/Evaluation
+    stub vs handler.go gated by //go:build enterprise); on Community and
+    Evaluation it returns 404 and Test 3 SKIPs cleanly
 
 Run with: python main.py
 """
@@ -98,7 +103,11 @@ async def main() -> int:
         for item in hitl_result.items:
             print(f"   -> {item.request_id}: severity={item.severity}, status={item.status}")
     except Exception as e:
-        print(f"   SKIP: HITL queue not available ({e}) - requires Evaluation+ license")
+        # Community/Evaluation builds register only /api/v1/hitl/status, not the
+        # /api/v1/hitl/queue endpoint the SDK calls here. A 404 here means the
+        # running agent isn't built with enterprise. Surface the underlying
+        # error so other failure modes (network, auth) are still visible.
+        print(f"   SKIP: HITL queue endpoint unavailable ({e}) - requires the Enterprise build of axonflow-agent")
     print()
 
     # Test 4: Complete workflow

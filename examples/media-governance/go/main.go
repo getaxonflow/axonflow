@@ -19,7 +19,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v5"
+	"github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 // Minimal valid 1x1 white pixel JPEG encoded as base64.

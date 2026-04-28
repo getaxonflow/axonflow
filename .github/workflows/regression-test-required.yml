@@ -1,0 +1,213 @@
+name: Regression Test Required
+
+# Implements the W12 rule from the Quality Freeze epic (#1697 / QF-19):
+# every bug-fix PR must include a test at the layer that failed.
+#
+# A PR is treated as a bug fix when:
+#   * its title matches the Conventional Commits "fix" type — i.e. starts with
+#     "fix:", "fix(scope):", "fix!:" (breaking), or "fix(scope)!:" — OR
+#   * it carries the "bug" label
+#
+# Escape hatch: the "regression-test-exempt" label skips the gate. Use only
+# when a regression test is genuinely impractical (e.g. infra-only fix, build
+# config, generated artifact) and justify in the PR body.
+#
+# See CONTRIBUTING.md ("Regression-test-per-bug") for the full rationale and
+# accepted test-file patterns.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, labeled, unlabeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check-regression-test:
+    name: Check Regression Test Present
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR head with merge-base history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine if PR is a bug fix
+        id: classify
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          echo "PR title: $PR_TITLE"
+          echo "Labels: $LABELS_JSON"
+
+          is_bug_fix=false
+          has_exempt=false
+
+          # Match the Conventional Commits "fix" type, including the breaking
+          # variants without scope ("fix!:") that the previous glob check missed.
+          # Pattern must live in a variable: an inline regex with parentheses
+          # in `[[ =~ ... ]]` triggers a bash parser error on unescaped ')'.
+          fix_title_regex='^fix(\([^)]*\))?!?:'
+          if [[ "$PR_TITLE" =~ $fix_title_regex ]]; then
+            is_bug_fix=true
+          fi
+
+          if echo "$LABELS_JSON" | grep -q '"bug"'; then
+            is_bug_fix=true
+          fi
+
+          if echo "$LABELS_JSON" | grep -q '"regression-test-exempt"'; then
+            has_exempt=true
+          fi
+
+          echo "is_bug_fix=$is_bug_fix" >> "$GITHUB_OUTPUT"
+          echo "has_exempt=$has_exempt" >> "$GITHUB_OUTPUT"
+
+      - name: Skip — not a bug fix
+        if: steps.classify.outputs.is_bug_fix != 'true'
+        run: |
+          echo "PR is not classified as a bug fix (title does not match a Conventional Commits 'fix' type, and 'bug' label not applied)."
+          echo "Regression-test-per-bug gate does not apply."
+
+      - name: Skip — exempt label applied
+        if: steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt == 'true'
+        run: |
+          echo "::warning::PR carries 'regression-test-exempt' label — regression-test-per-bug gate skipped."
+          echo "Reviewers: confirm the PR body justifies why a regression test is impractical."
+          echo "See CONTRIBUTING.md ('Regression-test-per-bug') for accepted exemption rationales."
+
+      - name: Verify a test file is present in the diff
+        if: steps.classify.outputs.is_bug_fix == 'true' && steps.classify.outputs.has_exempt != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "Diffing $BASE_SHA...$HEAD_SHA"
+          # We capture TWO diffs:
+          #   1. All changed paths (for the diagnostic listing and the
+          #      "deletion/rename does not satisfy the gate" warning)
+          #   2. Added or Modified paths only — the gate ONLY passes on test
+          #      files that show up in this set. Deletions (D), pure renames
+          #      (R, with --no-renames forcing them to A+D so D is filtered),
+          #      and copies (C) don't count as new regression coverage.
+          #
+          # Why: the previous bare `git diff --name-only` accepted any changed
+          # test-ish path, so the gate could be satisfied by deleting
+          # foo_test.go, by a rename of an unrelated test, or by touching a
+          # comment-only line in a tests/ fixture. Bug fixes need ADDED or
+          # MODIFIED regression coverage at the failing layer.
+          all_diff=$(mktemp)
+          am_diff=$(mktemp)
+          if ! git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$all_diff"; then
+            echo "::error::git diff failed for $BASE_SHA...$HEAD_SHA — the base or head SHA may be unreachable (force-push?). Re-running the workflow on a fresh PR sync usually fixes this."
+            exit 1
+          fi
+          if ! git diff --diff-filter=AM --no-renames --name-only "$BASE_SHA...$HEAD_SHA" > "$am_diff"; then
+            echo "::error::git diff (--diff-filter=AM) failed for $BASE_SHA...$HEAD_SHA."
+            exit 1
+          fi
+          mapfile -t changed_files < "$all_diff"
+          mapfile -t am_files < "$am_diff"
+          rm -f "$all_diff" "$am_diff"
+
+          if (( ${#changed_files[@]} == 0 )); then
+            echo "::error::Diff produced no changed files. Refusing to pass — re-run after pushing or syncing the PR."
+            exit 1
+          fi
+
+          echo "Changed files (all operations):"
+          printf '  %s\n' "${changed_files[@]}"
+          echo
+          echo "Added or Modified files (eligible for regression-test credit):"
+          if (( ${#am_files[@]} == 0 )); then
+            echo "  (none)"
+          else
+            printf '  %s\n' "${am_files[@]}"
+          fi
+          echo
+
+          # The "under tests/ directory" branch is restricted to code extensions
+          # so a bug-fix PR can't satisfy the gate by editing a JSON snapshot, a
+          # YAML fixture, a markdown helper, or any other non-executable file
+          # under tests/. The naming-convention branches (foo_test.go, FooTest.java,
+          # *.test.tsx, etc.) already imply code; only the directory fallback
+          # needed narrowing.
+          test_pattern='(_test\.go$|_test\.py$|\.test\.tsx?$|\.spec\.tsx?$|Test\.java$|Tests\.java$|IT\.java$|(^|/)tests?/.*\.(go|py|tsx?|java|sh|rb|rs|kt)$)'
+
+          matched=()
+          for f in "${am_files[@]}"; do
+            if [[ "$f" =~ $test_pattern ]]; then
+              matched+=("$f")
+            fi
+          done
+
+          if (( ${#matched[@]} > 0 )); then
+            echo "Found ${#matched[@]} added or modified test file(s) in the diff:"
+            printf '  %s\n' "${matched[@]}"
+            echo
+            echo "Regression-test-per-bug gate: PASS"
+            exit 0
+          fi
+
+          # Surface deletion/rename traps so authors know why they didn't pass.
+          touched_but_not_am=()
+          for f in "${changed_files[@]}"; do
+            if [[ "$f" =~ $test_pattern ]]; then
+              found_in_am=false
+              for am in "${am_files[@]}"; do
+                if [[ "$am" == "$f" ]]; then
+                  found_in_am=true
+                  break
+                fi
+              done
+              if [[ "$found_in_am" == "false" ]]; then
+                touched_but_not_am+=("$f")
+              fi
+            fi
+          done
+
+          if (( ${#touched_but_not_am[@]} > 0 )); then
+            echo "::warning::Test paths touched only via deletion or rename (not eligible):"
+            printf '  %s\n' "${touched_but_not_am[@]}"
+            echo "Deletions and pure renames don't satisfy the gate — add or modify a test."
+            echo
+          fi
+
+          echo "::error::No added or modified regression test found in this bug-fix PR."
+          echo
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "REGRESSION-TEST-PER-BUG GATE FAILED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo
+          echo "This PR is classified as a bug fix but adds no ADDED or MODIFIED test"
+          echo "at the layer that failed. Per the W12 rule (Quality Freeze epic #1697"
+          echo "/ QF-19), every bug fix must include a regression test that would have"
+          echo "caught the bug. Deletions and pure renames of existing tests don't count."
+          echo
+          echo "Accepted test-file patterns:"
+          echo "  *_test.go                                   Go tests"
+          echo "  *_test.py                                   Python tests"
+          echo "  *.test.ts(x)                                TypeScript tests"
+          echo "  *.spec.ts(x)                                TypeScript spec tests"
+          echo "  *Test.java                                  JUnit tests"
+          echo "  *Tests.java                                 JUnit tests"
+          echo "  *IT.java                                    Java integration tests"
+          echo "  tests/** or test/** with a code extension   .go .py .ts .tsx .java"
+          echo "                                              .sh .rb .rs .kt only"
+          echo
+          echo "Non-code files under tests/ (JSON snapshots, YAML fixtures, markdown,"
+          echo "etc.) DO NOT satisfy the gate — the test must exercise the failing layer."
+          echo
+          echo "If a regression test is genuinely impractical (infra-only fix,"
+          echo "build config, generated artifact, etc.), apply the"
+          echo "'regression-test-exempt' label and justify in the PR body."
+          echo
+          echo "See CONTRIBUTING.md ('Regression-test-per-bug') for the full guidance."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 1

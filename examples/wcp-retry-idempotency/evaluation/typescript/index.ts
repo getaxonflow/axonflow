@@ -63,8 +63,8 @@ async function deletePolicy(baseURL: string, clientId: string, clientSecret: str
 
 async function main(): Promise<void> {
   const endpoint = process.env.AXONFLOW_BASE_URL || 'http://localhost:8080';
-  const clientId = mustEnv('AXONFLOW_CLIENT_ID');
-  const clientSecret = mustEnv('AXONFLOW_CLIENT_SECRET');
+  const clientId = process.env.AXONFLOW_CLIENT_ID || 'demo';
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET || 'demo-secret';
 
   banner('Retry-aware policy (TypeScript SDK, Evaluation tier)');
 

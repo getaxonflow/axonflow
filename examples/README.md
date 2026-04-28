@@ -141,6 +141,26 @@ AXONFLOW_CLIENT_ID=your-client-id
 AXONFLOW_CLIENT_SECRET=your-client-secret
 ```
 
+## Python prerequisites
+
+The Python examples target the **current** `axonflow` PyPI release, which requires
+**Python 3.10 or newer**. A few examples (notably `retry-semantics/python` and
+`map-lifecycle/python`) use SDK methods, types, or async patterns that were added
+after `axonflow==4.1.0` and won't import on Python 3.9 with that version pinned.
+
+If you see a `Traceback` immediately on import or a missing-attribute error like
+`AttributeError: 'AxonFlow' object has no attribute '...'` when running an example,
+you are likely on Python 3.9 with an old SDK. Either:
+
+- **Recommended:** Use Python 3.11+ and `pip install -U axonflow` to pull the latest
+  SDK release, or
+- Build the SDK from source against your local checkout:
+  `pip install -e /path/to/axonflow-sdk-python`
+
+The system `python3` on macOS Big Sur / Monterey defaults to 3.9 — create a venv on
+a newer interpreter (`python3.11 -m venv .venv && source .venv/bin/activate`) before
+running these examples.
+
 ## Running with Docker
 
 ```bash

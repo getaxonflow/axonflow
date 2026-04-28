@@ -276,6 +276,7 @@ type UserContext struct {
 	Region      string   `json:"region"` // User's region for geo-based routing policies
 	Permissions []string `json:"permissions"`
 	TenantID    string   `json:"tenant_id"`
+	OrgID       string   `json:"org_id"` // Org for multi-tenant isolation; populated from X-Org-ID header set by the agent
 }
 
 type ClientContext struct {
@@ -1600,6 +1601,7 @@ func processRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
 		req.Client.OrgID = orgID
+		req.User.OrgID = orgID
 		// Defense-in-depth: warn if incoming org_id doesn't match deployment ORG_ID.
 		// The agent should always send the deployment ORG_ID (validated at startup).
 		// A mismatch here means either a misconfigured agent or direct orchestrator access.
@@ -2948,6 +2950,22 @@ func executeWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Identity from agent-set headers takes precedence over the JSON body.
+	// req.User.OrgID specifically: the agent's User struct (platform/agent/run.go)
+	// has TenantID but NOT OrgID, so even when the agent forwards the body it
+	// can't carry the org. Without this header read, the workflow engine's
+	// replay recorder writes execution rows with org_id="" while the read-side
+	// /api/v1/executions endpoint filters by the agent's X-Org-ID — producing
+	// zero matches. TenantID is already in the body but we re-derive from the
+	// header for defense-in-depth so direct-orchestrator callers can't claim a
+	// different identity than the agent authenticated.
+	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+		req.User.TenantID = tenantID
+	}
+	if orgID := r.Header.Get("X-Org-ID"); orgID != "" {
+		req.User.OrgID = orgID
+	}
+
 	// Validate workflow definition
 	if req.Workflow.Metadata.Name == "" {
 		sendErrorResponse(w, "Workflow name is required", http.StatusBadRequest)
@@ -3087,6 +3105,42 @@ type PlanRequest struct {
 	Context       map[string]interface{} `json:"context"`
 }
 
+// applyAuthoritativeIdentity overlays X-Org-ID / X-Tenant-ID headers (set by the
+// agent's auth chain) onto a PlanRequest's User and Client surfaces.
+//
+// Why both surfaces: the same handler reads identity from req.User.{OrgID,
+// TenantID} for some downstream consumers (replay tracking, plan storage) and
+// from req.Client["org_id"] / ["tenant_id"] for others (policy evaluation,
+// audit logging). Without normalizing both, a direct-orchestrator caller that
+// bypasses the agent could supply a body `client.org_id` that disagrees with
+// the header — and policy evaluation would run under the body value while
+// replay tracking ran under the header value. The agent's auth chain is the
+// only signed source of truth, so headers always win when present.
+//
+// Headers are applied only when non-empty; missing headers leave the body
+// values intact (which is the correct behavior for callers that come through
+// the agent — the agent always sets both).
+func applyAuthoritativeIdentity(r *http.Request, req *PlanRequest) {
+	orgID := r.Header.Get("X-Org-ID")
+	tenantID := r.Header.Get("X-Tenant-ID")
+
+	if orgID == "" && tenantID == "" {
+		return
+	}
+	if req.Client == nil {
+		req.Client = map[string]interface{}{}
+	}
+
+	if orgID != "" {
+		req.User.OrgID = orgID
+		req.Client["org_id"] = orgID
+	}
+	if tenantID != "" {
+		req.User.TenantID = tenantID
+		req.Client["tenant_id"] = tenantID
+	}
+}
+
 // ResponsePlanStep represents a step in the generated plan (matches SDK PlanStep)
 type ResponsePlanStep struct {
 	ID          string                 `json:"id"`
@@ -3160,6 +3214,12 @@ func planRequestHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, "Authentication required: requests must be routed through AxonFlow Agent", http.StatusUnauthorized)
 		return
 	}
+
+	// Header-derived identity from the agent's auth chain wins over any body
+	// values for org/tenant. Without this, a direct-orchestrator caller could
+	// have the plan stored under a different org than the agent authenticated
+	// (createReq.OrgID below reads from req.Client["org_id"]).
+	applyAuthoritativeIdentity(r, &req)
 
 	// Extract client info for audit logging and multi-tenant logging
 	clientName := "unknown"
@@ -3349,7 +3409,17 @@ func executePlanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract orgID from client info for authorization
+	// Header-derived identity from the agent's auth chain wins over any body
+	// values for org/tenant on both User and Client surfaces. Downstream
+	// consumers in this handler read from both surfaces — replay tracking
+	// uses req.User.OrgID; policy evaluation builds policyClient from
+	// req.Client["org_id"] further down — so leaving them out of sync would
+	// let a direct-orchestrator caller execute under one org for tracking
+	// purposes and have policies evaluated under another.
+	applyAuthoritativeIdentity(r, &req)
+
+	// Extract orgID for plan retrieval (GetPlanForExecution authz check).
+	// Read from req.Client now that headers have overlaid it.
 	orgID := ""
 	if req.Client != nil {
 		if org, ok := req.Client["org_id"].(string); ok {

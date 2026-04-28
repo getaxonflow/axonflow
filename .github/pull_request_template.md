@@ -126,6 +126,20 @@ Paste benchmark results here
 - [ ] All tests pass locally (`go test ./...`)
 - [ ] Manual testing completed
 
+### Regression test (bug-fix PRs)
+
+For PRs whose title starts with `fix(` or that carry the `bug` label, the
+`regression-test-required` CI gate (QF-19) will fail unless the diff adds at
+least one test file at the layer that failed.
+
+- [ ] Bug-fix PR includes a regression test that would have caught the bug
+- [ ] OR the `regression-test-exempt` label is applied with a justification below
+
+**If exempt, why a regression test is impractical:**
+<!-- e.g. "infra-only change to CFN template", "generated artifact regen",
+"test harness wiring with no executable behaviour change". See CONTRIBUTING.md
+("Regression-test-per-bug") for accepted patterns. -->
+
 ### Cross-plane parity (ADR-046)
 - [ ] If this PR extends `StepGateResponse`, `StepGateHTTPResponse`, or any
       `workflow_steps` / `hitl_approval_queue` field: the projection through

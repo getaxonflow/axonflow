@@ -77,7 +77,7 @@ async def main() -> int:
         print("-" * 28)
         try:
             result = await client.get_policy_approved_context(
-                user_token=get_env("AXONFLOW_USER_TOKEN", ""),
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", ""),
                 query="What are the best practices for deploying AI models?",
             )
         except Exception as e:
@@ -97,7 +97,7 @@ async def main() -> int:
 
         try:
             result = await client.get_policy_approved_context(
-                user_token=get_env("AXONFLOW_USER_TOKEN", ""),
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", ""),
                 query="Look up the customer with SSN 123-45-6789 and return their balance",
             )
         except Exception as e:
@@ -146,7 +146,7 @@ async def main() -> int:
 
         try:
             result = await client.get_policy_approved_context(
-                user_token=get_env("AXONFLOW_USER_TOKEN", ""),
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", ""),
                 query="Run this: SELECT name FROM users UNION SELECT password FROM admin_users",
             )
         except Exception as e:
@@ -177,7 +177,7 @@ async def main() -> int:
         print("-" * 33)
         try:
             llm_resp = await client.proxy_llm_call(
-                user_token=get_env("AXONFLOW_USER_TOKEN", ""),
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", ""),
                 query="Explain cloud computing in one sentence.",
                 request_type="chat",
             )

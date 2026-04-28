@@ -185,8 +185,8 @@ async def act2(client: AxonFlow) -> None:
 
 async def main() -> None:
     endpoint = os.environ.get("AXONFLOW_BASE_URL", "http://localhost:8080")
-    client_id = must_env("AXONFLOW_CLIENT_ID")
-    client_secret = must_env("AXONFLOW_CLIENT_SECRET")
+    client_id = os.environ.get("AXONFLOW_CLIENT_ID", "demo")
+    client_secret = os.environ.get("AXONFLOW_CLIENT_SECRET", "demo-secret")
 
     client = AxonFlow(
         endpoint=endpoint,
