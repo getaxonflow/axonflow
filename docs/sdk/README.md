@@ -12,7 +12,7 @@ AxonFlow provides official SDKs in four languages for integrating LLM governance
 
 | SDK | Repository | Install |
 |-----|-----------|---------|
-| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v5` |
+| **Go** | [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) | `go get github.com/getaxonflow/axonflow-sdk-go/v6` |
 | **Python** | [github.com/getaxonflow/axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) | `pip install axonflow` |
 | **TypeScript** | [github.com/getaxonflow/axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) | `npm install @axonflow/sdk` |
 | **Java** | [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) | See [Maven Central](#java) |
@@ -24,7 +24,7 @@ AxonFlow provides official SDKs in four languages for integrating LLM governance
 ### Go
 
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v5
+go get github.com/getaxonflow/axonflow-sdk-go/v6
 ```
 
 ```go
@@ -33,7 +33,7 @@ package main
 import (
     "context"
     "fmt"
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 func main() {
@@ -110,7 +110,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>6.1.0</version>
+    <version>6.2.0</version>
 </dependency>
 ```
 

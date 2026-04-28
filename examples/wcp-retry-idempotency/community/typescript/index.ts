@@ -49,8 +49,8 @@ function assertTrue(label: string, cond: boolean): void {
 
 async function main(): Promise<void> {
   const endpoint = process.env.AXONFLOW_BASE_URL || 'http://localhost:8080';
-  const clientId = mustEnv('AXONFLOW_CLIENT_ID');
-  const clientSecret = mustEnv('AXONFLOW_CLIENT_SECRET');
+  const clientId = process.env.AXONFLOW_CLIENT_ID || 'demo';
+  const clientSecret = process.env.AXONFLOW_CLIENT_SECRET || 'demo-secret';
 
   const client = new AxonFlow({ clientId, clientSecret, endpoint });
 

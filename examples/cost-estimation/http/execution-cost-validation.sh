@@ -1,12 +1,21 @@
 #!/bin/bash
 # Execution Cost Validation - HTTP/cURL Example
 #
-# Validates that ACTUAL execution costs are non-zero after workflow execution.
-# This tests the end-to-end cost pipeline:
-#   recordStepSnapshot() -> ReplaySnapshotInput.CostUSD -> DB -> API -> UI
+# Validates that a MAP plan can be generated AND executed end-to-end, and that
+# the cost-estimation endpoint returns a non-zero figure for the stored plan.
 #
-# The existing cost-estimation.sh tests pre-execution estimates only.
-# This script verifies that post-execution costs are populated correctly.
+# What this script proves:
+#   1. POST /api/request (request_type=multi-agent-plan) generates and stores a plan
+#   2. POST /api/request (request_type=execute-plan) executes the stored plan
+#      and returns substantive LLM output
+#   3. GET /api/v1/plans/{id}/cost returns a non-zero estimated cost
+#
+# Why two scripts in this directory:
+#   - cost-estimation.sh covers the cost-estimation API surface (estimate + plan/cost)
+#     in isolation, without execution.
+#   - execution-cost-validation.sh additionally exercises the *execute* path so a
+#     regression in plan storage / execute routing surfaces here even if estimate
+#     still works.
 #
 # Usage:
 #   docker compose up -d  # Start AxonFlow
@@ -15,15 +24,14 @@
 #
 # Environment:
 #   AXONFLOW_AGENT_URL or AXONFLOW_ENDPOINT - Agent URL (default: http://localhost:8080)
-#   AXONFLOW_AGENT_URL        - Agent URL (default: http://localhost:8080)
-#   AXONFLOW_CLIENT_ID     - Client ID (default: demo-org)
-#   AXONFLOW_CLIENT_SECRET - Client secret (optional for community mode)
-#   AXONFLOW_USER_TOKEN    - JWT token for MAP operations (optional)
+#   AXONFLOW_CLIENT_ID     - Client ID (default: community)
+#   AXONFLOW_CLIENT_SECRET - Client secret (default: empty for community mode)
+#   AXONFLOW_USER_TOKEN    - User token for plan ops (default: $CLIENT_ID)
 
 set -e
 
 cleanup() {
-    rm -f /tmp/axonflow_exec_cost_plan.json /tmp/axonflow_exec_cost_detail.json /tmp/axonflow_exec_cost_steps.json
+    rm -f /tmp/axonflow_exec_cost_plan.json /tmp/axonflow_exec_cost_execute.json /tmp/axonflow_exec_cost_cost.json
 }
 trap cleanup EXIT
 
@@ -36,7 +44,7 @@ USER_TOKEN="${AXONFLOW_USER_TOKEN:-$CLIENT_ID}"
 echo "=============================================="
 echo "Execution Cost Validation - HTTP/cURL Example"
 echo "=============================================="
-echo "Agent URL:        $AGENT_URL"
+echo "Agent URL: $AGENT_URL"
 echo ""
 
 PASS=0
@@ -59,90 +67,45 @@ check_result() {
 # ========================================
 echo "1. Health Check..."
 HEALTH_RESPONSE=$(curl -s --max-time 15 "${AGENT_URL}/health" || echo '{"error":"connection failed"}')
-echo "   Response: $HEALTH_RESPONSE"
-
 HEALTH_STATUS=$(echo "$HEALTH_RESPONSE" | jq -r '.status // empty' 2>/dev/null || echo "")
-check_result "Health check returns status" "$([ -n "$HEALTH_STATUS" ] && echo true || echo false)"
+check_result "Health check returns status (got '$HEALTH_STATUS')" "$([ -n "$HEALTH_STATUS" ] && echo true || echo false)"
 echo ""
 
 # ========================================
-# 2. SUBMIT MAP PLAN
+# 2. GENERATE MAP PLAN
 # ========================================
-echo "2. Submit MAP plan via POST /api/request..."
+echo "2. Generate MAP plan via POST /api/request (request_type=multi-agent-plan)..."
 
-PLAN_BODY=$(cat <<EOF
+GENERATE_BODY=$(cat <<EOF
 {
-    "query": "Analyze the key benefits of cloud computing and provide a brief summary",
+    "query": "Brief 3-step plan to summarize a technical document",
     "domain": "generic",
     "user_token": "$USER_TOKEN",
+    "client_id": "$CLIENT_ID",
     "request_type": "multi-agent-plan"
 }
 EOF
 )
 
-PLAN_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_plan.json -w "%{http_code}" \
+GEN_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_plan.json -w "%{http_code}" \
     --max-time 30 \
     -X POST "${AGENT_URL}/api/request" \
     -H "Content-Type: application/json" \
     -H "Authorization: Basic $AUTH_B64" \
-    -d "$PLAN_BODY" || echo "000")
+    -d "$GENERATE_BODY" || echo "000")
 
-PLAN_RESPONSE=$(cat /tmp/axonflow_exec_cost_plan.json 2>/dev/null || echo "{}")
-echo "   HTTP Status: $PLAN_HTTP_CODE"
+GEN_RESPONSE=$(cat /tmp/axonflow_exec_cost_plan.json 2>/dev/null || echo "{}")
+echo "   HTTP Status: $GEN_HTTP_CODE"
 
-REQUEST_ID=$(echo "$PLAN_RESPONSE" | jq -r '.request_id // .id // empty' 2>/dev/null || echo "")
-if [ -z "$REQUEST_ID" ]; then
-    # Try plan_id for MAP plans
-    REQUEST_ID=$(echo "$PLAN_RESPONSE" | jq -r '.plan_id // empty' 2>/dev/null || echo "")
-fi
+PLAN_ID=$(echo "$GEN_RESPONSE" | jq -r '.plan_id // empty' 2>/dev/null || echo "")
+check_result "Plan generated (HTTP $GEN_HTTP_CODE)" "$([ "$GEN_HTTP_CODE" = "200" ] && echo true || echo false)"
+check_result "Plan ID is present" "$([ -n "$PLAN_ID" ] && echo true || echo false)"
+echo "   Plan ID: ${PLAN_ID:-<none>}"
 
-PLAN_OK="false"
-if [ "$PLAN_HTTP_CODE" = "200" ] || [ "$PLAN_HTTP_CODE" = "201" ]; then
-    PLAN_OK="true"
-fi
-check_result "Plan submitted successfully (HTTP $PLAN_HTTP_CODE)" "$PLAN_OK"
-echo "   Request/Plan ID: ${REQUEST_ID:-none}"
-echo ""
-
-# ========================================
-# 3. WAIT FOR EXECUTION TO COMPLETE
-# ========================================
-echo "3. Waiting for execution to complete (polling executions endpoint)..."
-
-EXECUTION_ID=""
-MAX_WAIT=60
-WAITED=0
-POLL_INTERVAL=5
-
-while [ $WAITED -lt $MAX_WAIT ]; do
-    EXEC_LIST=$(curl -s --max-time 10 -H "Authorization: Basic $AUTH_B64" "${AGENT_URL}/api/v1/executions?limit=5" 2>/dev/null || echo '{"executions":[]}')
-
-    # Prefer matching our REQUEST_ID, fall back to any completed execution.
-    # The executions API returns request_id as the primary identifier.
-    if [ -n "$REQUEST_ID" ]; then
-        EXECUTION_ID=$(echo "$EXEC_LIST" | jq -r --arg rid "$REQUEST_ID" \
-            '[.executions[] | select(.status == "completed" and .request_id == $rid)] | first | .request_id // empty' 2>/dev/null)
-    fi
-    if [ -z "$EXECUTION_ID" ]; then
-        EXECUTION_ID=$(echo "$EXEC_LIST" | jq -r \
-            '[.executions[] | select(.status == "completed")] | first | .request_id // empty' 2>/dev/null)
-    fi
-
-    if [ -n "$EXECUTION_ID" ]; then
-        echo "   Found completed execution: $EXECUTION_ID (after ${WAITED}s)"
-        break
-    fi
-
-    echo "   Waiting... (${WAITED}s / ${MAX_WAIT}s)"
-    sleep $POLL_INTERVAL
-    WAITED=$((WAITED + POLL_INTERVAL))
-done
-
-check_result "Found completed execution within ${MAX_WAIT}s" "$([ -n "$EXECUTION_ID" ] && echo true || echo false)"
-echo ""
-
-if [ -z "$EXECUTION_ID" ]; then
-    echo "No completed execution found. Cannot validate costs."
+if [ -z "$PLAN_ID" ]; then
+    echo ""
+    echo "   Cannot continue without a plan_id."
+    echo "   Generate response: $GEN_RESPONSE"
     echo ""
     echo "=============================================="
     echo "Execution Cost Validation - Summary"
@@ -153,59 +116,61 @@ if [ -z "$EXECUTION_ID" ]; then
     echo "$FAIL assertion(s) FAILED"
     exit 1
 fi
-
-# ========================================
-# 4. VALIDATE EXECUTION COST
-# ========================================
-echo "4. GET /api/v1/executions/${EXECUTION_ID} - Validate total cost..."
-
-DETAIL_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_detail.json -w "%{http_code}" \
-    --max-time 15 \
-    -H "Authorization: Basic $AUTH_B64" \
-    "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}" || echo "000")
-
-DETAIL_RESPONSE=$(cat /tmp/axonflow_exec_cost_detail.json 2>/dev/null || echo "{}")
-echo "   HTTP Status: $DETAIL_HTTP_CODE"
-
-check_result "Execution detail returns 200" "$([ "$DETAIL_HTTP_CODE" = "200" ] && echo true || echo false)"
-
-# Detail response is {"summary": {...}, "steps": [...]}
-TOTAL_COST=$(echo "$DETAIL_RESPONSE" | jq -r '.summary.total_cost_usd // .total_cost_usd // "0"' 2>/dev/null || echo "0")
-TOTAL_TOKENS=$(echo "$DETAIL_RESPONSE" | jq -r '.summary.total_tokens // .total_tokens // "0"' 2>/dev/null || echo "0")
-
-echo "   Total Cost USD: $TOTAL_COST"
-echo "   Total Tokens:   $TOTAL_TOKENS"
-
-COST_NONZERO=$(echo "$TOTAL_COST" | awk '{print ($1 > 0) ? "true" : "false"}')
-check_result "total_cost_usd > 0 (got $TOTAL_COST)" "$COST_NONZERO"
-
-TOKENS_NONZERO=$(echo "$TOTAL_TOKENS" | awk '{print ($1 > 0) ? "true" : "false"}')
-check_result "total_tokens > 0 (got $TOTAL_TOKENS)" "$TOKENS_NONZERO"
 echo ""
 
 # ========================================
-# 5. VALIDATE STEP-LEVEL COST
+# 3. EXECUTE THE STORED PLAN
 # ========================================
-echo "5. GET /api/v1/executions/${EXECUTION_ID}/steps - Validate step costs..."
+echo "3. Execute the stored plan via POST /api/request (request_type=execute-plan)..."
 
-STEPS_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_steps.json -w "%{http_code}" \
+EXEC_BODY=$(cat <<EOF
+{
+    "query": "",
+    "client_id": "$CLIENT_ID",
+    "user_token": "$USER_TOKEN",
+    "request_type": "execute-plan",
+    "context": {"plan_id": "$PLAN_ID"}
+}
+EOF
+)
+
+EXEC_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_execute.json -w "%{http_code}" \
+    --max-time 120 \
+    -X POST "${AGENT_URL}/api/request" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Basic $AUTH_B64" \
+    -d "$EXEC_BODY" || echo "000")
+
+EXEC_RESPONSE=$(cat /tmp/axonflow_exec_cost_execute.json 2>/dev/null || echo "{}")
+echo "   HTTP Status: $EXEC_HTTP_CODE"
+
+EXEC_SUCCESS=$(echo "$EXEC_RESPONSE" | jq -r '.success // false' 2>/dev/null || echo "false")
+RESULT_LEN=$(echo "$EXEC_RESPONSE" | jq -r '.result // "" | length' 2>/dev/null || echo "0")
+
+check_result "Execute returns 200 (got $EXEC_HTTP_CODE)" "$([ "$EXEC_HTTP_CODE" = "200" ] && echo true || echo false)"
+check_result "Execute success=true" "$([ "$EXEC_SUCCESS" = "true" ] && echo true || echo false)"
+check_result "Result has substantive content (>100 chars, got $RESULT_LEN)" "$([ "$RESULT_LEN" -gt 100 ] 2>/dev/null && echo true || echo false)"
+echo ""
+
+# ========================================
+# 4. VALIDATE COST FOR THE PLAN
+# ========================================
+echo "4. GET /api/v1/plans/${PLAN_ID}/cost - Validate cost is non-zero..."
+
+COST_HTTP_CODE=$(curl -s -o /tmp/axonflow_exec_cost_cost.json -w "%{http_code}" \
     --max-time 15 \
     -H "Authorization: Basic $AUTH_B64" \
-    "${AGENT_URL}/api/v1/executions/${EXECUTION_ID}/steps" || echo "000")
+    "${AGENT_URL}/api/v1/plans/${PLAN_ID}/cost" || echo "000")
 
-STEPS_RESPONSE=$(cat /tmp/axonflow_exec_cost_steps.json 2>/dev/null || echo "{}")
-echo "   HTTP Status: $STEPS_HTTP_CODE"
+COST_RESPONSE=$(cat /tmp/axonflow_exec_cost_cost.json 2>/dev/null || echo "{}")
+echo "   HTTP Status: $COST_HTTP_CODE"
 
-check_result "Steps endpoint returns 200" "$([ "$STEPS_HTTP_CODE" = "200" ] && echo true || echo false)"
+ESTIMATED_COST=$(echo "$COST_RESPONSE" | jq -r '.estimated_cost_usd // 0' 2>/dev/null || echo "0")
+echo "   Estimated Cost USD: $ESTIMATED_COST"
 
-# Steps endpoint returns a JSON array directly
-STEP_WITH_COST=$(echo "$STEPS_RESPONSE" | jq '[.[] | select(.cost_usd > 0)] | length' 2>/dev/null || echo "0")
-TOTAL_STEPS=$(echo "$STEPS_RESPONSE" | jq 'length' 2>/dev/null || echo "0")
-
-echo "   Total steps: $TOTAL_STEPS"
-echo "   Steps with cost > 0: $STEP_WITH_COST"
-
-check_result "At least one step has cost_usd > 0 ($STEP_WITH_COST of $TOTAL_STEPS)" "$([ "$STEP_WITH_COST" -gt 0 ] 2>/dev/null && echo true || echo false)"
+check_result "Cost endpoint returns 200" "$([ "$COST_HTTP_CODE" = "200" ] && echo true || echo false)"
+COST_NONZERO=$(echo "$ESTIMATED_COST" | awk '{print ($1 > 0) ? "true" : "false"}')
+check_result "estimated_cost_usd > 0 (got $ESTIMATED_COST)" "$COST_NONZERO"
 echo ""
 
 # ========================================

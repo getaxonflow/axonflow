@@ -47,8 +47,8 @@ public class EvalRetryAware {
 
     public static void main(String[] args) throws Exception {
         String endpoint = envOrDefault("AXONFLOW_BASE_URL", "http://localhost:8080");
-        String clientId = mustEnv("AXONFLOW_CLIENT_ID");
-        String clientSecret = mustEnv("AXONFLOW_CLIENT_SECRET");
+        String clientId = envOrDefault("AXONFLOW_CLIENT_ID", "demo");
+        String clientSecret = envOrDefault("AXONFLOW_CLIENT_SECRET", "demo-secret");
 
         banner("Retry-aware policy (Java SDK, Evaluation tier)");
 

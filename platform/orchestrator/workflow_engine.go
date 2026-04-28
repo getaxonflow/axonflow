@@ -665,7 +665,7 @@ func (e *WorkflowEngine) ExecuteWorkflow(ctx context.Context, workflow Workflow,
 
 	// Start replay tracking (#763)
 	if e.replayRecorder != nil {
-		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), "", user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
+		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), user.OrgID, user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
 			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
 		}
 	}
@@ -1021,7 +1021,7 @@ func (e *WorkflowEngine) executeWorkflowWithStepGroups(ctx context.Context, work
 
 	// Start replay tracking (#835: wire MAP execution to replay)
 	if e.replayRecorder != nil {
-		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), "", user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
+		if err := e.replayRecorder.StartExecution(ctx, execution.ID, workflow.Metadata.Name, len(workflow.Spec.Steps), user.OrgID, user.TenantID, fmt.Sprintf("%d", user.ID)); err != nil {
 			log.Printf("[Replay] Warning: Failed to start execution tracking: %v", err)
 		}
 	}

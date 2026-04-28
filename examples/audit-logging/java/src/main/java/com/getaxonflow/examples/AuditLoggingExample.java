@@ -46,7 +46,7 @@ public class AuditLoggingExample {
         System.out.println();
 
         String clientId = getEnv("AXONFLOW_CLIENT_ID", "audit-logging-demo");
-        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "");
+        String clientSecret = getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret");
         String userToken = getEnv("AXONFLOW_USER_TOKEN", "audit-user");
 
         AxonFlow client = AxonFlow.create(AxonFlowConfig.builder()

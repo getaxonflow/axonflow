@@ -475,6 +475,97 @@ Before submitting:
 - [ ] Documentation updated (if needed)
 - [ ] Commit messages follow conventional commits
 - [ ] Local Docker Compose testing completed
+- [ ] **Bug fixes include a regression test** (see [Regression-test-per-bug](#regression-test-per-bug))
+
+### Regression-test-per-bug
+
+Every bug-fix PR must include a test at the layer that failed. This is W12 of
+the [Quality Freeze epic](https://github.com/getaxonflow/axonflow-enterprise/issues/1697)
+and is enforced in CI by `.github/workflows/regression-test-required.yml`
+(QF-19, issue #1732).
+
+**When the gate runs**
+
+A PR is treated as a bug fix when either:
+
+- The PR title matches the Conventional Commits "fix" type — `fix:`,
+  `fix(scope):`, `fix!:` (breaking), or `fix(scope)!:` — or
+- The PR carries the `bug` label.
+
+**What the gate accepts**
+
+The gate scans the PR diff for at least one **added or modified** file
+matching one of these patterns. Deletions and pure renames do **not** satisfy
+the gate (`git diff --diff-filter=AM --no-renames`):
+
+| Layer        | Pattern                                                                |
+|--------------|------------------------------------------------------------------------|
+| Go           | `*_test.go`                                                            |
+| Python       | `*_test.py`                                                            |
+| TypeScript   | `*.test.ts`, `*.test.tsx`, `*.spec.ts`, `*.spec.tsx`                   |
+| Java         | `*Test.java`, `*Tests.java`, `*IT.java`                                |
+| Any language | a file under a `tests/` or `test/` directory **with a code extension** |
+
+The directory branch is restricted to code extensions: `.go`, `.py`, `.ts`,
+`.tsx`, `.java`, `.sh`, `.rb`, `.rs`, `.kt`. Non-code churn under `tests/`
+(JSON snapshots, YAML fixtures, markdown helpers, CSV goldens, images, etc.)
+does **not** satisfy the gate — the test must exercise the failing layer.
+
+The matcher's behaviour is pinned by
+`tests/regression-test-required/path_pattern_test.sh`; run it locally if you
+edit the pattern.
+
+**Why "added or modified" only:** the previous version of the gate accepted any
+changed test path, so the gate could be satisfied by deleting `foo_test.go`,
+renaming an unrelated test, or touching a comment in a `tests/` fixture. Bug
+fixes need new or updated regression coverage at the failing layer — deletions
+don't add coverage and pure renames don't change behaviour.
+
+**Why code-extension only under `tests/`:** the directory branch was originally
+permissive — any path under `tests/` counted, including JSON snapshots, YAML
+fixtures, and markdown notes. That let a bug-fix PR satisfy the gate without
+adding executable coverage. The matcher now requires a code extension on the
+directory branch, closing the loophole. The naming-convention branches
+(`*_test.go`, `*Test.java`, `*.test.tsx`, etc.) already imply code, so they
+are unchanged.
+
+**Choosing the right layer**
+
+Match the test to where the bug was caught:
+
+| Bug surfaced via                          | Add a test at                                                  |
+|-------------------------------------------|----------------------------------------------------------------|
+| Live `docker-compose` E2E run             | `examples/` example or `tests/integration/`                    |
+| Portal UI regression                      | Playwright spec under `ee/platform/customer-portal-ui/e2e/`    |
+| Wrong wire shape between SDK and platform | SDK contract test plus an integration test that exercises the path |
+| Handler enforcement / tier gate           | `*_test.go` under the handler's package                        |
+| Cross-plane parity (WCP/MAP)              | `*_parity_test.go` under `platform/orchestrator/` (e.g. `hitl_response_parity_test.go`, `pending_approvals_plane_parity_test.go`) |
+| Migration / backfill                      | A historical-fixture test (Phase 2 QF-22)                      |
+
+**Escape hatch: `regression-test-exempt`**
+
+A small set of changes legitimately can't be tested at the layer that failed:
+
+- Pure infra changes (CFN/Terraform, IAM, GitHub Actions plumbing) where the
+  failure mode is the deploy itself
+- Generated-artifact regenerations (e.g. regenerated SDK clients) where the
+  generator already has tests
+- Build-config and dependency bumps with no executable behaviour change
+- Documentation-only fixes that happen to match the `fix(docs):` Conventional
+  Commits prefix
+
+Apply the `regression-test-exempt` label and **justify in the PR body under
+the "If exempt" section** of the PR template. Reviewers must confirm the
+exemption is genuine; an exemption is not a license to skip writing a test
+that *could* exist.
+
+**Why this rule exists**
+
+Per the QF epic post-mortem, a meaningful share of v7.x post-release bugs were
+caught in the next release cycle by a test that we hadn't written yet. Forcing
+the test into the same PR as the fix is the cheapest place to catch the next
+recurrence. See `axonflow-business-docs/engineering/QUALITY_FREEZE_EPIC_2026-04-24.md`
+for the full motivation.
 
 ## Code Style
 

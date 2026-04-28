@@ -177,7 +177,7 @@ Choose your language:
 
 **Go:**
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v5
+go get github.com/getaxonflow/axonflow-sdk-go/v6
 ```
 
 **Python:**
@@ -190,7 +190,7 @@ pip install axonflow-sdk
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>6.1.0</version>
+    <version>6.2.0</version>
 </dependency>
 ```
 
@@ -216,7 +216,7 @@ import (
     "log"
     "os"
 
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 func main() {

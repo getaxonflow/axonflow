@@ -9,8 +9,14 @@
 //
 // Prerequisites:
 //   - AxonFlow Agent running on localhost:8080
-//   - Evaluation or Enterprise license (HITL requires Evaluation+)
-//   - A dynamic policy with require_approval action configured
+//   - Tests 1, 2, 4 (workflow create + step gate + complete) run on any tier
+//     including Community
+//   - Test 3 (HITL queue listing) requires Enterprise — the /api/v1/hitl/queue
+//     endpoint is registered only in the enterprise build (see
+//     platform/agent/hitl/hitl_community.go for the Community/Evaluation stub
+//     vs handler.go gated by //go:build enterprise); on Community and
+//     Evaluation it returns 404 and Test 3 SKIPs without failing the suite
+//   - A dynamic policy with require_approval action configured (Enterprise)
 //
 // Usage:
 //
@@ -23,7 +29,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v5"
+	"github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 var (
@@ -104,9 +110,14 @@ func main() {
 	fmt.Println("Test 3: HITL Queue Status")
 	fmt.Println("-------------------------")
 
-	hitlResult, err := client.ListHITLQueue(axonflow.ListHITLQueueOptions{})
+	hitlResult, err := client.ListHITLQueue(axonflow.HITLQueueListOptions{})
 	if err != nil {
-		fmt.Printf("   SKIP: HITL queue not available (err=%v) — requires Evaluation+ license\n", err)
+		// Community/Evaluation builds register only /api/v1/hitl/status, not the
+		// /api/v1/hitl/queue endpoint the SDK calls here, so a 404 means the
+		// endpoint isn't compiled into the running agent — i.e. the running
+		// edition isn't Enterprise. We surface the underlying error verbatim so
+		// other failure modes (network, auth) are still visible.
+		fmt.Printf("   SKIP: HITL queue endpoint unavailable (err=%v) — requires the Enterprise build of axonflow-agent\n", err)
 	} else {
 		assert(true, fmt.Sprintf("HITL queue accessible (%d items)", len(hitlResult.Items)))
 		for _, item := range hitlResult.Items {

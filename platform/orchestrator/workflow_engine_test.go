@@ -1419,6 +1419,7 @@ type mockStartCall struct {
 	RequestID    string
 	WorkflowName string
 	TotalSteps   int
+	OrgID        string
 	TenantID     string
 	UserID       string
 }
@@ -1442,6 +1443,7 @@ func (m *mockReplayRecorder) StartExecution(_ context.Context, requestID, workfl
 		RequestID:    requestID,
 		WorkflowName: workflowName,
 		TotalSteps:   totalSteps,
+		OrgID:        orgID,
 		TenantID:     tenantID,
 		UserID:       userID,
 	})
@@ -1781,6 +1783,76 @@ func TestMAPReplayRecording_RecorderErrorLogged(t *testing.T) {
 	}
 	if execution.Status != "completed" {
 		t.Errorf("Expected completed status, got %s", execution.Status)
+	}
+}
+
+// TestReplayTracking_OrgIDPropagatedSequential verifies that ExecuteWorkflow propagates
+// UserContext.OrgID through to the replay recorder. Regression test for the bug where
+// /api/v1/executions returned zero rows because the replay tracker stored org_id="" but
+// the read-side filter (agent's X-Org-ID header) required a match against the deployment org.
+func TestReplayTracking_OrgIDPropagatedSequential(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "org-id-seq-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{{Name: "step1", Type: "function-call", Function: "test1"}},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := engine.ExecuteWorkflow(
+		ctx, workflow, map[string]interface{}{},
+		UserContext{TenantID: "test-tenant", OrgID: "test-org", ID: 42},
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+	if got := recorder.startCalls[0].OrgID; got != "test-org" {
+		t.Errorf("OrgID not propagated to replay recorder: got %q, want %q", got, "test-org")
+	}
+	if got := recorder.startCalls[0].TenantID; got != "test-tenant" {
+		t.Errorf("TenantID regression: got %q, want %q", got, "test-tenant")
+	}
+}
+
+// TestReplayTracking_OrgIDPropagatedParallel verifies the same for the parallel/balanced path
+// (executeWorkflowWithStepGroups → second StartExecution call site in workflow_engine.go).
+func TestReplayTracking_OrgIDPropagatedParallel(t *testing.T) {
+	engine := NewWorkflowEngine()
+	recorder := &mockReplayRecorder{}
+	engine.SetReplayRecorder(recorder)
+
+	workflow := Workflow{
+		Metadata: WorkflowMetadata{Name: "org-id-par-test"},
+		Spec: WorkflowSpec{
+			Steps: []WorkflowStep{
+				{Name: "step1", Type: "function-call", Function: "test1"},
+				{Name: "synthesis", Type: "function-call", Function: "synthesize"},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := engine.ExecuteWorkflowWithParallelSupport(
+		ctx, workflow, map[string]interface{}{},
+		UserContext{TenantID: "test-tenant", OrgID: "test-org", ID: 42}, true,
+	)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if len(recorder.startCalls) != 1 {
+		t.Fatalf("Expected 1 StartExecution call, got %d", len(recorder.startCalls))
+	}
+	if got := recorder.startCalls[0].OrgID; got != "test-org" {
+		t.Errorf("OrgID not propagated to replay recorder: got %q, want %q", got, "test-org")
 	}
 }
 

@@ -17,11 +17,11 @@ Step-by-step tutorials for getting started with AxonFlow.
 
 ## SDKs
 
-SDK versions: Python v6.1.0, Go/TypeScript/Java v5.1.0.
+SDK versions: Python v6.2.0, Go/TypeScript/Java v5.2.0.
 
 | Language | Package | Repository |
 |----------|---------|------------|
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v5` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v6` | [axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go) |
 | Python | `axonflow` (PyPI) | [axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) |
 | Java | `com.getaxonflow.sdk` (Maven Central) | [axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) |
 | TypeScript | `@axonflow/sdk` (npm) | [axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) |
@@ -30,17 +30,17 @@ SDK versions: Python v6.1.0, Go/TypeScript/Java v5.1.0.
 
 ```bash
 # Go
-go get github.com/getaxonflow/axonflow-sdk-go/v5
+go get github.com/getaxonflow/axonflow-sdk-go/v6
 
 # Python
-pip3 install axonflow==6.8.0
+pip3 install axonflow==6.9.0
 
 # Java (Maven)
 # Add to pom.xml:
 #   <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>6.1.0</version>
+#     <version>6.2.0</version>
 #   </dependency>
 
 # TypeScript

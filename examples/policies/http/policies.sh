@@ -86,16 +86,11 @@ response=$(curl -s -X POST "$AGENT_URL/api/v1/static-policies" \
     -d "{
         \"name\": \"$POLICY_NAME\",
         \"description\": \"Blocks profanity in user queries (HTTP example)\",
-        \"category\": \"content_filter\",
+        \"category\": \"sensitive-data\",
         \"tier\": \"tenant\",
         \"action\": \"block\",
         \"severity\": \"medium\",
-        \"patterns\": [
-            {
-                \"regex\": \"\\\\b(badword1|badword2)\\\\b\",
-                \"description\": \"Common profanity\"
-            }
-        ],
+        \"pattern\": \"\\\\b(badword1|badword2)\\\\b\",
         \"enabled\": true
     }")
 

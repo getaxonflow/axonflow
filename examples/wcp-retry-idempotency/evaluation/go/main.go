@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v5"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 const policyName = "Retry on gated-not-completed wire requires approval"
@@ -86,8 +86,8 @@ func deletePolicy(baseURL, clientID, clientSecret, policyID string) {
 
 func main() {
 	baseURL := envOrDefault("AXONFLOW_BASE_URL", "http://localhost:8080")
-	clientID := mustEnv("AXONFLOW_CLIENT_ID")
-	clientSecret := mustEnv("AXONFLOW_CLIENT_SECRET")
+	clientID := getEnv("AXONFLOW_CLIENT_ID", "demo")
+	clientSecret := getEnv("AXONFLOW_CLIENT_SECRET", "demo-secret")
 
 	banner("Retry-aware policy (Go SDK, Evaluation tier)")
 
@@ -162,6 +162,14 @@ func mustEnv(k string) string {
 	}
 	return v
 }
+
+func getEnv(k, fallback string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func must(err error, label string) {
 	if err != nil {
 		fail(label + ": " + err.Error())

@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v5"
+	"github.com/getaxonflow/axonflow-sdk-go/v6"
 )
 
 var failures []string
@@ -317,7 +317,7 @@ func main() {
 	fmt.Printf("   Gate decision: %s\n", approvalGate.Decision)
 
 	// Test ApproveStep
-	approveResp, err := client.ApproveStep(approvalWorkflow.WorkflowID, "approval-step-1")
+	approveResp, err := client.ApproveStep(approvalWorkflow.WorkflowID, "approval-step-1", "approved by example")
 	if err != nil {
 		errStr := fmt.Sprintf("%v", err)
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||
@@ -384,7 +384,7 @@ func main() {
 	}
 
 	// Test RejectStep
-	rejectResp, err := client.RejectStep(rejectWorkflow.WorkflowID, "reject-step-1")
+	rejectResp, err := client.RejectStep(rejectWorkflow.WorkflowID, "reject-step-1", "rejected by example")
 	if err != nil {
 		errStr := fmt.Sprintf("%v", err)
 		if strings.Contains(errStr, "403") || strings.Contains(errStr, "enterprise") ||

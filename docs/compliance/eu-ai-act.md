@@ -479,7 +479,7 @@ Proxy LLM calls through AxonFlow with EU AI Act compliance policies applied auto
 **Go:**
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v5/axonflow"
+import "github.com/getaxonflow/axonflow-sdk-go/v6/axonflow"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "https://your-axonflow-host",

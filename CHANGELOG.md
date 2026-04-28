@@ -12,6 +12,34 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.4.5] - 2026-04-28 — Phase 1 quality-freeze fixes + MAP execution-tracking org isolation
+
+PATCH: bug fixes only. The headline platform fix is a pair of org-identity propagation bugs in the MAP execution path that made `GET /api/v1/executions` return zero rows for newly-completed plans and let body-supplied identity override the authenticated org/tenant on policy evaluation. The rest is the close-out of the Phase 1 quality-freeze sweep against the bundled examples — every example now compiles, runs, and exits with a clear PASS/FAIL summary against a stock community-mode docker-compose stack.
+
+No breaking changes. No new endpoints, SDK methods, or features.
+
+### Community
+
+#### Fixed
+
+- **`GET /api/v1/executions` returned zero rows for newly-completed MAP plans.** Plans executed via `POST /api/request` with `request_type=execute-plan` were recorded in the execution-tracking store with an empty `org_id`, while the read-side filter (driven by the authenticated org from Basic auth) required a non-empty match — so every MAP plan execution produced a row that was invisible to subsequent list calls. The execution recorder now persists the same authenticated org used for filtering on read, and policy evaluation, plan storage, and replay tracking all read org and tenant from the same authoritative source on every request. A request can no longer be recorded under one org and policy-evaluated under another, even if a caller bypasses the agent and supplies mismatched values directly.
+- **MAP examples updated to current SDK releases** — Go 5.8.0, TypeScript 6.1.0, Python 6.8.0, Java 6.1.0 — so `go run`, `npm start`, `python main.py`, and `mvn exec:java` work against the published SDKs on a fresh checkout.
+- **`examples/cost-estimation/http/execution-cost-validation.sh`** now exits with a clear PASS/FAIL summary instead of aborting mid-run with exit code 5 when a response is malformed (e.g. on auth failure). The script was rewritten to use the generate-plan → execute-plan → fetch-cost flow that actually surfaces a non-zero plan cost in Community.
+- **`examples/risk-tiered-approvals/go`** now compiles from a clean checkout. The directory was missing `go.mod` and `go.sum`, so `go run main.go` failed with `no required module provides package`. The example also referenced an SDK type that was renamed before release; corrected to the published name. Both Go and Python variants now pass end-to-end. Test 3 (HITL queue listing) skips on Community and Evaluation with an accurate message — the queue endpoint is Enterprise-only and was previously mis-labelled.
+- **`examples/media-governance-policies/typescript`** Test 4b no longer fails with `tenant_id=undefined`. The TypeScript SDK exposes `MediaGovernanceConfig` fields in camelCase (`tenantId`); the example was asserting on the wire-shape snake_case field. Aligned the assertion and the log line.
+- **`examples/audit-logging` (TypeScript and Java)** now match the Python variant's authentication setup so `auditToolCall` succeeds without `Missing authentication` errors.
+- **`examples/llm-routing/go`** updated to the current routing API shape so the demo works against a stock stack.
+- **`examples/mcp-connectors/cloud-storage`** rewritten to exercise a working S3-compatible flow against the MinIO instance bundled in the docker-compose stack.
+- **`examples/.gitignore`** no longer excludes `go.sum`. Every Go example now ships with its lockfile committed so a clean clone runs without needing `go mod tidy`. Two stale `replace` directives in `examples/wcp-retry-idempotency/{community,evaluation}/go/go.mod` (pointing at sibling-checkout SDK paths) and a 0-byte orphan `examples/policies/go/go.mod` were also cleaned up.
+- **`examples/policies/http/policies.sh`** Create Custom Policy now sends a valid request body — a single `pattern` regex with a recognized category — instead of an invalid array shape that the platform was rejecting with HTTP 400. The script previously printed "Status: Created" without checking the response, masking the failure.
+- **`examples/gateway-policy-config/python`** no longer crashes with `TypeError: get_env() missing 1 required positional argument`.
+- **`examples/workflow-control/go`** now compiles. `ApproveStep` and `RejectStep` were called with two arguments after the SDK signatures had added a third (approver_id).
+- **`examples/hello-world/typescript`** is now a policy-only demo matching the other three SDKs. The Gateway Mode TypeScript example moved to `examples/integrations/gateway-mode/typescript/`.
+
+#### Documentation
+
+- **Python version prerequisite for examples.** `examples/README.md` and a new `examples/retry-semantics/python/README.md` now state that several Python examples require Python 3.10+ and the current `axonflow` PyPI release. The older pinned `axonflow==4.1.0` from earlier examples does not expose retry-policy or lifecycle fields used here and will fail on import or with a missing-attribute error. Users on systems where `python3` defaults to 3.9 (e.g. older macOS) should create a venv on a newer interpreter before running these examples.
+
 ## [7.4.4] - 2026-04-25 — `CreateOverrideResponse` schema split
 
 PATCH: documentation-grade correction — no platform behaviour change. Splits the `POST /api/v1/policies/{id}/overrides` create-response shape from the at-rest `PolicyOverride` entity, matching what the platform server has been emitting all along and the precedent established by `CreateWorkflowResponse` (orchestrator-api.yaml). Code-generated clients written against the prior spec would have read `undefined` for the create-time TTL clamping fields (`ttl_seconds`, `requested_ttl`, `clamped`, `clamped_reason`) and looked for at-rest fields (`action_override`, `enabled_override`, `tool_signature`) that the create response doesn't carry.
