@@ -2306,7 +2306,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Static Policies
@@ -2365,13 +2365,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Operation forbidden (e.g., system tier creation, license required)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/effective:
     get:
@@ -2407,7 +2407,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/test:
     post:
@@ -2452,7 +2452,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/overrides:
     get:
@@ -2491,7 +2491,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/{id}:
     get:
@@ -2530,13 +2530,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags:
         - Static Policies
@@ -2580,19 +2580,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: System policies cannot be modified
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Static Policies
@@ -2625,13 +2625,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags:
         - Static Policies
@@ -2680,13 +2680,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/{id}/versions:
     get:
@@ -2726,7 +2726,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/static-policies/{id}/override:
     post:
@@ -2799,19 +2799,19 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Enterprise license required
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Policy not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Static Policies
@@ -2849,13 +2849,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Override not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ErrorResponse'
 
 components:
   securitySchemes:
@@ -2932,6 +2932,8 @@ components:
             $ref: '#/components/schemas/PlatformCapability'
         sdk_compatibility:
           $ref: '#/components/schemas/SDKCompatInfo'
+        plugin_compatibility:
+          $ref: '#/components/schemas/PluginCompatInfo'
 
     PlatformCapability:
       type: object
@@ -2951,15 +2953,67 @@ components:
 
     SDKCompatInfo:
       type: object
+      description: |
+        SDK version compatibility information. Each key in the maps below
+        is one of `python` / `typescript` / `go` / `java`. SDKs that find
+        their own runtime version below `min_sdk_version[<their lang>]`
+        log a one-time upgrade warning; below `recommended_sdk_version`
+        is informational only.
       properties:
         min_sdk_version:
-          type: string
-          description: Minimum SDK version compatible with this platform
-          example: "3.0.0"
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Per-language minimum SDK version compatible with this
+            platform. Pre-v4.8.0 platforms returned a bare string; SDKs
+            v6.0.0+ accept either shape.
+          example:
+            python: "6.0.0"
+            typescript: "5.0.0"
+            go: "5.0.0"
+            java: "5.0.0"
         recommended_sdk_version:
-          type: string
-          description: Recommended SDK version for full feature coverage
-          example: "3.8.0"
+          type: object
+          additionalProperties:
+            type: string
+          description: Per-language SDK version this platform was tested against.
+          example:
+            python: "6.9.0"
+            typescript: "6.2.0"
+            go: "6.0.0"
+            java: "6.2.0"
+
+    PluginCompatInfo:
+      type: object
+      description: |
+        Plugin version compatibility information. Mirrors `SDKCompatInfo`
+        for the four AxonFlow plugins (`openclaw`, `claude-code`,
+        `cursor`, `codex`). Plugins read this from `/health` and warn
+        when their runtime version is below `min_plugin_version[<their id>]`.
+        Keys match the canonical plugin IDs the agent tracks in
+        `integration_activation.go::knownIntegrations`.
+      properties:
+        min_plugin_version:
+          type: object
+          additionalProperties:
+            type: string
+          description: Per-plugin minimum version compatible with this platform.
+          example:
+            openclaw: "2.0.0"
+            claude-code: "1.0.0"
+            cursor: "1.0.0"
+            codex: "1.0.0"
+        recommended_plugin_version:
+          type: object
+          additionalProperties:
+            type: string
+          description: Per-plugin version this platform was tested against.
+          example:
+            openclaw: "2.0.0"
+            claude-code: "1.0.0"
+            cursor: "1.0.0"
+            codex: "1.0.0"
 
     # =========================================================================
     # Static Policies Schemas (ADR-018)
@@ -3175,6 +3229,11 @@ components:
           items:
             type: string
           description: Tags for categorization
+        organization_id:
+          type: string
+          description: |
+            Organization id for organization-tier policies (Enterprise).
+            Required when `tier: organization`; ignored otherwise.
 
     UpdateStaticPolicyRequest:
       type: object
@@ -3199,6 +3258,13 @@ components:
           type: integer
         enabled:
           type: boolean
+        category:
+          type: string
+          description: |
+            Policy category. Updates can re-categorise non-system
+            policies; system policies stay pinned to their seeded
+            category.
+          enum: [security-sqli, security-admin, pii-global, pii-us, pii-eu, pii-india, custom]
         tags:
           type: array
           items:
@@ -3520,6 +3586,16 @@ components:
           type: object
           additionalProperties: true
           description: Additional context for request processing
+        media:
+          type: array
+          description: |
+            Optional multimodal payload accompanying the query
+            (images, documents, etc.). Consumed by the platform's
+            media-governance code path; per-item shape is
+            `MediaContent` from the SDK.
+          items:
+            type: object
+            additionalProperties: true
 
     ClientResponse:
       type: object
@@ -3549,6 +3625,21 @@ components:
           description: Reason for blocking
         policy_info:
           $ref: '#/components/schemas/PolicyEvaluationInfo'
+        budget_info:
+          type: object
+          description: |
+            Budget enforcement status (Issue #1082) — present when a
+            budget check ran. Surfaces current usage vs limits so
+            callers can render budget-aware UI without a separate
+            /api/v1/budgets call.
+          additionalProperties: true
+        media_analysis:
+          type: object
+          description: |
+            Media-governance analysis result — populated when the
+            request carried a `media` payload. Shape mirrors
+            `MediaAnalysisResponse`.
+          additionalProperties: true
 
     PolicyEvaluationInfo:
       type: object
@@ -3570,6 +3661,16 @@ components:
         tenant_id:
           type: string
           description: Tenant ID for the request
+        code_artifact:
+          type: object
+          description: |
+            Code-artifact metadata captured by the code-governance
+            evaluation path when the request carried code content
+            (LLM-generated or user-provided). Mirrors the SDK's
+            `CodeArtifact` type — language, code_type, size_bytes,
+            line_count, secrets_detected, unsafe_patterns,
+            policies_checked.
+          additionalProperties: true
 
     PreCheckRequest:
       type: object
@@ -5542,4 +5643,4 @@ components:
       schema:
         type: string
         pattern: "^[a-f0-9]{64}$"
-      example: "a1b2c3d4e5f6..."
+      example: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

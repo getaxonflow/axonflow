@@ -29,7 +29,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>6.2.0</version>
+            <version>7.0.0</version>
         </dependency>
         <!-- Override transitive jackson-core for CVE fix -->
         <dependency>

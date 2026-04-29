@@ -1519,6 +1519,12 @@ type MCPCheckOutputRequest struct {
 }
 
 // MCPCheckOutputResponse is the response body for POST /api/v1/mcp/check-output.
+//
+// DecisionID is minted on every governance decision (allow + deny + redact)
+// per Plugin Batch 1 / ADR-042 / ADR-043, so callers can correlate the
+// decision back to the audit log via /explain/{id} and create overrides
+// without an extra round-trip. omitempty preserves byte-for-byte
+// pre-batch shape when a caller doesn't surface it.
 type MCPCheckOutputResponse struct {
 	Allowed           bool                                `json:"allowed"`
 	BlockReason       string                              `json:"block_reason,omitempty"`
@@ -1526,6 +1532,7 @@ type MCPCheckOutputResponse struct {
 	PoliciesEvaluated int                                 `json:"policies_evaluated"`
 	ExfiltrationInfo  *sharedpolicy.ExfiltrationCheckInfo `json:"exfiltration_info,omitempty"`
 	PolicyInfo        *sharedpolicy.PolicyInfo            `json:"policy_info,omitempty"`
+	DecisionID        string                              `json:"decision_id,omitempty"`
 }
 
 // mcpCheckInputHandler evaluates dynamic + request-phase static policies for a proposed
@@ -1756,6 +1763,11 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		Allowed:           true,
 		PoliciesEvaluated: policiesEvaluated,
 		PolicyInfo:        policyInfo,
+		// Plugin Batch 1: every governance decision surfaces decision_id —
+		// allow paths included, so callers can fetch the audit record via
+		// /explain/{id} or compare requests across allow/deny without an
+		// extra round-trip. The deny paths above already emit it.
+		DecisionID: decisionID,
 	})
 }
 
@@ -1830,6 +1842,12 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mint a decision_id up front so every response branch (deny + allow +
+	// redact) can surface it. Same pattern as mcpCheckInputHandler — Plugin
+	// Batch 1 / ADR-042 / ADR-043 require decision_id on every governance
+	// decision. The audit_logs row is the lookup target for /explain/{id}.
+	decisionID := uuid.New().String()
+
 	auditEntry := MCPQueryAuditEntry{
 		AuditID:       uuid.New().String(),
 		ConnectorName: req.ConnectorType,
@@ -1837,6 +1855,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		TenantID:      tenantID,
 		OrgID:         orgID,
 		UserID:        userID,
+		DecisionID:    decisionID,
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -1867,6 +1886,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
 			Allowed:     false,
 			BlockReason: fmt.Sprintf("Response blocked: potential SQL injection detected (pattern: %s)", outcome.SQLiPattern),
+			DecisionID:  decisionID,
 		})
 		return
 	}
@@ -1881,6 +1901,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(MCPCheckOutputResponse{
 			Allowed:     false,
 			BlockReason: fmt.Sprintf("Response blocked: %s", outcome.StaticResult.BlockReason),
+			DecisionID:  decisionID,
 		})
 		return
 	}
@@ -1896,6 +1917,7 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 			Allowed:          false,
 			BlockReason:      outcome.ExfilResult.BlockReason,
 			ExfiltrationInfo: outcome.ExfilInfo,
+			DecisionID:       decisionID,
 		})
 		return
 	}
@@ -1931,6 +1953,9 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		PoliciesEvaluated: policiesEvaluated,
 		ExfiltrationInfo:  outcome.ExfilInfo,
 		PolicyInfo:        policyInfo,
+		// Plugin Batch 1: every governance decision surfaces decision_id —
+		// allow paths included, mirroring mcpCheckInputHandler.
+		DecisionID: decisionID,
 	})
 }
 

@@ -264,7 +264,7 @@ import (
     "fmt"
     "os"
 
-    "github.com/getaxonflow/axonflow-sdk-go/v6"
+    "github.com/getaxonflow/axonflow-sdk-go/v7"
 )
 
 func main() {

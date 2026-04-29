@@ -87,15 +87,17 @@ func TestHandleCommunityRegister_DB_Success(t *testing.T) {
 		t.Error("note should not be empty")
 	}
 
-	// Verify expiry is approximately 30 days from now
+	// Verify expiry is approximately communitySaasRegistrationTTL (1 year) from now —
+	// per ADR-048, lifecycle bumped from 30 days to 1 year with a daily inactivity
+	// sweep handling the 3-month-idle case in a follow-up PR.
 	expiresAt, err := time.Parse(time.RFC3339, resp.ExpiresAt)
 	if err != nil {
 		t.Fatalf("Failed to parse expires_at: %v", err)
 	}
-	expectedExpiry := time.Now().Add(30 * 24 * time.Hour)
+	expectedExpiry := time.Now().Add(communitySaasRegistrationTTL)
 	diff := expectedExpiry.Sub(expiresAt)
 	if diff < -1*time.Hour || diff > 1*time.Hour {
-		t.Errorf("expires_at should be ~30 days from now, diff: %v", diff)
+		t.Errorf("expires_at should be ~1 year from now, diff: %v", diff)
 	}
 
 	// Clean up

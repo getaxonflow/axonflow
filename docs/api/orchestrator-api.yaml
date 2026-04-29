@@ -2810,16 +2810,13 @@ paths:
                 checks:
                   - name: "Retention Configuration"
                     status: "pass"
-                    message: null
                   - name: "PII Detection Policies"
                     status: "pass"
-                    message: null
                   - name: "Human Oversight"
                     status: "pass"
-                    message: null
                   - name: "Decision Chain Tracing"
                     status: "warning"
-                    message: "Consider enabling for full audit trail"
+                    details: "Consider enabling for full audit trail"
                 recommendations:
                   - "Enable decision chain tracing to maintain full audit trail of AI decisions"
 
@@ -4026,6 +4023,7 @@ paths:
                   prior_completion_status: "none"
                   prior_output_available: false
                   prior_output: null
+                  prior_completion_at: null
                   idempotency_key: "payment-intent-123"
                   last_decision: "require_approval"
                   first_attempt_at: "2026-04-22T10:00:00Z"
@@ -4113,6 +4111,7 @@ paths:
                   prior_completion_status: "none"
                   prior_output_available: false
                   prior_output: null
+                  prior_completion_at: null
                   idempotency_key: ""
                   last_decision: "require_approval"
                   first_attempt_at: "2026-04-22T10:00:00Z"
@@ -4209,6 +4208,7 @@ paths:
                   prior_completion_status: "none"
                   prior_output_available: false
                   prior_output: null
+                  prior_completion_at: null
                   idempotency_key: "payment-intent-123"
                   last_decision: "require_approval"
                   first_attempt_at: "2026-04-22T10:00:00Z"
@@ -5314,6 +5314,7 @@ paths:
                 budget:
                   id: "monthly-budget"
                   name: "Monthly Production Budget"
+                  scope: "organization"
                   limit_usd: 1000.00
                   period: "monthly"
                 used_usd: 450.25
@@ -6363,6 +6364,70 @@ paths:
           description: Feature requires Evaluation or Enterprise license
 
 components:
+  parameters:
+    # Reusable header / query parameters referenced from path operations
+    # via the standard OpenAPI components.parameters mechanism. Each
+    # declaration mirrors the inline shape used in older endpoints (e.g.
+    # the inline X-Org-ID at line ~2415) so behaviour is identical
+    # whether a path uses the ref or repeats the definition inline.
+    OrgIDHeader:
+      name: X-Org-ID
+      in: header
+      required: false
+      description: |
+        Organization identifier. Falls back to authenticated org from
+        the Basic auth client when omitted. Surface for callers that
+        need to override (e.g. cross-org admin reads in Enterprise).
+      schema:
+        type: string
+      example: "travel-us"
+
+    UserIDHeader:
+      name: X-User-ID
+      in: header
+      required: false
+      description: |
+        Caller identity. Defaults to the authenticated user resolved
+        from the request token when omitted. Surface for service-mode
+        callers that proxy on behalf of multiple users.
+      schema:
+        type: string
+
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Maximum number of records to return. Defaults vary by
+        endpoint; see per-endpoint description for the cap.
+      schema:
+        type: integer
+        minimum: 1
+        default: 100
+
+    OffsetParam:
+      name: offset
+      in: query
+      required: false
+      description: |
+        Number of records to skip from the start of the result set.
+        Pair with `limit` to walk multi-page reads.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    OrgIDQuery:
+      name: org_id
+      in: query
+      required: false
+      description: |
+        Organization filter for list reads. Query-string form of the
+        X-Org-ID header used elsewhere — handlers fall back to the
+        authenticated org when omitted.
+      schema:
+        type: string
+
   schemas:
     HealthResponse:
       type: object
@@ -6752,8 +6817,9 @@ components:
         processing_time:
           type: string
         media_analysis:
-          $ref: '#/components/schemas/MediaAnalysisResponse'
           description: Media governance analysis results (present when media was submitted)
+          allOf:
+            - $ref: '#/components/schemas/MediaAnalysisResponse'
 
     PolicyEvaluationResult:
       type: object
@@ -6896,7 +6962,35 @@ components:
           type: string
         policy_info:
           description: Policy evaluation result for the plan execution (Issue #1020)
-          $ref: '#/components/schemas/PolicyEvaluationResult'
+          allOf:
+            - $ref: '#/components/schemas/PolicyEvaluationResult'
+        complexity:
+          type: string
+          description: |
+            Plan complexity hint inferred from query characteristics
+            (e.g. simple/medium/complex). Surfaced from the planning
+            engine so callers can apply complexity-aware UI hints.
+          example: medium
+        domain:
+          type: string
+          description: |
+            Inferred query domain (e.g. travel, finance, healthcare).
+            Echoes the request's `domain` field if provided, otherwise
+            populated by the planning engine's domain classifier.
+          example: travel
+        parallel:
+          type: boolean
+          description: |
+            True when the planning engine produced steps that can
+            execute in parallel. Callers may choose to render
+            parallel-step UIs differently from sequential ones.
+        status:
+          type: string
+          description: |
+            Plan lifecycle status (e.g. created, in_progress, completed,
+            failed). Mirrors the WorkflowStatusResponse.status field for
+            plans the orchestrator returns synchronously alongside the
+            plan body.
 
     CancelPlanResponse:
       type: object
@@ -6908,6 +7002,13 @@ components:
         status:
           type: string
           enum: [cancelled]
+        message:
+          type: string
+          description: |
+            Human-readable summary of the cancel outcome (e.g.
+            "Plan cancelled — 3 of 5 steps had already executed and
+            were rolled back"). Useful for end-user UI; programmatic
+            callers should prefer `status`.
 
     UpdatePlanRequest:
       type: object
@@ -6980,6 +7081,44 @@ components:
           description: Status after resuming
         result:
           description: Final result if plan completed
+        approved:
+          type: boolean
+          description: |
+            True when the resume was driven by an approval; false when
+            the resume rejected the pending decision. Mirrors the
+            decision the caller submitted on /resume.
+        message:
+          type: string
+          description: |
+            Human-readable summary of the resume outcome (e.g.
+            "Step 3 approved; plan continuing to step 4").
+        next_step:
+          type: integer
+          description: |
+            1-based index of the next step the orchestrator will run
+            after the resume completes. Absent when the plan is
+            already terminal.
+        next_step_name:
+          type: string
+          description: |
+            Name of the step at `next_step` (mirrors PlanStep.name).
+            Useful for callers rendering "Continuing to: …" UI.
+        step_result:
+          description: |
+            Result of the step that was waiting on this approval.
+            Shape depends on the step type; treat as opaque on the
+            client unless the step type is known.
+        total_steps:
+          type: integer
+          description: |
+            Total number of steps in the plan, so callers can render
+            "Step N of M" without a separate plan-status lookup.
+        workflow_id:
+          type: string
+          description: |
+            WCP workflow id this plan is bound to. Surfaced here so
+            callers don't need a separate /plans/{id} round-trip after
+            resume to learn the workflow id.
 
     RollbackPlanResponse:
       type: object
@@ -7040,6 +7179,45 @@ components:
           type: string
         enabled:
           type: boolean
+        type:
+          type: string
+          description: |
+            Policy type — narrower-than-category dimension surfaced on
+            list/CRUD responses (e.g. risk, content, user, cost).
+          example: risk
+        category:
+          type: string
+          description: |
+            Policy category. Dynamic policies use a `dynamic-` prefix
+            (dynamic-risk, dynamic-compliance, dynamic-security,
+            dynamic-cost, dynamic-access).
+          example: dynamic-risk
+        tier:
+          type: string
+          enum: [system, organization, tenant]
+          description: |
+            Policy tier. Dynamic policies default to `tenant`;
+            organization-tier policies require Enterprise.
+        organization_id:
+          type: string
+          nullable: true
+          description: |
+            Organization id for organization-tier policies. Null for
+            system and tenant tiers.
+        priority:
+          type: integer
+          description: |
+            Evaluation priority — lower values evaluate first. Useful
+            when multiple dynamic policies match the same request.
+          example: 0
+        created_at:
+          type: string
+          format: date-time
+          description: When the dynamic policy was first inserted.
+        updated_at:
+          type: string
+          format: date-time
+          description: When the dynamic policy was last modified.
         conditions:
           type: array
           items:
@@ -7239,6 +7417,32 @@ components:
         limit:
           type: integer
           default: 100
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: |
+            Pagination offset — number of audit-log rows to skip from
+            the start of the result set. Pair with `limit` to walk
+            multi-page audit reads.
+        decision_id:
+          type: string
+          description: |
+            Filter audit reads to a specific governance decision id
+            (mints from MCPCheckInputResponse / MCPCheckOutputResponse
+            etc.). Useful when correlating a specific request through
+            its full audit trail.
+        override_id:
+          type: string
+          description: |
+            Filter to audit entries that recorded an override-used
+            event for this override id.
+        policy_name:
+          type: string
+          description: |
+            Filter to audit entries where this policy fired
+            (matches against the `policy_violations` array on the
+            audit entry).
 
     AuditLogEntry:
       type: object
@@ -7268,6 +7472,29 @@ components:
           type: number
         provider:
           type: string
+        model:
+          type: string
+          description: |
+            LLM model identifier the agent routed to (e.g.
+            `gpt-4o-mini`, `claude-3-5-sonnet-20241022`,
+            `llama3.2:latest`). Surfaced separately from `provider`
+            so callers can filter audit reads by model without parsing
+            the provider's vendor-specific naming.
+        policy_violations:
+          type: array
+          description: |
+            Policies that fired on the request. Each entry is the
+            canonical policy id (e.g. `sys_sqli_drop_table`,
+            `pii-us-ssn-redact`). Empty when no policy matched.
+          items:
+            type: string
+        metadata:
+          type: object
+          description: |
+            Free-form per-entry metadata captured by the agent at
+            audit time — request shape varies by audit source. Treat
+            keys as opaque on the client unless documented elsewhere.
+          additionalProperties: true
         tokens_used:
           type: integer
         latency_ms:
@@ -7468,6 +7695,20 @@ components:
         started_at:
           type: string
           format: date-time
+        created_at:
+          type: string
+          format: date-time
+          description: |
+            When the workflow row was inserted. Distinct from
+            `started_at` because workflows can be created in a
+            staged-but-not-running state.
+        source:
+          type: string
+          enum: [langgraph, langchain, crewai, external]
+          description: |
+            Echoes the request's `source` so callers don't need a
+            separate read after creation to learn which orchestrator
+            owns the workflow.
 
     WorkflowStatusResponse:
       type: object
@@ -7524,6 +7765,25 @@ components:
         gate_checked_at:
           type: string
           format: date-time
+        approved_by:
+          type: string
+          description: |
+            User email of the approver when `approval_status` is
+            `approved`. Empty for `pending` and may be empty for
+            `rejected` if the step was auto-expired.
+        completed_at:
+          type: string
+          format: date-time
+          description: |
+            When the step transitioned to a terminal state (approved,
+            rejected, or auto-completed). Pair with `gate_checked_at`
+            to compute approval latency.
+        decision_reason:
+          type: string
+          description: |
+            Free-form rationale recorded alongside the decision —
+            populated by the approver when present, or by the policy
+            engine for auto-decisions. Per-step audit context.
 
     ToolContext:
       type: object
@@ -7783,6 +8043,14 @@ components:
             key recorded on the step's earlier /gate call. Mismatch returns
             409 IDEMPOTENCY_KEY_MISMATCH.
           example: "payment:wire:invoice-7721"
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Free-form metadata captured at step-completion time —
+            useful for audit context the gate-time data didn't have
+            (post-execution latency from a downstream service, retry
+            attempt counters, etc.). Treat as opaque on the client.
 
     APIErrorDetails:
       type: object
@@ -8195,27 +8463,11 @@ components:
           type: integer
           description: Total number of subscriptions
 
-    PolicyMatch:
-      type: object
-      description: Details of a policy that was evaluated or matched (Issue #1021)
-      properties:
-        policy_id:
-          type: string
-          description: Unique identifier of the policy
-          example: pol-pii-detection-001
-        policy_name:
-          type: string
-          description: Human-readable name of the policy
-          example: PII Detection - Critical
-        action:
-          type: string
-          description: The action configured for this policy
-          enum: [allow, block, require_approval]
-          example: block
-        reason:
-          type: string
-          description: Explanation of why the policy matched or its effect
-          example: Credit card number detected in step input
+    # NOTE: a duplicate `PolicyMatch:` declaration used to live here. The
+    # earlier definition at line ~6780 already covers this surface and is
+    # the one resolved by every $ref (YAML mapping rules: last-write-wins
+    # silently dropped this block, but swagger-cli flagged the duplicate).
+    # Removed in the same PR that closed the spec gaps under #1745.
 
     ConnectorInfo:
       type: object
@@ -9450,6 +9702,170 @@ components:
           type: string
           enum: [open, resolved, accepted]
 
+    ConformityAssessment:
+      type: object
+      description: |
+        EU AI Act conformity assessment record (Article 43). Mirrors the
+        wire shape of `platform/orchestrator/euaiact/types.go::ConformityAssessment`.
+      required:
+        - id
+        - org_id
+        - system_id
+        - system_name
+        - risk_category
+        - status
+        - assessment_date
+        - assessors
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          description: Unique assessment identifier (UUID).
+        org_id:
+          type: string
+          description: Owning organization.
+        system_id:
+          type: string
+          description: AI system this assessment covers.
+        system_name:
+          type: string
+          description: Human-readable name of the AI system.
+        risk_category:
+          type: string
+          enum: [minimal, limited, high-risk, unacceptable]
+          description: EU AI Act risk classification.
+        status:
+          type: string
+          enum: [draft, in_progress, submitted, approved, rejected]
+        version:
+          type: integer
+          description: Monotonic version (bumps on every update).
+        assessment_date:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+        assessors:
+          type: array
+          description: Email addresses of the team members carrying out the assessment.
+          items:
+            type: string
+        requirements:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequirementStatus'
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvidenceItem'
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+        risk_mitigation:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Free-form risk-mitigation notes structured as a JSON object.
+        recommendations:
+          type: array
+          items:
+            type: string
+        created_by:
+          type: string
+          description: User email that opened the assessment.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        submitted_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        approved_by:
+          type: string
+        rejected_at:
+          type: string
+          format: date-time
+          nullable: true
+        rejected_by:
+          type: string
+        rejection_reason:
+          type: string
+          description: Free-form reason a reviewer used when transitioning to `rejected`.
+
+    CreateConformityRequest:
+      type: object
+      description: |
+        Request body for `POST /api/v1/euaiact/conformity`. Mirrors
+        `platform/orchestrator/euaiact/types.go::CreateAssessmentRequest`.
+      required:
+        - system_id
+        - system_name
+        - risk_category
+      properties:
+        system_id:
+          type: string
+        system_name:
+          type: string
+        risk_category:
+          type: string
+          enum: [minimal, limited, high-risk, unacceptable]
+        assessors:
+          type: array
+          items:
+            type: string
+
+    UpdateConformityRequest:
+      type: object
+      description: |
+        Request body for `PUT /api/v1/euaiact/conformity/{assessment_id}`.
+        All fields optional — only the fields present are updated.
+        Mirrors `platform/orchestrator/euaiact/types.go::UpdateAssessmentRequest`.
+        The handler rejects updates when the assessment status is no
+        longer `draft` or `in_progress`.
+      properties:
+        system_name:
+          type: string
+        risk_category:
+          type: string
+          enum: [minimal, limited, high-risk, unacceptable]
+        assessors:
+          type: array
+          items:
+            type: string
+        requirements:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequirementStatus'
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvidenceItem'
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+        risk_mitigation:
+          type: object
+          additionalProperties: true
+        recommendations:
+          type: array
+          items:
+            type: string
+
     RecordAccuracyRequest:
       type: object
       required:
@@ -9709,6 +10125,18 @@ components:
           type: string
         error_message:
           type: string
+        input_summary:
+          type: string
+          description: |
+            Truncated, redacted summary of the workflow input — safe
+            to display in audit listings without leaking PII or
+            secrets. Full input is in the per-step ExecutionSnapshot
+            records.
+        output_summary:
+          type: string
+          description: |
+            Truncated, redacted summary of the workflow's final
+            output. Same redaction posture as `input_summary`.
 
     ExecutionSnapshot:
       type: object
@@ -9757,6 +10185,23 @@ components:
           type: string
         retry_count:
           type: integer
+        approval_required:
+          type: boolean
+          description: |
+            True when this step gated on human approval. The pair
+            `approved_at` + `approved_by` records when and by whom
+            the approval was granted (or shows null on rejection).
+        approved_at:
+          type: string
+          format: date-time
+          description: |
+            When the approval-required gate was resolved. Pair with
+            `approved_by` to compute approval latency at the step level.
+        approved_by:
+          type: string
+          description: |
+            User email of the approver. Empty when
+            `approval_required` is false or the gate was auto-resolved.
 
     PolicyEvent:
       type: object
@@ -9833,6 +10278,13 @@ components:
         name:
           type: string
           description: Human-readable budget name
+        enabled:
+          type: boolean
+          default: true
+          description: |
+            When false the budget is configured but its limit is not
+            enforced — usage is still tracked. Lets operators dry-run
+            a budget before flipping it on.
         scope:
           type: string
           enum: [organization, team, agent, workflow, user]
@@ -10061,6 +10513,13 @@ components:
         period_end:
           type: string
           format: date-time
+        period:
+          type: string
+          description: |
+            Bucket label for the rolled-up period (e.g. `2026-04`,
+            `2026-W17`, `2026-04-29`). Echoes the request's bucket
+            granularity so callers can label charts without parsing
+            `period_start` / `period_end`.
 
     UsageBreakdownItem:
       type: object
@@ -10096,6 +10555,19 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/UsageBreakdownItem'
+        period:
+          type: string
+          description: |
+            Bucket label for the rolled-up period (e.g. `2026-04`,
+            `2026-W17`). Same field as `UsageSummary.period`.
+        period_start:
+          type: string
+          format: date-time
+          description: Inclusive start of the rolled-up period.
+        period_end:
+          type: string
+          format: date-time
+          description: Exclusive end of the rolled-up period.
 
     UsageRecord:
       type: object
@@ -10136,6 +10608,13 @@ components:
         created_at:
           type: string
           format: date-time
+        timestamp:
+          type: string
+          format: date-time
+          description: |
+            Wall-clock time the usage event occurred — distinct from
+            `created_at` (when the row was inserted). Some downstream
+            paths emit this as the canonical event time.
 
     UsageRecordList:
       type: object
@@ -10163,6 +10642,15 @@ components:
 
     PricingInfo:
       type: object
+      # `required: [provider, model, pricing]` lets oneOf in
+      # /api/v1/pricing discriminate single-model responses from the
+      # all-providers shape (PricingList). Without this, PricingInfo
+      # accepts any object shape (including the all-providers payload)
+      # and the spectral oas3-valid-media-example check fails.
+      required:
+        - provider
+        - model
+        - pricing
       properties:
         provider:
           type: string
@@ -10173,6 +10661,8 @@ components:
 
     PricingList:
       type: object
+      required:
+        - providers
       properties:
         providers:
           type: object

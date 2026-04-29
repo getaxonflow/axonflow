@@ -7,7 +7,7 @@
     "start": "ts-node index.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^6.2.0",
+    "@axonflow/sdk": "^7.0.0",
     "dotenv": "^16.6.1",
     "openai": "^4.104.0"
   },

@@ -7,7 +7,7 @@
     "start": "npx tsx index.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^6.2.0"
+    "@axonflow/sdk": "^7.0.0"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
