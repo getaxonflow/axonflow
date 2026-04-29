@@ -87,6 +87,94 @@ func TestMCPCheckInputHandler_CommunityMode_Allowed(t *testing.T) {
 	if !resp.Allowed {
 		t.Errorf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
 	}
+	// Plugin Batch 1 / ADR-042 / ADR-043: every governance decision must
+	// surface decision_id, allow paths included.
+	if resp.DecisionID == "" {
+		t.Error("allow path must emit decision_id (#1746 regression guard)")
+	}
+}
+
+// TestMCPCheckInputHandler_AllowEmitsDecisionID is a focused regression
+// guard for #1746: the allow path of /api/v1/mcp/check-input must emit
+// decision_id in the response body. Plugin Batch 1 / ADR-042 / ADR-043
+// require it on every governance decision so callers can correlate the
+// decision back to the audit log via /explain/{id} without an extra
+// round-trip. The deny path was always covered; this test pins the
+// allow path so the regression cannot silently re-occur.
+func TestMCPCheckInputHandler_AllowEmitsDecisionID(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
+	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
+	sharedpolicy.SetGlobalDynamicPolicyEvaluator(nil)
+
+	body, _ := json.Marshal(MCPCheckInputRequest{
+		ConnectorType: "postgres",
+		Statement:     "SELECT id, email FROM users LIMIT 10",
+		TenantID:      "default",
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/check-input", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpCheckInputHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp MCPCheckInputResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Allowed {
+		t.Fatalf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
+	}
+	if resp.DecisionID == "" {
+		t.Error("allow path must emit decision_id (Plugin Batch 1)")
+	}
+}
+
+// TestMCPCheckOutputHandler_AllowEmitsDecisionID is the same regression
+// guard for /api/v1/mcp/check-output: allow path must emit decision_id.
+// The MCPCheckOutputResponse struct gained the field in this PR; this
+// test pins the contract so it cannot regress.
+func TestMCPCheckOutputHandler_AllowEmitsDecisionID(t *testing.T) {
+	cleanup := setupCommunityModeForTest(t)
+	defer cleanup()
+
+	originalEngine := sharedpolicy.GetGlobalEngine()
+	sharedpolicy.SetGlobalEngine(nil)
+	defer sharedpolicy.SetGlobalEngine(originalEngine)
+
+	body, _ := json.Marshal(MCPCheckOutputRequest{
+		ConnectorType: "postgres",
+		Message:       "OK",
+		TenantID:      "default",
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/check-output", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	mcpCheckOutputHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp MCPCheckOutputResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Allowed {
+		t.Fatalf("expected allowed=true, got false (block_reason=%q)", resp.BlockReason)
+	}
+	if resp.DecisionID == "" {
+		t.Error("allow path must emit decision_id (Plugin Batch 1)")
+	}
 }
 
 func TestMCPCheckInputHandler_MissingConnectorType(t *testing.T) {

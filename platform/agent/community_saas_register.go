@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	logutil "axonflow/platform/shared/logger"
@@ -27,12 +28,13 @@ import (
 
 // Community-SaaS registration errors (typed for structured logging)
 var (
-	ErrRegistrationNotFound  = errors.New("registration not found")
-	ErrRegistrationExpired   = errors.New("registration expired")
-	ErrRegistrationDisabled  = errors.New("registration disabled")
-	ErrInvalidSecret         = errors.New("invalid secret")
-	ErrDatabaseUnavailable   = errors.New("database unavailable")
-	ErrRegistrationRateLimit = errors.New("registration rate limit exceeded")
+	ErrRegistrationNotFound   = errors.New("registration not found")
+	ErrRegistrationExpired    = errors.New("registration expired")
+	ErrRegistrationDisabled   = errors.New("registration disabled")
+	ErrRegistrationTerminated = errors.New("registration terminated")
+	ErrInvalidSecret          = errors.New("invalid secret")
+	ErrDatabaseUnavailable    = errors.New("database unavailable")
+	ErrRegistrationRateLimit  = errors.New("registration rate limit exceeded")
 )
 
 const (
@@ -63,10 +65,32 @@ const (
 	// communitySaasTryEndpoint is the canonical endpoint URL returned to registrants.
 	communitySaasTryEndpoint = "https://try.getaxonflow.com"
 
-	// communitySaasDisclaimerNote is the mandatory disclaimer returned with every registration.
-	communitySaasDisclaimerNote = "This is a shared evaluation server. No SLA, no security guarantee. " +
-		"Do not send real PII or production data. Data retained 30 days max. " +
-		"For production use, deploy self-hosted or contact hello@getaxonflow.com for enterprise licensing."
+	// communitySaasRegistrationTTL is the lifetime of a fresh registration. After
+	// this period (regardless of activity) the registration becomes inactive and
+	// the daily inactivity sweep terminates it. Active registrations whose
+	// last_seen_at goes 3 months without traffic are terminated earlier; see
+	// community_saas_sweep.go.
+	communitySaasRegistrationTTL = 365 * 24 * time.Hour
+
+	// communitySaasMaxRegistrationRetries is the upper bound on retries when a
+	// freshly-generated UUID v4 collides with an existing tombstone in the
+	// community_saas_registrations PK. Collision probability per call is ~2^-122,
+	// so this should never fire in practice — present strictly as defense-in-depth
+	// against the impossible-but-not-zero case. After this many retries the
+	// registration handler returns 500 to surface the impossible event to the
+	// operator instead of silently looping.
+	communitySaasMaxRegistrationRetries = 3
+
+	// communitySaasDisclaimerNote is the disclaimer returned with every registration.
+	// This text is the canonical source for what the plugin's first-run setup message
+	// and the public privacy policy say about Community-SaaS. Keep all three surfaces
+	// in sync — drift across surfaces is the failure mode.
+	communitySaasDisclaimerNote = "AxonFlow Community SaaS is intended for basic testing and evaluation. " +
+		"For real workflows, real systems, or sensitive data, we recommend self-hosting AxonFlow from day one " +
+		"(https://docs.getaxonflow.com/quickstart). Best-effort retention up to 1 year. After 3 months of " +
+		"inactivity, your tenant data is disassociated and the tenant terminated. Due to the limits of " +
+		"identifying users on Community SaaS, we cannot offer reliability or security guarantees — by " +
+		"using it you accept these constraints."
 
 	// activityUpdateBufferSize is the capacity of the activity update channel.
 	// When full, updates are dropped (non-critical — activity tracking is best-effort).
@@ -88,6 +112,11 @@ type ipRegistrationEntry struct {
 var regIPTracker = &registrationIPTracker{
 	entries: make(map[string]*ipRegistrationEntry),
 }
+
+// uuidNewString is a package-level indirection over uuid.NewString to allow
+// deterministic UUIDs in tests covering the PK-collision retry path. Production
+// code never reassigns this; only test files do, in setup/teardown.
+var uuidNewString = uuid.NewString
 
 // check verifies the given IP has not exceeded the registration rate limit.
 // Returns nil if under limit, ErrRegistrationRateLimit if exceeded.
@@ -250,10 +279,7 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Generate tenant_id (cs_ prefix + UUID)
-		tenantID := communitySaasTenantPrefix + uuid.NewString()
-
-		// Generate cryptographic random secret
+		// Generate cryptographic random secret (shared across PK retries)
 		secretRaw := make([]byte, secretBytes)
 		if _, err := rand.Read(secretRaw); err != nil {
 			log.Printf("[CSAAS-REGISTER] Failed to generate secret: %v", err)
@@ -271,23 +297,44 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Store registration in database
+		// Store registration in database with PK retry on UUID collision.
+		// Tombstone rows (terminated_at non-NULL) hold the PK slot indefinitely so a
+		// freshly-generated UUID could in principle collide. The probability is
+		// astronomical (~2^-122 per generation) but the retry preserves "never reuse
+		// tenant_id" as a hard guarantee rather than a probabilistic one.
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+		expiresAt := time.Now().UTC().Add(communitySaasRegistrationTTL)
 		var labelParam interface{}
 		if req.Label != "" {
 			labelParam = req.Label
 		}
 
-		_, err = db.ExecContext(ctx,
-			`INSERT INTO community_saas_registrations (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt)
-		if err != nil {
-			log.Printf("[CSAAS-REGISTER] Failed to insert registration for tenant %s: %v",
-				logutil.Sanitize(tenantID), err)
+		var tenantID string
+		var insertErr error
+		for attempt := 0; attempt < communitySaasMaxRegistrationRetries; attempt++ {
+			tenantID = communitySaasTenantPrefix + uuidNewString()
+			_, insertErr = db.ExecContext(ctx,
+				`INSERT INTO community_saas_registrations (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at)
+				 VALUES ($1, $2, $3, $4, $5, $6)`,
+				tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt)
+			if insertErr == nil {
+				break
+			}
+			if !isUniqueViolation(insertErr) {
+				log.Printf("[CSAAS-REGISTER] Failed to insert registration for tenant %s: %v",
+					logutil.Sanitize(tenantID), insertErr)
+				writeJSONError(w, "Failed to create registration", http.StatusInternalServerError)
+				return
+			}
+			// Unique violation — log it (operationally interesting) and retry with a fresh UUID
+			log.Printf("[CSAAS-REGISTER] PK collision on tenant_id %s (attempt %d/%d), retrying",
+				logutil.Sanitize(tenantID), attempt+1, communitySaasMaxRegistrationRetries)
+		}
+		if insertErr != nil {
+			log.Printf("[CSAAS-REGISTER] Exhausted %d UUID retries — impossible state, surfacing 500",
+				communitySaasMaxRegistrationRetries)
 			writeJSONError(w, "Failed to create registration", http.StatusInternalServerError)
 			return
 		}
@@ -323,7 +370,12 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 //
 // Returns nil on success, or a typed error:
 //   - ErrRegistrationNotFound: tenant_id not in table
-//   - ErrRegistrationExpired: expires_at in the past
+//   - ErrRegistrationTerminated: terminated_at is set (3-month inactivity sweep
+//     or 1-year hard-cap sweep — the row is a tombstone, secret has been cleared,
+//     tenant-scoped data has been cascade-deleted; client must re-register)
+//   - ErrRegistrationExpired: expires_at in the past (registration TTL exceeded
+//     before the inactivity sweep ran — operationally close to ErrRegistrationTerminated
+//     but the underlying state differs and the typed errors give different log signal)
 //   - ErrRegistrationDisabled: disabled_at is set (operator kill-switch)
 //   - ErrInvalidSecret: bcrypt mismatch
 //   - ErrDatabaseUnavailable: db is nil
@@ -335,16 +387,24 @@ func validateCommunityRegistration(ctx context.Context, db *sql.DB, tenantID, se
 	var secretHash string
 	var expiresAt time.Time
 	var disabledAt sql.NullTime
+	var terminatedAt sql.NullTime
 
 	err := db.QueryRowContext(ctx,
-		`SELECT secret_hash, expires_at, disabled_at
+		`SELECT secret_hash, expires_at, disabled_at, terminated_at
 		 FROM community_saas_registrations
-		 WHERE tenant_id = $1`, tenantID).Scan(&secretHash, &expiresAt, &disabledAt)
+		 WHERE tenant_id = $1`, tenantID).Scan(&secretHash, &expiresAt, &disabledAt, &terminatedAt)
 	if err == sql.ErrNoRows {
 		return ErrRegistrationNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("database query failed: %w", err)
+	}
+
+	// Check tombstone (sweep-terminated tenant). Distinct from disabled (operator
+	// action) and expired (TTL): tombstone means the row exists only to hold the
+	// PK slot and prevent UUID reuse — the tenant's data is gone.
+	if terminatedAt.Valid {
+		return ErrRegistrationTerminated
 	}
 
 	// Check operator kill-switch
@@ -395,4 +455,16 @@ func extractClientIP(r *http.Request) string {
 		return "unknown"
 	}
 	return addr
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint violation
+// (SQLSTATE 23505). Used by the registration handler to distinguish a UUID v4 PK
+// collision (retryable) from any other insert failure (operational error). Driver:
+// github.com/lib/pq.
+func isUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23505"
+	}
+	return false
 }

@@ -12,6 +12,217 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.5.0] - 2026-04-29 — SDK & plugin majors, plugin compatibility, Community-SaaS lifecycle
+
+MINOR: a coordinated SDK and plugin major-version bump. All four SDKs (Go, Python,
+TypeScript, Java) advance to `v7.0.0`; the OpenClaw plugin advances to
+`v2.0.0`; the Claude Code, Cursor, and Codex CLI plugins graduate from
+`v0.x.x` to `v1.0.0`. The breaking change driving all eight is the
+DO_NOT_TRACK telemetry-opt-out removal — `AXONFLOW_TELEMETRY=off` is now
+the canonical and only opt-out across every SDK and every plugin. The
+platform itself is purely additive: a symmetric `plugin_compatibility`
+field on `/health` so plugins can run the same downgrade-warning gate
+SDKs have run since v4.8.0, plus an opt-in Community-SaaS lifecycle
+sweep, plus `/health` correctly reporting the deployed semver, plus a
+batch of OpenAPI corrections that close drift between the spec and what
+the platform actually returns on the wire.
+
+No breaking platform changes. Existing SDK and plugin callers continue
+to work; they receive a one-time upgrade hint when they sit below the
+new floor.
+
+### Community
+
+#### Added
+
+- **`/health` advertises plugin version compatibility.** New
+  `plugin_compatibility` field declares `min_plugin_version` and
+  `recommended_plugin_version` per plugin id (`openclaw`, `claude-code`,
+  `cursor`, `codex`), mirroring the long-standing `sdk_compatibility`
+  shape. Plugins query `/health` at startup, log a one-time upgrade
+  warning when they're below the floor, and stay quiet otherwise — the
+  same downgrade-warning gate every SDK already runs. The
+  `HealthResponse` OpenAPI schema gains the new field; older platforms
+  without the field degrade silently on the plugin side.
+- **Community-SaaS registration lifecycle.** Registration TTL bumped
+  from 30 days to 1 year; existing 30-day registrations within 60 days
+  of expiry are auto-extended at deploy time so no live tenant gets
+  locked out. New tombstone semantics keep the `tenant_id` slot
+  reserved indefinitely after a cascade-delete so a UUID is never
+  reused, and a distinct `ErrRegistrationTerminated` error returns an
+  actionable "re-register" message instead of the generic invalid-
+  credentials response. The disclaimer returned by
+  `POST /api/v1/register` now matches the public privacy policy and
+  the plugin first-run setup message — single source of truth across
+  surfaces.
+- **Daily Community-SaaS inactivity sweep** terminates tenants idle for
+  more than 3 months and tenants past the 1-year hard cap, cascade-
+  deleting their tenant-scoped data (audit logs, policies, workflows,
+  plans, etc.) in a single transaction so a partial failure rolls the
+  whole tick back. The cascade table list is reflected from
+  `information_schema` at agent startup with a hard non-cascade
+  allowlist for structural tables. Multi-instance correctness via
+  Postgres advisory lock — only one agent task runs the sweep per
+  tick. Opt-in per deploy via `COMMUNITY_SAAS_SWEEP_ENABLED=true`,
+  with `COMMUNITY_SAAS_SWEEP_DRYRUN=true` available so operators can
+  soak the predicate logic for 24h before flipping the real switch.
+  Per-termination audit-log line plus Prometheus counters for
+  inactivity terminations, hard-cap terminations, lock-skip events,
+  cascade row counts, and tick failures.
+
+#### Changed
+
+- **OpenAPI specs now declare 24 fields the platform has been emitting
+  on the wire but the spec hadn't documented.** `AuditLogEntry`
+  (`metadata`, `model`, `policy_violations`), `DynamicPolicy` (7 CRUD
+  fields), `PlanResponse` (4 plan-context fields),
+  `ResumePlanResponse` (7 resume-context fields), plus 16
+  lower-priority schemas covering audit query params, budget/usage
+  fields, execution-snapshot HITL fields, workflow step audit context,
+  and the multimodal payload field on `ClientRequest`. Closes the
+  spec-side gap surfaced by the Python SDK's wire-shape contract gate.
+
+#### Fixed
+
+- **`/health` now reports the deployed platform semver.** Previously
+  the `version` field returned `1.0.0` on every deployed stack because
+  the CloudFormation templates wired `AXONFLOW_VERSION` to the agent
+  image tag (`latest`, git SHA, etc.), which failed the semver regex
+  in the agent's version resolver. A new dedicated `PlatformVersion`
+  CFN parameter with a built-in semver `AllowedPattern` is now wired
+  to `AXONFLOW_VERSION` independently of the image tag, and a new
+  `VERSION` file at the repo root is the single source of truth read
+  by both the build pipeline and the deploy script. A version-
+  alignment validator runs on every push.
+- **`MCPCheckInputResponse` now emits `decision_id` on the allow path**
+  of `POST /api/v1/mcp/check-input` (it was already emitted on every
+  deny path). Every governance decision was supposed to surface
+  `decision_id` so callers can correlate the decision back to
+  the audit log via `/explain/{id}` without a round-trip — the allow
+  path silently dropped it. Same fix applied to
+  `MCPCheckOutputResponse` (which gains a `decision_id` field) and to
+  the MCP-tool variants so plugin-visible shape is consistent across
+  HTTP and MCP-tool surfaces.
+- **`try.getaxonflow.com` blocks SQL injection again.** Community SaaS
+  deployments now pin `SQLI_ACTION=block` on the agent task,
+  overriding the v6.2.0+ relaxed default profile that demoted SQLi
+  enforcement to `warn`. Configurable per-deploy via the new
+  `SqliAction` CFN parameter (`block` / `warn` / `log`, default
+  `block`). Takes effect on the next community-saas deployment.
+- **`try.getaxonflow.com` plan generation no longer 504s at 60 seconds.**
+  The community-saas CFN template's `AlbIdleTimeoutSeconds` parameter
+  (default 300) ships pre-set; the next deployment of the running
+  stack picks up the 300s idle timeout so long MAP plan-generation
+  requests complete without hitting the front-door gateway timeout.
+- **`docs/api/agent-api.yaml` and `docs/api/orchestrator-api.yaml` now
+  lint clean.** 21 broken `$ref` references to a non-existent `Error`
+  schema in `agent-api.yaml` are repointed to the existing
+  `ErrorResponse` (same shape both handlers return). Five additional
+  broken refs in `orchestrator-api.yaml` are resolved by adding the
+  missing `OrgIDQuery` parameter and three EU AI Act conformity
+  schemas. Several malformed-example errors and `no-$ref-siblings`
+  violations across the two specs are corrected.
+
+#### Documentation
+
+- **SDK telemetry contract: 7-day delivered-heartbeat.** All four SDKs
+  follow the same contract: AxonFlow emits at most one anonymous
+  heartbeat per environment every 7 days during SDK activity. The
+  telemetry contract document is rewritten with the new cadence
+  section, per-OS stamp-file specification, and a 9-case heartbeat
+  conformance test matrix plus a 4-run cross-process E2E. Plugin
+  parity (sibling 7-day-heartbeat at hook-fire time) noted at the
+  bottom of the contract, including the deliberate stamp-filename
+  split: SDKs use `{sdk}-telemetry-last-sent` while plugins keep the
+  legacy `{codex,claude-code,cursor,openclaw}-plugin-telemetry-sent`
+  so existing installs preserve their `instance_id` across the
+  upgrade.
+- **Telemetry opt-out is `AXONFLOW_TELEMETRY=off` everywhere.**
+  `DO_NOT_TRACK` is no longer honored as an opt-out across all four
+  SDKs and all four plugins. `DO_NOT_TRACK` is commonly inherited from
+  host tools and developer environments — host CLIs like Codex and
+  Claude Code inject it unconditionally — making it an unreliable
+  expression of user intent. Documentation, ADRs, and the README
+  callout are updated.
+- **Examples and SDK reference docs updated for the v7 majors.**
+  Install-command snippets, dependency declarations, getting-started
+  guides, tutorials, gateway/proxy guides, compliance pages, MCP audit
+  logging, execution tracking, and the configurable-agents reference
+  now point at the new SDK majors. Historical "Since vX" references
+  are intentionally left as-is — those document when a feature was
+  added.
+
+#### CI / Testing
+
+- **Tier-gate contract CI** now runs every PR that touches the agent
+  or orchestrator code paths against a fresh docker-compose stack in
+  community, evaluation, and enterprise modes, and asserts that each
+  guarded endpoint returns the documented status code per tier.
+  Catches drift between the published tier matrix and actual handler
+  enforcement before merge.
+- **OpenAPI validation now covers all three specs.** Previously only
+  `policy-api.yaml` was linted in CI; `agent-api.yaml` and
+  `orchestrator-api.yaml` were silently exempt and accumulated
+  structural defects (broken refs, duplicate schemas, malformed
+  examples). The validator now loops over all three specs and runs
+  per-spec breaking-change diffs against the base branch.
+
+### Evaluation
+
+- All Community changes apply.
+- The plugin-compatibility check, the openapi corrections, and the
+  Community-SaaS lifecycle additions all flow through Evaluation
+  unchanged. No new Evaluation-tier endpoints, no Evaluation-only
+  behaviour changes in this release.
+
+### Enterprise
+
+- All Community + Evaluation changes apply.
+- No Enterprise-only behaviour changes in this release. The portal,
+  customer-portal-ui, and the rest of the Enterprise tree pick up the
+  Community-side fixes (correct `/health` semver, `decision_id` on
+  allow, etc.) automatically.
+
+### SDKs
+
+- **Go SDK v7.0.0** — module path advances from `/v6` to `/v7`.
+  `DO_NOT_TRACK` is no longer honored; use `AXONFLOW_TELEMETRY=off`.
+  Anonymous heartbeat now follows the 7-day-per-environment cadence.
+- **Python SDK v7.0.0** — `axonflow>=7.0.0`. `StaticPolicy` and
+  `PolicyVersion` now serialize wire fields in snake_case to match
+  the OpenAPI spec; camelCase keys still accepted on input via field
+  validation aliases so existing consumers keep working — round-trip
+  identity is no longer preserved for callers that built models from
+  camelCase dicts. `DO_NOT_TRACK` removed; 7-day heartbeat cadence
+  shipped.
+- **TypeScript SDK v7.0.0** — `@axonflow/sdk@^7.0.0`. `DO_NOT_TRACK`
+  removed; 7-day heartbeat cadence shipped.
+- **Java SDK v7.0.0** — `<version>7.0.0</version>` on the
+  `axonflow-sdk` dependency. `DO_NOT_TRACK` removed; 7-day heartbeat
+  cadence shipped.
+
+See each SDK's release notes for the per-language migration shape.
+
+### Plugins
+
+- **OpenClaw v2.0.0** — `npm install @axonflow/openclaw@^2.0.0`.
+  `DO_NOT_TRACK` removed; `AXONFLOW_PLUGIN_VERSION_CHECK=off` to skip
+  the new platform compatibility check.
+- **Claude Code plugin v1.0.0** — graduates from the 0.x line to a
+  stable 1.x. `DO_NOT_TRACK` removed.
+- **Cursor plugin v1.0.0** — graduates from the 0.x line to a stable
+  1.x. `DO_NOT_TRACK` removed.
+- **Codex plugin v1.0.0** — graduates from the 0.x line to a stable
+  1.x. `DO_NOT_TRACK` removed.
+
+All four plugins query the platform's `/health` at startup, read
+`plugin_compatibility.min_plugin_version[<canonical id>]`, and emit a
+single upgrade hint to stderr when the runtime version is below the
+floor. Below recommended-but-above-min logs an info-level note;
+at-or-above recommended is silent. Older platforms that don't
+advertise the field degrade silently. Skippable per-plugin via
+`AXONFLOW_PLUGIN_VERSION_CHECK=off`.
+
 ## [7.4.5] - 2026-04-28 — Phase 1 quality-freeze fixes + MAP execution-tracking org isolation
 
 PATCH: bug fixes only. The headline platform fix is a pair of org-identity propagation bugs in the MAP execution path that made `GET /api/v1/executions` return zero rows for newly-completed plans and let body-supplied identity override the authenticated org/tenant on policy evaluation. The rest is the close-out of the Phase 1 quality-freeze sweep against the bundled examples — every example now compiles, runs, and exits with a clear PASS/FAIL summary against a stock community-mode docker-compose stack.

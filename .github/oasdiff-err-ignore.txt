@@ -1,0 +1,20 @@
+# oasdiff err-ignore file: each non-comment line is matched as a
+# substring against the rendered breaking-change description. Each
+# line MUST contain the endpoint identifier (method + path) AND the
+# specific change text. Each entry MUST cite the PR that introduced
+# it so a future audit can trace the rationale.
+#
+# Format reference:
+# https://github.com/Tufin/oasdiff/blob/main/docs/BREAKING-CHANGES.md
+
+# PR axonflow-enterprise#1764 — SDKCompatInfo schema correction.
+# The platform has returned per-language object maps for
+# sdk_compatibility.min_sdk_version + recommended_sdk_version since
+# v4.8.0 (the same release that introduced the field). All four SDKs
+# at v6.0.0+ depend on the object shape — the Go SDK v6.0.0 CHANGELOG
+# calls this out explicitly as a wire-shape bug fix. The agent-api.yaml
+# string shape was the bug; the platform behaviour is the contract.
+# Entries are scoped to those two specific properties so unrelated
+# future breaking changes on /health still trip the gate.
+GET /health the `sdk_compatibility/min_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`
+GET /health the `sdk_compatibility/recommended_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`

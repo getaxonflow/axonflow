@@ -18,7 +18,7 @@ import (
 	"os"
 	"strings"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v6"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
 )
 
 func main() {

@@ -1,0 +1,306 @@
+name: Tier Gate Contract
+
+# Asserts the published tier behavior of the agent + orchestrator HTTP API
+# (community / evaluation / enterprise) matches the contract in
+# tests/tier-gate/expected.yaml. Runs the manifest against a fresh
+# docker-compose stack in each of the three modes and fails if any endpoint
+# returns a status code that disagrees with the manifest.
+#
+# A synthetic-failure probe (tests/tier-gate/synthetic_failure_test.sh) runs
+# alongside the real run to confirm the gate is not a no-op.
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'platform/agent/**'
+      - 'platform/orchestrator/**'
+      - 'ee/platform/agent/**'
+      - 'ee/platform/orchestrator/**'
+      - 'tests/tier-gate/**'
+      - '.github/workflows/tier-gate-contract.yml'
+      - 'docker-compose.yml'
+      - 'docker-compose.enterprise.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'platform/agent/**'
+      - 'platform/orchestrator/**'
+      - 'ee/platform/agent/**'
+      - 'ee/platform/orchestrator/**'
+      - 'tests/tier-gate/**'
+      - '.github/workflows/tier-gate-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: '1'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  community:
+    name: Tier gate — community
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install runner deps
+        run: pip install --no-cache-dir pyyaml==6.0.2
+
+      - name: Bring up community stack
+        env:
+          DEPLOYMENT_MODE: community
+          AXONFLOW_LICENSE_KEY: ''
+          ORG_ID: tier-gate-test
+        run: |
+          set -euo pipefail
+          echo "::group::docker compose build"
+          docker compose build --no-cache axonflow-agent axonflow-orchestrator
+          echo "::endgroup::"
+          echo "::group::docker compose up"
+          docker compose up -d postgres redis axonflow-agent axonflow-orchestrator
+          echo "::endgroup::"
+
+      - name: Validate wait_for_stack readiness pattern
+        run: ./tests/tier-gate/wait_for_stack_test.sh
+
+      - name: Wait for stack readiness
+        run: ./tests/tier-gate/wait_for_stack.sh
+
+      - name: Run tier-gate runner (community)
+        env:
+          AXONFLOW_TIER: community
+          TIER_GATE_REPORT: ${{ runner.temp }}/tier-gate-community.json
+        run: ./tests/tier-gate/run.py
+
+      - name: Run synthetic-failure probe (community)
+        env:
+          AXONFLOW_TIER: community
+        run: ./tests/tier-gate/synthetic_failure_test.sh
+
+      - name: Capture stack logs on failure
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stack-logs"
+          docker compose logs --no-color > "$RUNNER_TEMP/stack-logs/community.log" 2>&1 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tier-gate-community
+          path: |
+            ${{ runner.temp }}/tier-gate-community.json
+            ${{ runner.temp }}/stack-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v --remove-orphans || true
+
+  evaluation:
+    name: Tier gate — evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install runner deps
+        run: pip install --no-cache-dir pyyaml==6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: us-east-1
+
+      - name: Build keygen + generate evaluation license
+        id: license
+        run: |
+          set -euo pipefail
+          ./tests/tier-gate/setup_license.sh evaluation >> "$GITHUB_OUTPUT"
+
+      - name: Bring up evaluation stack
+        env:
+          DEPLOYMENT_MODE: evaluation
+          AXONFLOW_LICENSE_KEY: ${{ steps.license.outputs.license_key }}
+          ORG_ID: ${{ steps.license.outputs.org_id }}
+        run: |
+          set -euo pipefail
+          docker compose build --no-cache axonflow-agent axonflow-orchestrator
+          docker compose up -d postgres redis axonflow-agent axonflow-orchestrator
+
+      - name: Validate wait_for_stack readiness pattern
+        run: ./tests/tier-gate/wait_for_stack_test.sh
+
+      - name: Wait for stack readiness
+        run: ./tests/tier-gate/wait_for_stack.sh
+
+      - name: Run tier-gate runner (evaluation)
+        env:
+          AXONFLOW_TIER: evaluation
+          AXONFLOW_USER_TOKEN: ${{ steps.license.outputs.user_token }}
+          AXONFLOW_CLIENT_ID: ${{ steps.license.outputs.client_id }}
+          AXONFLOW_CLIENT_SECRET: ${{ steps.license.outputs.client_secret }}
+          TIER_GATE_REPORT: ${{ runner.temp }}/tier-gate-evaluation.json
+        run: ./tests/tier-gate/run.py
+
+      - name: Run synthetic-failure probe (evaluation)
+        env:
+          AXONFLOW_TIER: evaluation
+          AXONFLOW_USER_TOKEN: ${{ steps.license.outputs.user_token }}
+          AXONFLOW_CLIENT_ID: ${{ steps.license.outputs.client_id }}
+          AXONFLOW_CLIENT_SECRET: ${{ steps.license.outputs.client_secret }}
+        run: ./tests/tier-gate/synthetic_failure_test.sh
+
+      - name: Capture stack logs on failure
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stack-logs"
+          docker compose logs --no-color > "$RUNNER_TEMP/stack-logs/evaluation.log" 2>&1 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tier-gate-evaluation
+          path: |
+            ${{ runner.temp }}/tier-gate-evaluation.json
+            ${{ runner.temp }}/stack-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v --remove-orphans || true
+
+  enterprise:
+    name: Tier gate — enterprise
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install runner deps
+        run: pip install --no-cache-dir pyyaml==6.0.2 bcrypt==4.2.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: us-east-1
+
+      - name: Build keygen + generate enterprise license
+        id: license
+        run: |
+          set -euo pipefail
+          ./tests/tier-gate/setup_license.sh enterprise >> "$GITHUB_OUTPUT"
+
+      - name: Bring up enterprise stack
+        env:
+          DEPLOYMENT_MODE: enterprise
+          AXONFLOW_LICENSE_KEY: ${{ steps.license.outputs.license_key }}
+          ORG_ID: ${{ steps.license.outputs.org_id }}
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml build --no-cache axonflow-agent axonflow-orchestrator
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d postgres redis axonflow-agent axonflow-orchestrator
+
+      - name: Validate wait_for_stack readiness pattern
+        run: ./tests/tier-gate/wait_for_stack_test.sh
+
+      - name: Wait for stack readiness
+        run: ./tests/tier-gate/wait_for_stack.sh
+
+      - name: Run tier-gate runner (enterprise)
+        env:
+          AXONFLOW_TIER: enterprise
+          AXONFLOW_USER_TOKEN: ${{ steps.license.outputs.user_token }}
+          AXONFLOW_CLIENT_ID: ${{ steps.license.outputs.client_id }}
+          AXONFLOW_CLIENT_SECRET: ${{ steps.license.outputs.client_secret }}
+          TIER_GATE_REPORT: ${{ runner.temp }}/tier-gate-enterprise.json
+        run: ./tests/tier-gate/run.py
+
+      - name: Run synthetic-failure probe (enterprise)
+        env:
+          AXONFLOW_TIER: enterprise
+          AXONFLOW_USER_TOKEN: ${{ steps.license.outputs.user_token }}
+          AXONFLOW_CLIENT_ID: ${{ steps.license.outputs.client_id }}
+          AXONFLOW_CLIENT_SECRET: ${{ steps.license.outputs.client_secret }}
+        run: ./tests/tier-gate/synthetic_failure_test.sh
+
+      - name: Capture stack logs on failure
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stack-logs"
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml logs --no-color > "$RUNNER_TEMP/stack-logs/enterprise.log" 2>&1 || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tier-gate-enterprise
+          path: |
+            ${{ runner.temp }}/tier-gate-enterprise.json
+            ${{ runner.temp }}/stack-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.enterprise.yml down -v --remove-orphans || true
+
+  summary:
+    name: Tier gate summary
+    runs-on: ubuntu-latest
+    needs: [community, evaluation, enterprise]
+    if: always()
+    steps:
+      - name: Aggregate results
+        run: |
+          echo "Community:  ${{ needs.community.result }}"
+          echo "Evaluation: ${{ needs.evaluation.result }}"
+          echo "Enterprise: ${{ needs.enterprise.result }}"
+          if [ "${{ needs.community.result }}"  != "success" ] || \
+             [ "${{ needs.evaluation.result }}" != "success" ] || \
+             [ "${{ needs.enterprise.result }}" != "success" ]; then
+            echo "::error::One or more tier-gate jobs failed."
+            exit 1
+          fi
+          echo "All three tiers passed the contract."

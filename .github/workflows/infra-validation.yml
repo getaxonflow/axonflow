@@ -1,0 +1,77 @@
+name: Infrastructure Validation
+
+# PR-blocking gate for CloudFormation template changes.
+#
+# Catches the class of regressions where a template-only change (e.g.
+# softening a security default or lowering a timeout) ships without
+# any code-side test exercising it. Runs on every PR that touches the
+# CFN templates or the community-saas regression-test suite.
+#
+# Currently covers:
+#   - cfn-lint on community-saas-ecs.yaml + marketplace template
+#   - tests/community-saas/cfn_template_test.py (CFN structural pins
+#     for axonflow-enterprise#1747 / #1751)
+#
+# Add new structural assertions to tests/community-saas/ and they'll
+# auto-run here.
+
+on:
+  pull_request:
+    paths:
+      - 'infrastructure/cloudformation/**'
+      - 'ee/platform/aws-marketplace/**.yaml'
+      - 'tests/community-saas/**'
+      - '.github/workflows/infra-validation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/cloudformation/**'
+      - 'ee/platform/aws-marketplace/**.yaml'
+      - 'tests/community-saas/**'
+      - '.github/workflows/infra-validation.yml'
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: '1'
+
+jobs:
+  cfn-lint:
+    name: cfn-lint CloudFormation templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint --quiet
+
+      - name: Lint community-saas template
+        run: cfn-lint infrastructure/cloudformation/community-saas-ecs.yaml --non-zero-exit-code error
+
+      - name: Lint marketplace template
+        run: cfn-lint ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml --non-zero-exit-code error
+
+  community-saas-regression:
+    name: community-saas CFN structural pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest + PyYAML
+        run: pip install pytest pyyaml --quiet
+
+      - name: Run CFN regression suite
+        run: pytest tests/community-saas/ -v

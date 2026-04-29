@@ -1,0 +1,51 @@
+# Portal UI overlay for local Playwright golden-flow runs.
+#
+# Brings up the Next.js Customer Portal UI (port 3000) so Playwright can
+# drive the real UI against agent + orchestrator + customer-portal locally,
+# without depending on a remote staging stack.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml \
+#                  -f docker-compose.portal-ui.yml up -d
+#
+# Driven by scripts/seed-portal-playwright.sh — do not start this overlay
+# in isolation; it depends on the agent + customer-portal services from the
+# enterprise overlay.
+
+services:
+  axonflow-customer-portal-ui:
+    build:
+      context: ./ee/platform/customer-portal-ui
+      dockerfile: Dockerfile
+      args:
+        # Empty here — the standalone Next.js server reads API_BACKEND_URL at
+        # runtime via app/api/v1/[...path]/route.ts (lib/proxy.ts).
+        NEXT_PUBLIC_API_BASE_URL: ""
+    container_name: axonflow-customer-portal-ui
+    restart: unless-stopped
+    environment:
+      # Runtime backend pointer used by lib/proxy.ts — points the Next.js
+      # /api/v1/* catch-all at the agent on the in-network bridge.
+      API_BACKEND_URL: http://axonflow-agent:8080
+      API_PROXY_TIMEOUT: "30000"
+      NODE_ENV: production
+      PORT: "3000"
+    # Grafana from the base compose binds host:3000 — map portal-ui to host:3100
+    # so both services can co-exist on the same network. Container-internal
+    # port stays 3000 (Next.js default) so the healthcheck and Playwright
+    # selectors don't need to know about the remap.
+    ports:
+      - "3100:3000"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+      axonflow-customer-portal:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - axonflow-network

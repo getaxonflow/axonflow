@@ -14,6 +14,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -327,9 +328,18 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 	if err := validateCommunityRegistration(authCtx, authDB, cID, cSecret); err != nil {
 		log.Printf("[AUTH] community-saas auth failed for tenant %s: %v",
 			logutil.Sanitize(cID), err)
+		// Differentiate terminated tenants from other auth failures so the client
+		// can distinguish "your registration is gone, re-register" from "your
+		// secret is wrong". Terminated is permanent (sweep cleared the data);
+		// re-trying with the same credentials will never succeed.
+		message := "Invalid credentials or registration expired"
+		if errors.Is(err, ErrRegistrationTerminated) {
+			message = "Registration terminated by retention policy (3-month inactivity or 1-year cap). " +
+				"Re-register at POST /api/v1/register."
+		}
 		return nil, &CommunitySaasAuthError{
 			StatusCode: http.StatusUnauthorized,
-			Message:    "Invalid credentials or registration expired",
+			Message:    message,
 		}
 	}
 

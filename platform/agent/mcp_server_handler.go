@@ -860,8 +860,15 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 
 	blocked := outcome.DynamicBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
 
+	// Mint decision_id up front. Plugin Batch 1 / ADR-042 / ADR-043
+	// require it on every governance decision (allow + deny + redact)
+	// so callers can correlate the decision back to /explain/{id}
+	// without an extra round-trip. Allowed responses surface the same
+	// id even though there's no audit-log dual-write needed.
+	decisionID := uuid.New().String()
 	resp := map[string]interface{}{
-		"allowed": !blocked,
+		"allowed":     !blocked,
+		"decision_id": decisionID,
 	}
 
 	if outcome.StaticResult != nil {
@@ -879,8 +886,6 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 	// Block path. Build richer context + dual-write audit_logs + apply any
 	// active override. Same helpers the HTTP /api/v1/mcp/check-input handler
 	// uses, so plugin-visible shape is consistent across the two surfaces.
-	decisionID := uuid.New().String()
-	resp["decision_id"] = decisionID
 
 	if outcome.DynamicBlocked {
 		resp["block_reason"] = outcome.DynamicBlockReason
@@ -975,8 +980,13 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 
 	blocked := outcome.SQLiBlocked || (outcome.StaticResult != nil && outcome.StaticResult.Blocked)
 
+	// Mint decision_id up front for the same reason as
+	// mcpToolCheckPolicy — surface it on every decision (allow + deny
+	// + redact) per Plugin Batch 1 / ADR-042 / ADR-043.
+	decisionID := uuid.New().String()
 	resp := map[string]interface{}{
-		"allowed": !blocked,
+		"allowed":     !blocked,
+		"decision_id": decisionID,
 	}
 
 	if outcome.StaticResult != nil {
@@ -1001,8 +1011,6 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 	// Block path. Mirror mcpToolCheckPolicy's richer-context + override-
 	// apply + audit dual-write so check_output behaves consistently with
 	// check_policy across the MCP surface.
-	decisionID := uuid.New().String()
-	resp["decision_id"] = decisionID
 	if outcome.SQLiBlocked {
 		resp["block_reason"] = fmt.Sprintf("SQL injection detected: %s", outcome.SQLiPattern)
 	} else if outcome.StaticResult != nil && outcome.StaticResult.Blocked {

@@ -36,44 +36,104 @@ jobs:
 
       - name: Validate OpenAPI spec syntax
         run: |
+          set -e
           echo "Validating OpenAPI specification syntax..."
-          swagger-cli validate docs/api/policy-api.yaml
+          # All three specs validated — agent-api.yaml + orchestrator-api.yaml
+          # were left out of the gate originally and accumulated broken refs
+          # (#1759). With all three covered, swagger-cli fails the gate on
+          # any new broken $ref, duplicate schema, or unparseable YAML.
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml; do
+            echo "  → $spec"
+            swagger-cli validate "$spec"
+          done
           echo "✅ Syntax validation passed"
 
       - name: Lint OpenAPI spec
         run: |
+          set -e
           echo "Linting OpenAPI specification..."
-          # Fail on errors, allow warnings
-          spectral lint docs/api/policy-api.yaml --ruleset .spectral.yaml --fail-severity error
+          # Fail on errors, allow warnings.
+          for spec in docs/api/agent-api.yaml docs/api/orchestrator-api.yaml docs/api/policy-api.yaml; do
+            echo "  → $spec"
+            spectral lint "$spec" --ruleset .spectral.yaml --fail-severity error
+          done
           echo "✅ Linting passed"
 
-      - name: Get base spec for comparison
+      - name: Get base specs for comparison
         if: github.event_name == 'pull_request'
         id: base-spec
         run: |
+          set -e
           git fetch origin ${{ github.base_ref }} --depth=1
-          # Save base spec in workspace (not /tmp) so Docker action can access it
-          if git show origin/${{ github.base_ref }}:docs/api/policy-api.yaml > base-spec.yaml 2>/dev/null; then
-            echo "has_base=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_base=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No previous spec found on base branch - skipping breaking change check"
-          fi
+          # Save base specs in workspace (not /tmp) so Docker actions can
+          # access them. One file per spec — the breaking-change check
+          # runs once per spec.
+          #
+          # Each base spec is also pre-validated with swagger-cli before
+          # we declare it eligible for the breaking-change diff. oasdiff
+          # bombs out with a confusing "map key X not found" error when
+          # the base spec has broken $refs or duplicate keys, which can
+          # block a legitimate spec-cleanup PR (the PR that's fixing
+          # those very defects). Specs whose base fails validation skip
+          # the breaking-change diff with a notice — once that PR
+          # merges, future PRs see a clean base and the diff runs
+          # normally.
+          for spec in agent-api orchestrator-api policy-api; do
+            key="${spec//-/_}"
+            if ! git show "origin/${{ github.base_ref }}:docs/api/${spec}.yaml" > "base-${spec}.yaml" 2>/dev/null; then
+              echo "has_${key}=false" >> "$GITHUB_OUTPUT"
+              echo "ℹ️  No previous ${spec}.yaml found on base branch — skipping its breaking-change check"
+              continue
+            fi
+            if ! swagger-cli validate "base-${spec}.yaml" >/dev/null 2>&1; then
+              echo "has_${key}=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Base spec invalid::Base ${spec}.yaml does not validate — skipping breaking-change diff this run. Merge the cleanup PR and the next run will diff against a valid base."
+              continue
+            fi
+            echo "has_${key}=true" >> "$GITHUB_OUTPUT"
+          done
 
-      - name: Check for breaking changes
-        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_base == 'true'
+      - name: Check for breaking changes (agent-api)
+        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_agent_api == 'true'
         uses: oasdiff/oasdiff-action/breaking@main
         with:
-          base: base-spec.yaml
+          base: base-agent-api.yaml
+          revision: docs/api/agent-api.yaml
+          fail-on: ERR
+          # Reviewed-and-accepted breaking changes that are actually
+          # spec corrections (the platform has always returned the
+          # corrected shape; the YAML was the bug). Entry-by-entry
+          # justification in .github/oasdiff-err-ignore.txt, each
+          # pinned to the PR that added it.
+          err-ignore: .github/oasdiff-err-ignore.txt
+
+      - name: Check for breaking changes (orchestrator-api)
+        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_orchestrator_api == 'true'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-orchestrator-api.yaml
+          revision: docs/api/orchestrator-api.yaml
+          fail-on: ERR
+          err-ignore: .github/oasdiff-err-ignore.txt
+
+      - name: Check for breaking changes (policy-api)
+        if: github.event_name == 'pull_request' && steps.base-spec.outputs.has_policy_api == 'true'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: base-policy-api.yaml
           revision: docs/api/policy-api.yaml
           # For v2.0.0: Fail on ERR only (actual breaking changes)
           # Warnings for new enum values in responses are acceptable for major versions
           fail-on: ERR
+          err-ignore: .github/oasdiff-err-ignore.txt
 
       - name: Generate documentation preview
         run: |
-          echo "Generating documentation preview..."
-          npx @redocly/cli build-docs docs/api/policy-api.yaml -o /tmp/api-docs.html
+          set -e
+          echo "Generating documentation previews..."
+          for spec in agent-api orchestrator-api policy-api; do
+            npx @redocly/cli build-docs "docs/api/${spec}.yaml" -o "/tmp/${spec}-docs.html"
+          done
           echo "✅ Documentation generated successfully"
 
       - name: Upload documentation preview
@@ -81,7 +141,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: api-docs-preview
-          path: /tmp/api-docs.html
+          path: |
+            /tmp/agent-api-docs.html
+            /tmp/orchestrator-api-docs.html
+            /tmp/policy-api-docs.html
           retention-days: 7
 
   bundle:
@@ -104,14 +167,24 @@ jobs:
       - name: Install tools
         run: npm install -g @redocly/cli
 
-      - name: Bundle specification
+      - name: Bundle specifications
         run: |
-          npx @redocly/cli bundle docs/api/policy-api.yaml -o docs/api/policy-api-bundled.yaml
-          echo "✅ Bundled specification created"
+          set -e
+          for spec in agent-api orchestrator-api policy-api; do
+            npx @redocly/cli bundle "docs/api/${spec}.yaml" -o "docs/api/${spec}-bundled.yaml"
+          done
+          echo "✅ Bundled specifications created"
 
       - name: Generate static documentation
         run: |
+          set -e
+          # `index.html` defaults to the policy-api shape so the existing
+          # docs landing URL doesn't move; the per-spec docs are uploaded
+          # alongside as additional artifacts.
           npx @redocly/cli build-docs docs/api/policy-api.yaml -o docs/api/index.html
+          for spec in agent-api orchestrator-api; do
+            npx @redocly/cli build-docs "docs/api/${spec}.yaml" -o "docs/api/${spec}.html"
+          done
           echo "✅ Static documentation generated"
 
       - name: Upload bundled artifacts
@@ -119,6 +192,10 @@ jobs:
         with:
           name: openapi-bundle
           path: |
+            docs/api/agent-api-bundled.yaml
+            docs/api/orchestrator-api-bundled.yaml
             docs/api/policy-api-bundled.yaml
             docs/api/index.html
+            docs/api/agent-api.html
+            docs/api/orchestrator-api.html
           retention-days: 30
