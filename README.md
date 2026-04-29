@@ -6,6 +6,8 @@ It operates inside the execution path between your workflow logic and model or t
 
 It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, and **Java**.
 
+> **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow/security/advisories)
+
 ## Why AxonFlow Exists
 
 Production AI systems are multi-step, non-deterministic, and increasingly regulated. In practice:
