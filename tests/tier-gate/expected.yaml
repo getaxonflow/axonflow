@@ -1,0 +1,567 @@
+# Tier-Gate Contract Manifest
+#
+# Purpose: machine-readable contract of expected HTTP status per (endpoint × deployment tier).
+#          The accompanying runner asserts actual handler enforcement matches this contract.
+#
+# Tier matrix:
+#   community  — community-edition binary, no AXONFLOW_LICENSE_KEY,         DEPLOYMENT_MODE=community
+#   evaluation — community-edition binary, Evaluation-tier signed license,  DEPLOYMENT_MODE=evaluation
+#   enterprise — enterprise-edition binary, Enterprise-tier signed license, DEPLOYMENT_MODE=enterprise
+#
+# Status code conventions used in expected.<tier>.status:
+#   200 — request reaches handler, handler does not block on tier; success
+#   201 — created
+#   400 — request reaches handler, validates body, rejects (tier-allowed)
+#   401 — auth required (tier-allowed; runner sends valid auth, so a 401 means handler is auth-only)
+#   403 — handler tier-blocked (the gate fired; this is a tier-block signal)
+#   404 — route not registered for this build/mode (tier-block via absence)
+#   422 — validation failed (tier-allowed)
+#   503 — service not yet bootstrapped (tier-allowed)
+#
+# Each row's reason field cites the handler/registration site that establishes the expected status.
+# When code and reason disagree, the runner FAILS — surface as a real bug to file or fix.
+
+version: 1
+generated_by: tests/tier-gate/expected.yaml (hand-authored from handler audit, 2026-04-29)
+
+# Default request shape applied when a row omits its own headers/body.
+defaults:
+  headers:
+    X-Tenant-ID: tier-gate-test
+    X-Org-ID:    tier-gate-test
+    X-User-ID:   tier-gate-runner
+    X-User-Email: tier-gate@test.local
+    Content-Type: application/json
+  # bearer_env: name of env var that holds a JWT to inject as Authorization: Bearer <token>.
+  # Empty when not set — auth-required endpoints will respond 401 in that case.
+  bearer_env: AXONFLOW_USER_TOKEN
+  # body_default: JSON body sent on POST/PUT/PATCH when an endpoint omits its own body.
+  body_default: "{}"
+
+endpoints:
+  # ---------------------------------------------------------------------------
+  # Sanity / liveness — exposed in every tier
+  # ---------------------------------------------------------------------------
+  - id: agent-health
+    method: GET
+    port: 8080
+    path: /health
+    expected:
+      community:  {status: 200, reason: "platform/agent/run.go:389 always-registered, no auth"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: agent-prometheus
+    method: GET
+    port: 8080
+    path: /prometheus
+    expected:
+      community:  {status: 200, reason: "platform/agent/run.go:923 always-registered, no auth"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-health
+    method: GET
+    port: 8081
+    path: /health
+    expected:
+      community:  {status: 200, reason: "platform/orchestrator/run.go health route, no auth"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-prometheus
+    method: GET
+    port: 8081
+    path: /prometheus
+    expected:
+      community:  {status: 200, reason: "platform/orchestrator/run.go prometheus route, no auth"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Core MCP gateway — RegisterMCPHandlers (mcp_handler.go:524) registers these
+  # routes UNCONDITIONALLY. The community-mode gate (line 78) is for individual
+  # query *license* validation, not route registration. apiAuthMiddleware is
+  # only applied in licensed (eval/enterprise) builds — in community mode the
+  # listing/health endpoints are open and queries fall back to permissive auth.
+  # ---------------------------------------------------------------------------
+  - id: agent-mcp-connectors-list
+    method: GET
+    port: 8080
+    path: /mcp/connectors
+    expected:
+      community:  {status: 200, reason: "RegisterMCPHandlers always registers; listing is open across all tiers"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: agent-mcp-health
+    method: GET
+    port: 8080
+    path: /mcp/health
+    expected:
+      community:  {status: 200, reason: "always registered, no tier check"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: agent-mcp-resources-query
+    method: POST
+    port: 8080
+    path: /mcp/resources/query
+    body: '{"connector":"postgres","query":"SELECT 1"}'
+    expected:
+      community:  {status: 200, reason: "always registered; community has no Basic-auth gate, query falls through and returns 200"}
+      evaluation: {status: 401, reason: "apiAuthMiddleware requires Basic auth (clientId:clientSecret) once a license is present"}
+      enterprise: {status: 401, reason: "same"}
+
+  - id: agent-mcp-tools-execute
+    method: POST
+    port: 8080
+    path: /mcp/tools/execute
+    body: '{"tool":"echo","arguments":{}}'
+    expected:
+      community:  {status: 403, reason: "always registered; tools/execute carries an internal-service-secret gate that returns 403 in community mode"}
+      evaluation: {status: 401, reason: "apiAuthMiddleware requires Basic auth in licensed builds"}
+      enterprise: {status: 401, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # MAP plan endpoints — always registered; the resume/rollback handlers gate on isCommunityMode()
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-plan-resume
+    method: POST
+    port: 8081
+    path: /api/v1/plan/test-plan-id/resume
+    expected:
+      community:  {status: 403, reason: "run.go:4156 isCommunityMode → 'requires Enterprise' → StatusForbidden"}
+      evaluation: {status: 404, reason: "isCommunityMode=false bypasses gate; planService initialized → plan lookup returns 404"}
+      enterprise: {status: 404, reason: "same"}
+
+  - id: orchestrator-plan-rollback
+    method: POST
+    port: 8081
+    path: /api/v1/plan/test-plan-id/rollback/1
+    expected:
+      community:  {status: 403, reason: "run.go:4378 isCommunityMode → 'requires Enterprise'"}
+      evaluation: {status: 404, reason: "isCommunityMode=false bypasses; plan lookup miss returns 404"}
+      enterprise: {status: 404, reason: "same"}
+
+  - id: orchestrator-plan-step-approve
+    method: POST
+    port: 8081
+    path: /api/v1/plans/test-plan/steps/test-step/approve
+    expected:
+      community:  {status: 403, reason: "map_hitl_adapter.go:149 isCommunityMode + !IsHITLApprovalEnabled → 403"}
+      evaluation: {status: 503, reason: "isCommunityMode=false bypasses gate; WCP services not bootstrapped (no LLM keys in CI) → StatusServiceUnavailable"}
+      enterprise: {status: 503, reason: "same"}
+
+  - id: orchestrator-plan-step-reject
+    method: POST
+    port: 8081
+    path: /api/v1/plans/test-plan/steps/test-step/reject
+    expected:
+      community:  {status: 403, reason: "map_hitl_adapter.go:334 same gate as approve"}
+      evaluation: {status: 503, reason: "gate bypassed; WCP service not bootstrapped"}
+      enterprise: {status: 503, reason: "same"}
+
+  - id: orchestrator-plan-approvals-pending
+    method: GET
+    port: 8081
+    path: /api/v1/plans/approvals/pending
+    expected:
+      community:  {status: 403, reason: "map_hitl_adapter.go:461 same gate; #1680"}
+      evaluation: {status: 200, reason: "gate bypassed; empty list returned"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # WCP HITL execution status — handler-level gate present, but the WCP service
+  # itself isn't bootstrapped in CI (no LLM keys), so all three modes hit the
+  # service-unavailable path before / after the gate. The community vs eval gate
+  # difference still surfaces on the other plan/step routes.
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-workflow-hitl-status
+    method: GET
+    port: 8081
+    path: /api/v1/workflows/executions/test-exec-id/hitl-status
+    expected:
+      community:  {status: 503, reason: "WCP service not bootstrapped in CI; same response as eval/enterprise"}
+      evaluation: {status: 503, reason: "same"}
+      enterprise: {status: 503, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Policy simulation — handler checks tierChecker.IsPolicySimulationEnabled
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-policies-simulate
+    method: POST
+    port: 8081
+    path: /api/v1/policies/simulate
+    body: '{"query":"hello","inputs":[{}]}'
+    expected:
+      community:  {status: 405, reason: "tierChecker.IsPolicySimulationEnabled=false → handler nil → POST falls through to /api/v1/policies/{id} GET/PUT/DELETE route, gorilla/mux returns 405"}
+      evaluation: {status: 200, reason: "IsPolicySimulationEnabled=true; simulation runs"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-policies-impact-report
+    method: POST
+    port: 8081
+    path: /api/v1/policies/impact-report
+    body: '{"policy_id":"test","inputs":[{}]}'
+    expected:
+      community:  {status: 405, reason: "handler nil in community → falls through to /policies/{id}, 405"}
+      evaluation: {status: 500, reason: "gate bypassed; downstream conflict-detection internal error on synthetic policy_id"}
+      enterprise: {status: 500, reason: "same"}
+
+  - id: orchestrator-policies-conflicts
+    method: POST
+    port: 8081
+    path: /api/v1/policies/conflicts
+    expected:
+      community:  {status: 405, reason: "handler nil in community → falls through to /policies/{id}, 405"}
+      evaluation: {status: 200, reason: "gate bypassed; conflict detection runs on empty body and returns 200 with no conflicts"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Evidence export — handler checks tierChecker.IsEvidenceExportEnabled
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-evidence-export
+    method: POST
+    port: 8081
+    path: /api/v1/evidence/export
+    # Probe an empty body to avoid consuming the daily evidence-export quota.
+    body: '{}'
+    expected:
+      community:  {status: 404, reason: "evidenceExportHandler is nil in community (tierChecker.IsEvidenceExportEnabled=false) → routes not registered → 404"}
+      evaluation: {status: 400, reason: "handler registered; IsEvidenceExportEnabled=true → falls to start_date validation → 400"}
+      enterprise: {status: 400, reason: "same"}
+
+  - id: orchestrator-evidence-summary
+    method: GET
+    port: 8081
+    path: /api/v1/evidence/summary?start_date=2026-04-01&end_date=2026-04-29
+    expected:
+      community:  {status: 404, reason: "evidenceExportHandler nil in community → routes not registered"}
+      evaluation: {status: 200, reason: "summary returned"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Static / dynamic policies — core feature, no tier gate
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-policies-list
+    method: GET
+    port: 8081
+    path: /api/v1/policies
+    expected:
+      community:  {status: 200, reason: "policy CRUD core feature, ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-dynamic-policies-list
+    method: GET
+    port: 8081
+    path: /api/v1/dynamic-policies
+    expected:
+      community:  {status: 200, reason: "dynamic_policy_handlers.go:48 ADR-026 single entry, ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-dynamic-policies-effective
+    method: GET
+    port: 8081
+    path: /api/v1/dynamic-policies/effective
+    expected:
+      community:  {status: 200, reason: "ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-policies-export
+    method: GET
+    port: 8081
+    path: /api/v1/policies/export
+    expected:
+      community:  {status: 200, reason: "policy export core feature, ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-templates-list
+    method: GET
+    port: 8081
+    path: /api/v1/templates
+    expected:
+      community:  {status: 200, reason: "policy templates ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-templates-categories
+    method: GET
+    port: 8081
+    path: /api/v1/templates/categories
+    expected:
+      community:  {status: 200, reason: "ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Connectors — registry/marketplace, ungated
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-connectors-list
+    method: GET
+    port: 8081
+    path: /api/v1/connectors
+    expected:
+      community:  {status: 200, reason: "connector marketplace ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # LLM provider mgmt endpoints (/api/v1/llm-provider-types, /api/v1/llm-providers,
+  # /api/v1/llm-providers/status) are intentionally omitted: the underlying
+  # llmProviderAPIHandler is bootstrap-conditional on LLM credentials, which CI
+  # does not provide — they're config-gated, not tier-gated, so they don't
+  # belong in this contract.
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-providers-status
+    method: GET
+    port: 8081
+    path: /api/v1/providers/status
+    expected:
+      community:  {status: 200, reason: "ungated provider status"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Plan core CRUD — always registered, ungated
+  # ---------------------------------------------------------------------------
+  # /api/v1/plans/estimate is intentionally omitted: cost_estimation_handler
+  # depends on planService bootstrap, which is config-gated on LLM credentials
+  # (CI lacks them by design). Not a clean tier-gate signal.
+  #
+  # ---------------------------------------------------------------------------
+  # Workflow control plane — registered always, no tier gate on listing
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-workflows-executions-list
+    method: GET
+    port: 8081
+    path: /api/v1/workflows/executions
+    expected:
+      community:  {status: 200, reason: "list ungated"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  - id: orchestrator-workflows-execute
+    method: POST
+    port: 8081
+    path: /api/v1/workflows/execute
+    expected:
+      community:  {status: 400, reason: "always-registered; missing body 400"}
+      evaluation: {status: 400, reason: "same"}
+      enterprise: {status: 400, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Audit — tier-aware retention, but list endpoint itself is ungated
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-audit-search
+    method: POST
+    port: 8081
+    path: /api/v1/audit/search
+    body: '{"limit":10}'
+    expected:
+      community:  {status: 200, reason: "audit search ungated; retention window enforced via filter"}
+      evaluation: {status: 200, reason: "same"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # MCP policy evaluation (orchestrator side, called by agent) — ungated
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-mcp-evaluate-policies
+    method: POST
+    port: 8081
+    path: /api/v1/mcp/evaluate-policies
+    body: '{"tenant_id":"tier-gate-test"}'
+    expected:
+      community:  {status: 400, reason: "always-registered if engine implements MCPPolicyEngine; minimal body 400"}
+      evaluation: {status: 400, reason: "same"}
+      enterprise: {status: 400, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # MCP input/output check on agent — auth-gated (Basic auth via Authenticate()).
+  # Not particularly tier-revealing across all 3 modes; covered by other rows.
+  # (Intentionally omitted from this manifest — covered by other rows.)
+  #
+  # Static policy management on agent (port 8080) — registered at /api/v1/static-policies
+  # via PathPrefix subrouter (static_policy_api_handlers.go:77).
+  # ---------------------------------------------------------------------------
+  - id: agent-static-policies-list
+    method: GET
+    port: 8080
+    path: /api/v1/static-policies
+    expected:
+      community:  {status: 200, reason: "apiAuthMiddleware skips Basic-auth check when no license is configured (community mode)"}
+      evaluation: {status: 401, reason: "Basic auth required once a license is present"}
+      enterprise: {status: 401, reason: "same"}
+
+  - id: agent-static-policies-effective
+    method: GET
+    port: 8080
+    path: /api/v1/static-policies/effective
+    expected:
+      community:  {status: 200, reason: "auth permissive in community mode"}
+      evaluation: {status: 401, reason: "Basic auth required in licensed builds"}
+      enterprise: {status: 401, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # HITL status endpoint (agent side, ee/platform/agent/hitl). Always-registered
+  # via hitlSub.Use(apiAuthMiddleware). With Basic auth (clientId:license_key)
+  # the handler responds with the queue's metadata in every tier — useful
+  # regression marker that the route stays mounted on the agent across builds.
+  # ---------------------------------------------------------------------------
+  - id: agent-hitl-status
+    method: GET
+    port: 8080
+    path: /api/v1/hitl/status
+    auth: basic
+    expected:
+      community:  {status: 200, reason: "ee/platform/agent/hitl/handler.go:78 status returns metadata; community auth permissive → 200"}
+      evaluation: {status: 200, reason: "Basic auth provided; handler returns 200"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # MCP server protocol endpoint — always-registered (mcp_server_handler.go:426).
+  # An `initialize` JSON-RPC payload is the protocol's identity exchange and
+  # responds with capabilities regardless of license tier.
+  # ---------------------------------------------------------------------------
+  - id: agent-mcp-server-protocol
+    method: POST
+    port: 8080
+    path: /api/v1/mcp-server
+    auth: basic
+    body: '{"jsonrpc":"2.0","method":"initialize","id":1}'
+    expected:
+      community:  {status: 200, reason: "always-registered MCP-server transport; initialize is unauth-allowed in community"}
+      evaluation: {status: 200, reason: "Basic auth provided; initialize succeeds"}
+      enterprise: {status: 200, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Community-SaaS self-registration — registered ONLY when isCommunitySaasMode
+  # (i.e. AXONFLOW_COMMUNITY_SAAS_MODE=true). None of the three matrix modes
+  # set this, so the route is absent across the board.
+  # ---------------------------------------------------------------------------
+  - id: agent-community-register
+    method: POST
+    port: 8080
+    path: /api/v1/register
+    body: '{"email":"probe@test.local","org_name":"probe"}'
+    expected:
+      community:  {status: 404, reason: "community_saas_register.go:192 only registers when AXONFLOW_COMMUNITY_SAAS_MODE=true; not set in matrix"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 404, reason: "same"}
+
+  # ---------------------------------------------------------------------------
+  # Compliance modules — RBI / SEBI / EU AI Act / MAS FEAT
+  #
+  # These four modules are Enterprise-only by binary topology, not by handler
+  # gate: the community-edition binary ships only the no-op stub
+  # (platform/orchestrator/<module>/<module>_community.go, //go:build !enterprise)
+  # whose RegisterRoutesWithMux is empty. The real handler implementations
+  # (wire.go and friends) carry //go:build enterprise and are absent from the
+  # community + evaluation binaries entirely.
+  #
+  # Net contract:
+  #   community  → 404 (route never registered)
+  #   evaluation → 404 (uses community-edition binary)
+  #   enterprise → 200 (real handler registered)
+  #
+  # If a future PR drops a //go:build enterprise tag and ships a compliance
+  # handler into the community binary — i.e. gives the feature away — these
+  # rows trip and block the merge.
+  # ---------------------------------------------------------------------------
+  - id: orchestrator-rbi-ai-systems
+    method: GET
+    port: 8081
+    path: /api/v1/rbi/ai-systems
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "rbi_community.go RegisterRoutesWithMux is no-op; route absent in community binary"}
+      evaluation: {status: 404, reason: "evaluation uses community-edition binary; same stub"}
+      enterprise: {status: 200, reason: "wire.go (//go:build enterprise) registers the real RBI registry handler"}
+
+  - id: orchestrator-rbi-dashboard
+    method: GET
+    port: 8081
+    path: /api/v1/rbi/dashboard
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "stub in community binary"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "wire.go enterprise build registers dashboard"}
+
+  - id: orchestrator-sebi-audit-retention
+    method: GET
+    port: 8081
+    path: /api/v1/sebi/audit/retention
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "sebi_community.go RegisterRoutesWithMux is no-op"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "wire.go enterprise build wires the audit retention status handler"}
+
+  - id: orchestrator-sebi-dashboard
+    method: GET
+    port: 8081
+    path: /api/v1/sebi/dashboard
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "stub in community binary"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "enterprise build registers SEBI dashboard"}
+
+  - id: orchestrator-euaiact-conformity-list
+    method: GET
+    port: 8081
+    path: /api/v1/euaiact/conformity
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "euaiact_community.go stub no-op"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "enterprise build registers EU AI Act conformity handler"}
+
+  - id: orchestrator-euaiact-accuracy-list
+    method: GET
+    port: 8081
+    path: /api/v1/euaiact/accuracy
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "euaiact stub in community binary"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "enterprise build registers accuracy metrics handler"}
+
+  - id: orchestrator-masfeat-registry
+    method: GET
+    port: 8081
+    path: /api/v1/masfeat/registry
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "masfeat_community.go stub no-op"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "enterprise build registers MAS FEAT registry handler"}
+
+  - id: orchestrator-masfeat-assessments
+    method: GET
+    port: 8081
+    path: /api/v1/masfeat/assessments
+    auth: basic
+    expected:
+      community:  {status: 404, reason: "masfeat stub in community binary"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 200, reason: "enterprise build registers MAS FEAT assessments handler"}
+
+  # ---------------------------------------------------------------------------
+  # Negative-control: route that does not exist anywhere — 404 in all tiers.
+  # Anchors the contract: a 404 here proves the router rejects unknown paths
+  # uniformly across builds (helps debug a misclassified 404 elsewhere).
+  # ---------------------------------------------------------------------------
+  - id: nonexistent-route-control
+    method: GET
+    port: 8081
+    path: /api/v1/__tier_gate_does_not_exist__
+    expected:
+      community:  {status: 404, reason: "negative control: gorilla/mux returns 404 for unknown path"}
+      evaluation: {status: 404, reason: "same"}
+      enterprise: {status: 404, reason: "same"}

@@ -138,6 +138,22 @@ func TestHealthHandler(t *testing.T) {
 	if _, ok := response["sdk_compatibility"]; !ok {
 		t.Error("expected sdk_compatibility in response")
 	}
+	pluginCompat, ok := response["plugin_compatibility"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected plugin_compatibility map in response")
+	}
+	for _, key := range []string{"min_plugin_version", "recommended_plugin_version"} {
+		entry, ok := pluginCompat[key].(map[string]interface{})
+		if !ok {
+			t.Errorf("expected plugin_compatibility.%s map", key)
+			continue
+		}
+		for _, id := range []string{"openclaw", "claude-code", "cursor", "codex"} {
+			if _, ok := entry[id].(string); !ok {
+				t.Errorf("expected plugin_compatibility.%s.%s string", key, id)
+			}
+		}
+	}
 }
 
 // TestReadinessAwareHealthHandler tests the readiness-aware health endpoint

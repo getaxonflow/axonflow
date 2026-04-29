@@ -42,15 +42,14 @@ Telemetry is on by default so we can understand SDK adoption, prioritize feature
 
 Any of these methods will disable telemetry:
 
-### Environment variables
+### Environment variable
 
 ```bash
-# Standard opt-out (respected by many tools)
-export DO_NOT_TRACK=1
-
-# AxonFlow-specific
+# AxonFlow-specific opt-out (canonical and only)
 export AXONFLOW_TELEMETRY=off
 ```
+
+> **Note:** `DO_NOT_TRACK` is **not** honored as an opt-out for AxonFlow telemetry. It is commonly inherited from host tools and developer environments (CLIs like Codex and Claude Code inject it unconditionally), which makes it an unreliable expression of user intent. Use `AXONFLOW_TELEMETRY=off` instead.
 
 ### SDK configuration
 

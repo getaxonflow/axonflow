@@ -410,13 +410,14 @@ func readinessAwareHealthHandler(w http.ResponseWriter, r *http.Request) {
 		status = "healthy"
 	}
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":             status,
-		"service":            "axonflow-agent",
-		"tier":               currentLicenseTier(),
-		"timestamp":          time.Now().UTC(),
-		"version":            GetPlatformVersion(),
-		"capabilities":       getCapabilities(),
-		"sdk_compatibility":  getSDKCompatibility(),
+		"status":               status,
+		"service":              "axonflow-agent",
+		"tier":                 currentLicenseTier(),
+		"timestamp":            time.Now().UTC(),
+		"version":              GetPlatformVersion(),
+		"capabilities":         getCapabilities(),
+		"sdk_compatibility":    getSDKCompatibility(),
+		"plugin_compatibility": getPluginCompatibility(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}
@@ -913,6 +914,15 @@ func Run() {
 		log.Println("Per-tenant connector registry disabled via TENANT_CONNECTOR_REGISTRY_ENABLED=false")
 	}
 
+	// Community-SaaS inactivity sweep (ADR-048): daily background job that
+	// terminates tenants idle for >3 months or past the 1-year hard cap, with
+	// cascade-delete of tenant-scoped data. Opt-in per deploy via
+	// COMMUNITY_SAAS_SWEEP_ENABLED=true. Only runs in community-saas mode and
+	// only when the license tier is community — see the helper.
+	if communitySaasSweepShouldStart() {
+		StartCommunitySaasSweep(context.Background(), authDB)
+	}
+
 	// Register all routes on the global router (server is already running with /health)
 	// /health was registered in initServerImmediately() - now add all other routes
 
@@ -1054,13 +1064,14 @@ func Run() {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":             "healthy",
-		"service":            "axonflow-agent",
-		"tier":               currentLicenseTier(),
-		"timestamp":          time.Now().UTC(),
-		"version":            GetPlatformVersion(),
-		"capabilities":       getCapabilities(),
-		"sdk_compatibility":  getSDKCompatibility(),
+		"status":               "healthy",
+		"service":              "axonflow-agent",
+		"tier":                 currentLicenseTier(),
+		"timestamp":            time.Now().UTC(),
+		"version":              GetPlatformVersion(),
+		"capabilities":         getCapabilities(),
+		"sdk_compatibility":    getSDKCompatibility(),
+		"plugin_compatibility": getPluginCompatibility(),
 	}); err != nil {
 		log.Printf("Error encoding health response: %v", err)
 	}

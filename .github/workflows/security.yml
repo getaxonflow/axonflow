@@ -234,8 +234,16 @@ jobs:
           scanners: 'secret'
           format: 'table'
           exit-code: '0'  # Informational (demo tokens trigger false positives)
-          timeout: '15m'  # Default 5m too short — Maven pom.xml resolution can be slow
+          timeout: '15m'
           skip-dirs: 'node_modules,vendor,.cache'
+          # Skip Maven pom.xml files: even with `scanners: secret`, Trivy's
+          # language-specific analyzers still try to resolve parent POMs from
+          # Maven Central (e.g. examples/singapore-pii/java triggers a fetch
+          # of slf4j-parent), which can hang past the 15m timeout on slow
+          # mirrors and bring down the whole job. POMs are dependency
+          # manifests, not credential stores — skipping them does not
+          # weaken secret detection. Same logic for build.gradle*.
+          skip-files: '**/pom.xml,**/build.gradle,**/build.gradle.kts'
 
   # Docker Image Scans - Skip on PRs for speed
   trivy-docker-agent:

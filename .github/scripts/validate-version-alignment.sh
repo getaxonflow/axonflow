@@ -22,6 +22,46 @@ fi
 echo "📋 Latest CHANGELOG version: $LATEST_VERSION"
 echo ""
 
+# Check VERSION file (single source of truth read by build.yml + deploy-cloudformation.sh)
+echo "📄 Checking VERSION file..."
+if [ -f VERSION ]; then
+    VERSION_FILE_CONTENT=$(tr -d '[:space:]' < VERSION)
+    if [ "$VERSION_FILE_CONTENT" != "$LATEST_VERSION" ]; then
+        echo "  ❌ VERSION — content is '$VERSION_FILE_CONTENT', expected $LATEST_VERSION"
+        ERRORS=$((ERRORS + 1))
+    else
+        echo "  ✅ VERSION — $VERSION_FILE_CONTENT"
+    fi
+else
+    echo "  ❌ VERSION file missing at repo root"
+    ERRORS=$((ERRORS + 1))
+fi
+
+echo ""
+
+# Check CloudFormation PlatformVersion parameter defaults (community-saas + enterprise templates)
+echo "☁️  Checking CloudFormation PlatformVersion defaults..."
+for cfn in infrastructure/cloudformation/community-saas-ecs.yaml ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml; do
+    if [ -f "$cfn" ]; then
+        DEFAULT=$(awk '
+            /^  PlatformVersion:/ {in_block=1; next}
+            in_block && /^  [A-Za-z]/ {in_block=0}
+            in_block && /^    Default:/ {gsub(/[^0-9.]/, ""); print; exit}
+        ' "$cfn")
+        if [ -z "$DEFAULT" ]; then
+            echo "  ❌ $cfn — PlatformVersion parameter or its Default not found"
+            ERRORS=$((ERRORS + 1))
+        elif [ "$DEFAULT" != "$LATEST_VERSION" ]; then
+            echo "  ❌ $cfn — PlatformVersion default is '$DEFAULT', expected $LATEST_VERSION"
+            ERRORS=$((ERRORS + 1))
+        else
+            echo "  ✅ $cfn — $DEFAULT"
+        fi
+    fi
+done
+
+echo ""
+
 # Check docker-compose*.yml AXONFLOW_VERSION defaults
 echo "🐳 Checking docker-compose version defaults..."
 while IFS= read -r line; do

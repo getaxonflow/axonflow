@@ -442,7 +442,10 @@ func TestMcpToolCheckOutput_MissingArgs(t *testing.T) {
 }
 
 // TestMcpToolCheckPolicy_AllowedPath — happy path. Dynamic evaluator returns
-// allowed; no block path, no richer-context fields required.
+// allowed; richer-context fields aren't applicable, but `decision_id` IS
+// emitted (Plugin Batch 1 / ADR-042 / ADR-043: every governance decision
+// surfaces decision_id, allow paths included, so callers can correlate
+// the decision via /explain/{id} without an extra round-trip).
 func TestMcpToolCheckPolicy_AllowedPath(t *testing.T) {
 	originalEval := sharedpolicy.GetGlobalDynamicPolicyEvaluator()
 	defer sharedpolicy.SetGlobalDynamicPolicyEvaluator(originalEval)
@@ -479,8 +482,19 @@ func TestMcpToolCheckPolicy_AllowedPath(t *testing.T) {
 	if allowed, _ := m["allowed"].(bool); !allowed {
 		t.Errorf("expected allowed=true, got %v", m["allowed"])
 	}
-	if _, set := m["decision_id"]; set {
-		t.Error("allowed path must not emit decision_id")
+	id, hasID := m["decision_id"].(string)
+	if !hasID {
+		t.Error("allowed path must emit decision_id (Plugin Batch 1 / ADR-042)")
+	}
+	if id == "" {
+		t.Error("allowed path emitted decision_id but it was empty")
+	}
+	// No richer-context fields on the allow path — those only fire when
+	// the engine matched a blocking policy.
+	for _, k := range []string{"block_reason", "blocked_by", "risk_level", "policy_matches", "override_available"} {
+		if _, set := m[k]; set {
+			t.Errorf("allowed path leaked %q field: %v", k, m[k])
+		}
 	}
 }
 
@@ -556,7 +570,9 @@ func TestMcpToolCheckPolicy_DefaultOperation(t *testing.T) {
 }
 
 // TestMcpToolCheckOutput_AllowedPath — verifies response-data parsing + the
-// short-circuit when no policies fire.
+// short-circuit when no policies fire. Allow paths emit decision_id too
+// (Plugin Batch 1 / ADR-042 / ADR-043 — every governance decision is
+// addressable via /explain/{id}).
 func TestMcpToolCheckOutput_AllowedPath(t *testing.T) {
 	originalEngine := sharedpolicy.GetGlobalEngine()
 	defer sharedpolicy.SetGlobalEngine(originalEngine)
@@ -580,6 +596,13 @@ func TestMcpToolCheckOutput_AllowedPath(t *testing.T) {
 	}
 	if allowed, _ := m["allowed"].(bool); !allowed {
 		t.Errorf("expected allowed=true, got %v", m["allowed"])
+	}
+	id, hasID := m["decision_id"].(string)
+	if !hasID {
+		t.Error("allowed path must emit decision_id (Plugin Batch 1 / ADR-042)")
+	}
+	if id == "" {
+		t.Error("allowed path emitted decision_id but it was empty")
 	}
 }
 
