@@ -1563,8 +1563,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":           getPlatformVersion(),
 		"timestamp":         time.Now().UTC(),
 		"components":        components,
-		"capabilities":      getCapabilities(),
-		"sdk_compatibility": getSDKCompatibility(),
+		"capabilities":         getCapabilities(),
+		"sdk_compatibility":    getSDKCompatibility(),
+		"plugin_compatibility": getPluginCompatibility(),
 		"features": map[string]bool{
 			"multi_agent_planning": planningEngine != nil && resultAggregator != nil,
 			"sebi_compliance":      sebiModule != nil && sebiModule.IsHealthy(),
