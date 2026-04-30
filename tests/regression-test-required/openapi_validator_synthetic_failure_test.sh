@@ -2,8 +2,8 @@
 # Synthetic-failure proof for the OpenAPI validation gate
 # (.github/workflows/validate-openapi.yml).
 #
-# axonflow-enterprise#1759 surfaced that the workflow originally only
-# linted policy-api.yaml — agent-api.yaml and orchestrator-api.yaml were
+# A past regression surfaced that the workflow originally only linted
+# policy-api.yaml — agent-api.yaml and orchestrator-api.yaml were
 # silently exempt and accumulated 21 broken `Error` $refs plus a
 # duplicate `PolicyMatch:` schema. After expansion to all three specs,
 # without this test, a future cleanup that reverted the loop back to a

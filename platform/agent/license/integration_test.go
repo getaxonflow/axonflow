@@ -40,7 +40,7 @@ func TestLicenseGenerationAndValidation(t *testing.T) {
 		{
 			name:           "Enterprise tier",
 			tier:           TierEnterprise,
-			orgID:          "axonflow-production-us-20251124-124117",
+			orgID:          "test-stack-20260101-000000",
 			validityDays:   365,
 			shouldGenerate: true,
 			shouldValidate: true,

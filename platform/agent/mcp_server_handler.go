@@ -39,7 +39,6 @@ import (
 //   get_policy_stats→ GET /api/v1/audit/summary (Orchestrator, ~50-100ms)
 //
 // Reference: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
-// Epic: getaxonflow/axonflow-enterprise#1484
 // =============================================================================
 
 const (

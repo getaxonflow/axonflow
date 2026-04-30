@@ -343,7 +343,7 @@ EnabledLLMProviders: "anthropic"
 
 **Full Production (All Connectors + All LLM Providers):**
 ```yaml
-# config/environments/production-us.yaml
+# config/environments/production.yaml
 EnabledConnectors: "amadeus,salesforce,slack,snowflake"
 EnabledLLMProviders: "openai,anthropic"
 ```
@@ -664,7 +664,7 @@ llm:
 
 **Configuration:**
 ```yaml
-# config/environments/production-us.yaml
+# config/environments/production.yaml
 llm:
   routing_strategy: weighted
   providers:
@@ -935,7 +935,7 @@ llm:
 
 ### Production Multi-Provider (Cost Optimization)
 
-**Configuration:** `config/environments/production-us.yaml`
+**Configuration:** `config/environments/production.yaml`
 
 ```yaml
 llm:
