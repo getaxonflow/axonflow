@@ -109,6 +109,19 @@ def agent_environment(agent_task):
     return {entry["Name"]: entry.get("Value") for entry in env_list if "Name" in entry}
 
 
+@pytest.fixture(scope="module")
+def orchestrator_environment(template):
+    """Return the orchestrator container's Environment as a name -> value-spec
+    dict. Same shape as `agent_environment` for symmetric assertions."""
+    resources = template.get("Resources") or {}
+    task = resources.get("OrchestratorTaskDefinition")
+    assert task is not None, "OrchestratorTaskDefinition missing from template"
+    container_defs = (task.get("Properties") or {}).get("ContainerDefinitions") or []
+    assert container_defs, "OrchestratorTaskDefinition has no container definitions"
+    env_list = container_defs[0].get("Environment") or []
+    return {entry["Name"]: entry.get("Value") for entry in env_list if "Name" in entry}
+
+
 # axonflow-enterprise#1747 ---------------------------------------------
 
 
@@ -196,6 +209,50 @@ def test_template_has_expected_resources(template):
         assert key in resources, f"Resource {key!r} missing — fixture references will go stale"
 
 
+# /health.version sourced from image, not CFN ---------------------------
+
+
+def test_platform_version_param_absent(parameters):
+    """The PlatformVersion CFN parameter must NOT exist.
+
+    Reintroducing it would re-establish the CFN-side override of
+    AXONFLOW_VERSION on the ECS task definitions, which was the original
+    drift bug: a deploy-application-only deploy could ship a new image
+    while /health kept reporting the old semver until someone bumped the
+    CFN parameter via deploy-platform / update-stack. The container
+    image bakes AXONFLOW_VERSION at build time from the repo-root
+    VERSION file via the Dockerfile ARG/ENV pair; that is the single
+    source of truth for /health.version, and it must stay the only one.
+    """
+    assert "PlatformVersion" not in parameters, (
+        "PlatformVersion CFN parameter must NOT exist. AXONFLOW_VERSION is now "
+        "baked into the container image at build time (see Dockerfile + "
+        "build.yml `--build-arg AXONFLOW_VERSION=$(cat VERSION)`); a CFN "
+        "parameter for it would re-introduce the drift between deploy-application "
+        "and the /health.version field that this fix removed."
+    )
+
+
+def test_agent_environment_no_axonflow_version(agent_environment):
+    """The agent container env must NOT set AXONFLOW_VERSION from CFN."""
+    assert "AXONFLOW_VERSION" not in agent_environment, (
+        "AXONFLOW_VERSION must not appear in AgentTaskDefinition.Environment. "
+        "It is baked into the agent image at build time; a CFN-side env "
+        "override shadows the image's value and was the source of /health.version "
+        "reporting stale semver after deploy-application updates the image."
+    )
+
+
+def test_orchestrator_environment_no_axonflow_version(orchestrator_environment):
+    """The orchestrator container env must NOT set AXONFLOW_VERSION from CFN."""
+    assert "AXONFLOW_VERSION" not in orchestrator_environment, (
+        "AXONFLOW_VERSION must not appear in OrchestratorTaskDefinition.Environment. "
+        "It is baked into the orchestrator image at build time; a CFN-side env "
+        "override shadows the image's value and was the source of /health.version "
+        "reporting stale semver after deploy-application updates the image."
+    )
+
+
 ###############################################################################
 # Synthetic-failure proofs                                                    #
 ###############################################################################
@@ -223,6 +280,20 @@ def _run_assertion(fn, fixture_template):
         if container_defs
         else {}
     )
+    orch_container_defs = (
+        (fixture_template.get("Resources") or {})
+        .get("OrchestratorTaskDefinition", {})
+        .get("Properties", {})
+        .get("ContainerDefinitions", [])
+    )
+    orch_env = (
+        {
+            entry["Name"]: entry.get("Value")
+            for entry in orch_container_defs[0].get("Environment", [])
+        }
+        if orch_container_defs
+        else {}
+    )
     try:
         if fn == "sqli_param":
             test_sqli_action_parameter_exists(parameters)
@@ -234,6 +305,12 @@ def _run_assertion(fn, fixture_template):
             test_alb_idle_timeout_parameter_min_value(parameters)
         elif fn == "resources":
             test_template_has_expected_resources(fixture_template)
+        elif fn == "platform_version_param":
+            test_platform_version_param_absent(parameters)
+        elif fn == "agent_no_axonflow_version":
+            test_agent_environment_no_axonflow_version(env)
+        elif fn == "orch_no_axonflow_version":
+            test_orchestrator_environment_no_axonflow_version(orch_env)
     except AssertionError as e:
         return True, str(e)
     return False, ""
@@ -325,6 +402,51 @@ def test_synthetic_failure_resources_renamed():
     bad["Resources"]["AgentTaskDef"] = bad["Resources"].pop("AgentTaskDefinition")
     raised, _ = _run_assertion("resources", bad)
     assert raised, "synthetic-failure check did not fire when AgentTaskDefinition was renamed"
+
+
+def test_synthetic_failure_platform_version_param_reintroduced():
+    bad = _good_template()
+    bad["Parameters"]["PlatformVersion"] = {
+        "Type": "String",
+        "Default": "7.5.0",
+    }
+    raised, _ = _run_assertion("platform_version_param", bad)
+    assert raised, (
+        "synthetic-failure check did not fire when PlatformVersion CFN parameter "
+        "was re-added — gate would silently allow the drift bug back."
+    )
+
+
+def test_synthetic_failure_agent_axonflow_version_reintroduced():
+    bad = _good_template()
+    bad["Resources"]["AgentTaskDefinition"]["Properties"]["ContainerDefinitions"][0][
+        "Environment"
+    ].append({"Name": "AXONFLOW_VERSION", "Value": "7.5.0"})
+    raised, _ = _run_assertion("agent_no_axonflow_version", bad)
+    assert raised, (
+        "synthetic-failure check did not fire when AXONFLOW_VERSION env was re-added "
+        "to the agent container — gate would silently allow the override back."
+    )
+
+
+def test_synthetic_failure_orchestrator_axonflow_version_reintroduced():
+    bad = _good_template()
+    bad["Resources"]["OrchestratorTaskDefinition"] = {
+        "Properties": {
+            "ContainerDefinitions": [
+                {
+                    "Environment": [
+                        {"Name": "AXONFLOW_VERSION", "Value": "7.5.0"},
+                    ],
+                },
+            ],
+        },
+    }
+    raised, _ = _run_assertion("orch_no_axonflow_version", bad)
+    assert raised, (
+        "synthetic-failure check did not fire when AXONFLOW_VERSION env was re-added "
+        "to the orchestrator container — gate would silently allow the override back."
+    )
 
 
 if __name__ == "__main__":
