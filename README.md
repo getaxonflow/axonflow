@@ -579,6 +579,7 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## Links
 
 - **Docs:** https://docs.getaxonflow.com
+- **Performance:** [Load testing — Measured Results](https://docs.getaxonflow.com/docs/development/load-testing/#measured-results) for published P50/P95/P99 numbers and test conditions
 - **License:** [BSL 1.1](LICENSE) (converts to Apache 2.0 after 4 years)
 - **Issues:** https://github.com/getaxonflow/axonflow/issues
 - **Enterprise:** [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
