@@ -1,0 +1,523 @@
+name: Scheduled Performance Benchmark
+
+# Long-term platform-performance tracking. Runs end-to-end without human input:
+#   1. Provision a fresh in-vpc-enterprise stack (production-comparable shape)
+#   2. Wait for stack ready
+#   3. Trigger light / hourly / daily test modes via aws ecs run-task
+#   4. Pull P50/P95/P99 + success rate from CloudWatch logs
+#   5. Generate a markdown report into technical-docs/performance-testing/
+#   6. Open a PR with the report so trend deltas show up in code review
+#   7. Tear down the stack (default) — set keep_stack=true to leave it running
+#
+# Use this to:
+#   - Catch regressions: a release that pushes P95 from 7ms to 30ms shows up
+#     as a deviation in the next run's report
+#   - Capacity-plan: read the trend across weeks for any RPS level
+#   - Validate sizing changes: redeploy with new sizing → next benchmark
+#     captures the impact
+#
+# Schedule: weekly Monday 06:00 UTC. Adjust the cron below if needed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which benchmark environment to provision/use. in-vpc-enterprise = internal-ALB topology; saas-perf-testing = internet-facing-ALB topology. Both stacks share the same 5+10 shape and are ephemeral.'
+        required: false
+        type: choice
+        default: 'in-vpc-enterprise'
+        options:
+          - in-vpc-enterprise
+          - saas-perf-testing
+      target_stack:
+        description: 'Existing stack to benchmark (skips provision + teardown). Leave blank for the default scheduled flow which provisions a fresh stack.'
+        required: false
+        type: string
+        default: ''
+      keep_stack:
+        description: 'Keep the stack running after benchmark (false = tear down). Default false to control cost. Ignored when target_stack is set (existing stacks are never torn down).'
+        required: false
+        type: boolean
+        default: false
+      modes:
+        description: 'Comma-separated test modes to run. Default: light,hourly,daily.'
+        required: false
+        type: string
+        default: 'light,hourly,daily'
+      report_pr:
+        description: 'Open a PR with the report (false = commit to current branch).'
+        required: false
+        type: boolean
+        default: true
+      tls_server_name:
+        description: 'Override SNI ServerName on harness TLS handshake (LOAD_TEST_TLS_SERVER_NAME). Required when the listener cert hostname differs from the URL host (e.g. internal ALB DNS but cert is for try.getaxonflow.com). Empty = derive from URL.'
+        required: false
+        type: string
+        default: ''
+      coldstart_window:
+        description: 'If >0, harness reports separate P50/P95/P99 over the FIRST N issued requests (warm-up curve), so a single sweep produces both cold-start AND steady-state numbers without a re-run. 0 = disabled (back-compat default).'
+        required: false
+        type: string
+        default: '0'
+  schedule:
+    # Weekly — Monday 06:00 UTC. Off-peak for any production correlation.
+    - cron: '0 6 * * 1'
+
+env:
+  AWS_REGION: us-east-1
+  # Default to in-vpc-enterprise when triggered by schedule (cron has no
+  # inputs); workflow_dispatch overrides via inputs.environment.
+  ENVIRONMENT: ${{ inputs.environment || 'in-vpc-enterprise' }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  # Only one perf benchmark at a time across the org — protects the shared
+  # community-saas Ollama from concurrent test spikes.
+  group: scheduled-performance-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Run end-to-end perf benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      stack_name: ${{ steps.deploy.outputs.stack_name }}
+      report_path: ${{ steps.report.outputs.path }}
+      run_date: ${{ steps.deploy.outputs.run_date }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve stack (provision or use target)
+        id: deploy
+        run: |
+          set -euo pipefail
+          RUN_DATE=$(date -u +%Y-%m-%d)
+          echo "run_date=$RUN_DATE" >> $GITHUB_OUTPUT
+
+          TARGET="${{ inputs.target_stack }}"
+          if [ -n "$TARGET" ]; then
+            # Validate the supplied stack exists and is in a usable state. We
+            # accept CREATE_COMPLETE and UPDATE_COMPLETE — both are valid
+            # benchmark targets — but reject anything mid-rollback or deleted.
+            STATUS=$(aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$TARGET" \
+              --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "MISSING")
+            case "$STATUS" in
+              CREATE_COMPLETE|UPDATE_COMPLETE)
+                echo "::notice::Using target_stack=$TARGET (status=$STATUS) — skipping provision"
+                ;;
+              *)
+                echo "::error::target_stack=$TARGET is not in CREATE_COMPLETE/UPDATE_COMPLETE (status=$STATUS)"
+                exit 1
+                ;;
+            esac
+            echo "stack_name=$TARGET" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "::notice::Triggering deploy-platform for $ENVIRONMENT at $(date -u +%FT%TZ)"
+
+          # Trigger and capture the run id
+          gh workflow run deploy-platform.yml -f environment="$ENVIRONMENT" --ref main
+          # Wait briefly so the run is queryable
+          sleep 8
+          DEPLOY_RUN_ID=$(gh run list --workflow=deploy-platform.yml --limit 1 \
+            --json databaseId,status,event \
+            --jq '.[] | select(.event=="workflow_dispatch") | .databaseId' | head -1)
+          echo "deploy_run_id=$DEPLOY_RUN_ID" >> $GITHUB_OUTPUT
+          echo "::notice::Deploy run id: $DEPLOY_RUN_ID — watching..."
+
+          gh run watch "$DEPLOY_RUN_ID" --exit-status
+
+          # Pick the most-recently-created stack matching the chosen
+          # environment in CREATE_COMPLETE. The stack-name prefix derives
+          # from the env name — config/environments/<env>.yaml's
+          # `stack_name_prefix` is `axonflow-<env>` for both supported
+          # environments, so the same prefix lookup works.
+          STACK_PREFIX="axonflow-${ENVIRONMENT}-"
+          STACK=$(aws cloudformation describe-stacks --region "$AWS_REGION" \
+            --query "Stacks[?starts_with(StackName, '${STACK_PREFIX}') && StackStatus=='CREATE_COMPLETE'] | sort_by(@, &CreationTime) | [-1].StackName" \
+            --output text)
+          if [ -z "$STACK" ] || [ "$STACK" = "None" ]; then
+            echo "::error::Could not find a CREATE_COMPLETE stack matching prefix ${STACK_PREFIX}"
+            exit 1
+          fi
+          echo "stack_name=$STACK" >> $GITHUB_OUTPUT
+          echo "::notice::Stack ready: $STACK"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger test modes
+        id: test
+        run: |
+          set -euo pipefail
+          STACK="${{ steps.deploy.outputs.stack_name }}"
+          CLUSTER=${STACK}-cluster
+          TASK_DEF=${STACK}-performance-testing
+          IFS=',' read -ra MODES <<< "${{ inputs.modes || 'light,hourly,daily' }}"
+
+          # Network config from CFN parameters
+          SUBNETS=$(aws cloudformation describe-stacks --region "$AWS_REGION" --stack-name "$STACK" \
+            --query 'Stacks[0].Parameters[?ParameterKey==`PublicSubnet1` || ParameterKey==`PublicSubnet2`].ParameterValue' \
+            --output text | tr '\t' ',')
+          SG=$(aws ec2 describe-security-groups --region "$AWS_REGION" \
+            --filters "Name=tag:aws:cloudformation:stack-name,Values=$STACK" "Name=group-name,Values=*Agent*" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+
+          echo "subnets=$SUBNETS"
+          echo "security_group=$SG"
+
+          # launch_with_retry: aws ecs run-task with retry on transient image-pull
+          # failures (CannotPullContainerError: i/o timeout against ECR). The
+          # iteration-4 hourly mode flake was a 1-shot pull timeout — light + daily
+          # on the same task definition pulled fine 30s before. Up to 3 attempts
+          # total, 30s backoff between, so a single transient flake doesn't drop
+          # an entire mode out of the report.
+          # Build the containerOverrides env array. TEST_MODE is required;
+          # LOAD_TEST_TLS_SERVER_NAME and COLDSTART_WINDOW are passed via
+          # workflow_dispatch inputs and propagated only when set so the
+          # scheduled cron path stays back-compat. Use jq to construct the
+          # JSON so embedded quotes / spaces don't break the bash arg.
+          OVERRIDES_JSON=$(jq -nc \
+            --arg test_mode_placeholder "PLACEHOLDER" \
+            --arg tls_server_name "${{ inputs.tls_server_name }}" \
+            --arg coldstart_window "${{ inputs.coldstart_window }}" \
+            '{
+              containerOverrides: [{
+                name: "performance-testing",
+                environment: (
+                  [{name: "TEST_MODE", value: $test_mode_placeholder}]
+                  + (if $tls_server_name != "" then [{name: "LOAD_TEST_TLS_SERVER_NAME", value: $tls_server_name}] else [] end)
+                  + (if $coldstart_window != "" and $coldstart_window != "0" then [{name: "COLDSTART_WINDOW", value: $coldstart_window}] else [] end)
+                )
+              }]
+            }')
+
+          launch_with_retry() {
+            local mode=$1
+            local attempt
+            local max_attempts=3
+            # Substitute the per-mode TEST_MODE value into the prebuilt overrides JSON.
+            local overrides
+            overrides=$(echo "$OVERRIDES_JSON" | jq --arg m "$mode" '.containerOverrides[0].environment[0].value = $m')
+            for attempt in $(seq 1 $max_attempts); do
+              local task_arn
+              task_arn=$(aws ecs run-task --region "$AWS_REGION" \
+                --cluster "$CLUSTER" --task-definition "$TASK_DEF" \
+                --launch-type FARGATE \
+                --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
+                --overrides "$overrides" \
+                --query 'tasks[0].taskArn' --output text 2>&1) || {
+                echo "::error::aws ecs run-task failed for $mode (attempt $attempt/$max_attempts): $task_arn" >&2
+                if [ $attempt -lt $max_attempts ]; then
+                  sleep 30
+                  continue
+                fi
+                return 1
+              }
+              # Empty / "None" task_arn → run-task succeeded but returned no
+              # task (permission boundary, missing task def, capacity provider
+              # issue). Fail loud — silent empty-id propagation broke
+              # downstream describe-tasks calls.
+              if [ -z "$task_arn" ] || [ "$task_arn" = "None" ]; then
+                echo "::error::aws ecs run-task returned empty task ARN for $mode (attempt $attempt/$max_attempts)" >&2
+                if [ $attempt -lt $max_attempts ]; then
+                  sleep 30
+                  continue
+                fi
+                return 1
+              fi
+              local task_id="${task_arn##*/}"
+
+              # Wait briefly for the task to either start running or fail with a
+              # pull error. Pull errors surface as STOPPED with stoppedReason
+              # containing "CannotPullContainerError" before any container starts.
+              local status reason
+              for _ in $(seq 1 12); do
+                status=$(aws ecs describe-tasks --region "$AWS_REGION" --cluster "$CLUSTER" --tasks "$task_id" \
+                  --query 'tasks[0].lastStatus' --output text 2>/dev/null || echo "MISSING")
+                if [ "$status" = "RUNNING" ] || [ "$status" = "STOPPED" ]; then
+                  break
+                fi
+                sleep 5
+              done
+
+              reason=$(aws ecs describe-tasks --region "$AWS_REGION" --cluster "$CLUSTER" --tasks "$task_id" \
+                --query 'tasks[0].stoppedReason' --output text 2>/dev/null || echo "")
+              if [ "$status" = "STOPPED" ] && echo "$reason" | grep -qE "CannotPullContainerError|i/o timeout"; then
+                echo "::warning::$mode attempt $attempt/$max_attempts hit ECR pull error: $reason"
+                if [ $attempt -lt $max_attempts ]; then
+                  sleep 30
+                  continue
+                fi
+                echo "::error::$mode exhausted retries after ECR pull errors"
+              fi
+
+              echo "$task_id"
+              return 0
+            done
+            return 1
+          }
+
+          declare -A TASK_IDS
+          for MODE in "${MODES[@]}"; do
+            echo "::group::Trigger TEST_MODE=$MODE"
+            TASK_ID=$(launch_with_retry "$MODE")
+            echo "$MODE: $TASK_ID"
+            TASK_IDS[$MODE]=$TASK_ID
+            echo "task_${MODE}=$TASK_ID" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+          done
+
+          # Wait for all tasks to complete (max ~10 min for daily mode — 120s
+          # capacity phase + 30s pause + 60s realistic phase + warm-up tail).
+          echo "::group::Waiting for all tasks to STOPPED"
+          for MODE in "${MODES[@]}"; do
+            TID="${TASK_IDS[$MODE]}"
+            for i in $(seq 1 90); do
+              STATUS=$(aws ecs describe-tasks --region "$AWS_REGION" --cluster "$CLUSTER" --tasks "$TID" \
+                --query 'tasks[0].lastStatus' --output text 2>/dev/null || echo "MISSING")
+              if [ "$STATUS" = "STOPPED" ]; then
+                echo "$MODE ($TID) STOPPED after $((i*10))s"
+                break
+              fi
+              sleep 10
+            done
+          done
+          echo "::endgroup::"
+
+      - name: Build report
+        id: report
+        env:
+          # toJSON renders to multi-line JSON with embedded double quotes.
+          # Interpolating that directly into a bash double-quoted string
+          # breaks the shell parser, so we route it through an env var
+          # and read it with printf '%s' "$VAR".
+          TEST_OUTPUTS_JSON: ${{ toJSON(steps.test.outputs) }}
+        run: |
+          set -euo pipefail
+          STACK="${{ steps.deploy.outputs.stack_name }}"
+          RUN_DATE="${{ steps.deploy.outputs.run_date }}"
+          REPORT_PATH="technical-docs/performance-testing/LOAD_TEST_BENCHMARK_${RUN_DATE}.md"
+          echo "path=$REPORT_PATH" >> $GITHUB_OUTPUT
+          IFS=',' read -ra MODES <<< "${{ inputs.modes || 'light,hourly,daily' }}"
+
+          # parse_phase_to_table_row: extract one summary block's metrics and
+          # print the markdown table row. Args: mode, phase_num, summary_text.
+          # Correctness % = (Total - Unexpected) / Total — tracks business
+          # correctness (policy verdict matched expectation), not just HTTP
+          # 2xx. iteration-4 reported "100% Success at 100 RPS" while 53% of
+          # requests had the WRONG policy verdict; this column makes that
+          # gap visible at the headline-table level.
+          parse_phase_to_table_row() {
+            local mode=$1
+            local phase=$2
+            local block=$3
+            local total success http_pct unexpected correctness_pct p50 p95 p99 slo test_type phase_label
+
+            total=$(echo "$block" | grep -oE 'Total Requests:[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "?")
+            success=$(echo "$block" | grep -oE 'Success:[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "?")
+            http_pct=$(echo "$block" | grep -oE 'Success:[[:space:]]+[0-9]+ \([0-9.]+%\)' | head -1 | sed -E 's/.*\(([0-9.]+)%\).*/\1%/' || echo "?")
+            unexpected=$(echo "$block" | grep -oE 'Unexpected:[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1 || echo "?")
+            p50=$(echo "$block" | grep -oE 'P50:[[:space:]]+[0-9.]+ms' | head -1 | grep -oE '[0-9.]+ms' || echo "?")
+            p95=$(echo "$block" | grep -oE 'P95:[[:space:]]+[0-9.]+ms' | head -1 | grep -oE '[0-9.]+ms' || echo "?")
+            p99=$(echo "$block" | grep -oE 'P99:[[:space:]]+[0-9.]+ms' | head -1 | grep -oE '[0-9.]+ms' || echo "?")
+            slo=$(echo "$block" | grep -oE 'SLO Status:[[:space:]]+[A-Z]+' | head -1 | awk '{print $NF}' || echo "?")
+
+            # Correctness % computed only when both totals are numeric.
+            if [[ "$total" =~ ^[0-9]+$ ]] && [[ "$unexpected" =~ ^[0-9]+$ ]] && [ "$total" -gt 0 ]; then
+              correctness_pct=$(awk -v t="$total" -v u="$unexpected" 'BEGIN { printf "%.1f%%", (t-u)*100/t }')
+            else
+              correctness_pct="?"
+            fi
+
+            # Phase label — sustained_load echoes its `Test Type:` near the
+            # start of each invocation. daily mode prints daily-capacity
+            # then daily-realistic; we reuse that as the phase label so the
+            # table reader doesn't have to remember which phase is which.
+            test_type=$(echo "$block" | grep -oE 'Test Type:[[:space:]]+[a-z-]+' | head -1 | awk '{print $NF}' || echo "")
+            if [ -n "$test_type" ]; then
+              phase_label="$test_type"
+            else
+              phase_label="phase-$phase"
+            fi
+
+            echo "| $mode | $phase_label | $total | $http_pct | $correctness_pct | $p50 | $p95 | $p99 | $slo |"
+          }
+
+          # Pull stack metadata
+          REGION="$AWS_REGION"
+          IMAGE_TAG=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+            --query 'Stacks[0].Parameters[?ParameterKey==`PerformanceTestingImageTag`].ParameterValue' --output text)
+          AGENT_REPLICAS=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+            --query 'Stacks[0].Parameters[?ParameterKey==`AgentDesiredCount`].ParameterValue' --output text 2>/dev/null || echo "?")
+          DB_INSTANCE=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+            --query 'Stacks[0].Parameters[?ParameterKey==`DatabaseInstanceClass`].ParameterValue' --output text 2>/dev/null || echo "?")
+
+          {
+            echo "# In-VPC Enterprise Benchmark — $RUN_DATE"
+            echo ""
+            echo "**Source:** Automated weekly run via \`scheduled-performance-benchmark.yml\` (workflow run ID: $GITHUB_RUN_ID)"
+            echo "**Generated:** $(date -u +%FT%TZ)"
+            echo ""
+            echo "## Stack under test"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Stack | \`$STACK\` |"
+            echo "| Region | $REGION |"
+            echo "| Topology | Internal ALB |"
+            echo "| Image SHA | \`$IMAGE_TAG\` |"
+            echo "| Agent replicas | $AGENT_REPLICAS |"
+            echo "| RDS instance | $DB_INSTANCE |"
+            echo ""
+            echo "## Results"
+            echo ""
+            echo "Per-phase row: each \`sustained_load\` invocation emits its own"
+            echo "summary block. Daily mode runs two phases (capacity + realistic-with-LLM)"
+            echo "so it produces two rows. \`Correctness %\` counts requests whose actual"
+            echo "policy verdict matched the scenario's \`expected_code\`; HTTP-200 alone"
+            echo "is not enough."
+            echo ""
+            echo "| Mode | Phase | Total req | HTTP 2xx | Correctness | P50 | P95 | P99 | SLO |"
+            echo "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+          } > "$REPORT_PATH"
+
+          for MODE in "${MODES[@]}"; do
+            TID_VAR="task_${MODE}"
+            TID=$(printf '%s' "$TEST_OUTPUTS_JSON" | jq -r --arg k "$TID_VAR" '.[$k]')
+            STREAM="performance-testing/performance-testing/$TID"
+            echo "Pulling $MODE log stream $STREAM..."
+
+            # Full log (no tail truncation) — daily mode runs two phases, each
+            # printing its own ~50-line summary block. The previous tail -200
+            # cut off Phase 2's summary.
+            FULL_LOG=$(aws logs get-log-events --region "$REGION" \
+              --log-group-name "/ecs/${STACK}/performance-testing" \
+              --log-stream-name "$STREAM" \
+              --start-from-head --output json 2>/dev/null | jq -r '.events[].message' || echo "")
+
+            # Split into per-phase blocks. Each `sustained_load` invocation
+            # prints a `Test Type:` line near its top and a
+            # `Sustained Load Test Results` summary block at the end. We
+            # slice on `Test Type:` so each phase's chunk includes its OWN
+            # test-type label (otherwise daily mode's daily-realistic label
+            # gets attributed to phase-1's block since it sits between
+            # phase-1's summary and phase-2's summary).
+            PHASE_BLOCKS=$(printf '%s\n' "$FULL_LOG" | awk '
+              /^Test Type:[[:space:]]+/ { phase++; print "---PHASE---" phase }
+              phase > 0 { print }
+            ')
+
+            # If there were no summary blocks at all (task crashed early),
+            # emit a single row with "?" placeholders so the table still has
+            # an entry for the mode.
+            if ! echo "$PHASE_BLOCKS" | grep -q "^---PHASE---"; then
+              echo "| $MODE | (no summary) | ? | ? | ? | ? | ? | ? | ? |" >> "$REPORT_PATH"
+              continue
+            fi
+
+            # Iterate each phase block.
+            PHASE_NUM=0
+            while IFS= read -r line; do
+              if echo "$line" | grep -q "^---PHASE---"; then
+                # Flush previous phase (if any).
+                if [ "$PHASE_NUM" -gt 0 ]; then
+                  parse_phase_to_table_row "$MODE" "$PHASE_NUM" "$PHASE_TEXT" >> "$REPORT_PATH"
+                fi
+                PHASE_NUM=$((PHASE_NUM + 1))
+                PHASE_TEXT=""
+                continue
+              fi
+              PHASE_TEXT="${PHASE_TEXT}${line}"$'\n'
+            done <<< "$PHASE_BLOCKS"
+            # Flush final phase
+            if [ "$PHASE_NUM" -gt 0 ]; then
+              parse_phase_to_table_row "$MODE" "$PHASE_NUM" "$PHASE_TEXT" >> "$REPORT_PATH"
+            fi
+          done
+
+          {
+            echo ""
+            echo "## Trend (vs previous published run)"
+            echo ""
+            echo "_To be filled in by reviewer or a follow-up automation step. For now, scan \`technical-docs/performance-testing/LOAD_TEST_BENCHMARK_*.md\` to compare._"
+            echo ""
+            echo "## Reproducing"
+            echo ""
+            echo "See \`technical-docs/runbooks/RUNBOOK_ON_DEMAND_PERFORMANCE_TESTING.md\` for the manual workflow that this automation runs."
+            echo ""
+            echo "## Stack persistence"
+            echo ""
+            if [ -n "${{ inputs.target_stack }}" ]; then
+              echo "Stack supplied via \`target_stack\` input — not provisioned by this run, not torn down by this run. Operator owns the lifecycle."
+            elif [ "${{ inputs.keep_stack }}" = "true" ]; then
+              echo "Stack KEPT running per \`keep_stack=true\` input. EventBridge schedules continue producing data automatically until the next teardown."
+            else
+              echo "Stack scheduled for teardown after this report lands. Re-spin via \`gh workflow run scheduled-performance-benchmark.yml\` or \`deploy-platform.yml\`."
+            fi
+          } >> "$REPORT_PATH"
+
+          echo "::notice::Report written to $REPORT_PATH"
+          cat "$REPORT_PATH"
+
+      - name: Open PR with report
+        if: ${{ inputs.report_pr != false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="perf-benchmark-${{ steps.deploy.outputs.run_date }}-${GITHUB_RUN_ID}"
+          git config user.email "deployment-automation@axonflow.com"
+          git config user.name "Deployment Automation"
+          git checkout -b "$BRANCH"
+          git add "${{ steps.report.outputs.path }}"
+          git commit -m "perf: automated benchmark report for ${{ steps.deploy.outputs.run_date }}"
+          git push -u origin "$BRANCH"
+          # printf assembles the body so each YAML line stays at the same
+          # indentation. A multi-line double-quoted string here would break
+          # the workflow file's YAML literal-block scalar, because blank
+          # lines inside the quoted string drop below the block's indent.
+          BODY=$(printf '%s\n\n%s\n\n%s\n' \
+            "Automated benchmark report from \`scheduled-performance-benchmark.yml\` workflow run [$GITHUB_RUN_ID](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/$GITHUB_RUN_ID)." \
+            "Stack: \`${{ steps.deploy.outputs.stack_name }}\`" \
+            "See full results inline in the diff. Compare against previous \`technical-docs/performance-testing/LOAD_TEST_BENCHMARK_*.md\` for trend analysis.")
+          gh pr create \
+            --title "perf: weekly benchmark report ${{ steps.deploy.outputs.run_date }}" \
+            --body "$BODY" \
+            --label perf-benchmark || echo "::warning::PR creation failed (label may not exist) — falling back to direct commit"
+
+  teardown:
+    name: Tear down benchmark stack
+    needs: benchmark
+    # Skip teardown when we didn't provision the stack (target_stack set), or
+    # when the user asked to keep it. The job is purely a delete-stack dispatch,
+    # so a no-op skip here is safe and explicit.
+    if: ${{ inputs.keep_stack != true && inputs.target_stack == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger delete-stack.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run delete-stack.yml \
+            -f stack_name="${{ needs.benchmark.outputs.stack_name }}" \
+            -f region=us-east-1 \
+            -f dry_run=false \
+            -f confirm_delete=DELETE
+          echo "::notice::Tear-down dispatched for ${{ needs.benchmark.outputs.stack_name }}"

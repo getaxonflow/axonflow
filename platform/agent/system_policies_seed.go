@@ -590,7 +590,14 @@ func getPIIPatterns() []SystemPolicySeed {
 			Name:        "Booking Reference Logging",
 			Description: "Booking reference detected - logged for audit trail (not blocked)",
 			Category:    CategoryPIIGlobal,
-			Pattern:     `\b[A-Z0-9]{6}\b`,
+			// Match a 6-char alphanumeric token ONLY when it follows a
+			// booking-context label (booking, reservation, reference, ref,
+			// PNR, confirmation, conf). The previous pattern \b[A-Z0-9]{6}\b
+			// matched any 6-char uppercase token — including every common SQL
+			// keyword (SELECT, INSERT, DELETE, UPDATE, CREATE) — and fired on
+			// every benign query, polluting audit logs and inflating
+			// "PII detected" counts in compliance reports.
+			Pattern:     `(?i)\b(?:booking|reservation|reference|ref|pnr|conf(?:irmation)?)\b\s*[:#]?\s*\b([A-Z0-9]{6})\b`,
 			Severity:    SeverityLow,
 			Action:      "log",
 			Priority:    10,
