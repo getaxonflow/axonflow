@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,24 @@ import (
 
 // AxonFlow Agent - Authentication, Authorization & Static Policy Enforcement Gateway
 // This service sits between clients and the AxonFlow Orchestrator
+
+// envIntDefault parses an integer env var, returning the default on missing
+// or invalid values (logs a warning so a typo in the override doesn't
+// silently fall through to defaults). Centralised so circuit-breaker
+// thresholds, future numeric knobs, and the existing bespoke parsers can
+// share one bug-for-bug consistent fallback path.
+func envIntDefault(key string, def int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("[Env] WARNING: %s=%q is not a valid int, using default %d: %v", key, raw, def, err)
+		return def
+	}
+	return v
+}
 
 // isCommunityMode returns true if running in Community mode.
 // Community mode bypasses license validation and authentication for local development.
@@ -268,6 +287,15 @@ type ClientResponse struct {
 }
 
 type PolicyEvaluationInfo struct {
+	// MatchedPolicies lists the IDs of policies that matched the request.
+	// This is the canonical field and what callers should consume going forward.
+	MatchedPolicies []string `json:"matched_policies"`
+	// PoliciesEvaluated is a backward-compatibility alias that emits the same
+	// list under the historical (mislabeled) field name. The original name
+	// suggested "every policy the engine ran against the input", but the
+	// value has always been the matched-policies list. Keep it populated for
+	// existing SDK / dashboard consumers; new code should read MatchedPolicies.
+	// TODO(deprecation): drop this on the next major release.
 	PoliciesEvaluated []string `json:"policies_evaluated"`
 	StaticChecks      []string `json:"static_checks"`
 	ProcessingTime    string   `json:"processing_time"`
@@ -995,15 +1023,28 @@ func Run() {
 	// Register Circuit Breaker API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Emergency stop/interrupt capability for AI operations
 	// Issue #1176: Wire circuit breaker into request pipeline with meaningful thresholds
+	//
+	// Thresholds are overridable via env. Defaults stay at the Article-14
+	// production posture (10 errors / 20 policy violations per 5-min window
+	// per client). Benchmark stacks need to drive sustained traffic past
+	// those thresholds without the breaker pre-empting requests after the
+	// first second of load — they set the env vars to high numbers (or 0
+	// for "disabled" semantically — 0 still trips on the first violation
+	// per the existing logic, so use a large positive value instead).
+	cbErrorThreshold := envIntDefault("AXONFLOW_CB_ERROR_THRESHOLD", 10)
+	cbPolicyViolationThreshold := envIntDefault("AXONFLOW_CB_POLICY_VIOLATION_THRESHOLD", 20)
 	cbRepo := circuitbreaker.NewRepository(usageDB)
 	circuitBreakerInstance = circuitbreaker.New(cbRepo, circuitbreaker.Config{
 		DefaultTimeout:           5 * time.Minute,
 		MaxTimeout:               1 * time.Hour,
-		ErrorThreshold:           10,
-		PolicyViolationThreshold: 20,
+		ErrorThreshold:           cbErrorThreshold,
+		PolicyViolationThreshold: cbPolicyViolationThreshold,
 		PolicyViolationWindow:    5 * time.Minute,
 		EnableAutoRecovery:       true,
 	})
+	if cbErrorThreshold != 10 || cbPolicyViolationThreshold != 20 {
+		log.Printf("[CB] thresholds overridden: error=%d policy_violation=%d (defaults are 10/20)", cbErrorThreshold, cbPolicyViolationThreshold)
+	}
 	notifService := circuitbreaker.NewNotificationService(cbRepo)
 	circuitBreakerInstance.SetTripCallback(notifService.HandleTripEvent)
 	cbHandler := circuitbreaker.NewHandler(circuitBreakerInstance)
@@ -1097,8 +1138,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	parseTime := time.Since(startTime)
 	log.Printf("[TIMING] Request parse: %v", parseTime)
-	log.Printf("   Request body: ClientID='%s', RequestType='%s', Query='%s'",
-		logutil.Sanitize(req.ClientID), logutil.Sanitize(req.RequestType), logutil.Sanitize(truncateString(req.Query, 50)))
+	log.Printf("   Request body: ClientID='%s', RequestType='%s', SkipLLM=%v, Query='%s'",
+		logutil.Sanitize(req.ClientID), logutil.Sanitize(req.RequestType), req.SkipLLM, logutil.Sanitize(truncateString(req.Query, 50)))
 
 	// 1. Validate client authentication via unified authenticator
 	validateClientStart := time.Now()
@@ -1264,6 +1305,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			Blocked:     true,
 			BlockReason: policyResult.Reason,
 			PolicyInfo: &PolicyEvaluationInfo{
+				MatchedPolicies:   policyResult.TriggeredPolicies,
 				PoliciesEvaluated: policyResult.TriggeredPolicies,
 				StaticChecks:      policyResult.ChecksPerformed,
 				ProcessingTime:    time.Since(startTime).String(),
@@ -1299,12 +1341,14 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		promPolicyEvaluations.Inc()
 		promRequestDuration.WithLabelValues("hitl").Observe(float64(time.Since(startTime).Milliseconds()))
 
+		hitlMatched := append(policyResult.TriggeredPolicies, "hitl_compliance")
 		response := ClientResponse{
 			Success:     false,
 			Blocked:     true,
 			BlockReason: "require_approval",
 			PolicyInfo: &PolicyEvaluationInfo{
-				PoliciesEvaluated: append(policyResult.TriggeredPolicies, "hitl_compliance"),
+				MatchedPolicies:   hitlMatched,
+				PoliciesEvaluated: hitlMatched,
 				StaticChecks:      policyResult.ChecksPerformed,
 				ProcessingTime:    time.Since(startTime).String(),
 				TenantID:          user.TenantID,
@@ -1355,6 +1399,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 					BlockReason: budgetDecision.Message,
 					BudgetInfo:  budgetInfo,
 					PolicyInfo: &PolicyEvaluationInfo{
+						MatchedPolicies:   []string{"budget_exceeded"},
 						PoliciesEvaluated: []string{"budget_exceeded"},
 						StaticChecks:      policyResult.ChecksPerformed,
 						ProcessingTime:    time.Since(startTime).String(),
@@ -1576,6 +1621,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		Data:    responseData,
 		Error:   orchError,
 		PolicyInfo: &PolicyEvaluationInfo{
+			MatchedPolicies:   policyResult.TriggeredPolicies,
 			PoliciesEvaluated: policyResult.TriggeredPolicies,
 			StaticChecks:      policyResult.ChecksPerformed,
 			ProcessingTime:    time.Since(startTime).String(),
@@ -1831,7 +1877,7 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 
 	// Make HTTP call to orchestrator
 	orchURL := orchestratorURL + orchEndpoint
-	log.Printf("🚀 Forwarding to orchestrator: %s (ClientID: %s, Type: %s)", orchURL, req.ClientID, req.RequestType)
+	log.Printf("🚀 Forwarding to orchestrator: %s (ClientID: %s, Type: %s, SkipLLM: %v)", orchURL, req.ClientID, req.RequestType, req.SkipLLM)
 	orchReq, err := http.NewRequest("POST", orchURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create orchestrator request: %v", err)

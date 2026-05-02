@@ -39,28 +39,12 @@ fi
 
 echo ""
 
-# Check CloudFormation PlatformVersion parameter defaults (community-saas + enterprise templates)
-echo "☁️  Checking CloudFormation PlatformVersion defaults..."
-for cfn in infrastructure/cloudformation/community-saas-ecs.yaml ee/platform/aws-marketplace/cloudformation-ecs-fargate.yaml; do
-    if [ -f "$cfn" ]; then
-        DEFAULT=$(awk '
-            /^  PlatformVersion:/ {in_block=1; next}
-            in_block && /^  [A-Za-z]/ {in_block=0}
-            in_block && /^    Default:/ {gsub(/[^0-9.]/, ""); print; exit}
-        ' "$cfn")
-        if [ -z "$DEFAULT" ]; then
-            echo "  ❌ $cfn — PlatformVersion parameter or its Default not found"
-            ERRORS=$((ERRORS + 1))
-        elif [ "$DEFAULT" != "$LATEST_VERSION" ]; then
-            echo "  ❌ $cfn — PlatformVersion default is '$DEFAULT', expected $LATEST_VERSION"
-            ERRORS=$((ERRORS + 1))
-        else
-            echo "  ✅ $cfn — $DEFAULT"
-        fi
-    fi
-done
-
-echo ""
+# Note: CFN PlatformVersion parameter was deliberately removed in v7.5.0
+# (commit 6d5bc3d47, "fix(infra): /health.version sourced from image,
+# drop CFN PlatformVersion param"). The image bakes AXONFLOW_VERSION at
+# build time and /health reports that — having a CFN-level default would
+# reintroduce the two-sources-of-truth drift trap that motivated the
+# removal. The check that lived here is gone on purpose.
 
 # Check docker-compose*.yml AXONFLOW_VERSION defaults
 echo "🐳 Checking docker-compose version defaults..."
@@ -96,22 +80,12 @@ done < <(grep -rn '^ARG AXONFLOW_VERSION=[0-9]' platform/ ee/ --include="Dockerf
 
 echo ""
 
-# Check capabilities.go platform version constants
-echo "🔧 Checking capabilities.go platform version..."
-while IFS= read -r line; do
-    file=$(echo "$line" | cut -d: -f1)
-    lineno=$(echo "$line" | cut -d: -f2)
-    version=$(echo "$line" | grep -o '"[0-9.]*"' | tr -d '"')
-
-    if [ "$version" != "$LATEST_VERSION" ]; then
-        echo "  ❌ $file:$lineno — platform version is $version, expected $LATEST_VERSION"
-        ERRORS=$((ERRORS + 1))
-    else
-        echo "  ✅ $file:$lineno — $version"
-    fi
-done < <(grep -rn 'PlatformVersion.*=.*"[0-9]' platform/ ee/ --include="*.go" 2>/dev/null || true)
-
-echo ""
+# Note: there's no Go-side PlatformVersion constant to validate.
+# capabilities.go reads the version from os.Getenv("AXONFLOW_VERSION") at
+# runtime (set by the Dockerfile ARG that's already validated above), and
+# the `Since: "x.y.z"` capability markers are intentionally permanent —
+# they record which platform release first shipped each capability and
+# must not be bumped on every release. So there is nothing to check here.
 
 # Summary
 if [ "$ERRORS" -gt 0 ]; then
