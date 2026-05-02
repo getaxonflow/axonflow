@@ -12,6 +12,68 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.6.0] - 2026-05-02 — Policy-engine response cleanup + per-category enforcement controls
+
+MINOR release. Adds new API surfaces on the marketplace CFN template and
+on the policy enforcement response, plus two bug fixes on the audit-trail
+side. No breaking changes; existing SDK / dashboard consumers continue
+to work.
+
+**Bug fixes:**
+
+- **`policy_info` no longer reports duplicate matched policies.** When a
+  policy's pattern matched both the query string and a request parameter,
+  the response field listed the same policy twice (e.g.
+  `["sys_sqli_grant", "sys_sqli_grant"]`). Each policy is now reported
+  once per evaluation regardless of how many contexts it matched in.
+  Block-decision behaviour is unchanged.
+- **`sys_pii_booking_ref` no longer fires on SQL keywords.** The original
+  pattern `\b[A-Z0-9]{6}\b` matched any 6-char alphanumeric token,
+  including SELECT, INSERT, DELETE, UPDATE, CREATE — generating a
+  booking-reference audit-log entry for every benign SQL query and
+  inflating "PII detected" counts in compliance dashboards. The pattern
+  now requires a booking-context label (booking, reservation, reference,
+  ref, pnr, confirmation, conf) before the alphanumeric token. Real
+  booking refs like `booking ABC123` or `PNR XYZ789` continue to match.
+  Action remains `log` — requests are not affected, only audit-trail
+  noise. A follow-up SQL migration (074) updates already-deployed
+  systems in place; new deployments seed the corrected pattern from
+  the start.
+
+**API additions:**
+
+- **`policy_info.matched_policies` field added** alongside the existing
+  `policies_evaluated`. The new field name is the canonical one; the
+  legacy `policies_evaluated` is kept populated with the same values
+  for backward compatibility and will be removed in the next major
+  release. The original field name suggested "every policy the engine
+  ran against the input" but the value has always been the matched-
+  policies list — the new name reflects what's actually reported.
+
+**Enterprise:**
+
+- **Per-category detection action overrides on the marketplace CFN
+  template.** Self-hosted enterprise stacks gain four new optional
+  CloudFormation parameters — `SQLIAction`, `PIIAction`,
+  `SensitiveDataAction`, `DangerousQueryAction` (each: `block` / `warn` /
+  `log`, `PIIAction` also accepts `redact`). Empty leaves the active
+  `AXONFLOW_PROFILE` default in place; setting one overrides only that
+  category without flipping the global profile. Lets operators tighten
+  enforcement on a single category (e.g. `SQLIAction=block` for a
+  benchmark stack) without inheriting the strict profile's PII redact
+  behaviour. No change for existing deployments — the parameters
+  default to empty.
+
+- **Per-category circuit breaker threshold overrides on the
+  marketplace CFN template.** Two new optional CloudFormation
+  parameters — `CBErrorThreshold` and `CBPolicyViolationThreshold`
+  (integers) — let operators tune the agent's per-client circuit
+  breaker without forking the template. Production defaults stay
+  at the Article-14 posture (10 errors / 20 policy violations per
+  5-min window per client); empty values leave defaults in place.
+  Useful for benchmark stacks running attack-pattern load that would
+  otherwise trip the breaker after the first second.
+
 ## [7.5.0] - 2026-04-29 — Production, quality, and security hardening — upgrade encouraged
 
 **Upgrade strongly recommended.** Over the past month we've shipped substantial
