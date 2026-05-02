@@ -155,8 +155,19 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 		}
 	}
 
-	// Scan parameter values individually (Issue #1287)
+	// Scan parameter values individually (Issue #1287). Track which PolicyIDs
+	// already matched in the query-string scan so we don't report the same
+	// policy twice in MatchedPolicies — that produced confusing duplicate
+	// entries like "matched_policies": ["sys_sqli_grant", "sys_sqli_grant"]
+	// in the API response. The FIRST occurrence's FieldPath is preserved;
+	// subsequent matches still drive the block decision but don't add another
+	// entry to the list.
 	if !result.Blocked && len(opts.Parameters) > 0 {
+		alreadyMatched := make(map[string]bool, len(result.MatchedPolicies))
+		for _, m := range result.MatchedPolicies {
+			alreadyMatched[m.PolicyID] = true
+		}
+
 		for key, val := range opts.Parameters {
 			paramStr := ""
 			switch v := val.(type) {
@@ -194,7 +205,10 @@ func (e *UnifiedPolicyEngine) EvaluateRequest(ctx context.Context, input string,
 					}
 					match.Action = action
 					match.FieldPath = fmt.Sprintf("parameter '%s'", key)
-					result.MatchedPolicies = append(result.MatchedPolicies, *match)
+					if !alreadyMatched[match.PolicyID] {
+						result.MatchedPolicies = append(result.MatchedPolicies, *match)
+						alreadyMatched[match.PolicyID] = true
+					}
 
 					if match.Action == ActionBlock {
 						result.Blocked = true

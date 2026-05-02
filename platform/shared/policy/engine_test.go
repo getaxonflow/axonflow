@@ -1550,3 +1550,80 @@ func TestEvaluateRequest_NestedParametersSQLi(t *testing.T) {
 		t.Errorf("Expected FieldPath 'parameter \\'order\\'', got %q", result.MatchedPolicies[0].FieldPath)
 	}
 }
+
+// TestEvaluateRequest_DedupSamePolicyAcrossQueryAndParameter is a regression
+// test for the duplicate-match bug that produced
+// "matched_policies": ["sys_sqli_grant", "sys_sqli_grant"] in API responses
+// when a single policy's pattern hit both the query string and a parameter
+// value. The engine should record each PolicyID at most once in
+// MatchedPolicies — the parameter scan should be allowed to drive the block
+// decision but must not append a second entry for an already-matched policy.
+func TestEvaluateRequest_DedupSamePolicyAcrossQueryAndParameter(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_grant",
+			Name:          "GRANT Privileges",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)\bGRANT\s+`),
+			PatternStr:    `(?i)\bGRANT\s+`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionLog, // log-only so the loop continues into params
+			Enabled:       true,
+			Priority:      100,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	// Both the query string and the parameter contain "GRANT ..." so the
+	// pattern matches in both contexts. Pre-fix: MatchedPolicies length 2.
+	// Post-fix: length 1.
+	result := engine.EvaluateRequest(context.Background(), "GRANT SELECT ON foo TO bar", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"echo": "GRANT INSERT ON baz TO qux",
+		},
+	})
+
+	if len(result.MatchedPolicies) != 1 {
+		t.Fatalf("expected exactly 1 entry in MatchedPolicies (dedup); got %d: %+v",
+			len(result.MatchedPolicies), result.MatchedPolicies)
+	}
+	if result.MatchedPolicies[0].PolicyID != "sqli_grant" {
+		t.Errorf("expected PolicyID=sqli_grant, got %q", result.MatchedPolicies[0].PolicyID)
+	}
+}
+
+// TestEvaluateRequest_DedupAcrossMultipleParameters verifies that the same
+// policy matching in TWO different parameters also dedups to one entry,
+// not two. A pre-existing single-list semantic is what callers expect.
+func TestEvaluateRequest_DedupAcrossMultipleParameters(t *testing.T) {
+	policies := []CompiledPolicy{
+		{
+			PolicyID:      "sqli_drop",
+			Name:          "DROP TABLE",
+			Category:      CategorySecuritySQLi,
+			Pattern:       regexp.MustCompile(`(?i)\bDROP\s+TABLE\b`),
+			PatternStr:    `(?i)\bDROP\s+TABLE\b`,
+			Severity:      SeverityCritical,
+			Phase:         PhaseRequest,
+			ActionRequest: ActionLog,
+			Enabled:       true,
+		},
+	}
+
+	engine := createTestEngine(policies)
+
+	result := engine.EvaluateRequest(context.Background(), "benign query", EvalOptions{
+		TenantID: "test-tenant",
+		Parameters: map[string]interface{}{
+			"a": "DROP TABLE users",
+			"b": "DROP TABLE accounts",
+		},
+	})
+
+	if len(result.MatchedPolicies) != 1 {
+		t.Errorf("expected dedup to 1 entry across multiple params; got %d", len(result.MatchedPolicies))
+	}
+}
