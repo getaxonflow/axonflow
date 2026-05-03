@@ -2,6 +2,36 @@
 
 Thank you for your interest in contributing to AxonFlow! This guide will help you get started with local development and making contributions.
 
+## Sign your commits — Developer Certificate of Origin (DCO) is required
+
+All contributions to this repository must be **signed off** under the [Developer Certificate of Origin v1.1](https://developercertificate.org/). The DCO is a per-commit affirmation that you wrote the code (or otherwise have the right to submit it) and are licensing it under the same license as the rest of this repository.
+
+Add the sign-off automatically with `-s` (or `--signoff`) on every commit:
+
+```bash
+git commit -s -m "your commit message"
+```
+
+This appends a trailer like:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+The name and email must match `git config user.name` / `git config user.email`.
+
+If you forgot `-s` on an existing commit, fix it with one of:
+
+```bash
+# most recent commit
+git commit --amend --signoff --no-edit
+
+# every commit on the current branch
+git rebase --signoff origin/main
+```
+
+A DCO check runs automatically on every PR opened in the `getaxonflow` org. **PRs with any unsigned commit will be blocked from merging until the missing sign-offs are added.** No exceptions, including for maintainers.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
