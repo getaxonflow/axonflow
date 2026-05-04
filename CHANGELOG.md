@@ -12,6 +12,37 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.6.1] - 2026-05-04 — Governance overrides + audit-search response fixes
+
+PATCH release. Two user-visible bug fixes around the read-side governance
+surface; no new endpoints, no schema-breaking changes on existing
+responses. Companion to plugin releases axonflow-claude-plugin v1.1.0,
+axonflow-cursor-plugin v1.1.0, axonflow-codex-plugin v1.1.0, and
+axonflow-openclaw-plugin v2.1.0, which expose this surface as
+agent-callable tools and skills.
+
+> Note: the binary additionally contains internal scaffolding for
+> upcoming work (free-tier email recovery, paid plugin-claim tier).
+> These are not yet wired to any user-facing surface in this release —
+> no new public endpoints, no behaviour change. They activate in a
+> later release when the plugin and operator-facing pieces ship
+> together.
+
+**Bug fixes (Community):**
+
+- **`POST /api/v1/audit/search` no longer returns `entries: null` on empty
+  result sets.** The response now consistently returns `entries: []` so
+  downstream clients that iterate the array (`for entry of entries`) or
+  read its length without a null guard work correctly. Pre-existing
+  callers that already handled the null case remain compatible.
+- **`POST /api/v1/overrides` now rejects with HTTP 403 for severity=critical
+  system policies.** Authentication-bypass, time-based blind SQL
+  injection, stacked DROP/DELETE/UPDATE/INSERT/EXEC, government IDs,
+  and financial-PII patterns are no longer overridable; attempting to
+  create a session override against any of them returns
+  `403 "Critical-risk policies cannot be overridden"`. Pre-existing
+  active overrides on these policies are revoked at upgrade time.
+
 ## [7.6.0] - 2026-05-02 — Policy-engine response cleanup + per-category enforcement controls
 
 MINOR release. Adds new API surfaces on the marketplace CFN template and
