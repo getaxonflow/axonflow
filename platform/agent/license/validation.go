@@ -83,19 +83,52 @@ const (
 	TierEnterprise     Tier = "Enterprise"
 	TierEnterprisePlus Tier = "Plus"
 	TierCommunity      Tier = "Community" // Community tier - no license required
+
+	// W4 plugin-claim product line — orthogonal to the self-hosted tier ladder
+	// above (Community/Evaluation/Professional/Enterprise/Plus). These tiers
+	// are issued by axonflow-billing on Stripe Checkout success, signed with
+	// the plugin-claim Ed25519 key (AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY), and
+	// validated per-request by the agent middleware (NOT at orchestrator boot
+	// like the self-hosted tiers). See ADR-049 for the full design.
+	TierPluginClaimed      Tier = "plugin-claimed"      // Pro v1, $9.99 one-time
+	TierPluginSubscription Tier = "plugin-subscription" // Premium v2 placeholder; not issued in v1
 )
 
-// IsPaidTier returns true if the tier is a paid tier (Professional, Enterprise, Plus).
+// IsPaidTier returns true if the tier is a SELF-HOSTED paid tier
+// (Professional, Enterprise, Plus). Plugin-claim tiers are NOT included
+// here because they're a separate product line — use IsPluginTier instead.
+// This preserves backward compatibility with all existing callers that
+// gate self-hosted features on IsPaidTier (LLM provider matrix, MAP plans,
+// HITL approvals, EU AI Act templates, etc.).
 func IsPaidTier(t Tier) bool {
 	return t == TierProfessional || t == TierEnterprise || t == TierEnterprisePlus
 }
 
-// IsEvaluationOrHigher returns true if the tier is Evaluation or any paid tier.
+// IsEvaluationOrHigher returns true if the tier is Evaluation or any
+// SELF-HOSTED paid tier. Plugin-claim tiers excluded for the same reason
+// as IsPaidTier — different product line, different feature surface.
 func IsEvaluationOrHigher(t Tier) bool {
 	return t == TierEvaluation || IsPaidTier(t)
 }
 
+// IsPluginTier returns true if the tier belongs to the plugin-claim
+// product line (Pro v1 or future Premium). Plugin tiers are orthogonal
+// to the self-hosted tier ladder: they're validated per-request in the
+// agent middleware, their entitlements live in plugin_user_licenses DB
+// rows (NOT in the token), and they're issued by axonflow-billing on
+// Stripe Checkout success.
+//
+// Use this in agent middleware to branch on plugin-claim vs self-hosted
+// validation context. See ADR-049 sections 1, 2, 9.
+func IsPluginTier(t Tier) bool {
+	return t == TierPluginClaimed || t == TierPluginSubscription
+}
+
 // tierRank returns the numeric rank of a tier for comparison.
+// Plugin-claim tiers return -1 (intentionally outside the ladder) so any
+// rank-based comparison against them yields predictable "not comparable"
+// behavior. Plugin-claim is product-orthogonal to self-hosted tiers — they
+// don't sit on the same continuum.
 func tierRank(t Tier) int {
 	switch t {
 	case TierCommunity:
@@ -108,6 +141,8 @@ func tierRank(t Tier) int {
 		return 2
 	case TierEnterprisePlus:
 		return 3
+	case TierPluginClaimed, TierPluginSubscription:
+		return -1 // sentinel: not on the self-hosted tier ladder
 	default:
 		return 0
 	}
@@ -191,6 +226,12 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 }
 
 // ServiceLicensePayload represents the JSON payload in an Ed25519-signed license.
+//
+// W4 plugin-claim additions (TenantID, Aud, JTI, KID, Origin) are all
+// `omitempty` so they only appear in plugin-claim tokens. Self-hosted
+// (Evaluation/Professional/Enterprise/Plus) tokens continue to serialize
+// without these fields, preserving backward compatibility — existing
+// validators don't read fields they don't know about.
 type ServiceLicensePayload struct {
 	LicenseID   string      `json:"id,omitempty"`           // Unique license ID
 	Tier        string      `json:"tier"`
@@ -203,6 +244,37 @@ type ServiceLicensePayload struct {
 	Email       string      `json:"email,omitempty"`
 	Email2      string      `json:"email2,omitempty"`
 	Limits      *TierLimits `json:"limits,omitempty"`
+
+	// W4 plugin-claim claims (per ADR-049 sections 1, 9). Only present in
+	// plugin-claim tokens. Validated by agent middleware on each request.
+	TenantID string `json:"tenant_id,omitempty"` // cs_<uuid> binding the token to a community-saas tenant
+	Aud      string `json:"aud,omitempty"`       // expected audience: "community_saas_plugin" for plugin-claim
+	JTI      string `json:"jti,omitempty"`       // unique token id (UUID v7) for revocation + audit
+	KID      string `json:"kid,omitempty"`       // signing key id (e.g., "v3-2026-05-04") for rotation
+	Origin   string `json:"origin,omitempty"`    // "plugin" / "self_hosted_eval" / "self_hosted_enterprise" — for cross-context check
+}
+
+// expectedAudience is the canonical audience string for plugin-claim tokens.
+// Validators use this to reject tokens issued for a different context (e.g.,
+// a token signed for "orchestrator_boot" must NOT be accepted by the agent
+// middleware which expects "community_saas_plugin"). Per ADR-049 section 1.
+const ExpectedPluginClaimAudience = "community_saas_plugin"
+
+// expectedPluginOrigin is the canonical origin string for plugin-claim tokens.
+// Tokens with origin != "plugin" must be rejected by plugin-claim validators
+// (defense-in-depth alongside the audience check).
+const ExpectedPluginClaimOrigin = "plugin"
+
+// PluginClaimValidationError indicates the token failed a plugin-claim-specific
+// validation step (audience, origin). Distinct error type so callers can
+// distinguish "this is an Ed25519-valid token but not for our context" from
+// "this token's signature doesn't verify".
+type PluginClaimValidationError struct {
+	Reason string
+}
+
+func (e *PluginClaimValidationError) Error() string {
+	return "plugin-claim validation failed: " + e.Reason
 }
 
 // validateEd25519License validates an Ed25519-signed license key.

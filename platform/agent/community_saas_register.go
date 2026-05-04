@@ -164,8 +164,20 @@ type registrationResponse struct {
 }
 
 // registrationRequest is the JSON request body for POST /api/v1/register.
+//
+// Email is OPTIONAL but required for the W3 free email-recovery flow to be
+// reachable. Plugins that send `email` at registration bind it to the new
+// tenant_id, enabling users to recover the same identity via /api/v1/recover
+// after a lost local cache. Plugins that omit `email` get the existing pre-W3
+// behavior: tenant_id stored locally only, no recovery path.
+//
+// App-level cap of 3 active tenants per email enforced at registration time
+// per ADR-049 section 4. Registration with an over-cap email returns 409 with
+// a clear error message; the user can either use one of their existing tenants
+// or contact support.
 type registrationRequest struct {
 	Label string `json:"label"`
+	Email string `json:"email,omitempty"`
 }
 
 // activityUpdateChan is a bounded channel for fire-and-forget activity updates.
@@ -279,6 +291,16 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// Optional email — normalize + validate. If present, will bind the new
+		// tenant_id to this email for W3 recovery. App-level cap of 3 active
+		// tenants per email is enforced inside the registration transaction
+		// below (per ADR-049 section 4 — TOCTOU-safe via SERIALIZABLE isolation).
+		email := strings.TrimSpace(strings.ToLower(req.Email))
+		if email != "" && !looksLikeEmail(email) {
+			writeJSONError(w, "Invalid email format", http.StatusBadRequest)
+			return
+		}
+
 		// Generate cryptographic random secret (shared across PK retries)
 		secretRaw := make([]byte, secretBytes)
 		if _, err := rand.Read(secretRaw); err != nil {
@@ -310,15 +332,72 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 		if req.Label != "" {
 			labelParam = req.Label
 		}
+		// Email param: NULL when not provided (so claimed_by_email column stays NULL)
+		var emailParam interface{}
+		if email != "" {
+			emailParam = email
+
+			// Per-email cap check inside SERIALIZABLE transaction to prevent
+			// TOCTOU races (two concurrent registrations with same email both
+			// passing the cap check, both inserting → cap exceeded).
+			//
+			// We use a separate transaction for the cap check to keep the existing
+			// PK-retry loop simple. SERIALIZABLE makes Postgres detect the race
+			// and abort one of the transactions if they would conflict.
+			capTx, capErr := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+			if capErr != nil {
+				log.Printf("[CSAAS-REGISTER] Failed to start cap-check tx for %s: %v",
+					logutil.Sanitize(email), capErr)
+				writeJSONError(w, "Internal error during registration", http.StatusInternalServerError)
+				return
+			}
+			var activeTenants int
+			capErr = capTx.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM community_saas_registrations
+				 WHERE claimed_by_email = $1
+				   AND terminated_at IS NULL
+				   AND disabled_at IS NULL
+				   AND expires_at > NOW()`, email).Scan(&activeTenants)
+			if capErr != nil {
+				_ = capTx.Rollback()
+				log.Printf("[CSAAS-REGISTER] Cap-check query failed for %s: %v",
+					logutil.Sanitize(email), capErr)
+				writeJSONError(w, "Internal error during registration", http.StatusInternalServerError)
+				return
+			}
+			if activeTenants >= recoveryMaxTenantsPerEmail {
+				_ = capTx.Rollback()
+				log.Printf("[CSAAS-REGISTER] Per-email cap reached for %s (active=%d, cap=%d)",
+					logutil.Sanitize(email), activeTenants, recoveryMaxTenantsPerEmail)
+				writeJSONError(w,
+					fmt.Sprintf("Max %d active tenants per email reached. Use one of your existing tenants or contact support.", recoveryMaxTenantsPerEmail),
+					http.StatusConflict)
+				return
+			}
+			if commitErr := capTx.Commit(); commitErr != nil {
+				log.Printf("[CSAAS-REGISTER] Cap-check commit failed for %s: %v",
+					logutil.Sanitize(email), commitErr)
+				writeJSONError(w, "Internal error during registration", http.StatusInternalServerError)
+				return
+			}
+		}
 
 		var tenantID string
 		var insertErr error
 		for attempt := 0; attempt < communitySaasMaxRegistrationRetries; attempt++ {
 			tenantID = communitySaasTenantPrefix + uuidNewString()
-			_, insertErr = db.ExecContext(ctx,
-				`INSERT INTO community_saas_registrations (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at)
-				 VALUES ($1, $2, $3, $4, $5, $6)`,
-				tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt)
+			if emailParam != nil {
+				_, insertErr = db.ExecContext(ctx,
+					`INSERT INTO community_saas_registrations
+					 (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at, claimed_by_email, claimed_at)
+					 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+					tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt, emailParam)
+			} else {
+				_, insertErr = db.ExecContext(ctx,
+					`INSERT INTO community_saas_registrations (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at)
+					 VALUES ($1, $2, $3, $4, $5, $6)`,
+					tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt)
+			}
 			if insertErr == nil {
 				break
 			}

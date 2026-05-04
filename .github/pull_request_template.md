@@ -1,3 +1,18 @@
+## Is this user-facing?
+
+<!-- Required: choose one. See `runtime-e2e/README.md` for the convention. -->
+
+- [ ] **Yes** — includes a runtime-path test that exercises this from the user's actual surface (OpenClaw tool / Claude skill / Cursor tool / Codex tool / portal page / SDK example invoked end-to-end through the live stack). Examples that import the SDK client class directly do NOT count.
+- [ ] **No** — internal-only capability. Reason (must name a specific downstream consumer — a named test, a scheduled job, an internal CLI; "future PRs" or "wire later" is NOT acceptable): ___________
+
+If user-facing, the wiring PR for every relevant runtime must land with this PR (or be linked and merged in the same release window). No "wire it later."
+
+> **If a user cannot reach the feature from their runtime, we did not ship a feature, we shipped a library.**
+
+See [`runtime-e2e/README.md`](../runtime-e2e/README.md) for the convention. The cross-plugin coverage matrix lives at `axonflow-internal-docs/engineering/FEATURE_RUNTIME_COVERAGE.md` (private; engineering team only).
+
+---
+
 ## Description
 
 <!-- Provide a clear and concise description of the changes in this PR -->
