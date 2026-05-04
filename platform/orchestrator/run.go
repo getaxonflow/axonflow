@@ -2380,6 +2380,14 @@ func auditSearchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Empty result must serialize as `[]`, not `null`. SearchAuditLogs returns
+	// a nil slice when there are no rows, and json.Marshal turns that into
+	// `null`, which breaks every client that does `for entry of entries`
+	// or `entries.length`.
+	if results == nil {
+		results = []*AuditEntry{}
+	}
+
 	// Return response in SDK-expected format
 	response := struct {
 		Entries []*AuditEntry `json:"entries"`

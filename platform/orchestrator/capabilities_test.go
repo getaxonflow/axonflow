@@ -63,10 +63,10 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"codex":       "1.0.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":    "2.0.0",
-		"claude-code": "1.0.0",
-		"cursor":      "1.0.0",
-		"codex":       "1.0.0",
+		"openclaw":    "2.1.0",
+		"claude-code": "1.1.0",
+		"cursor":      "1.1.0",
+		"codex":       "1.1.0",
 	}
 
 	for id, want := range wantMin {

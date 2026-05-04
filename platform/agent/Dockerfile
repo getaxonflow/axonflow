@@ -125,7 +125,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
-ARG AXONFLOW_VERSION=7.6.0
+ARG AXONFLOW_VERSION=7.6.1
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

@@ -14,6 +14,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -845,6 +846,72 @@ func TestSearchAuditLogs_NilDatabase(t *testing.T) {
 
 	if len(results) != 0 {
 		t.Errorf("Expected empty results for nil database, got %d results", len(results))
+	}
+}
+
+// TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice ensures the empty-results
+// path returns a non-nil slice so JSON encoders serialize it as `[]` rather
+// than `null`. Plugin and SDK clients downstream do `Array.isArray(entries)`
+// or `for entry of entries` and break on null.
+func TestSearchAuditLogs_EmptyResultsReturnsNonNilSlice(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer db.Close()
+
+	logger := &AuditLogger{db: db}
+
+	// Empty result set — the rows.Next() loop never advances, so prior to
+	// the fix `entries` stayed at its zero value (nil). After the fix it's
+	// pre-allocated as a non-nil empty slice.
+	mock.ExpectQuery("SELECT id, request_id, timestamp").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "request_id", "timestamp", "user_id", "user_email", "user_role",
+			"client_id", "tenant_id", "request_type", "query", "policy_decision",
+			"policy_details", "provider", "model", "response_time_ms", "tokens_used",
+			"cost", "redacted_fields", "error_message", "compliance_flags",
+		}))
+
+	criteria := struct {
+		UserEmail   string    `json:"user_email,omitempty"`
+		ClientID    string    `json:"client_id,omitempty"`
+		TenantID    string    `json:"-"`
+		StartTime   time.Time `json:"start_time"`
+		EndTime     time.Time `json:"end_time"`
+		RequestType string    `json:"request_type,omitempty"`
+		DecisionID  string    `json:"decision_id,omitempty"`
+		PolicyName  string    `json:"policy_name,omitempty"`
+		OverrideID  string    `json:"override_id,omitempty"`
+		Limit       int       `json:"limit,omitempty"`
+	}{
+		TenantID: "tenant-1",
+		Limit:    10,
+	}
+
+	results, err := logger.SearchAuditLogs(criteria)
+	if err != nil {
+		t.Fatalf("expected no error on empty results, got %v", err)
+	}
+	if results == nil {
+		t.Fatal("expected non-nil empty slice, got nil — JSON would serialize as null")
+	}
+	if len(results) != 0 {
+		t.Errorf("expected zero results, got %d", len(results))
+	}
+
+	// The actual contract for downstream clients: JSON-marshalling produces
+	// `[]` not `null`. This is the behavior the bug surfaced.
+	encoded, err := json.Marshal(results)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if string(encoded) != "[]" {
+		t.Errorf("expected JSON `[]`, got %q", string(encoded))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
 

@@ -623,7 +623,10 @@ func (l *AuditLogger) SearchAuditLogs(criteria interface{}) ([]*AuditEntry, erro
 	}
 	defer func() { _ = rows.Close() }()
 
-	var entries []*AuditEntry
+	// Pre-allocate so the zero-result path returns `[]` not `nil`. JSON
+	// callers downstream serialize nil as `null`, which breaks any
+	// consumer that does `for entry of entries` or `entries.length`.
+	entries := make([]*AuditEntry, 0)
 	for rows.Next() {
 		entry := &AuditEntry{}
 		var policyDetailsJSON, redactedFieldsJSON, complianceFlagsJSON []byte

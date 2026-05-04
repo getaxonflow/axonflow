@@ -108,12 +108,16 @@ func getPluginCompatibility() PluginCompatInfo {
 			"codex":       "1.0.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
-		// with each plugin's release-train tag.
+		// with each plugin's release-train tag. Bumped alongside the W2
+		// read-side governance plugin shipment (claude/cursor/codex 1.1.0,
+		// openclaw 2.1.0) which exposes audit-search / explain-decision /
+		// list-overrides / create-override / revoke-override as
+		// agent-callable surfaces against this platform.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.0.0",
-			"claude-code": "1.0.0",
-			"cursor":      "1.0.0",
-			"codex":       "1.0.0",
+			"openclaw":    "2.1.0",
+			"claude-code": "1.1.0",
+			"cursor":      "1.1.0",
+			"codex":       "1.1.0",
 		},
 	}
 }
