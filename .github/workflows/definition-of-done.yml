@@ -1,0 +1,178 @@
+name: Definition of Done
+
+# Enforces CLAUDE.md HARD RULE #0: a user-facing feature is not done until
+# demonstrated through its actual runtime. See axonflow-claude-plugin#59
+# for the doctrine + lint-no-mocks rationale.
+#
+# axonflow-enterprise has the broadest user-facing surface of any repo:
+# the agent + orchestrator HTTP APIs are reached by every plugin, every
+# SDK, and direct API consumers. The detection heuristic here is
+# deliberately conservative — it triggers on handler / API / route /
+# middleware files plus any file under ee/platform/ that's not a test.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint-no-mocks-in-runtime-e2e:
+    name: Lint — no mocks in runtime-e2e/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run lint
+        run: |
+          if [ -x scripts/lint-no-mocks-in-runtime-e2e.sh ]; then
+            ./scripts/lint-no-mocks-in-runtime-e2e.sh
+          else
+            echo "lint-no-mocks-in-runtime-e2e.sh not present — skipping (older branch)."
+          fi
+
+  runtime-e2e-required:
+    name: Runtime E2E required for user-facing changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect user-facing surface changes
+        id: detect
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          USER_FACING_PREFIX_GLOBS=(
+            'platform/agent/'
+            'platform/orchestrator/'
+            'platform/connectors/'
+            'platform/shared/'
+            'ee/platform/agent/'
+            'ee/platform/orchestrator/'
+            'ee/platform/connectors/'
+            'ee/platform/customer-portal/'
+            'ee/platform/customer-portal-ui/app/'
+            'ee/platform/aws-marketplace/'
+            'ee/platform/checkpoint-service/'
+            'ee/platform/license-server/'
+            'migrations/'
+            'docs/api/'
+          )
+          SKIP_SUFFIXES=(
+            '_test.go'
+            '.test.ts'
+            '.test.tsx'
+            '.test.js'
+            '_test.py'
+            '.pb.go'
+            '.gen.go'
+          )
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" || true)
+          echo "Changed files in PR:" >&2
+          printf '  %s\n' $CHANGED >&2
+
+          MATCHED=""
+          for f in $CHANGED; do
+            skip=0
+            for suf in "${SKIP_SUFFIXES[@]}"; do
+              case "$f" in
+                *"$suf") skip=1; break;;
+              esac
+            done
+            if [ "$skip" = "1" ]; then continue; fi
+            case "$f" in
+              *.md|*.yaml|*.yml|*.json) continue;;
+            esac
+
+            for pat in "${USER_FACING_PREFIX_GLOBS[@]}"; do
+              case "$f" in
+                "$pat"*)
+                  MATCHED="$MATCHED $f"
+                  break
+                  ;;
+              esac
+            done
+          done
+
+          RUNTIME_E2E_TOUCHED=$(echo "$CHANGED" | grep -c '^runtime-e2e/' || true)
+
+          {
+            echo "user_facing_changed=$([ -n "$MATCHED" ] && echo true || echo false)"
+            echo "runtime_e2e_touched=$RUNTIME_E2E_TOUCHED"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -n "$MATCHED" ]; then
+            echo "User-facing files changed:" >&2
+            for f in $MATCHED; do echo "  - $f" >&2; done
+          fi
+
+      - name: Check escape-hatch justification
+        id: hatch
+        if: steps.detect.outputs.user_facing_changed == 'true' && steps.detect.outputs.runtime_e2e_touched == '0'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+          if [[ "$PR_TITLE" == *"[skip-runtime-e2e]"* ]]; then
+            if echo "$PR_BODY" | grep -q '## Skip-runtime-e2e justification'; then
+              echo "Escape hatch active." >&2
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::PR title carries [skip-runtime-e2e] but body has no '## Skip-runtime-e2e justification' section."
+              exit 1
+            fi
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enforce runtime-e2e/ presence
+        if: steps.detect.outputs.user_facing_changed == 'true' && steps.detect.outputs.runtime_e2e_touched == '0' && steps.hatch.outputs.skip != 'true'
+        run: |
+          cat <<'EOF' >&2
+          ::error::This PR touches user-facing surface (platform/, ee/platform/,
+          migrations/, or docs/api/) but does not add or update any runtime-e2e/
+          test in the same PR.
+
+          Per CLAUDE.md HARD RULE #0:
+          A user-facing feature is not done until you have demonstrated it
+          working through its actual runtime — a real plugin or SDK or
+          direct-API client invokes the capability against the live agent
+          + orchestrator stack and observes the expected outcome.
+
+          Mocks, stubs, host-cli-shim simulators, fixture-servers, and
+          unit-test-package mocks (httptest.NewServer in *_test.go) do
+          NOT count as runtime proof. Unit tests verify code; runtime
+          tests verify the feature.
+
+          To resolve, do ONE of:
+            1. Add a test under runtime-e2e/<feature>/ that invokes the
+               capability through a real upstream client (plugin, SDK,
+               or direct-API curl with appropriate auth) against a live
+               docker-compose-up agent stack.
+            2. If genuinely internal (build / deps / lint baseline /
+               connector-builder tooling / non-shipped infra-only),
+               add `[skip-runtime-e2e]` to PR title AND a
+               `## Skip-runtime-e2e justification` section to PR body.
+
+          See: axonflow-internal-docs/engineering/E2E_EXAMPLES_TESTING_WORKFLOW.md
+          See: runtime-e2e/README.md
+          EOF
+          exit 1
+
+      - name: All clear
+        if: steps.detect.outputs.user_facing_changed == 'false' || steps.detect.outputs.runtime_e2e_touched != '0' || steps.hatch.outputs.skip == 'true'
+        run: |
+          if [ "${{ steps.detect.outputs.user_facing_changed }}" = 'false' ]; then
+            echo "No user-facing surface changed. Gate not applicable." >&2
+          elif [ "${{ steps.detect.outputs.runtime_e2e_touched }}" != '0' ]; then
+            echo "User-facing change detected and runtime-e2e/ updated in same PR. ✓" >&2
+          else
+            echo "Escape hatch active with valid justification. ✓" >&2
+          fi

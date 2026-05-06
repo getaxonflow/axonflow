@@ -1,0 +1,316 @@
+# Grafana alert rule provisioning for V1 SaaS Plugin Pro launch (issue #1886).
+# https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/
+#
+# These alerts cover the BUSINESS-METRIC layer of paid-tier observability —
+# downward MRR signals, expiration cliffs, refund-rate spikes, and
+# observability-pipeline health.
+#
+# OPERATIONAL alerts (webhook-delivery failure within 5min, license-issuance
+# alerting within 60s, first-payment Slack ping) are owned by the C1 stream
+# of issue #1886 and provisioned as CloudWatch alarms — NOT duplicated here.
+#
+# Notification routing: contact-points.yml + notification-policies.yml in
+# this same directory.
+#
+# To trigger a test fire of any rule against a freshly-deployed Grafana:
+#   curl -X POST https://grafana.example/api/v1/provisioning/alert-rules/<uid>/test \
+#     -H "Authorization: Bearer $GRAFANA_API_KEY"
+# (Replace <uid> with the rule's `uid` field below.)
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: v1-saas-plugin-pro-business
+    folder: AxonFlow
+    interval: 5m
+    rules:
+      # ---------------------------------------------------------------------
+      # 1. MRR Dropoff
+      # ---------------------------------------------------------------------
+      # Active Pro license count drops by >25% in a 7-day window. Likely
+      # signals churn or an expiration cliff (Premium v2 future state). In
+      # V1 (one-time-purchase, no auto-expiry), the only way active count
+      # decreases is admin-revocation — so a sustained drop is meaningful.
+      #
+      # Threshold rationale: 25% / 7 days. Below this is normal noise on
+      # small absolute numbers; above this is a signal worth a human look.
+      # Operators can tune via the threshold in this file.
+      - uid: v1-saas-pro-mrr-dropoff
+        title: V1 Pro — MRR dropoff (>25% in 7 days)
+        condition: dropoff_ratio_high
+        data:
+          - refId: now_active
+            queryType: ''
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: max(axonflow_plugin_licenses_active_total)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: now_active
+          - refId: week_ago_active
+            queryType: ''
+            relativeTimeRange: { from: 604800, to: 604200 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: max(axonflow_plugin_licenses_active_total)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: week_ago_active
+          - refId: dropoff_ratio
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: ($week_ago_active - $now_active) / $week_ago_active
+              refId: dropoff_ratio
+              datasource: { type: __expr__, uid: __expr__ }
+          - refId: dropoff_ratio_high
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { params: [0.25], type: gt }
+                  operator: { type: and }
+                  query: { params: [dropoff_ratio] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              expression: dropoff_ratio
+              refId: dropoff_ratio_high
+              datasource: { type: __expr__, uid: __expr__ }
+        for: 1h  # require sustained 1h before paging — reduces flap
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: Active Pro Tenant count dropped >25% over 7 days
+          description: |
+            axonflow_plugin_licenses_active_total (active Pro tenants) is at
+            {{ $values.now_active.Value }}, down from
+            {{ $values.week_ago_active.Value }} a week ago — a
+            {{ printf "%.1f" (mul $values.dropoff_ratio.Value 100.0) }}% drop.
+            Possible causes: churn, mass revocation (refund spike?),
+            chargeback wave, or operator misconfiguration of the metrics
+            poller. Check the Stripe dashboard + Revocations Today panel.
+          runbook_url: https://github.com/getaxonflow/axonflow-internal-docs/blob/main/engineering/V1_PAID_TIER_OBSERVABILITY_RUNBOOK.md
+        labels:
+          severity: warning
+          team: business
+
+      # ---------------------------------------------------------------------
+      # 2. Pro license expiration cliff
+      # ---------------------------------------------------------------------
+      # >10 active Pro licenses expire in next 24h. V1 issues NULL-expiry
+      # licenses (one-time-purchase, no auto-expiry), so this fires only
+      # after Premium v2 ships. Wired now so it's live the day Premium goes
+      # GA without a config edit.
+      #
+      # Threshold rationale: 10 expirations is when a heads-up batch-renewal
+      # email send becomes worthwhile. Below this is single-tenant care.
+      - uid: v1-saas-pro-expiration-cliff
+        title: V1 Pro — Expiration cliff (>10 in 24h)
+        condition: cliff_threshold
+        data:
+          - refId: expiring_24h
+            queryType: ''
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              # Tighter window than the gauge's 7-day default.
+              # Until we add a 24h-specific gauge we approximate by
+              # multiplying the 7d gauge by 1/7 — close enough for a
+              # heads-up alert, not for revenue accounting.
+              expr: max(axonflow_plugin_licenses_expiring_7d_total) / 7
+              instant: true
+              refId: expiring_24h
+          - refId: cliff_threshold
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { params: [10], type: gt }
+                  operator: { type: and }
+                  query: { params: [expiring_24h] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              expression: expiring_24h
+              refId: cliff_threshold
+              datasource: { type: __expr__, uid: __expr__ }
+        for: 30m
+        noDataState: OK
+        execErrState: OK
+        annotations:
+          summary: Approximately {{ $values.expiring_24h.Value | printf "%.0f" }} Pro licenses expire in next 24h
+          description: |
+            Send a renewal-marketing batch to claimed_by_email on these rows
+            before they expire. Query:
+            SELECT claimed_by_email, expires_at FROM plugin_user_licenses
+              WHERE revoked_at IS NULL AND expires_at BETWEEN NOW() AND NOW()+'24 hours';
+          runbook_url: https://github.com/getaxonflow/axonflow-internal-docs/blob/main/engineering/V1_PAID_TIER_OBSERVABILITY_RUNBOOK.md
+        labels:
+          severity: info
+          team: business
+
+      # ---------------------------------------------------------------------
+      # 3. Refund rate spike
+      # ---------------------------------------------------------------------
+      # revoked_today / issued_today > 10% for 3+ consecutive days.
+      # In V1 refunds are processed manually via the Stripe dashboard;
+      # admin sets revoked_at on the corresponding plugin_user_licenses row
+      # via the revoke runbook. So revoked_today is the closest proxy to
+      # refund volume we have.
+      #
+      # Threshold rationale: industry SaaS chargeback rate hovers around
+      # 1-3%; >10% sustained means a real product issue (broken plugin,
+      # billing snafu, abuse). The "3 consecutive days" qualifier lives
+      # in the `for: 72h` field which Grafana evaluates as
+      # condition-true-throughout.
+      - uid: v1-saas-pro-refund-rate-spike
+        title: V1 Pro — Refund rate spike (>10% revoked/issued for 3+ days)
+        condition: refund_rate_high
+        data:
+          - refId: revoked
+            queryType: ''
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: max(axonflow_plugin_licenses_revoked_today_total)
+              instant: true
+              refId: revoked
+          - refId: issued
+            queryType: ''
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              # Clamp to 1 to avoid divide-by-zero spike on quiet days.
+              # On a day with 0 issued and 0 revoked, ratio = 0/1 = 0 (clean).
+              # On a day with 0 issued and 5 revoked, ratio = 5/1 = 5 — fires
+              # the alert correctly (something is wrong if we're revoking
+              # without issuing).
+              expr: clamp_min(max(axonflow_plugin_licenses_issued_today_total), 1)
+              instant: true
+              refId: issued
+          - refId: refund_rate
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $revoked / $issued
+              refId: refund_rate
+              datasource: { type: __expr__, uid: __expr__ }
+          - refId: refund_rate_high
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { params: [0.10], type: gt }
+                  operator: { type: and }
+                  query: { params: [refund_rate] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              expression: refund_rate
+              refId: refund_rate_high
+              datasource: { type: __expr__, uid: __expr__ }
+        for: 72h
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: Refund rate {{ printf "%.1f" (mul $values.refund_rate.Value 100.0) }}% sustained for >3 days
+          description: |
+            revoked_today / issued_today >10% for the last 72h. Likely
+            cause: a plugin regression that breaks the buyer's first-run
+            experience, or a marketing/copy mismatch driving wrong
+            expectations. Pull the recent revoked rows for context:
+            SELECT tenant_id, claimed_by_email, revoked_at, revocation_reason
+              FROM plugin_user_licenses
+              WHERE revoked_at >= NOW() - INTERVAL '72 hours'
+              ORDER BY revoked_at DESC;
+          runbook_url: https://github.com/getaxonflow/axonflow-internal-docs/blob/main/engineering/V1_PAID_TIER_OBSERVABILITY_RUNBOOK.md
+        labels:
+          severity: warning
+          team: product
+
+      # ---------------------------------------------------------------------
+      # 4. Daily report failure / observability-pipeline wedge
+      # ---------------------------------------------------------------------
+      # The community-saas-daily-report.yml workflow runs at 08:00 UTC.
+      # If it hasn't fired in 26h+ (with a 2h grace), something is wrong:
+      # workflow disabled, IAM rotated, schedule cleared, runner pool
+      # exhausted, etc. This fires a paging alert.
+      #
+      # Implementation: alert on poll-lag instead of workflow-cron. The
+      # plugin-license metrics poller updates
+      # axonflow_plugin_licenses_last_poll_timestamp_seconds every 60s.
+      # If that falls behind by >5min, the agent's metrics pipeline is
+      # unhealthy — and so is whatever the daily report would tell us.
+      # Catches BOTH classes (workflow + agent) in one rule.
+      - uid: v1-saas-pro-poller-wedged
+        title: V1 Pro — Metrics poller wedged (>5min lag)
+        condition: poll_lag_high
+        data:
+          - refId: lag_seconds
+            queryType: ''
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: time() - max(axonflow_plugin_licenses_last_poll_timestamp_seconds)
+              instant: true
+              refId: lag_seconds
+          - refId: poll_lag_high
+            queryType: ''
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              conditions:
+                - evaluator: { params: [300], type: gt }
+                  operator: { type: and }
+                  query: { params: [lag_seconds] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              expression: lag_seconds
+              refId: poll_lag_high
+              datasource: { type: __expr__, uid: __expr__ }
+        # Why noDataState: NoData — on stacks where the metrics poller
+        # hasn't been deployed yet (Item 2 / PR #1889 not merged here),
+        # the absent metric must not fire this rule. Once Item 2 lands
+        # and the gauge is exporting, lag > 5min will fire correctly.
+        # For the case where the poller WAS running and silently stopped
+        # (e.g. agent crash-looping), alerting still fires because the
+        # last_poll timestamp persists from the most recent scrape window
+        # and lag exceeds the threshold inside the eval window.
+        for: 10m
+        noDataState: NoData
+        execErrState: Error
+        annotations:
+          summary: Plugin-license metrics poller hasn't checked in for {{ $values.lag_seconds.Value | printf "%.0fs" }}
+          description: |
+            axonflow_plugin_licenses_last_poll_timestamp_seconds is stale.
+            All paid-tier dashboard panels (claims/day, MRR, active Pro
+            tenants) are reading last-known-good values, which means they
+            could be silently drifting from reality. Check:
+              1. agent ECS task state (CloudWatch task exit codes)
+              2. agent → RDS connectivity (security-group + NAT)
+              3. plugin_user_licenses table existence (migration 077)
+              4. axonflow_plugin_licenses_poll_failures_total{reason=...}
+                 — bucket tells you which class of failure
+          runbook_url: https://github.com/getaxonflow/axonflow-internal-docs/blob/main/engineering/V1_PAID_TIER_OBSERVABILITY_RUNBOOK.md
+        labels:
+          severity: critical
+          team: ops

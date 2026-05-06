@@ -86,6 +86,11 @@ type telemetryEvent struct {
 	endpoint   string
 	method     string
 	statusCode int
+	// client is the X-Axonflow-Client header value (e.g. "openclaw/2.1.0",
+	// "sdk-typescript/7.0.0"). Empty when the caller didn't set the header.
+	// Captured per ADR-050 §4 for per-plugin distribution analysis on the
+	// telemetry table.
+	client string
 }
 
 // NewCommunitySaaSTelemetry creates a new telemetry middleware.
@@ -256,6 +261,10 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 			endpoint:   r.URL.Path, // Path only — no query params (defense in depth against PII)
 			method:     r.Method,
 			statusCode: sw.statusCode,
+			// ADR-050 §4: capture the X-Axonflow-Client identity directly
+			// from the request — no auth-middleware plumbing needed since
+			// the header is independent of the credential chain.
+			client: r.Header.Get("X-Axonflow-Client"),
 		}:
 		default:
 			// Channel full — drop event silently (telemetry is non-critical)
@@ -284,6 +293,12 @@ func (t *CommunitySaaSTelemetry) writeEvent(event telemetryEvent) {
 		"platform_version": &types.AttributeValueMemberS{Value: t.version},
 		"source":           &types.AttributeValueMemberS{Value: "community-saas"},
 		"ttl":              &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+	}
+	// ADR-050 §4: per-plugin distribution analysis. Only emit the column when
+	// the request actually carried the header so absent-header rows don't
+	// pollute the dimension.
+	if event.client != "" {
+		item["client"] = &types.AttributeValueMemberS{Value: event.client}
 	}
 
 	_, err := t.client.PutItem(ctx, &dynamodb.PutItemInput{

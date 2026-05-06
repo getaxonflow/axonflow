@@ -44,13 +44,14 @@ import (
 	"axonflow/platform/connectors/postgres"
 	"axonflow/platform/connectors/redis"
 	"axonflow/platform/connectors/registry"
-	logutil "axonflow/platform/shared/logger"
 	"axonflow/platform/connectors/s3"
 	"axonflow/platform/connectors/salesforce"
 	"axonflow/platform/connectors/servicenow"
 	"axonflow/platform/connectors/slack"
 	"axonflow/platform/connectors/snowflake"
+	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 )
 
@@ -65,7 +66,10 @@ var runtimeConfigService *config.RuntimeConfigService
 var internalTokenValidator *serviceauth.TokenValidator
 
 func init() {
-	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+	// secretenv.Get trims AWS-SM-quirky trailing whitespace; an HMAC seed
+	// with a stray newline produces a different digest from the orchestrator
+	// side and silently fails the 401 verification path.
+	if secret := secretenv.Get(serviceauth.SecretEnvVar); secret != "" {
 		internalTokenValidator = serviceauth.NewTokenValidator(secret, serviceauth.RealClock{}, serviceauth.DefaultClockSkew)
 	}
 	serviceauth.LogAuthWarning()

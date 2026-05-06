@@ -81,16 +81,15 @@ const (
 	// operator instead of silently looping.
 	communitySaasMaxRegistrationRetries = 3
 
-	// communitySaasDisclaimerNote is the disclaimer returned with every registration.
-	// This text is the canonical source for what the plugin's first-run setup message
-	// and the public privacy policy say about Community-SaaS. Keep all three surfaces
-	// in sync — drift across surfaces is the failure mode.
-	communitySaasDisclaimerNote = "AxonFlow Community SaaS is intended for basic testing and evaluation. " +
-		"For real workflows, real systems, or sensitive data, we recommend self-hosting AxonFlow from day one " +
-		"(https://docs.getaxonflow.com/quickstart). Best-effort retention up to 1 year. After 3 months of " +
-		"inactivity, your tenant data is disassociated and the tenant terminated. Due to the limits of " +
-		"identifying users on Community SaaS, we cannot offer reliability or security guarantees — by " +
-		"using it you accept these constraints."
+	// communitySaasDisclaimerNote is returned with every registration response.
+	// Operational facts only — what the tenant gets on the Free tier, the
+	// inactivity sweep that customers should be aware of, and the upgrade path
+	// to Plugin Pro. Quality-of-service framing belongs in the Terms of Service
+	// and Privacy Policy, not in the API surface.
+	communitySaasDisclaimerNote = "Free tier: 3-day audit retention, 200 events/day. Tenants are deprovisioned " +
+		"after 3 months of inactivity, or 1 year from creation regardless of activity (data disassociated, " +
+		"tenant terminated). Plugin Pro upgrades to 30-day retention and 1,000 events/day for 90 days ($9.99) " +
+		"— see https://www.getaxonflow.com/pricing/."
 
 	// activityUpdateBufferSize is the capacity of the activity update channel.
 	// When full, updates are dropped (non-critical — activity tracking is best-effort).
@@ -505,23 +504,33 @@ func validateCommunityRegistration(ctx context.Context, db *sql.DB, tenantID, se
 }
 
 // extractClientIP extracts the client IP from the request.
-// Checks X-Forwarded-For first (for ALB/proxy), then falls back to RemoteAddr.
-// Trims whitespace and returns a non-empty result or "unknown".
+//
+// AWS ALB always appends the connecting peer's IP to the X-Forwarded-For
+// header chain, so the LAST entry is the real client IP — regardless of
+// whatever the client sent. Reading the FIRST entry would be unsafe
+// because any client can spoof it (e.g. sending `X-Forwarded-For:
+// 10.1.2.3` would let the caller bypass per-IP rate limits, since each
+// forged value looks like a fresh client). The single-hop ALB assumption
+// matches the production stack topology; if a CDN (CloudFront) is added
+// later, this needs a configurable trusted-proxy count.
+//
+// Falls back to RemoteAddr if XFF is absent or malformed. Returns
+// "unknown" only when both are empty.
 func extractClientIP(r *http.Request) string {
-	// X-Forwarded-For: client, proxy1, proxy2
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// First entry is the original client
-		firstComma := strings.IndexByte(xff, ',')
+		// Walk from the right: the LAST non-empty trimmed entry is the
+		// IP the trusted proxy (ALB) observed at its peer socket.
+		lastComma := strings.LastIndexByte(xff, ',')
 		var ip string
-		if firstComma >= 0 {
-			ip = strings.TrimSpace(xff[:firstComma])
+		if lastComma >= 0 {
+			ip = strings.TrimSpace(xff[lastComma+1:])
 		} else {
 			ip = strings.TrimSpace(xff)
 		}
 		if ip != "" {
 			return ip
 		}
-		// Malformed XFF (empty first entry) — fall through to RemoteAddr
+		// Malformed XFF (empty last entry) — fall through to RemoteAddr
 	}
 
 	// Strip port from RemoteAddr (e.g., "192.168.1.1:12345" → "192.168.1.1")

@@ -12,36 +12,305 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
-## [7.6.1] - 2026-05-04 — Governance overrides + audit-search response fixes
+## [7.7.0] - 2026-05-06 — V1 SaaS Plugin Pro launch + free-tier credential recovery + license matrix
 
-PATCH release. Two user-visible bug fixes around the read-side governance
-surface; no new endpoints, no schema-breaking changes on existing
-responses. Companion to plugin releases axonflow-claude-plugin v1.1.0,
-axonflow-cursor-plugin v1.1.0, axonflow-codex-plugin v1.1.0, and
-axonflow-openclaw-plugin v2.1.0, which expose this surface as
-agent-callable tools and skills.
+**V1 launch release.** First public release of the paid Pro tier and credential recovery for AxonFlow Community SaaS. Self-hosted deployments are unaffected; existing Self-Hosted licenses keep validating via the documented backward-compat path.
 
-> Note: the binary additionally contains internal scaffolding for
-> upcoming work (free-tier email recovery, paid plugin-claim tier).
-> These are not yet wired to any user-facing surface in this release —
-> no new public endpoints, no behaviour change. They activate in a
-> later release when the plugin and operator-facing pieces ship
-> together.
+**V1 customer-facing surfaces shipping together:**
 
-**Bug fixes (Community):**
+- **Paid Pro tier ($9.99 one-time, 90 days).** Stripe Checkout success mints
+  an Ed25519-signed plugin license token, persists it on the tenant, and
+  emails it to the buyer. The token paste activates Pro features immediately
+  on every governed request through the plugin. Full Stripe refunds within
+  the 14-day window auto-revoke the license; partial refunds are an explicit
+  no-op.
+- **Free-tier credential recovery.** A Community SaaS tenant who opted into
+  recovery at sign-up time can self-recover a lost secret via emailed magic
+  link. Capped at 3 active tenants per email; per-IP rate limit prevents
+  enumeration probes.
+- **GDPR right-to-erasure.** Two-step email-verified tenant deletion
+  atomically scrubs registration, license, audit history, daily-usage
+  counters, and per-tenant usage records. An immutable deletion log row
+  survives the cascade for Article 30 compliance.
 
-- **`POST /api/v1/audit/search` no longer returns `entries: null` on empty
-  result sets.** The response now consistently returns `entries: []` so
-  downstream clients that iterate the array (`for entry of entries`) or
-  read its length without a null guard work correctly. Pre-existing
-  callers that already handled the null case remain compatible.
-- **`POST /api/v1/overrides` now rejects with HTTP 403 for severity=critical
-  system policies.** Authentication-bypass, time-based blind SQL
-  injection, stacked DROP/DELETE/UPDATE/INSERT/EXEC, government IDs,
-  and financial-PII patterns are no longer overridable; attempting to
-  create a session override against any of them returns
-  `403 "Critical-risk policies cannot be overridden"`. Pre-existing
-  active overrides on these policies are revoked at upgrade time.
+**Companion plugin and SDK release.** All four plugins
+(axonflow-claude-plugin, axonflow-cursor-plugin, axonflow-codex-plugin,
+axonflow-openclaw-plugin) and all four stable SDKs (Go, Python, TypeScript,
+Java) advance to v7.7.0 with the new `X-Axonflow-Client` header and
+scope-aware license validation. Existing v7.0.x callers continue to work
+without the header — they receive a one-time upgrade hint.
+
+No breaking platform changes for existing self-hosted Enterprise tenants.
+Existing license tokens validate cleanly via the missing-`aud` fallback
+documented in the License Matrix below.
+
+### Community
+
+#### Added
+
+- **`POST /api/v1/billing/stripe-webhook`** — Stripe webhook receiver for
+  the V1 SaaS Plugin Pro tier. Subscribes to `checkout.session.completed`
+  (issues the license) and `charge.refunded` (revokes on full refund).
+  Defended by Stripe-Signature HMAC + IP allowlist (Stripe's published
+  webhook CIDRs, env-overridable) + per-source rate limit (60 req/min
+  default). `GET` returns 405 so misconfigured webhook URLs in the Stripe
+  Dashboard fail loudly. Idempotent over `stripe_session_id` — Stripe's
+  at-least-once delivery returns the original token byte-identically on
+  retry, never a new one.
+- **License token validation on every governed request.**
+  `validateCommunitySaasAuth` now reads `X-License-Token`, validates the
+  Ed25519 signature, checks the token's audience claim against the SaaS
+  Plugin accept list, verifies the tenant binding matches the auth-resolved
+  tenant, and looks up the active row in `plugin_user_licenses`. Free tier
+  (no header) passes through unmodified; Pro / Premium tier promotes the
+  request when both token and row are valid. Per-request DB lookup keeps
+  revocation effective within ~60s of a chargeback or dispute. Token
+  tenant_id mismatch returns 403; missing/revoked row returns 401; DB
+  unavailability returns 503 so the plugin retries rather than silently
+  degrading to Free.
+- **Per-tenant daily request quota.** Daily event quota now follows the
+  resolved tier from the license token: Free 200/day, Pro 1,000/day,
+  Premium 5,000/day (reserved, not yet sold). Quota fires on both admin
+  routes (`apiAuthMiddleware`) and plugin / SDK governed routes
+  (`/api/v1/process`, `/api/v1/audit/*`, `/api/v1/mcp/evaluate-policies`,
+  `/api/v1/connectors`). The legacy `COMMUNITY_SAAS_DAILY_LIMIT` env var
+  is preserved as a fallback for callers without a resolved tier
+  (perf-testing rigs, etc.).
+- **Per-tenant audit retention.** Audit log cleanup now buckets tenants by
+  retention tier — Free 3 days, Pro 30 days, Premium 90 days (reserved).
+  Self-hosted deployments without the SaaS schema fall through cleanly
+  via a `relation does not exist` guard on the SaaS table.
+- **`POST /api/v1/recover`** — request a magic-link recovery email for a
+  Community SaaS tenant bound to a given email. Always returns 202
+  (anti-enumeration); the delivered email contains a single-use 15-minute
+  magic link.
+- **`POST /api/v1/recover/verify`** — consume a magic-link token and
+  receive fresh credentials bound to the same email. `GET` on the same
+  path serves an HTML confirmation page (no state change) so email-link
+  prefetchers don't burn the token.
+- **Email field on `POST /api/v1/register`** so Community SaaS registrants
+  can opt into recovery at sign-up time.
+- **`POST /api/v1/tenant/<id>/delete-request`** +
+  **`POST /api/v1/tenant/<id>/delete-confirm`** — GDPR right-to-erasure
+  endpoints. `delete-request` accepts the email-on-file and emails a
+  single-use 1-hour confirmation token; `delete-confirm` consumes the
+  token and atomically scrubs the tenant from the SaaS registration table,
+  license table, audit logs, daily-usage counter, and usage events. Stripe
+  customer archive runs best-effort post-commit (DB-side erasure completes
+  regardless of Stripe reachability). Per-IP (1/min) and per-tenant
+  (1/hour) rate limits prevent spam. Tokens stored as HMAC-SHA256 (with
+  optional `AXONFLOW_TENANT_DELETE_TOKEN_PEPPER` for at-rest hardening).
+
+#### Changed
+
+- **License Matrix — explicit `aud` claim per hosting-mode × scope.** Six
+  canonical audience values now describe the matrix:
+  `axonflow.{saas,self_hosted}.{plugin,sdk,full}`. Each license-validation
+  context (SaaS Plugin path, SaaS SDK path, self-hosted loader) ships an
+  explicit accept list — cross-quadrant misuse (e.g. a SaaS Plugin Pro
+  token pasted into `AXONFLOW_LICENSE_KEY`, or a self-hosted Enterprise
+  license sent as `X-License-Token`) is rejected at the validator
+  boundary with an explicit reason. **Existing tokens predating the
+  rename have empty `aud` and validate via a documented fallback to
+  `axonflow.self_hosted.full` — no production breakage on upgrade.** Two
+  new helpers (`HostingMode()` and `HasScope(scope)`) on the parsed
+  license payload derive the matrix coordinates so callers don't
+  string-parse inline. The deprecated `origin` claim (redundant with
+  the new `aud`) is no longer set on newly issued tokens or read by
+  validators.
+- **SaaS Plugin tier rename + schema simplification.** Internal V1
+  paid-tier names `plugin-claimed` and `plugin-subscription` rename to
+  `Pro` and `Premium`, with a new `Free` baseline applied when no
+  `X-License-Token` is sent. Per-tier limits move out of a JSONB blob
+  and into a typed struct shared with the self-hosted ladder. The
+  forward-only schema migration drops the JSONB column, renames any
+  existing rows, and tightens the tier CHECK constraint. No production
+  tokens existed for the prior design; staging fixtures re-seed cleanly
+  under the new schema.
+- **Stripe webhook now issues 90-day Pro tokens by default.**
+  Configurable per-deploy via `AXONFLOW_BILLING_PRO_VALIDITY_DAYS`;
+  per-tenant token validity is independent of the plugin install
+  lifetime.
+- **Eval-license endpoint mints a quadrant-aware token.** The
+  `/api/evaluation-license` Cloudflare Pages Function on `getaxonflow.com`
+  now sets `aud` explicitly per the originating form: the platform
+  Self-Hosted Eval form at `/evaluation-license` mints
+  `axonflow.self_hosted.full`; the Plugin In-VPC Eval form at
+  `/plugins/evaluation-license` mints `axonflow.self_hosted.plugin`.
+  Existing eval tokens issued before this release validate unchanged
+  via the missing-`aud` fallback.
+- **Cross-quadrant license rejection.** A self-hosted Enterprise
+  license sent as `X-License-Token` on a SaaS request is now rejected
+  at the validator boundary with an explicit "wrong hosting mode"
+  reason instead of silently failing further down the stack.
+
+#### Fixed
+
+- **Stripe webhook idempotency held only on the day a token was issued.**
+  The token's payload `IssuedAt` came from `time.Now()` while the
+  persisted row's `issued_at` defaulted to the DB's `NOW()` and was read
+  back via `RETURNING`. A replay landing on a different UTC day produced
+  a byte-different re-minted token, breaking the V1 Stripe-retry
+  guarantee. Issuer now passes `IssuedAt` explicitly into both the
+  token and the INSERT so the persisted value matches what the token
+  signs.
+- **`POST /api/v1/audit/search` returns `entries: []` (not `null`) on
+  empty result sets.** Iteration code that walked the array
+  (`for entry of entries`) or read its length without a null guard now
+  works correctly. Callers that already handled the null case remain
+  compatible.
+- **`POST /api/v1/overrides` rejects critical-severity system policies
+  with HTTP 403.** Authentication-bypass, time-based blind SQL injection,
+  stacked DROP/DELETE/UPDATE/INSERT/EXEC patterns, government IDs, and
+  financial PII patterns are no longer overridable. Pre-existing active
+  overrides on these policies are revoked at upgrade time.
+- **Per-tenant daily cap fires on plugin / SDK governed routes.**
+  Previously the cap was only enforced on admin routes; plugin and SDK
+  traffic flowing through `/api/v1/process`, `/api/v1/audit/*`,
+  `/api/v1/mcp/evaluate-policies`, and `/api/v1/connectors` was
+  effectively un-capped. The cap now mirrors onto these proxy routes
+  with the same per-tenant tier-aware limit and the same HTTP 429
+  response shape.
+- **Per-IP rate limits behind ALB now key on the trusted last-hop IP.**
+  Community SaaS register and recovery rate limits previously read the
+  first `X-Forwarded-For` entry, which is client-controlled behind
+  AWS ALB; the limits now read the last entry (the ALB-observed peer
+  IP) so spoofed first-entry values cannot bypass the per-IP cap.
+- **AWS Secrets Manager-derived secrets are trimmed at boot.**
+  RESEND_API_KEY, STRIPE_WEBHOOK_SIGNING_SECRET,
+  AXONFLOW_INTERNAL_SERVICE_SECRET, JWT_SECRET, and LLM provider API
+  keys are read via a dedicated helper that strips trailing whitespace.
+  SM-CLI-quirky values with stray newlines previously caused
+  Authorization-header rejection or HMAC mismatch in confusing ways at
+  first request.
+
+#### Documentation
+
+- **License Matrix architecture decision (ADR-050)** documents the
+  six-quadrant license model, per-context accept lists, and the
+  missing-`aud` backward-compat fallback used by every existing
+  self-hosted token.
+- **V1 paid Pro tier integration guide** covering Stripe Checkout setup,
+  webhook configuration, license token format, plugin-side activation,
+  and the refund window. Included in `docs/api/agent-api.yaml` for the
+  Community Stripe webhook endpoint.
+
+#### CI / Testing
+
+- **Definition-of-Done CI gate.** Every PR that touches user-facing
+  surface (platform, ee/platform, migrations, docs/api) must include a
+  corresponding `runtime-e2e/` test that exercises the change against a
+  live agent + DB stack. Skipped via `[skip-runtime-e2e]` PR title prefix
+  + a justification block in the PR body for build / deps / lint /
+  connector-builder tooling changes.
+- **License-flow runtime E2E** (`runtime-e2e/v1_paid_tier/`) drives the
+  full Stripe-checkout → token-issued → email-delivered →
+  plugin-uses-token path against a Docker community-saas stack.
+- **Tenant-durability runtime E2E** (`runtime-e2e/tenant_durability/`)
+  asserts a Community SaaS tenant survives an agent-container restart
+  because the tenant row lives in Postgres.
+- **Free-tier recovery runtime E2E** (`runtime-e2e/recovery/`) drives
+  the magic-link recovery flow end-to-end including the post-recovery
+  audit-write check.
+
+### Operator
+
+- **`AXONFLOW_BILLING_PRO_VALIDITY_DAYS`** — override the 90-day default
+  Pro license validity. Bad / non-positive values fall through to the
+  default rather than failing boot.
+- **`AXONFLOW_BILLING_FROM_EMAIL`** — override the from-address on
+  post-purchase license-delivery emails (default
+  `AxonFlow <hello@getaxonflow.com>`).
+- **`AXONFLOW_PLUGIN_CLAIMED_PUBLIC_KEY`** — verifier-only split. When
+  set, the agent verifies plugin tokens without holding the signing
+  seed; only the issuer service holds the seed. Recommended production
+  posture so a runtime compromise of the agent cannot mint forged
+  tokens. Backward-compatible: when unset, the agent derives the
+  pubkey from the existing signing-key env var.
+- **`AXONFLOW_STRIPE_WEBHOOK_IP_ALLOWLIST`** +
+  **`AXONFLOW_STRIPE_WEBHOOK_RATE_PER_MIN`** — knobs for tuning the
+  Stripe webhook IP allowlist (default = Stripe's published webhook
+  CIDRs) and per-source rate limit (default 60/min).
+- **`AXONFLOW_TENANT_DELETE_TOKEN_PEPPER`** — optional pepper for the
+  at-rest HMAC of GDPR-deletion confirmation tokens.
+- **AWS Marketplace template** (`cloudformation-ecs-fargate.yaml`)
+  gains an optional `StripeWebhookSecretArn` parameter that wires the
+  agent container's `STRIPE_WEBHOOK_SIGNING_SECRET` env var from a
+  Secrets Manager ARN. Default empty (Stripe-paid tier disabled, agent
+  webhook handler exits early). The IAM TaskExecutionRole grants
+  `secretsmanager:GetSecretValue` on the supplied ARN only when set,
+  so customers running the marketplace template without Stripe see no
+  policy bloat.
+- **CloudWatch alarms for Stripe billing** attach three
+  metric-filter-driven alarms to the agent log group: webhook delivery
+  failures (≥5 in 5 min → page), license issuance failures (1 in 1
+  min → page — money taken without service delivered), and a
+  first-payment milestone (1 in 1 min → separate SNS topic for the
+  launch celebratory ping). Gated by `EnableStripeAlarms=true`
+  (default) so staging stacks can opt out.
+- **Synthetic monitoring canary.** Stand-alone CFN stack deploys a
+  Python Lambda that runs hourly via EventBridge and exercises
+  `/api/v1/register` → `/api/v1/mcp-server` → `/api/v1/audit/search`
+  end-to-end against the public community-saas endpoint. Failures
+  publish a structured failure report to a dedicated SNS topic.
+
+### Evaluation
+
+- All Community changes apply.
+- Self-Hosted Evaluation licenses continue working unchanged. The
+  `/api/evaluation-license` issuance endpoint now stamps the explicit
+  `aud` claim per the originating form (Self-Hosted Full vs. Plugin
+  In-VPC), but tokens issued before this release validate cleanly via
+  the missing-`aud` fallback.
+
+### Enterprise
+
+- All Community + Evaluation changes apply.
+- No Enterprise-only behaviour changes in this release. The portal,
+  customer-portal-ui, and the rest of the Enterprise tree pick up the
+  Community-side fixes (license matrix validators, daily-cap on proxy
+  routes, secret-trimming) automatically.
+
+### SDKs
+
+- **Go SDK v7.1.0** — `axonflow-sdk-go@v7.1.0`. Sends `X-Axonflow-Client`
+  on every governed request; SDK identifies itself by the canonical
+  `sdk-go/<version>` pattern.
+- **Python SDK v7.1.0** — `axonflow>=7.1.0`. Same `X-Axonflow-Client`
+  injection.
+- **TypeScript SDK v7.1.0** — `@axonflow/sdk@^7.1.0`. Same.
+- **Java SDK v7.1.0** — `<version>7.1.0</version>`. Same.
+
+The `X-Axonflow-Client` header is consumed by the agent's scope
+validator: a SaaS Plugin Pro token paired with an SDK client header is
+rejected at the validator boundary, and vice versa. Existing v7.0.x
+callers continue to authenticate without the header — the agent emits
+a one-time upgrade hint per process and treats the request as `full`
+scope.
+
+axonflow-sdk-rust remains at v0.1.0 (preview). The `X-Axonflow-Client`
+header support lands in a future preview release.
+
+### Plugins
+
+- **OpenClaw v2.2.0** — `npm install @axonflow/openclaw@^2.2.0`. Sends
+  `X-Axonflow-Client: openclaw/<version>` on every governed agent
+  request. Pro license token paste via
+  `clawhub config set license-token <token>` activates Pro features
+  immediately.
+- **Claude Code plugin v1.2.0** — graduates from the v1.1 line. Sends
+  `X-Axonflow-Client: claude-code/<version>`. License token paste via
+  `/axonflow login --token <token>`.
+- **Cursor plugin v1.2.0** — graduates from the v1.1 line. Sends
+  `X-Axonflow-Client: cursor/<version>` via `mcp.json` `headers` field.
+  License token paste via Cursor settings (`AXONFLOW_LICENSE_TOKEN`).
+- **Codex plugin v1.2.0** — graduates from the v1.1 line. Sends
+  `X-Axonflow-Client: codex/<version>` via `.mcp.json` `http_headers`
+  block. License token paste via `~/.codex/axonflow.toml`.
+
+All four plugins continue to query `/health` at startup and emit a
+one-time upgrade hint when the agent's `min_plugin_version` floor is
+above the plugin runtime.
 
 ## [7.6.0] - 2026-05-02 — Policy-engine response cleanup + per-category enforcement controls
 

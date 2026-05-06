@@ -1,0 +1,9 @@
+[package]
+name = "axonflow-map-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axonflow-sdk-rust = { git = "https://github.com/getaxonflow/axonflow-sdk-rust.git", tag = "v0.1.0" }
+tokio = { version = "1", features = ["full"] }

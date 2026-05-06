@@ -221,9 +221,13 @@ func TestTierSatisfiesRequirement(t *testing.T) {
 		{"Professional doesn't meet Enterprise", license.TierProfessional, license.TierEnterprise, false},
 		{"Enterprise doesn't meet Plus", license.TierEnterprise, license.TierEnterprisePlus, false},
 
-		// Unknown tier — treated as rank 0 (same as Community)
-		{"Unknown current tier meets Community", license.Tier("unknown"), license.TierCommunity, true},
-		{"Unknown required tier met by Community", license.TierCommunity, license.Tier("unknown"), true},
+		// Unknown tier — fails closed per GAP-3. Pre-GAP-3 the default
+		// branch in tierRank returned 0 (== Community), silently treating
+		// any unrecognized tier as the lowest valid tier. tierRank now
+		// returns -1 sentinel and TierSatisfiesRequirement rejects when
+		// either side is sentinel — both directions evaluate to false.
+		{"Unknown current tier fails closed against Community", license.Tier("unknown"), license.TierCommunity, false},
+		{"Unknown required tier fails closed against Community", license.TierCommunity, license.Tier("unknown"), false},
 		{"Unknown current tier doesn't meet Professional", license.Tier("unknown"), license.TierProfessional, false},
 	}
 

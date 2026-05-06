@@ -176,9 +176,10 @@ func TestHandleCommunityRegister_DB_OneYearExpiry(t *testing.T) {
 }
 
 // TestHandleCommunityRegister_DB_DisclaimerNote asserts the response Note field
-// matches the canonical disclaimer text. This text is one of the three
-// surfaces (this constant, the plugin first-run setup message, the privacy
-// policy) that must stay in sync. Drift is the failure mode this test catches.
+// matches the canonical disclaimer text and surfaces the operational facts
+// customers need: Free-tier limits, lifecycle sweep rules, and the Pro
+// upgrade path. Quality-of-service framing belongs in ToS / Privacy, not
+// here.
 func TestHandleCommunityRegister_DB_DisclaimerNote(t *testing.T) {
 	db, cleanup := connectAndCleanDB(t, "cs_test_disclaimer_")
 	defer cleanup()
@@ -192,13 +193,18 @@ func TestHandleCommunityRegister_DB_DisclaimerNote(t *testing.T) {
 		t.Errorf("response Note does not match canonical disclaimer\n  got:  %q\n  want: %q",
 			resp.Note, communitySaasDisclaimerNote)
 	}
-	// Spot-check the disclaimer surfaces the lifecycle policy and the upgrade pointer
+	// Spot-check the disclaimer surfaces the operational facts (Free-tier
+	// limits, lifecycle sweep, Pro upgrade pointer)
 	mustContain := []string{
-		"basic testing and evaluation",
-		"self-hosting AxonFlow from day one",
+		"3-day audit retention",
+		"200 events/day",
 		"3 months of inactivity",
-		"1 year",
-		"reliability or security guarantees",
+		"1 year from creation",
+		"Plugin Pro",
+		"30-day retention",
+		"1,000 events/day",
+		"$9.99",
+		"https://www.getaxonflow.com/pricing/",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(resp.Note, s) {

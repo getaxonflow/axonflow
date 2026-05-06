@@ -15,13 +15,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"axonflow/platform/connectors/base"
+	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 )
 
@@ -61,8 +61,10 @@ func init() {
 	prometheus.MustRegister(promConnectorDuration)
 	prometheus.MustRegister(promConnectorErrors)
 
-	// Initialize HMAC token generator if secret is configured
-	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+	// Initialize HMAC token generator if secret is configured. Read via
+	// secretenv.Get so the SM-derived value's trailing whitespace doesn't
+	// produce a different digest from the agent-side validator.
+	if secret := secretenv.Get(serviceauth.SecretEnvVar); secret != "" {
 		internalTokenGenerator = serviceauth.NewTokenGenerator(secret, serviceauth.RealClock{})
 	}
 	serviceauth.LogAuthWarning()

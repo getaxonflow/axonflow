@@ -14,6 +14,7 @@
 package license
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -186,7 +187,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 	tests := []struct {
 		name         string
 		tier         Tier
-		orgID     string
+		orgID        string
 		serviceName  string
 		serviceType  string
 		permissions  []string
@@ -196,7 +197,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Valid client-application license",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -206,7 +207,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Valid backend-service license",
 			tier:         TierEnterprisePlus,
-			orgID:     "healthcare-us",
+			orgID:        "healthcare-us",
 			serviceName:  "medical-ai",
 			serviceType:  "backend-service",
 			permissions:  []string{"mcp:*:*", "llm:*:*"},
@@ -216,7 +217,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Valid integration license",
 			tier:         TierProfessional,
-			orgID:     "startup",
+			orgID:        "startup",
 			serviceName:  "data-sync",
 			serviceType:  "integration",
 			permissions:  []string{"mcp:slack:send_message"},
@@ -226,7 +227,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Invalid tier",
 			tier:         Tier("INVALID"),
-			orgID:     "test",
+			orgID:        "test",
 			serviceName:  "service",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:*:*"},
@@ -236,7 +237,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Empty org ID",
 			tier:         TierProfessional,
-			orgID:     "",
+			orgID:        "",
 			serviceName:  "service",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:*:*"},
@@ -246,7 +247,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Empty service name",
 			tier:         TierProfessional,
-			orgID:     "test",
+			orgID:        "test",
 			serviceName:  "",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:*:*"},
@@ -256,7 +257,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Invalid service type",
 			tier:         TierProfessional,
-			orgID:     "test",
+			orgID:        "test",
 			serviceName:  "service",
 			serviceType:  "invalid-type",
 			permissions:  []string{"mcp:*:*"},
@@ -266,7 +267,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Empty permissions",
 			tier:         TierProfessional,
-			orgID:     "test",
+			orgID:        "test",
 			serviceName:  "service",
 			serviceType:  "client-application",
 			permissions:  []string{},
@@ -276,7 +277,7 @@ func TestGenerateServiceLicenseKeyEdgeCases(t *testing.T) {
 		{
 			name:         "Zero validity days",
 			tier:         TierProfessional,
-			orgID:     "test",
+			orgID:        "test",
 			serviceName:  "service",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:*:*"},
@@ -493,5 +494,68 @@ func BenchmarkGenerateLicenseKeyWithValidation(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Failed to validate key: %v", err)
 		}
+	}
+}
+
+// TestGetSigningKey_AcceptsAnyBase64Dialect proves the signing-key loader
+// is tolerant of all four common base64 dialects an operator might paste
+// into AWS Secrets Manager. Operators repeatedly paste the unpadded
+// "raw" form and get bitten by `base64.StdEncoding.DecodeString`'s
+// strictness with "illegal base64 data at input byte N". This test
+// locks the tolerant behaviour so a future refactor doesn't regress it.
+func TestGetSigningKey_AcceptsAnyBase64Dialect(t *testing.T) {
+	// Generate a real Ed25519 keypair to seed all four encodings with
+	// the SAME 32 bytes — they should all decode back identically.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_ = pub
+	seed := priv.Seed()
+
+	cases := []struct {
+		name    string
+		encoded string
+	}{
+		{"std-padded", base64.StdEncoding.EncodeToString(seed)},          // ends with '='
+		{"std-raw", base64.RawStdEncoding.EncodeToString(seed)},          // no padding
+		{"url-padded", base64.URLEncoding.EncodeToString(seed)},          // URL-safe + padding
+		{"url-raw", base64.RawURLEncoding.EncodeToString(seed)},          // URL-safe no padding
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY", tc.encoded)
+			got, err := getSigningKey(TierPro)
+			if err != nil {
+				t.Fatalf("getSigningKey rejected %s-encoded seed: %v", tc.name, err)
+			}
+			if !bytes.Equal(got.Seed(), seed) {
+				t.Fatalf("decoded seed mismatch for %s dialect", tc.name)
+			}
+		})
+	}
+}
+
+// TestGetSigningKey_RejectsNonBase64 keeps a clear error path for
+// genuinely malformed input — we relaxed dialect-strictness, not
+// validity-strictness.
+func TestGetSigningKey_RejectsNonBase64(t *testing.T) {
+	t.Setenv("AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY", "this is not base64 at all !!!")
+	_, err := getSigningKey(TierPro)
+	if err == nil {
+		t.Fatal("expected error for non-base64 input, got nil")
+	}
+}
+
+// TestGetSigningKey_RejectsWrongLength catches base64-decodable input
+// that yields a wrong-length seed (e.g. 24 bytes — base64-valid but not
+// a 32-byte Ed25519 seed).
+func TestGetSigningKey_RejectsWrongLength(t *testing.T) {
+	short := base64.StdEncoding.EncodeToString(make([]byte, 24)) // 24 != ed25519.SeedSize (32)
+	t.Setenv("AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY", short)
+	_, err := getSigningKey(TierPro)
+	if err == nil {
+		t.Fatal("expected error for short seed, got nil")
 	}
 }

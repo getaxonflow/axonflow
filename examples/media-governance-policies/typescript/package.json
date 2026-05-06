@@ -7,7 +7,7 @@
     "start": "ts-node main.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^7.0.0",
+    "@axonflow/sdk": "^7.1.0",
     "dotenv": "^16.3.1"
   },
   "devDependencies": {

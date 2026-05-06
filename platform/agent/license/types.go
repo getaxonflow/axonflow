@@ -23,8 +23,8 @@ import (
 type LicenseKey struct {
 	// Core license fields
 	KeyID     string    `json:"key_id"`
-	OrgID     string    `json:"org_id"`     // Organization ID (e.g., "travel-eu", "healthcare-eu")
-	Tier      Tier      `json:"tier"`        // License tier (Professional, Enterprise, Plus)
+	OrgID     string    `json:"org_id"` // Organization ID (e.g., "travel-eu", "healthcare-eu")
+	Tier      Tier      `json:"tier"`   // License tier (Professional, Enterprise, Plus)
 	IssuedAt  time.Time `json:"issued_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Signature string    `json:"signature"` // Ed25519 signature for validation
@@ -130,13 +130,13 @@ func (k *LicenseKey) String() string {
 // This is for backward compatibility with existing code that uses ValidationResult
 func (k *LicenseKey) ToValidationResult() *ValidationResult {
 	return &ValidationResult{
-		Valid:            true,
-		Tier:             k.Tier,
-		OrgID:            k.OrgID,
-		MaxNodes:         k.MaxNodes,
-		ExpiresAt:        k.ExpiresAt,
-		DaysUntilExpiry:  k.DaysUntilExpiry,
-		Features:         k.Features,
+		Valid:           true,
+		Tier:            k.Tier,
+		OrgID:           k.OrgID,
+		MaxNodes:        k.MaxNodes,
+		ExpiresAt:       k.ExpiresAt,
+		DaysUntilExpiry: k.DaysUntilExpiry,
+		Features:        k.Features,
 		// Service identity fields (may be empty for non-service licenses)
 		ServiceName: k.ServiceName,
 		ServiceType: k.ServiceType,

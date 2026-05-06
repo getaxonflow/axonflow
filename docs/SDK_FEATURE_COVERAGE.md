@@ -216,14 +216,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-All 4 SDKs should have identical method coverage:
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.2.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP); feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v4.1.0 | ~44 | ✅ |
-| Python | v4.1.0 | ~44 | ✅ |
-| TypeScript | v4.1.0 | ~45 | ✅ (+protect) |
-| Java | v4.1.0 | ~44 | ✅ |
+| Go | v7.1.0 | ~44 | ✅ |
+| Python | v7.1.0 | ~44 | ✅ |
+| TypeScript | v7.1.0 | ~45 | ✅ (+protect) |
+| Java | v7.1.0 | ~44 | ✅ |
+| Rust _(preview)_ | v0.2.0 | ~14 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP) |
 
 ### Infrastructure (v4.1.0)
 
@@ -238,6 +239,7 @@ All 4 SDKs should have identical method coverage:
 
 | Date | Change |
 |------|--------|
+| 2026-05-04 | Added Rust SDK to the matrix as a preview (v0.2.0). Baseline covers HTTP Basic auth (with `community:` default), `proxy_llm_call`, `audit_llm_call`, basic MAP (`generate_plan`, `execute_plan`, `get_plan_status`, `cancel_plan`), basic MCP connectors, OpenAI interceptor, `X-License-Key`, `AXONFLOW_TELEMETRY=off` opt-out. Subsequent releases will add the universal surface, full interceptor lineup, governance, workflows, cost, and compliance methods to bring it to parity with the four established SDKs |
 | 2026-03-01 | Added healthCheckDetailed() and hasCapability() to all SDKs (v4.1.0); Added User-Agent headers and version mismatch warnings; Added Infrastructure section |
 | 2026-02-12 | Added failWorkflow() to all SDKs; Added HITL Queue API (listHITLQueue, getHITLRequest, approveHITLRequest, rejectHITLRequest, getHITLStats) to all SDKs; Moved HITL from exclusions to Tier 2 |
 | 2026-02-07 | Added SSE streaming (streamExecutionStatus) for real-time MAP/WCP execution monitoring |
