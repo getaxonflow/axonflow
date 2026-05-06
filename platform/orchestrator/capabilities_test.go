@@ -26,10 +26,10 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"java":       "7.0.0",
 	}
 	wantRecommended := map[string]string{
-		"python":     "7.0.0",
-		"typescript": "7.0.0",
-		"go":         "7.0.0",
-		"java":       "7.0.0",
+		"python":     "7.1.0",
+		"typescript": "7.1.0",
+		"go":         "7.1.0",
+		"java":       "7.1.0",
 	}
 
 	for lang, want := range wantMin {
@@ -63,10 +63,10 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 		"codex":       "1.0.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":    "2.1.0",
-		"claude-code": "1.1.0",
-		"cursor":      "1.1.0",
-		"codex":       "1.1.0",
+		"openclaw":    "2.2.0",
+		"claude-code": "1.2.0",
+		"cursor":      "1.2.0",
+		"codex":       "1.2.0",
 	}
 
 	for id, want := range wantMin {

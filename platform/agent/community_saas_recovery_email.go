@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"axonflow/platform/shared/secretenv"
 )
 
 // RecoveryEmailSender abstracts the magic-link email transport so tests can
@@ -176,12 +178,16 @@ func htmlAttrEscape(s string) string {
 //
 // FromEmail defaults to "AxonFlow <recovery@getaxonflow.com>" but can be
 // overridden via AXONFLOW_RECOVERY_FROM_EMAIL.
+//
+// Reads via secretenv.Get so an SM-resolved RESEND_API_KEY with a stray
+// trailing newline (a recurring V1 footgun — Authorization header is
+// rejected by net/http) is silently trimmed at boot.
 func NewRecoveryEmailSenderFromEnv() RecoveryEmailSender {
-	apiKey := os.Getenv("RESEND_API_KEY")
+	apiKey := secretenv.Get("RESEND_API_KEY")
 	if apiKey == "" {
 		return &NoopRecoveryEmailSender{}
 	}
-	from := os.Getenv("AXONFLOW_RECOVERY_FROM_EMAIL")
+	from := secretenv.Get("AXONFLOW_RECOVERY_FROM_EMAIL")
 	if from == "" {
 		from = "AxonFlow <recovery@getaxonflow.com>"
 	}

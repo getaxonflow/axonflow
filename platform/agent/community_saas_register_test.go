@@ -140,25 +140,31 @@ func TestRegistrationIPTracker_Cleanup(t *testing.T) {
 }
 
 func TestExtractClientIP_XForwardedFor(t *testing.T) {
+	// AWS ALB appends the real peer IP to XFF, so the LAST entry is
+	// always trustworthy and the FIRST entry is client-controlled.
+	// Tests assert the LAST-entry behavior; "spoof attempt" verifies
+	// that client-supplied prepended values cannot bypass the rate-limit.
 	tests := []struct {
-		name     string
-		xff      string
-		expected string
+		name      string
+		xff       string
+		remote    string // optional override; "" → httptest default
+		expected  string
 	}{
-		{"single IP", "1.2.3.4", "1.2.3.4"},
-		{"multiple IPs", "1.2.3.4, 5.6.7.8, 9.10.11.12", "1.2.3.4"},
-		{"with spaces", "  1.2.3.4  , 5.6.7.8", "1.2.3.4"},
-		{"empty first entry falls through", ", 1.2.3.4", "127.0.0.1"}, // falls to RemoteAddr
+		{"single IP", "1.2.3.4", "", "1.2.3.4"},
+		{"multiple IPs (ALB-appended)", "1.2.3.4, 5.6.7.8, 9.10.11.12", "", "9.10.11.12"},
+		{"with spaces", "  1.2.3.4  , 5.6.7.8  ", "", "5.6.7.8"},
+		{"spoof attempt: forged first entry ignored",
+			"99.99.99.99, 8.8.8.8", "", "8.8.8.8"},
+		{"empty last entry falls through to RemoteAddr",
+			"1.2.3.4, ", "127.0.0.1:5678", "127.0.0.1"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/", nil)
 			req.Header.Set("X-Forwarded-For", tt.xff)
-			// httptest sets RemoteAddr to "192.0.2.1:1234" by default
-			// For the "empty first entry" case, we need to check it falls through
-			if tt.name == "empty first entry falls through" {
-				req.RemoteAddr = "127.0.0.1:5678"
+			if tt.remote != "" {
+				req.RemoteAddr = tt.remote
 			}
 			got := extractClientIP(req)
 			if got != tt.expected {

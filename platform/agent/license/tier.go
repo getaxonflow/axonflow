@@ -29,6 +29,16 @@ const (
 	TierEnterprisePlus Tier = "Plus"
 	TierEvaluation     Tier = "Evaluation" // Evaluation tier - free license with elevated limits
 	TierCommunity      Tier = "Community"  // Community tier - no license required
+
+	// SaaS Plugin tier constants (per ADR-050 §1) — duplicated here for
+	// the community build because `auth.go` references `TierFree` and
+	// `auth.go` is loaded in BOTH build tags. The enterprise validation.go
+	// declares the same constants under `//go:build enterprise`; both
+	// share the same string values so the rendered DB rows / API responses
+	// are identical regardless of which build resolves the symbol.
+	TierFree    Tier = "Free"
+	TierPro     Tier = "Pro"
+	TierPremium Tier = "Premium"
 )
 
 // IsPaidTier returns true if the tier is a paid tier (Professional, Enterprise, Plus).
@@ -41,7 +51,12 @@ func IsEvaluationOrHigher(t Tier) bool {
 	return t == TierEvaluation || IsPaidTier(t)
 }
 
-// tierRank returns the numeric rank of a tier for comparison.
+// tierRank returns the numeric rank of a tier for comparison. Returns -1
+// for any unknown tier so rank-based comparisons fail closed (GAP-3).
+// Pre-fix the default returned 0 (== Community), silently treating unknown
+// tiers as the lowest valid tier — a footgun for any future tier added
+// without updating this switch. Mirrors the enterprise-build version in
+// validation.go.
 func tierRank(t Tier) int {
 	switch t {
 	case TierCommunity:
@@ -55,14 +70,21 @@ func tierRank(t Tier) int {
 	case TierEnterprisePlus:
 		return 3
 	default:
-		return 0
+		return -1
 	}
 }
 
 // TierSatisfiesRequirement returns true if the current tier meets or exceeds
 // the required tier level. Used for provider access gating.
+//
+// Fails closed when EITHER tier has rank -1 (unknown tier — GAP-3).
 func TierSatisfiesRequirement(current, required Tier) bool {
-	return tierRank(current) >= tierRank(required)
+	cr := tierRank(current)
+	rr := tierRank(required)
+	if cr < 0 || rr < 0 {
+		return false
+	}
+	return cr >= rr
 }
 
 // normalizeTier validates that a tier string matches one of the canonical
@@ -85,19 +107,25 @@ func normalizeTier(raw string) Tier {
 
 // TierLimits defines the resource limits for a license tier.
 type TierLimits struct {
-	TenantPolicies         int `json:"tenant_policies"`
-	OrgPolicies            int `json:"org_policies"`
-	CustomPolicyConnectors int `json:"custom_policy_connectors"`
-	AuditRetentionDays     int `json:"audit_retention_days"`
-	MaxLLMProviders        int `json:"max_llm_providers"`
-	MaxExecutionHistory    int `json:"max_execution_history"`
-	MaxConcurrentExec      int `json:"max_concurrent_executions"`
-	MaxPlans               int `json:"max_plans"`
-	MaxVersionsPerPlan     int `json:"max_versions_per_plan"`
-	MaxSSEConnections      int `json:"max_sse_connections"`
+	TenantPolicies         int  `json:"tenant_policies"`
+	OrgPolicies            int  `json:"org_policies"`
+	CustomPolicyConnectors int  `json:"custom_policy_connectors"`
+	AuditRetentionDays     int  `json:"audit_retention_days"`
+	MaxLLMProviders        int  `json:"max_llm_providers"`
+	MaxExecutionHistory    int  `json:"max_execution_history"`
+	MaxConcurrentExec      int  `json:"max_concurrent_executions"`
+	MaxPlans               int  `json:"max_plans"`
+	MaxVersionsPerPlan     int  `json:"max_versions_per_plan"`
+	MaxSSEConnections      int  `json:"max_sse_connections"`
 	MaxCostEstimatesPerDay int  `json:"max_cost_estimates_per_day"`
 	MaxPendingApprovals    int  `json:"max_pending_approvals"`
 	MediaGovernanceEnabled bool `json:"media_governance_enabled"`
+
+	// SaaS Plugin daily write-quota — only meaningful for SaaS Plugin
+	// tiers (Free/Pro/Premium per ADR-050 §1). The community build never
+	// resolves to a SaaS Plugin tier, so any read here is a no-op; the
+	// field exists so the struct shape stays identical across builds.
+	DailyEventQuota int `json:"daily_event_quota"`
 
 	// Evaluation tier feature gates
 	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
@@ -127,6 +155,7 @@ var (
 		MaxCostEstimatesPerDay: 10,
 		MaxPendingApprovals:    5,
 		MediaGovernanceEnabled: false, // Opt-in via MEDIA_GOVERNANCE_ENABLED=true
+		DailyEventQuota:        -1,    // not a SaaS Plugin tier; daily quota n/a
 		// Evaluation features disabled
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
@@ -152,6 +181,7 @@ var (
 		MaxCostEstimatesPerDay: 100,
 		MaxPendingApprovals:    100,
 		MediaGovernanceEnabled: true,
+		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// Evaluation features enabled with limits
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -177,6 +207,7 @@ var (
 		MaxCostEstimatesPerDay: -1,   // Unlimited
 		MaxPendingApprovals:    -1,   // Unlimited
 		MediaGovernanceEnabled: true,
+		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// Enterprise features enabled, unlimited
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -247,6 +278,13 @@ type ValidationResult struct {
 }
 
 // ServiceLicensePayload represents the JSON payload in an Ed25519-signed license.
+//
+// Plugin-claim claims (TenantID, Aud, JTI, KID, Origin) are all `omitempty` so
+// they only appear in plugin-claim tokens. Self-hosted tokens continue to
+// serialize without these fields, preserving backward compatibility — existing
+// validators don't read fields they don't know about. Carried in both
+// community and enterprise builds so HasScope() / HostingMode() (defined in
+// scope.go, no build tag) compile against a uniform shape.
 type ServiceLicensePayload struct {
 	LicenseID   string      `json:"id,omitempty"`
 	Tier        string      `json:"tier"`
@@ -259,6 +297,14 @@ type ServiceLicensePayload struct {
 	Email       string      `json:"email,omitempty"`
 	Email2      string      `json:"email2,omitempty"`
 	Limits      *TierLimits `json:"limits,omitempty"`
+
+	// Plugin-claim / SaaS-quadrant claims. Only present in tokens issued for
+	// the SaaS Plugin path; self-hosted tokens leave them empty.
+	TenantID string `json:"tenant_id,omitempty"`
+	Aud      string `json:"aud,omitempty"` // see ADR-050 §1 for the canonical six values
+	JTI      string `json:"jti,omitempty"`
+	KID      string `json:"kid,omitempty"`
+	Origin   string `json:"origin,omitempty"`
 }
 
 // ValidateHMACSecretAtStartup is a no-op — HMAC is no longer used.

@@ -26,7 +26,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 	tests := []struct {
 		name         string
 		tier         Tier
-		orgID     string
+		orgID        string
 		serviceName  string
 		serviceType  string
 		permissions  []string
@@ -37,7 +37,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "valid service license",
 			tier:         TierEnterprisePlus,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:search_flights", "mcp:amadeus:search_hotels"},
@@ -47,7 +47,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "backend service type",
 			tier:         TierEnterprise,
-			orgID:     "healthcare-eu",
+			orgID:        "healthcare-eu",
 			serviceName:  "patient-portal",
 			serviceType:  "backend-service",
 			permissions:  []string{"mcp:salesforce:*"},
@@ -57,7 +57,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "integration service type",
 			tier:         TierProfessional,
-			orgID:     "fintech",
+			orgID:        "fintech",
 			serviceName:  "payment-gateway",
 			serviceType:  "integration",
 			permissions:  []string{"mcp:stripe:*", "mcp:plaid:*"},
@@ -67,7 +67,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "global mcp permissions",
 			tier:         TierEnterprisePlus,
-			orgID:     "admin-org",
+			orgID:        "admin-org",
 			serviceName:  "admin-service",
 			serviceType:  "backend-service",
 			permissions:  []string{"mcp:*"},
@@ -79,7 +79,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "invalid tier",
 			tier:         Tier("INVALID"),
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -90,7 +90,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "empty tenant ID",
 			tier:         TierEnterprise,
-			orgID:     "",
+			orgID:        "",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -101,7 +101,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "empty service name",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -112,7 +112,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "invalid service type",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "invalid-type",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -123,7 +123,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "empty permissions",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{},
@@ -134,7 +134,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "zero validity days",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},
@@ -145,7 +145,7 @@ func TestGenerateServiceLicenseKey(t *testing.T) {
 		{
 			name:         "negative validity days",
 			tier:         TierEnterprise,
-			orgID:     "travel-eu",
+			orgID:        "travel-eu",
 			serviceName:  "trip-planner",
 			serviceType:  "client-application",
 			permissions:  []string{"mcp:amadeus:*"},

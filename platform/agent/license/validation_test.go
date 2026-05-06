@@ -61,10 +61,10 @@ func TestValidateLicense(t *testing.T) {
 			wantError:  false,
 		},
 		{
-			name:      "Empty license key returns Community",
+			name:       "Empty license key returns Community",
 			licenseKey: "",
-			wantValid: true,
-			wantTier:  TierCommunity,
+			wantValid:  true,
+			wantTier:   TierCommunity,
 		},
 		{
 			name:          "Invalid prefix",

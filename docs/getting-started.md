@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: April 2026** | **Platform: v6.0.0** | **SDKs: Python v6.1.0, Go v5.1.0, TypeScript v5.1.0, Java v5.1.0**
+**Last Updated: May 2026** | **Platform: v7.7.0** | **SDKs: Python / Go / TypeScript / Java v7.1.0**
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -190,7 +190,7 @@ pip install axonflow-sdk
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>7.0.0</version>
+    <version>7.1.0</version>
 </dependency>
 ```
 
@@ -201,7 +201,7 @@ npm install @axonflow/sdk
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. All four SDKs are fully supported at v5.0.0.
+Choose your language below. All four SDKs are fully supported at v7.1.0.
 
 #### Go
 

@@ -85,10 +85,10 @@ func getSDKCompatibility() SDKCompatInfo {
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each SDK's release-train tag.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "7.0.0",
-			"typescript": "7.0.0",
-			"go":         "7.0.0",
-			"java":       "7.0.0",
+			"python":     "7.1.0",
+			"typescript": "7.1.0",
+			"go":         "7.1.0",
+			"java":       "7.1.0",
 		},
 	}
 }
@@ -110,16 +110,16 @@ func getPluginCompatibility() PluginCompatInfo {
 			"codex":       "1.0.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
-		// with each plugin's release-train tag. Bumped alongside the W2
-		// read-side governance plugin shipment (claude/cursor/codex 1.1.0,
-		// openclaw 2.1.0) which exposes audit-search / explain-decision /
-		// list-overrides / create-override / revoke-override as
-		// agent-callable surfaces against this platform.
+		// with each plugin's release-train tag. Bumped alongside the V1
+		// SaaS Plugin Pro launch (claude/cursor/codex 1.2.0, openclaw
+		// 2.2.0) which carries the X-License-Token forwarding for Pro
+		// tier activation and the X-Axonflow-Client header for scope
+		// validation against the agent.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.1.0",
-			"claude-code": "1.1.0",
-			"cursor":      "1.1.0",
-			"codex":       "1.1.0",
+			"openclaw":    "2.2.0",
+			"claude-code": "1.2.0",
+			"cursor":      "1.2.0",
+			"codex":       "1.2.0",
 		},
 	}
 }
