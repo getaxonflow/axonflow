@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: April 2026** | **Platform: v6.0.0** | **SDKs: Python v6.2.0, Go v5.1.0, TypeScript v5.1.0, Java v5.1.0**
+**Last Updated: May 2026** | **Platform: v7.7.0** | **SDKs: Python / Go / TypeScript / Java v7.1.0**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 

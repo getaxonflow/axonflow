@@ -21,19 +21,26 @@ import (
 
 // TierLimits defines the resource limits for a license tier.
 type TierLimits struct {
-	TenantPolicies          int  `json:"tenant_policies"`
-	OrgPolicies             int  `json:"org_policies"`
-	CustomPolicyConnectors  int  `json:"custom_policy_connectors"`
-	AuditRetentionDays      int  `json:"audit_retention_days"`
-	MaxLLMProviders         int  `json:"max_llm_providers"`
-	MaxExecutionHistory     int  `json:"max_execution_history"`
-	MaxConcurrentExec       int  `json:"max_concurrent_executions"`
-	MaxPlans                int  `json:"max_plans"`
-	MaxVersionsPerPlan      int  `json:"max_versions_per_plan"`
-	MaxSSEConnections       int  `json:"max_sse_connections"`
-	MaxCostEstimatesPerDay  int  `json:"max_cost_estimates_per_day"`
-	MaxPendingApprovals     int  `json:"max_pending_approvals"`
-	MediaGovernanceEnabled  bool `json:"media_governance_enabled"`
+	TenantPolicies         int  `json:"tenant_policies"`
+	OrgPolicies            int  `json:"org_policies"`
+	CustomPolicyConnectors int  `json:"custom_policy_connectors"`
+	AuditRetentionDays     int  `json:"audit_retention_days"`
+	MaxLLMProviders        int  `json:"max_llm_providers"`
+	MaxExecutionHistory    int  `json:"max_execution_history"`
+	MaxConcurrentExec      int  `json:"max_concurrent_executions"`
+	MaxPlans               int  `json:"max_plans"`
+	MaxVersionsPerPlan     int  `json:"max_versions_per_plan"`
+	MaxSSEConnections      int  `json:"max_sse_connections"`
+	MaxCostEstimatesPerDay int  `json:"max_cost_estimates_per_day"`
+	MaxPendingApprovals    int  `json:"max_pending_approvals"`
+	MediaGovernanceEnabled bool `json:"media_governance_enabled"`
+
+	// SaaS Plugin daily write-quota — governed events per tenant per UTC
+	// day. -1 = unlimited (self-hosted tiers; the env-var fallback in
+	// community_saas_ratelimit covers callers that never resolve to a
+	// SaaS Plugin tier). Per PRD_TENANT_DURABILITY_AND_CLAIM "Free vs
+	// Paid Boundary": Free=200, Pro=1000, Premium=5000.
+	DailyEventQuota int `json:"daily_event_quota"`
 
 	// Evaluation tier feature gates
 	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
@@ -63,6 +70,7 @@ var (
 		MaxCostEstimatesPerDay: 10,
 		MaxPendingApprovals:    5,
 		MediaGovernanceEnabled: false,
+		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// Evaluation features disabled
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
@@ -92,6 +100,7 @@ var (
 		// and contradicted TestTierBoundary_EvaluationLimitsValues.
 		MaxPendingApprovals:    25,
 		MediaGovernanceEnabled: true,
+		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// Evaluation features enabled with limits
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -117,6 +126,7 @@ var (
 		MaxCostEstimatesPerDay: -1,   // Unlimited
 		MaxPendingApprovals:    -1,   // Unlimited
 		MediaGovernanceEnabled: true,
+		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
 		// Enterprise features enabled, unlimited
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -128,6 +138,106 @@ var (
 		MaxEvidenceWindowDays:    -1, // Unlimited
 		MaxEvidenceExportsPerDay: -1, // Unlimited
 	}
+
+	// FreeLimits is the SaaS Plugin Free baseline applied when a request
+	// arrives without an X-License-Token header. Per
+	// PRD_TENANT_DURABILITY_AND_CLAIM "Free vs Paid Boundary" (locked
+	// 2026-05-05): 3-day audit retention + 200 events/day quota.
+	//
+	// Non-tenant-scoped fields (MaxLLMProviders, MaxExecutionHistory, …)
+	// are deployment-scoped per ADR-050 §9 and read from the deployment
+	// ceiling (the SaaS deployment runs Enterprise-tier license, so these
+	// are effectively unlimited at runtime). Mirroring CommunityLimits
+	// here is a safe default for any caller that reads them directly.
+	FreeLimits = TierLimits{
+		TenantPolicies:           20,
+		OrgPolicies:              0,
+		CustomPolicyConnectors:   2,
+		AuditRetentionDays:       3,
+		MaxLLMProviders:          2,
+		MaxExecutionHistory:      50,
+		MaxConcurrentExec:        5,
+		MaxPlans:                 25,
+		MaxVersionsPerPlan:       10,
+		MaxSSEConnections:        5,
+		MaxCostEstimatesPerDay:   10,
+		MaxPendingApprovals:      5,
+		MediaGovernanceEnabled:   false,
+		DailyEventQuota:          200,
+		HITLApprovalEnabled:      false,
+		HITLExpiryHours:          0,
+		PolicySimulationEnabled:  false,
+		MaxSimulationsPerDay:     0,
+		MaxImpactReportInputs:    0,
+		EvidenceExportEnabled:    false,
+		MaxEvidenceExportRecords: 0,
+		MaxEvidenceWindowDays:    0,
+		MaxEvidenceExportsPerDay: 0,
+	}
+
+	// ProLimits is the SaaS Plugin V1 paid tier ($9.99 / 90 days). 30-day
+	// retention + 1000 events/day quota per the locked PRD numbers. Other
+	// tenant-scoped capability gates (HITL, simulation, evidence export)
+	// stay off in V1 — those map to self-hosted higher tiers and are not
+	// part of the SaaS Plugin product.
+	ProLimits = TierLimits{
+		TenantPolicies:           20,
+		OrgPolicies:              0,
+		CustomPolicyConnectors:   2,
+		AuditRetentionDays:       30,
+		MaxLLMProviders:          2,
+		MaxExecutionHistory:      50,
+		MaxConcurrentExec:        5,
+		MaxPlans:                 25,
+		MaxVersionsPerPlan:       10,
+		MaxSSEConnections:        5,
+		MaxCostEstimatesPerDay:   10,
+		MaxPendingApprovals:      5,
+		MediaGovernanceEnabled:   false,
+		DailyEventQuota:          1000,
+		HITLApprovalEnabled:      false,
+		HITLExpiryHours:          0,
+		PolicySimulationEnabled:  false,
+		MaxSimulationsPerDay:     0,
+		MaxImpactReportInputs:    0,
+		EvidenceExportEnabled:    false,
+		MaxEvidenceExportRecords: 0,
+		MaxEvidenceWindowDays:    0,
+		MaxEvidenceExportsPerDay: 0,
+	}
+
+	// PremiumLimits is the SaaS Plugin Premium tier — placeholder for a
+	// future expensive higher tier (~$19.99/month subscription, TBD).
+	// NOT sold V1; populated so the schema reserves the constant + the
+	// downstream `audit_cleanup` / `community_saas_ratelimit` paths can be
+	// tested end-to-end without waiting on the Premium product launch.
+	// 90-day retention + 5000 events/day quota per the PRD's placeholder
+	// numbers — adjust when Premium PRD locks the real values.
+	PremiumLimits = TierLimits{
+		TenantPolicies:           20,
+		OrgPolicies:              0,
+		CustomPolicyConnectors:   2,
+		AuditRetentionDays:       90,
+		MaxLLMProviders:          2,
+		MaxExecutionHistory:      50,
+		MaxConcurrentExec:        5,
+		MaxPlans:                 25,
+		MaxVersionsPerPlan:       10,
+		MaxSSEConnections:        5,
+		MaxCostEstimatesPerDay:   10,
+		MaxPendingApprovals:      5,
+		MediaGovernanceEnabled:   false,
+		DailyEventQuota:          5000,
+		HITLApprovalEnabled:      false,
+		HITLExpiryHours:          0,
+		PolicySimulationEnabled:  false,
+		MaxSimulationsPerDay:     0,
+		MaxImpactReportInputs:    0,
+		EvidenceExportEnabled:    false,
+		MaxEvidenceExportRecords: 0,
+		MaxEvidenceWindowDays:    0,
+		MaxEvidenceExportsPerDay: 0,
+	}
 )
 
 // GetTierLimits returns the resource limits for a given tier.
@@ -137,6 +247,12 @@ func GetTierLimits(tier Tier) TierLimits {
 		return EvaluationLimits
 	case TierProfessional, TierEnterprise, TierEnterprisePlus:
 		return EnterpriseLimits
+	case TierFree:
+		return FreeLimits
+	case TierPro:
+		return ProLimits
+	case TierPremium:
+		return PremiumLimits
 	default:
 		return CommunityLimits
 	}

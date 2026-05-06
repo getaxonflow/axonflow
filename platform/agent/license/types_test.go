@@ -37,7 +37,7 @@ func TestLicenseKey_IsServiceLicense(t *testing.T) {
 			name: "regular org license without service name",
 			licenseKey: &LicenseKey{
 				OrgID: "acme",
-				Tier:     TierEnterprise,
+				Tier:  TierEnterprise,
 			},
 			wantService: false,
 		},
@@ -159,7 +159,7 @@ func TestLicenseKey_HasPermission(t *testing.T) {
 		{
 			name: "non-service license - no service name",
 			licenseKey: &LicenseKey{
-				OrgID:    "acme",
+				OrgID:       "acme",
 				Tier:        TierEnterprise,
 				Permissions: []string{"mcp:amadeus:*"}, // Has permissions but not a service license
 			},
@@ -239,7 +239,7 @@ func TestLicenseKey_GetServiceInfo(t *testing.T) {
 			name: "non-service license",
 			licenseKey: &LicenseKey{
 				OrgID: "acme",
-				Tier:     TierEnterprise,
+				Tier:  TierEnterprise,
 			},
 			wantServiceName: "",
 			wantServiceType: "",
@@ -272,7 +272,7 @@ func TestLicenseKey_String(t *testing.T) {
 		{
 			name: "service license string representation",
 			licenseKey: &LicenseKey{
-				OrgID:    "travel-eu",
+				OrgID:       "travel-eu",
 				ServiceName: "trip-planner",
 				ServiceType: "client-application",
 				Tier:        TierEnterprisePlus,
@@ -284,7 +284,7 @@ func TestLicenseKey_String(t *testing.T) {
 			name: "regular license string representation",
 			licenseKey: &LicenseKey{
 				OrgID: "acme",
-				Tier:     TierEnterprise,
+				Tier:  TierEnterprise,
 			},
 			wantSubstr: "tenant=acme",
 		},
@@ -307,7 +307,7 @@ func TestLicenseKey_ToValidationResult(t *testing.T) {
 	expiry := now.AddDate(0, 0, 365)
 
 	licenseKey := &LicenseKey{
-		OrgID:        "travel-eu",
+		OrgID:           "travel-eu",
 		Tier:            TierEnterprisePlus,
 		ExpiresAt:       expiry,
 		DaysUntilExpiry: 365,

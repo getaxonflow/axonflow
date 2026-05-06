@@ -427,9 +427,9 @@ Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-lim
 ## SDKs
 
 ```bash
-pip install axonflow          # Python
-npm install @axonflow/sdk     # TypeScript
-go get github.com/getaxonflow/axonflow-sdk-go/v4  # Go
+pip install axonflow              # Python
+npm install @axonflow/sdk         # TypeScript
+go get github.com/getaxonflow/axonflow-sdk-go/v7  # Go
 ```
 
 ```xml
@@ -437,7 +437,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v4  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>4.0.0</version>
+    <version>7.1.0</version>
 </dependency>
 ```
 
@@ -475,7 +475,7 @@ const response = await axonflow.proxyLLMCall({
 ### Go
 
 ```go
-import axonflow "github.com/getaxonflow/axonflow-sdk-go/v4"
+import axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "http://localhost:8080",

@@ -12,6 +12,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	logutil "axonflow/platform/shared/logger"
+	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 
 	"github.com/gorilla/mux"
@@ -31,6 +33,54 @@ import (
 // they came through the Agent gateway (not directly from an external caller).
 // Uses the same AXONFLOW_INTERNAL_SERVICE_SECRET shared secret as MCP auth.
 var proxyTokenGenerator *serviceauth.TokenGenerator
+
+// proxyDailyLimitChecker is the seam tests use to drive the
+// proxyAuthMiddleware daily-cap branch without standing up Redis or a
+// live PostgreSQL stack. Production resolves to checkCommunityDailyLimit
+// which talks to Redis (primary) with a DB fallback. Unit tests swap
+// this for a stub that returns ErrDailyLimitExceeded to assert the 429
+// response shape.
+var proxyDailyLimitChecker = checkCommunityDailyLimit
+
+// enforceCommunitySaasDailyCap applies the per-tenant daily request cap
+// for AuthKindCommunitySaaS callers and returns true if the request was
+// halted with HTTP 429. Returns false for any non-community-saas auth
+// result OR when the cap check passes — caller continues request
+// processing in either case.
+//
+// Per ADR-049 §3 + ADR-050 §9 the cap is per-tenant:
+// validateCommunitySaasAuth has already resolved Client.EffectiveTier
+// (Free / Pro / Premium); dailyLimitForTenant looks up the tier's
+// DailyEventQuota (Free=200, Pro=1000, Premium=5000 per
+// PRD_TENANT_DURABILITY_AND_CLAIM, with the legacy
+// COMMUNITY_SAAS_DAILY_LIMIT env honored as a Free-baseline fallback
+// for self-hosted operator overrides).
+//
+// Why this lives in proxy.go and not auth.go: the apiAuthMiddleware in
+// auth.go has its own inline copy of the same logic. Plugins and SDKs
+// reach the agent via proxy routes (/api/v1/process, /api/v1/audit/*,
+// /api/v1/mcp/evaluate-policies, /api/v1/connectors); without this
+// mirror the daily cap was effectively un-enforced for the routes that
+// matter most to the V1 product story (#1921, surfaced by #1920 E2E
+// harness).
+func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool {
+	if auth == nil || auth.Kind != AuthKindCommunitySaaS {
+		return false
+	}
+	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dailyCancel()
+	dailyLimit := dailyLimitForTenant(auth.Client)
+	if err := proxyDailyLimitChecker(dailyCtx, auth.TenantID, dailyLimit, authDB); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		body, _ := json.Marshal(map[string]string{
+			"error": "Daily request limit reached. Resets at midnight UTC.",
+		})
+		_, _ = w.Write(body)
+		return true
+	}
+	return false
+}
 
 // ProxyConfig holds configuration for the reverse proxy
 type ProxyConfig struct {
@@ -50,8 +100,10 @@ type ReverseProxyHandler struct {
 func NewReverseProxyHandler(config ProxyConfig) (*ReverseProxyHandler, error) {
 	handler := &ReverseProxyHandler{}
 
-	// Initialize proxy token generator for signing proxied requests
-	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+	// Initialize proxy token generator for signing proxied requests.
+	// secretenv.Get trims trailing whitespace so an SM-resolved secret with
+	// a stray newline doesn't produce a different HMAC than the receiver.
+	if secret := secretenv.Get(serviceauth.SecretEnvVar); secret != "" {
 		proxyTokenGenerator = serviceauth.NewTokenGenerator(secret, nil)
 		log.Printf("[Proxy] Internal service token signing enabled for proxied requests")
 	}
@@ -199,6 +251,15 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			w.WriteHeader(authErr.HTTPStatus)
 			errBody, _ := json.Marshal(map[string]string{"error": authErr.Message})
 			_, _ = w.Write(errBody)
+			return
+		}
+
+		// Community-SaaS daily cap. See enforceCommunitySaasDailyCap for
+		// the per-tenant cap rationale and the ADR pointers. The block
+		// is factored out so unit tests can drive it without standing up
+		// a real Authenticate path (which requires a live community-saas
+		// registrations table).
+		if enforceCommunitySaasDailyCap(w, auth) {
 			return
 		}
 

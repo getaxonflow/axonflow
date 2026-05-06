@@ -46,6 +46,7 @@ import (
 	"axonflow/platform/orchestrator/cost"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/secretenv"
 )
 
 // AxonFlow Agent - Authentication, Authorization & Static Policy Enforcement Gateway
@@ -120,7 +121,11 @@ const (
 
 // Configuration
 var (
-	jwtSecret              = []byte(os.Getenv("JWT_SECRET"))
+	// JWT_SECRET feeds straight into HMAC-SHA256. Trim via secretenv.Get
+	// so an SM-resolved value with trailing whitespace doesn't produce a
+	// silently-different signature than what the orchestrator computes
+	// from the same logical secret.
+	jwtSecret              = []byte(secretenv.Get("JWT_SECRET"))
 	orchestratorURL        = getOrchestratorURL() // Auto-discovered based on environment
 	authDB                 *sql.DB                // Database for Option 3 authentication
 	usageDB                *sql.DB // Database for usage metering
@@ -361,6 +366,25 @@ type Client struct {
 	LicenseExpiry time.Time `json:"license_expiry,omitempty"`
 	APIKeyID      string    `json:"api_key_id,omitempty"`   // For Option 3 usage tracking
 	ServiceName   string    `json:"service_name,omitempty"` // For V2 service licenses
+
+	// ADR-050 §4: per-request client identity captured from the X-Axonflow-Client
+	// header on community-saas auth. Empty when the caller didn't set the header
+	// (defaults to "full" scope per the ADR). Surfaced for telemetry + future
+	// per-client policy gates.
+	ClientHeader string `json:"client_header,omitempty"`
+	Scope        string `json:"scope,omitempty"` // derived from ClientHeader (plugin/sdk/full)
+
+	// EffectiveTier is the per-tenant SaaS Plugin tier resolved inline by
+	// `validateCommunitySaasAuth` (per ADR-049 §3 + ADR-050 §9 Pattern B):
+	// the tenant's tier scales WITHIN the deployment ceiling. Free baseline
+	// when no X-License-Token header is presented; promotes to the row's
+	// tier (Pro / Premium) when a valid token + matching plugin_user_licenses
+	// row are present. Self-hosted callers leave this empty — they read the
+	// process-wide tier via `license.GetCurrentTier(ctx)`. Downstream
+	// handlers that need tenant-scoped limits (audit retention, daily
+	// quota, capability gates) read EffectiveTier and call
+	// `license.GetTierLimits(EffectiveTier)`.
+	EffectiveTier string `json:"effective_tier,omitempty"`
 }
 
 // substituteGrafanaPassword substitutes {{GRAFANA_PASSWORD}} in SQL.
@@ -1085,6 +1109,42 @@ func Run() {
 	if isCommunitySaasMode() {
 		RegisterCommunityRegistrationHandler(globalRouter, usageDB)
 		log.Println("✅ Community SaaS registration endpoint enabled: POST /api/v1/register")
+
+		// W3 tenant-credential recovery (free tier): POST /api/v1/recover and
+		// /api/v1/recover/verify. Intentionally NOT behind apiAuthMiddleware —
+		// this is the recovery path for users who have lost their auth secret.
+		// Magic-link email is delivered via Resend (or Noop in dev).
+		RegisterCommunityRecoveryHandler(globalRouter, usageDB, nil)
+		log.Println("✅ Community SaaS recovery endpoints enabled: POST /api/v1/recover[/verify]")
+
+		// GDPR right-to-erasure (issue #1896): two-step email-verified deletion.
+		// Intentionally NOT behind apiAuthMiddleware — the auth proof is the
+		// single-use confirmation token sent to the email-on-file. Stripe
+		// customer archive is best-effort post-DB-commit (the operator-side
+		// erasure must complete regardless of Stripe API availability).
+		RegisterTenantDeletionHandler(globalRouter, usageDB, nil)
+		log.Println("✅ Community SaaS tenant deletion endpoints enabled: POST /api/v1/tenant/{id}/delete-{request,confirm}")
+
+		// W4 paid Pro v1 tier: Stripe-driven license issuance. The webhook is
+		// intentionally NOT behind apiAuthMiddleware — Stripe-Signature HMAC
+		// validation + IP allowlist + per-source rate limit are the auth
+		// stack. Returns early without registering when STRIPE_WEBHOOK_SIGNING_SECRET
+		// is unset (dev / test stacks routinely run without payment config).
+		RegisterBillingWebhook(globalRouter, usageDB)
+
+		// SaaS Plugin license validation lives inline in
+		// validateCommunitySaasAuth per ADR-049 §3 + ADR-050 §9 — there
+		// is no separate plugin-claim middleware. The X-License-Token
+		// header, X-Axonflow-Client header, plugin_user_licenses row
+		// lookup, and per-tenant tier resolution all happen in the
+		// existing community-saas auth path. Downstream handlers read
+		// the resolved tier from `Client.EffectiveTier`.
+
+		// V1 SaaS Plugin Pro paid-tier observability gauges (issue #1886).
+		// Background poll over plugin_user_licenses → Prometheus gauges
+		// (active_total, total, issued_today, expiring_7d). 60s interval.
+		// No-op on community builds (build-tagged file).
+		startPluginLicenseMetricsPoller(usageDB)
 
 		// Usage telemetry middleware (DynamoDB — disabled when table name is empty)
 		telTable := getEnv("COMMUNITY_SAAS_TELEMETRY_TABLE", "")

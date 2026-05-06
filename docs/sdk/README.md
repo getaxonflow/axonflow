@@ -1,10 +1,12 @@
 # AxonFlow SDK Documentation
 
-**Last Updated:** February 2026
+**Last Updated:** May 2026
 
-**SDK Version:** v5.0.0 | **Platform Version:** v5.0.0
+**SDK Versions:** v7.6.x (Go / Python / TypeScript / Java) — v0.2.0 preview (Rust) | **Platform Version:** v7.6.x
 
-AxonFlow provides official SDKs in four languages for integrating LLM governance into your applications. All SDKs offer identical feature coverage (see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md)) and follow the same API design principles: type-safe clients, automatic retries, and structured error handling.
+AxonFlow provides official SDKs in five languages for integrating LLM governance into your applications. The four established SDKs (Go / Python / TypeScript / Java) offer identical feature coverage; the Rust SDK is in preview with a Phase-0 baseline (auth + proxy + audit + basic MAP + basic MCP) — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix.
+
+All SDKs follow the same API design principles: type-safe clients, automatic retries, and structured error handling.
 
 ---
 
@@ -16,6 +18,7 @@ AxonFlow provides official SDKs in four languages for integrating LLM governance
 | **Python** | [github.com/getaxonflow/axonflow-sdk-python](https://github.com/getaxonflow/axonflow-sdk-python) | `pip install axonflow` |
 | **TypeScript** | [github.com/getaxonflow/axonflow-sdk-typescript](https://github.com/getaxonflow/axonflow-sdk-typescript) | `npm install @axonflow/sdk` |
 | **Java** | [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java) | See [Maven Central](#java) |
+| **Rust** _(preview)_ | [github.com/getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust) | `cargo add axonflow-sdk-rust` |
 
 ---
 
@@ -110,7 +113,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>7.0.0</version>
+    <version>7.1.0</version>
 </dependency>
 ```
 
@@ -132,6 +135,33 @@ var response = client.proxyLlmCall(
 System.out.println(response);
 ```
 
+### Rust _(preview, v0.2.0)_
+
+```toml
+# Cargo.toml
+[dependencies]
+axonflow-sdk-rust = "0.2"
+tokio = { version = "1", features = ["full"] }
+```
+
+```rust
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
+use std::collections::HashMap;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = AxonFlowConfig::new("http://localhost:8080")
+        .with_auth("your-client-id", "your-client-secret");
+    let client = AxonFlowClient::new(config)?;
+
+    let response = client
+        .proxy_llm_call("user-token", "Summarize Q4 revenue", "chat", HashMap::new())
+        .await?;
+    println!("{:?}", response);
+    Ok(())
+}
+```
+
 ---
 
 ## SDK Documentation
@@ -141,6 +171,7 @@ System.out.println(response);
 | [TypeScript Architecture](./typescript-architecture.md) | TypeScript SDK architecture and design |
 | [TypeScript Specification](./typescript-specification.md) | TypeScript SDK technical specification |
 | [TypeScript Quick Start](./typescript-quickstart.md) | Quick start guide for TypeScript SDK |
+| [Rust Quick Start](./rust-quickstart.md) | Quick start guide for the (preview) Rust SDK |
 | [LLM SDK Guide](./llm-sdk-guide.md) | Using LLM providers with the SDK |
 | [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) | Full method coverage matrix across all SDKs |
 

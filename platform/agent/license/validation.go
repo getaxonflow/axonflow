@@ -78,57 +78,73 @@ func ValidateHMACSecretAtStartup() error {
 type Tier string
 
 const (
-	TierEvaluation     Tier = "Evaluation"    // Evaluation tier - free, 90-day limit
+	TierEvaluation     Tier = "Evaluation" // Evaluation tier - free, 90-day limit
 	TierProfessional   Tier = "Professional"
 	TierEnterprise     Tier = "Enterprise"
 	TierEnterprisePlus Tier = "Plus"
 	TierCommunity      Tier = "Community" // Community tier - no license required
 
-	// W4 plugin-claim product line — orthogonal to the self-hosted tier ladder
+	// SaaS Plugin product line — orthogonal to the self-hosted tier ladder
 	// above (Community/Evaluation/Professional/Enterprise/Plus). These tiers
-	// are issued by axonflow-billing on Stripe Checkout success, signed with
-	// the plugin-claim Ed25519 key (AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY), and
-	// validated per-request by the agent middleware (NOT at orchestrator boot
-	// like the self-hosted tiers). See ADR-049 for the full design.
-	TierPluginClaimed      Tier = "plugin-claimed"      // Pro v1, $9.99 one-time
-	TierPluginSubscription Tier = "plugin-subscription" // Premium v2 placeholder; not issued in v1
+	// govern the AxonFlow-hosted SaaS Plugin path (try.getaxonflow.com today).
+	// `aud=axonflow.saas.plugin` per ADR-050 §1; tokens are issued by the
+	// in-agent Stripe webhook, signed with the plugin-claim Ed25519 key
+	// (AXONFLOW_PLUGIN_CLAIMED_SIGNING_KEY), and validated per-request by
+	// validateCommunitySaasAuth (NOT at agent boot like the self-hosted tiers).
+	// See ADR-049 (rewritten) + ADR-050 + PRD_TENANT_DURABILITY_AND_CLAIM.
+	TierFree    Tier = "Free"    // SaaS baseline; applied when no X-License-Token is sent
+	TierPro     Tier = "Pro"     // V1 paid product, $9.99 one-time / 90 days
+	TierPremium Tier = "Premium" // Reserved for a future expensive higher tier; not sold V1
 )
 
 // IsPaidTier returns true if the tier is a SELF-HOSTED paid tier
-// (Professional, Enterprise, Plus). Plugin-claim tiers are NOT included
-// here because they're a separate product line — use IsPluginTier instead.
-// This preserves backward compatibility with all existing callers that
-// gate self-hosted features on IsPaidTier (LLM provider matrix, MAP plans,
-// HITL approvals, EU AI Act templates, etc.).
+// (Professional, Enterprise, Plus). SaaS Plugin tiers (Pro, Premium) are
+// NOT included here because they're a separate product line — use
+// IsSaasPluginTier instead. Existing callers that gate self-hosted
+// features on IsPaidTier (LLM provider matrix, MAP plans, HITL approvals,
+// EU AI Act templates, etc.) keep their semantics unchanged.
 func IsPaidTier(t Tier) bool {
 	return t == TierProfessional || t == TierEnterprise || t == TierEnterprisePlus
 }
 
 // IsEvaluationOrHigher returns true if the tier is Evaluation or any
-// SELF-HOSTED paid tier. Plugin-claim tiers excluded for the same reason
+// SELF-HOSTED paid tier. SaaS Plugin tiers excluded for the same reason
 // as IsPaidTier — different product line, different feature surface.
 func IsEvaluationOrHigher(t Tier) bool {
 	return t == TierEvaluation || IsPaidTier(t)
 }
 
-// IsPluginTier returns true if the tier belongs to the plugin-claim
-// product line (Pro v1 or future Premium). Plugin tiers are orthogonal
-// to the self-hosted tier ladder: they're validated per-request in the
-// agent middleware, their entitlements live in plugin_user_licenses DB
-// rows (NOT in the token), and they're issued by axonflow-billing on
-// Stripe Checkout success.
+// IsSaasPluginTier returns true if the tier belongs to the SaaS Plugin
+// product line that ships paid tokens (Pro, Premium). TierFree is excluded
+// because Free is the absence-of-token baseline, never carried in a token's
+// payload.
 //
-// Use this in agent middleware to branch on plugin-claim vs self-hosted
-// validation context. See ADR-049 sections 1, 2, 9.
+// Used by validators (axonflow.saas.plugin accept list) and by the Stripe
+// webhook to gate which tier values are valid for issuance.
+func IsSaasPluginTier(t Tier) bool {
+	return t == TierPro || t == TierPremium
+}
+
+// IsPluginTier is the legacy name for IsSaasPluginTier; kept as a thin
+// alias so call sites that haven't migrated to the new name still compile.
+// New code should call IsSaasPluginTier directly.
 func IsPluginTier(t Tier) bool {
-	return t == TierPluginClaimed || t == TierPluginSubscription
+	return IsSaasPluginTier(t)
 }
 
 // tierRank returns the numeric rank of a tier for comparison.
-// Plugin-claim tiers return -1 (intentionally outside the ladder) so any
-// rank-based comparison against them yields predictable "not comparable"
-// behavior. Plugin-claim is product-orthogonal to self-hosted tiers — they
-// don't sit on the same continuum.
+//
+// Returns -1 sentinel for:
+//   - SaaS Plugin tiers (Free, Pro, Premium — orthogonal to the self-hosted
+//     ladder per ADR-050 §1)
+//   - Any unknown / unrecognized tier (defense against forgetting to update
+//     this switch when a new tier is added — silent default-zero would have
+//     made unknown tiers compare equal to Community, a footgun that GAP-3
+//     specifically called out)
+//
+// Callers comparing ranks (TierSatisfiesRequirement, customer-portal admin)
+// MUST treat -1 as "not comparable / fail closed" — see
+// TierSatisfiesRequirement below for the canonical handling.
 func tierRank(t Tier) int {
 	switch t {
 	case TierCommunity:
@@ -141,17 +157,36 @@ func tierRank(t Tier) int {
 		return 2
 	case TierEnterprisePlus:
 		return 3
-	case TierPluginClaimed, TierPluginSubscription:
-		return -1 // sentinel: not on the self-hosted tier ladder
+	case TierFree, TierPro, TierPremium:
+		return -1 // sentinel: SaaS Plugin tiers are not on the self-hosted ladder
 	default:
-		return 0
+		// Unknown tier — return -1 so rank-based comparisons fail closed.
+		// Pre-GAP-3 this returned 0 (== Community), which silently treated
+		// unknown tiers as the lowest valid tier. That meant any future tier
+		// added without updating this switch would default to Community
+		// rank, opening up cross-tier comparison bugs (e.g. an enterprise
+		// admin escalation check evaluating "Unknown >= Community" as true).
+		return -1
 	}
 }
 
 // TierSatisfiesRequirement returns true if the current tier meets or exceeds
 // the required tier level. Used for provider access gating.
+//
+// Fails closed when EITHER tier has rank -1 (SaaS Plugin tiers — orthogonal
+// to the self-hosted ladder per ADR-050 §1 — OR unknown tiers). Pre-GAP-3
+// the raw `>=` comparison treated -1 against any positive rank as false,
+// but treated -1 against -1 as TRUE (-1 >= -1 → unknown satisfies unknown),
+// and treated 0 against -1 as TRUE (Community satisfies plugin-claim) —
+// both were wrong. The explicit -1 check makes the orthogonality intent
+// enforceable rather than incidental.
 func TierSatisfiesRequirement(current, required Tier) bool {
-	return tierRank(current) >= tierRank(required)
+	cr := tierRank(current)
+	rr := tierRank(required)
+	if cr < 0 || rr < 0 {
+		return false
+	}
+	return cr >= rr
 }
 
 // normalizeTier validates that a tier string matches one of the canonical
@@ -233,7 +268,7 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 // without these fields, preserving backward compatibility — existing
 // validators don't read fields they don't know about.
 type ServiceLicensePayload struct {
-	LicenseID   string      `json:"id,omitempty"`           // Unique license ID
+	LicenseID   string      `json:"id,omitempty"` // Unique license ID
 	Tier        string      `json:"tier"`
 	OrgID       string      `json:"org_id"`
 	ServiceName string      `json:"service_name,omitempty"`
@@ -254,27 +289,103 @@ type ServiceLicensePayload struct {
 	Origin   string `json:"origin,omitempty"`    // "plugin" / "self_hosted_eval" / "self_hosted_enterprise" — for cross-context check
 }
 
-// expectedAudience is the canonical audience string for plugin-claim tokens.
-// Validators use this to reject tokens issued for a different context (e.g.,
-// a token signed for "orchestrator_boot" must NOT be accepted by the agent
-// middleware which expects "community_saas_plugin"). Per ADR-049 section 1.
-const ExpectedPluginClaimAudience = "community_saas_plugin"
+// =============================================================================
+// ADR-050 license matrix: per-context validators
+// =============================================================================
+//
+// The canonical aud constants + HostingMode/HasScope helpers + the SaaS
+// Plugin path accept list live in scope.go (no build tag). This file
+// owns the SDK / Self-Hosted accept lists + the per-context validator
+// wrappers used by the enterprise-build call sites.
 
-// expectedPluginOrigin is the canonical origin string for plugin-claim tokens.
-// Tokens with origin != "plugin" must be rejected by plugin-claim validators
-// (defense-in-depth alongside the audience check).
+// ExpectedPluginClaimAudience aliases scope.go's AudSaaSPlugin so legacy
+// callers that still reference `ExpectedPluginClaimAudience` keep
+// compiling without a rename pass.
+const ExpectedPluginClaimAudience = AudSaaSPlugin
+
+// ExpectedPluginClaimOrigin is the deprecated `origin` field used by the
+// abandoned parallel-JSONB design. ADR-050 §2 dropped it as redundant with
+// the third `aud` segment. The constant remains for any caller that still
+// references it (no-op after the validator stopped reading it on
+// 2026-05-05); new code SHOULD NOT set or check this field.
+//
+// Deprecated: use the `aud` claim and `HasScope` instead.
 const ExpectedPluginClaimOrigin = "plugin"
 
-// PluginClaimValidationError indicates the token failed a plugin-claim-specific
-// validation step (audience, origin). Distinct error type so callers can
-// distinguish "this is an Ed25519-valid token but not for our context" from
-// "this token's signature doesn't verify".
+// saasSDKPathAcceptList is the closed set of aud values accepted by the
+// SaaS SDK path validator. Reserved for the future SaaS SDK product —
+// shipped day one so future product launches are config + marketing only,
+// not architecture work. (The SaaS Plugin path's accept list lives in
+// scope.go as `SaaSPluginPathAcceptList`.)
+var saasSDKPathAcceptList = []string{AudSaaSSDK, AudSaaSFull}
+
+// selfHostedLicenseAcceptList is the closed set of aud values accepted by
+// the self-hosted license loader (AXONFLOW_LICENSE_KEY env var read at
+// agent boot). Per ADR-050 §3.
+var selfHostedLicenseAcceptList = []string{AudSelfHostedPlugin, AudSelfHostedSDK, AudSelfHostedFull}
+
+// ValidateForSaasPluginPath is the per-context validator for the SaaS
+// Plugin path (X-License-Token on requests to the SaaS agent). Delegates
+// to `IsSaaSPluginPathAud` (scope.go) so the accept list — which includes
+// the legacy `community_saas_plugin` aud for W4 scaffolding tokens — is
+// the single source of truth.
+//
+// Caller responsibilities (NOT done here): signature verification, expiry
+// check, plugin_user_licenses row lookup, tenant_id match.
+func ValidateForSaasPluginPath(payload *ServiceLicensePayload) error {
+	if !IsSaaSPluginPathAud(payload.Aud) {
+		return &PluginClaimValidationError{Reason: fmt.Sprintf(
+			"aud %q not accepted by the SaaS Plugin path (need one of %v)",
+			payload.Aud, SaaSPluginPathAcceptList)}
+	}
+	return nil
+}
+
+// ValidateForSaasSDKPath is the per-context validator for the SaaS SDK
+// path. Reserved for the future SaaS SDK product.
+func ValidateForSaasSDKPath(payload *ServiceLicensePayload) error {
+	for _, accepted := range saasSDKPathAcceptList {
+		if payload.Aud == accepted {
+			return nil
+		}
+	}
+	return &PluginClaimValidationError{Reason: fmt.Sprintf(
+		"aud %q not accepted by the SaaS SDK path (need one of %v)",
+		payload.Aud, saasSDKPathAcceptList)}
+}
+
+// ValidateForSelfHostedLicense is the per-context validator for the
+// self-hosted license loader (AXONFLOW_LICENSE_KEY env var at agent boot).
+// Per ADR-050 §8 missing-aud tokens predate the matrix and are accepted
+// (treated as `axonflow.self_hosted.full` equivalents — the only quadrant
+// they could plausibly belong to). New tokens MUST carry an explicit aud
+// value from selfHostedLicenseAcceptList.
+func ValidateForSelfHostedLicense(payload *ServiceLicensePayload) error {
+	if payload.Aud == "" {
+		// ADR-050 §8 backward-compat: legacy customer tokens with no
+		// aud claim were issued for self-hosted use; accept them.
+		return nil
+	}
+	for _, accepted := range selfHostedLicenseAcceptList {
+		if payload.Aud == accepted {
+			return nil
+		}
+	}
+	return &PluginClaimValidationError{Reason: fmt.Sprintf(
+		"aud %q not accepted by the self-hosted license loader (need one of %v)",
+		payload.Aud, selfHostedLicenseAcceptList)}
+}
+
+// PluginClaimValidationError indicates the token failed a SaaS Plugin
+// validation step (audience). Distinct error type so callers can
+// distinguish "this is an Ed25519-valid token but not for our context"
+// from "this token's signature doesn't verify".
 type PluginClaimValidationError struct {
 	Reason string
 }
 
 func (e *PluginClaimValidationError) Error() string {
-	return "plugin-claim validation failed: " + e.Reason
+	return "SaaS Plugin validation failed: " + e.Reason
 }
 
 // validateEd25519License validates an Ed25519-signed license key.
@@ -328,6 +439,18 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 		// valid
 	default:
 		return nil, fmt.Errorf("invalid license tier: %s", tier)
+	}
+
+	// Cross-quadrant guard: a self-hosted license loader (this path) MUST
+	// reject tokens issued for SaaS quadrants. Per ADR-050 §3 the accept
+	// list is `axonflow.self_hosted.{plugin,sdk,full}`. Tokens with empty
+	// `aud` predate the rename and fall back to `axonflow.self_hosted.full`
+	// (still on the accept list), so legacy customer licenses keep working.
+	// A buyer who pastes their `axonflow.saas.plugin` Pro token into
+	// AXONFLOW_LICENSE_KEY trips this check and gets a clear boot-time
+	// rejection.
+	if err := ValidateForSelfHostedLicense(&payload); err != nil {
+		return nil, fmt.Errorf("license validation failed: %w", err)
 	}
 
 	// Parse expiry date
@@ -471,9 +594,9 @@ func getFeatures(tier Tier) map[string]bool {
 // Thread-safe validation cache with TTL and bounded size.
 // Keys are SHA-256 hashes to avoid storing license keys in plaintext.
 var (
-	validationCache  = make(map[string]*cachedValidation)
-	validationCacheMu sync.RWMutex
-	validationCacheTTL = 5 * time.Minute
+	validationCache        = make(map[string]*cachedValidation)
+	validationCacheMu      sync.RWMutex
+	validationCacheTTL     = 5 * time.Minute
 	validationCacheMaxSize = 100
 )
 

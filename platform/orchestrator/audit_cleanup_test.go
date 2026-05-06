@@ -75,6 +75,12 @@ func TestAuditCleanupService_CleanupExpiredAuditLogs(t *testing.T) {
 
 			svc := NewAuditCleanupService(db, checker)
 
+			// Per-tenant retention lookup runs first (B4). When no Pro / Premium
+			// tenants exist, return an empty result — the cleanup falls through
+			// to the deployment-wide DELETE.
+			mock.ExpectQuery(`SELECT tenant_id, tier\s+FROM plugin_user_licenses\s+WHERE revoked_at IS NULL`).
+				WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "tier"}))
+
 			if tt.expectDelete {
 				mock.ExpectExec(`DELETE FROM audit_logs WHERE timestamp < \$1`).
 					WillReturnResult(sqlmock.NewResult(0, tt.rowsAffected))
@@ -174,6 +180,11 @@ func TestAuditCleanupService_CleanupExpiredAuditLogs_DBError(t *testing.T) {
 	}
 	svc := NewAuditCleanupService(db, checker)
 
+	// Per-tenant lookup runs first; return no Pro/Premium tenants so the
+	// deployment-wide DELETE fires next.
+	mock.ExpectQuery(`SELECT tenant_id, tier\s+FROM plugin_user_licenses\s+WHERE revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "tier"}))
+
 	mock.ExpectExec(`DELETE FROM audit_logs WHERE timestamp < \$1`).
 		WillReturnError(context.DeadlineExceeded)
 
@@ -185,6 +196,97 @@ func TestAuditCleanupService_CleanupExpiredAuditLogs_DBError(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled mock expectations: %v", err)
 	}
+}
+
+// TestAuditCleanupService_PerTenantRetention asserts that an active SaaS
+// Plugin Pro tenant gets its own 30-day retention DELETE while every
+// other tenant rolls into the deployment-wide DELETE that excludes the
+// Pro tenant. Locks the per-tenant cleanup contract added in B4.
+func TestAuditCleanupService_PerTenantRetention(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	checker := &mockLicenseChecker{
+		tier:               license.TierEnterprise,
+		auditRetentionDays: 3650, // SaaS deployment ceiling
+	}
+	svc := NewAuditCleanupService(db, checker)
+
+	// One active Pro tenant in plugin_user_licenses.
+	mock.ExpectQuery(`SELECT tenant_id, tier\s+FROM plugin_user_licenses\s+WHERE revoked_at IS NULL`).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "tier"}).
+			AddRow("cs_pro_buyer", "Pro"))
+
+	// Per-tenant DELETE for the Pro bucket (30d retention).
+	mock.ExpectExec(`DELETE FROM audit_logs WHERE tenant_id = ANY\(\$1\) AND timestamp < \$2`).
+		WillReturnResult(sqlmock.NewResult(0, 4))
+
+	// Deployment-wide DELETE for everyone else, excluding the Pro tenant.
+	mock.ExpectExec(`DELETE FROM audit_logs\s+WHERE timestamp < \$1\s+AND \(tenant_id IS NULL OR NOT tenant_id = ANY\(\$2\)\)`).
+		WillReturnResult(sqlmock.NewResult(0, 17))
+
+	count, err := svc.CleanupExpiredAuditLogs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 21 { // 4 + 17
+		t.Errorf("expected 21 rows deleted (4 per-tenant + 17 default), got %d", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestAuditCleanupService_TableMissing_FallsThrough asserts that when
+// plugin_user_licenses doesn't exist (self-hosted deployments without
+// the SaaS schema), the cleanup runs the deployment-wide DELETE and
+// returns its row count.
+func TestAuditCleanupService_TableMissing_FallsThrough(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	checker := &mockLicenseChecker{
+		tier:               license.TierEvaluation,
+		auditRetentionDays: 14,
+	}
+	svc := NewAuditCleanupService(db, checker)
+
+	// Simulate the postgres "table does not exist" error for plugin_user_licenses.
+	mock.ExpectQuery(`SELECT tenant_id, tier\s+FROM plugin_user_licenses`).
+		WillReturnError(&pgUndefinedTableError{table: "plugin_user_licenses"})
+
+	mock.ExpectExec(`DELETE FROM audit_logs WHERE timestamp < \$1`).
+		WillReturnResult(sqlmock.NewResult(0, 9))
+
+	count, err := svc.CleanupExpiredAuditLogs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 9 {
+		t.Errorf("expected 9 rows deleted (fallback bucket), got %d", count)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock: %v", err)
+	}
+}
+
+// pgUndefinedTableError is a minimal stand-in for pq's
+// `*pq.Error{Code:"42P01"}`. We don't import pq here because the
+// production code uses string-matching against the error message — see
+// `isUndefinedTableError` in audit_cleanup.go.
+type pgUndefinedTableError struct {
+	table string
+}
+
+func (e *pgUndefinedTableError) Error() string {
+	return "ERROR: relation \"" + e.table + "\" does not exist (SQLSTATE 42P01)"
 }
 
 func TestAuditCleanupService_SetExecutionRepo(t *testing.T) {

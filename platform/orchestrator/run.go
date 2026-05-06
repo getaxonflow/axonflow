@@ -55,6 +55,7 @@ import (
 	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
+	"axonflow/platform/shared/secretenv"
 	"axonflow/platform/shared/serviceauth"
 )
 
@@ -394,11 +395,21 @@ type ProviderInfo struct {
 func LoadLLMConfig() LLMRouterConfig {
 	config := LLMRouterConfig{}
 
+	// LLM API keys are read via secretenv.Get because every provider's
+	// official SDK passes the key into an HTTP Authorization header
+	// (Bearer / x-api-key) — Go's net/http rejects header values
+	// containing control characters with `invalid header field value`.
+	// AWS Secrets Manager secret values commonly carry trailing newlines,
+	// which causes every LLM call to fail closed with a confusing
+	// transport-layer error. Trimming defensively at boot avoids that.
+	// Endpoints / model names / deployment names are kept on os.Getenv
+	// because they're URLs / identifiers, not secrets.
+
 	// OpenAI configuration
-	config.OpenAIKey = os.Getenv("OPENAI_API_KEY")
+	config.OpenAIKey = secretenv.Get("OPENAI_API_KEY")
 
 	// Anthropic configuration
-	config.AnthropicKey = os.Getenv("ANTHROPIC_API_KEY")
+	config.AnthropicKey = secretenv.Get("ANTHROPIC_API_KEY")
 
 	// Bedrock configuration
 	// Allow environment-specific overrides (e.g., BEDROCK_REGION_PROD)
@@ -410,17 +421,17 @@ func LoadLLMConfig() LLMRouterConfig {
 	config.OllamaModel = os.Getenv("OLLAMA_MODEL")
 
 	// Gemini configuration
-	config.GeminiKey = os.Getenv("GOOGLE_API_KEY")
+	config.GeminiKey = secretenv.Get("GOOGLE_API_KEY")
 	config.GeminiModel = os.Getenv("GOOGLE_MODEL")
 
 	// Mistral configuration
-	config.MistralKey = os.Getenv("MISTRAL_API_KEY")
+	config.MistralKey = secretenv.Get("MISTRAL_API_KEY")
 	config.MistralModel = os.Getenv("MISTRAL_MODEL")
 	config.MistralEndpoint = os.Getenv("MISTRAL_ENDPOINT")
 
 	// Azure OpenAI configuration
 	config.AzureOpenAIEndpoint = os.Getenv("AZURE_OPENAI_ENDPOINT")
-	config.AzureOpenAIAPIKey = os.Getenv("AZURE_OPENAI_API_KEY")
+	config.AzureOpenAIAPIKey = secretenv.Get("AZURE_OPENAI_API_KEY")
 	config.AzureOpenAIDeploymentName = os.Getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 	config.AzureOpenAIAPIVersion = os.Getenv("AZURE_OPENAI_API_VERSION")
 
@@ -1517,8 +1528,11 @@ func initializeComponents() {
 		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
 	}
 
-	// Initialize proxy auth validator — verifies requests came through the Agent gateway
-	if secret := os.Getenv(serviceauth.SecretEnvVar); secret != "" {
+	// Initialize proxy auth validator — verifies requests came through the Agent gateway.
+	// secretenv.Get trims SM-derived whitespace so the agent's HMAC signature
+	// matches; otherwise the orchestrator's verifier would compute a different
+	// digest from the same logical secret and fail-closed silently.
+	if secret := secretenv.Get(serviceauth.SecretEnvVar); secret != "" {
 		proxyTokenValidator = serviceauth.NewTokenValidator(secret, nil, serviceauth.DefaultClockSkew)
 		log.Println("Proxy auth validation enabled for audit write endpoints")
 	} else {

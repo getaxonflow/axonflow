@@ -1,0 +1,64 @@
+# Grafana contact-point provisioning for V1 SaaS Plugin Pro alerts.
+# https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/
+#
+# Two contact points:
+#   1. axonflow-ops-email — primary route, fires every alert to dev@getaxonflow.com
+#   2. axonflow-ops-noop  — silent (NoopNotifier) — used for staging stacks where
+#      we want to TEST alert evaluation without paging
+#
+# SMTP creds + sender address come from Grafana env (GF_SMTP_*); see the docs
+# in axonflow-internal-docs/engineering/V1_PAID_TIER_OBSERVABILITY_RUNBOOK.md
+# for how to wire those for production deployment.
+#
+# Email choice rationale: the V1 SaaS Plugin Pro launch is single-operator
+# (Saurabh) per the V1 launch tracker. SMS / PagerDuty / Slack integration
+# is deferred to V2 when the team grows beyond one. Email gets through to
+# the correct human reliably enough for a 60s page on critical-class alerts.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: axonflow-ops-email
+    receivers:
+      - uid: axonflow-ops-email-receiver
+        type: email
+        settings:
+          # Single recipient — see file header comment for routing rationale.
+          # Keep this in sync with reference_email_addresses.md
+          # (dev@getaxonflow.com is the gcloud identity / canonical ops inbox).
+          addresses: dev@getaxonflow.com
+          # Single-message alerts so the operator gets one email per
+          # alert fire, not a digest.
+          singleEmail: true
+          subject: |
+            [AxonFlow {{ .Status | toUpper }}] {{ .CommonAnnotations.summary }}
+          message: |
+            {{ range .Alerts }}
+            Alert: {{ .Labels.alertname }}
+            Severity: {{ .Labels.severity }}
+            Team: {{ .Labels.team }}
+            Status: {{ .Status }}
+
+            Summary: {{ .Annotations.summary }}
+
+            {{ .Annotations.description }}
+
+            Runbook: {{ .Annotations.runbook_url }}
+            Grafana panel: {{ .GeneratorURL }}
+            ---
+            {{ end }}
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: axonflow-ops-noop
+    receivers:
+      - uid: axonflow-ops-noop-receiver
+        type: webhook
+        settings:
+          # Webhook to a localhost address that doesn't accept connections —
+          # functionally a noop that still records the alert evaluation in
+          # Grafana history. Use for staging stacks. NEVER use for prod.
+          url: http://127.0.0.1:1
+          httpMethod: POST
+        disableResolveMessage: true

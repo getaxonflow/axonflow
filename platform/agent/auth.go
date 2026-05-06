@@ -345,15 +345,95 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 
 	enqueueActivityUpdate(authDB, cID)
 
+	// ADR-050 §4: derive request scope from X-Axonflow-Client. Absent header
+	// defaults to "full" — a caller hitting raw HTTP without identification
+	// is by construction a sophisticated user; a plugin-only token paired
+	// with that request would correctly reject below.
+	clientHeader := r.Header.Get("X-Axonflow-Client")
+	scope := license.DeriveScopeFromClientHeader(clientHeader)
+
+	// Per-tenant effective tier per ADR-049 §3 + ADR-050 §9. Default is
+	// the SaaS Plugin Free baseline (applied when no X-License-Token is
+	// present). A valid token + matching plugin_user_licenses row
+	// promotes the request to the row's tier (today: Pro). Token
+	// validation runs first (signature, aud accept-list, scope); the
+	// DB lookup runs only after the token is otherwise valid so we
+	// don't burn a query per malformed-token request.
+	effectiveTier := string(license.TierFree)
+
+	// ADR-050 §3 + §4: when the caller presents a license token, validate it
+	// against the SaaS Plugin path's accept list and check that the token's
+	// aud.scope satisfies the request scope derived above. Cross-quadrant
+	// misuse (e.g. self_hosted token sent as X-License-Token, or plugin-scope
+	// token paired with an SDK client header) is rejected here.
+	if licenseToken := r.Header.Get("X-License-Token"); licenseToken != "" {
+		payload, err := license.ParseAndVerifyServiceToken(licenseToken)
+		if err != nil {
+			log.Printf("[AUTH] X-License-Token parse/verify failed for tenant %s: %v",
+				logutil.Sanitize(cID), err)
+			return nil, &CommunitySaasAuthError{
+				StatusCode: http.StatusUnauthorized,
+				Message:    "invalid_license_token: " + err.Error(),
+			}
+		}
+		if !license.IsSaaSPluginPathAud(payload.Aud) {
+			log.Printf("[AUTH] cross-quadrant token rejected for tenant %s: aud=%q",
+				logutil.Sanitize(cID), payload.Aud)
+			return nil, &CommunitySaasAuthError{
+				StatusCode: http.StatusUnauthorized,
+				Message:    fmt.Sprintf("cross_quadrant_token: aud %q not accepted on SaaS plugin path", payload.Aud),
+			}
+		}
+		if !payload.HasScope(scope) {
+			log.Printf("[AUTH] scope mismatch for tenant %s: token aud=%q, request scope=%q (client=%q)",
+				logutil.Sanitize(cID), payload.Aud, scope, logutil.Sanitize(clientHeader))
+			return nil, &CommunitySaasAuthError{
+				StatusCode: http.StatusUnauthorized,
+				Message:    fmt.Sprintf("scope_mismatch: token aud %q does not grant scope %q (client %q)", payload.Aud, scope, clientHeader),
+			}
+		}
+
+		// The token's tenant_id MUST match the auth-resolved tenant. A
+		// buyer presenting their token from another tenant is a forgery
+		// / token-leak scenario.
+		if payload.TenantID != cID {
+			log.Printf("[AUTH] license token tenant mismatch: token=%s auth=%s",
+				logutil.Sanitize(payload.TenantID), logutil.Sanitize(cID))
+			return nil, &CommunitySaasAuthError{
+				StatusCode: http.StatusForbidden,
+				Message:    "license_tenant_mismatch: token tenant_id does not match authenticated tenant",
+			}
+		}
+
+		// Per-request DB lookup so revocation is effective within ~60s
+		// of a chargeback or dispute (ADR-049 §2). The row carries the
+		// canonical tier — the token's tier claim is informational
+		// only. This is the work that used to live in
+		// `plugin_claim_middleware.go`; it folds inline here per
+		// ADR-049 §3 / ADR-050 §9 so per-tenant tier resolution stays
+		// in the single auth path.
+		rowTier, lookupErr := lookupActivePluginLicenseTier(r.Context(), authDB, payload.JTI, cID)
+		if lookupErr != nil {
+			authErr := mapPluginLicenseLookupError(lookupErr, payload.JTI)
+			log.Printf("[AUTH] plugin_user_licenses lookup failed for jti=%s: %v",
+				logutil.Sanitize(payload.JTI), lookupErr)
+			return nil, authErr
+		}
+		effectiveTier = string(rowTier)
+	}
+
 	return &Client{
-		ID:          cID,
-		Name:        "Community-SaaS",
-		OrgID:       communitySaasOrgID,
-		TenantID:    cID,
-		Enabled:     true,
-		LicenseTier: "Community",
-		RateLimit:   minuteLimit,
-		Permissions: []string{},
+		ID:            cID,
+		Name:          "Community-SaaS",
+		OrgID:         communitySaasOrgID,
+		TenantID:      cID,
+		Enabled:       true,
+		LicenseTier:   "Community",
+		RateLimit:     minuteLimit,
+		Permissions:   []string{},
+		ClientHeader:  clientHeader,
+		Scope:         scope,
+		EffectiveTier: effectiveTier,
 	}, nil
 }
 
@@ -458,11 +538,18 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		orgID := auth.OrgID
 		clientID := auth.ClientID
 
-		// Community-SaaS daily cap (per-request concern, not in Authenticate)
+		// Community-SaaS daily cap (per-request concern, not in Authenticate).
+		// Per ADR-049 §3 + ADR-050 §9 the cap is per-tenant: validateCommunitySaasAuth
+		// has already resolved Client.EffectiveTier (Free / Pro / Premium); we
+		// look up the tier's `DailyEventQuota` here. The locked numbers per
+		// PRD_TENANT_DURABILITY_AND_CLAIM are Free=200, Pro=1000, Premium=5000.
+		// The legacy `COMMUNITY_SAAS_DAILY_LIMIT` env var is still honored as
+		// a fallback for the Free baseline so operators running their own
+		// stacks can override without rebuilding (e.g. the perf-testing rig).
 		if auth.Kind == AuthKindCommunitySaaS {
 			dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer dailyCancel()
-			dailyLimit := getEnvInt("COMMUNITY_SAAS_DAILY_LIMIT", 500)
+			dailyLimit := dailyLimitForTenant(auth.Client)
 			if err := checkCommunityDailyLimit(dailyCtx, tenantID, dailyLimit, authDB); err != nil {
 				writeJSONError(w, "Daily request limit reached. Resets at midnight UTC.", http.StatusTooManyRequests)
 				return
