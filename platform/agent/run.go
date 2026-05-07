@@ -133,6 +133,13 @@ var (
 	meteringService           *marketplace.MeteringService // AWS Marketplace metering
 	costService               *cost.Service // Cost tracking and budget enforcement (Issue #1082)
 	circuitBreakerInstance    *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
+	// mcpHITLService is the long-lived HITL service the MCP-tool dispatcher
+	// reuses for `axonflow_request_approval`. Wiring it here (rather than
+	// constructing a new Service per call) means the MCP-tool path inherits
+	// the same tier gate, validation, history-write, and pending-cap logic
+	// the HTTP handler path uses — single chokepoint, no parallel
+	// enforcement layers to drift.
+	mcpHITLService *hitl.Service
 )
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
@@ -1021,6 +1028,12 @@ func Run() {
 	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{
 		MaxPendingApprovals: hitlLimits.MaxPendingApprovals,
 	})
+	// Expose the HITL service to the MCP-tool dispatcher so
+	// `axonflow_request_approval` (mcp_v1_pro_tools.go) routes through the
+	// same Service the HTTP handler uses, instead of writing to the
+	// `hitl_approval_queue` table directly. Single enforcement chokepoint
+	// for the tier gate + pending cap + history.
+	mcpHITLService = hitlService
 	hitlHandler := hitl.NewHandler(hitlService)
 	// HITL routes need apiAuthMiddleware so X-Org-ID/X-Tenant-ID headers are set
 	// from auth credentials (same pattern as circuit breaker).

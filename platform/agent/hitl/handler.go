@@ -219,9 +219,15 @@ func (h *Handler) CreateRequest(w http.ResponseWriter, r *http.Request) {
 	req, err := h.service.CreateApprovalRequest(r.Context(), createInput)
 	if err != nil {
 		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue", "error").Inc()
-		if errors.Is(err, ErrPendingApprovalLimitExceeded) {
+		switch {
+		case errors.Is(err, ErrHITLApprovalDisabledByTier):
+			// 403 Forbidden — tier gate; the request shape is fine, the
+			// running license tier is what's denying it. Surfaces a clear
+			// upgrade pointer in the body.
+			h.writeError(w, http.StatusForbidden, err.Error())
+		case errors.Is(err, ErrPendingApprovalLimitExceeded):
 			h.writeError(w, http.StatusTooManyRequests, err.Error())
-		} else {
+		default:
 			h.writeError(w, http.StatusBadRequest, err.Error())
 		}
 		return

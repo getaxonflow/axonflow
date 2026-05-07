@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -600,7 +601,7 @@ func TestMCPToolCreateTenantPolicy_RequiredArgs(t *testing.T) {
 	}
 	for i, args := range cases {
 		t.Run(string(rune('a'+i)), func(t *testing.T) {
-			_, err := mcpToolCreateTenantPolicy(context.Background(), nil, session, args)
+			_, err := mcpToolCreateTenantPolicy(context.Background(), session, args)
 			if err == nil {
 				t.Errorf("expected error for args=%v, got none", args)
 			}
@@ -641,6 +642,294 @@ func TestWriteMCPGateError_AllLimitTypes(t *testing.T) {
 			}
 			if env.Upgrade.BuyURL != v1ProUpgradeBuyURL {
 				t.Errorf("envelope.upgrade.buy_url drift: %q", env.Upgrade.BuyURL)
+			}
+		})
+	}
+}
+
+// TestMCPToolCreateTenantPolicy_HappyPath stands up an httptest server in
+// place of the orchestrator and asserts the tool builds the expected
+// request body shape, calls /api/v1/policies, and returns the policy
+// fields lifted up into the MCP tool response shape with explicit
+// success+created flags.
+func TestMCPToolCreateTenantPolicy_HappyPath(t *testing.T) {
+	var capturedBody map[string]interface{}
+	var capturedPath string
+	var capturedTenantHeader string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedTenantHeader = r.Header.Get("X-Tenant-ID")
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"policy": map[string]interface{}{
+				"id":        "0d2a83cf-9b2e-4d3a-9f1a-7b9c2e1a4d56",
+				"policy_id": "tenant-cs_test_p-orch-generated-uuid",
+				"name":      "Block ssh-key writes",
+				"tier":      "tenant",
+				"enabled":   true,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	originalURL := orchestratorURL
+	orchestratorURL = srv.URL
+	defer func() { orchestratorURL = originalURL }()
+
+	session := &mcpSession{tenantID: "cs_test_pro_tenant", tier: "Pro"}
+	result, err := mcpToolCreateTenantPolicy(context.Background(), session, map[string]interface{}{
+		"name":           "Block ssh-key writes",
+		"connector_type": "claude_code.Bash",
+		"pattern":        ".*~/\\.ssh/.*",
+		"action":         "block",
+		"description":    "Prevent the AI from writing ssh keys",
+	})
+	if err != nil {
+		t.Fatalf("happy path error: %v", err)
+	}
+
+	if capturedPath != "/api/v1/policies" {
+		t.Errorf("orchestrator path = %q, want /api/v1/policies", capturedPath)
+	}
+	if capturedTenantHeader != "cs_test_pro_tenant" {
+		t.Errorf("X-Tenant-ID = %q, want cs_test_pro_tenant", capturedTenantHeader)
+	}
+	if capturedBody["tier"] != "tenant" {
+		t.Errorf("body.tier = %v, want tenant (this is what triggers IsPaidTier on orchestrator)", capturedBody["tier"])
+	}
+	if capturedBody["type"] != "content" {
+		t.Errorf("body.type = %v, want content", capturedBody["type"])
+	}
+	conds, _ := capturedBody["conditions"].([]interface{})
+	if len(conds) != 1 {
+		t.Fatalf("conditions len = %d, want 1", len(conds))
+	}
+	cond0, _ := conds[0].(map[string]interface{})
+	if cond0["field"] != "query" || cond0["operator"] != "regex" || cond0["value"] != ".*~/\\.ssh/.*" {
+		t.Errorf("condition shape drift: %v", cond0)
+	}
+	actions, _ := capturedBody["actions"].([]interface{})
+	if len(actions) != 1 {
+		t.Fatalf("actions len = %d, want 1", len(actions))
+	}
+	act0, _ := actions[0].(map[string]interface{})
+	if act0["type"] != "block" {
+		t.Errorf("action.type = %v, want block (block→block mapping)", act0["type"])
+	}
+
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result not map: %T", result)
+	}
+	if m["success"] != true || m["created"] != true {
+		t.Errorf("missing success/created flags: %v", m)
+	}
+	if m["id"] != "0d2a83cf-9b2e-4d3a-9f1a-7b9c2e1a4d56" {
+		t.Errorf("id passthrough = %v", m["id"])
+	}
+	if m["policy_id"] != "tenant-cs_test_p-orch-generated-uuid" {
+		t.Errorf("policy_id passthrough = %v", m["policy_id"])
+	}
+	if m["connector_type"] != "claude_code.Bash" {
+		t.Errorf("connector_type echo = %v", m["connector_type"])
+	}
+}
+
+// TestMCPToolCreateTenantPolicy_ActionMapping asserts every supported
+// user-facing action maps to the right engine action type. Asserts on
+// the body sent to the orchestrator (not just the response).
+func TestMCPToolCreateTenantPolicy_ActionMapping(t *testing.T) {
+	cases := []struct {
+		userAction   string
+		engineAction string
+	}{
+		{"block", "block"},
+		{"warn", "alert"},
+		{"audit", "log"},
+		{"require_approval", "require_approval"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.userAction, func(t *testing.T) {
+			var capturedAction string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]interface{}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if actions, ok := body["actions"].([]interface{}); ok && len(actions) > 0 {
+					if a0, ok := actions[0].(map[string]interface{}); ok {
+						capturedAction, _ = a0["type"].(string)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"policy": map[string]interface{}{"id": "x"}})
+			}))
+			defer srv.Close()
+
+			originalURL := orchestratorURL
+			orchestratorURL = srv.URL
+			defer func() { orchestratorURL = originalURL }()
+
+			_, err := mcpToolCreateTenantPolicy(context.Background(), &mcpSession{tenantID: "t1", tier: "Pro"}, map[string]interface{}{
+				"name":           "test",
+				"connector_type": "test_connector",
+				"pattern":        ".*",
+				"action":         tc.userAction,
+			})
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if capturedAction != tc.engineAction {
+				t.Errorf("user action %q → engine action %q, want %q", tc.userAction, capturedAction, tc.engineAction)
+			}
+		})
+	}
+}
+
+// TestMCPToolCreateTenantPolicy_PaidTierReject asserts that when the
+// orchestrator returns the IsPaidTier rejection (403 with the canonical
+// "Enterprise license" wording), the MCP tool surfaces a clearer error
+// that distinguishes deployment-license cause from SaaS Plugin tier cap.
+// This is the bypass-closure assertion: a Community-tier process now
+// correctly rejects tenant-policy creation through the MCP tool path.
+func TestMCPToolCreateTenantPolicy_PaidTierReject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "TIER_VALIDATION_FAILED",
+			"code":    "tier_validation_enterprise_or_higher",
+			"message": "Tenant-tier policies require Enterprise license. Get an Enterprise license at https://getaxonflow.com/enterprise",
+		})
+	}))
+	defer srv.Close()
+
+	originalURL := orchestratorURL
+	orchestratorURL = srv.URL
+	defer func() { orchestratorURL = originalURL }()
+
+	_, err := mcpToolCreateTenantPolicy(context.Background(), &mcpSession{tenantID: "cs_pro", tier: "Pro"}, map[string]interface{}{
+		"name":           "test",
+		"connector_type": "x",
+		"pattern":        ".*",
+		"action":         "block",
+	})
+	if err == nil {
+		t.Fatal("expected error from orchestrator 403 IsPaidTier reject")
+	}
+	if !strings.Contains(err.Error(), "license tier") || !strings.Contains(err.Error(), "Community caps at 20") {
+		t.Errorf("error should surface deployment-license-tier cause and quota numbers, got: %v", err)
+	}
+}
+
+// TestMCPToolCreateTenantPolicy_OrchestratorDown asserts that when the
+// orchestrator URL isn't configured, the tool surfaces a clear error
+// rather than panicking or silently succeeding.
+func TestMCPToolCreateTenantPolicy_OrchestratorDown(t *testing.T) {
+	originalURL := orchestratorURL
+	orchestratorURL = ""
+	defer func() { orchestratorURL = originalURL }()
+
+	_, err := mcpToolCreateTenantPolicy(context.Background(), &mcpSession{tenantID: "t1", tier: "Pro"}, map[string]interface{}{
+		"name":           "test",
+		"connector_type": "x",
+		"pattern":        ".*",
+		"action":         "block",
+	})
+	if err == nil {
+		t.Fatal("expected error when orchestrator not configured")
+	}
+	if !strings.Contains(err.Error(), "could not create tenant policy") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+// TestMCPToolCreateTenantPolicy_GenericOrchestratorError asserts that
+// non-403 orchestrator errors (500, 400, etc.) bubble up as a generic
+// "could not create" error rather than being misclassified as a
+// paid-tier rejection.
+func TestMCPToolCreateTenantPolicy_GenericOrchestratorError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"INTERNAL_ERROR","message":"database temporarily unavailable"}`))
+	}))
+	defer srv.Close()
+
+	originalURL := orchestratorURL
+	orchestratorURL = srv.URL
+	defer func() { orchestratorURL = originalURL }()
+
+	_, err := mcpToolCreateTenantPolicy(context.Background(), &mcpSession{tenantID: "t1", tier: "Pro"}, map[string]interface{}{
+		"name":           "test",
+		"connector_type": "x",
+		"pattern":        ".*",
+		"action":         "block",
+	})
+	if err == nil {
+		t.Fatal("expected error from orchestrator 500")
+	}
+	if strings.Contains(err.Error(), "Evaluation or Enterprise license") {
+		t.Errorf("500 error should NOT be classified as paid-tier reject, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "could not create tenant policy") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+// TestIsOrchestratorPaidTierReject_Cases covers the classifier in
+// isolation across realistic 403 / non-403 / paid-tier-vs-other-403
+// inputs. Keeps the classifier honest if message text drifts.
+func TestIsOrchestratorPaidTierReject_Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"non-403", fmt.Errorf("orchestrator returned 500: internal error"), false},
+		{"403 paid-tier with enterprise wording", fmt.Errorf(`orchestrator returned 403: {"code":"tier_validation_enterprise_or_higher","message":"Tenant policies require Enterprise license"}`), true},
+		{"403 paid-tier with evaluation wording", fmt.Errorf(`orchestrator returned 403: {"code":"tier_validation_organization_or_higher","message":"Org policies require Evaluation or Enterprise license"}`), true},
+		{"403 paid-tier matches on tier_validation prefix", fmt.Errorf(`orchestrator returned 403: {"code":"tier_validation_enterprise_or_higher"}`), true},
+		{"403 policy-limit cap reached", fmt.Errorf(`orchestrator returned 403: {"code":"policy_limit_exceeded","message":"Policy limit of 20 reached for Community tier. Get a free Evaluation license for 50 policies"}`), true},
+		{"403 policy-limit wording without code", fmt.Errorf(`orchestrator returned 403: {"message":"Policy limit reached"}`), true},
+		{"403 unrelated", fmt.Errorf(`orchestrator returned 403: {"error":"FORBIDDEN","message":"Tenant ID mismatch"}`), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOrchestratorPaidTierReject(tc.err); got != tc.want {
+				t.Errorf("isOrchestratorPaidTierReject(%q) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractPolicyFromResponse_Cases exercises the extractor against
+// realistic + malformed shapes to catch any regression in response
+// translation as the orchestrator's API evolves.
+func TestExtractPolicyFromResponse_Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		in   interface{}
+		want map[string]interface{}
+	}{
+		{
+			"valid envelope",
+			map[string]interface{}{"policy": map[string]interface{}{"id": "abc"}},
+			map[string]interface{}{"id": "abc"},
+		},
+		{"non-map", "string-response", map[string]interface{}{}},
+		{"missing policy key", map[string]interface{}{"other": "value"}, map[string]interface{}{}},
+		{"policy not an object", map[string]interface{}{"policy": "string"}, map[string]interface{}{}},
+		{"nil", nil, map[string]interface{}{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractPolicyFromResponse(tc.in)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("extractPolicyFromResponse(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}

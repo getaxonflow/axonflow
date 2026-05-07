@@ -10,11 +10,13 @@ package hitl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
 
+	"axonflow/platform/agent/license"
 	logutil "axonflow/platform/shared/logger"
 
 	"github.com/google/uuid"
@@ -23,12 +25,33 @@ import (
 // ErrPendingApprovalLimitExceeded is returned when the pending approval limit is reached.
 var ErrPendingApprovalLimitExceeded = fmt.Errorf("pending approval limit exceeded")
 
+// ErrHITLApprovalDisabledByTier is returned when the running process is on a
+// tier that does not enable HITL approvals (Community). The platform's tier
+// matrix in `license/tier.go` defines `HITLApprovalEnabled: false` for
+// Community-tier; we surface that as an explicit error so callers (HTTP
+// handlers, in-process callers like the MCP tool path) can map to a clear
+// "requires Evaluation+ license" response.
+//
+// Mirrors the orchestrator's existing WCP HITL gate at
+// `platform/orchestrator/hitl_wcp_community.go` so a self-hosted process
+// blocks user-initiated approvals at every entry point uniformly.
+var ErrHITLApprovalDisabledByTier = errors.New("HITL approvals require an Evaluation or higher license tier; current tier is Community")
+
+// tierProvider lets tests override the tier source. In production this
+// resolves to the binary's effective license tier via
+// `license.GetCurrentTier`. Defaults to that on Service construction.
+type tierProvider func(ctx context.Context) license.Tier
+
 // Service provides business logic for HITL queue operations.
 type Service struct {
 	repo                *Repository
 	defaultExpiry       time.Duration
 	maxExpiry           time.Duration
 	maxPendingApprovals atomic.Int64 // 0 or negative = unlimited
+	// currentTier resolves the running process's tier on every call so the
+	// gate reflects hot-reloaded license state (the license validator caches
+	// internally; tier flips take effect on next call).
+	currentTier tierProvider
 }
 
 // ServiceConfig contains configuration for the HITL service.
@@ -50,9 +73,17 @@ func NewService(repo *Repository, config ServiceConfig) *Service {
 		repo:          repo,
 		defaultExpiry: config.DefaultExpiry,
 		maxExpiry:     config.MaxExpiry,
+		currentTier:   license.GetCurrentTier,
 	}
 	svc.maxPendingApprovals.Store(int64(config.MaxPendingApprovals))
 	return svc
+}
+
+// SetTierProviderForTest overrides the tier source. Test-only; production
+// callers must not invoke this (the default `license.GetCurrentTier` is
+// the production source of truth).
+func (s *Service) SetTierProviderForTest(p tierProvider) {
+	s.currentTier = p
 }
 
 // SetMaxPendingApprovals updates the max pending approvals limit (for hot-reload via license changes).
@@ -114,6 +145,21 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 	}
 	if !validSeverities[input.Severity] {
 		return nil, fmt.Errorf("invalid severity: %s", input.Severity)
+	}
+
+	// License-tier gate. Community-tier processes (no AXONFLOW_LICENSE_KEY,
+	// or invalid/expired license) reject HITL-approval creation here so the
+	// `hitl_approval_queue` row is never written. Mirrors the WCP gate at
+	// `platform/orchestrator/hitl_wcp_community.go` so the same call from
+	// the HTTP handler path AND the in-process MCP-tool path both fail at
+	// this single chokepoint.
+	//
+	// Eval-or-higher tiers fall through to the existing flow.
+	if s.currentTier != nil {
+		tier := s.currentTier(ctx)
+		if !license.IsEvaluationOrHigher(tier) {
+			return nil, ErrHITLApprovalDisabledByTier
+		}
 	}
 
 	// Check pending approval limit per tenant (after validation, before DB writes)
