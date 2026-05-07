@@ -10,12 +10,26 @@ package hitl
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
+
+	"axonflow/platform/agent/license"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 )
+
+// newEvalTierService returns a Service whose tier provider is pinned to
+// Evaluation (tier gate passes). Used by every test in this file that
+// exercises the happy path; tier-gate tests construct the Service
+// directly with the desired tier.
+func newEvalTierService(t *testing.T, repo *Repository, cfg ServiceConfig) *Service {
+	t.Helper()
+	svc := NewService(repo, cfg)
+	svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return license.TierEvaluation })
+	return svc
+}
 
 func TestNewService(t *testing.T) {
 	db, _, err := sqlmock.New()
@@ -27,7 +41,7 @@ func TestNewService(t *testing.T) {
 	repo := NewRepository(db)
 
 	// Test default config
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	if svc.defaultExpiry != 24*time.Hour {
 		t.Errorf("Expected default expiry 24h, got %v", svc.defaultExpiry)
 	}
@@ -56,7 +70,7 @@ func TestCreateApprovalRequest_Validation(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	tests := []struct {
@@ -178,7 +192,7 @@ func TestCreateApprovalRequest_Success(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{
+	svc := newEvalTierService(t, repo, ServiceConfig{
 		DefaultExpiry: 24 * time.Hour,
 	})
 	ctx := context.Background()
@@ -234,7 +248,7 @@ func TestCreateApprovalRequest_DefaultSeverity(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	// Mock the INSERT query
@@ -277,7 +291,7 @@ func TestCreateApprovalRequest_ExpiryLimiting(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{
+	svc := newEvalTierService(t, repo, ServiceConfig{
 		DefaultExpiry: 24 * time.Hour,
 		MaxExpiry:     48 * time.Hour,
 	})
@@ -325,7 +339,7 @@ func TestApproveRequest_InvalidStatus(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -373,7 +387,7 @@ func TestApproveRequest_Expired(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -422,7 +436,7 @@ func TestOverrideRequest_RequiresJustification(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -450,7 +464,7 @@ func TestOverrideRequest_RequiresAuthorizedBy(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -482,7 +496,7 @@ func TestOverrideRequest_Success(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -538,7 +552,7 @@ func TestOverrideRequest_NonPendingStatus(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -586,7 +600,7 @@ func TestRejectRequest_Success(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -642,7 +656,7 @@ func TestRejectRequest_NotFoundService(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -670,7 +684,7 @@ func TestApproveRequest_Success(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -726,7 +740,7 @@ func TestApproveRequest_NotFoundService(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -754,7 +768,7 @@ func TestGetApprovalRequest_NotFound(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -788,7 +802,7 @@ func TestListApprovalRequests(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	mock.ExpectQuery("SELECT COUNT").
@@ -844,7 +858,7 @@ func TestGetPendingStats(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	mock.ExpectQuery("SELECT").
@@ -875,7 +889,7 @@ func TestGetRequestHistoryService(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	requestID := uuid.New()
@@ -916,7 +930,7 @@ func TestExpireStaleRequests(t *testing.T) {
 	defer db.Close()
 
 	repo := NewRepository(db)
-	svc := NewService(repo, ServiceConfig{})
+	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
 	mock.ExpectQuery("SELECT expire_hitl_requests").
@@ -935,3 +949,186 @@ func TestExpireStaleRequests(t *testing.T) {
 		t.Errorf("Unfulfilled expectations: %v", err)
 	}
 }
+
+// =============================================================================
+// Tier-gate tests (added in #1998)
+//
+// These tests exercise the license-tier gate added at the top of
+// CreateApprovalRequest. The gate is the single chokepoint that both the
+// HTTP handler path AND the in-process MCP-tool path inherit.
+// =============================================================================
+
+// TestCreateApprovalRequest_CommunityTierRejected asserts that a
+// Community-tier process refuses HITL-approval creation BEFORE any DB
+// write occurs.
+func TestCreateApprovalRequest_CommunityTierRejected(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	svc := NewService(repo, ServiceConfig{DefaultExpiry: 24 * time.Hour})
+	svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return license.TierCommunity })
+
+	input := CreateApprovalInput{
+		OrgID:               "org-1",
+		TenantID:            "tenant-1",
+		ClientID:            "client-1",
+		OriginalQuery:       "rm -rf /",
+		RequestType:         "shell_command",
+		TriggeredPolicyID:   "policy-1",
+		TriggeredPolicyName: "Destructive command",
+		TriggerReason:       "deletion attempt",
+		Severity:            "high",
+	}
+
+	_, err = svc.CreateApprovalRequest(context.Background(), input)
+	if err == nil {
+		t.Fatal("Expected ErrHITLApprovalDisabledByTier, got nil")
+	}
+	if !errors.Is(err, ErrHITLApprovalDisabledByTier) {
+		t.Fatalf("Expected ErrHITLApprovalDisabledByTier, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Unexpected query (gate should have short-circuited before DB): %v", err)
+	}
+}
+
+// TestCreateApprovalRequest_EvaluationOrHigherAllowed asserts every
+// non-Community tier passes the gate.
+func TestCreateApprovalRequest_EvaluationOrHigherAllowed(t *testing.T) {
+	tierCases := []license.Tier{
+		license.TierEvaluation,
+		license.TierProfessional,
+		license.TierEnterprise,
+		license.TierEnterprisePlus,
+	}
+	for _, tier := range tierCases {
+		t.Run(string(tier), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("Failed to create sqlmock: %v", err)
+			}
+			defer db.Close()
+
+			repo := NewRepository(db)
+			svc := NewService(repo, ServiceConfig{DefaultExpiry: 24 * time.Hour})
+			svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return tier })
+
+			mock.ExpectQuery("INSERT INTO hitl_approval_queue").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
+					AddRow(1, time.Now(), time.Now()))
+			mock.ExpectQuery("INSERT INTO hitl_approval_history").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+					AddRow(1, time.Now()))
+
+			input := CreateApprovalInput{
+				OrgID:               "org-1",
+				TenantID:            "tenant-1",
+				ClientID:            "client-1",
+				OriginalQuery:       "SELECT 1",
+				RequestType:         "sql",
+				TriggeredPolicyID:   "policy-1",
+				TriggeredPolicyName: "Smoke",
+				TriggerReason:       "smoke",
+				Severity:            "high",
+			}
+
+			_, err = svc.CreateApprovalRequest(context.Background(), input)
+			if err != nil {
+				t.Fatalf("Tier %s rejected unexpectedly: %v", tier, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("Mock expectations not met: %v", err)
+			}
+		})
+	}
+}
+
+// TestCreateApprovalRequest_TierGateOrderVsValidation confirms that
+// validation errors fire BEFORE the tier gate (input-shape problems
+// surface as the more informative error to the caller). On valid input
+// + Community tier the tier-gate error fires.
+func TestCreateApprovalRequest_TierGateOrderVsValidation(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	svc := NewService(repo, ServiceConfig{})
+	svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return license.TierCommunity })
+
+	// Valid shape, Community tier → tier-gate error.
+	validInput := CreateApprovalInput{
+		OrgID:               "org-1",
+		TenantID:            "tenant-1",
+		ClientID:            "client-1",
+		OriginalQuery:       "SELECT 1",
+		RequestType:         "sql",
+		TriggeredPolicyID:   "policy-1",
+		TriggeredPolicyName: "Smoke",
+		TriggerReason:       "smoke",
+	}
+	_, err = svc.CreateApprovalRequest(context.Background(), validInput)
+	if !errors.Is(err, ErrHITLApprovalDisabledByTier) {
+		t.Fatalf("Expected tier-gate error on Community + valid input, got %v", err)
+	}
+
+	// Invalid shape, Community tier → validation error fires first.
+	invalidInput := CreateApprovalInput{}
+	_, err = svc.CreateApprovalRequest(context.Background(), invalidInput)
+	if err == nil {
+		t.Fatal("Expected validation error on empty input")
+	}
+	if errors.Is(err, ErrHITLApprovalDisabledByTier) {
+		t.Fatalf("Tier gate fired on invalid input; expected validation error first, got %v", err)
+	}
+}
+
+// TestCreateApprovalRequest_NilTierProviderFallsThrough confirms that
+// a Service whose tier provider has been explicitly nilled out does not
+// fire the gate. Defensive coverage for the `s.currentTier != nil`
+// guard.
+func TestCreateApprovalRequest_NilTierProviderFallsThrough(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	repo := NewRepository(db)
+	svc := NewService(repo, ServiceConfig{DefaultExpiry: 24 * time.Hour})
+	svc.SetTierProviderForTest(nil)
+
+	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
+			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectQuery("INSERT INTO hitl_approval_history").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+			AddRow(1, time.Now()))
+
+	input := CreateApprovalInput{
+		OrgID:               "org-1",
+		TenantID:            "tenant-1",
+		ClientID:            "client-1",
+		OriginalQuery:       "SELECT 1",
+		RequestType:         "sql",
+		TriggeredPolicyID:   "policy-1",
+		TriggeredPolicyName: "Smoke",
+		TriggerReason:       "smoke",
+		Severity:            "high",
+	}
+
+	_, err = svc.CreateApprovalRequest(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Nil tier provider should not block: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("Mock expectations not met: %v", err)
+	}
+}
+

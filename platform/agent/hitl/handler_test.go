@@ -9,18 +9,35 @@ package hitl
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"axonflow/platform/agent/license"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
+// setupTestHandler builds a handler whose Service has the tier provider
+// pinned to Evaluation. Existing handler tests assume the request flow
+// reaches the DB layer; the tier gate added in #1998 would otherwise
+// short-circuit them at 403. Tests that specifically exercise the
+// Community-tier rejection path call setupTestHandlerCommunityTier.
 func setupTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
+	return setupTestHandlerWithTier(t, license.TierEvaluation)
+}
+
+func setupTestHandlerCommunityTier(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
+	return setupTestHandlerWithTier(t, license.TierCommunity)
+}
+
+func setupTestHandlerWithTier(t *testing.T, tier license.Tier) (*Handler, sqlmock.Sqlmock, func()) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("Failed to create sqlmock: %v", err)
@@ -31,6 +48,7 @@ func setupTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 		DefaultExpiry: 24 * time.Hour,
 		MaxExpiry:     168 * time.Hour,
 	})
+	svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return tier })
 	handler := NewHandler(svc)
 
 	cleanup := func() {
@@ -147,6 +165,65 @@ func TestCreateRequest_Success(t *testing.T) {
 
 	if !resp.Success {
 		t.Errorf("Expected success=true, got false: %s", resp.Error)
+	}
+}
+
+// TestCreateRequest_CommunityTierForbidden asserts that a Community-tier
+// process returns 403 Forbidden with the tier-rejection error wording.
+// Added in #1998 to close the parallel bypass on the agent's
+// `POST /api/v1/hitl/queue` endpoint (Fix B).
+func TestCreateRequest_CommunityTierForbidden(t *testing.T) {
+	handler, mock, cleanup := setupTestHandlerCommunityTier(t)
+	defer cleanup()
+
+	// No DB mock expectations registered: if the handler short-circuits
+	// at the tier gate (correct behavior), no DB query fires. Any query
+	// that fires will be flagged by sqlmock.
+
+	input := CreateRequestInput{
+		ClientID:            "client-1",
+		OriginalQuery:       "rm -rf /",
+		RequestType:         "shell_command",
+		TriggeredPolicyID:   "policy-1",
+		TriggeredPolicyName: "Destructive command",
+		TriggerReason:       "deletion attempt",
+		Severity:            "high",
+	}
+	body, _ := json.Marshal(input)
+
+	req := httptest.NewRequest("POST", "/api/v1/hitl/queue", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Org-ID", "org-1")
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+	w := httptest.NewRecorder()
+
+	router := mux.NewRouter()
+	handler.RegisterRoutes(router)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Success {
+		t.Error("Expected success=false")
+	}
+	if resp.Error == "" {
+		t.Error("Expected non-empty error message")
+	}
+	// The error body must surface the upgrade hint so the caller can
+	// tell the user how to unblock — guards against a future refactor
+	// that swallows the message.
+	if !strings.Contains(resp.Error, "Evaluation") {
+		t.Errorf("Expected error to mention 'Evaluation' license tier, got: %q", resp.Error)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("DB query fired despite tier-gate rejection: %v", err)
 	}
 }
 

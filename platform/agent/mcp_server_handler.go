@@ -766,7 +766,7 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	case mcpToolNameRequestApproval:
 		result, toolErr = mcpToolRequestApproval(r.Context(), authDB, session, params.Arguments)
 	case mcpToolNameCreateTenantPolicy:
-		result, toolErr = mcpToolCreateTenantPolicy(r.Context(), authDB, session, params.Arguments)
+		result, toolErr = mcpToolCreateTenantPolicy(r.Context(), session, params.Arguments)
 	case mcpToolNameGetCostEstimate:
 		result, toolErr = mcpToolGetCostEstimate(session, params.Arguments)
 	case mcpToolNameListProFeatures:
