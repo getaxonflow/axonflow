@@ -49,6 +49,10 @@ Rule order (highest priority first):
 
 `AXONFLOW_TELEMETRY=off` always wins. Config flag overrides mode-based defaults but cannot override the env var. No credential-based logic — credentials do not affect telemetry defaults. Endpoint host does not affect defaults either: localhost, private-network, and self-hosted evaluation endpoints are still ON unless sandbox mode or an opt-out disables telemetry.
 
+### Deployment-shape note: scope of the opt-out
+
+`AXONFLOW_TELEMETRY=off` controls the SDK/plugin **heartbeat**. On self-hosted and in-VPC deployments, that heartbeat is the only data path from the SDK or plugin to AxonFlow, so the env var is the relevant opt-out lever. On **Community SaaS** (`try.getaxonflow.com`) the hosted service also processes operational data — registrations, audit logs, policy enforcement records, workflow state, plan data, and request-header metadata aggregated for usage analytics — as part of running the platform. That operational data flow is governed by the [Privacy Policy](https://getaxonflow.com/privacy/) rather than by this env var; the contract documented here applies to the heartbeat path only.
+
 > **Note on `DO_NOT_TRACK`:** It is **not** honored as an opt-out for AxonFlow telemetry. It is commonly inherited from host tools and developer environments (CLIs like Codex and Claude Code inject it unconditionally), which makes it an unreliable expression of user intent. SDKs do not read this variable at all.
 
 ## Runtime Behavior

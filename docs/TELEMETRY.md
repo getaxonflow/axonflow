@@ -49,6 +49,10 @@ Any of these methods will disable telemetry:
 export AXONFLOW_TELEMETRY=off
 ```
 
+#### Scope of `AXONFLOW_TELEMETRY=off`
+
+`AXONFLOW_TELEMETRY=off` disables the anonymous SDK/plugin heartbeat (version, OS, architecture). On **self-hosted** and **in-VPC** deployments, that heartbeat is the only data the SDK or plugin sends to AxonFlow, so setting `=off` means we receive nothing. On **Community SaaS** (`try.getaxonflow.com`) the hosted service also processes operational data — registrations, audit logs, policy enforcement records, workflow state, plan data, and request-header metadata aggregated for usage analytics — as part of running the platform; that operational data flow is governed by the [Privacy Policy](https://getaxonflow.com/privacy/), not by `AXONFLOW_TELEMETRY`. If you need no-data-leaves-network guarantees, self-host AxonFlow Community Edition.
+
 > **Note:** `DO_NOT_TRACK` is **not** honored as an opt-out for AxonFlow telemetry. It is commonly inherited from host tools and developer environments (CLIs like Codex and Claude Code inject it unconditionally), which makes it an unreliable expression of user intent. Use `AXONFLOW_TELEMETRY=off` instead.
 
 ### SDK configuration

@@ -9,9 +9,10 @@ import "axonflow/platform/agent/license"
 // community-saas daily-cap check. The flow:
 //
 //  1. If the request resolved to a SaaS Plugin tier (EffectiveTier is one
-//     of Free / Pro / Premium), use that tier's `DailyEventQuota` from the
-//     typed `TierLimits` struct. The locked numbers per
-//     PRD_TENANT_DURABILITY_AND_CLAIM are Free=200, Pro=1000, Premium=5000.
+//     of Free / Pro / Premium), use that tier's `DailyEventQuota` from
+//     the typed `TierLimits` struct. The locked numbers per
+//     PRD_TENANT_DURABILITY_AND_CLAIM (V1 Plugin Pro umbrella #1958) are
+//     Free=200, Pro=2,000, Premium=5,000.
 //
 //  2. Otherwise (no tier resolution happened — e.g. self-hosted callers
 //     hitting the same path, or a community build with the SaaS path
@@ -24,16 +25,25 @@ import "axonflow/platform/agent/license"
 // path. In practice the daily-cap call site only fires when auth has
 // already produced a non-nil Client.
 func dailyLimitForTenant(client *Client) int {
+	if client != nil && client.EffectiveTier != "" {
+		return dailyLimitForTier(client.EffectiveTier)
+	}
+	return dailyLimitForTier("")
+}
+
+// dailyLimitForTier resolves the daily quota by tier string alone.
+// Used by the MCP server path (umbrella #1958 + #1976) where the
+// session struct carries tier as a string but doesn't reconstruct a
+// full *Client. Same semantics as dailyLimitForTenant otherwise: -1
+// or 0 falls through to the env-var fallback.
+func dailyLimitForTier(tier string) int {
 	const envFallbackDefault = 500
 
-	if client != nil && client.EffectiveTier != "" {
-		limits := license.GetTierLimits(license.Tier(client.EffectiveTier))
+	if tier != "" {
+		limits := license.GetTierLimits(license.Tier(tier))
 		if limits.DailyEventQuota > 0 {
 			return limits.DailyEventQuota
 		}
-		// `-1` means "n/a — not a SaaS Plugin tier"; `0` would be a
-		// misconfiguration. In either case fall through to the env-var
-		// rather than locking the tenant out.
 	}
 	return getEnvInt("COMMUNITY_SAAS_DAILY_LIMIT", envFallbackDefault)
 }

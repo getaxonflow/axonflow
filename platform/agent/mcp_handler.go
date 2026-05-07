@@ -1575,6 +1575,16 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
+	// V1 Plugin Pro daily-cap enforcement (umbrella #1958 + #1976):
+	// /api/v1/mcp/check-input is registered directly on globalRouter
+	// without proxyAuthMiddleware/apiAuthMiddleware so we run the cap
+	// check here. Plugins' pre-tool hooks call this on every governed
+	// tool invocation; without enforcement here a Free tenant gets
+	// unlimited governance evaluation.
+	if enforceCommunitySaasDailyCap(w, auth) {
+		return
+	}
+
 	// Resolve user and extract identity fields
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {
@@ -1810,6 +1820,15 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
+
+	// V1 Plugin Pro daily-cap enforcement (umbrella #1958 + #1976):
+	// /api/v1/mcp/check-output is registered directly on globalRouter
+	// without daily-cap middleware. Plugins call this on every governed
+	// post-tool result; without enforcement here a Free tenant gets
+	// unlimited output policy evaluation.
+	if enforceCommunitySaasDailyCap(w, auth) {
+		return
+	}
 
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {

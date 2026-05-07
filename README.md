@@ -525,7 +525,11 @@ if (approval.isApproved()) {
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
 
-> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization, including localhost and self-hosted evaluation environments outside sandbox mode. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export AXONFLOW_TELEMETRY=off`. `DO_NOT_TRACK` is **not** honored — it is commonly inherited from host tools and developer environments, which makes it an unreliable expression of user intent. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
+> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization, including localhost and self-hosted evaluation environments outside sandbox mode. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export AXONFLOW_TELEMETRY=off`.
+>
+> **Scope of `AXONFLOW_TELEMETRY=off`:** disables the anonymous SDK/plugin heartbeat. On self-hosted and in-VPC deployments, that heartbeat is the only data the SDK or plugin sends to AxonFlow, so setting `=off` means we receive nothing. On Community SaaS (`try.getaxonflow.com`) the hosted service also processes operational data — registrations, audit logs, policy enforcement records, workflow state, plan data, and request-header metadata aggregated for usage analytics — as part of running the platform; that operational data flow is governed by the [Privacy Policy](https://getaxonflow.com/privacy/), not by this env var.
+>
+> `DO_NOT_TRACK` is **not** honored — it is commonly inherited from host tools and developer environments, which makes it an unreliable expression of user intent. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
 
 ---
 

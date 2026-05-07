@@ -115,6 +115,34 @@ type mcpTool struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	InputSchema interface{} `json:"inputSchema"`
+
+	// V1 Plugin Pro tier-gating fields (umbrella #1958). Both default
+	// zero/nil so existing tools are unchanged — backward compat. PR2 of
+	// the umbrella opts each new Pro-only / graduated-limit tool in.
+	//
+	// json:"-" keeps these out of the tools/list wire response — they are
+	// internal dispatch config, not part of the MCP protocol surface.
+	RequiredTier   string          `json:"-"` // "" (all tiers) | "Pro" (Pro+) | "Premium" (Premium only)
+	FreeUsageLimit *FreeUsageLimit `json:"-"` // nil = no graduated Free-tier cap
+}
+
+// FreeUsageLimit defines a graduated cap that Free-tier callers must obey on
+// a given MCP tool. Used by tools/call dispatch (PR2 of umbrella #1958) to
+// enforce object-count limits ("2 active custom policies") and rolling-
+// window action limits ("1 HITL approval per 7 days").
+//
+// Zero-valued fields are ignored:
+//   - MaxCount=0 means no object-count cap (use WindowSeconds+MaxInWindow instead)
+//   - WindowSeconds=0 means no time-window cap (use MaxCount instead)
+//
+// LimitType drives the response envelope rendering — must match one of the
+// LimitType* constants in community_saas_ratelimit_response.go so plugin-side
+// parsers see a consistent shape.
+type FreeUsageLimit struct {
+	MaxCount      int    // for object-creation limits (e.g. 2 active policies)
+	WindowSeconds int    // for time-windowed action limits (e.g. 604800 = 7d)
+	MaxInWindow   int    // count threshold within window
+	LimitType     string // one of LimitType* constants — passed to writeFreeLimitError on enforcement
 }
 
 type mcpToolCallParams struct {
@@ -143,6 +171,13 @@ type mcpSession struct {
 	userEmail string // per-user identity from X-User-Email header; distinct from userID so Plugin Batch 1 endpoints scope by real email, not synthetic "0".
 	userRole  string
 	clientID  string
+
+	// V1 Plugin Pro tier (umbrella #1958). Captured from auth.Client.EffectiveTier
+	// at session-create time. One of "Free" / "Pro" / "Premium" for SaaS
+	// Plugin callers; empty for self-hosted enterprise (gating framework
+	// only applies to SaaS Plugin — empty tier means tools/list returns
+	// everything and tools/call enforces no gates).
+	tier string
 }
 
 var (
@@ -418,6 +453,16 @@ func getMCPTools() []mcpTool {
 	}
 }
 
+// getMCPToolsForCaller returns the MCP tool list filtered by the caller's
+// effective tier (V1 Plugin Pro umbrella #1958). Free callers don't see
+// Pro-only tools (they'd be useless); empty tier (self-hosted enterprise
+// or internal-service) sees everything because the gating framework only
+// applies to SaaS Plugin tiers.
+func getMCPToolsForCaller(callerTier string) []mcpTool {
+	all := append(getMCPTools(), v1ProMCPTools()...)
+	return filterMCPToolsByTier(all, callerTier)
+}
+
 // --- Registration ---
 
 // RegisterMCPServerHandler registers the MCP server protocol endpoint.
@@ -528,7 +573,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the caller has valid credentials for this session's tenant
-	_, _, _, _, clientID, err := authenticateMCPServerRequest(r)
+	_, _, _, _, clientID, _, err := authenticateMCPServerRequest(r)
 	if err != nil && !isCommunityMode() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -548,7 +593,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 // --- Method Handlers ---
 
 func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(r)
+	tenantID, userID, userEmail, userRole, clientID, tier, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		writeJSONRPCAuthError(w, req.ID, err.Error())
 		return
@@ -565,6 +610,7 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 		userEmail: userEmail,
 		userRole:  userRole,
 		clientID:  clientID,
+		tier:      tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
 	}
 
 	mcpSessionsMu.Lock()
@@ -615,12 +661,20 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 }
 
 // handleMCPToolsList requires authentication (prevents information disclosure in enterprise mode).
+//
+// V1 Plugin Pro umbrella #1958: tools list is filtered by the caller's
+// effective tier — Free callers don't see Pro-only tools, since they
+// can't call them anyway. Empty tier (self-hosted / internal) sees the
+// full list. The filter is honest visibility, not security: a determined
+// Free caller could still attempt tools/call by-name, and the dispatch
+// re-enforces the gate there.
 func handleMCPToolsList(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	if session := requireMCPAuth(w, r, req); session == nil {
+	session := requireMCPAuth(w, r, req)
+	if session == nil {
 		return
 	}
 	writeJSONRPCResult(w, req.ID, map[string]interface{}{
-		"tools": getMCPTools(),
+		"tools": getMCPToolsForCaller(session.tier),
 	})
 }
 
@@ -652,6 +706,38 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	var result interface{}
 	var toolErr error
 
+	// V1 Plugin Pro daily-cap enforcement (umbrella #1958 + #1976):
+	// /api/v1/mcp-server registers directly on globalRouter with no
+	// daily-cap middleware (apiAuthMiddleware / proxyAuthMiddleware
+	// don't wrap MCP), so we run the cap check here at tools/call
+	// before the per-tool gate. Affects every governance call —
+	// plugins' pre/post-tool hooks all flow through tools/call. The
+	// matrix harness at runtime-e2e/v1_pro_full_matrix exercises this
+	// path on real wire traffic.
+	if enforceMCPSessionDailyCap(w, req, session) {
+		return
+	}
+
+	// V1 Plugin Pro tier-gating (umbrella #1958): look up the tool's
+	// RequiredTier + FreeUsageLimit and enforce the gate before running
+	// the body. enforceMCPToolGate writes the structured envelope on
+	// rejection and returns true; we return early. Skipping gate check
+	// for non-V1 (legacy) tools by checking only the V1 tool list — the
+	// existing tools (check_policy, check_output, audit_tool_call,
+	// list_policies, get_policy_stats, search_audit_events,
+	// explain_decision, create_override, delete_override, list_overrides)
+	// have RequiredTier="" + FreeUsageLimit=nil so the gate is a no-op
+	// for them anyway, but we explicitly run it via the V1 tool lookup
+	// so future additions to legacy tools that opt into gating Just Work.
+	for _, t := range append(getMCPTools(), v1ProMCPTools()...) {
+		if t.Name == params.Name {
+			if enforceMCPToolGate(r.Context(), w, req, session, t, authDB) {
+				return
+			}
+			break
+		}
+	}
+
 	switch params.Name {
 	case "check_policy":
 		result, toolErr = mcpToolCheckPolicy(r.Context(), session, params.Arguments)
@@ -674,6 +760,17 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		result, toolErr = mcpToolDeleteOverride(session, params.Arguments)
 	case "list_overrides":
 		result, toolErr = mcpToolListOverrides(session, params.Arguments)
+	// V1 Plugin Pro tools (umbrella #1958, PR2).
+	case mcpToolNameGetTenantID:
+		result, toolErr = mcpToolGetTenantID(session)
+	case mcpToolNameRequestApproval:
+		result, toolErr = mcpToolRequestApproval(r.Context(), authDB, session, params.Arguments)
+	case mcpToolNameCreateTenantPolicy:
+		result, toolErr = mcpToolCreateTenantPolicy(r.Context(), authDB, session, params.Arguments)
+	case mcpToolNameGetCostEstimate:
+		result, toolErr = mcpToolGetCostEstimate(session, params.Arguments)
+	case mcpToolNameListProFeatures:
+		result, toolErr = mcpToolListProFeatures(session)
 	default:
 		writeJSONRPCError(w, req.ID, jsonRPCInvalidParams, fmt.Sprintf("Unknown tool: %s", params.Name))
 		return
@@ -726,10 +823,10 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 // to the orchestrator so access control and scoping work per-user. Absent —
 // legacy clients — we fall back to a client-scoped pseudo-identity rather
 // than a shared synthetic "0" to avoid cross-user aliasing on the MCP path.
-func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail, userRole, clientID string, err error) {
+func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail, userRole, clientID, tier string, err error) {
 	auth, authErr := Authenticate(r, nil)
 	if authErr != nil {
-		return "", "", "", "", "", fmt.Errorf("%s", authErr.Message)
+		return "", "", "", "", "", "", fmt.Errorf("%s", authErr.Message)
 	}
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
@@ -754,7 +851,18 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail,
 		resolvedUserID = resolvedEmail
 	}
 
-	return auth.TenantID, resolvedUserID, resolvedEmail, "admin", auth.ClientID, nil
+	// V1 Plugin Pro tier capture (umbrella #1958). For community-saas auth
+	// the validateCommunitySaasAuth flow has already resolved the tier from
+	// X-License-Token + plugin_user_licenses lookup. For non-SaaS auth
+	// (enterprise self-hosted, internal-service) auth.Client may be nil and
+	// tier stays empty — that's fine, downstream tier-gating treats empty
+	// tier as "ungated" so self-hosted enterprise sees every tool.
+	resolvedTier := ""
+	if auth.Client != nil {
+		resolvedTier = auth.Client.EffectiveTier
+	}
+
+	return auth.TenantID, resolvedUserID, resolvedEmail, "admin", auth.ClientID, resolvedTier, nil
 }
 
 // resolveMCPSession resolves auth from session header or credentials.
@@ -794,7 +902,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 	}
 
 	// Fall back to direct auth
-	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(r)
+	tenantID, userID, userEmail, userRole, clientID, tier, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		return nil
 	}
@@ -804,6 +912,7 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		userEmail: userEmail,
 		userRole:  userRole,
 		clientID:  clientID,
+		tier:      tier,
 	}
 }
 
