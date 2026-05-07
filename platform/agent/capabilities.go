@@ -63,6 +63,9 @@ func getCapabilities() []PlatformCapability {
 		{Name: "plugin_compatibility", Since: "7.5.0", Description: "Health response advertises min_plugin_version + recommended_plugin_version per plugin id (mirrors sdk_compatibility)"},
 		{Name: "community_saas_recovery", Since: "7.7.0", Description: "POST /api/v1/recover[/verify] free-tier credential recovery via emailed magic link (Community SaaS only)"},
 		{Name: "plugin_claim_license", Since: "7.7.0", Description: "Stripe-driven Pro v1 plugin license issuance (POST /api/v1/billing/stripe-webhook) + per-request X-License-Token validation (Community SaaS only)"},
+		{Name: "v1_pro_upgrade_envelope", Since: "7.8.0", Description: "Structured V1 upgrade envelope on every Free-tier limit hit (429 daily_quota + 403 active_policies / hitl_approvals_window / feature_pro_only) with locked compare_url + buy_url + Retry-After header (Community SaaS only)"},
+		{Name: "v1_pro_mcp_tools", Since: "7.8.0", Description: "Five new MCP tools on /api/v1/mcp-server (axonflow_get_tenant_id, axonflow_request_approval, axonflow_create_tenant_policy, axonflow_get_cost_estimate, axonflow_list_pro_features) with tier-aware tools/list filtering and graduated FreeUsageLimit gates"},
+		{Name: "v1_pro_graduated_freemium", Since: "7.8.0", Description: "Free tier exposes a taste of Pro capabilities — 2 active custom tenant policies + 1 HITL approval per rolling 7d — with structured 403 envelope on cap-hit; Pro tier removes both caps (Community SaaS only)"},
 	}
 }
 
@@ -111,15 +114,20 @@ func getPluginCompatibility() PluginCompatInfo {
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each plugin's release-train tag. Bumped alongside the V1
-		// SaaS Plugin Pro launch (claude/cursor/codex 1.2.0, openclaw
-		// 2.2.0) which carries the X-License-Token forwarding for Pro
-		// tier activation and the X-Axonflow-Client header for scope
-		// validation against the agent.
+		// Plugin Pro graduated-freemium completion (claude/cursor/codex
+		// 1.3.0, openclaw 2.3.0) which carries the envelope-aware error
+		// handling — plugins parse the structured 429/403 envelope, surface
+		// upgrade.wording to the user, and honor Retry-After. Plugin tags +
+		// registry publish are held pending explicit per-version
+		// authorization per `feedback_releases_require_approval.md`; until
+		// the tags ship the recommended-version advertises the planned
+		// version so plugins on 1.2.0 / 2.2.0 receive an actionable
+		// upgrade-warning header on every governed call.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.2.0",
-			"claude-code": "1.2.0",
-			"cursor":      "1.2.0",
-			"codex":       "1.2.0",
+			"openclaw":    "2.3.0",
+			"claude-code": "1.3.0",
+			"cursor":      "1.3.0",
+			"codex":       "1.3.0",
 		},
 	}
 }

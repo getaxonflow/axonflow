@@ -172,8 +172,8 @@ func TestIssueLicense_DB_HappyPath(t *testing.T) {
 	if got := license.GetTierLimits(license.TierPro); got.AuditRetentionDays != 30 {
 		t.Errorf("ProLimits.AuditRetentionDays: got %d, want 30", got.AuditRetentionDays)
 	}
-	if got := license.GetTierLimits(license.TierPro); got.DailyEventQuota != 1000 {
-		t.Errorf("ProLimits.DailyEventQuota: got %d, want 1000", got.DailyEventQuota)
+	if got := license.GetTierLimits(license.TierPro); got.DailyEventQuota != 2000 {
+		t.Errorf("ProLimits.DailyEventQuota: got %d, want 2000", got.DailyEventQuota)
 	}
 }
 

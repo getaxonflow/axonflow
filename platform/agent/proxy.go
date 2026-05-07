@@ -71,12 +71,54 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 	defer dailyCancel()
 	dailyLimit := dailyLimitForTenant(auth.Client)
 	if err := proxyDailyLimitChecker(dailyCtx, auth.TenantID, dailyLimit, authDB); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		body, _ := json.Marshal(map[string]string{
-			"error": "Daily request limit reached. Resets at midnight UTC.",
-		})
-		_, _ = w.Write(body)
+		// Emit the V1 Plugin Pro structured upgrade envelope (locked
+		// shape per umbrella #1958). Replaces the prior bare
+		// `{"error": "..."}` body so plugin-side parsers see the same
+		// envelope shape on the proxy path as on the auth.go path —
+		// the two paths used to drift (auth.go went through
+		// writeJSONError producing a wrapped shape; this site wrote
+		// flat JSON inline). The new helper unifies them.
+		//
+		// Defensive tier fallback to "Free" when auth.Client is nil:
+		// the AuthKindCommunitySaaS guard at the top of the function
+		// should already have produced a non-nil Client, but the
+		// helper accepts any string anyway and "Free" is the only
+		// SaaS Plugin tier that would actually hit a daily cap.
+		tier := "Free"
+		if auth.Client != nil && auth.Client.EffectiveTier != "" {
+			tier = auth.Client.EffectiveTier
+		}
+		writeRateLimitError(w, auth.TenantID, tier, dailyLimit)
+		return true
+	}
+	return false
+}
+
+// enforceMCPSessionDailyCap is the JSON-RPC analog of
+// enforceCommunitySaasDailyCap, called at the top of
+// handleMCPToolsCall (umbrella #1958 + #1976 fix). The MCP server path
+// at `/api/v1/mcp-server` doesn't go through proxyAuthMiddleware OR
+// apiAuthMiddleware — it registers directly on globalRouter — so it
+// needs its own cap-enforcement call site to avoid the quota leak that
+// #1976 surfaced.
+//
+// Returns true if the call should be blocked: the helper wrote a
+// JSON-RPC error result with the V1 envelope as content[0].text;
+// caller returns without dispatching the tool. Returns false if the
+// call should proceed (under-cap or non-SaaS-Plugin caller).
+//
+// session.tier="" (self-hosted enterprise / internal-service) bypasses
+// the cap entirely — the SaaS Plugin daily-cap framework only applies
+// to community-saas tenants. Same semantics as the proxy variant.
+func enforceMCPSessionDailyCap(w http.ResponseWriter, req *jsonRPCRequest, session *mcpSession) bool {
+	if session == nil || session.tier == "" {
+		return false
+	}
+	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer dailyCancel()
+	dailyLimit := dailyLimitForTier(session.tier)
+	if err := proxyDailyLimitChecker(dailyCtx, session.tenantID, dailyLimit, authDB); err != nil {
+		writeRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, dailyLimit)
 		return true
 	}
 	return false

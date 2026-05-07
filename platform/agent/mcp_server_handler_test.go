@@ -184,9 +184,14 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 	}
 
 	// 6 pre-existing tools + 4 Plugin Batch 1 tools (explain_decision,
-	// create_override, delete_override, list_overrides) = 10.
-	if len(tools) != 10 {
-		t.Errorf("Expected 10 tools, got %d", len(tools))
+	// create_override, delete_override, list_overrides) + 5 V1 Plugin
+	// Pro tools (axonflow_get_tenant_id, axonflow_request_approval,
+	// axonflow_create_tenant_policy, axonflow_get_cost_estimate,
+	// axonflow_list_pro_features per umbrella #1958) = 15. Community
+	// mode resolves to empty tier so the V1 Pro tier filter is a no-op
+	// and every tool is visible.
+	if len(tools) != 15 {
+		t.Errorf("Expected 15 tools (10 legacy + 5 V1 Plugin Pro), got %d", len(tools))
 	}
 
 	expectedNames := map[string]bool{
@@ -194,6 +199,12 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 		"list_policies": false, "get_policy_stats": false, "search_audit_events": false,
 		"explain_decision": false, "create_override": false, "delete_override": false,
 		"list_overrides": false,
+		// V1 Plugin Pro umbrella #1958 PR2:
+		"axonflow_get_tenant_id":       false,
+		"axonflow_request_approval":    false,
+		"axonflow_create_tenant_policy": false,
+		"axonflow_get_cost_estimate":   false,
+		"axonflow_list_pro_features":   false,
 	}
 	for _, tool := range tools {
 		tm, _ := tool.(map[string]interface{})
@@ -1298,7 +1309,7 @@ func TestMCPServer_AuthenticateRequest_InvalidBasicAuth(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Basic !!!invalid-base64!!!")
-	_, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for invalid Basic auth")
 	}
@@ -1462,7 +1473,7 @@ func TestMCPServer_AuthenticateRequest_MissingHeader(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	_, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for missing Authorization header")
 	}
@@ -1477,7 +1488,7 @@ func TestMCPServer_AuthenticateRequest_WrongScheme(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Bearer some-token")
-	_, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for non-Basic auth")
 	}
@@ -1491,7 +1502,7 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	tenantID, userID, userEmail, userRole, clientID, err := authenticateMCPServerRequest(req)
+	tenantID, userID, userEmail, userRole, clientID, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("Community mode should not require auth: %v", err)
 	}
@@ -1531,7 +1542,7 @@ func TestMCPServer_AuthenticateRequest_PerUserIdentity(t *testing.T) {
 	req.Header.Set("X-User-Email", "alice@example.com")
 	req.Header.Set("X-User-ID", "user-123")
 
-	_, userID, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	_, userID, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1554,7 +1565,7 @@ func TestMCPServer_AuthenticateRequest_EmailOnly(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("X-User-Email", "bob@example.com")
 
-	_, userID, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	_, userID, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1579,7 +1590,7 @@ func TestMCPServer_AuthenticateRequest_PseudoIdentityIsolation(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", nil)
 	// No X-User-Email, no X-User-ID — legacy behavior.
 
-	_, _, userEmail, _, _, err := authenticateMCPServerRequest(req)
+	_, _, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

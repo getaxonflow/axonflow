@@ -39,8 +39,17 @@ type TierLimits struct {
 	// day. -1 = unlimited (self-hosted tiers; the env-var fallback in
 	// community_saas_ratelimit covers callers that never resolve to a
 	// SaaS Plugin tier). Per PRD_TENANT_DURABILITY_AND_CLAIM "Free vs
-	// Paid Boundary": Free=200, Pro=1000, Premium=5000.
+	// Paid Boundary" (V1 Plugin Pro umbrella #1958): Free=200,
+	// Pro=2,000 (bumped from 1,000 in #1958), Premium=5,000.
 	DailyEventQuota int `json:"daily_event_quota"`
+
+	// V1 Plugin Pro graduated-freemium fields (umbrella #1958). Free
+	// tier exposes a "taste" of these capabilities — Pro tier removes
+	// the caps. -1 = unlimited (Pro / Premium / self-hosted higher
+	// tiers). Same semantics as DailyEventQuota: -1 means n/a / not a
+	// SaaS Plugin tier.
+	MaxActiveCustomPolicies int `json:"max_active_custom_policies"`
+	MaxHITLApprovalsPerWeek int `json:"max_hitl_approvals_per_week"`
 
 	// Evaluation tier feature gates
 	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
@@ -71,6 +80,9 @@ var (
 		MaxPendingApprovals:    5,
 		MediaGovernanceEnabled: false,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (Community is self-hosted, not SaaS Plugin)
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Evaluation features disabled
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
@@ -101,6 +113,9 @@ var (
 		MaxPendingApprovals:    25,
 		MediaGovernanceEnabled: true,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (Evaluation is self-hosted, not SaaS Plugin)
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Evaluation features enabled with limits
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -127,6 +142,9 @@ var (
 		MaxPendingApprovals:    -1,   // Unlimited
 		MediaGovernanceEnabled: true,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (Enterprise is self-hosted, not SaaS Plugin)
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Enterprise features enabled, unlimited
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -150,20 +168,27 @@ var (
 	// are effectively unlimited at runtime). Mirroring CommunityLimits
 	// here is a safe default for any caller that reads them directly.
 	FreeLimits = TierLimits{
-		TenantPolicies:           20,
-		OrgPolicies:              0,
-		CustomPolicyConnectors:   2,
-		AuditRetentionDays:       3,
-		MaxLLMProviders:          2,
-		MaxExecutionHistory:      50,
-		MaxConcurrentExec:        5,
-		MaxPlans:                 25,
-		MaxVersionsPerPlan:       10,
-		MaxSSEConnections:        5,
-		MaxCostEstimatesPerDay:   10,
-		MaxPendingApprovals:      5,
-		MediaGovernanceEnabled:   false,
-		DailyEventQuota:          200,
+		TenantPolicies:         20,
+		OrgPolicies:            0,
+		CustomPolicyConnectors: 2,
+		AuditRetentionDays:     3,
+		MaxLLMProviders:        2,
+		MaxExecutionHistory:    50,
+		MaxConcurrentExec:      5,
+		MaxPlans:               25,
+		MaxVersionsPerPlan:     10,
+		MaxSSEConnections:      5,
+		MaxCostEstimatesPerDay: 10,
+		MaxPendingApprovals:    5,
+		MediaGovernanceEnabled: false,
+		DailyEventQuota:        200,
+		// V1 Plugin Pro graduated-freemium teasers (umbrella #1958):
+		// Free tier gets a TASTE of Pro capabilities — 2 active custom
+		// policies and 1 HITL approval per rolling 7-day window. Hitting
+		// either limit returns the structured upgrade envelope per
+		// PRD_TENANT_DURABILITY_AND_CLAIM §"Customer-facing copy".
+		MaxActiveCustomPolicies:  2,
+		MaxHITLApprovalsPerWeek:  1,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,
@@ -175,11 +200,14 @@ var (
 		MaxEvidenceExportsPerDay: 0,
 	}
 
-	// ProLimits is the SaaS Plugin V1 paid tier ($9.99 / 90 days). 30-day
-	// retention + 1000 events/day quota per the locked PRD numbers. Other
-	// tenant-scoped capability gates (HITL, simulation, evidence export)
-	// stay off in V1 — those map to self-hosted higher tiers and are not
-	// part of the SaaS Plugin product.
+	// ProLimits is the SaaS Plugin V1 paid tier ($9.99 / 90 days).
+	// Per V1 Plugin Pro umbrella #1958: 30-day audit retention,
+	// 2,000 events/day daily quota (bumped from 1,000 in #1958 — gives
+	// 10x headroom over Free's 200, validated against the heaviest
+	// observed Free-tier daily volume of ~780 events/day on prod).
+	// Custom-policy + HITL caps removed (-1 = unlimited). Other
+	// tenant-scoped capability gates (LLM cost pre-flight, evidence
+	// export) are gated at the MCP-tool dispatch layer per PR2.
 	ProLimits = TierLimits{
 		TenantPolicies:           20,
 		OrgPolicies:              0,
@@ -194,7 +222,10 @@ var (
 		MaxCostEstimatesPerDay:   10,
 		MaxPendingApprovals:      5,
 		MediaGovernanceEnabled:   false,
-		DailyEventQuota:          1000,
+		DailyEventQuota:          2000,
+		// V1 Plugin Pro fields: -1 = unlimited (Pro removes Free caps).
+		MaxActiveCustomPolicies:  -1,
+		MaxHITLApprovalsPerWeek:  -1,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,
@@ -214,20 +245,23 @@ var (
 	// 90-day retention + 5000 events/day quota per the PRD's placeholder
 	// numbers — adjust when Premium PRD locks the real values.
 	PremiumLimits = TierLimits{
-		TenantPolicies:           20,
-		OrgPolicies:              0,
-		CustomPolicyConnectors:   2,
-		AuditRetentionDays:       90,
-		MaxLLMProviders:          2,
-		MaxExecutionHistory:      50,
-		MaxConcurrentExec:        5,
-		MaxPlans:                 25,
-		MaxVersionsPerPlan:       10,
-		MaxSSEConnections:        5,
-		MaxCostEstimatesPerDay:   10,
-		MaxPendingApprovals:      5,
-		MediaGovernanceEnabled:   false,
-		DailyEventQuota:          5000,
+		TenantPolicies:         20,
+		OrgPolicies:            0,
+		CustomPolicyConnectors: 2,
+		AuditRetentionDays:     90,
+		MaxLLMProviders:        2,
+		MaxExecutionHistory:    50,
+		MaxConcurrentExec:      5,
+		MaxPlans:               25,
+		MaxVersionsPerPlan:     10,
+		MaxSSEConnections:      5,
+		MaxCostEstimatesPerDay: 10,
+		MaxPendingApprovals:    5,
+		MediaGovernanceEnabled: false,
+		DailyEventQuota:        5000,
+		// V1 Plugin Pro fields: -1 = unlimited (Premium also removes Free caps).
+		MaxActiveCustomPolicies:  -1,
+		MaxHITLApprovalsPerWeek:  -1,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,

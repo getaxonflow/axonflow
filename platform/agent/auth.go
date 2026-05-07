@@ -542,16 +542,23 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// Per ADR-049 §3 + ADR-050 §9 the cap is per-tenant: validateCommunitySaasAuth
 		// has already resolved Client.EffectiveTier (Free / Pro / Premium); we
 		// look up the tier's `DailyEventQuota` here. The locked numbers per
-		// PRD_TENANT_DURABILITY_AND_CLAIM are Free=200, Pro=1000, Premium=5000.
-		// The legacy `COMMUNITY_SAAS_DAILY_LIMIT` env var is still honored as
-		// a fallback for the Free baseline so operators running their own
-		// stacks can override without rebuilding (e.g. the perf-testing rig).
+		// PRD_TENANT_DURABILITY_AND_CLAIM (V1 Plugin Pro umbrella #1958):
+		// Free=200, Pro=2,000, Premium=5,000. The legacy
+		// `COMMUNITY_SAAS_DAILY_LIMIT` env var is still honored as a
+		// fallback for the Free baseline so operators running their own
+		// stacks can override without rebuilding (e.g. the perf-testing
+		// rig). On limit hit we emit the V1 Plugin Pro structured
+		// upgrade envelope (locked shape per umbrella #1958).
 		if auth.Kind == AuthKindCommunitySaaS {
 			dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer dailyCancel()
 			dailyLimit := dailyLimitForTenant(auth.Client)
 			if err := checkCommunityDailyLimit(dailyCtx, tenantID, dailyLimit, authDB); err != nil {
-				writeJSONError(w, "Daily request limit reached. Resets at midnight UTC.", http.StatusTooManyRequests)
+				tier := "Free"
+				if auth.Client != nil && auth.Client.EffectiveTier != "" {
+					tier = auth.Client.EffectiveTier
+				}
+				writeRateLimitError(w, tenantID, tier, dailyLimit)
 				return
 			}
 		}

@@ -12,6 +12,56 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.8.0] - 2026-05-07 — V1 Plugin Pro graduated freemium + structured upgrade envelope + 5 new MCP tools + Rust SDK announcement
+
+**V1 Plugin Pro completion release.** Builds on v7.7.0's launch with the graduated freemium model that turns every Free-tier limit into a conversion moment instead of a dead-end 401/429. Pro buyers now get the right caps everywhere, MCP governance traffic counts against daily quota, and a structured upgrade envelope replaces five different per-route ad-hoc 429 bodies with one wire shape that all four plugins parse identically. No breaking changes for existing self-hosted Enterprise deployments; Free / Pro / Premium SaaS Plugin tiers all keep their v7.7.0 wire shape, plus richer fields.
+
+**5th SDK live — Rust preview at v0.1.0.** First-ever AxonFlow Rust SDK shipped 2026-05-05 to [crates.io](https://crates.io/crates/axonflow-sdk-rust) covering proxy + audit + basic MAP + basic MCP + OpenAI interceptor. Repo: [getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust). Quickstart: [docs/sdk/rust-quickstart.md](docs/sdk/rust-quickstart.md). Foundation contributed voluntarily by Francesco Pierfederici.
+
+**V1 customer-facing surfaces in this release:**
+
+- **Five Pro differentiators, all enforced.** Daily quota (Free 200 → Pro 2,000), audit retention (Free 3d → Pro 30d), custom tenant policies (Free 2 active → Pro unlimited), HITL approvals (Free 1 per rolling 7d → Pro unlimited), LLM cost pre-flight (Pro only). Existing Pro buyers automatically receive the higher daily-quota cap on this release.
+- **Structured upgrade envelope across every Free-tier limit hit.** One JSON shape (`{error, limit_type, tier, limit, remaining, window, resets_at, upgrade.{tier, wording, compare_url, buy_url}}`) on 429 daily-quota AND 403 graduated / Pro-only paths. Three locked headers (`X-Axonflow-Tier-Limit`, `X-Axonflow-Upgrade-URL`, `Retry-After`). Plugin parsers read the same envelope on the HTTP path and on the JSON-RPC path (where it rides inside `result.content[0].text` with `isError: true`).
+- **Five new MCP tools on `/api/v1/mcp-server`.** `axonflow_get_tenant_id` (Free + Pro), `axonflow_request_approval` (Free 1 per rolling 7d, Pro unlimited), `axonflow_create_tenant_policy` (Free 2 active max, Pro unlimited), `axonflow_get_cost_estimate` (Pro only — wraps `/api/v1/plans/estimate`), `axonflow_list_pro_features` (data only, all tiers). All five carry an explicit `success: true` field so LLM consumers in Cursor / Claude Code / Codex / OpenClaw see an unambiguous positive signal on every successful call.
+- **Tier-aware `tools/list` filtering.** Free callers see N tools, Pro callers see N+M. Honest visibility — `axonflow_get_cost_estimate` does not appear in a Free user's tool list at all (not just rejected on call).
+
+**Companion plugin release planned at v1.3.0 / v2.3.0** with envelope-aware error handling (parse → display → honor `Retry-After`) and skill / README mentions of the new MCP tools. Plugin tags + npm / ClawHub publishes follow on their own release schedule.
+
+**Stable SDKs (Go / Python / TypeScript / Java) unchanged at v7.1.0.** Existing SDK callers inherit the higher Pro daily quota with zero code change — V1 Plugin Pro is server-side and plugin-side only.
+
+### Community
+
+#### Added
+
+- **Tier-gating framework on MCP tools.** Tool definitions can now declare `RequiredTier` ("Pro" / "Premium") which drives `tools/list` filter visibility and `tools/call` dispatch rejection, and `FreeUsageLimit` which enforces graduated-cap behavior — `MaxCount` for object-creation limits ("2 active custom policies") and `WindowSeconds` + `MaxInWindow` for rolling-window action limits ("1 HITL approval per 7 days"). Both fields default zero / nil so every existing tool is unchanged.
+- **Structured V1 upgrade envelope.** One shape across HTTP (429 daily-quota, 403 active-policies / hitl-approvals / feature-pro-only) and JSON-RPC (wraps the same envelope inside `result.content[0].text` with `isError: true`). Locked URLs `https://getaxonflow.com/pricing/` (compare) + `https://buy.stripe.com/bJe28qbztcdVchjdkw8k800` (buy) are the single source of truth across agent code, license email body, Stripe Dashboard, and customer-facing landing pages.
+- **`axonflow_get_tenant_id` MCP tool.** Returns `{success, tenant_id, tier, upgrade_url, buy_url}`. The AI in any host CLI can answer "what's my tenant ID?" / "what tier am I on?" inline without running a shell script — replaces the per-plugin discovery scripts with auto-discovered MCP tool dispatch.
+- **`axonflow_request_approval` MCP tool.** Inline HITL approval gate before risky operations (e.g. `rm -rf`, `git push --force`, production deploy). Free tier supports 1 approval per rolling 7-day window; Pro unlimited.
+- **`axonflow_create_tenant_policy` MCP tool.** Lets the AI create tenant-scoped governance policies on the fly — *"block any tool call that writes to ~/.ssh/"*, *"require approval for any `rm -rf`"*. Free tier supports 2 active policies (delete to make room); Pro unlimited.
+- **`axonflow_get_cost_estimate` MCP tool.** LLM cost pre-flight before running multi-step plans — the headline anti-runaway-bills feature. Pro tier only; Free callers see the tool filtered out of `tools/list`. Wraps the orchestrator's `/api/v1/plans/estimate` so per-token pricing follows the orchestrator's authoritative pricing config — no drift between proxy enforcement and tool-reported estimate.
+- **`axonflow_list_pro_features` MCP tool.** Returns the V1 Pro feature list as data — five differentiators, exact pricing, tone-direction quote — so a Free user's AI can faithfully answer "what would I get if I upgraded?" without reading docs.
+- **Daily-cap enforcement on every governance route.** Three previously-leaking routes — `/api/v1/mcp-server tools/call`, `/api/v1/mcp/check-input`, `/api/v1/mcp/check-output` — now consume daily quota and emit the V1 envelope on rejection. Pre-fix: Free tenants could get unlimited governance evaluation by routing through MCP. Post-fix: every governed event counts.
+- **`success: true` field on every V1 MCP tool response.** Plus companion `submitted: true` / `awaiting_review: true` on `axonflow_request_approval` and `created: true` on `axonflow_create_tenant_policy` so LLM consumers don't misread `status: "pending"` (HITL row state) or `enabled: true` (policy state, not operation outcome) as failure. Locks unambiguous tool-success semantics for AI consumers across host CLIs.
+- **Telemetry stream classifier.** Every heartbeat row tagged `Stream=heartbeat` so the SDK / plugin heartbeat stream and a future Community SaaS operational stream remain distinguishable when both flow through the same telemetry pipeline.
+
+#### Changed
+
+- **Pro daily quota 1,000 → 2,000.** Existing Pro buyers automatically receive the higher cap on this release. Heaviest observed Free-tier daily volume in the week leading up to release was ~780 events for a single power user; 2,000 leaves comfortable headroom for a Pro user's normal day.
+- **MCP `tools/list` is tier-filtered.** Free callers see N tools (Pro-only ones omitted); Pro callers see N+M. The filter is honest visibility, not security — `tools/call` dispatch re-enforces the gate so a determined Free caller invoking by name still gets the structured rejection envelope.
+- **All daily-cap-exceeded responses now emit the V1 envelope.** Auth-path and proxy-path rejection bodies used to differ in shape for the same condition (one wrapped, one flat); both now emit the V1 envelope verbatim. Plugins or direct API consumers that previously parsed the auth-path's nested `{error: {code, message}}` shape will need to update to read the V1 envelope's top-level `error` string + richer surrounding fields — the v1.3.0 / v2.3.0 plugin train carries the parser change on the client side.
+- **`AXONFLOW_TELEMETRY=off` scope clarified in docs.** Controls the SDK / plugin heartbeat path only. Community SaaS operational data (registrations, audit logs, policy-enforcement records, request-header metadata) is processed inherent to running the hosted service and is independent of the heartbeat opt-out.
+
+#### Fixed
+
+- **Apache Thrift CVE-2026-41602 (HIGH — Integer Overflow).** Indirect dependency `github.com/apache/thrift` bumped from v0.22.0 to v0.23.0 via the Snowflake connector chain.
+
+### Enterprise
+
+#### Changed
+
+- **`RecommendedPluginVersion` advertised in `/health`** bumps to claude / cursor / codex 1.3.0 and openclaw 2.3.0. `MinPluginVersion` floors stay at 1.0.0 / 2.0.0 — pre-1.x plugins ran the pre-DNT-removal contract and remain blocked; pre-V1-Plugin-Pro plugins continue to work but log an actionable upgrade warning on every governed call.
+- **`RecommendedSDKVersion` unchanged at v7.1.0.** This release is server-side and plugin-side only; the `X-Axonflow-Client` header semantics + scope-aware license validation that v7.1.0 SDKs already speak cover all V1 Plugin Pro paths.
+
 ## [7.7.0] - 2026-05-06 — V1 SaaS Plugin Pro launch + free-tier credential recovery + license matrix
 
 **V1 launch release.** First public release of the paid Pro tier and credential recovery for AxonFlow Community SaaS. Self-hosted deployments are unaffected; existing Self-Hosted licenses keep validating via the documented backward-compat path.
@@ -34,11 +84,13 @@ community mirror, **Enterprise** changes are EE-only.
   survives the cascade for Article 30 compliance.
 
 **Companion plugin and SDK release.** All four plugins
-(axonflow-claude-plugin, axonflow-cursor-plugin, axonflow-codex-plugin,
-axonflow-openclaw-plugin) and all four stable SDKs (Go, Python, TypeScript,
-Java) advance to v7.7.0 with the new `X-Axonflow-Client` header and
-scope-aware license validation. Existing v7.0.x callers continue to work
-without the header — they receive a one-time upgrade hint.
+(axonflow-claude-plugin, axonflow-cursor-plugin, axonflow-codex-plugin)
+advance to v1.2.0 and axonflow-openclaw-plugin advances to v2.2.0. All
+four stable SDKs (Go, Python, TypeScript, Java) advance to v7.1.0 with
+the new `X-Axonflow-Client` header and scope-aware license validation.
+Existing v7.0.x SDK / v1.1.x plugin callers continue to work without
+the header — they receive a one-time upgrade hint. (Per-version detail
+in the Plugin / SDK release-companion sections below.)
 
 No breaking platform changes for existing self-hosted Enterprise tenants.
 Existing license tokens validate cleanly via the missing-`aud` fallback

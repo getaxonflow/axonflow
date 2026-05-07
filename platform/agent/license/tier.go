@@ -127,6 +127,16 @@ type TierLimits struct {
 	// field exists so the struct shape stays identical across builds.
 	DailyEventQuota int `json:"daily_event_quota"`
 
+	// V1 Plugin Pro graduated-freemium fields (umbrella #1958). Free
+	// tier exposes a "taste" of these capabilities — Pro tier removes
+	// the caps. -1 = unlimited (Pro / Premium / self-hosted higher
+	// tiers). Same semantics as DailyEventQuota: -1 means n/a / not a
+	// SaaS Plugin tier. The community build never resolves to a SaaS
+	// Plugin tier; field carried so cross-build struct shape is
+	// identical.
+	MaxActiveCustomPolicies int `json:"max_active_custom_policies"`
+	MaxHITLApprovalsPerWeek int `json:"max_hitl_approvals_per_week"`
+
 	// Evaluation tier feature gates
 	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
 	HITLExpiryHours          int  `json:"hitl_expiry_hours"`
@@ -156,6 +166,10 @@ var (
 		MaxPendingApprovals:    5,
 		MediaGovernanceEnabled: false, // Opt-in via MEDIA_GOVERNANCE_ENABLED=true
 		DailyEventQuota:        -1,    // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (community build never resolves
+		// to a SaaS Plugin tier; cross-build struct-shape parity only).
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Evaluation features disabled
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
@@ -182,6 +196,9 @@ var (
 		MaxPendingApprovals:    100,
 		MediaGovernanceEnabled: true,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (Evaluation is self-hosted, not SaaS Plugin)
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Evaluation features enabled with limits
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -208,6 +225,9 @@ var (
 		MaxPendingApprovals:    -1,   // Unlimited
 		MediaGovernanceEnabled: true,
 		DailyEventQuota:        -1, // not a SaaS Plugin tier; daily quota n/a
+		// V1 Plugin Pro fields: -1 = n/a (Enterprise is self-hosted, not SaaS Plugin)
+		MaxActiveCustomPolicies: -1,
+		MaxHITLApprovalsPerWeek: -1,
 		// Enterprise features enabled, unlimited
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,

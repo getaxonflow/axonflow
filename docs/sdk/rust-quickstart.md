@@ -188,6 +188,8 @@ The SDK sends an anonymous heartbeat at most once per machine every 7 days for l
 export AXONFLOW_TELEMETRY=off
 ```
 
+**Scope:** `AXONFLOW_TELEMETRY=off` disables the heartbeat described above. On self-hosted and in-VPC deployments, that heartbeat is the only data the SDK sends to AxonFlow. On Community SaaS (`try.getaxonflow.com`) the hosted service also processes operational data (registrations, audit logs, policy enforcement records, workflow state, plan data, request-header metadata aggregated for usage analytics) as part of running the platform; that flow is governed by the [Privacy Policy](https://getaxonflow.com/privacy/), not by `AXONFLOW_TELEMETRY`.
+
 `DO_NOT_TRACK` is intentionally **not** honored — it's commonly inherited from a parent shell, and we want telemetry opt-out to be an explicit AxonFlow decision.
 
 ---
