@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/lib/pq"
+
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -41,7 +43,7 @@ func buildRicherCheckInputBlock(
 	matches = make([]RicherPolicyMatch, 0, len(matched))
 	var firstOverridablePolicyID string
 	for _, m := range matched {
-		risk, allowOverride, err := lookupPolicyRiskOverride(ctx, db, m.PolicyID)
+		risk, allowOverride, version, err := lookupPolicyMeta(ctx, db, m.PolicyID)
 		if err != nil {
 			log.Printf("richer context: policy lookup failed for %s: %v", m.PolicyID, err)
 			// Emit a stub entry so the plugin sees it was matched even when
@@ -57,6 +59,7 @@ func buildRicherCheckInputBlock(
 			PolicyName:    m.PolicyName,
 			RiskLevel:     risk,
 			AllowOverride: allowOverride,
+			Version:       version,
 		})
 		// Top-level risk_level: prefer first overridable non-critical match
 		// so the plugin UI can default to showing the "request override"
@@ -98,25 +101,94 @@ func buildRicherCheckInputBlock(
 	return matches, topRisk, overrideAvailable, overrideID
 }
 
-// lookupPolicyRiskOverride fetches risk_level + allow_override for a
-// policy. Returns ("", false, nil) if the policy isn't in the table
+// lookupPolicyMeta fetches risk_level + allow_override + version for a
+// policy. Returns ("", false, 0, nil) if the policy isn't in the table
 // (non-fatal — dynamic policies don't live in static_policies).
-func lookupPolicyRiskOverride(ctx context.Context, db *sql.DB, policyID string) (string, bool, error) {
+//
+// version is the live `static_policies.version` column (#1983 / α1):
+// callers stamp the value into audit_logs.policy_details so the explain
+// endpoint can answer "which version evaluated me?" without a separate
+// lookup. Forward-only — pre-α1 decisions surface no version.
+func lookupPolicyMeta(ctx context.Context, db *sql.DB, policyID string) (string, bool, int, error) {
 	var risk sql.NullString
 	var allowOverride sql.NullBool
+	var version sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-		SELECT risk_level, allow_override
+		SELECT risk_level, allow_override, version
 		FROM static_policies
 		WHERE policy_id = $1
 		LIMIT 1
-	`, policyID).Scan(&risk, &allowOverride)
+	`, policyID).Scan(&risk, &allowOverride, &version)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", false, 0, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
-	return risk.String, allowOverride.Bool, nil
+	return risk.String, allowOverride.Bool, int(version.Int64), nil
+}
+
+// collectPolicyVersions distills RicherPolicyMatch.Version values into the
+// { policy_id → version } map shape carried by MCPQueryAuditEntry +
+// audit_logs.policy_details JSONB (#1983 / α1). Returns nil when no match
+// has a known version so audit consumers see omitempty rather than `{}`.
+func collectPolicyVersions(matches []RicherPolicyMatch) map[string]int {
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(matches))
+	for _, m := range matches {
+		if m.PolicyID != "" && m.Version > 0 {
+			out[m.PolicyID] = m.Version
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// lookupPolicyVersionsByID returns version numbers keyed by policy_id for the
+// given list. Used by the check-output handler to attach policy_version to
+// audit entries when static-policy matches fire (#1983 / α1). Single round
+// trip via ANY($1::text[]); missing policies (dynamic, ad-hoc) simply don't
+// appear in the result map. Best-effort — DB errors return an empty map and
+// the audit write proceeds without policy_versions rather than failing the
+// decision.
+func lookupPolicyVersionsByID(ctx context.Context, db *sql.DB, policyIDs []string) map[string]int {
+	if db == nil || len(policyIDs) == 0 {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT policy_id, version
+		FROM static_policies
+		WHERE policy_id = ANY($1)
+	`, pq.Array(policyIDs))
+	if err != nil {
+		log.Printf("richer context: policy_versions batch lookup failed: %v", err)
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]int, len(policyIDs))
+	for rows.Next() {
+		var pid string
+		var ver sql.NullInt64
+		if err := rows.Scan(&pid, &ver); err != nil {
+			log.Printf("richer context: policy_versions row scan failed: %v", err)
+			continue
+		}
+		if ver.Valid {
+			out[pid] = int(ver.Int64)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("richer context: policy_versions iteration failed: %v", err)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // lookupActiveOverride returns (id, true, nil) when the caller already has
@@ -158,10 +230,15 @@ func lookupActiveOverride(ctx context.Context, db *sql.DB, tenantID, userEmail, 
 }
 
 // applyOverrideToCheckInputBlock applies an active session override to a
-// matched-policy block. Returns (true, overrideID) when the block is
+// matched-policy block. Returns (overrideID, &match, true) when the block is
 // suppressed — caller should treat the request as allowed and emit an
-// override_used audit event — or (false, "") when no applicable override
-// exists and the block stands.
+// override_used audit event — or ("", nil, false) when no applicable
+// override exists and the block stands.
+//
+// The matched RicherPolicyMatch is returned so the caller can stamp the
+// overridden policy's version into the override_used audit event
+// (#1983 / α1). Returning a pointer keeps the no-override case allocation
+// free.
 //
 // ADR-044 invariants enforced:
 //   - Only non-critical, allow_override=true policies are overridable
@@ -177,11 +254,12 @@ func applyOverrideToCheckInputBlock(
 	db *sql.DB,
 	tenantID, userEmail string,
 	matches []RicherPolicyMatch,
-) (string, bool) {
+) (string, *RicherPolicyMatch, bool) {
 	if db == nil || userEmail == "" || len(matches) == 0 {
-		return "", false
+		return "", nil, false
 	}
-	for _, m := range matches {
+	for i := range matches {
+		m := matches[i]
 		if m.RiskLevel == "critical" || !m.AllowOverride {
 			continue
 		}
@@ -191,19 +269,27 @@ func applyOverrideToCheckInputBlock(
 			continue
 		}
 		if found {
-			return id, true
+			return id, &matches[i], true
 		}
 	}
-	return "", false
+	return "", nil, false
 }
 
 // writeOverrideUsedEvent records an override_used audit event for the MCP
 // check-input path. The orchestrator emits matching events for its own
 // paths; this keeps the override audit trail consistent across surfaces.
+//
+// policyID + policyVersion identify the policy whose block was unblocked
+// by this override (#1983 / α1). They land in policy_details JSONB so the
+// explain endpoint can surface "which version of which policy was overridden"
+// without re-deriving from the override row. Both are best-effort: empty
+// policyID / zero policyVersion are simply omitted from the JSONB so we
+// never block an override write on an unknown match.
 func writeOverrideUsedEvent(
 	ctx context.Context,
 	db *sql.DB,
 	overrideID, decisionID, tenantID, orgID, clientID, userEmail string,
+	policyID string, policyVersion int,
 ) {
 	if db == nil || overrideID == "" {
 		return
@@ -212,6 +298,12 @@ func writeOverrideUsedEvent(
 		"decision_id": decisionID,
 		"override_id": overrideID,
 		"event_type":  "override_used",
+	}
+	if policyID != "" {
+		details["policy_id"] = policyID
+	}
+	if policyVersion > 0 {
+		details["policy_version"] = policyVersion
 	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {
@@ -286,8 +378,18 @@ func writeExplainableAuditLog(
 	}
 
 	policyNames := make([]string, 0, len(matches))
+	// policy_versions is a parallel { policy_id -> version } map carried at
+	// the JSONB top level so explain/SDK consumers can surface the version
+	// without unpacking the policy_matches array. Each match's Version is
+	// also serialised inline (RicherPolicyMatch.Version → "policy_version"
+	// key under each match) — the top-level map is the convenience view
+	// used by α3's DecisionExplanation passthrough (#1983).
+	policyVersions := make(map[string]int, len(matches))
 	for _, m := range matches {
 		policyNames = append(policyNames, m.PolicyName)
+		if m.PolicyID != "" && m.Version > 0 {
+			policyVersions[m.PolicyID] = m.Version
+		}
 	}
 	details := map[string]interface{}{
 		"decision_id":    decisionID,
@@ -295,6 +397,9 @@ func writeExplainableAuditLog(
 		"risk_level":     topRisk,
 		"policy_names":   policyNames,
 		"policy_matches": matches,
+	}
+	if len(policyVersions) > 0 {
+		details["policy_versions"] = policyVersions
 	}
 	detailsJSON, err := json.Marshal(details)
 	if err != nil {

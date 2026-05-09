@@ -51,6 +51,14 @@ type TierLimits struct {
 	MaxActiveCustomPolicies int `json:"max_active_custom_policies"`
 	MaxHITLApprovalsPerWeek int `json:"max_hitl_approvals_per_week"`
 
+	// V1.1 decision-list (issue #1982 / project_v1_1_decision_record_2026_05_07).
+	// Govern GET /api/v1/decisions: how far back the lookback window extends
+	// and how many rows a single response page may carry. -1 = unbounded.
+	// Window measured in hours so SaaS Pro's 30 days renders as 720 — staying
+	// in int means the schema doesn't grow a Duration type for one field.
+	DecisionListWindowHours int `json:"decision_list_window_hours"`
+	DecisionListMaxPage     int `json:"decision_list_max_page"`
+
 	// Evaluation tier feature gates
 	HITLApprovalEnabled      bool `json:"hitl_approval_enabled"`
 	HITLExpiryHours          int  `json:"hitl_expiry_hours"`
@@ -83,6 +91,9 @@ var (
 		// V1 Plugin Pro fields: -1 = n/a (Community is self-hosted, not SaaS Plugin)
 		MaxActiveCustomPolicies: -1,
 		MaxHITLApprovalsPerWeek: -1,
+		// V1.1 decision-list: 24h / 5 per page (matches SaaS Free).
+		DecisionListWindowHours: 24,
+		DecisionListMaxPage:     5,
 		// Evaluation features disabled
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
@@ -116,6 +127,9 @@ var (
 		// V1 Plugin Pro fields: -1 = n/a (Evaluation is self-hosted, not SaaS Plugin)
 		MaxActiveCustomPolicies: -1,
 		MaxHITLApprovalsPerWeek: -1,
+		// V1.1 decision-list: 14d / 100 per page.
+		DecisionListWindowHours: 336,
+		DecisionListMaxPage:     100,
 		// Evaluation features enabled with limits
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -145,6 +159,9 @@ var (
 		// V1 Plugin Pro fields: -1 = n/a (Enterprise is self-hosted, not SaaS Plugin)
 		MaxActiveCustomPolicies: -1,
 		MaxHITLApprovalsPerWeek: -1,
+		// V1.1 decision-list: full retention / 1000 per page.
+		DecisionListWindowHours: -1, // unbounded — only audit retention bounds the lookback
+		DecisionListMaxPage:     1000,
 		// Enterprise features enabled, unlimited
 		HITLApprovalEnabled:      true,
 		HITLExpiryHours:          24,
@@ -189,6 +206,10 @@ var (
 		// PRD_TENANT_DURABILITY_AND_CLAIM §"Customer-facing copy".
 		MaxActiveCustomPolicies:  2,
 		MaxHITLApprovalsPerWeek:  1,
+		// V1.1 decision-list: 24h / 5 per page (Free tier — same as
+		// self-host Community per locked V1.1 tier matrix).
+		DecisionListWindowHours:  24,
+		DecisionListMaxPage:      5,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,
@@ -226,6 +247,9 @@ var (
 		// V1 Plugin Pro fields: -1 = unlimited (Pro removes Free caps).
 		MaxActiveCustomPolicies:  -1,
 		MaxHITLApprovalsPerWeek:  -1,
+		// V1.1 decision-list: 30d (720h) / 100 per page.
+		DecisionListWindowHours:  720,
+		DecisionListMaxPage:      100,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,
@@ -262,6 +286,10 @@ var (
 		// V1 Plugin Pro fields: -1 = unlimited (Premium also removes Free caps).
 		MaxActiveCustomPolicies:  -1,
 		MaxHITLApprovalsPerWeek:  -1,
+		// V1.1 decision-list: matches Pro until Premium PRD locks
+		// distinct values (placeholder tier; not sold V1).
+		DecisionListWindowHours:  720,
+		DecisionListMaxPage:      100,
 		HITLApprovalEnabled:      false,
 		HITLExpiryHours:          0,
 		PolicySimulationEnabled:  false,

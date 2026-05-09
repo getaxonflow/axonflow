@@ -12,6 +12,34 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [7.9.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision
+
+**Decision-record release.** Closes the loop on programmatic decision audit:
+callers can now `list` recorded decisions, `explain` any specific one, and
+read the policy version that was active at decision time. The complete
+read-side audit surface (list + explain + version provenance) is enough for
+"show me everything we blocked yesterday and why" workflows without operators
+leaving the API.
+
+No breaking changes for self-hosted Enterprise deployments.
+
+### Community
+
+#### Added
+
+- **`GET /api/v1/decisions` list endpoint** for paging recorded policy decisions. Companion to `/api/v1/decisions/{id}/explain` shipped in v7.4.0 — callers can now both list and drill in. Tier-aware caps (Free 24h × 5; Pro 30d × 100; Self-hosted Evaluation 14d × 100; Self-hosted Enterprise full retention × 1000).
+- **`list_recent_decisions` MCP tool** wraps the new list endpoint so the AI in any host CLI can answer "what just got blocked?" inline without the user leaving their tool surface. Same tier caps as the HTTP endpoint.
+- **`policy_version_at_decision` on the explain response.** Records and surfaces the policy version that was active when the decision was made — an audit drill-in shows not just *which* policy fired but the exact rule text the decision was made against. Crucial for compliance reviews of decisions made before a policy was edited. Additive field; existing readers ignore it cleanly.
+
+#### Telemetry
+
+- **Anonymous platform startup heartbeat (agent + orchestrator).** One classification-only ping per binary per 7 days; single opt-out `AXONFLOW_TELEMETRY=off`; disclosure line printed on every send. Closes the gap where `docker compose up` deployments that never instantiate an SDK looked invisible to adoption analytics.
+- **v1 schema additions on `POST /v1/ping`** — additive `telemetry_type`, `component`, `license_tier`, `environment_class`, `stream` fields with closed-enum normalization on both sides. `"rust"` joins the language-SDK allowlist. Existing SDK / plugin pings continue working unchanged.
+
+#### Fixed
+
+- **Community-SaaS daily-cap 429 events now persist with full attribution.** Previously the auth middleware populated the telemetry tenant_id after the daily-cap check, so rate-limit rejections terminated before attribution and the telemetry table was blind to the very rejections it should have been counting. Tenant_id now resolves immediately after auth, before the daily-cap gate, so every 429 event ingests with full attribution.
+
 ## [7.8.0] - 2026-05-07 — V1 Plugin Pro graduated freemium + structured upgrade envelope + 5 new MCP tools + Rust SDK announcement
 
 **V1 Plugin Pro completion release.** Builds on v7.7.0's launch with the graduated freemium model that turns every Free-tier limit into a conversion moment instead of a dead-end 401/429. Pro buyers now get the right caps everywhere, MCP governance traffic counts against daily quota, and a structured upgrade envelope replaces five different per-route ad-hoc 429 bodies with one wire shape that all four plugins parse identically. No breaking changes for existing self-hosted Enterprise deployments; Free / Pro / Premium SaaS Plugin tiers all keep their v7.7.0 wire shape, plus richer fields.
@@ -69,19 +97,19 @@ community mirror, **Enterprise** changes are EE-only.
 **V1 customer-facing surfaces shipping together:**
 
 - **Paid Pro tier ($9.99 one-time, 90 days).** Stripe Checkout success mints
-  an Ed25519-signed plugin license token, persists it on the tenant, and
-  emails it to the buyer. The token paste activates Pro features immediately
-  on every governed request through the plugin. Full Stripe refunds within
-  the 14-day window auto-revoke the license; partial refunds are an explicit
-  no-op.
+ an Ed25519-signed plugin license token, persists it on the tenant, and
+ emails it to the buyer. The token paste activates Pro features immediately
+ on every governed request through the plugin. Full Stripe refunds within
+ the 14-day window auto-revoke the license; partial refunds are an explicit
+ no-op.
 - **Free-tier credential recovery.** A Community SaaS tenant who opted into
-  recovery at sign-up time can self-recover a lost secret via emailed magic
-  link. Capped at 3 active tenants per email; per-IP rate limit prevents
-  enumeration probes.
+ recovery at sign-up time can self-recover a lost secret via emailed magic
+ link. Capped at 3 active tenants per email; per-IP rate limit prevents
+ enumeration probes.
 - **GDPR right-to-erasure.** Two-step email-verified tenant deletion
-  atomically scrubs registration, license, audit history, daily-usage
-  counters, and per-tenant usage records. An immutable deletion log row
-  survives the cascade for Article 30 compliance.
+ atomically scrubs registration, license, audit history, daily-usage
+ counters, and per-tenant usage records. An immutable deletion log row
+ survives the cascade for Article 30 compliance.
 
 **Companion plugin and SDK release.** All four plugins
 (axonflow-claude-plugin, axonflow-cursor-plugin, axonflow-codex-plugin)
@@ -101,235 +129,235 @@ documented in the License Matrix below.
 #### Added
 
 - **`POST /api/v1/billing/stripe-webhook`** — Stripe webhook receiver for
-  the V1 SaaS Plugin Pro tier. Subscribes to `checkout.session.completed`
-  (issues the license) and `charge.refunded` (revokes on full refund).
-  Defended by Stripe-Signature HMAC + IP allowlist (Stripe's published
-  webhook CIDRs, env-overridable) + per-source rate limit (60 req/min
-  default). `GET` returns 405 so misconfigured webhook URLs in the Stripe
-  Dashboard fail loudly. Idempotent over `stripe_session_id` — Stripe's
-  at-least-once delivery returns the original token byte-identically on
-  retry, never a new one.
+ the V1 SaaS Plugin Pro tier. Subscribes to `checkout.session.completed`
+ (issues the license) and `charge.refunded` (revokes on full refund).
+ Defended by Stripe-Signature HMAC + IP allowlist (Stripe's published
+ webhook CIDRs, env-overridable) + per-source rate limit (60 req/min
+ default). `GET` returns 405 so misconfigured webhook URLs in the Stripe
+ Dashboard fail loudly. Idempotent over `stripe_session_id` — Stripe's
+ at-least-once delivery returns the original token byte-identically on
+ retry, never a new one.
 - **License token validation on every governed request.**
-  `validateCommunitySaasAuth` now reads `X-License-Token`, validates the
-  Ed25519 signature, checks the token's audience claim against the SaaS
-  Plugin accept list, verifies the tenant binding matches the auth-resolved
-  tenant, and looks up the active row in `plugin_user_licenses`. Free tier
-  (no header) passes through unmodified; Pro / Premium tier promotes the
-  request when both token and row are valid. Per-request DB lookup keeps
-  revocation effective within ~60s of a chargeback or dispute. Token
-  tenant_id mismatch returns 403; missing/revoked row returns 401; DB
-  unavailability returns 503 so the plugin retries rather than silently
-  degrading to Free.
+ `validateCommunitySaasAuth` now reads `X-License-Token`, validates the
+ Ed25519 signature, checks the token's audience claim against the SaaS
+ Plugin accept list, verifies the tenant binding matches the auth-resolved
+ tenant, and looks up the active row in `plugin_user_licenses`. Free tier
+ (no header) passes through unmodified; Pro / Premium tier promotes the
+ request when both token and row are valid. Per-request DB lookup keeps
+ revocation effective within ~60s of a chargeback or dispute. Token
+ tenant_id mismatch returns 403; missing/revoked row returns 401; DB
+ unavailability returns 503 so the plugin retries rather than silently
+ degrading to Free.
 - **Per-tenant daily request quota.** Daily event quota now follows the
-  resolved tier from the license token: Free 200/day, Pro 1,000/day,
-  Premium 5,000/day (reserved, not yet sold). Quota fires on both admin
-  routes (`apiAuthMiddleware`) and plugin / SDK governed routes
-  (`/api/v1/process`, `/api/v1/audit/*`, `/api/v1/mcp/evaluate-policies`,
-  `/api/v1/connectors`). The legacy `COMMUNITY_SAAS_DAILY_LIMIT` env var
-  is preserved as a fallback for callers without a resolved tier
-  (perf-testing rigs, etc.).
+ resolved tier from the license token: Free 200/day, Pro 1,000/day,
+ Premium 5,000/day (reserved, not yet sold). Quota fires on both admin
+ routes (`apiAuthMiddleware`) and plugin / SDK governed routes
+ (`/api/v1/process`, `/api/v1/audit/*`, `/api/v1/mcp/evaluate-policies`,
+ `/api/v1/connectors`). The legacy `COMMUNITY_SAAS_DAILY_LIMIT` env var
+ is preserved as a fallback for callers without a resolved tier
+ (perf-testing rigs, etc.).
 - **Per-tenant audit retention.** Audit log cleanup now buckets tenants by
-  retention tier — Free 3 days, Pro 30 days, Premium 90 days (reserved).
-  Self-hosted deployments without the SaaS schema fall through cleanly
-  via a `relation does not exist` guard on the SaaS table.
+ retention tier — Free 3 days, Pro 30 days, Premium 90 days (reserved).
+ Self-hosted deployments without the SaaS schema fall through cleanly
+ via a `relation does not exist` guard on the SaaS table.
 - **`POST /api/v1/recover`** — request a magic-link recovery email for a
-  Community SaaS tenant bound to a given email. Always returns 202
-  (anti-enumeration); the delivered email contains a single-use 15-minute
-  magic link.
+ Community SaaS tenant bound to a given email. Always returns 202
+ (anti-enumeration); the delivered email contains a single-use 15-minute
+ magic link.
 - **`POST /api/v1/recover/verify`** — consume a magic-link token and
-  receive fresh credentials bound to the same email. `GET` on the same
-  path serves an HTML confirmation page (no state change) so email-link
-  prefetchers don't burn the token.
+ receive fresh credentials bound to the same email. `GET` on the same
+ path serves an HTML confirmation page (no state change) so email-link
+ prefetchers don't burn the token.
 - **Email field on `POST /api/v1/register`** so Community SaaS registrants
-  can opt into recovery at sign-up time.
+ can opt into recovery at sign-up time.
 - **`POST /api/v1/tenant/<id>/delete-request`** +
-  **`POST /api/v1/tenant/<id>/delete-confirm`** — GDPR right-to-erasure
-  endpoints. `delete-request` accepts the email-on-file and emails a
-  single-use 1-hour confirmation token; `delete-confirm` consumes the
-  token and atomically scrubs the tenant from the SaaS registration table,
-  license table, audit logs, daily-usage counter, and usage events. Stripe
-  customer archive runs best-effort post-commit (DB-side erasure completes
-  regardless of Stripe reachability). Per-IP (1/min) and per-tenant
-  (1/hour) rate limits prevent spam. Tokens stored as HMAC-SHA256 (with
-  optional `AXONFLOW_TENANT_DELETE_TOKEN_PEPPER` for at-rest hardening).
+ **`POST /api/v1/tenant/<id>/delete-confirm`** — GDPR right-to-erasure
+ endpoints. `delete-request` accepts the email-on-file and emails a
+ single-use 1-hour confirmation token; `delete-confirm` consumes the
+ token and atomically scrubs the tenant from the SaaS registration table,
+ license table, audit logs, daily-usage counter, and usage events. Stripe
+ customer archive runs best-effort post-commit (DB-side erasure completes
+ regardless of Stripe reachability). Per-IP (1/min) and per-tenant
+ (1/hour) rate limits prevent spam. Tokens stored as HMAC-SHA256 (with
+ optional `AXONFLOW_TENANT_DELETE_TOKEN_PEPPER` for at-rest hardening).
 
 #### Changed
 
 - **License Matrix — explicit `aud` claim per hosting-mode × scope.** Six
-  canonical audience values now describe the matrix:
-  `axonflow.{saas,self_hosted}.{plugin,sdk,full}`. Each license-validation
-  context (SaaS Plugin path, SaaS SDK path, self-hosted loader) ships an
-  explicit accept list — cross-quadrant misuse (e.g. a SaaS Plugin Pro
-  token pasted into `AXONFLOW_LICENSE_KEY`, or a self-hosted Enterprise
-  license sent as `X-License-Token`) is rejected at the validator
-  boundary with an explicit reason. **Existing tokens predating the
-  rename have empty `aud` and validate via a documented fallback to
-  `axonflow.self_hosted.full` — no production breakage on upgrade.** Two
-  new helpers (`HostingMode()` and `HasScope(scope)`) on the parsed
-  license payload derive the matrix coordinates so callers don't
-  string-parse inline. The deprecated `origin` claim (redundant with
-  the new `aud`) is no longer set on newly issued tokens or read by
-  validators.
+ canonical audience values now describe the matrix:
+ `axonflow.{saas,self_hosted}.{plugin,sdk,full}`. Each license-validation
+ context (SaaS Plugin path, SaaS SDK path, self-hosted loader) ships an
+ explicit accept list — cross-quadrant misuse (e.g. a SaaS Plugin Pro
+ token pasted into `AXONFLOW_LICENSE_KEY`, or a self-hosted Enterprise
+ license sent as `X-License-Token`) is rejected at the validator
+ boundary with an explicit reason. **Existing tokens predating the
+ rename have empty `aud` and validate via a documented fallback to
+ `axonflow.self_hosted.full` — no production breakage on upgrade.** Two
+ new helpers (`HostingMode()` and `HasScope(scope)`) on the parsed
+ license payload derive the matrix coordinates so callers don't
+ string-parse inline. The deprecated `origin` claim (redundant with
+ the new `aud`) is no longer set on newly issued tokens or read by
+ validators.
 - **SaaS Plugin tier rename + schema simplification.** Internal V1
-  paid-tier names `plugin-claimed` and `plugin-subscription` rename to
-  `Pro` and `Premium`, with a new `Free` baseline applied when no
-  `X-License-Token` is sent. Per-tier limits move out of a JSONB blob
-  and into a typed struct shared with the self-hosted ladder. The
-  forward-only schema migration drops the JSONB column, renames any
-  existing rows, and tightens the tier CHECK constraint. No production
-  tokens existed for the prior design; staging fixtures re-seed cleanly
-  under the new schema.
+ paid-tier names `plugin-claimed` and `plugin-subscription` rename to
+ `Pro` and `Premium`, with a new `Free` baseline applied when no
+ `X-License-Token` is sent. Per-tier limits move out of a JSONB blob
+ and into a typed struct shared with the self-hosted ladder. The
+ forward-only schema migration drops the JSONB column, renames any
+ existing rows, and tightens the tier CHECK constraint. No production
+ tokens existed for the prior design; staging fixtures re-seed cleanly
+ under the new schema.
 - **Stripe webhook now issues 90-day Pro tokens by default.**
-  Configurable per-deploy via `AXONFLOW_BILLING_PRO_VALIDITY_DAYS`;
-  per-tenant token validity is independent of the plugin install
-  lifetime.
+ Configurable per-deploy via `AXONFLOW_BILLING_PRO_VALIDITY_DAYS`;
+ per-tenant token validity is independent of the plugin install
+ lifetime.
 - **Eval-license endpoint mints a quadrant-aware token.** The
-  `/api/evaluation-license` Cloudflare Pages Function on `getaxonflow.com`
-  now sets `aud` explicitly per the originating form: the platform
-  Self-Hosted Eval form at `/evaluation-license` mints
-  `axonflow.self_hosted.full`; the Plugin In-VPC Eval form at
-  `/plugins/evaluation-license` mints `axonflow.self_hosted.plugin`.
-  Existing eval tokens issued before this release validate unchanged
-  via the missing-`aud` fallback.
+ `/api/evaluation-license` Cloudflare Pages Function on `getaxonflow.com`
+ now sets `aud` explicitly per the originating form: the platform
+ Self-Hosted Eval form at `/evaluation-license` mints
+ `axonflow.self_hosted.full`; the Plugin In-VPC Eval form at
+ `/plugins/evaluation-license` mints `axonflow.self_hosted.plugin`.
+ Existing eval tokens issued before this release validate unchanged
+ via the missing-`aud` fallback.
 - **Cross-quadrant license rejection.** A self-hosted Enterprise
-  license sent as `X-License-Token` on a SaaS request is now rejected
-  at the validator boundary with an explicit "wrong hosting mode"
-  reason instead of silently failing further down the stack.
+ license sent as `X-License-Token` on a SaaS request is now rejected
+ at the validator boundary with an explicit "wrong hosting mode"
+ reason instead of silently failing further down the stack.
 
 #### Fixed
 
 - **Stripe webhook idempotency held only on the day a token was issued.**
-  The token's payload `IssuedAt` came from `time.Now()` while the
-  persisted row's `issued_at` defaulted to the DB's `NOW()` and was read
-  back via `RETURNING`. A replay landing on a different UTC day produced
-  a byte-different re-minted token, breaking the V1 Stripe-retry
-  guarantee. Issuer now passes `IssuedAt` explicitly into both the
-  token and the INSERT so the persisted value matches what the token
-  signs.
+ The token's payload `IssuedAt` came from `time.Now()` while the
+ persisted row's `issued_at` defaulted to the DB's `NOW()` and was read
+ back via `RETURNING`. A replay landing on a different UTC day produced
+ a byte-different re-minted token, breaking the V1 Stripe-retry
+ guarantee. Issuer now passes `IssuedAt` explicitly into both the
+ token and the INSERT so the persisted value matches what the token
+ signs.
 - **`POST /api/v1/audit/search` returns `entries: []` (not `null`) on
-  empty result sets.** Iteration code that walked the array
-  (`for entry of entries`) or read its length without a null guard now
-  works correctly. Callers that already handled the null case remain
-  compatible.
+ empty result sets.** Iteration code that walked the array
+ (`for entry of entries`) or read its length without a null guard now
+ works correctly. Callers that already handled the null case remain
+ compatible.
 - **`POST /api/v1/overrides` rejects critical-severity system policies
-  with HTTP 403.** Authentication-bypass, time-based blind SQL injection,
-  stacked DROP/DELETE/UPDATE/INSERT/EXEC patterns, government IDs, and
-  financial PII patterns are no longer overridable. Pre-existing active
-  overrides on these policies are revoked at upgrade time.
+ with HTTP 403.** Authentication-bypass, time-based blind SQL injection,
+ stacked DROP/DELETE/UPDATE/INSERT/EXEC patterns, government IDs, and
+ financial PII patterns are no longer overridable. Pre-existing active
+ overrides on these policies are revoked at upgrade time.
 - **Per-tenant daily cap fires on plugin / SDK governed routes.**
-  Previously the cap was only enforced on admin routes; plugin and SDK
-  traffic flowing through `/api/v1/process`, `/api/v1/audit/*`,
-  `/api/v1/mcp/evaluate-policies`, and `/api/v1/connectors` was
-  effectively un-capped. The cap now mirrors onto these proxy routes
-  with the same per-tenant tier-aware limit and the same HTTP 429
-  response shape.
+ Previously the cap was only enforced on admin routes; plugin and SDK
+ traffic flowing through `/api/v1/process`, `/api/v1/audit/*`,
+ `/api/v1/mcp/evaluate-policies`, and `/api/v1/connectors` was
+ effectively un-capped. The cap now mirrors onto these proxy routes
+ with the same per-tenant tier-aware limit and the same HTTP 429
+ response shape.
 - **Per-IP rate limits behind ALB now key on the trusted last-hop IP.**
-  Community SaaS register and recovery rate limits previously read the
-  first `X-Forwarded-For` entry, which is client-controlled behind
-  AWS ALB; the limits now read the last entry (the ALB-observed peer
-  IP) so spoofed first-entry values cannot bypass the per-IP cap.
+ Community SaaS register and recovery rate limits previously read the
+ first `X-Forwarded-For` entry, which is client-controlled behind
+ AWS ALB; the limits now read the last entry (the ALB-observed peer
+ IP) so spoofed first-entry values cannot bypass the per-IP cap.
 - **AWS Secrets Manager-derived secrets are trimmed at boot.**
-  RESEND_API_KEY, STRIPE_WEBHOOK_SIGNING_SECRET,
-  AXONFLOW_INTERNAL_SERVICE_SECRET, JWT_SECRET, and LLM provider API
-  keys are read via a dedicated helper that strips trailing whitespace.
-  SM-CLI-quirky values with stray newlines previously caused
-  Authorization-header rejection or HMAC mismatch in confusing ways at
-  first request.
+ RESEND_API_KEY, STRIPE_WEBHOOK_SIGNING_SECRET,
+ AXONFLOW_INTERNAL_SERVICE_SECRET, JWT_SECRET, and LLM provider API
+ keys are read via a dedicated helper that strips trailing whitespace.
+ SM-CLI-quirky values with stray newlines previously caused
+ Authorization-header rejection or HMAC mismatch in confusing ways at
+ first request.
 
 #### Documentation
 
-- **License Matrix architecture decision (ADR-050)** documents the
-  six-quadrant license model, per-context accept lists, and the
-  missing-`aud` backward-compat fallback used by every existing
-  self-hosted token.
+- **License Matrix architecture decision** documents the
+ six-quadrant license model, per-context accept lists, and the
+ missing-`aud` backward-compat fallback used by every existing
+ self-hosted token.
 - **V1 paid Pro tier integration guide** covering Stripe Checkout setup,
-  webhook configuration, license token format, plugin-side activation,
-  and the refund window. Included in `docs/api/agent-api.yaml` for the
-  Community Stripe webhook endpoint.
+ webhook configuration, license token format, plugin-side activation,
+ and the refund window. Included in `docs/api/agent-api.yaml` for the
+ Community Stripe webhook endpoint.
 
 #### CI / Testing
 
 - **Definition-of-Done CI gate.** Every PR that touches user-facing
-  surface (platform, ee/platform, migrations, docs/api) must include a
-  corresponding `runtime-e2e/` test that exercises the change against a
-  live agent + DB stack. Skipped via `[skip-runtime-e2e]` PR title prefix
-  + a justification block in the PR body for build / deps / lint /
-  connector-builder tooling changes.
-- **License-flow runtime E2E** (`runtime-e2e/v1_paid_tier/`) drives the
-  full Stripe-checkout → token-issued → email-delivered →
-  plugin-uses-token path against a Docker community-saas stack.
-- **Tenant-durability runtime E2E** (`runtime-e2e/tenant_durability/`)
-  asserts a Community SaaS tenant survives an agent-container restart
-  because the tenant row lives in Postgres.
-- **Free-tier recovery runtime E2E** (`runtime-e2e/recovery/`) drives
-  the magic-link recovery flow end-to-end including the post-recovery
-  audit-write check.
+ surface (platform, ee/platform, migrations, docs/api) must include a
+ corresponding `runtime-e2e/` test that exercises the change against a
+ live agent + DB stack. Skipped via `[skip-runtime-e2e]` PR title prefix
+ + a justification block in the PR body for build / deps / lint /
+ connector-builder tooling changes.
+- **License-flow runtime E2E** (the runtime test bundle) drives the
+ full Stripe-checkout → token-issued → email-delivered →
+ plugin-uses-token path against a Docker community-saas stack.
+- **Tenant-durability runtime E2E** (the runtime test bundle)
+ asserts a Community SaaS tenant survives an agent-container restart
+ because the tenant row lives in Postgres.
+- **Free-tier recovery runtime E2E** (the runtime test bundle) drives
+ the magic-link recovery flow end-to-end including the post-recovery
+ audit-write check.
 
 ### Operator
 
 - **`AXONFLOW_BILLING_PRO_VALIDITY_DAYS`** — override the 90-day default
-  Pro license validity. Bad / non-positive values fall through to the
-  default rather than failing boot.
+ Pro license validity. Bad / non-positive values fall through to the
+ default rather than failing boot.
 - **`AXONFLOW_BILLING_FROM_EMAIL`** — override the from-address on
-  post-purchase license-delivery emails (default
-  `AxonFlow <hello@getaxonflow.com>`).
+ post-purchase license-delivery emails (default
+ `AxonFlow <hello@getaxonflow.com>`).
 - **`AXONFLOW_PLUGIN_CLAIMED_PUBLIC_KEY`** — verifier-only split. When
-  set, the agent verifies plugin tokens without holding the signing
-  seed; only the issuer service holds the seed. Recommended production
-  posture so a runtime compromise of the agent cannot mint forged
-  tokens. Backward-compatible: when unset, the agent derives the
-  pubkey from the existing signing-key env var.
+ set, the agent verifies plugin tokens without holding the signing
+ seed; only the issuer service holds the seed. Recommended production
+ posture so a runtime compromise of the agent cannot mint forged
+ tokens. Backward-compatible: when unset, the agent derives the
+ pubkey from the existing signing-key env var.
 - **`AXONFLOW_STRIPE_WEBHOOK_IP_ALLOWLIST`** +
-  **`AXONFLOW_STRIPE_WEBHOOK_RATE_PER_MIN`** — knobs for tuning the
-  Stripe webhook IP allowlist (default = Stripe's published webhook
-  CIDRs) and per-source rate limit (default 60/min).
+ **`AXONFLOW_STRIPE_WEBHOOK_RATE_PER_MIN`** — knobs for tuning the
+ Stripe webhook IP allowlist (default = Stripe's published webhook
+ CIDRs) and per-source rate limit (default 60/min).
 - **`AXONFLOW_TENANT_DELETE_TOKEN_PEPPER`** — optional pepper for the
-  at-rest HMAC of GDPR-deletion confirmation tokens.
+ at-rest HMAC of GDPR-deletion confirmation tokens.
 - **AWS Marketplace template** (`cloudformation-ecs-fargate.yaml`)
-  gains an optional `StripeWebhookSecretArn` parameter that wires the
-  agent container's `STRIPE_WEBHOOK_SIGNING_SECRET` env var from a
-  Secrets Manager ARN. Default empty (Stripe-paid tier disabled, agent
-  webhook handler exits early). The IAM TaskExecutionRole grants
-  `secretsmanager:GetSecretValue` on the supplied ARN only when set,
-  so customers running the marketplace template without Stripe see no
-  policy bloat.
+ gains an optional `StripeWebhookSecretArn` parameter that wires the
+ agent container's `STRIPE_WEBHOOK_SIGNING_SECRET` env var from a
+ Secrets Manager ARN. Default empty (Stripe-paid tier disabled, agent
+ webhook handler exits early). The IAM TaskExecutionRole grants
+ `secretsmanager:GetSecretValue` on the supplied ARN only when set,
+ so customers running the marketplace template without Stripe see no
+ policy bloat.
 - **CloudWatch alarms for Stripe billing** attach three
-  metric-filter-driven alarms to the agent log group: webhook delivery
-  failures (≥5 in 5 min → page), license issuance failures (1 in 1
-  min → page — money taken without service delivered), and a
-  first-payment milestone (1 in 1 min → separate SNS topic for the
-  launch celebratory ping). Gated by `EnableStripeAlarms=true`
-  (default) so staging stacks can opt out.
+ metric-filter-driven alarms to the agent log group: webhook delivery
+ failures (≥5 in 5 min → page), license issuance failures (1 in 1
+ min → page — money taken without service delivered), and a
+ first-payment milestone (1 in 1 min → separate SNS topic for the
+ launch celebratory ping). Gated by `EnableStripeAlarms=true`
+ (default) so staging stacks can opt out.
 - **Synthetic monitoring canary.** Stand-alone CFN stack deploys a
-  Python Lambda that runs hourly via EventBridge and exercises
-  `/api/v1/register` → `/api/v1/mcp-server` → `/api/v1/audit/search`
-  end-to-end against the public community-saas endpoint. Failures
-  publish a structured failure report to a dedicated SNS topic.
+ Python Lambda that runs hourly via EventBridge and exercises
+ `/api/v1/register` → `/api/v1/mcp-server` → `/api/v1/audit/search`
+ end-to-end against the public community-saas endpoint. Failures
+ publish a structured failure report to a dedicated SNS topic.
 
 ### Evaluation
 
 - All Community changes apply.
 - Self-Hosted Evaluation licenses continue working unchanged. The
-  `/api/evaluation-license` issuance endpoint now stamps the explicit
-  `aud` claim per the originating form (Self-Hosted Full vs. Plugin
-  In-VPC), but tokens issued before this release validate cleanly via
-  the missing-`aud` fallback.
+ `/api/evaluation-license` issuance endpoint now stamps the explicit
+ `aud` claim per the originating form (Self-Hosted Full vs. Plugin
+ In-VPC), but tokens issued before this release validate cleanly via
+ the missing-`aud` fallback.
 
 ### Enterprise
 
 - All Community + Evaluation changes apply.
 - No Enterprise-only behaviour changes in this release. The portal,
-  customer-portal-ui, and the rest of the Enterprise tree pick up the
-  Community-side fixes (license matrix validators, daily-cap on proxy
-  routes, secret-trimming) automatically.
+ customer-portal-ui, and the rest of the Enterprise tree pick up the
+ Community-side fixes (license matrix validators, daily-cap on proxy
+ routes, secret-trimming) automatically.
 
 ### SDKs
 
 - **Go SDK v7.1.0** — `axonflow-sdk-go@v7.1.0`. Sends `X-Axonflow-Client`
-  on every governed request; SDK identifies itself by the canonical
-  `sdk-go/<version>` pattern.
+ on every governed request; SDK identifies itself by the canonical
+ `sdk-go/<version>` pattern.
 - **Python SDK v7.1.0** — `axonflow>=7.1.0`. Same `X-Axonflow-Client`
-  injection.
+ injection.
 - **TypeScript SDK v7.1.0** — `@axonflow/sdk@^7.1.0`. Same.
 - **Java SDK v7.1.0** — `<version>7.1.0</version>`. Same.
 
@@ -346,19 +374,19 @@ header support lands in a future preview release.
 ### Plugins
 
 - **OpenClaw v2.2.0** — `npm install @axonflow/openclaw@^2.2.0`. Sends
-  `X-Axonflow-Client: openclaw/<version>` on every governed agent
-  request. Pro license token paste via
-  `clawhub config set license-token <token>` activates Pro features
-  immediately.
+ `X-Axonflow-Client: openclaw/<version>` on every governed agent
+ request. Pro license token paste via
+ `clawhub config set license-token <token>` activates Pro features
+ immediately.
 - **Claude Code plugin v1.2.0** — graduates from the v1.1 line. Sends
-  `X-Axonflow-Client: claude-code/<version>`. License token paste via
-  `/axonflow login --token <token>`.
+ `X-Axonflow-Client: claude-code/<version>`. License token paste via
+ `/axonflow login --token <token>`.
 - **Cursor plugin v1.2.0** — graduates from the v1.1 line. Sends
-  `X-Axonflow-Client: cursor/<version>` via `mcp.json` `headers` field.
-  License token paste via Cursor settings (`AXONFLOW_LICENSE_TOKEN`).
+ `X-Axonflow-Client: cursor/<version>` via `mcp.json` `headers` field.
+ License token paste via Cursor settings (`AXONFLOW_LICENSE_TOKEN`).
 - **Codex plugin v1.2.0** — graduates from the v1.1 line. Sends
-  `X-Axonflow-Client: codex/<version>` via `.mcp.json` `http_headers`
-  block. License token paste via `~/.codex/axonflow.toml`.
+ `X-Axonflow-Client: codex/<version>` via `.mcp.json` `http_headers`
+ block. License token paste via `~/.codex/axonflow.toml`.
 
 All four plugins continue to query `/health` at startup and emit a
 one-time upgrade hint when the agent's `min_plugin_version` floor is
@@ -374,57 +402,57 @@ to work.
 **Bug fixes:**
 
 - **`policy_info` no longer reports duplicate matched policies.** When a
-  policy's pattern matched both the query string and a request parameter,
-  the response field listed the same policy twice (e.g.
-  `["sys_sqli_grant", "sys_sqli_grant"]`). Each policy is now reported
-  once per evaluation regardless of how many contexts it matched in.
-  Block-decision behaviour is unchanged.
+ policy's pattern matched both the query string and a request parameter,
+ the response field listed the same policy twice (e.g.
+ `["sys_sqli_grant", "sys_sqli_grant"]`). Each policy is now reported
+ once per evaluation regardless of how many contexts it matched in.
+ Block-decision behaviour is unchanged.
 - **`sys_pii_booking_ref` no longer fires on SQL keywords.** The original
-  pattern `\b[A-Z0-9]{6}\b` matched any 6-char alphanumeric token,
-  including SELECT, INSERT, DELETE, UPDATE, CREATE — generating a
-  booking-reference audit-log entry for every benign SQL query and
-  inflating "PII detected" counts in compliance dashboards. The pattern
-  now requires a booking-context label (booking, reservation, reference,
-  ref, pnr, confirmation, conf) before the alphanumeric token. Real
-  booking refs like `booking ABC123` or `PNR XYZ789` continue to match.
-  Action remains `log` — requests are not affected, only audit-trail
-  noise. A follow-up SQL migration (074) updates already-deployed
-  systems in place; new deployments seed the corrected pattern from
-  the start.
+ pattern `\b[A-Z0-9]{6}\b` matched any 6-char alphanumeric token,
+ including SELECT, INSERT, DELETE, UPDATE, CREATE — generating a
+ booking-reference audit-log entry for every benign SQL query and
+ inflating "PII detected" counts in compliance dashboards. The pattern
+ now requires a booking-context label (booking, reservation, reference,
+ ref, pnr, confirmation, conf) before the alphanumeric token. Real
+ booking refs like `booking ABC123` or `PNR XYZ789` continue to match.
+ Action remains `log` — requests are not affected, only audit-trail
+ noise. A follow-up SQL migration (074) updates already-deployed
+ systems in place; new deployments seed the corrected pattern from
+ the start.
 
 **API additions:**
 
 - **`policy_info.matched_policies` field added** alongside the existing
-  `policies_evaluated`. The new field name is the canonical one; the
-  legacy `policies_evaluated` is kept populated with the same values
-  for backward compatibility and will be removed in the next major
-  release. The original field name suggested "every policy the engine
-  ran against the input" but the value has always been the matched-
-  policies list — the new name reflects what's actually reported.
+ `policies_evaluated`. The new field name is the canonical one; the
+ legacy `policies_evaluated` is kept populated with the same values
+ for backward compatibility and will be removed in the next major
+ release. The original field name suggested "every policy the engine
+ ran against the input" but the value has always been the matched-
+ policies list — the new name reflects what's actually reported.
 
 **Enterprise:**
 
 - **Per-category detection action overrides on the marketplace CFN
-  template.** Self-hosted enterprise stacks gain four new optional
-  CloudFormation parameters — `SQLIAction`, `PIIAction`,
-  `SensitiveDataAction`, `DangerousQueryAction` (each: `block` / `warn` /
-  `log`, `PIIAction` also accepts `redact`). Empty leaves the active
-  `AXONFLOW_PROFILE` default in place; setting one overrides only that
-  category without flipping the global profile. Lets operators tighten
-  enforcement on a single category (e.g. `SQLIAction=block` for a
-  benchmark stack) without inheriting the strict profile's PII redact
-  behaviour. No change for existing deployments — the parameters
-  default to empty.
+ template.** Self-hosted enterprise stacks gain four new optional
+ CloudFormation parameters — `SQLIAction`, `PIIAction`,
+ `SensitiveDataAction`, `DangerousQueryAction` (each: `block` / `warn` /
+ `log`, `PIIAction` also accepts `redact`). Empty leaves the active
+ `AXONFLOW_PROFILE` default in place; setting one overrides only that
+ category without flipping the global profile. Lets operators tighten
+ enforcement on a single category (e.g. `SQLIAction=block` for a
+ benchmark stack) without inheriting the strict profile's PII redact
+ behaviour. No change for existing deployments — the parameters
+ default to empty.
 
 - **Per-category circuit breaker threshold overrides on the
-  marketplace CFN template.** Two new optional CloudFormation
-  parameters — `CBErrorThreshold` and `CBPolicyViolationThreshold`
-  (integers) — let operators tune the agent's per-client circuit
-  breaker without forking the template. Production defaults stay
-  at the Article-14 posture (10 errors / 20 policy violations per
-  5-min window per client); empty values leave defaults in place.
-  Useful for benchmark stacks running attack-pattern load that would
-  otherwise trip the breaker after the first second.
+ marketplace CFN template.** Two new optional CloudFormation
+ parameters — `CBErrorThreshold` and `CBPolicyViolationThreshold`
+ (integers) — let operators tune the agent's per-client circuit
+ breaker without forking the template. Production defaults stay
+ at the Article-14 posture (10 errors / 20 policy violations per
+ 5-min window per client); empty values leave defaults in place.
+ Useful for benchmark stacks running attack-pattern load that would
+ otherwise trip the breaker after the first second.
 
 ## [7.5.0] - 2026-04-29 — Production, quality, and security hardening — upgrade encouraged
 
@@ -434,16 +462,16 @@ upgrade for a more secure, reliable, and bug-free experience.
 
 **Security highlights from this release cycle:**
 - **Multi-tenant isolation in MAP execution** (v7.4.5). A body-supplied
-  `org_id` could override the authenticated org for both recording AND
-  policy evaluation. Identity is now sourced from authenticated headers
-  consistently across recording, read filters, and policy evaluation.
+ `org_id` could override the authenticated org for both recording AND
+ policy evaluation. Identity is now sourced from authenticated headers
+ consistently across recording, read filters, and policy evaluation.
 - **SQL-injection enforcement restored on `try.getaxonflow.com`** (v7.5.0).
-  The Community SaaS endpoint had inherited the `warn` default since
-  v6.2.0; SQLi-shaped requests passed through to the LLM. Default flipped
-  back to `block`; configurable per deploy.
+ The Community SaaS endpoint had inherited the `warn` default since
+ v6.2.0; SQLi-shaped requests passed through to the LLM. Default flipped
+ back to `block`; configurable per deploy.
 - **Cross-tenant audit-log isolation** (v7.2.0). Evidence and explain
-  handlers fail-closed when tenant context is missing instead of
-  returning data scoped to a different tenant.
+ handlers fail-closed when tenant context is missing instead of
+ returning data scoped to a different tenant.
 
 The full set of platform-side security fixes addressed in this cycle —
 including five additional access-control and DoS hardening items not
@@ -452,16 +480,16 @@ listed above — is documented in the consolidated security advisory
 
 **Reliability and bug-fix highlights:**
 - **`/health` now reports the deployed platform semver** (v7.5.0). Was
-  returning `1.0.0` on every deployed stack because the image tag
-  failed the version-resolver regex. New `PlatformVersion` CFN parameter
-  + repo-root `VERSION` file as single source of truth.
+ returning `1.0.0` on every deployed stack because the image tag
+ failed the version-resolver regex. New `PlatformVersion` CFN parameter
+ + repo-root `VERSION` file as single source of truth.
 - **ALB idle timeout 300s on Community SaaS** (v7.5.0). Long MAP plan
-  generation requests no longer 504 at the load balancer before the
-  orchestrator finishes.
+ generation requests no longer 504 at the load balancer before the
+ orchestrator finishes.
 - **`decision_id` on every governance decision path** (v7.5.0).
-  Allow paths on `/api/v1/mcp/check-input` and `/api/v1/mcp/check-output`
-  no longer silently drop the audit correlator; every allow / deny /
-  redact decision now surfaces `decision_id` for forensic correlation.
+ Allow paths on `/api/v1/mcp/check-input` and `/api/v1/mcp/check-output`
+ no longer silently drop the audit correlator; every allow / deny /
+ redact decision now surfaces `decision_id` for forensic correlation.
 
 No breaking platform changes. Existing SDK and plugin callers continue
 to work; they receive a one-time upgrade hint when they sit below the
@@ -482,184 +510,184 @@ every SDK and every plugin.
 #### Added
 
 - **`/health` advertises plugin version compatibility.** New
-  `plugin_compatibility` field declares `min_plugin_version` and
-  `recommended_plugin_version` per plugin id (`openclaw`, `claude-code`,
-  `cursor`, `codex`), mirroring the long-standing `sdk_compatibility`
-  shape. Plugins query `/health` at startup, log a one-time upgrade
-  warning when they're below the floor, and stay quiet otherwise — the
-  same downgrade-warning gate every SDK already runs. The
-  `HealthResponse` OpenAPI schema gains the new field; older platforms
-  without the field degrade silently on the plugin side.
+ `plugin_compatibility` field declares `min_plugin_version` and
+ `recommended_plugin_version` per plugin id (`openclaw`, `claude-code`,
+ `cursor`, `codex`), mirroring the long-standing `sdk_compatibility`
+ shape. Plugins query `/health` at startup, log a one-time upgrade
+ warning when they're below the floor, and stay quiet otherwise — the
+ same downgrade-warning gate every SDK already runs. The
+ `HealthResponse` OpenAPI schema gains the new field; older platforms
+ without the field degrade silently on the plugin side.
 - **Community-SaaS registration lifecycle.** Registration TTL bumped
-  from 30 days to 1 year; existing 30-day registrations within 60 days
-  of expiry are auto-extended at deploy time so no live tenant gets
-  locked out. New tombstone semantics keep the `tenant_id` slot
-  reserved indefinitely after a cascade-delete so a UUID is never
-  reused, and a distinct `ErrRegistrationTerminated` error returns an
-  actionable "re-register" message instead of the generic invalid-
-  credentials response. The disclaimer returned by
-  `POST /api/v1/register` now matches the public privacy policy and
-  the plugin first-run setup message — single source of truth across
-  surfaces.
+ from 30 days to 1 year; existing 30-day registrations within 60 days
+ of expiry are auto-extended at deploy time so no live tenant gets
+ locked out. New tombstone semantics keep the `tenant_id` slot
+ reserved indefinitely after a cascade-delete so a UUID is never
+ reused, and a distinct `ErrRegistrationTerminated` error returns an
+ actionable "re-register" message instead of the generic invalid-
+ credentials response. The disclaimer returned by
+ `POST /api/v1/register` now matches the public privacy policy and
+ the plugin first-run setup message — single source of truth across
+ surfaces.
 - **Daily Community-SaaS inactivity sweep** terminates tenants idle for
-  more than 3 months and tenants past the 1-year hard cap, cascade-
-  deleting their tenant-scoped data (audit logs, policies, workflows,
-  plans, etc.) in a single transaction so a partial failure rolls the
-  whole tick back. The cascade table list is reflected from
-  `information_schema` at agent startup with a hard non-cascade
-  allowlist for structural tables. Multi-instance correctness via
-  Postgres advisory lock — only one agent task runs the sweep per
-  tick. Opt-in per deploy via `COMMUNITY_SAAS_SWEEP_ENABLED=true`,
-  with `COMMUNITY_SAAS_SWEEP_DRYRUN=true` available so operators can
-  soak the predicate logic for 24h before flipping the real switch.
-  Per-termination audit-log line plus Prometheus counters for
-  inactivity terminations, hard-cap terminations, lock-skip events,
-  cascade row counts, and tick failures.
+ more than 3 months and tenants past the 1-year hard cap, cascade-
+ deleting their tenant-scoped data (audit logs, policies, workflows,
+ plans, etc.) in a single transaction so a partial failure rolls the
+ whole tick back. The cascade table list is reflected from
+ `information_schema` at agent startup with a hard non-cascade
+ allowlist for structural tables. Multi-instance correctness via
+ Postgres advisory lock — only one agent task runs the sweep per
+ tick. Opt-in per deploy via `COMMUNITY_SAAS_SWEEP_ENABLED=true`,
+ with `COMMUNITY_SAAS_SWEEP_DRYRUN=true` available so operators can
+ soak the predicate logic for 24h before flipping the real switch.
+ Per-termination audit-log line plus Prometheus counters for
+ inactivity terminations, hard-cap terminations, lock-skip events,
+ cascade row counts, and tick failures.
 
 #### Changed
 
 - **OpenAPI specs now declare 24 fields the platform has been emitting
-  on the wire but the spec hadn't documented.** `AuditLogEntry`
-  (`metadata`, `model`, `policy_violations`), `DynamicPolicy` (7 CRUD
-  fields), `PlanResponse` (4 plan-context fields),
-  `ResumePlanResponse` (7 resume-context fields), plus 16
-  lower-priority schemas covering audit query params, budget/usage
-  fields, execution-snapshot HITL fields, workflow step audit context,
-  and the multimodal payload field on `ClientRequest`. Closes the
-  spec-side gap surfaced by the Python SDK's wire-shape contract gate.
+ on the wire but the spec hadn't documented.** `AuditLogEntry`
+ (`metadata`, `model`, `policy_violations`), `DynamicPolicy` (7 CRUD
+ fields), `PlanResponse` (4 plan-context fields),
+ `ResumePlanResponse` (7 resume-context fields), plus 16
+ lower-priority schemas covering audit query params, budget/usage
+ fields, execution-snapshot HITL fields, workflow step audit context,
+ and the multimodal payload field on `ClientRequest`. Closes the
+ spec-side gap surfaced by the Python SDK's wire-shape contract gate.
 
 #### Fixed
 
 - **`/health` now reports the deployed platform semver.** Previously
-  the `version` field returned `1.0.0` on every deployed stack because
-  the CloudFormation templates wired `AXONFLOW_VERSION` to the agent
-  image tag (`latest`, git SHA, etc.), which failed the semver regex
-  in the agent's version resolver. A new dedicated `PlatformVersion`
-  CFN parameter with a built-in semver `AllowedPattern` is now wired
-  to `AXONFLOW_VERSION` independently of the image tag, and a new
-  `VERSION` file at the repo root is the single source of truth read
-  by both the build pipeline and the deploy script. A version-
-  alignment validator runs on every push.
+ the `version` field returned `1.0.0` on every deployed stack because
+ the CloudFormation templates wired `AXONFLOW_VERSION` to the agent
+ image tag (`latest`, git SHA, etc.), which failed the semver regex
+ in the agent's version resolver. A new dedicated `PlatformVersion`
+ CFN parameter with a built-in semver `AllowedPattern` is now wired
+ to `AXONFLOW_VERSION` independently of the image tag, and a new
+ `VERSION` file at the repo root is the single source of truth read
+ by both the build pipeline and the deploy script. A version-
+ alignment validator runs on every push.
 - **`MCPCheckInputResponse` now emits `decision_id` on the allow path**
-  of `POST /api/v1/mcp/check-input` (it was already emitted on every
-  deny path). Every governance decision was supposed to surface
-  `decision_id` so callers can correlate the decision back to
-  the audit log via `/explain/{id}` without a round-trip — the allow
-  path silently dropped it. Same fix applied to
-  `MCPCheckOutputResponse` (which gains a `decision_id` field) and to
-  the MCP-tool variants so plugin-visible shape is consistent across
-  HTTP and MCP-tool surfaces.
+ of `POST /api/v1/mcp/check-input` (it was already emitted on every
+ deny path). Every governance decision was supposed to surface
+ `decision_id` so callers can correlate the decision back to
+ the audit log via `/explain/{id}` without a round-trip — the allow
+ path silently dropped it. Same fix applied to
+ `MCPCheckOutputResponse` (which gains a `decision_id` field) and to
+ the MCP-tool variants so plugin-visible shape is consistent across
+ HTTP and MCP-tool surfaces.
 - **`try.getaxonflow.com` blocks SQL injection again.** Community SaaS
-  deployments now pin `SQLI_ACTION=block` on the agent task,
-  overriding the v6.2.0+ relaxed default profile that demoted SQLi
-  enforcement to `warn`. Configurable per-deploy via the new
-  `SqliAction` CFN parameter (`block` / `warn` / `log`, default
-  `block`). Takes effect on the next community-saas deployment.
+ deployments now pin `SQLI_ACTION=block` on the agent task,
+ overriding the v6.2.0+ relaxed default profile that demoted SQLi
+ enforcement to `warn`. Configurable per-deploy via the new
+ `SqliAction` CFN parameter (`block` / `warn` / `log`, default
+ `block`). Takes effect on the next community-saas deployment.
 - **`try.getaxonflow.com` plan generation no longer 504s at 60 seconds.**
-  The community-saas CFN template's `AlbIdleTimeoutSeconds` parameter
-  (default 300) ships pre-set; the next deployment of the running
-  stack picks up the 300s idle timeout so long MAP plan-generation
-  requests complete without hitting the front-door gateway timeout.
+ The community-saas CFN template's `AlbIdleTimeoutSeconds` parameter
+ (default 300) ships pre-set; the next deployment of the running
+ stack picks up the 300s idle timeout so long MAP plan-generation
+ requests complete without hitting the front-door gateway timeout.
 - **`docs/api/agent-api.yaml` and `docs/api/orchestrator-api.yaml` now
-  lint clean.** 21 broken `$ref` references to a non-existent `Error`
-  schema in `agent-api.yaml` are repointed to the existing
-  `ErrorResponse` (same shape both handlers return). Five additional
-  broken refs in `orchestrator-api.yaml` are resolved by adding the
-  missing `OrgIDQuery` parameter and three EU AI Act conformity
-  schemas. Several malformed-example errors and `no-$ref-siblings`
-  violations across the two specs are corrected.
+ lint clean.** 21 broken `$ref` references to a non-existent `Error`
+ schema in `agent-api.yaml` are repointed to the existing
+ `ErrorResponse` (same shape both handlers return). Five additional
+ broken refs in `orchestrator-api.yaml` are resolved by adding the
+ missing `OrgIDQuery` parameter and three EU AI Act conformity
+ schemas. Several malformed-example errors and `no-$ref-siblings`
+ violations across the two specs are corrected.
 
 #### Documentation
 
 - **SDK telemetry contract: 7-day delivered-heartbeat.** All four SDKs
-  follow the same contract: AxonFlow emits at most one anonymous
-  heartbeat per environment every 7 days during SDK activity. The
-  telemetry contract document is rewritten with the new cadence
-  section, per-OS stamp-file specification, and a 9-case heartbeat
-  conformance test matrix plus a 4-run cross-process E2E. Plugin
-  parity (sibling 7-day-heartbeat at hook-fire time) noted at the
-  bottom of the contract, including the deliberate stamp-filename
-  split: SDKs use `{sdk}-telemetry-last-sent` while plugins keep the
-  legacy `{codex,claude-code,cursor,openclaw}-plugin-telemetry-sent`
-  so existing installs preserve their `instance_id` across the
-  upgrade.
+ follow the same contract: AxonFlow emits at most one anonymous
+ heartbeat per environment every 7 days during SDK activity. The
+ telemetry contract document is rewritten with the new cadence
+ section, per-OS stamp-file specification, and a 9-case heartbeat
+ conformance test matrix plus a 4-run cross-process E2E. Plugin
+ parity (sibling 7-day-heartbeat at hook-fire time) noted at the
+ bottom of the contract, including the deliberate stamp-filename
+ split: SDKs use `{sdk}-telemetry-last-sent` while plugins keep the
+ legacy `{codex,claude-code,cursor,openclaw}-plugin-telemetry-sent`
+ so existing installs preserve their `instance_id` across the
+ upgrade.
 - **Telemetry opt-out is `AXONFLOW_TELEMETRY=off` everywhere.**
-  `DO_NOT_TRACK` is no longer honored as an opt-out across all four
-  SDKs and all four plugins. `DO_NOT_TRACK` is commonly inherited from
-  host tools and developer environments — host CLIs like Codex and
-  Claude Code inject it unconditionally — making it an unreliable
-  expression of user intent. Documentation, ADRs, and the README
-  callout are updated.
+ `DO_NOT_TRACK` is no longer honored as an opt-out across all four
+ SDKs and all four plugins. `DO_NOT_TRACK` is commonly inherited from
+ host tools and developer environments — host CLIs like Codex and
+ Claude Code inject it unconditionally — making it an unreliable
+ expression of user intent. Documentation, ADRs, and the README
+ callout are updated.
 - **Examples and SDK reference docs updated for the v7 majors.**
-  Install-command snippets, dependency declarations, getting-started
-  guides, tutorials, gateway/proxy guides, compliance pages, MCP audit
-  logging, execution tracking, and the configurable-agents reference
-  now point at the new SDK majors. Historical "Since vX" references
-  are intentionally left as-is — those document when a feature was
-  added.
+ Install-command snippets, dependency declarations, getting-started
+ guides, tutorials, gateway/proxy guides, compliance pages, MCP audit
+ logging, execution tracking, and the configurable-agents reference
+ now point at the new SDK majors. Historical "Since vX" references
+ are intentionally left as-is — those document when a feature was
+ added.
 
 #### CI / Testing
 
 - **Tier-gate contract CI** now runs every PR that touches the agent
-  or orchestrator code paths against a fresh docker-compose stack in
-  community, evaluation, and enterprise modes, and asserts that each
-  guarded endpoint returns the documented status code per tier.
-  Catches drift between the published tier matrix and actual handler
-  enforcement before merge.
+ or orchestrator code paths against a fresh docker-compose stack in
+ community, evaluation, and enterprise modes, and asserts that each
+ guarded endpoint returns the documented status code per tier.
+ Catches drift between the published tier matrix and actual handler
+ enforcement before merge.
 - **OpenAPI validation now covers all three specs.** Previously only
-  `policy-api.yaml` was linted in CI; `agent-api.yaml` and
-  `orchestrator-api.yaml` were silently exempt and accumulated
-  structural defects (broken refs, duplicate schemas, malformed
-  examples). The validator now loops over all three specs and runs
-  per-spec breaking-change diffs against the base branch.
+ `policy-api.yaml` was linted in CI; `agent-api.yaml` and
+ `orchestrator-api.yaml` were silently exempt and accumulated
+ structural defects (broken refs, duplicate schemas, malformed
+ examples). The validator now loops over all three specs and runs
+ per-spec breaking-change diffs against the base branch.
 
 ### Evaluation
 
 - All Community changes apply.
 - The plugin-compatibility check, the openapi corrections, and the
-  Community-SaaS lifecycle additions all flow through Evaluation
-  unchanged. No new Evaluation-tier endpoints, no Evaluation-only
-  behaviour changes in this release.
+ Community-SaaS lifecycle additions all flow through Evaluation
+ unchanged. No new Evaluation-tier endpoints, no Evaluation-only
+ behaviour changes in this release.
 
 ### Enterprise
 
 - All Community + Evaluation changes apply.
 - No Enterprise-only behaviour changes in this release. The portal,
-  customer-portal-ui, and the rest of the Enterprise tree pick up the
-  Community-side fixes (correct `/health` semver, `decision_id` on
-  allow, etc.) automatically.
+ customer-portal-ui, and the rest of the Enterprise tree pick up the
+ Community-side fixes (correct `/health` semver, `decision_id` on
+ allow, etc.) automatically.
 
 ### SDKs
 
 - **Go SDK v7.0.0** — module path advances from `/v6` to `/v7`.
-  `DO_NOT_TRACK` is no longer honored; use `AXONFLOW_TELEMETRY=off`.
-  Anonymous heartbeat now follows the 7-day-per-environment cadence.
+ `DO_NOT_TRACK` is no longer honored; use `AXONFLOW_TELEMETRY=off`.
+ Anonymous heartbeat now follows the 7-day-per-environment cadence.
 - **Python SDK v7.0.0** — `axonflow>=7.0.0`. `StaticPolicy` and
-  `PolicyVersion` now serialize wire fields in snake_case to match
-  the OpenAPI spec; camelCase keys still accepted on input via field
-  validation aliases so existing consumers keep working — round-trip
-  identity is no longer preserved for callers that built models from
-  camelCase dicts. `DO_NOT_TRACK` removed; 7-day heartbeat cadence
-  shipped.
+ `PolicyVersion` now serialize wire fields in snake_case to match
+ the OpenAPI spec; camelCase keys still accepted on input via field
+ validation aliases so existing consumers keep working — round-trip
+ identity is no longer preserved for callers that built models from
+ camelCase dicts. `DO_NOT_TRACK` removed; 7-day heartbeat cadence
+ shipped.
 - **TypeScript SDK v7.0.0** — `@axonflow/sdk@^7.0.0`. `DO_NOT_TRACK`
-  removed; 7-day heartbeat cadence shipped.
+ removed; 7-day heartbeat cadence shipped.
 - **Java SDK v7.0.0** — `<version>7.0.0</version>` on the
-  `axonflow-sdk` dependency. `DO_NOT_TRACK` removed; 7-day heartbeat
-  cadence shipped.
+ `axonflow-sdk` dependency. `DO_NOT_TRACK` removed; 7-day heartbeat
+ cadence shipped.
 
 See each SDK's release notes for the per-language migration shape.
 
 ### Plugins
 
 - **OpenClaw v2.0.0** — `npm install @axonflow/openclaw@^2.0.0`.
-  `DO_NOT_TRACK` removed; `AXONFLOW_PLUGIN_VERSION_CHECK=off` to skip
-  the new platform compatibility check.
+ `DO_NOT_TRACK` removed; `AXONFLOW_PLUGIN_VERSION_CHECK=off` to skip
+ the new platform compatibility check.
 - **Claude Code plugin v1.0.0** — graduates from the 0.x line to a
-  stable 1.x. `DO_NOT_TRACK` removed.
+ stable 1.x. `DO_NOT_TRACK` removed.
 - **Cursor plugin v1.0.0** — graduates from the 0.x line to a stable
-  1.x. `DO_NOT_TRACK` removed.
+ 1.x. `DO_NOT_TRACK` removed.
 - **Codex plugin v1.0.0** — graduates from the 0.x line to a stable
-  1.x. `DO_NOT_TRACK` removed.
+ 1.x. `DO_NOT_TRACK` removed.
 
 All four plugins query the platform's `/health` at startup, read
 `plugin_compatibility.min_plugin_version[<canonical id>]`, and emit a
@@ -707,7 +735,7 @@ PATCH: documentation-grade correction — no platform behaviour change. Splits t
 
 - **`CreateOverrideResponse` schema added** to `docs/api/agent-api.yaml`. The `createStaticPolicyOverride: 201` response now references this dedicated schema instead of the at-rest `PolicyOverride`. Carries `id`, `policy_id`, `policy_type`, `expires_at`, `ttl_seconds`, optional `requested_ttl` / `clamped` / `clamped_reason` (populated when server-side TTL clamping kicked in), and `created_at`. The at-rest `PolicyOverride` schema retains its role on `GET /api/v1/policy-overrides` / `GET /api/v1/policy-overrides/{id}`.
 
-  AxonFlow's hand-written OpenClaw plugin already implements `CreateOverrideResult` matching the actual server shape — this fix aligns the spec with the plugin's reality and unblocks code-generated clients.
+ AxonFlow's hand-written OpenClaw plugin already implements `CreateOverrideResult` matching the actual server shape — this fix aligns the spec with the plugin's reality and unblocks code-generated clients.
 
 ## [7.4.3] - 2026-04-25 — Plugin Batch 1 spec corrections
 
@@ -718,9 +746,9 @@ PATCH: documentation-grade corrections — no platform behaviour change. Compani
 #### Fixed
 
 - **OpenAPI spec corrections — Plugin Batch 1 explainability fields.** Two MCP-response schemas have been stale relative to what the agent has emitted since Plugin Batch 1 shipped. The fix unblocks code-generated clients and auto-resolves baseline drift entries on every AxonFlow plugin's wire-shape contract gate.
-  - **`MCPCheckInputResponse`** gains the five Plugin Batch 1 fields the agent has emitted since v7.1.0 (`decision_id`, `risk_level`, `policy_matches`, `override_available`, `override_existing_id`).
-  - **`MCPCheckOutputResponse`** gains `redacted_message` (text-redaction counterpart to `redacted_data`), `decision_id`, and `policy_matches`.
-  - **`ExplainPolicy`**, **`ExplainRule`**, **`DecisionExplanation`** schemas added — these are the explainability shapes returned by the `explain_decision` MCP tool. Hand-written SDKs and plugins are already aligned with what the agent emits; this just documents the wire contract.
+ - **`MCPCheckInputResponse`** gains the five Plugin Batch 1 fields the agent has emitted since v7.1.0 (`decision_id`, `risk_level`, `policy_matches`, `override_available`, `override_existing_id`).
+ - **`MCPCheckOutputResponse`** gains `redacted_message` (text-redaction counterpart to `redacted_data`), `decision_id`, and `policy_matches`.
+ - **`ExplainPolicy`**, **`ExplainRule`**, **`DecisionExplanation`** schemas added — these are the explainability shapes returned by the `explain_decision` MCP tool. Hand-written SDKs and plugins are already aligned with what the agent emits; this just documents the wire contract.
 
 ## [7.4.2] - 2026-04-25 — OpenAPI spec corrections
 
@@ -737,13 +765,13 @@ spec artefacts.
 #### Fixed
 
 - **`AISystemRegistry.materiality` → `materiality_classification`**
-  in `docs/api/masfeat-api.yaml`. Server has emitted
-  `materiality_classification` since the 3-dimensional risk rating
-  refactor for MAS AI Risk Management Guidelines 2025.
+ in `docs/api/masfeat-api.yaml`. Server has emitted
+ `materiality_classification` since the 3-dimensional risk rating
+ refactor for MAS AI Risk Management Guidelines 2025.
 - **`DynamicPolicyInfo`** in `docs/api/agent-api.yaml` rewritten from
-  8 aspirational fields to the 4 actual server fields
-  (`policies_evaluated`, `matched_policies`, `orchestrator_reachable`,
-  `processing_time_ms`).
+ 8 aspirational fields to the 4 actual server fields
+ (`policies_evaluated`, `matched_policies`, `orchestrator_reachable`,
+ `processing_time_ms`).
 
 ## [7.4.1] - 2026-04-23 — Portal HITL + audit trail fixes
 
@@ -762,117 +790,117 @@ three tables.
 #### Fixed
 
 - **Unified execution step now distinguishes approver from rejector.**
-  The unified execution API (`/api/v1/unified/executions/{id}`)
-  populated `approved_by` with the rejector's email on rejected steps
-  because the serializer projected `workflow_steps.approved_by`
-  verbatim regardless of terminal state. The step serializer now
-  splits into `approved_by` / `approved_at` on the approval path and
-  `rejected_by` / `rejected_at` on the rejection path, mirroring the
-  split already done by `workflow_control.ProjectStepGateToHTTP` on
-  the WCP HTTP response. `execution.StepStatus` gains two new fields
-  (`RejectedBy`, `RejectedAt`).
+ The unified execution API (`/api/v1/unified/executions/{id}`)
+ populated `approved_by` with the rejector's email on rejected steps
+ because the serializer projected `workflow_steps.approved_by`
+ verbatim regardless of terminal state. The step serializer now
+ splits into `approved_by` / `approved_at` on the approval path and
+ `rejected_by` / `rejected_at` on the rejection path, mirroring the
+ split already done by `workflow_control.ProjectStepGateToHTTP` on
+ the WCP HTTP response. `execution.StepStatus` gains two new fields
+ (`RejectedBy`, `RejectedAt`).
 - **`/api/v1/audit/summary` returns six card-view aggregates.** The
-  response previously emitted `total_events` / `by_severity` /
-  `by_action` / `top_policies` / `compliance_score` — the handler
-  now additionally computes and returns `total_requests`,
-  `allowed_requests`, `blocked_requests`, `modified_requests`,
-  `block_rate_percent`, `avg_latency_ms`. Legacy fields retained for
-  back-compat. Block rate is derived from the allowed/blocked/modified
-  counts; average latency is a separate query over `response_time_ms`
-  excluding rows where latency wasn't measured (HITL decisions,
-  workflow-lifecycle events).
+ response previously emitted `total_events` / `by_severity` /
+ `by_action` / `top_policies` / `compliance_score` — the handler
+ now additionally computes and returns `total_requests`,
+ `allowed_requests`, `blocked_requests`, `modified_requests`,
+ `block_rate_percent`, `avg_latency_ms`. Legacy fields retained for
+ back-compat. Block rate is derived from the allowed/blocked/modified
+ counts; average latency is a separate query over `response_time_ms`
+ excluding rows where latency wasn't measured (HITL decisions,
+ workflow-lifecycle events).
 - **Compliance Summary arithmetic always closes.** The summary
-  handler previously only counted `allowed` / `blocked` / `redacted`
-  decisions explicitly; `pending_approval` (from `workflow_step_gate`
-  rows where HITL fires require_approval) and `error` decisions were
-  dropped between the buckets, so `total_requests` could exceed
-  `allowed_requests + blocked_requests + modified_requests` by the
-  number of orphan rows. Now every non-blocked, non-redacted decision
-  rolls into Allowed — Total = Allowed + Blocked + Modified is
-  always true. `pending_approval` counts as allowed because the
-  policy didn't block; the subsequent human decision writes its own
-  `workflow_step_approved` / `workflow_step_rejected` row.
+ handler previously only counted `allowed` / `blocked` / `redacted`
+ decisions explicitly; `pending_approval` (from `workflow_step_gate`
+ rows where HITL fires require_approval) and `error` decisions were
+ dropped between the buckets, so `total_requests` could exceed
+ `allowed_requests + blocked_requests + modified_requests` by the
+ number of orphan rows. Now every non-blocked, non-redacted decision
+ rolls into Allowed — Total = Allowed + Blocked + Modified is
+ always true. `pending_approval` counts as allowed because the
+ policy didn't block; the subsequent human decision writes its own
+ `workflow_step_approved` / `workflow_step_rejected` row.
 - **Historical workflows decided before v7.4.1 deployed now render
-  their terminal approval state.** The unified-execution cache was
-  written at `/gate` time (approval_status=pending) and pre-v7.4.1
-  approve/reject paths did not re-sync it — so any workflow decided
-  before the fix deployed would forever show "Approval: pending" on
-  the execution API. `GetWorkflowStatus` now reconciles cached step
-  snapshots against current `workflow_steps` state on every read via
-  a new `reconcileStepApprovals` helper. Steps present in the cache
-  but absent from the fresh rows are left untouched so partial WCP
-  state can't clobber the cache; WCP fetch failure falls back to the
-  cached snapshot.
+ their terminal approval state.** The unified-execution cache was
+ written at `/gate` time (approval_status=pending) and pre-v7.4.1
+ approve/reject paths did not re-sync it — so any workflow decided
+ before the fix deployed would forever show "Approval: pending" on
+ the execution API. `GetWorkflowStatus` now reconciles cached step
+ snapshots against current `workflow_steps` state on every read via
+ a new `reconcileStepApprovals` helper. Steps present in the cache
+ but absent from the fresh rows are left untouched so partial WCP
+ state can't clobber the cache; WCP fetch failure falls back to the
+ cached snapshot.
 
 ### Evaluation
 
 #### Fixed
 
 - **WCP step approve + reject now emit rows in `audit_logs`.** The
-  WCP step-approve/reject endpoints
-  (`/api/v1/workflows/{id}/steps/{step_id}/approve|reject`, Evaluation+)
-  previously updated `workflow_steps.approval_status` and fired a
-  webhook but never wrote to `audit_logs`, so any audit pipeline that
-  reads `audit_logs` had no trace of approvals or rejections — rejected
-  steps never appeared as "Blocked" rows, compliance summaries ignored
-  the events, and operator dashboards showed "N/A" under user. Both
-  paths now write an `audit_logs` row via the existing
-  `WorkflowAuditEntry` pipeline with `request_type="workflow_step_approved"`
-  / `"workflow_step_rejected"`, `policy_decision="allowed"` on approve
-  / `"blocked"` on reject, and the reviewer's `X-User-Email` populated
-  on `user_email`. `WorkflowAuditEntry` gains `UserEmail` / `UserRole`
-  so reviewer identity carries through the audit adapter end-to-end.
+ WCP step-approve/reject endpoints
+ (`/api/v1/workflows/{id}/steps/{step_id}/approve|reject`, Evaluation+)
+ previously updated `workflow_steps.approval_status` and fired a
+ webhook but never wrote to `audit_logs`, so any audit pipeline that
+ reads `audit_logs` had no trace of approvals or rejections — rejected
+ steps never appeared as "Blocked" rows, compliance summaries ignored
+ the events, and operator dashboards showed "N/A" under user. Both
+ paths now write an `audit_logs` row via the existing
+ `WorkflowAuditEntry` pipeline with `request_type="workflow_step_approved"`
+ / `"workflow_step_rejected"`, `policy_decision="allowed"` on approve
+ / `"blocked"` on reject, and the reviewer's `X-User-Email` populated
+ on `user_email`. `WorkflowAuditEntry` gains `UserEmail` / `UserRole`
+ so reviewer identity carries through the audit adapter end-to-end.
 - **Reject propagates the aborted status to the unified execution
-  tracker.** `RejectStep` flipped `workflow_steps.approval_status`
-  and called `repo.Abort(...)` on the workflow, but never notified
-  `executionTracker.OnWorkflowAborted(...)`. `GetWorkflowStatus`
-  prefers the cached unified execution when one exists, so
-  `/api/v1/unified/executions/{id}` kept reporting the overall
-  execution as running/pending even though the rejection had already
-  aborted the workflow. Now calls `OnWorkflowAborted` after the abort
-  succeeds — only when the abort actually landed, so we don't lie
-  about workflow state on an abort failure.
+ tracker.** `RejectStep` flipped `workflow_steps.approval_status`
+ and called `repo.Abort(.)` on the workflow, but never notified
+ `executionTracker.OnWorkflowAborted(.)`. `GetWorkflowStatus`
+ prefers the cached unified execution when one exists, so
+ `/api/v1/unified/executions/{id}` kept reporting the overall
+ execution as running/pending even though the rejection had already
+ aborted the workflow. Now calls `OnWorkflowAborted` after the abort
+ succeeds — only when the abort actually landed, so we don't lie
+ about workflow state on an abort failure.
 
 ### Enterprise
 
 #### Fixed
 
 - **HITL queue approve + reject now emit rows in `audit_logs`.** The
-  Enterprise HITL queue endpoints
-  (`/api/v1/hitl/queue/{id}/approve|reject`) previously wrote only to
-  `hitl_approval_history` (the immutable compliance audit trail), so
-  the audit-logs-based portal audit page had no trace of queue-driven
-  approvals/rejections — the USER / TENANT column showed "N/A" and
-  rejections never appeared as "Blocked" rows. Both paths now write
-  an `audit_logs` row via a new `Repository.WriteHITLAuditEvent`
-  helper with `request_type="workflow_step_gate"`,
-  `policy_decision="allowed"` on approve / `"blocked"` on reject,
-  the reviewer's email and role populated, and `workflow_id` /
-  `step_id` / `request_id` / `policy_name` in `policy_details`. Write
-  is best-effort — a DB failure does not fail the mutation because
-  `hitl_approval_history` remains the authoritative record.
+ Enterprise HITL queue endpoints
+ (`/api/v1/hitl/queue/{id}/approve|reject`) previously wrote only to
+ `hitl_approval_history` (the immutable compliance audit trail), so
+ the audit-logs-based portal audit page had no trace of queue-driven
+ approvals/rejections — the USER / TENANT column showed "N/A" and
+ rejections never appeared as "Blocked" rows. Both paths now write
+ an `audit_logs` row via a new `Repository.WriteHITLAuditEvent`
+ helper with `request_type="workflow_step_gate"`,
+ `policy_decision="allowed"` on approve / `"blocked"` on reject,
+ the reviewer's email and role populated, and `workflow_id` /
+ `step_id` / `request_id` / `policy_name` in `policy_details`. Write
+ is best-effort — a DB failure does not fail the mutation because
+ `hitl_approval_history` remains the authoritative record.
 - **Portal execution timeline renders rejector identity correctly.**
-  The portal execution page already read `approved_by` and
-  `rejected_by` as separate fields, but the Community-side serializer
-  only populated `approved_by` — so a rejected step appeared as
-  "approved by \<rejector\>". Paired with the Community-side split
-  above, the timeline now renders "Approval: rejected by \<email\>
-  on \<date\>" when `approval_status=rejected` and the approved
-  variant when approved, suppressing the other field in each case.
-  `ExecutionStep` on the portal API client gains `rejected_by` /
-  `rejected_at`.
+ The portal execution page already read `approved_by` and
+ `rejected_by` as separate fields, but the Community-side serializer
+ only populated `approved_by` — so a rejected step appeared as
+ "approved by \<rejector\>". Paired with the Community-side split
+ above, the timeline now renders "Approval: rejected by \<email\>
+ on \<date\>" when `approval_status=rejected` and the approved
+ variant when approved, suppressing the other field in each case.
+ `ExecutionStep` on the portal API client gains `rejected_by` /
+ `rejected_at`.
 - **Sidebar approvals badge refreshes immediately after approve or
-  reject in the same tab.** The Navigation component polls
-  `getPendingApprovals` every 30 s. When a reviewer approved or
-  rejected from the side panel, the approvals list removed the row
-  optimistically but the `1` badge next to "Approvals" in the sidebar
-  lingered until the next poll — visually making the queue look
-  unreclaimed. The approvals page now dispatches an
-  `approvals:updated` CustomEvent on success; Navigation listens and
-  re-fetches immediately. Event listener cleaned up on unmount
-  alongside the polling interval. Cross-tab approvals (second browser
-  window, SDK, or CLI) still fall back to the 30 s poll — same-tab
-  only is the scope of this fix.
+ reject in the same tab.** The Navigation component polls
+ `getPendingApprovals` every 30 s. When a reviewer approved or
+ rejected from the side panel, the approvals list removed the row
+ optimistically but the `1` badge next to "Approvals" in the sidebar
+ lingered until the next poll — visually making the queue look
+ unreclaimed. The approvals page now dispatches an
+ `approvals:updated` CustomEvent on success; Navigation listens and
+ re-fetches immediately. Event listener cleaned up on unmount
+ alongside the polling interval. Cross-tab approvals (second browser
+ window, SDK, or CLI) still fall back to the 30 s poll — same-tab
+ only is the scope of this fix.
 
 ---
 
@@ -898,85 +926,85 @@ callers rely on are unchanged.
 #### Added
 
 - **Shared HITL response projection helper** in the community codebase —
-  `workflow_control.ProjectStepGateToHTTP` and `DeriveHITLApprovalID`. Both
-  planes' handlers use it, so the wire shape stays consistent and the
-  deterministic HITL queue UUID reappears on every response where the
-  backing workflow_steps row exists.
+ `workflow_control.ProjectStepGateToHTTP` and `DeriveHITLApprovalID`. Both
+ planes' handlers use it, so the wire shape stays consistent and the
+ deterministic HITL queue UUID reappears on every response where the
+ backing workflow_steps row exists.
 - **Plan-to-workflow lookup** — `GetWorkflowByPlanID` service method +
-  PostgreSQL repository implementation (index on `metadata->>'plan_id'`).
-  Enables plan-scoped HITL endpoints to project from the same
-  `workflow_steps` row that /gate and /complete use.
+ PostgreSQL repository implementation (index on `metadata->>'plan_id'`).
+ Enables plan-scoped HITL endpoints to project from the same
+ `workflow_steps` row that /gate and /complete use.
 
 #### Deprecated
 
 - `DO_NOT_TRACK=1` as an AxonFlow SDK telemetry opt-out — scheduled for
-  removal after 2026-05-05 in the next major release. Use
-  `AXONFLOW_TELEMETRY=off` instead. All 4 SDKs emit a one-line migration
-  warning when `DO_NOT_TRACK=1` is the active control and
-  `AXONFLOW_TELEMETRY=off` is not also set. See the SDK CHANGELOGs for
-  per-language notes.
+ removal after 2026-05-05 in the next major release. Use
+ `AXONFLOW_TELEMETRY=off` instead. All 4 SDKs emit a one-line migration
+ warning when `DO_NOT_TRACK=1` is the active control and
+ `AXONFLOW_TELEMETRY=off` is not also set. See the SDK CHANGELOGs for
+ per-language notes.
 
 ### Evaluation
 
 #### Added
 
 - **Rich WCP approve/reject responses.** `POST /api/v1/workflows/{id}/steps/{step_id}/approve`
-  and `.../reject` now return `decision`, `reason`, `retry_context`,
-  `approval_id`, `approved_by` / `approved_at` (or `rejected_by` /
-  `rejected_at`), `policies_matched`, `status`, and `message`. Documented
-  in OpenAPI as `ApprovalResponse`; mirrors the step-gate response field set.
+ and `./reject` now return `decision`, `reason`, `retry_context`,
+ `approval_id`, `approved_by` / `approved_at` (or `rejected_by` /
+ `rejected_at`), `policies_matched`, `status`, and `message`. Documented
+ in OpenAPI as `ApprovalResponse`; mirrors the step-gate response field set.
 - **Rich MAP approve/reject responses** at the `/api/v1/plans/{id}/steps/{step_id}/approve|reject`
-  endpoints. Same shape as WCP plus a `plan_id` field. Two underlying flows —
-  confirm/step mode (WCP-backed) and legacy policy-driven pause/resume —
-  now surface a uniform shape so clients don't branch on which mode the
-  plan ran in.
+ endpoints. Same shape as WCP plus a `plan_id` field. Two underlying flows —
+ confirm/step mode (WCP-backed) and legacy policy-driven pause/resume —
+ now surface a uniform shape so clients don't branch on which mode the
+ plan ran in.
 - **Plane-scoped pending-approvals listing** — new
-  `GET /api/v1/plans/approvals/pending` endpoint (Evaluation+), the MAP
-  counterpart of the existing `GET /api/v1/workflows/approvals/pending`.
-  Returns `{pending_approvals, count}` with every entry carrying `plan_id`
-  (populated from `workflows.metadata->>'plan_id'`). Optional `?plan_id=`
-  query param scopes the listing to a single plan so reviewer tools can
-  render per-plan context without filtering client-side. Tier-gated on
-  `IsHITLApprovalEnabled()` — same gate as the plane-scoped approve/reject.
+ `GET /api/v1/plans/approvals/pending` endpoint (Evaluation+), the MAP
+ counterpart of the existing `GET /api/v1/workflows/approvals/pending`.
+ Returns `{pending_approvals, count}` with every entry carrying `plan_id`
+ (populated from `workflows.metadata->>'plan_id'`). Optional `?plan_id=`
+ query param scopes the listing to a single plan so reviewer tools can
+ render per-plan context without filtering client-side. Tier-gated on
+ `IsHITLApprovalEnabled()` — same gate as the plane-scoped approve/reject.
 
 #### Changed
 
 - **MAP plan-scoped HITL tier gate lowered to Evaluation+** (was Enterprise-only
-  pre-v7.4.0). Tier check now matches WCP: community + Evaluation license →
-  accepted; community + no license → 403; enterprise mode → accepted. Error
-  message updated from "requires Enterprise license" to "requires Evaluation
-  or Enterprise license."
+ pre-v7.4.0). Tier check now matches WCP: community + Evaluation license →
+ accepted; community + no license → 403; enterprise mode → accepted. Error
+ message updated from "requires Enterprise license" to "requires Evaluation
+ or Enterprise license."
 - **Cross-plane contract test** in CI asserts the WCP and MAP response field
-  sets stay aligned modulo the intentional `plan_id` asymmetry. Guards
-  against silent future drift when either plane grows a new field. A sibling
-  `TestPendingApprovalsPlaneParity` does the same for the plane-scoped
-  pending-approvals listings — the intentional `plan_id` asymmetry is
-  enforced: populated on every MAP entry, never on WCP entries.
+ sets stay aligned modulo the intentional `plan_id` asymmetry. Guards
+ against silent future drift when either plane grows a new field. A sibling
+ `TestPendingApprovalsPlaneParity` does the same for the plane-scoped
+ pending-approvals listings — the intentional `plan_id` asymmetry is
+ enforced: populated on every MAP entry, never on WCP entries.
 
 ### SDKs
 
 - **Go SDK v5.6.0** — `ApproveStepResponse` / `RejectStepResponse` gain
-  `Decision`, `Reason`, `ApprovalStatus`, `ApprovalID`, `ApprovedBy` /
-  `ApprovedAt` / `RejectedBy` / `RejectedAt`, `PoliciesMatched`,
-  `RetryContext`, `Message`, `PlanID`. New `GetPendingPlanApprovals` method
-  covers the MAP-plane listing. `PendingApproval` extended with `PlanID`,
-  `StepIndex`, `Decision`, `DecisionReason`, `PoliciesMatched`, `StepInput`,
-  `ApprovalStatus`. Also fixes three pre-existing URL bugs on
-  `ApproveStep` / `RejectStep` / `GetPendingApprovals` (they were hitting
-  non-existent `/api/v1/workflow-control/` paths) and renames the response
-  wire shape to match the server (`PendingApprovals` / `Count`).
+ `Decision`, `Reason`, `ApprovalStatus`, `ApprovalID`, `ApprovedBy` /
+ `ApprovedAt` / `RejectedBy` / `RejectedAt`, `PoliciesMatched`,
+ `RetryContext`, `Message`, `PlanID`. New `GetPendingPlanApprovals` method
+ covers the MAP-plane listing. `PendingApproval` extended with `PlanID`,
+ `StepIndex`, `Decision`, `DecisionReason`, `PoliciesMatched`, `StepInput`,
+ `ApprovalStatus`. Also fixes three pre-existing URL bugs on
+ `ApproveStep` / `RejectStep` / `GetPendingApprovals` (they were hitting
+ non-existent `/api/v1/workflow-control/` paths) and renames the response
+ wire shape to match the server (`PendingApprovals` / `Count`).
 - **TypeScript SDK v5.6.0** — same rich fields on `ApproveStepResponse` /
-  `RejectStepResponse` interfaces, new `getPendingPlanApprovals`, extended
-  `PendingApproval` interface, and the same WCP URL / response-shape fixes.
+ `RejectStepResponse` interfaces, new `getPendingPlanApprovals`, extended
+ `PendingApproval` interface, and the same WCP URL / response-shape fixes.
 - **Python SDK v6.6.0** — rich optional fields on the pydantic
-  `ApproveStepResponse` / `RejectStepResponse` models, new
-  `get_pending_plan_approvals` method (sync wrapper included), extended
-  `PendingApproval` model, and the same WCP URL / response-shape fixes.
+ `ApproveStepResponse` / `RejectStepResponse` models, new
+ `get_pending_plan_approvals` method (sync wrapper included), extended
+ `PendingApproval` model, and the same WCP URL / response-shape fixes.
 - **Java SDK v5.7.0** — rich fields on `WorkflowTypes.ApproveStepResponse`
-  and `.RejectStepResponse`, plus back-compat 3-arg constructors so existing
-  test fixtures keep compiling. New `getPendingPlanApprovals` + async
-  variant. Extended `PendingApproval` class with back-compat 6-arg
-  constructor. Same WCP URL / response-getter fixes.
+ and `.RejectStepResponse`, plus back-compat 3-arg constructors so existing
+ test fixtures keep compiling. New `getPendingPlanApprovals` + async
+ variant. Extended `PendingApproval` class with back-compat 6-arg
+ constructor. Same WCP URL / response-getter fixes.
 
 ---
 
@@ -998,70 +1026,70 @@ No breaking changes. Purely additive.
 #### Added
 
 - **`retry_context` on every `StepGateResponse`** — always present, including
-  on the first gate call (where counters are 1/0 and
-  `prior_completion_status` is `"none"`). Fields: `gate_count`,
-  `completion_count`, `prior_completion_status` (enum `none` / `completed` /
-  `gated_not_completed`), `prior_output_available`, `prior_output`,
-  `prior_completion_at`, `first_attempt_at`, `last_attempt_at`,
-  `last_decision`, `idempotency_key`. Counter bookkeeping is atomic inside
-  the repository UPSERT; a separate cached-hit update keeps counters
-  accurate across idempotent retries without re-evaluating policy.
+ on the first gate call (where counters are 1/0 and
+ `prior_completion_status` is `"none"`). Fields: `gate_count`,
+ `completion_count`, `prior_completion_status` (enum `none` / `completed` /
+ `gated_not_completed`), `prior_output_available`, `prior_output`,
+ `prior_completion_at`, `first_attempt_at`, `last_attempt_at`,
+ `last_decision`, `idempotency_key`. Counter bookkeeping is atomic inside
+ the repository UPSERT; a separate cached-hit update keeps counters
+ accurate across idempotent retries without re-evaluating policy.
 - **`?include_prior_output=true` query param on `/gate`** — opt-in inclusion
-  of the prior `/complete` payload in `retry_context.prior_output`. Default
-  is `false` (null) because output may be large and/or contain sensitive
-  data. When the opt-in is set AND a prior completion exists, the full
-  output is returned so agents can safely short-circuit re-execution.
+ of the prior `/complete` payload in `retry_context.prior_output`. Default
+ is `false` (null) because output may be large and/or contain sensitive
+ data. When the opt-in is set AND a prior completion exists, the full
+ output is returned so agents can safely short-circuit re-execution.
 - **Caller-supplied `idempotency_key` on `/gate` and `/complete`** —
-  optional opaque string up to 255 chars. Recorded on the first gate call
-  that sets it; immutable for the step's lifetime. Surfaced on every
-  subsequent `retry_context.idempotency_key`. Audit log records the key
-  on every `step_gate` and `step_completed` event.
+ optional opaque string up to 255 chars. Recorded on the first gate call
+ that sets it; immutable for the step's lifetime. Surfaced on every
+ subsequent `retry_context.idempotency_key`. Audit log records the key
+ on every `step_gate` and `step_completed` event.
 - **`HTTP 409 IDEMPOTENCY_KEY_MISMATCH`** returned when `/complete` (or a
-  subsequent `/gate`) passes a different key than the one recorded on the
-  first gate, or when one side supplies a key and the other omits it.
-  Response envelope includes `expected_idempotency_key` and
-  `received_idempotency_key` so SDKs can build typed errors.
+ subsequent `/gate`) passes a different key than the one recorded on the
+ first gate, or when one side supplies a key and the other omits it.
+ Response envelope includes `expected_idempotency_key` and
+ `received_idempotency_key` so SDKs can build typed errors.
 - **`cached` and `decision_source` fields remain on every response** so
-  existing SDK versions continue working unchanged. Both are marked
-  deprecated in the wire docs; `retry_context.gate_count > 1` replaces
-  `cached: true` and `retry_context.prior_completion_status` replaces the
-  string-typed `decision_source`.
+ existing SDK versions continue working unchanged. Both are marked
+ deprecated in the wire docs; `retry_context.gate_count > 1` replaces
+ `cached: true` and `retry_context.prior_completion_status` replaces the
+ string-typed `decision_source`.
 
 #### Changed
 
 - **`MarkStepCompleted` HTTP handler** now reads tenant identity from
-  `X-Tenant-ID` consistently with `StepGate` rather than from
-  `X-Client-ID`. A real multi-tenant caller setting the tenant header now
-  works on both endpoints; previously the complete path rejected the
-  request as "workflow not found" because the isolation check compared
-  against the wrong attribute. No behavior change for callers using
-  empty headers.
+ `X-Tenant-ID` consistently with `StepGate` rather than from
+ `X-Client-ID`. A real multi-tenant caller setting the tenant header now
+ works on both endpoints; previously the complete path rejected the
+ request as "workflow not found" because the isolation check compared
+ against the wrong attribute. No behavior change for callers using
+ empty headers.
 
 ### Evaluation
 
 #### Added
 
 - **Retry-aware dynamic policy conditions** — the policy engine now
-  resolves seven new `step.*` fields: `step.gate_count`,
-  `step.completion_count`, `step.prior_completion_status` (enum `none` /
-  `completed` / `gated_not_completed`), `step.prior_output_available`,
-  `step.last_decision`, `step.first_attempt_age_seconds`, and
-  `step.idempotency_key`. Policy authors can write rules like
-  "retry on un-completed payment requires approval", "more than three
-  attempts = block", or "rapid retry within 30 seconds escalates severity"
-  without custom code. These fields are added to `ValidPolicyFields` so
-  the create/update policy APIs accept them.
+ resolves seven new `step.*` fields: `step.gate_count`,
+ `step.completion_count`, `step.prior_completion_status` (enum `none` /
+ `completed` / `gated_not_completed`), `step.prior_output_available`,
+ `step.last_decision`, `step.first_attempt_age_seconds`, and
+ `step.idempotency_key`. Policy authors can write rules like
+ "retry on un-completed payment requires approval", "more than three
+ attempts = block", or "rapid retry within 30 seconds escalates severity"
+ without custom code. These fields are added to `ValidPolicyFields` so
+ the create/update policy APIs accept them.
 - **Tier-gated create:** attempting to author a dynamic policy with any
-  `step.*` condition on a Community license is rejected at create time
-  with `FEATURE_REQUIRES_EVALUATION_LICENSE`. Evaluation and Enterprise
-  tiers accept. Enforcement sits in `PolicyService.validateTierForCreate`
-  before the tenant policy-count check, so the rejection fires cleanly
-  without a DB roundtrip.
+ `step.*` condition on a Community license is rejected at create time
+ with `FEATURE_REQUIRES_EVALUATION_LICENSE`. Evaluation and Enterprise
+ tiers accept. Enforcement sits in `PolicyService.validateTierForCreate`
+ before the tenant policy-count check, so the rejection fires cleanly
+ without a DB roundtrip.
 - **UX note for policy authors:** retry-aware policies only fire when
-  callers pass `retry_policy: "reevaluate"` on subsequent `/gate` calls.
-  Default-idempotent retries hit the cache and bypass the policy engine,
-  consistent with the existing cache semantics. Documented in the
-  bundled Evaluation-tier example.
+ callers pass `retry_policy: "reevaluate"` on subsequent `/gate` calls.
+ Default-idempotent retries hit the cache and bypass the policy engine,
+ consistent with the existing cache semantics. Documented in the
+ bundled Evaluation-tier example.
 
 ### Enterprise
 
@@ -1085,36 +1113,36 @@ seeing real values.
 #### Fixed
 
 - **`/api/v1/workflows/{id}` now surfaces `approved_by` and `approved_at` on
-  each step.** The `StepInfo` DTO used by the workflow-detail response was
-  missing both fields, so callers polling for approval completion saw
-  `approval_status: "approved"` but no approver identity or timestamp.
-  Both fields were already captured by `ApproveStep` and persisted on the
-  `WorkflowStep` row — the DTO just wasn't copying them over. Portal and
-  SDK consumers now get the full provenance without a second round-trip
-  to the audit log.
+ each step.** The `StepInfo` DTO used by the workflow-detail response was
+ missing both fields, so callers polling for approval completion saw
+ `approval_status: "approved"` but no approver identity or timestamp.
+ Both fields were already captured by `ApproveStep` and persisted on the
+ `WorkflowStep` row — the DTO just wasn't copying them over. Portal and
+ SDK consumers now get the full provenance without a second round-trip
+ to the audit log.
 - **`StepGateResponse.approval_id` populated on `require_approval`
-  decisions.** The HITL adapter was creating the approval queue entry and
-  setting `StepGateEvaluation.ApprovalID`, but the API response struct
-  didn't carry the field. SDK clients that want to correlate a paused
-  step with its HITL queue row (for Slack/PagerDuty routing, direct
-  portal deep-links, or programmatic approval) now get `approval_id` on
-  the same response that reports the `require_approval` decision.
+ decisions.** The HITL adapter was creating the approval queue entry and
+ setting `StepGateEvaluation.ApprovalID`, but the API response struct
+ didn't carry the field. SDK clients that want to correlate a paused
+ step with its HITL queue row (for Slack/PagerDuty routing, direct
+ portal deep-links, or programmatic approval) now get `approval_id` on
+ the same response that reports the `require_approval` decision.
 
 ### Enterprise
 
 #### Fixed
 
 - **Customer Portal `/approvals` page no longer crashes on expand.** The
-  `PendingApproval.policies_matched` TypeScript type declared the field
-  as `string[]`, but the `/api/v1/workflows/approvals/pending` endpoint
-  returns an array of `PolicyMatch` objects (`{policy_id, policy_name,
-  action, risk_level, allow_override, policy_description}`). React
-  tried to render the object directly and threw error #31 ("Objects
-  are not valid as a React child"), dumping the approver into the
-  ErrorBoundary fallback the moment they clicked a row to expand the
-  detail panel. The approvals page now accepts either shape, extracts
-  `policy_name` when given an object, and surfaces `policy_description`
-  as a tooltip on the matched-policy chip.
+ `PendingApproval.policies_matched` TypeScript type declared the field
+ as `string[]`, but the `/api/v1/workflows/approvals/pending` endpoint
+ returns an array of `PolicyMatch` objects (`{policy_id, policy_name,
+ action, risk_level, allow_override, policy_description}`). React
+ tried to render the object directly and threw error #31 ("Objects
+ are not valid as a React child"), dumping the approver into the
+ ErrorBoundary fallback the moment they clicked a row to expand the
+ detail panel. The approvals page now accepts either shape, extracts
+ `policy_name` when given an object, and surfaces `policy_description`
+ as a tooltip on the matched-policy chip.
 
 ---
 
@@ -1135,391 +1163,391 @@ caller keeps working without changes.
 #### Community
 
 - **`AXONFLOW_MAP_MAX_TIMEOUT_SECONDS` orchestrator env.** Caps the
-  MAP plan-execution budget without a binary rebuild. Clamped to
-  60..1800 seconds; default 300. The effective value is logged at
-  startup when non-default. If you front the orchestrator with a
-  reverse proxy or load balancer, set its idle / read timeout to
-  at least the orchestrator cap — otherwise long plans will be
-  cut off at the proxy before the orchestrator finishes.
+ MAP plan-execution budget without a binary rebuild. Clamped to
+ 60..1800 seconds; default 300. The effective value is logged at
+ startup when non-default. If you front the orchestrator with a
+ reverse proxy or load balancer, set its idle / read timeout to
+ at least the orchestrator cap — otherwise long plans will be
+ cut off at the proxy before the orchestrator finishes.
 
 #### Enterprise
 
 - **`AlbIdleTimeoutSeconds` CloudFormation parameter on the
-  AWS Marketplace template.** Mirror of the Community knob.
+ AWS Marketplace template.** Mirror of the Community knob.
 - **`middleware.MaxBodyBytesMiddleware` exported on the Customer
-  Portal.** Caps every POST/PUT/PATCH request body at 1 MiB by
-  default; `MaxBodyBytesMiddlewareWithLimit(n int64)` returns a
-  variant for routes that legitimately need a larger ceiling (SAML
-  metadata, future file uploads). GET/HEAD are not wrapped.
+ Portal.** Caps every POST/PUT/PATCH request body at 1 MiB by
+ default; `MaxBodyBytesMiddlewareWithLimit(n int64)` returns a
+ variant for routes that legitimately need a larger ceiling (SAML
+ metadata, future file uploads). GET/HEAD are not wrapped.
 - **Per-feature HTTP examples for every route the Portal UI
-  calls.** Each example is runnable against a local Docker Compose
-  stack and covers one topic end-to-end:
-    - Full RBI AI-system lifecycle: register → validate → incident
-      → kill-switch → board report → audit export.
-    - SEBI dashboard, retention, readiness, and audit export.
-    - EU AI Act conformity, accuracy/bias, and async export jobs.
-    - Compliance evidence bundle (summary + stream-download).
-    - Decision explainability with the cross-tenant 404 guard
-      asserted.
-    - License, deployment, nodes, and session metadata.
-    - Policy bundle export/import with `overwrite_mode` semantics.
-    - Full `/api/v1/auth/*` walkthrough: login, session, logout,
-      SSO availability, forgot-password, reset-password,
-      change-password — including the auth-enum identical-body
-      assertions.
-  A curl-based smoke runner covers every Portal API route (44
-  total) without needing a browser, pairing with the Playwright
-  health spec so CI and demo-freeze runs have a Playwright-free
-  verification path. Every script passes `shellcheck` and runs
-  green against local compose.
+ calls.** Each example is runnable against a local Docker Compose
+ stack and covers one topic end-to-end:
+ - Full RBI AI-system lifecycle: register → validate → incident
+ → kill-switch → board report → audit export.
+ - SEBI dashboard, retention, readiness, and audit export.
+ - EU AI Act conformity, accuracy/bias, and async export jobs.
+ - Compliance evidence bundle (summary + stream-download).
+ - Decision explainability with the cross-tenant 404 guard
+ asserted.
+ - License, deployment, nodes, and session metadata.
+ - Policy bundle export/import with `overwrite_mode` semantics.
+ - Full `/api/v1/auth/*` walkthrough: login, session, logout,
+ SSO availability, forgot-password, reset-password,
+ change-password — including the auth-enum identical-body
+ assertions.
+ A curl-based smoke runner covers every Portal API route (44
+ total) without needing a browser, pairing with the Playwright
+ health spec so CI and demo-freeze runs have a Playwright-free
+ verification path. Every script passes `shellcheck` and runs
+ green against local compose.
 - **Compliance → Evidence Export Download button.** The Compliance
-  page showed per-type record counts (audit logs, workflow steps,
-  HITL approvals) but had no way to actually download the bundle.
-  Added a Download Evidence button that streams the JSON bundle as
-  a blob with a 30-day default window (the backend caps by tier)
-  and saves as `axonflow-evidence-<start>-to-<end>.json`. Disabled
-  with a tooltip explanation when counts are zero. Surfaces any
-  backend error (tier / license / quota) as an inline alert
-  instead of silently doing nothing.
+ page showed per-type record counts (audit logs, workflow steps,
+ HITL approvals) but had no way to actually download the bundle.
+ Added a Download Evidence button that streams the JSON bundle as
+ a blob with a 30-day default window (the backend caps by tier)
+ and saves as `axonflow-evidence-<start>-to-<end>.json`. Disabled
+ with a tooltip explanation when counts are zero. Surfaces any
+ backend error (tier / license / quota) as an inline alert
+ instead of silently doing nothing.
 
 ### Fixed
 
 #### Community
 
 - **Agent now proxies `/api/v1/euaiact/*` to the orchestrator.**
-  The single-entry-point mux listed `/rbi`, `/sebi`, and
-  `/masfeat` alongside the rest of the compliance family but
-  omitted `/euaiact`, so every EU AI Act call that landed on the
-  front-door ALB returned `404 page not found` and the Portal's
-  Compliance page reported the module as "not enabled for this
-  tenant" even though peer modules rendered fine. Added the prefix
-  to both the router and the proxy-allow-list.
+ The single-entry-point mux listed `/rbi`, `/sebi`, and
+ `/masfeat` alongside the rest of the compliance family but
+ omitted `/euaiact`, so every EU AI Act call that landed on the
+ front-door ALB returned `404 page not found` and the Portal's
+ Compliance page reported the module as "not enabled for this
+ tenant" even though peer modules rendered fine. Added the prefix
+ to both the router and the proxy-allow-list.
 - **Canonical `/api/v1/policy-overrides` alias on the agent.** The
-  Portal's overrides handler proxies to this path, matching the
-  `policy-categories` / `static-policies` / `dynamic-policies`
-  naming pattern; the agent previously only exposed the tenant
-  override list under `/api/v1/static-policies/overrides`.
-  Callers using the canonical path hit 404 and the Portal's
-  Policies → Overrides tab rendered empty. Same handler, new
-  path, auth unchanged.
+ Portal's overrides handler proxies to this path, matching the
+ `policy-categories` / `static-policies` / `dynamic-policies`
+ naming pattern; the agent previously only exposed the tenant
+ override list under `/api/v1/static-policies/overrides`.
+ Callers using the canonical path hit 404 and the Portal's
+ Policies → Overrides tab rendered empty. Same handler, new
+ path, auth unchanged.
 - **Agent `/health` includes `tier`.** The validated license tier
-  (`Community` / `Evaluation` / `Professional` / `Enterprise` /
-  `starting`) is now surfaced on the health response. Operators
-  querying `curl /health | jq .tier` used to get `"unknown"`
-  because the field was not present.
+ (`Community` / `Evaluation` / `Professional` / `Enterprise` /
+ `starting`) is now surfaced on the health response. Operators
+ querying `curl /health | jq.tier` used to get `"unknown"`
+ because the field was not present.
 - **Orchestrator MAP plan-execution budget now caps at 300s by
-  default.** MAP plans chain multiple LLM calls (~15s each); a
-  typical 5-step plan routinely ran past the old 60s server-side
-  default and truncated mid-stream even though the orchestrator
-  was still working. The cap is now 300s out of the box and
-  tunable via `AXONFLOW_MAP_MAX_TIMEOUT_SECONDS`. SDK note: the
-  TypeScript SDK's default `mapTimeout` is 120s; clients relying
-  on the default will cut off at 120s before the server cap
-  takes effect. Pass `mapTimeout: 300000` on the SDK client
-  config to match.
+ default.** MAP plans chain multiple LLM calls (~15s each); a
+ typical 5-step plan routinely ran past the old 60s server-side
+ default and truncated mid-stream even though the orchestrator
+ was still working. The cap is now 300s out of the box and
+ tunable via `AXONFLOW_MAP_MAX_TIMEOUT_SECONDS`. SDK note: the
+ TypeScript SDK's default `mapTimeout` is 120s; clients relying
+ on the default will cut off at 120s before the server cap
+ takes effect. Pass `mapTimeout: 300000` on the SDK client
+ config to match.
 - **Orchestrator policy type allowlist accepts `context_aware`.**
-  Three seeded system policies (Tenant Isolation, Debug Mode
-  Restriction, Sensitive Data Control) ship with
-  `policy_type=context_aware`; any update through
-  `PUT /api/v1/policies/{id}` returned 400 because that type was
-  missing from the allowlist.
+ Three seeded system policies (Tenant Isolation, Debug Mode
+ Restriction, Sensitive Data Control) ship with
+ `policy_type=context_aware`; any update through
+ `PUT /api/v1/policies/{id}` returned 400 because that type was
+ missing from the allowlist.
 - **`POST /api/v1/policies/{id}/overrides` accepts
-  `require_approval` (HITL).** The override validator's allow-list
-  was hand-written as `{block, redact, warn, log}`, silently
-  dropping the HITL action even though the rest of the stack
-  accepted it end-to-end. Standardised on a single canonical list
-  of valid actions:
-    - Policy authoring — `alert`, `block`, `log`, `modify_risk`,
-      `redact`, `require_approval`, `route`, `warn`.
-    - Override endpoint (terminal-action subset) — `block`,
-      `require_approval`, `redact`, `warn`, `log`. Authoring-only
-      actions are deliberately excluded — they have no
-      terminal-action meaning and the agent's override repository
-      would reject them anyway.
+ `require_approval` (HITL).** The override validator's allow-list
+ was hand-written as `{block, redact, warn, log}`, silently
+ dropping the HITL action even though the rest of the stack
+ accepted it end-to-end. Standardised on a single canonical list
+ of valid actions:
+ - Policy authoring — `alert`, `block`, `log`, `modify_risk`,
+ `redact`, `require_approval`, `route`, `warn`.
+ - Override endpoint (terminal-action subset) — `block`,
+ `require_approval`, `redact`, `warn`, `log`. Authoring-only
+ actions are deliberately excluded — they have no
+ terminal-action meaning and the agent's override repository
+ would reject them anyway.
 - **Test / Edit / Delete / Versions of legacy-named policies no
-  longer 400.** The policy-ID validator only accepted UUIDs and
-  the `sys_*` prefix, so seeded policies like
-  `sensitive_data_control` and `tenant_isolation` failed every
-  per-policy action with "Invalid policy ID format". Allowlist now
-  also accepts the legacy snake-case form.
+ longer 400.** The policy-ID validator only accepted UUIDs and
+ the `sys_*` prefix, so seeded policies like
+ `sensitive_data_control` and `tenant_isolation` failed every
+ per-policy action with "Invalid policy ID format". Allowlist now
+ also accepts the legacy snake-case form.
 - **`GET /api/v1/policies` honours the `tier` and `category` query
-  params.** The orchestrator's list handler dropped both at the
-  handler boundary even though the repo supported them. Without
-  this every Tier / Category dropdown in the Portal's
-  `/policies` page returned the full unfiltered list.
+ params.** The orchestrator's list handler dropped both at the
+ handler boundary even though the repo supported them. Without
+ this every Tier / Category dropdown in the Portal's
+ `/policies` page returned the full unfiltered list.
 - **Legacy V1 HMAC license format purged from active code.** The
-  V2 Ed25519 format has been the only accepted key for months;
-  stale HMAC references would have produced confusing failures
-  in a clean shell. The rejection-path code that returns `"V1
-  license format no longer supported"` is kept so an old key
-  ever surfacing gets a clear error, not silent acceptance.
+ V2 Ed25519 format has been the only accepted key for months;
+ stale HMAC references would have produced confusing failures
+ in a clean shell. The rejection-path code that returns `"V1
+ license format no longer supported"` is kept so an old key
+ ever surfacing gets a clear error, not silent acceptance.
 
 #### Enterprise
 
 - **RBI FREE-AI: registering an AI system no longer 500s.** The
-  repository's INSERT listed `board_approval_required`, but that
-  column is a stored-generated column computed from
-  `risk_category`. PostgreSQL rejected every write with
-  `cannot insert a non-DEFAULT value into column
-  board_approval_required`, so the Portal's RBI compliance page
-  could never progress past step 1. Removed the column from the
-  INSERT and UPDATE statements; the Go struct field is still
-  populated at read time.
+ repository's INSERT listed `board_approval_required`, but that
+ column is a stored-generated column computed from
+ `risk_category`. PostgreSQL rejected every write with
+ `cannot insert a non-DEFAULT value into column
+ board_approval_required`, so the Portal's RBI compliance page
+ could never progress past step 1. Removed the column from the
+ INSERT and UPDATE statements; the Go struct field is still
+ populated at read time.
 - **RBI FREE-AI: generating a board report no longer 500s.** The
-  service layer set `generation_method = "automated"` but the
-  database check constraint only accepts `'automatic'` or
-  `'manual'`. Fixed the literal.
+ service layer set `generation_method = "automated"` but the
+ database check constraint only accepts `'automatic'` or
+ `'manual'`. Fixed the literal.
 - **Marketplace CloudFormation: Agent security group can reach the
-  Customer Portal.** Per the single-entry-point architecture,
-  every public request funnels through the Agent, which then
-  proxies `/api/v1/auth/*`, `/api/v1/portal/*`,
-  `/api/v1/code-governance/*`, and `/api/v1/git-providers/*` to
-  the Customer Portal over Cloud Map. The security group allowed
-  ALB → Portal and Portal → Agent but nothing allowed Agent →
-  Portal, so every auth call hitting the raw stack domain timed
-  out after 30 seconds and fell back to `503 Backend service
-  unavailable`. The vanity-domain host-header rule routed
-  directly to the UI and masked the issue during demo prep; only
-  requests on the raw stack domain surfaced it. Applies on
-  `update-stack` without recycling ECS tasks.
+ Customer Portal.** Per the single-entry-point architecture,
+ every public request funnels through the Agent, which then
+ proxies `/api/v1/auth/*`, `/api/v1/portal/*`,
+ `/api/v1/code-governance/*`, and `/api/v1/git-providers/*` to
+ the Customer Portal over Cloud Map. The security group allowed
+ ALB → Portal and Portal → Agent but nothing allowed Agent →
+ Portal, so every auth call hitting the raw stack domain timed
+ out after 30 seconds and fell back to `503 Backend service
+ unavailable`. The vanity-domain host-header rule routed
+ directly to the UI and masked the issue during demo prep; only
+ requests on the raw stack domain surfaced it. Applies on
+ `update-stack` without recycling ECS tasks.
 - **Usage & Billing no longer returns zeros for every tenant.**
-  The daily rollup was defined but never invoked — no scheduler,
-  no goroutine, no on-demand call — so the rollup table stayed
-  empty forever and the Portal's summary and time-series queries
-  returned zeros even when the underlying events had rows. The
-  aggregator is now idempotent (re-running an overlapping window
-  recomputes the bucket rather than adding to it) and is called
-  on-demand from the Usage handlers before they query the
-  rollup — self-healing, no scheduler required. A pre-existing
-  latent bug that surfaced once rollups populated
-  (`COALESCE(AVG())` returns numeric, the scan target was int)
-  is fixed in the same change.
+ The daily rollup was defined but never invoked — no scheduler,
+ no goroutine, no on-demand call — so the rollup table stayed
+ empty forever and the Portal's summary and time-series queries
+ returned zeros even when the underlying events had rows. The
+ aggregator is now idempotent (re-running an overlapping window
+ recomputes the bucket rather than adding to it) and is called
+ on-demand from the Usage handlers before they query the
+ rollup — self-healing, no scheduler required. A pre-existing
+ latent bug that surfaced once rollups populated
+ (`COALESCE(AVG())` returns numeric, the scan target was int)
+ is fixed in the same change.
 - **`GET /api/v1/export/usage` no longer 500s.** The handler
-  queried columns that didn't exist (`policy_id`, `latency_ms`,
-  `success` — the real columns are `policy_decision`,
-  `response_time_ms`, and a derived success flag), constructed
-  `INTERVAL '$2 days'` which is not valid PostgreSQL
-  parameterization (the `$2` inside a string literal is treated
-  as literal characters, not a placeholder), and ignored the
-  `start` / `end` query params the UI sends (only honouring a
-  legacy `days=` param). Rewritten against the per-request
-  metering table with correct columns, proper date-range handling
-  for RFC3339 timestamps or `YYYY-MM-DD` dates, and surfaced DB
-  errors in the server log instead of swallowing them behind the
-  generic `"Database error"` response.
+ queried columns that didn't exist (`policy_id`, `latency_ms`,
+ `success` — the real columns are `policy_decision`,
+ `response_time_ms`, and a derived success flag), constructed
+ `INTERVAL '$2 days'` which is not valid PostgreSQL
+ parameterization (the `$2` inside a string literal is treated
+ as literal characters, not a placeholder), and ignored the
+ `start` / `end` query params the UI sends (only honouring a
+ legacy `days=` param). Rewritten against the per-request
+ metering table with correct columns, proper date-range handling
+ for RFC3339 timestamps or `YYYY-MM-DD` dates, and surfaced DB
+ errors in the server log instead of swallowing them behind the
+ generic `"Database error"` response.
 - **`GET /api/v1/license/status` no longer 500s for orgs without
-  an `expires_at`.** The handler scanned the column into a
-  non-nullable type; NULL expiry blew up inside `Scan`. Switched
-  to a nullable target and treats NULL as ACTIVE.
+ an `expires_at`.** The handler scanned the column into a
+ non-nullable type; NULL expiry blew up inside `Scan`. Switched
+ to a nullable target and treats NULL as ACTIVE.
 - **`GET /api/v1/admin/organizations/{id}` no longer 500s.** The
-  join against the SSO configuration table used the wrong join
-  column; every org detail page 500'd with `pq: column
-  s.org_id does not exist`.
+ join against the SSO configuration table used the wrong join
+ column; every org detail page 500'd with `pq: column
+ s.org_id does not exist`.
 - **Admin org list queries fixed against the heartbeat schema.**
-  Both the list and detail endpoints joined `agent_heartbeats` on
-  column names that don't exist (`organization_id`,
-  `last_heartbeat_at`); the real columns are `org_id` and
-  `last_heartbeat`. Both endpoints returned 500 with
-  `pq: column "organization_id" does not exist`.
+ Both the list and detail endpoints joined `agent_heartbeats` on
+ column names that don't exist (`organization_id`,
+ `last_heartbeat_at`); the real columns are `org_id` and
+ `last_heartbeat`. Both endpoints returned 500 with
+ `pq: column "organization_id" does not exist`.
 - **Customer Portal Docker image builds with the Enterprise Go
-  tag.** The Portal Dockerfile previously hard-coded a Community
-  build, so `license.GenerateLicenseKey` always returned the
-  Community stub and admin onboarding 500'd on every call,
-  leaving the orgs table empty and the SaaS deployment with no
-  orgs to log in as.
+ tag.** The Portal Dockerfile previously hard-coded a Community
+ build, so `license.GenerateLicenseKey` always returned the
+ Community stub and admin onboarding 500'd on every call,
+ leaving the orgs table empty and the SaaS deployment with no
+ orgs to log in as.
 - **Dashboard "Workflows Run" counts MAP plans too.** The
-  dashboard summary queried the WCP-only execution endpoint, so
-  MAP-only tenants saw `Workflows Run: 0` even after running
-  plans. Now queries the cross-type unified executions endpoint
-  with a fallback to the legacy shape for older server builds.
+ dashboard summary queried the WCP-only execution endpoint, so
+ MAP-only tenants saw `Workflows Run: 0` even after running
+ plans. Now queries the cross-type unified executions endpoint
+ with a fallback to the legacy shape for older server builds.
 - **Dashboard no longer renders "Welcome," with an empty name.**
-  The page mounted before `AuthContext.checkSession()` resolved,
-  so the heading printed "Welcome," and the License Status card
-  printed an empty Organization ID. The dashboard now waits on
-  the session-loading gate.
+ The page mounted before `AuthContext.checkSession()` resolved,
+ so the heading printed "Welcome," and the License Status card
+ printed an empty Organization ID. The dashboard now waits on
+ the session-loading gate.
 - **Sidebar pending-approvals badge no longer fires a console
-  401 on first paint.** The poll fired from a `useEffect` on
-  mount without a user guard; on a hard refresh the first poll
-  raced the session check and hit the catch-all orchestrator
-  proxy without an authenticated session. The poll now waits
-  for the user to be non-null and re-runs when the user
-  changes.
+ 401 on first paint.** The poll fired from a `useEffect` on
+ mount without a user guard; on a hard refresh the first poll
+ raced the session check and hit the catch-all orchestrator
+ proxy without an authenticated session. The poll now waits
+ for the user to be non-null and re-runs when the user
+ changes.
 - **`setup-vanity-domain` workflow overwrites stale CFN-managed
-  ALB private-DNS aliases.** When a stack is rebuilt the old ALB
-  DNS goes away; the workflow used to refuse to touch the
-  existing record, leaving the Portal UI's API backend URL
-  resolving to a deleted ALB inside the VPC — surfaced as 503
-  "Backend service unavailable" on the login page. The workflow
-  now upserts when the existing target matches the CFN naming
-  pattern, and continues to skip operator-managed records.
+ ALB private-DNS aliases.** When a stack is rebuilt the old ALB
+ DNS goes away; the workflow used to refuse to touch the
+ existing record, leaving the Portal UI's API backend URL
+ resolving to a deleted ALB inside the VPC — surfaced as 503
+ "Backend service unavailable" on the login page. The workflow
+ now upserts when the existing target matches the CFN naming
+ pattern, and continues to skip operator-managed records.
 - **Policy editor accepts `context_aware` and exposes
-  `require_approval`.** Mirrors the orchestrator allowlist change
-  above; users can now author HITL policies end-to-end without
-  the request-level 400 that previously dropped the action at
-  the Portal boundary.
+ `require_approval`.** Mirrors the orchestrator allowlist change
+ above; users can now author HITL policies end-to-end without
+ the request-level 400 that previously dropped the action at
+ the Portal boundary.
 - **Policy modal interactions no longer swallowed by the
-  backdrop.** A CSS stacking-context bug made Save Changes,
-  Cancel, and every form input unclickable; the Edit-policy
-  flow looked broken. Promoted the dialog content to a higher
-  z-index.
+ backdrop.** A CSS stacking-context bug made Save Changes,
+ Cancel, and every form input unclickable; the Edit-policy
+ flow looked broken. Promoted the dialog content to a higher
+ z-index.
 - **Modal form inputs readable in OS dark mode.** A leftover
-  `prefers-color-scheme: dark` block from the create-next-app
-  template repointed form text to near-white over a hardcoded
-  white modal, so field values looked empty. The block is
-  removed and native controls (checkboxes, scrollbars) now
-  follow the light color scheme.
+ `prefers-color-scheme: dark` block from the create-next-app
+ template repointed form text to near-white over a hardcoded
+ white modal, so field values looked empty. The block is
+ removed and native controls (checkboxes, scrollbars) now
+ follow the light color scheme.
 - **`/export` page no longer logs a React hydration error.** The
-  date-range hint rendered `new Date().toLocaleDateString()`
-  directly in JSX, producing different output on the SSR pass
-  vs the client. Deferred the dates behind a `mounted` flag.
+ date-range hint rendered `new Date().toLocaleDateString()`
+ directly in JSX, producing different output on the SSR pass
+ vs the client. Deferred the dates behind a `mounted` flag.
 - **`POST /api/v1/admin/onboard-customer` accepts an optional
-  `license_key`.** Lets operators register an org against an
-  already-minted license (Lambda bootstrap, key-rotation
-  scripts, existing SDK customers) without forcing the Portal
-  to re-key. When set, in-process generation is skipped and
-  the existing Secrets Manager entry is left untouched.
+ `license_key`.** Lets operators register an org against an
+ already-minted license (Lambda bootstrap, key-rotation
+ scripts, existing SDK customers) without forcing the Portal
+ to re-key. When set, in-process generation is skipped and
+ the existing Secrets Manager entry is left untouched.
 - **Marketplace CloudFormation: orchestrator connector secrets
-  resolve under the per-stack environment name.** Fourteen
-  connector secret paths used the wrong path component; on any
-  non-default stack every connector came up with empty
-  credentials. The `TaskExecutionRole` IAM grant now matches
-  the per-stack path as well, with an `AllowedPattern` on
-  `EnvironmentName` so typos fail at `CreateChangeSet` time
-  rather than at runtime.
+ resolve under the per-stack environment name.** Fourteen
+ connector secret paths used the wrong path component; on any
+ non-default stack every connector came up with empty
+ credentials. The `TaskExecutionRole` IAM grant now matches
+ the per-stack path as well, with an `AllowedPattern` on
+ `EnvironmentName` so typos fail at `CreateChangeSet` time
+ rather than at runtime.
 
 ### Security
 
 #### Community
 
 - **Internal-service auth no longer accepts a static fallback
-  token in non-Community deployments.** When the
-  internal-service secret was unset, the agent fell through to
-  a literal-string compare against a constant. Any caller
-  knowing that constant could supply internal-service headers
-  and impersonate the orchestrator, injecting arbitrary
-  `X-Tenant-ID` / `X-Org-ID` for cross-tenant access. The
-  fallback path is now gated to Community / Community-SaaS
-  modes only; outside those a one-time security warning is
-  logged at startup. HMAC and legacy plain-secret paths are
-  unchanged.
+ token in non-Community deployments.** When the
+ internal-service secret was unset, the agent fell through to
+ a literal-string compare against a constant. Any caller
+ knowing that constant could supply internal-service headers
+ and impersonate the orchestrator, injecting arbitrary
+ `X-Tenant-ID` / `X-Org-ID` for cross-tenant access. The
+ fallback path is now gated to Community / Community-SaaS
+ modes only; outside those a one-time security warning is
+ logged at startup. HMAC and legacy plain-secret paths are
+ unchanged.
 - **Orchestrator audit handler fails closed when proxy auth is
-  missing in non-Community deployments.** The handler
-  previously skipped the proxy-auth validation entirely when
-  the token validator was nil — the same misconfiguration
-  shape that enabled the agent fallback bypass above. An
-  attacker reaching the orchestrator directly could spoof
-  `X-Org-ID` for cross-tenant audit attribution. The handler
-  now returns 403 if the validator is nil and the deployment
-  mode is not Community.
+ missing in non-Community deployments.** The handler
+ previously skipped the proxy-auth validation entirely when
+ the token validator was nil — the same misconfiguration
+ shape that enabled the agent fallback bypass above. An
+ attacker reaching the orchestrator directly could spoof
+ `X-Org-ID` for cross-tenant audit attribution. The handler
+ now returns 403 if the validator is nil and the deployment
+ mode is not Community.
 - **`GET /api/v1/decisions/{id}/explain` filters tenant in the
-  SELECT clause.** The handler used to look up the audit entry
-  by `decision_id` only and post-check the tenant; the
-  short-circuit on email failed open whenever the user-email
-  column was NULL, and the email check itself was bypassable
-  by an attacker who happened to share an email with the
-  decision owner across tenants. Now: `X-Tenant-ID` is
-  required, the SELECT binds on `(decisionID, callerTenant)`,
-  and cross-tenant requests return 404 (not 403) so the
-  response shape doesn't leak whether `decision_id` exists in
-  another tenant. The post-fetch tenant comparison is kept as
-  defense-in-depth.
+ SELECT clause.** The handler used to look up the audit entry
+ by `decision_id` only and post-check the tenant; the
+ short-circuit on email failed open whenever the user-email
+ column was NULL, and the email check itself was bypassable
+ by an attacker who happened to share an email with the
+ decision owner across tenants. Now: `X-Tenant-ID` is
+ required, the SELECT binds on `(decisionID, callerTenant)`,
+ and cross-tenant requests return 404 (not 403) so the
+ response shape doesn't leak whether `decision_id` exists in
+ another tenant. The post-fetch tenant comparison is kept as
+ defense-in-depth.
 - **`POST /api/v1/evidence/export` and `GET /api/v1/evidence/summary`
-  fail closed when the tenant scope is missing.** Both endpoints
-  previously fell back to an empty-string tenant when neither
-  `X-Tenant-ID` nor a context-stored `tenant_id` was set, then
-  ran SQL with `WHERE tenant_id = ''` — zero rows in practice
-  but silently burned a daily-export quota slot for an empty
-  bucket and would have leaked data the moment a downstream
-  query stopped filtering. Both now return 401
-  `TENANT_REQUIRED` when neither source provides a scope.
+ fail closed when the tenant scope is missing.** Both endpoints
+ previously fell back to an empty-string tenant when neither
+ `X-Tenant-ID` nor a context-stored `tenant_id` was set, then
+ ran SQL with `WHERE tenant_id = ''` — zero rows in practice
+ but silently burned a daily-export quota slot for an empty
+ bucket and would have leaked data the moment a downstream
+ query stopped filtering. Both now return 401
+ `TENANT_REQUIRED` when neither source provides a scope.
 - **`POST /api/v1/policies/simulate` and
-  `POST /api/v1/policies/{id}/impact-report` adopt the same
-  fail-closed tenant resolution.** Same header-then-context-
-  then-fall-through-to-empty pattern as evidence/export; would
-  have shared a global empty-tenant rate-limit bucket when
-  called without `X-Tenant-ID`.
+ `POST /api/v1/policies/{id}/impact-report` adopt the same
+ fail-closed tenant resolution.** Same header-then-context-
+ then-fall-through-to-empty pattern as evidence/export; would
+ have shared a global empty-tenant rate-limit bucket when
+ called without `X-Tenant-ID`.
 - **`POST /api/v1/cost/estimate` and
-  `GET /api/v1/plans/{id}/cost` reject anonymous callers.**
-  Both substituted a `"_default"` literal for an empty
-  `X-Tenant-ID`, so every unauthenticated caller drained the
-  same daily quota. Both now return 401 `TENANT_REQUIRED`.
+ `GET /api/v1/plans/{id}/cost` reject anonymous callers.**
+ Both substituted a `"_default"` literal for an empty
+ `X-Tenant-ID`, so every unauthenticated caller drained the
+ same daily quota. Both now return 401 `TENANT_REQUIRED`.
 - **`GET /api/v1/audit/tenant/{tenant_id}` requires
-  `X-Tenant-ID`.** The URL-vs-session tenant mismatch check
-  was gated on a non-empty session tenant, so omitting the
-  header bypassed the cross-check entirely. The header is now
-  required; mismatches still return 403.
+ `X-Tenant-ID`.** The URL-vs-session tenant mismatch check
+ was gated on a non-empty session tenant, so omitting the
+ header bypassed the cross-check entirely. The header is now
+ required; mismatches still return 403.
 - **`/api/v1/audit/search` enforces tenant scoping from the
-  trusted header.** The handler ignored the proxy-injected
-  tenant header and only filtered on caller-supplied criteria,
-  so a Portal user for tenant A could read tenant B's audit
-  logs by POSTing to `/api/v1/audit/search`. The header is now
-  required and decoded into a JSON-tag-ignored field so a
-  malicious payload cannot override it. The same path also
-  silently-disabled tenant filtering on
-  `/api/v1/audit/tenant/{id}` because the tenant-only struct
-  shape no longer matched after a `StartTime` field was added;
-  the new SQL filter fixes that too.
+ trusted header.** The handler ignored the proxy-injected
+ tenant header and only filtered on caller-supplied criteria,
+ so a Portal user for tenant A could read tenant B's audit
+ logs by POSTing to `/api/v1/audit/search`. The header is now
+ required and decoded into a JSON-tag-ignored field so a
+ malicious payload cannot override it. The same path also
+ silently-disabled tenant filtering on
+ `/api/v1/audit/tenant/{id}` because the tenant-only struct
+ shape no longer matched after a `StartTime` field was added;
+ the new SQL filter fixes that too.
 - **`/api/v1/audit/tenant/{tenant_id}` rejects URL paths that
-  don't match the session tenant.** Without the cross-check a
-  Portal user for tenant A could read tenant B's audit history
-  by browsing to `/api/v1/audit/tenant/B`.
+ don't match the session tenant.** Without the cross-check a
+ Portal user for tenant A could read tenant B's audit history
+ by browsing to `/api/v1/audit/tenant/B`.
 
 #### Enterprise
 
 - **Customer Portal login no longer leaks org existence or auth
-  mode.** `POST /api/v1/auth/login` returned three
-  distinguishable failure responses that together let an
-  unauthenticated caller enumerate valid org IDs and classify
-  each org by auth mode:
-    - Unknown org: `401 "Invalid credentials"` (no bcrypt work).
-    - Known org with no password set (SSO-only): `401 "Password
-      authentication not enabled for this organization"` (no
-      bcrypt work).
-    - Known org, bad password: `401 "Invalid credentials"`
-      (full bcrypt compare).
-  The distinct no-password body outed which orgs existed and
-  which were password-backed; even with a uniform body the
-  missing bcrypt on the first two branches leaked the same bit
-  through response timing. Every failure now returns `"Invalid
-  credentials"`; the no-password branch runs a throwaway
-  bcrypt compare against a fixed placeholder hash so the
-  timing profile matches a real check. SSO-only orgs cannot
-  log in through this path — they are simply indistinguishable
-  from wrong-password attempts to an external caller.
+ mode.** `POST /api/v1/auth/login` returned three
+ distinguishable failure responses that together let an
+ unauthenticated caller enumerate valid org IDs and classify
+ each org by auth mode:
+ - Unknown org: `401 "Invalid credentials"` (no bcrypt work).
+ - Known org with no password set (SSO-only): `401 "Password
+ authentication not enabled for this organization"` (no
+ bcrypt work).
+ - Known org, bad password: `401 "Invalid credentials"`
+ (full bcrypt compare).
+ The distinct no-password body outed which orgs existed and
+ which were password-backed; even with a uniform body the
+ missing bcrypt on the first two branches leaked the same bit
+ through response timing. Every failure now returns `"Invalid
+ credentials"`; the no-password branch runs a throwaway
+ bcrypt compare against a fixed placeholder hash so the
+ timing profile matches a real check. SSO-only orgs cannot
+ log in through this path — they are simply indistinguishable
+ from wrong-password attempts to an external caller.
 - **Customer Portal request-body size capped at 1 MiB.** The
-  Portal had no upstream bound on JSON-decode; a single
-  multi-GB POST could pin goroutines and memory. The new
-  middleware caps POST/PUT/PATCH bodies at 1 MiB by default
-  and is wired into the Portal's outer chain so SCIM, admin,
-  and session-protected handlers all inherit it.
+ Portal had no upstream bound on JSON-decode; a single
+ multi-GB POST could pin goroutines and memory. The new
+ middleware caps POST/PUT/PATCH bodies at 1 MiB by default
+ and is wired into the Portal's outer chain so SCIM, admin,
+ and session-protected handlers all inherit it.
 - **System policies visible in the Customer Portal.** The
-  Portal's fetch-static-policies call landed on the agent
-  without internal-service credentials and was denied 401, so
-  the Static (Read-only) count showed 0 next to a Total
-  Policies of 17 — the 80+ PII / SQLi / dangerous-commands
-  rules were invisible. Three paired changes restore
-  visibility: the agent accepts internal-service credentials
-  from headers alongside the hint-based path, the Portal
-  signs every agent call with the internal-service secret,
-  and CloudFormation injects that secret into the Portal task
-  definition. Missing-secret deployments log a startup
-  warning and continue with empty static policies so dev
-  environments degrade gracefully.
+ Portal's fetch-static-policies call landed on the agent
+ without internal-service credentials and was denied 401, so
+ the Static (Read-only) count showed 0 next to a Total
+ Policies of 17 — the 80+ PII / SQLi / dangerous-commands
+ rules were invisible. Three paired changes restore
+ visibility: the agent accepts internal-service credentials
+ from headers alongside the hint-based path, the Portal
+ signs every agent call with the internal-service secret,
+ and CloudFormation injects that secret into the Portal task
+ definition. Missing-secret deployments log a startup
+ warning and continue with empty static policies so dev
+ environments degrade gracefully.
 - **`POST /api/v1/admin/onboard-customer` is no longer
-  unauthenticated, and supplied `license_key` payloads are
-  verified.** The route was registered on the bare router
-  with a "legacy / no auth for backward compatibility"
-  comment; anyone reachable on the Portal could hit it,
-  write rows into the orgs table, mint license keys, and
-  overwrite Secrets Manager entries. Two paired fixes close
-  the gap: the route now lives under the admin subrouter
-  that runs the admin auth middleware (API key required in
-  SaaS production; optional otherwise), and when the request
-  supplies `license_key` the handler validates the Ed25519
-  signature, expiry, and signed org/tier match before
-  accepting. The signed payload's `expires_at` and
-  `max_nodes` win over the request body — the body cannot
-  widen what the license actually grants.
+ unauthenticated, and supplied `license_key` payloads are
+ verified.** The route was registered on the bare router
+ with a "legacy / no auth for backward compatibility"
+ comment; anyone reachable on the Portal could hit it,
+ write rows into the orgs table, mint license keys, and
+ overwrite Secrets Manager entries. Two paired fixes close
+ the gap: the route now lives under the admin subrouter
+ that runs the admin auth middleware (API key required in
+ SaaS production; optional otherwise), and when the request
+ supplies `license_key` the handler validates the Ed25519
+ signature, expiry, and signed org/tier match before
+ accepting. The signed payload's `expires_at` and
+ `max_nodes` win over the request body — the body cannot
+ widen what the license actually grants.
 
 ## [7.1.1] - 2026-04-19
 
@@ -1534,77 +1562,77 @@ MCP JSON-RPC surfaces.
 ### Fixed
 
 - **MCP check-input responses now carry richer context.** Block responses
-  include `decision_id`, `risk_level`, `policy_matches`, and
-  `override_available`/`override_existing_id` when the caller provides
-  `X-User-Email`. Previously the agent returned only the legacy
-  `allowed`/`block_reason`/`policies_evaluated` trio, so plugins could
-  not surface a useful reason on a block or offer an override CTA.
+ include `decision_id`, `risk_level`, `policy_matches`, and
+ `override_available`/`override_existing_id` when the caller provides
+ `X-User-Email`. Previously the agent returned only the legacy
+ `allowed`/`block_reason`/`policies_evaluated` trio, so plugins could
+ not surface a useful reason on a block or offer an override CTA.
 - **`explainDecision` resolves MCP-path decisions.** MCP
-  check-input/check-output decisions are now dual-written to
-  `audit_logs` with the decision id in `policy_details`, so the
-  existing explain endpoint returns the full `DecisionExplanation`
-  rather than 404.
+ check-input/check-output decisions are now dual-written to
+ `audit_logs` with the decision id in `policy_details`, so the
+ existing explain endpoint returns the full `DecisionExplanation`
+ rather than 404.
 - **MCP check-input now consults active overrides.** Previously the
-  handler surfaced `override_available: true` but still returned
-  `allowed: false` because override enforcement was wired into the WCP
-  path only. A flip-to-allow emits an `override_used` audit event
-  mirroring the WCP path.
+ handler surfaced `override_available: true` but still returned
+ `allowed: false` because override enforcement was wired into the WCP
+ path only. A flip-to-allow emits an `override_used` audit event
+ mirroring the WCP path.
 - **Audit search tolerates NULL columns.** `SearchAuditLogs` previously
-  aborted the row scan on a NULL `provider`/`model`/`error_message`/`cost`/
-  `response_time_ms`/`tokens_used` and dropped the entire result set,
-  hiding every Plugin Batch 1 audit row. The scan now uses nullable
-  types and maps to zero values for the caller's `AuditEntry`.
+ aborted the row scan on a NULL `provider`/`model`/`error_message`/`cost`/
+ `response_time_ms`/`tokens_used` and dropped the entire result set,
+ hiding every Plugin Batch 1 audit row. The scan now uses nullable
+ types and maps to zero values for the caller's `AuditEntry`.
 - **Cache invalidation on override create matches WCP cache shape.**
-  `invalidateCachedDeniedDecisions` previously matched the policy UUID
-  against `workflow_steps.policies_matched[].policy_id`, but the WCP
-  adapter writes the policy NAME in that slot. The helper now resolves
-  UUID + slug + name synonyms and matches any of them, so overrides
-  actually flush the WCP cache.
+ `invalidateCachedDeniedDecisions` previously matched the policy UUID
+ against `workflow_steps.policies_matched[].policy_id`, but the WCP
+ adapter writes the policy NAME in that slot. The helper now resolves
+ UUID + slug + name synonyms and matches any of them, so overrides
+ actually flush the WCP cache.
 - **WCP-path overrides now apply.**
-  `DatabaseDynamicPolicyEngine.EvaluateDynamicPolicies` (used by the WCP
-  step gate) now populates `result.AppliedPoliciesDetail`. Previously
-  only the in-memory engine did, so `ApplyOverrideToResult` iterated an
-  empty slice on the WCP path and no override ever flipped a deny.
+ `DatabaseDynamicPolicyEngine.EvaluateDynamicPolicies` (used by the WCP
+ step gate) now populates `result.AppliedPoliciesDetail`. Previously
+ only the in-memory engine did, so `ApplyOverrideToResult` iterated an
+ empty slice on the WCP path and no override ever flipped a deny.
 - **MCP `tools/call` path now emits richer-context on blocks.** Same
-  fix as the HTTP check-input path, mirrored into `mcpToolCheckPolicy`
-  and `mcpToolCheckOutput`. Pre-fix, Claude Code / Cursor / Codex
-  plugins (which use the MCP server's JSON-RPC surface rather than the
-  HTTP endpoint OpenClaw uses) saw a terse "blocked" string with no
-  `decision_id` / `risk_level` / `policy_matches` / `override_available`.
-  Override apply + audit dual-write are now mirrored identically across
-  both surfaces.
+ fix as the HTTP check-input path, mirrored into `mcpToolCheckPolicy`
+ and `mcpToolCheckOutput`. Pre-fix, Claude Code / Cursor / Codex
+ plugins (which use the MCP server's JSON-RPC surface rather than the
+ HTTP endpoint OpenClaw uses) saw a terse "blocked" string with no
+ `decision_id` / `risk_level` / `policy_matches` / `override_available`.
+ Override apply + audit dual-write are now mirrored identically across
+ both surfaces.
 - **`createOverride` / `listOverrides` accept UUID *or* slug/name for
-  `policy_id`.** Plugins read `policy_id` from a check-input response's
-  `policy_matches[]` (where static policies carry the slug, not the
-  UUID) and pass that straight to the override endpoints. Pre-fix, the
-  orchestrator required the UUID and returned 404 for slug callers.
-  `policyRiskAndOverride` now resolves either and stores the canonical
-  UUID in `policy_overrides.policy_id`.
+ `policy_id`.** Plugins read `policy_id` from a check-input response's
+ `policy_matches[]` (where static policies carry the slug, not the
+ UUID) and pass that straight to the override endpoints. Pre-fix, the
+ orchestrator required the UUID and returned 404 for slug callers.
+ `policyRiskAndOverride` now resolves either and stores the canonical
+ UUID in `policy_overrides.policy_id`.
 - **`DatabaseDynamicPolicyEngine` schema covers the new columns.**
-  `dbPolicyEngineSchema()` now includes `id UUID`, `risk_level`, and
-  `allow_override` so integration tests and fresh clusters match
-  migration 070's shape.
+ `dbPolicyEngineSchema()` now includes `id UUID`, `risk_level`, and
+ `allow_override` so integration tests and fresh clusters match
+ migration 070's shape.
 - **`policy_override_repository.policyRiskAndOverride` returns the
-  canonical UUID.** Callers can no longer store the user-supplied
-  value (which may be a slug) in `policy_overrides.policy_id`.
+ canonical UUID.** Callers can no longer store the user-supplied
+ value (which may be a slug) in `policy_overrides.policy_id`.
 
 ### Changed
 
 - **Workflow handler `getUserID` falls back to `X-User-Email`.** Matches
-  the Plugin Batch 1 convention of per-user identity via the email
-  header, so WCP workflows capture per-user scoping and the cache
-  invalidation query finds the right rows.
+ the Plugin Batch 1 convention of per-user identity via the email
+ header, so WCP workflows capture per-user scoping and the cache
+ invalidation query finds the right rows.
 
 ### Internal
 
 - New `platform/agent/mcp_richer_context.go` helper module.
 - New install-E2E scenario scripts at
-  `tests/e2e/plugin-batch-1/{openclaw,claude,cursor,codex}-install/`
-  covering the post-release "install from npm / GitHub release and use
-  as a real user would" layer that caught these ten gaps across both
-  the HTTP check-input path and the MCP tools/call path.
-  `PLUGIN_E2E_TESTING_WORKFLOW.md` now mandates both paths as separate
-  install-E2E layers for every future plugin batch.
+ the e2e test suite
+ covering the post-release "install from npm / GitHub release and use
+ as a real user would" layer that caught these ten gaps across both
+ the HTTP check-input path and the MCP tools/call path.
+ `PLUGIN_E2E_TESTING_WORKFLOW.md` now mandates both paths as separate
+ install-E2E layers for every future plugin batch.
 
 ---
 
@@ -1618,109 +1646,109 @@ Plugin Batch 1 — Governed Overrides & Explainability.
 #### Workflow State Management & HITL Enhancement
 
 - **Execution boundary semantics** — Step gate decisions are now idempotent
-  by default. Calling the same `(workflow_id, step_id)` returns the cached
-  decision without re-running the policy evaluator. Pass
-  `retry_policy: "reevaluate"` to force a fresh evaluation when external state
-  has changed. Responses include `cached` (boolean) and `decision_source`
-  ("fresh" or "cached") so callers always know the provenance of the decision.
+ by default. Calling the same `(workflow_id, step_id)` returns the cached
+ decision without re-running the policy evaluator. Pass
+ `retry_policy: "reevaluate"` to force a fresh evaluation when external state
+ has changed. Responses include `cached` (boolean) and `decision_source`
+ ("fresh" or "cached") so callers always know the provenance of the decision.
 
 - **Workflow checkpoints** — Every step gate evaluation automatically creates
-  a checkpoint capturing the decision, policy context, and full step metadata
-  (model, provider, tool context, actor identity). Checkpoints are
-  governance-aware resume boundaries, not arbitrary snapshots.
-  - Community: list checkpoints via `GET /api/v1/workflows/{id}/checkpoints`
-  - Evaluation: resume from last checkpoint via `POST /api/v1/workflows/{id}/checkpoints/resume`
-  - Enterprise: resume from any checkpoint via `POST /api/v1/workflows/{id}/checkpoints/{id}/resume`
+ a checkpoint capturing the decision, policy context, and full step metadata
+ (model, provider, tool context, actor identity). Checkpoints are
+ governance-aware resume boundaries, not arbitrary snapshots.
+ - Community: list checkpoints via `GET /api/v1/workflows/{id}/checkpoints`
+ - Evaluation: resume from last checkpoint via `POST /api/v1/workflows/{id}/checkpoints/resume`
+ - Enterprise: resume from any checkpoint via `POST /api/v1/workflows/{id}/checkpoints/{id}/resume`
 
 - **Risk-tiered approval routing** — HITL approval requests now carry a
-  severity level (critical, high, medium, low) derived from the triggering
-  policy's action config or the policy evaluation risk score. When multiple
-  policies match, the highest severity wins. The HITL queue can be filtered
-  by severity.
-  - Enterprise: auto-approve low-risk actions after a configurable delay,
-    escalate critical-risk actions past SLA threshold. Configure via
-    `AXONFLOW_RISK_TIER_ENABLED`, `AXONFLOW_RISK_TIER_ORG_ID`,
-    `AXONFLOW_LOW_AUTO_APPROVE_DELAY_MIN`, `AXONFLOW_CRITICAL_ESCALATION_SLA_MIN`.
+ severity level (critical, high, medium, low) derived from the triggering
+ policy's action config or the policy evaluation risk score. When multiple
+ policies match, the highest severity wins. The HITL queue can be filtered
+ by severity.
+ - Enterprise: auto-approve low-risk actions after a configurable delay,
+ escalate critical-risk actions past SLA threshold. Configure via
+ `AXONFLOW_RISK_TIER_ENABLED`, `AXONFLOW_RISK_TIER_ORG_ID`,
+ `AXONFLOW_LOW_AUTO_APPROVE_DELAY_MIN`, `AXONFLOW_CRITICAL_ESCALATION_SLA_MIN`.
 
 - **Deterministic approval deduplication** — WCP approval creation uses a
-  deterministic UUID derived from `(workflow_id, step_id)` combined with
-  `ON CONFLICT` to guarantee exactly one approval per execution boundary,
-  even under concurrent first-time calls.
+ deterministic UUID derived from `(workflow_id, step_id)` combined with
+ `ON CONFLICT` to guarantee exactly one approval per execution boundary,
+ even under concurrent first-time calls.
 
 #### Plugin Batch 1 — Governed Overrides & Explainability
 
 - **Governed session overrides** — users can grant themselves a time-bounded,
-  audit-logged override on a policy that would otherwise deny, closing the
-  dev-mode UX gap without weakening governance. TTL is clamped server-side
-  (default 60 minutes, hard cap 24 hours, zero for critical-risk policies).
-  A free-text justification is mandatory on every override. Four new audit
-  event types record the full lifecycle: `override_created`, `override_used`,
-  `override_expired`, `override_revoked`. New endpoints: `POST /api/v1/overrides`,
-  `GET /api/v1/overrides`, `GET /api/v1/overrides/{id}`,
-  `DELETE /api/v1/overrides/{id}`.
+ audit-logged override on a policy that would otherwise deny, closing the
+ dev-mode UX gap without weakening governance. TTL is clamped server-side
+ (default 60 minutes, hard cap 24 hours, zero for critical-risk policies).
+ A free-text justification is mandatory on every override. Four new audit
+ event types record the full lifecycle: `override_created`, `override_used`,
+ `override_expired`, `override_revoked`. New endpoints: `POST /api/v1/overrides`,
+ `GET /api/v1/overrides`, `GET /api/v1/overrides/{id}`,
+ `DELETE /api/v1/overrides/{id}`.
 - **Policy risk level + override flag** — every policy now carries an explicit
-  `risk_level` (`low` | `medium` | `high` | `critical`) and an
-  `allow_override` boolean. The combination is enforced as a contract: a
-  database trigger forces `allow_override=false` whenever `risk_level=critical`,
-  and the override creation endpoint rejects with 403 if either condition
-  forbids the override. Existing policies are migrated with sensible defaults
-  (dangerous commands, RCE, and privilege-escalation categories set to
-  `critical`; SQLi, prompt injection, and secret leaks set to `high`).
+ `risk_level` (`low` | `medium` | `high` | `critical`) and an
+ `allow_override` boolean. The combination is enforced as a contract: a
+ database trigger forces `allow_override=false` whenever `risk_level=critical`,
+ and the override creation endpoint rejects with 403 if either condition
+ forbids the override. Existing policies are migrated with sensible defaults
+ (dangerous commands, RCE, and privilege-escalation categories set to
+ `critical`; SQLi, prompt injection, and secret leaks set to `high`).
 - **Richer approval context** — `PolicyMatch` now includes `risk_level`,
-  `allow_override`, `matched_rule`, and `policy_description` fields. Plugins
-  can surface a structured reason on every block rather than a terse string.
-  Existing consumers are unaffected — all new fields use `omitempty`.
+ `allow_override`, `matched_rule`, and `policy_description` fields. Plugins
+ can surface a structured reason on every block rather than a terse string.
+ Existing consumers are unaffected — all new fields use `omitempty`.
 - **Explain-on-demand endpoint** — `GET /api/v1/decisions/{id}/explain`
-  returns a stable `DecisionExplanation` payload: matched policies with
-  descriptions, decision + reason, risk level, override availability and any
-  existing active override, historical hit count for the same rule in the
-  caller's rolling 24-hour session window, and a tool signature. Authorization
-  is scoped to the decision owner or same-tenant callers. Payload shape is
-  frozen — additive fields only until a major version bump.
+ returns a stable `DecisionExplanation` payload: matched policies with
+ descriptions, decision + reason, risk level, override availability and any
+ existing active override, historical hit count for the same rule in the
+ caller's rolling 24-hour session window, and a tool signature. Authorization
+ is scoped to the decision owner or same-tenant callers. Payload shape is
+ frozen — additive fields only until a major version bump.
 - **Audit search filter parity** — `POST /api/v1/audit/search` accepts three
-  new optional filters: `decision_id` for explain flows, `policy_name` for
-  "what did this policy block" queries, and `override_id` to reconstruct the
-  full lifecycle of a single override. Existing filters remain unchanged.
+ new optional filters: `decision_id` for explain flows, `policy_name` for
+ "what did this policy block" queries, and `override_id` to reconstruct the
+ full lifecycle of a single override. Existing filters remain unchanged.
 - **MCP tool surface** — `explain_decision`, `create_override`, `delete_override`,
-  and `list_overrides` are now exposed as MCP tools on the agent's MCP server,
-  alongside the existing `check_policy` / `check_output` / `audit_tool_call`
-  / `list_policies` / `get_policy_stats` / `search_audit_events` tools. Agents
-  running in the plugin ecosystem can drive the full override lifecycle and
-  decision explainability without leaving the MCP surface.
+ and `list_overrides` are now exposed as MCP tools on the agent's MCP server,
+ alongside the existing `check_policy` / `check_output` / `audit_tool_call`
+ / `list_policies` / `get_policy_stats` / `search_audit_events` tools. Agents
+ running in the plugin ecosystem can drive the full override lifecycle and
+ decision explainability without leaving the MCP surface.
 
 ### Changed
 
 - **Step gate upsert** — Re-evaluation (`retry_policy: "reevaluate"`) now
-  updates all step metadata (step_name, step_type, step_input, model,
-  provider) in the persisted step record, not just the decision columns.
+ updates all step metadata (step_name, step_type, step_input, model,
+ provider) in the persisted step record, not just the decision columns.
 
 - **Concurrent safety** — After upserting a step decision, the service reads
-  back the persisted row to ensure the response matches what actually landed
-  in the database. If a concurrent call won the race with a different
-  decision, the persisted (winning) decision is returned.
+ back the persisted row to ensure the response matches what actually landed
+ in the database. If a concurrent call won the race with a different
+ decision, the persisted (winning) decision is returned.
 
 - **Feature matrix** — Updated with checkpoint and risk-tiered approval rows
-  across Community, Evaluation, and Enterprise tiers.
+ across Community, Evaluation, and Enterprise tiers.
 
 - `DynamicPolicy` and `StaticPolicy` structs gained `risk_level` and
-  `allow_override` fields. Policy repositories persist them via migration 070.
+ `allow_override` fields. Policy repositories persist them via migration 070.
 
 ### Fixed
 
 - **Severity was hardcoded** — HITL approval severity was always set to
-  "high" regardless of the triggering policy's risk level. Now derived from
-  the policy's `require_approval` action config or the evaluation risk score.
+ "high" regardless of the triggering policy's risk level. Now derived from
+ the policy's `require_approval` action config or the evaluation risk score.
 
 ### Database
 
-- Migration `069_*` — workflow state management (#1607).
+- Migration `069_*` — workflow state management.
 - Migration `070_policy_batch1_risk_and_override_extensions.sql` adds
-  `risk_level` and `allow_override` columns (with seeded defaults per category)
-  to `static_policies` and `dynamic_policies`; extends the existing
-  `policy_overrides` table with `tool_signature`, `revoked_at`, `revoked_by`;
-  adds `audit_logs` indexes on `decision_id` for the new filters; installs a
-  trigger that enforces the critical-risk no-override invariant at the
-  database level.
+ `risk_level` and `allow_override` columns (with seeded defaults per category)
+ to `static_policies` and `dynamic_policies`; extends the existing
+ `policy_overrides` table with `tool_signature`, `revoked_at`, `revoked_by`;
+ adds `audit_logs` indexes on `decision_id` for the new filters; installs a
+ trigger that enforces the critical-risk no-override invariant at the
+ database level.
 
 ### Plugin ecosystem
 
@@ -1735,25 +1763,25 @@ consumption of the new override, explain, and audit-search endpoints.
 ### Fixed
 
 - **Authentication on all endpoints** — Unified auth handling across gateway,
-  MCP, proxy, and API routes. Fixes 401 errors on community-saas (try.getaxonflow.com)
-  for gateway pre-check, audit, proxy, and MCP endpoints. Proxy routes
-  (dynamic policies, cost controls) were previously inaccessible in
-  community-saas mode.
+ MCP, proxy, and API routes. Fixes 401 errors on community-saas (try.getaxonflow.com)
+ for gateway pre-check, audit, proxy, and MCP endpoints. Proxy routes
+ (dynamic policies, cost controls) were previously inaccessible in
+ community-saas mode.
 - **Community mode tenant isolation** — Requests in community mode now
-  preserve per-tenant scoping. Previously all requests collapsed to a
-  single synthetic client, mixing audit and policy data across tenants.
+ preserve per-tenant scoping. Previously all requests collapsed to a
+ single synthetic client, mixing audit and policy data across tenants.
 - **Telemetry tracking** — All authenticated requests (including MCP and
-  JSON-RPC sessions) now correctly record telemetry in community-saas mode.
+ JSON-RPC sessions) now correctly record telemetry in community-saas mode.
 - **Audit identity** — Audit records now use the authenticated client identity
-  instead of trusting the request body, preventing cross-tenant attribution.
+ instead of trusting the request body, preventing cross-tenant attribution.
 - **MCP server DB auth** — MCP JSON-RPC handler now validates clients
-  registered via database, not just the in-memory whitelist.
+ registered via database, not just the in-memory whitelist.
 - **Example credentials** — 139 example files updated to read auth credentials
-  from environment variables, fixing failures on authenticated servers.
+ from environment variables, fixing failures on authenticated servers.
 - **Deploy workflow** — Stack discovery excludes auxiliary services when
-  deploying community-saas.
+ deploying community-saas.
 - **Next.js security update** — Customer portal updated to 16.2.3
-  (GHSA-q4gf-8mx6-v5v3).
+ (GHSA-q4gf-8mx6-v5v3).
 
 ## [7.0.0] - 2026-04-09
 
@@ -1762,48 +1790,48 @@ consumption of the new override, explain, and audit-search endpoints.
 #### Changed — Default detection actions relaxed
 
 - **Breaking:** the default `PII_ACTION` is now `warn` (previously `redact`). SQLi and
-  sensitive-data categories also default to `warn`. Compliance categories (HIPAA, GDPR,
-  PCI, RBI, MAS FEAT) default to `log`. Only unambiguously dangerous patterns — reverse
-  shells, `rm -rf /`, SSRF to `169.254.169.254`, `/etc/shadow`, credential files — block
-  by default.
+ sensitive-data categories also default to `warn`. Compliance categories (HIPAA, GDPR,
+ PCI, RBI, MAS FEAT) default to `log`. Only unambiguously dangerous patterns — reverse
+ shells, `rm -rf /`, SSRF to `169.254.169.254`, `/etc/shadow`, credential files — block
+ by default.
 
-  **Why this is a major version bump:** upgrading without explicit config reduces enforcement.
-  A governance product silently weakening default protections is exactly the kind of change
-  that warrants a major version signal.
+ **Why this is a major version bump:** upgrading without explicit config reduces enforcement.
+ A governance product silently weakening default protections is exactly the kind of change
+ that warrants a major version signal.
 
-  **Migration path:**
-  - To restore previous behavior: set `AXONFLOW_PROFILE=strict` or `PII_ACTION=redact`
-  - To keep new defaults: no action needed
-  - Explicit `*_ACTION` env vars are unaffected — they always take highest precedence
+ **Migration path:**
+ - To restore previous behavior: set `AXONFLOW_PROFILE=strict` or `PII_ACTION=redact`
+ - To keep new defaults: no action needed
+ - Explicit `*_ACTION` env vars are unaffected — they always take highest precedence
 
 - **Database migration for system-default policies.** A migration rewrites system-default
-  policies to match the new defaults. User-created and tenant-owned policies are untouched.
-  An accompanying down migration restores the previous strict defaults.
+ policies to match the new defaults. User-created and tenant-owned policies are untouched.
+ An accompanying down migration restores the previous strict defaults.
 
 ### Community
 
 #### Added — Community SaaS evaluation server (try.getaxonflow.com)
 - `DEPLOYMENT_MODE=community-saas` — new deployment mode for shared evaluation server.
-  Requires self-registration via `POST /api/v1/register`. Rate-limited: 20 req/min +
-  500 req/day per tenant. Ollama is the only LLM provider. No license required.
+ Requires self-registration via `POST /api/v1/register`. Rate-limited: 20 req/min +
+ 500 req/day per tenant. Ollama is the only LLM provider. No license required.
 - `POST /api/v1/register` — generates UUID tenant_id (prefixed `cs_`) and one-time-display
-  secret (bcrypt-hashed at cost 12). Credentials expire after 30 days. IP-rate-limited
-  to prevent registration abuse (5/hour/IP).
+ secret (bcrypt-hashed at cost 12). Credentials expire after 30 days. IP-rate-limited
+ to prevent registration abuse (5/hour/IP).
 - Migration 068: `community_saas_registrations` + `community_saas_daily_usage` tables +
-  `increment_csaas_daily()` atomic counter function for daily rate limiting.
+ `increment_csaas_daily()` atomic counter function for daily rate limiting.
 - Community SaaS usage telemetry to dedicated DynamoDB table (`community-saas-telemetry-events`).
-  Records endpoint, method, status_code, platform version, correlation_id per request.
-  Never records request content, query params, or IP addresses. 30-day TTL, PITR enabled,
-  server-side encryption enabled.
+ Records endpoint, method, status_code, platform version, correlation_id per request.
+ Never records request content, query params, or IP addresses. 30-day TTL, PITR enabled,
+ server-side encryption enabled.
 - Ollama EC2 infrastructure template (`infrastructure/cloudformation/ollama-ec2.yaml`)
-  with security-group-scoped port 11434, SSM management, GPU driver auto-install for
-  g4dn/g5 instance types.
+ with security-group-scoped port 11434, SSM management, GPU driver auto-install for
+ g4dn/g5 instance types.
 - Dedicated community CloudFormation template (`community-saas-ecs.yaml`) — stripped-down
-  stack with Agent, Orchestrator, Prometheus, and Grafana only. No Customer Portal,
-  no Portal UI, no enterprise connectors. Deploy script auto-selects the right template
-  based on `deployment_mode` in the environment config.
+ stack with Agent, Orchestrator, Prometheus, and Grafana only. No Customer Portal,
+ no Portal UI, no enterprise connectors. Deploy script auto-selects the right template
+ based on `deployment_mode` in the environment config.
 - Docker Compose overlay (`docker-compose.community-saas.yml`) for local E2E testing with
-  bundled Ollama service and automatic model pull.
+ bundled Ollama service and automatic model pull.
 - `community-saas` added to deploy-application and deploy-platform workflow dropdowns.
 - Checkpoint telemetry accepts `community-saas` as a valid `endpoint_type` value.
 
@@ -1866,14 +1894,14 @@ consumption of the new override, explain, and audit-search endpoints.
 - **Orchestrator workflow tenant/org ownership checks.** `platform/orchestrator/workflow_control/service.go` — **nine** service methods now enforce tenant/org ownership before acting on a workflow: `GetWorkflow`, `StepGate`, `MarkStepCompleted`, `ApproveStep`, `RejectStep`, `ResumeWorkflow`, `CompleteWorkflow`, `FailWorkflow`, `AbortWorkflow`. Previously `GetWorkflow` (called from `GET /api/v1/workflows/{id}`) did no tenant/org filtering — any authenticated client that knew a workflow ID could fetch any workflow (classic IDOR). The same gap existed on every other workflow state transition: an attacker could approve, reject, resume, complete, fail, or abort any other tenant's workflow, or inject fake cost/token metrics into another tenant's audit trail by calling `MarkStepCompleted`. All matching HTTP handlers in `handlers.go` extract tenant/org from request headers (`X-Tenant-ID`, `X-Org-ID`) and pass them through. Callers in `run.go` (MAP confirm mode) and `unified_execution_handler.go` also updated. `ListWorkflows` was already filtering correctly.
 
 - **Unified execution handler `checkTenantOwnership` hardened.** `platform/orchestrator/unified_execution_handler.go` previously had permissive fallbacks: requests without `X-Tenant-ID` were allowed through, and executions without a `tenant_id` were accessible to any caller. Both were cross-tenant data leak vectors. The check now:
-  - Requires **both** `X-Tenant-ID` and `X-Org-ID` on every request (401 if missing).
-  - Rejects executions that lack either `tenant_id` or `org_id` (404).
-  - Requires exact match on both fields (404 on any mismatch).
-  - All mismatch responses return 404 (not 403) to prevent cross-tenant existence leakage.
+ - Requires **both** `X-Tenant-ID` and `X-Org-ID` on every request (401 if missing).
+ - Rejects executions that lack either `tenant_id` or `org_id` (404).
+ - Requires exact match on both fields (404 on any mismatch).
+ - All mismatch responses return 404 (not 403) to prevent cross-tenant existence leakage.
 
 #### Added — Customer portal multi-tenant identity
 
-- **`tenant_id` column on `user_sessions`** (migration 065). The customer portal previously aliased `tenantID := orgID` in `auth.go` with the comment *"organizations table doesn't have tenant_id column"*. That collapsed two concepts and prevented a single portal org from representing multiple tenants (prod, staging, dev). The new column lets a portal session track which tenant within an org the user is currently viewing.
+- **`tenant_id` column on `user_sessions`** (migration 065). The customer portal previously aliased `tenantID:= orgID` in `auth.go` with the comment *"organizations table doesn't have tenant_id column"*. That collapsed two concepts and prevented a single portal org from representing multiple tenants (prod, staging, dev). The new column lets a portal session track which tenant within an org the user is currently viewing.
 
 - **`portal_default_tenant_id()` SQL helper** (migration 065). Resolves the default tenant for an org: prefers `tenant_id = org_id` (canonical default) and falls back to the oldest tenant in the `tenants` table, then to `org_id` itself for community deployments. Used at login time to populate the session.
 
@@ -1890,9 +1918,9 @@ consumption of the new override, explain, and audit-search endpoints.
 - **`api/orchestrator_proxy.go`** forwards `X-Tenant-ID` from `session.TenantID` (the currently-selected tenant within the org) and `X-Client-ID` from the tenant identifier — previously both collapsed to `session.OrgID`. `X-Org-ID` continues to carry `session.OrgID`. A warning log fires when `session.TenantID` is empty (legacy session, unexpected after migration 065).
 
 - **`ORG_ID` environment variable role clarified.** Previously documented as "canonical org identity (single source of truth)", the env var is now understood as:
-  - **Stack-level deployment label** (used in logs, metrics, startup validation against the stack's own boot license)
-  - **Community mode fallback** (when no client license is present)
-  - **NOT a routing key** for per-request multi-tenant data scoping — that comes from the authenticated client license
+ - **Stack-level deployment label** (used in logs, metrics, startup validation against the stack's own boot license)
+ - **Community mode fallback** (when no client license is present)
+ - **NOT a routing key** for per-request multi-tenant data scoping — that comes from the authenticated client license
 
 #### Fixed — Deployment tooling
 
@@ -1958,7 +1986,7 @@ consumption of the new override, explain, and audit-search endpoints.
 - **PII detection modes example** (`examples/pii-detection/http/pii-modes.sh`). Tests request-side and response-side PII with ISO timestamp false positive regression test.
 - **Proxy routes** for MCP processing, MAP cost estimation, unified execution cancel, legacy policy reads.
 - **Runtime table creation moved to migrations.** `audit_logs`, `dynamic_policies`, `policy_metrics`, `media_governance_config`.
-- **ADR-041**: Organization and Tenant Identity Separation.
+- **Organization and Tenant Identity Separation.
 - **Setup script repo override.** `COMMUNITY_REPO` environment variable in `setup-e2e-testing.sh` allows pointing community-mode testing at any repo path.
 
 #### Changed
@@ -1999,7 +2027,7 @@ consumption of the new override, explain, and audit-search endpoints.
 - **Python 3.10+ compatibility in test scripts.** `test-all.sh` and `demo.sh` now respect `PYTHON` env var.
 - **Proxy community mode tenant injection.** Agent proxy now derives tenant from Basic auth `clientId` (or defaults to `community`).
 - **`AXONFLOW_CLIENT_SECRET` not exported in evaluation mode.** Setup script now exports both `LICENSE_KEY` and `CLIENT_SECRET`.
-- **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from .env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
+- **Enterprise setup reused stale `DEPLOYMENT_MODE=evaluation` from.env.** `start_enterprise()` now explicitly sets `DEPLOYMENT_MODE=enterprise`.
 - **Community mode `org_id` defaulted to `"demo-org"`.** Changed to `getDeploymentOrgID()` (resolves to `"local-dev-org"` by default).
 
 ### Enterprise
@@ -2107,9 +2135,9 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Added
 
-- **Policy conflict detection** (#1062): New `POST /api/v1/policies/conflicts` endpoint analyzes active policies for contradictions (`contradictory_action`), shadows, and redundancies. Helps teams validate policy configurations before deploying changes. Available at Evaluation tier and above, sharing the simulation rate limiter.
+- **Policy conflict detection**: New `POST /api/v1/policies/conflicts` endpoint analyzes active policies for contradictions (`contradictory_action`), shadows, and redundancies. Helps teams validate policy configurations before deploying changes. Available at Evaluation tier and above, sharing the simulation rate limiter.
 - **Policy simulation examples**: 8-step deterministic E2E examples in HTTP/cURL, Python, TypeScript, Go, and Java demonstrating simulate, impact report, and conflict detection workflows.
-- **LangGraph tool output enforcement example** (#1413): Python example demonstrating `tool_output_wrapper()` for policy enforcement on local `@tool` outputs in LangGraph workflows.
+- **LangGraph tool output enforcement example**: Python example demonstrating `tool_output_wrapper()` for policy enforcement on local `@tool` outputs in LangGraph workflows.
 - **LangGraph 1-line wrapper example**: New `langgraph_wrapper_example.py` demonstrating `wrap_langgraph()` for transparent governance of compiled LangGraph StateGraphs without modifying the graph definition.
 - **Per-tool governance in HTTP example**: `workflow-control.sh` now uses the `tool_context` field in step gate requests for tool_call steps, demonstrating structured tool-level policy evaluation.
 
@@ -2138,9 +2166,9 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Fixed
 
-- **Cross-tenant dynamic policy cache collision** (#1410): Dynamic policy cache was keyed by policy name, causing policies with the same name across different tenants to silently overwrite each other. In multi-tenant deployments, this could result in step gate evaluations using the wrong tenant's policy or skipping policies entirely due to tenant mismatch. Cache key changed from `name` to `policy_id` to ensure all policies coexist regardless of naming. Includes `GetPolicy()` fallback search by name field for backward compatibility.
-- **step_input/tool_input field resolution in dynamic policies** (#1408): Dynamic policy conditions referencing `step_input.*` and `tool_input.*` fields now resolve correctly during step gate evaluation. Previously these fields were not extracted from the policy evaluation context, causing conditions like `step_input.query contains "DROP"` to never match.
-- **Step gate policy matching for step_input fields** (#1409): Fixed policy matching logic to correctly evaluate conditions against step_input fields in the dynamic policy engine. Added comprehensive test coverage for step_input and tool_input condition matching.
+- **Cross-tenant dynamic policy cache collision**: Dynamic policy cache was keyed by policy name, causing policies with the same name across different tenants to silently overwrite each other. In multi-tenant deployments, this could result in step gate evaluations using the wrong tenant's policy or skipping policies entirely due to tenant mismatch. Cache key changed from `name` to `policy_id` to ensure all policies coexist regardless of naming. Includes `GetPolicy()` fallback search by name field for backward compatibility.
+- **step_input/tool_input field resolution in dynamic policies**: Dynamic policy conditions referencing `step_input.*` and `tool_input.*` fields now resolve correctly during step gate evaluation. Previously these fields were not extracted from the policy evaluation context, causing conditions like `step_input.query contains "DROP"` to never match.
+- **Step gate policy matching for step_input fields**: Fixed policy matching logic to correctly evaluate conditions against step_input fields in the dynamic policy engine. Added comprehensive test coverage for step_input and tool_input condition matching.
 
 ### Enterprise
 
@@ -2153,7 +2181,7 @@ consumption of the new override, explain, and audit-search endpoints.
 - **Portal proxy missing headers**: Customer Portal orchestrator proxy now forwards `X-Org-ID` and `X-Client-ID` headers from session context, fixing 401 errors on SEBI compliance endpoints and other handlers that require these headers.
 - **SEBI audit export integer-only org IDs**: SEBI audit export service migrated from `int orgID` to `string tenantID` for consistency with the rest of the platform. Portal tenants with string IDs (e.g., `travel-us`) now work correctly with SEBI endpoints.
 - **SEBI org name lookup**: `getOrgName` now queries `org_id` column first (matching the varchar tenant ID from portal), with fallback to numeric `id` for backward compatibility.
-- **Compliance page crash on EU AI Act data**: Fixed `StatusBadge` component crash when `status` is undefined. Added null-safety guard. Also fixed `getEUAIActConformity()` API function to transform the backend list response (`{assessments: [...]}`) into the single-object shape (`{status, risk_level, last_assessment, requirements}`) expected by the compliance page UI.
+- **Compliance page crash on EU AI Act data**: Fixed `StatusBadge` component crash when `status` is undefined. Added null-safety guard. Also fixed `getEUAIActConformity()` API function to transform the backend list response (`{assessments: [.]}`) into the single-object shape (`{status, risk_level, last_assessment, requirements}`) expected by the compliance page UI.
 - **SCIM page smoke test false positive**: Playwright smoke test `afterEach` filter now catches browser-level "Failed to load resource: 403/404" console errors that lack endpoint URL context, preventing false failures on the SCIM settings page when SCIM provisioning is not configured.
 
 ---
@@ -2164,26 +2192,26 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Added
 
-- **Circuit breaker error auto-trip** (#1176): Upstream LLM errors (orchestrator hard failures, orchestrator-level errors, proxy 502s) now automatically trip client-scoped circuits after threshold exceeded within a sliding window. Previously, `RecordError` was implemented but not wired into the request pipeline.
-- **Sliding window for circuit breaker thresholds** (#1176): Error and policy violation counting now uses a time-windowed approach (default 5 minutes) instead of lifetime counters. Errors outside the window are automatically discarded.
-- **Per-tool governance examples** (#1243): LangGraph adapter examples for TypeScript, Go, and Java demonstrating per-tool gate checks within tools nodes.
+- **Circuit breaker error auto-trip**: Upstream LLM errors (orchestrator hard failures, orchestrator-level errors, proxy 502s) now automatically trip client-scoped circuits after threshold exceeded within a sliding window. Previously, `RecordError` was implemented but not wired into the request pipeline.
+- **Sliding window for circuit breaker thresholds**: Error and policy violation counting now uses a time-windowed approach (default 5 minutes) instead of lifetime counters. Errors outside the window are automatically discarded.
+- **Per-tool governance examples**: LangGraph adapter examples for TypeScript, Go, and Java demonstrating per-tool gate checks within tools nodes.
 - **WCP guide updated**: Workflow Control Plane documentation expanded with TypeScript, Go, and Java LangGraph adapter examples alongside Python.
 
 ### Enterprise
 
 #### Added
 
-- **Per-tenant circuit breaker thresholds** (#1176): Tenants can override global circuit breaker defaults (error threshold, violation threshold, window duration, timeout, auto-recovery) via `GET/PUT /api/v1/circuit-breaker/config`. Null fields fall back to global defaults. In-memory cache with 1-minute TTL.
-- **Circuit breaker notification fan-out** (#1176): Auto-trip events trigger notifications via webhook (HMAC-SHA256 signed), Slack (Block Kit), or PagerDuty (Events API v2). CRUD endpoints at `/api/v1/circuit-breaker/notifications`. Includes SSRF protection (private IP rejection) and retry with exponential backoff.
-- **SDK circuit breaker observability** (#1176): New methods across all 4 SDKs: `GetCircuitBreakerStatus`, `GetCircuitBreakerHistory`, `GetCircuitBreakerConfig`, `UpdateCircuitBreakerConfig`.
+- **Per-tenant circuit breaker thresholds**: Tenants can override global circuit breaker defaults (error threshold, violation threshold, window duration, timeout, auto-recovery) via `GET/PUT /api/v1/circuit-breaker/config`. Null fields fall back to global defaults. In-memory cache with 1-minute TTL.
+- **Circuit breaker notification fan-out**: Auto-trip events trigger notifications via webhook (HMAC-SHA256 signed), Slack (Block Kit), or PagerDuty (Events API v2). CRUD endpoints at `/api/v1/circuit-breaker/notifications`. Includes SSRF protection (private IP rejection) and retry with exponential backoff.
+- **SDK circuit breaker observability**: New methods across all 4 SDKs: `GetCircuitBreakerStatus`, `GetCircuitBreakerHistory`, `GetCircuitBreakerConfig`, `UpdateCircuitBreakerConfig`.
 
 #### Fixed
 
-- **Customer Portal UI fixes** (#1360, #1361, #1362, #1364): SaaS dashboard rendering, navbar overflow on long org names, graceful 404 handling, sidebar navigation cleanup, and React hooks ordering fix.
+- **Customer Portal UI fixes**: SaaS dashboard rendering, navbar overflow on long org names, graceful 404 handling, sidebar navigation cleanup, and React hooks ordering fix.
 
 #### Docs
 
-- **Customer Portal access guide** (#1355): Step-by-step guide for enterprise portal authentication, JWT setup, and role-based access.
+- **Customer Portal access guide**: Step-by-step guide for enterprise portal authentication, JWT setup, and role-based access.
 
 ---
 
@@ -2193,20 +2221,20 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Security
 
-- **Proxy route authentication** (#1340): Agent gateway now validates client credentials on all proxied `/api/v1/*` routes before forwarding to backend services. Previously, proxy routes forwarded requests without authentication.
-- **Proxy auth token hardening** (#1340): Reject static fallback proxy token when `AXONFLOW_INTERNAL_SERVICE_SECRET` is configured; only HMAC-signed tokens accepted in hardened deployments.
+- **Proxy route authentication**: Agent gateway now validates client credentials on all proxied `/api/v1/*` routes before forwarding to backend services. Previously, proxy routes forwarded requests without authentication.
+- **Proxy auth token hardening**: Reject static fallback proxy token when `AXONFLOW_INTERNAL_SERVICE_SECRET` is configured; only HMAC-signed tokens accepted in hardened deployments.
 
 #### Added
 
-- **Tool call audit endpoint** (#1260): `POST /api/v1/audit/tool-call` records non-LLM tool call audit entries (API calls, MCP executions, function invocations) for compliance tracking. Includes Basic auth enforcement and 1MB request body size limit.
-- **Audit query SDK methods** (#1260, ADR-023): `GetAuditLogsByTenant` and `SearchAuditLogs` for programmatic audit log retrieval with pagination and filtering. Supported in all 4 SDKs (v4.1.0+).
+- **Tool call audit endpoint**: `POST /api/v1/audit/tool-call` records non-LLM tool call audit entries (API calls, MCP executions, function invocations) for compliance tracking. Includes Basic auth enforcement and 1MB request body size limit.
+- **Audit query SDK methods**: `GetAuditLogsByTenant` and `SearchAuditLogs` for programmatic audit log retrieval with pagination and filtering. Supported in all 4 SDKs (v4.1.0+).
 
 #### Fixed
 
-- Allow tenant/client ID mismatch on proxy-verified requests where the Agent maps client IDs to different tenant IDs (e.g., `healthcare-demo` -> `healthcare_tenant`) (#1340)
-- AWS Marketplace CloudFormation template updated to v5.0.0 (#1339)
-- Deploy workflow resolves version from ECR instead of HEAD (#1341, #1343)
-- Migration 122 FK ordering fix + GCP secret backup docs (#1344)
+- Allow tenant/client ID mismatch on proxy-verified requests where the Agent maps client IDs to different tenant IDs (e.g., `healthcare-demo` -> `healthcare_tenant`)
+- AWS Marketplace CloudFormation template updated to v5.0.0
+- Deploy workflow resolves version from ECR instead of HEAD
+- Migration 122 FK ordering fix + GCP secret backup docs
 
 ---
 
@@ -2216,20 +2244,20 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Security
 
-- **`check-input` parameter scanning** (#1287): The `check-input` endpoint now inspects `parameters` field values individually for SQLi, PII, and compliance violations. Previously, a caller could pass a benign `statement` while embedding payloads in parameters that bypassed all policy checks. Each parameter value is scanned independently by the static policy engine; string values are scanned directly, nested objects/arrays are JSON-serialized before scanning, numeric values are converted to strings for PII/compliance detection, and boolean values are skipped.
+- **`check-input` parameter scanning**: The `check-input` endpoint now inspects `parameters` field values individually for SQLi, PII, and compliance violations. Previously, a caller could pass a benign `statement` while embedding payloads in parameters that bypassed all policy checks. Each parameter value is scanned independently by the static policy engine; string values are scanned directly, nested objects/arrays are JSON-serialized before scanning, numeric values are converted to strings for PII/compliance detection, and boolean values are skipped.
 
 #### Added
 
-- **Audit: parameter tracking in MCP query audits** (#1287): Added `parameters_hash` (SHA-256) and `parameter_count` columns to `mcp_query_audits` table for forensic analysis of check-input requests. Migration: `057_mcp_audit_parameters.sql`
-- **Dynamic policy: parameter condition fields** (#1287): Dynamic policies can now match on `parameters.<key>` (individual parameter values) and `parameter_count` (number of parameters) as condition fields
+- **Audit: parameter tracking in MCP query audits**: Added `parameters_hash` (SHA-256) and `parameter_count` columns to `mcp_query_audits` table for forensic analysis of check-input requests. Migration: `057_mcp_audit_parameters.sql`
+- **Dynamic policy: parameter condition fields**: Dynamic policies can now match on `parameters.<key>` (individual parameter values) and `parameter_count` (number of parameters) as condition fields
 
 ### Enterprise
 
 #### Added
 
-- **Execution Timeline page** (#1329): New customer portal page showing unified MAP and WCP execution history with real-time status, step-level drill-down, cost tracking, and policy decision visibility. Supports filtering by execution type and status, pagination, and keyboard-accessible expandable rows.
-- **HITL Approval Flow Dashboard** (#1330): New customer portal page for human-in-the-loop approval queue management. Displays pending approval steps with workflow context, policy triggers, and matched policies. Supports approve/reject with mandatory justification, expandable detail panels with step input inspection, and real-time badge count polling in navigation. Migration `058_approval_justification.sql` adds `approval_comment` column to `workflow_steps`.
-- **Enterprise portal documentation** (#1331): Added enterprise docs for Execution Timeline and Approval Dashboard. Fixed OpenAPI spec paths and added `minLength` constraints on approval comment/reason fields.
+- **Execution Timeline page**: New customer portal page showing unified MAP and WCP execution history with real-time status, step-level drill-down, cost tracking, and policy decision visibility. Supports filtering by execution type and status, pagination, and keyboard-accessible expandable rows.
+- **HITL Approval Flow Dashboard**: New customer portal page for human-in-the-loop approval queue management. Displays pending approval steps with workflow context, policy triggers, and matched policies. Supports approve/reject with mandatory justification, expandable detail panels with step input inspection, and real-time badge count polling in navigation. Migration `058_approval_justification.sql` adds `approval_comment` column to `workflow_steps`.
+- **Enterprise portal documentation**: Added enterprise docs for Execution Timeline and Approval Dashboard. Fixed OpenAPI spec paths and added `minLength` constraints on approval comment/reason fields.
 
 ---
 
@@ -2239,26 +2267,26 @@ consumption of the new override, explain, and audit-search endpoints.
 
 #### Breaking Changes
 
-- **Removed `total_steps` from `CreateWorkflowRequest` API** (#1318): The field was deprecated since Platform v4.5.0. Total steps are now exclusively auto-computed when the workflow reaches a terminal state (completed, aborted, or failed). Clients sending `total_steps` in create requests will have the field silently ignored. The `total_steps` field remains in `WorkflowStatusResponse`.
-- **MCP `operation` default changed from `"query"` to `"execute"`** (#1307): `mcpCheckInputHandler` now defaults to `"execute"` when no `operation` is specified. Callers relying on the implicit `"query"` default must now pass `operation: "query"` explicitly.
+- **Removed `total_steps` from `CreateWorkflowRequest` API**: The field was deprecated since Platform v4.5.0. Total steps are now exclusively auto-computed when the workflow reaches a terminal state (completed, aborted, or failed). Clients sending `total_steps` in create requests will have the field silently ignored. The `total_steps` field remains in `WorkflowStatusResponse`.
+- **MCP `operation` default changed from `"query"` to `"execute"`**: `mcpCheckInputHandler` now defaults to `"execute"` when no `operation` is specified. Callers relying on the implicit `"query"` default must now pass `operation: "query"` explicitly.
 
 #### Added
 
-- **Python SDK: MCP Tool Interceptor** (SDK PR #109, #112): New `mcp_tool_interceptor()` factory method on `AxonFlowLangGraphAdapter` for enforcing AxonFlow input/output policies around MCP tool calls in LangGraph agents. Includes `MCPInterceptorOptions` configuration and JSON serialization fix.
-- **Python LangGraph MCP Interceptor Example** (#1317): New example demonstrating MCP input/output policy checks integrated into a LangGraph agent with tool interception
+- **Python SDK: MCP Tool Interceptor**: New `mcp_tool_interceptor()` factory method on `AxonFlowLangGraphAdapter` for enforcing AxonFlow input/output policies around MCP tool calls in LangGraph agents. Includes `MCPInterceptorOptions` configuration and JSON serialization fix.
+- **Python LangGraph MCP Interceptor Example**: New example demonstrating MCP input/output policy checks integrated into a LangGraph agent with tool interception
 
 #### Fixed
 
-- Community sync workflow: include `docs/tutorials/` in sync using include-before-exclude rsync pattern (#1297)
-- Community sync workflow: fixed commit detection to use merged PRs instead of workflow runs, fixed pathspec with positive `.` anchor (#1302)
-- Community sync workflow: fixed jq parse error, split detection step permissions, added GH_TOKEN to sync step (#1295, #1299-#1301)
-- Restored historical version annotations incorrectly bumped in docs sweep (#1298)
+- Community sync workflow: include `docs/tutorials/` in sync using include-before-exclude rsync pattern
+- Community sync workflow: fixed commit detection to use merged PRs instead of workflow runs, fixed pathspec with positive `.` anchor
+- Community sync workflow: fixed jq parse error, split detection step permissions, added GH_TOKEN to sync step
+- Restored historical version annotations incorrectly bumped in docs sweep
 
 ### Enterprise
 
 #### Fixed
 
-- Customer portal UI: removed vulnerable `@tootallnate/once` dependency (#1309)
+- Customer portal UI: removed vulnerable `@tootallnate/once` dependency
 
 ### Note
 
@@ -2273,22 +2301,22 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **External Trace ID for Workflows** (#1259): Add optional `trace_id` field to workflows for correlation with external tracing systems (Langsmith, Datadog, OpenTelemetry)
-  - `trace_id` on `CreateWorkflowRequest` and `CreateWorkflowResponse`
-  - `trace_id` on `WorkflowStatusResponse` and `GET /workflows` query parameter
-  - Partial index on `trace_id` column for query performance (NULL values not indexed)
-  - Migration 055: `ALTER TABLE workflows ADD COLUMN trace_id VARCHAR(255)`
-- **Per-Tool Governance (Phase 1)** (#1243): Add `ToolContext` to step gate requests for tool-aware policy evaluation within tool_call steps
-  - New `ToolContext` struct: `tool_name`, `tool_type` (function/mcp/api), `tool_input`
-  - Policy adapter propagates tool context into policy evaluation (tool_name, tool_type, tool_input.* keys)
-  - Optional field — fully backward compatible with existing SDKs
-  - ADR-038 documents Phase 1 (context enrichment) and Phase 2 (tool-scoped policies, future)
+- **External Trace ID for Workflows**: Add optional `trace_id` field to workflows for correlation with external tracing systems (Langsmith, Datadog, OpenTelemetry)
+ - `trace_id` on `CreateWorkflowRequest` and `CreateWorkflowResponse`
+ - `trace_id` on `WorkflowStatusResponse` and `GET /workflows` query parameter
+ - Partial index on `trace_id` column for query performance (NULL values not indexed)
+ - Migration 055: `ALTER TABLE workflows ADD COLUMN trace_id VARCHAR(255)`
+- **Per-Tool Governance (Phase 1)**: Add `ToolContext` to step gate requests for tool-aware policy evaluation within tool_call steps
+ - New `ToolContext` struct: `tool_name`, `tool_type` (function/mcp/api), `tool_input`
+ - Policy adapter propagates tool context into policy evaluation (tool_name, tool_type, tool_input.* keys)
+ - Optional field — fully backward compatible with existing SDKs
+ - Phase 1 (context enrichment) and Phase 2 (tool-scoped policies, future)
 - **Per-Tool Governance Example**: New `langgraph_tools_example.py` demonstrating `check_tool_gate()` and `tool_completed()` for individual tool invocations within a LangGraph tools node
-- **SDK-Platform Version Discovery** (#1275): Health endpoints now report real platform version, capability registry, and SDK compatibility information
-  - `/health` response includes `version` (from `AXONFLOW_VERSION` env var), `capabilities` array, and `sdk_compatibility` object
-  - Capability registry lists all platform features with the version that introduced them (15 capabilities from v1.0.0 through v4.8.0)
-  - `sdk_compatibility` reports `min_sdk_version` and `recommended_sdk_version` for programmatic upgrade guidance
-  - Applies to both Agent and Orchestrator health endpoints
+- **SDK-Platform Version Discovery**: Health endpoints now report real platform version, capability registry, and SDK compatibility information
+ - `/health` response includes `version` (from `AXONFLOW_VERSION` env var), `capabilities` array, and `sdk_compatibility` object
+ - Capability registry lists all platform features with the version that introduced them (15 capabilities from v1.0.0 through v4.8.0)
+ - `sdk_compatibility` reports `min_sdk_version` and `recommended_sdk_version` for programmatic upgrade guidance
+ - Applies to both Agent and Orchestrator health endpoints
 - **Version Check Examples**: New `examples/version-check/` with HTTP, Go, Python, TypeScript, and Java variants demonstrating capability discovery
 - **Compatibility Matrix**: New `docs/COMPATIBILITY_MATRIX.md` mapping platform versions to minimum SDK versions
 - **SDK Telemetry Documentation**: New `docs/TELEMETRY.md` and `docs/TELEMETRY_CONTRACT.md` describing what SDK telemetry collects (version, OS, architecture), what is never collected (prompts, payloads, PII, API keys), defaults by deployment mode, and opt-out methods (`AXONFLOW_TELEMETRY=off` or `DO_NOT_TRACK=1`)
@@ -2307,25 +2335,25 @@ This major version also formally acknowledges a breaking change shipped in a pri
 #### Added
 
 - **SDK Telemetry Checkpoint Service**: New Lambda service at `checkpoint.getaxonflow.com` for anonymous SDK runtime telemetry
-  - `POST /v1/ping` receives SDK telemetry, stores in DynamoDB, returns latest version info
-  - `GET /v1/version` returns latest SDK versions (cacheable)
-  - Privacy-preserving: IPs hashed (SHA256), 90-day TTL, no PII stored
-  - Terraform infrastructure: Lambda, API Gateway, DynamoDB, CloudWatch alarms
+ - `POST /v1/ping` receives SDK telemetry, stores in DynamoDB, returns latest version info
+ - `GET /v1/version` returns latest SDK versions (cacheable)
+ - Privacy-preserving: IPs hashed (SHA256), 90-day TTL, no PII stored
+ - Terraform infrastructure: Lambda, API Gateway, DynamoDB, CloudWatch alarms
 - **Per-Tool Governance Policy Adapter**: `wcp_policy_adapter.go` propagates `ToolContext` fields into the dynamic policy evaluation context, enabling tool-aware governance rules
 - **Evaluation Tier Feature Unlock**: Three high-impact features unlocked for Evaluation license holders, giving evaluators immediate demo value for governance control, safety simulation, and compliance proof
-  - **HITL Approval Gates**: `require_approval` policy action now routes to a real HITL queue with Evaluation+ licenses. Approve/reject API, max 100 pending approvals, 24h fixed expiry with auto-reject, expiry cleanup goroutine
-  - **Policy Simulation + Impact Report**: Two new endpoints for dry-run policy evaluation
-    - `POST /api/v1/policies/simulate`: Run all active policies against input (Evaluation: 300/day, Enterprise: unlimited)
-    - `POST /api/v1/policies/impact-report`: Test a single policy against N inputs with aggregate stats (Evaluation: 50 inputs, Enterprise: 100)
-  - **Evidence Export Pack**: Bundled JSON export of audit logs, workflow steps, and HITL approvals
-    - `POST /api/v1/evidence/export`: Synchronous JSON export with date range and type filters (Evaluation: 5K records, 14-day window, 3/day; Enterprise: unlimited, no watermark)
-    - `GET /api/v1/evidence/summary`: Counts by evidence type within the tier's lookback window
-    - Evaluation exports include `"NOT FOR REGULATORY SUBMISSION"` watermark; Enterprise exports are clean
-  - Updated `TierLimits` struct with 9 new fields for feature gating
-  - Updated `LicenseChecker` interface with 9 new methods
-  - MaxPendingApprovals for Evaluation tier raised from 25 → 100
-  - Database migration 056: `evidence_exports` table for export tracking and rate limiting
-  - OpenAPI spec updated with 4 new endpoint definitions
+ - **HITL Approval Gates**: `require_approval` policy action now routes to a real HITL queue with Evaluation+ licenses. Approve/reject API, max 100 pending approvals, 24h fixed expiry with auto-reject, expiry cleanup goroutine
+ - **Policy Simulation + Impact Report**: Two new endpoints for dry-run policy evaluation
+ - `POST /api/v1/policies/simulate`: Run all active policies against input (Evaluation: 300/day, Enterprise: unlimited)
+ - `POST /api/v1/policies/impact-report`: Test a single policy against N inputs with aggregate stats (Evaluation: 50 inputs, Enterprise: 100)
+ - **Evidence Export Pack**: Bundled JSON export of audit logs, workflow steps, and HITL approvals
+ - `POST /api/v1/evidence/export`: Synchronous JSON export with date range and type filters (Evaluation: 5K records, 14-day window, 3/day; Enterprise: unlimited, no watermark)
+ - `GET /api/v1/evidence/summary`: Counts by evidence type within the tier's lookback window
+ - Evaluation exports include `"NOT FOR REGULATORY SUBMISSION"` watermark; Enterprise exports are clean
+ - Updated `TierLimits` struct with 9 new fields for feature gating
+ - Updated `LicenseChecker` interface with 9 new methods
+ - MaxPendingApprovals for Evaluation tier raised from 25 → 100
+ - Database migration 056: `evidence_exports` table for export tracking and rate limiting
+ - OpenAPI spec updated with 4 new endpoint definitions
 
 ---
 
@@ -2335,35 +2363,35 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **Standalone MCP Policy-Check Endpoints** (#1265): Two new endpoints for external orchestrators (LangGraph, CrewAI) to validate MCP requests and responses against AxonFlow policies without executing connector queries
-  - `POST /api/v1/mcp/check-input`: Validate SQL/commands against input policies (SQLi detection, dangerous query blocking, PII in queries, dynamic policies). Returns `allowed: true` or `403` with `block_reason`
-  - `POST /api/v1/mcp/check-output`: Validate response data against output policies (PII redaction, exfiltration limits, dynamic policies). Returns original or redacted data with `policy_info`
-  - Supports both query-style (`response_data`) and execute-style (`message` + `metadata`) output validation
-  - Full audit logging for both endpoints
-  - 1033-line test suite covering both endpoints with edge cases
-- **MCP Check Endpoint Examples** (#1267, #1268): Full examples in 6 language variants — HTTP curl scripts, Python SDK, Python-HTTP (raw requests), Go SDK, TypeScript SDK, Java SDK
-- **OpenAPI Spec for MCP Check Endpoints** (#1266): 4 new schemas (`MCPCheckInputRequest`, `MCPCheckInputResponse`, `MCPCheckOutputRequest`, `MCPCheckOutputResponse`) added to `agent-api.yaml`
+- **Standalone MCP Policy-Check Endpoints**: Two new endpoints for external orchestrators (LangGraph, CrewAI) to validate MCP requests and responses against AxonFlow policies without executing connector queries
+ - `POST /api/v1/mcp/check-input`: Validate SQL/commands against input policies (SQLi detection, dangerous query blocking, PII in queries, dynamic policies). Returns `allowed: true` or `403` with `block_reason`
+ - `POST /api/v1/mcp/check-output`: Validate response data against output policies (PII redaction, exfiltration limits, dynamic policies). Returns original or redacted data with `policy_info`
+ - Supports both query-style (`response_data`) and execute-style (`message` + `metadata`) output validation
+ - Full audit logging for both endpoints
+ - 1033-line test suite covering both endpoints with edge cases
+- **MCP Check Endpoint Examples**: Full examples in 6 language variants — HTTP curl scripts, Python SDK, Python-HTTP (raw requests), Go SDK, TypeScript SDK, Java SDK
+- **OpenAPI Spec for MCP Check Endpoints**: 4 new schemas (`MCPCheckInputRequest`, `MCPCheckInputResponse`, `MCPCheckOutputRequest`, `MCPCheckOutputResponse`) added to `agent-api.yaml`
 
 #### Fixed
 
-- **Python-HTTP MCP check example** (#1271): Added standalone `python-http/` variant with `requirements.txt` and virtual environment setup; refactored Python SDK example for clarity
+- **Python-HTTP MCP check example**: Added standalone `python-http/` variant with `requirements.txt` and virtual environment setup; refactored Python SDK example for clarity
 
 #### Security
 
 - **CVE-2026-24051**: Bumped `go.opentelemetry.io/otel/sdk` v1.38.0 → v1.40.0 in platform module (HIGH — OTel SDK resource attribute injection)
 - **GHSA-72hv-8253-57qq**: Overrode transitive `jackson-core` 2.17.0 → 2.18.6 across 69 Java example pom.xml files (HIGH — async JSON parser `maxNumberLength` bypass)
-- **OpenTelemetry BOM**: Added `opentelemetry-bom` dependency management to all Java examples for transitive CVE remediation (#1271)
+- **OpenTelemetry BOM**: Added `opentelemetry-bom` dependency management to all Java examples for transitive CVE remediation
 
 ### Enterprise
 
 #### Added
 
 - **Circuit Breaker Pipeline Wiring** (#1176, Phase 1): Wire existing circuit breaker state machine into the Agent request pipeline — previously `Check()`, `RecordError()`, `RecordPolicyViolation()` were dead code
-  - `CB.Check()` runs before policy evaluation in both `clientRequestHandler` and `handlePolicyPreCheck` — returns HTTP 503 with dynamic `Retry-After` header when circuit is open
-  - `RecordPolicyViolation()` called on every policy block, tracking violations toward auto-trip threshold (default: 20 violations in 5 minutes)
-  - Active circuits loaded from DB on startup for restart persistence; background goroutine expires circuits every minute for auto-recovery
-  - Community stubs added (`Check`, `IsAllowed`, `RecordError`, `RecordPolicyViolation`, `LoadCircuits`, `ExpireCircuits`) — no-op, always allowed
-  - Example README updated with correct endpoint names and auto-trip documentation; shell script updated with auto-trip demonstration
+ - `CB.Check()` runs before policy evaluation in both `clientRequestHandler` and `handlePolicyPreCheck` — returns HTTP 503 with dynamic `Retry-After` header when circuit is open
+ - `RecordPolicyViolation()` called on every policy block, tracking violations toward auto-trip threshold (default: 20 violations in 5 minutes)
+ - Active circuits loaded from DB on startup for restart persistence; background goroutine expires circuits every minute for auto-recovery
+ - Community stubs added (`Check`, `IsAllowed`, `RecordError`, `RecordPolicyViolation`, `LoadCircuits`, `ExpireCircuits`) — no-op, always allowed
+ - Example README updated with correct endpoint names and auto-trip documentation; shell script updated with auto-trip demonstration
 
 ---
 
@@ -2380,11 +2408,11 @@ This major version also formally acknowledges a breaking change shipped in a pri
 #### Added
 
 - **Cloud Storage Backends for Audit Exports**: S3, Azure Blob Storage, and GCS implementations of `StorageBackend` for durable, compliance-grade audit log export storage
-  - S3: SSE-KMS encryption, Object Lock (WORM compliance), presigned URL downloads, configurable retention
-  - Azure Blob Storage: SAS URL generation, shared key and connection string authentication
-  - GCS: Signed URL generation, ADC / credentials file / credentials JSON authentication
-  - Factory constructor: `AUDIT_EXPORT_STORAGE_TYPE` env var selects backend (`s3` | `azure` | `gcs` | `local`)
-  - MinIO integration: Docker Compose enterprise config with MinIO for local S3-compatible testing
+ - S3: SSE-KMS encryption, Object Lock (WORM compliance), presigned URL downloads, configurable retention
+ - Azure Blob Storage: SAS URL generation, shared key and connection string authentication
+ - GCS: Signed URL generation, ADC / credentials file / credentials JSON authentication
+ - Factory constructor: `AUDIT_EXPORT_STORAGE_TYPE` env var selects backend (`s3` | `azure` | `gcs` | `local`)
+ - MinIO integration: Docker Compose enterprise config with MinIO for local S3-compatible testing
 - **RBI Audit Export to Cloud Storage**: `AuditExportService` uploads exports to configured cloud backend, generates presigned download URLs on-demand, and manages cloud lifecycle (delete, cleanup expired). New `download_url`, `storage_type`, `storage_key` columns on `rbi_audit_exports`. Download handler returns HTTP 307 redirect for cloud exports. Falls back to local filesystem when no backend configured
 - **SEBI Audit Export to Cloud Storage**: Large exports (>1000 records) automatically uploaded to cloud storage with presigned URL population. Small exports retain inline data response
 - **EU AI Act Export to Cloud Storage**: `ExportService` wired with `StorageBackend` for cloud uploads during async export processing. Download handler generates presigned URLs for cloud-stored exports. New `download_url`, `storage_type`, `storage_key` columns on `euaiact_exports`
@@ -2403,57 +2431,57 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **Media Governance Policy Engine** (#1224): Tiered media governance with system-managed policies
-  - 5 default media governance rules seeded automatically: NSFW blocking, violence warning, biometric audit, PII blocking, sensitive document detection
-  - Media governance enable/disable: Community deployments opt-in via `MEDIA_GOVERNANCE_ENABLED=true` environment variable
-  - Media governance status API: `GET /api/v1/media-governance/status` returns feature availability per tier
-  - Media policy categories: `media-safety`, `media-biometric`, `media-pii`, `media-document`
-  - System media policy toggle: All tiers can enable/disable system media policies
-  - New examples: `media-governance-policies/` demonstrating policy CRUD and governance outcomes (HTTP, Go, Python, TypeScript, Java)
-- **Per-Step Token Tracking** (#1223): `tokens_in`/`tokens_out` fields through the full WCP step execution pipeline — types, migration 051, repository, service, and all 3 tracker mapping paths
-- **Per-Step Cost Tracking** (#1229): `cost_usd` field through the full WCP step execution pipeline — types, migration 052, repository, service, and tracker. MAP workflows already had cost tracking; WCP now has parity
-- **MAP/WCP Step Result Sync** (#1232): `SyncStepResults()` syncs step-level data (status, provider, model, tokens, cost) from `WorkflowExecution` to the unified execution tracker. Called from `executePlanHandler` before `SyncPlanStatus` in all 3 code paths
-- **Prompt-Aware Cost Estimation** (#1230): `EstimatePlanCost` now uses actual step prompt length (`len(prompt)/4 + 50` input tokens) and `max_tokens` for output estimates, instead of hardcoded 1000/500. Output schema overhead calculated via `json.Marshal`. 5 new unit tests added
-- **Stale Model ID CI Guardrail** (#1233, #1235): CI workflow scans docs and technical-docs markdown files on PRs for deprecated LLM model IDs. Fails CI when stale Anthropic, OpenAI, Ollama, or Bedrock model identifiers are introduced. Hardened with `fetch-depth: 0`, `rg` availability check, and runtime error handling
+- **Media Governance Policy Engine**: Tiered media governance with system-managed policies
+ - 5 default media governance rules seeded automatically: NSFW blocking, violence warning, biometric audit, PII blocking, sensitive document detection
+ - Media governance enable/disable: Community deployments opt-in via `MEDIA_GOVERNANCE_ENABLED=true` environment variable
+ - Media governance status API: `GET /api/v1/media-governance/status` returns feature availability per tier
+ - Media policy categories: `media-safety`, `media-biometric`, `media-pii`, `media-document`
+ - System media policy toggle: All tiers can enable/disable system media policies
+ - New examples: `media-governance-policies/` demonstrating policy CRUD and governance outcomes (HTTP, Go, Python, TypeScript, Java)
+- **Per-Step Token Tracking**: `tokens_in`/`tokens_out` fields through the full WCP step execution pipeline — types, migration 051, repository, service, and all 3 tracker mapping paths
+- **Per-Step Cost Tracking**: `cost_usd` field through the full WCP step execution pipeline — types, migration 052, repository, service, and tracker. MAP workflows already had cost tracking; WCP now has parity
+- **MAP/WCP Step Result Sync**: `SyncStepResults()` syncs step-level data (status, provider, model, tokens, cost) from `WorkflowExecution` to the unified execution tracker. Called from `executePlanHandler` before `SyncPlanStatus` in all 3 code paths
+- **Prompt-Aware Cost Estimation**: `EstimatePlanCost` now uses actual step prompt length (`len(prompt)/4 + 50` input tokens) and `max_tokens` for output estimates, instead of hardcoded 1000/500. Output schema overhead calculated via `json.Marshal`. 5 new unit tests added
+- **Stale Model ID CI Guardrail**: CI workflow scans docs and technical-docs markdown files on PRs for deprecated LLM model IDs. Fails CI when stale Anthropic, OpenAI, Ollama, or Bedrock model identifiers are introduced. Hardened with `fetch-depth: 0`, `rg` availability check, and runtime error handling
 
 #### Fixed
 
 - **StepComplete ignores post-execution metrics**: `MarkStepCompleted` handler silently dropped request body — `tokens_in`, `tokens_out`, `cost_usd` were only set at gate time, never updated at completion. Now accepts `StepCompleteRequest` with actual post-execution values that override gate-time estimates via COALESCE. Also stores `step_output` (migration 054). All 4 SDKs updated on v3.6.0 branches
-- **Execution viewer token/cost rendering** (#1228): Token display showed "undefined" when value was `0` (used `!= null` check and `?? 0` nullish coalescing). Cost display skipped legitimate `$0.0000` values. Policy events rendered blank rows due to type mismatch between `[]string` and expected objects
-- **WCP gate decisions invisible in unified execution** (#1228): `Decision`, `DecisionReason`, `PoliciesMatched`, `ApprovalStatus`, `ApprovedBy` were never mapped into unified `StepStatus`. Added conversion helpers: `extractPolicyNames`, `mapWCPGateDecision`, `mapWCPApprovalStatus`
-- **Step status clobbering** (#1228): `BaseExecutionTracker.AddStep` unconditionally overwrote step status to `pending`, discarding WCP-computed status. Now preserves pre-set status
-- **Execution cost null in API** (#1232): `actual_cost_usd` always null in API responses. Added `TotalCost()` calculation in `resolveExecution` and `ListExecutions`
-- **WCP steps stuck at "running"** (#1232): Steps remained in running state when workflow completed. Replaced O(n) `ListExecutions` scan with O(1) indexed `GetByMetadata` lookup
-- **Cost estimation used hardcoded tokens** (#1230): `EstimatePlanCost` ignored `Prompt` and `MaxTokens` fields on `WorkflowStep`, always using 1000/500. All 5 cost-estimation examples sent non-existent `estimated_tokens_in`/`estimated_tokens_out` fields silently dropped by JSON unmarshaling
+- **Execution viewer token/cost rendering**: Token display showed "undefined" when value was `0` (used `!= null` check and `?? 0` nullish coalescing). Cost display skipped legitimate `$0.0000` values. Policy events rendered blank rows due to type mismatch between `[]string` and expected objects
+- **WCP gate decisions invisible in unified execution**: `Decision`, `DecisionReason`, `PoliciesMatched`, `ApprovalStatus`, `ApprovedBy` were never mapped into unified `StepStatus`. Added conversion helpers: `extractPolicyNames`, `mapWCPGateDecision`, `mapWCPApprovalStatus`
+- **Step status clobbering**: `BaseExecutionTracker.AddStep` unconditionally overwrote step status to `pending`, discarding WCP-computed status. Now preserves pre-set status
+- **Execution cost null in API**: `actual_cost_usd` always null in API responses. Added `TotalCost()` calculation in `resolveExecution` and `ListExecutions`
+- **WCP steps stuck at "running"**: Steps remained in running state when workflow completed. Replaced O(n) `ListExecutions` scan with O(1) indexed `GetByMetadata` lookup
+- **Cost estimation used hardcoded tokens**: `EstimatePlanCost` ignored `Prompt` and `MaxTokens` fields on `WorkflowStep`, always using 1000/500. All 5 cost-estimation examples sent non-existent `estimated_tokens_in`/`estimated_tokens_out` fields silently dropped by JSON unmarshaling
 
 #### Changed
 
-- **LLM Model ID Sweep** (#1236): ~200 files updated across code defaults, pricing tables, tests, examples, infrastructure, and technical docs. Migration 053 updates COALESCE default for Bedrock model in `llm_provider_configs`
-  - Anthropic: `claude-3-*`/`claude-3-5-*` → `claude-opus-4-20250514`/`claude-sonnet-4-20250514`/`claude-haiku-4-5-20251001`
-  - Bedrock: Updated to region-prefixed inference profile IDs (`us.anthropic.claude-sonnet-4-20250514-v1:0` etc.)
-  - OpenAI: `gpt-3.5-turbo` → `gpt-4o-mini`, `gpt-4-turbo` → `gpt-4o`
-  - Ollama: `llama3.1` → `llama3.2`, `codellama` → `qwen2.5-coder:32b`, `mistral:7b` → `mistral:latest`, `mixtral:8x7b` → `mixtral:latest`
-- **LLM provider diversity in examples** (#1223): 20 WCP and HITL example files updated from hardcoded `openai/gpt-4` to a mix of providers (ollama, anthropic, gemini, bedrock, azure) demonstrating provider-agnostic governance
-- **Execution viewer UI** (#1223): Wired to unified execution API (`/api/v1/unified/executions`) with correct field mappings, gate decision/approval display, and step_index handling
-- Media governance disabled by default on Community tier — previously ran globally if analyzers were registered (#1224)
-- Dynamic policy API (`/api/v1/dynamic-policies`) now accepts `media-*` category prefixes alongside `dynamic-*` (#1224)
-- Dynamic policy listing now includes system/global policies alongside tenant policies (#1224)
-- Documentation: All LLM model references updated to current versions across docs and technical-docs (#1231)
-- SDK version references bumped to v3.5.0 (#1221)
-- Docker base images: Go 1.25-alpine → 1.26-alpine for agent and orchestrator (#1189, #1190)
+- **LLM Model ID Sweep**: ~200 files updated across code defaults, pricing tables, tests, examples, infrastructure, and technical docs. Migration 053 updates COALESCE default for Bedrock model in `llm_provider_configs`
+ - Anthropic: `claude-3-*`/`claude-3-5-*` → `claude-opus-4-20250514`/`claude-sonnet-4-20250514`/`claude-haiku-4-5-20251001`
+ - Bedrock: Updated to region-prefixed inference profile IDs (`us.anthropic.claude-sonnet-4-20250514-v1:0` etc.)
+ - OpenAI: `gpt-3.5-turbo` → `gpt-4o-mini`, `gpt-4-turbo` → `gpt-4o`
+ - Ollama: `llama3.1` → `llama3.2`, `codellama` → `qwen2.5-coder:32b`, `mistral:7b` → `mistral:latest`, `mixtral:8x7b` → `mixtral:latest`
+- **LLM provider diversity in examples**: 20 WCP and HITL example files updated from hardcoded `openai/gpt-4` to a mix of providers (ollama, anthropic, gemini, bedrock, azure) demonstrating provider-agnostic governance
+- **Execution viewer UI**: Wired to unified execution API (`/api/v1/unified/executions`) with correct field mappings, gate decision/approval display, and step_index handling
+- Media governance disabled by default on Community tier — previously ran globally if analyzers were registered
+- Dynamic policy API (`/api/v1/dynamic-policies`) now accepts `media-*` category prefixes alongside `dynamic-*`
+- Dynamic policy listing now includes system/global policies alongside tenant policies
+- Documentation: All LLM model references updated to current versions across docs and technical-docs
+- SDK version references bumped to v3.5.0
+- Docker base images: Go 1.25-alpine → 1.26-alpine for agent and orchestrator
 - CI dependencies: `actions/github-script` 7→8, `docker/build-push-action` 5→6, `actions/upload-artifact` 4→6, `aws-actions/configure-aws-credentials` 4→6, `actions/download-artifact` 4→7 (#1197-#1201)
 
 ### Enterprise
 
 #### Added
 
-- **Per-Tenant Media Governance Configuration** (#1224): `GET/PUT /api/v1/media-governance/config` for enable/disable and analyzer restriction per tenant
-- **System Media Policy Modification** (#1224): Enterprise tier can modify actions and priority on system media policies
-- **Media Governance Audit Export** (#1224): `GET /api/v1/media-governance/audit/export` for compliance reporting (CSV/JSON)
+- **Per-Tenant Media Governance Configuration**: `GET/PUT /api/v1/media-governance/config` for enable/disable and analyzer restriction per tenant
+- **System Media Policy Modification**: Enterprise tier can modify actions and priority on system media policies
+- **Media Governance Audit Export**: `GET /api/v1/media-governance/audit/export` for compliance reporting (CSV/JSON)
 
 #### Fixed
 
-- **Customer portal Docker build failure** (#1226): `go.mod` in `ee/platform/customer-portal/` pinned `golang.org/x/crypto v0.45.0` while platform bumped to `v0.47.0` during v4.4.0 merge
+- **Customer portal Docker build failure**: `go.mod` in `ee/platform/customer-portal/` pinned `golang.org/x/crypto v0.45.0` while platform bumped to `v0.47.0` during v4.4.0 merge
 
 ### Breaking
 
@@ -2467,24 +2495,24 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **Multimodal Image Governance Pipeline** (#1214): Images are governed the same way as prompts — analyzed before routing, policies can block, and everything is audited.
-  - `platform/orchestrator/media/` package: registry, factory, pipeline, audit, cost tracking, and license gating
-  - Pluggable `MediaAnalyzer` interface with Name(), Type(), Analyze(), HealthCheck(), Capabilities()
-  - Local OCR analyzer via Tesseract (`exec.CommandContext`, stdin/stdout, no temp files)
-  - PII detection via composition — OCR text feeds existing `PIIDetectorFunc`, no drift
-  - Pipeline runs analyzers in parallel per image, aggregates worst-case signals
-  - Community default: fail-open (warn and audit), never blocks
-  - 11 policy fields: `media.has_pii`, `media.has_faces`, `media.nsfw_score`, `media.violence_score`, `media.content_safe`, `media.has_biometric_data`, `media.is_sensitive_document`, `media.document_type`, `media.face_count`, `media.has_extracted_text`, `media.extracted_text_length`
-  - API: `media` array on request, `media_analysis` object on response with per-image results
-  - SHA-256 hashing for base64 and URL-sourced images (URL download with 30s timeout, 20MB limit, cached)
-  - Validation: MIME type allowlist, max 20MB per image, max 8192px per dimension, max 10 images per request
-  - Audit logging: hash, MIME type, file size, PII detection, content safety, timing (Enterprise adds biometric, safety scores, per-analyzer details)
-  - New examples in 5 languages (HTTP/curl, Go, Python, TypeScript, Java) with strict field validation
+- **Multimodal Image Governance Pipeline**: Images are governed the same way as prompts — analyzed before routing, policies can block, and everything is audited.
+ - `platform/orchestrator/media/` package: registry, factory, pipeline, audit, cost tracking, and license gating
+ - Pluggable `MediaAnalyzer` interface with Name(), Type(), Analyze(), HealthCheck(), Capabilities()
+ - Local OCR analyzer via Tesseract (`exec.CommandContext`, stdin/stdout, no temp files)
+ - PII detection via composition — OCR text feeds existing `PIIDetectorFunc`, no drift
+ - Pipeline runs analyzers in parallel per image, aggregates worst-case signals
+ - Community default: fail-open (warn and audit), never blocks
+ - 11 policy fields: `media.has_pii`, `media.has_faces`, `media.nsfw_score`, `media.violence_score`, `media.content_safe`, `media.has_biometric_data`, `media.is_sensitive_document`, `media.document_type`, `media.face_count`, `media.has_extracted_text`, `media.extracted_text_length`
+ - API: `media` array on request, `media_analysis` object on response with per-image results
+ - SHA-256 hashing for base64 and URL-sourced images (URL download with 30s timeout, 20MB limit, cached)
+ - Validation: MIME type allowlist, max 20MB per image, max 8192px per dimension, max 10 images per request
+ - Audit logging: hash, MIME type, file size, PII detection, content safety, timing (Enterprise adds biometric, safety scores, per-analyzer details)
+ - New examples in 5 languages (HTTP/curl, Go, Python, TypeScript, Java) with strict field validation
 - **SDK Media Types**: All 4 SDKs updated with `MediaContent`, `MediaAnalysisResult`, `MediaAnalysisResponse`
-  - Go: `ProxyLLMCallWithMedia()` method
-  - Python: `proxy_llm_call_with_media()` async + sync, caching disabled for media requests
-  - TypeScript: media support in `proxyLLMCall()` options
-  - Java: media in `ClientRequest.Builder`
+ - Go: `ProxyLLMCallWithMedia()` method
+ - Python: `proxy_llm_call_with_media()` async + sync, caching disabled for media requests
+ - TypeScript: media support in `proxyLLMCall()` options
+ - Java: media in `ClientRequest.Builder`
 
 ### Enterprise
 
@@ -2538,16 +2566,16 @@ This major version also formally acknowledges a breaking change shipped in a pri
 - **StepModeEvaluator idempotency (Bug J)**: Step gate evaluation keyed on `(planID, stepIndex)` via `sync.Map` instead of a plain counter. Retries return the cached decision instead of advancing the counter.
 - **Connection tracker tenant validation (Bug K)**: SSE connections with missing `X-Tenant-ID` header now return `400 Bad Request` instead of silently falling back to a shared `"default"` bucket.
 - **SyncPlanStatus error visibility (Bug L)**: `SyncPlanStatus` errors logged as warnings instead of silently discarded via `_ =`.
-- **json.Marshal error handling (Bug B)**: Abort and fail reason marshaling errors in WCP repository now propagated instead of suppressed with `_ :=`.
+- **json.Marshal error handling (Bug B)**: Abort and fail reason marshaling errors in WCP repository now propagated instead of suppressed with `_:=`.
 
 #### Added
 
-- **Cost Estimation Endpoints** (#1072): Pre-execution cost analysis for MAP plans
-  - `POST /api/v1/plans/estimate`: Estimate cost from provider/model/steps specification
-  - `GET /api/v1/plans/{id}/cost`: Get cost estimate for an existing plan
-  - Tiered response: community gets aggregate total only (10/day), evaluation gets per-step breakdown (100/day), enterprise unlimited
+- **Cost Estimation Endpoints**: Pre-execution cost analysis for MAP plans
+ - `POST /api/v1/plans/estimate`: Estimate cost from provider/model/steps specification
+ - `GET /api/v1/plans/{id}/cost`: Get cost estimate for an existing plan
+ - Tiered response: community gets aggregate total only (10/day), evaluation gets per-step breakdown (100/day), enterprise unlimited
 - **WCP Community Approve/Reject**: Basic approval flow via step gates with HITL status endpoint (`GET /api/v1/hitl/status`)
-  - Tiered limits: community max 5 pending approvals, evaluation max 25, enterprise unlimited
+ - Tiered limits: community max 5 pending approvals, evaluation max 25, enterprise unlimited
 - **Direct Metadata Lookup**: `GetExecutionByPlanID()` and `GetExecutionByMetadata()` methods for efficient execution lookups
 - **Expired Execution Status**: `ExecutionStatusExpired` constant and `ExpireExecution()` method for proper lifecycle tracking
 - **Migration 050**: GIN index on `execution_history.metadata->>'plan_id'`, `expired` enum value for `execution_status`
@@ -2557,14 +2585,14 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **MAP-HITL Integration** (#1076): Enterprise HITL approval workflow for MAP plan steps
-  - `POST /api/v1/plans/{id}/steps/{step_id}/approve` and `reject` endpoints
-  - `HITLWorkflowEngine` wired when enterprise license present
-  - Community mode returns 403 for HITL endpoints
+- **MAP-HITL Integration**: Enterprise HITL approval workflow for MAP plan steps
+ - `POST /api/v1/plans/{id}/steps/{step_id}/approve` and `reject` endpoints
+ - `HITLWorkflowEngine` wired when enterprise license present
+ - Community mode returns 403 for HITL endpoints
 - **HITL Expiration Background Job**: Automatic expiration of stale approval requests
-  - 1-hour ticker interval with configurable schedule
-  - `ExpireRequests()` method in service and repository layers
-  - Graceful shutdown via stop channel
+ - 1-hour ticker interval with configurable schedule
+ - `ExpireRequests()` method in service and repository layers
+ - Graceful shutdown via stop channel
 - **HITL Queue API in SDKs**: All 4 SDKs now include HITL queue methods (list, get, approve, reject, stats)
 - **New enterprise examples**: `ee/examples/hitl-queue/`, `ee/examples/hitl-expiration/`, `ee/examples/map-hitl/`, `ee/examples/cost-estimation-enterprise/`, `ee/examples/tier-limits/`
 
@@ -2601,58 +2629,58 @@ This major version also formally acknowledges a breaking change shipped in a pri
 #### Added
 
 - **Evaluation Tier Licensing**: Free 90-day license with elevated limits for production proof-of-concepts
-  - Request at [getaxonflow.com/evaluation-license](https://getaxonflow.com/evaluation-license)
-  - Limits: 50 tenant policies, 5 org policies, 5 connectors with custom policies, 3 LLM providers, 14-day audit retention, 100 plans, 25 versions/plan
-  - Graceful degradation to Community tier on expiry. No downtime, no data loss
+ - Request at [getaxonflow.com/evaluation-license](https://getaxonflow.com/evaluation-license)
+ - Limits: 50 tenant policies, 5 org policies, 5 connectors with custom policies, 3 LLM providers, 14-day audit retention, 100 plans, 25 versions/plan
+ - Graceful degradation to Community tier on expiry. No downtime, no data loss
 - **Ed25519 License Signing**: Asymmetric cryptographic signatures replace HMAC-SHA256
-  - Public keys embedded in binary; private keys stay in infrastructure (AWS Secrets Manager)
-  - Format: `AXON-{PAYLOAD}.{SIGNATURE}`. Old V2 (`AXON-V2-...`) and V1 formats rejected with clear upgrade message
-  - Two keypairs: evaluation (for free licenses) and enterprise (for paid licenses). Blast radius isolation
+ - Public keys embedded in binary; private keys stay in infrastructure (AWS Secrets Manager)
+ - Format: `AXON-{PAYLOAD}.{SIGNATURE}`. Old V2 (`AXON-V2-.`) and V1 formats rejected with clear upgrade message
+ - Two keypairs: evaluation (for free licenses) and enterprise (for paid licenses). Blast radius isolation
 - **Feature Limits Boundary Testing**: `examples/feature-limits/http/test_feature_limits.sh` validates all tier limits across Community, Evaluation, and Enterprise modes
 - **E2E Setup Script**: `scripts/setup-e2e-testing.sh` now supports `evaluation` mode alongside `community` and `enterprise`
-- **Workflow Control Plane v1** (#834): Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
-  - `POST /api/v1/workflows`: Register workflow with name, source, total_steps, metadata
-  - `GET /api/v1/workflows`: List workflows with status/source filters
-  - `GET /api/v1/workflows/{id}`: Get workflow status and step history
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/gate`: Policy-based step gate (allow/block/require_approval)
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/complete`: Mark step completed with output data
-  - `POST /api/v1/workflows/{id}/complete`: Mark workflow completed
-  - `POST /api/v1/workflows/{id}/abort`: Abort workflow with reason
-  - `POST /api/v1/workflows/{id}/resume`: Resume after approval
-  - Step gate responses include `policies_evaluated` and `policies_matched` for policy transparency
-  - Audit logging: `workflow_created`, `workflow_step_gate`, `workflow_completed`, `workflow_aborted`
-- **MAP Plan Versioning & Rollback** (#1072): Full plan lifecycle management with optimistic locking
-  - `UpdatePlan()`: Update plan with version conflict detection (`ErrVersionConflict` on mismatch)
-  - `GetPlanVersions()`: Retrieve full version history with change tracking (changed_by, change_type, change_summary)
-  - `RollbackPlan()`: Restore to a previous version snapshot (creates pre-rollback snapshot first)
-  - `CleanupExpiredPlans()`: Background worker removes expired plans (configurable interval, default 15min)
-  - Community limits: max 25 plans with versioning, max 10 versions per plan
-  - Migration `047_plan_versioning.sql`: adds `version` column to plans, creates `plan_versions` table
-- **MAP Confirm & Step Execution Modes** (#1072): HITL execution modes via WCP infrastructure
-  - Confirm mode: every step requires explicit approval before proceeding
-  - Step mode: first step auto-allowed, subsequent steps require approval
-  - Creates WCP workflow (`map-confirm-{planID}` / `map-step-{planID}`) to track step gates
-  - Maps plan steps to WCP step types (llm-call, tool-call, connector-call, etc.)
-- **MAP Plan Cancellation** (#1074): `PlanStatusCancelled` constant and `CancelPlan()` method in planning service
-- **Unified Execution Tracking** (#1074, #1075): Consistent status tracking across MAP plans and WCP workflows
-  - `GET /api/v1/unified/executions`: List executions with type/status filters
-  - `GET /api/v1/unified/executions/{id}`: Get status by execution ID, workflow ID, or plan ID
-  - `POST /api/v1/unified/executions/{id}/cancel`: Cancel execution (propagates to MAP or WCP)
-  - MAPExecutionTracker: adapts planning service to unified format, syncs plan state changes
-  - WCPExecutionTracker: adapts WCP service to unified format, maps step decisions to unified status
-  - Lookup by execution ID, `wf_*`/`wcp_*` prefix, `plan_*` prefix, or metadata search
-- **SSE Execution Streaming** (#1074): `GET /api/v1/unified/executions/{id}/stream` provides real-time execution events
-  - Events: `execution.started`, `execution.completed`, `execution.failed`, `execution.cancelled`, `step.started`, `step.completed`, `step.failed`, `step.decision`
-  - Auto-closes on terminal state; no external dependencies (pure Go channels)
-  - Per-tenant connection limits: Community (5), Evaluation (25), Enterprise (unlimited)
-  - HTTP 429 with `Retry-After: 30` header when limit exceeded
-  - `ConnectionTracker` with atomic acquire/release pattern (handles disconnect, timeout, panic)
-- **EventHub Pub-Sub** (#1074): Channel-based event bus in `platform/shared/execution/event_hub.go`
-  - Buffered channels (cap 16), non-blocking publish with slow subscriber protection
-  - Both MAP and WCP trackers publish events on state transitions
+- **Workflow Control Plane v1**: Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
+ - `POST /api/v1/workflows`: Register workflow with name, source, total_steps, metadata
+ - `GET /api/v1/workflows`: List workflows with status/source filters
+ - `GET /api/v1/workflows/{id}`: Get workflow status and step history
+ - `POST /api/v1/workflows/{id}/steps/{step_id}/gate`: Policy-based step gate (allow/block/require_approval)
+ - `POST /api/v1/workflows/{id}/steps/{step_id}/complete`: Mark step completed with output data
+ - `POST /api/v1/workflows/{id}/complete`: Mark workflow completed
+ - `POST /api/v1/workflows/{id}/abort`: Abort workflow with reason
+ - `POST /api/v1/workflows/{id}/resume`: Resume after approval
+ - Step gate responses include `policies_evaluated` and `policies_matched` for policy transparency
+ - Audit logging: `workflow_created`, `workflow_step_gate`, `workflow_completed`, `workflow_aborted`
+- **MAP Plan Versioning & Rollback**: Full plan lifecycle management with optimistic locking
+ - `UpdatePlan()`: Update plan with version conflict detection (`ErrVersionConflict` on mismatch)
+ - `GetPlanVersions()`: Retrieve full version history with change tracking (changed_by, change_type, change_summary)
+ - `RollbackPlan()`: Restore to a previous version snapshot (creates pre-rollback snapshot first)
+ - `CleanupExpiredPlans()`: Background worker removes expired plans (configurable interval, default 15min)
+ - Community limits: max 25 plans with versioning, max 10 versions per plan
+ - Migration `047_plan_versioning.sql`: adds `version` column to plans, creates `plan_versions` table
+- **MAP Confirm & Step Execution Modes**: HITL execution modes via WCP infrastructure
+ - Confirm mode: every step requires explicit approval before proceeding
+ - Step mode: first step auto-allowed, subsequent steps require approval
+ - Creates WCP workflow (`map-confirm-{planID}` / `map-step-{planID}`) to track step gates
+ - Maps plan steps to WCP step types (llm-call, tool-call, connector-call, etc.)
+- **MAP Plan Cancellation**: `PlanStatusCancelled` constant and `CancelPlan()` method in planning service
+- **Unified Execution Tracking**: Consistent status tracking across MAP plans and WCP workflows
+ - `GET /api/v1/unified/executions`: List executions with type/status filters
+ - `GET /api/v1/unified/executions/{id}`: Get status by execution ID, workflow ID, or plan ID
+ - `POST /api/v1/unified/executions/{id}/cancel`: Cancel execution (propagates to MAP or WCP)
+ - MAPExecutionTracker: adapts planning service to unified format, syncs plan state changes
+ - WCPExecutionTracker: adapts WCP service to unified format, maps step decisions to unified status
+ - Lookup by execution ID, `wf_*`/`wcp_*` prefix, `plan_*` prefix, or metadata search
+- **SSE Execution Streaming**: `GET /api/v1/unified/executions/{id}/stream` provides real-time execution events
+ - Events: `execution.started`, `execution.completed`, `execution.failed`, `execution.cancelled`, `step.started`, `step.completed`, `step.failed`, `step.decision`
+ - Auto-closes on terminal state; no external dependencies (pure Go channels)
+ - Per-tenant connection limits: Community (5), Evaluation (25), Enterprise (unlimited)
+ - HTTP 429 with `Retry-After: 30` header when limit exceeded
+ - `ConnectionTracker` with atomic acquire/release pattern (handles disconnect, timeout, panic)
+- **EventHub Pub-Sub**: Channel-based event bus in `platform/shared/execution/event_hub.go`
+ - Buffered channels (cap 16), non-blocking publish with slow subscriber protection
+ - Both MAP and WCP trackers publish events on state transitions
 - **Unified Execution Handler Tests**: Tests covering list, get, cancel, CORS, and route registration
 - **CancelPlan Tests**: 6 tests covering cancel from pending/executing states, validation
-- **Cost Estimation** (#1072): `GET /api/v1/plans/{id}/cost` and `POST /api/v1/plans/estimate` for pre-execution cost estimation with per-step breakdowns
+- **Cost Estimation**: `GET /api/v1/plans/{id}/cost` and `POST /api/v1/plans/estimate` for pre-execution cost estimation with per-step breakdowns
 - **MAP + WCP Examples**: `map-confirm-mode/`, `map-lifecycle/`, `workflow-control/` across all 5 languages (Go, Python, TypeScript, Java, HTTP)
 
 #### Fixed
@@ -2667,11 +2695,11 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Changed
 
-- **License format migration**: All licenses must use Ed25519 format (`AXON-{PAYLOAD}.{SIGNATURE}`). Old V2 HMAC format (`AXON-V2-...`) returns Community tier with upgrade guidance. No action needed for users without a license (Community mode unchanged).
+- **License format migration**: All licenses must use Ed25519 format (`AXON-{PAYLOAD}.{SIGNATURE}`). Old V2 HMAC format (`AXON-V2-.`) returns Community tier with upgrade guidance. No action needed for users without a license (Community mode unchanged).
 - **HMAC startup check removed**: `ValidateHMACSecretAtStartup()` is now a no-op. No HMAC secret environment variable required at startup
 - **BaseExecutionTracker**: Now publishes events via EventHub after every state change (start, complete, fail, cancel, step transitions)
 - **UnifiedExecutionHandler**: Accepts EventHub and PlanService; registers cancel, stream, and list/get routes
-- **ADR-030**: Updated with SSE streaming, cancellation, and versioning architecture patterns
+- **Updated with SSE streaming, cancellation, and versioning architecture patterns
 - **License tier names normalized**: `PRO`→`Professional`, `ENT`→`Enterprise`, `PLUS`→`Plus`, `BASIC`/`EVALUATION`→`Evaluation`. Migration 122 updates all tier-related tables. DB constraint enforces canonical names.
 - **SDK versions bumped to v3.3.0** across all examples and docs
 - **CI dependencies bumped**: actions/checkout v6, actions/setup-go v6, Go 1.25, Docker Alpine 3.23
@@ -2682,22 +2710,22 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **WCP HITL Approval Gates** (#1169): Human-in-the-loop approval for workflow steps
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/approve`: Approve a pending step (requires approval_id from gate)
-  - `POST /api/v1/workflows/{id}/steps/{step_id}/reject`: Reject step with optional reason
-  - `GET /api/v1/workflows/approvals/pending`: List all workflows awaiting human approval
-  - Approval URLs generated for notification links
-- **Webhook Notification System** (#1169): Event-driven notifications for workflow and approval events
-  - `POST /api/v1/webhooks`: Create webhook subscription
-  - `GET /api/v1/webhooks`: List subscriptions
-  - `GET /api/v1/webhooks/{id}`: Get subscription details
-  - `PUT /api/v1/webhooks/{id}`: Update subscription
-  - `DELETE /api/v1/webhooks/{id}`: Delete subscription
-  - 7 event types: `step.approval_required`, `step.approved`, `step.rejected`, `step.completed`, `workflow.completed`, `workflow.aborted`, `workflow.failed`
-  - HMAC-SHA256 request signing when secret configured; secret never exposed in API responses
-  - SSRF protection: blocks private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8)
-  - Retry strategy: exponential backoff (1s, 2s, 4s), max 3 retries, 10s timeout per attempt
-  - Migration `048_webhook_subscriptions.sql`: subscription and delivery tracking tables
+- **WCP HITL Approval Gates**: Human-in-the-loop approval for workflow steps
+ - `POST /api/v1/workflows/{id}/steps/{step_id}/approve`: Approve a pending step (requires approval_id from gate)
+ - `POST /api/v1/workflows/{id}/steps/{step_id}/reject`: Reject step with optional reason
+ - `GET /api/v1/workflows/approvals/pending`: List all workflows awaiting human approval
+ - Approval URLs generated for notification links
+- **Webhook Notification System**: Event-driven notifications for workflow and approval events
+ - `POST /api/v1/webhooks`: Create webhook subscription
+ - `GET /api/v1/webhooks`: List subscriptions
+ - `GET /api/v1/webhooks/{id}`: Get subscription details
+ - `PUT /api/v1/webhooks/{id}`: Update subscription
+ - `DELETE /api/v1/webhooks/{id}`: Delete subscription
+ - 7 event types: `step.approval_required`, `step.approved`, `step.rejected`, `step.completed`, `workflow.completed`, `workflow.aborted`, `workflow.failed`
+ - HMAC-SHA256 request signing when secret configured; secret never exposed in API responses
+ - SSRF protection: blocks private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8)
+ - Retry strategy: exponential backoff (1s, 2s, 4s), max 3 retries, 10s timeout per attempt
+ - Migration `048_webhook_subscriptions.sql`: subscription and delivery tracking tables
 
 ---
 
@@ -2707,45 +2735,45 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **AES-256-GCM Connector Credential Encryption** (#1157): Credentials encrypted at rest via `CONNECTOR_ENCRYPTION_KEY` env var
-  - Credentials stored separately from connection URLs. No secrets in `connection_url` column
-  - Supports encrypted, JSON-quoted encrypted, and plain JSON formats (backward compatible)
-- **Connector SDK Runtime Wiring** (#1140): Connector installs persist to `connector_configs` table; Agent reads runtime configs from DB with static fallback
-  - All SDK-backed connectors (Postgres, MySQL, MongoDB, Redis, Cassandra, HTTP) migrated to `connectors/sdk.BaseConnector`
-  - Runtime config service loads connector credentials and options from DB, reconstructs connection URLs at runtime
-- **LLM Provider SDK Registration** (#1140): SDK-backed LLM providers (OpenAI, Anthropic, Gemini) registered at orchestrator startup via factory pattern
-  - Azure OpenAI runtime config parity across env/config/DB paths
-- **Strict Provider Pinning** (#1140): `context.strict_provider=true` hard-pins to a specific provider; default remains preference with failover
-- **Direct LLM Config Passing** (#1157): `BootstrapFromConfig` replaces goroutine-unsafe `ApplyLLMConfigToEnv` / `os.Setenv`
-- **Atomic LLM Provider Update** (#1157): `Registry.Update()` method prevents gap where provider is missing during reconfiguration
-- **Audit Logging Examples** (#1135): Complete audit logging examples across Go, Python, TypeScript, Java SDKs
-- **Testcontainers for Integration Tests** (#1136, #1137): PostgreSQL integration tests use testcontainers instead of mock DB
-- **Runtime Connector Config Migrations** (#1140): `007_runtime_connector_configuration.sql`, `045_connector_configs_credentials.sql`
+- **AES-256-GCM Connector Credential Encryption**: Credentials encrypted at rest via `CONNECTOR_ENCRYPTION_KEY` env var
+ - Credentials stored separately from connection URLs. No secrets in `connection_url` column
+ - Supports encrypted, JSON-quoted encrypted, and plain JSON formats (backward compatible)
+- **Connector SDK Runtime Wiring**: Connector installs persist to `connector_configs` table; Agent reads runtime configs from DB with static fallback
+ - All SDK-backed connectors (Postgres, MySQL, MongoDB, Redis, Cassandra, HTTP) migrated to `connectors/sdk.BaseConnector`
+ - Runtime config service loads connector credentials and options from DB, reconstructs connection URLs at runtime
+- **LLM Provider SDK Registration**: SDK-backed LLM providers (OpenAI, Anthropic, Gemini) registered at orchestrator startup via factory pattern
+ - Azure OpenAI runtime config parity across env/config/DB paths
+- **Strict Provider Pinning**: `context.strict_provider=true` hard-pins to a specific provider; default remains preference with failover
+- **Direct LLM Config Passing**: `BootstrapFromConfig` replaces goroutine-unsafe `ApplyLLMConfigToEnv` / `os.Setenv`
+- **Atomic LLM Provider Update**: `Registry.Update()` method prevents gap where provider is missing during reconfiguration
+- **Audit Logging Examples**: Complete audit logging examples across Go, Python, TypeScript, Java SDKs
+- **Testcontainers for Integration Tests**: PostgreSQL integration tests use testcontainers instead of mock DB
+- **Runtime Connector Config Migrations**: `007_runtime_connector_configuration.sql`, `045_connector_configs_credentials.sql`
 
 #### Fixed
 
-- **Encrypted credentials never decrypted on load** (#1157): `RuntimeConfigService` now uses `CredentialEncryptor.Decrypt()` instead of `json.Unmarshal`
-- **MySQL DSN credentials persisted in stored URLs** (#1157): `StripURLCredentials` now handles `@tcp()` and `@unix()` DSN formats
-- **Connector uninstall DB/registry divergence** (#1157): Unregister from memory first, then delete DB record
-- **PII detection examples require `PII_ACTION=block`** (#1154): Updated examples and docs with prerequisite
-- **Migration runner safety** (#1140): `_down.sql` files skipped by migration runner to prevent accidental rollbacks
-- **Internal MCP calls carry tenant ID** (#1140): Orchestrator→Agent MCP calls now include tenant ID for correct access isolation
+- **Encrypted credentials never decrypted on load**: `RuntimeConfigService` now uses `CredentialEncryptor.Decrypt()` instead of `json.Unmarshal`
+- **MySQL DSN credentials persisted in stored URLs**: `StripURLCredentials` now handles `@tcp()` and `@unix()` DSN formats
+- **Connector uninstall DB/registry divergence**: Unregister from memory first, then delete DB record
+- **PII detection examples require `PII_ACTION=block`**: Updated examples and docs with prerequisite
+- **Migration runner safety**: `_down.sql` files skipped by migration runner to prevent accidental rollbacks
+- **Internal MCP calls carry tenant ID**: Orchestrator→Agent MCP calls now include tenant ID for correct access isolation
 
 #### Changed
 
-- **Connector install/uninstall requires `tenant_id`** when a DB is present (#1140, #1157): Prevents silent inconsistent state; matches schema constraints
-- **`context.provider` remains preference** (#1140): Failover still default unless `strict_provider` is set
-- **LLM provider runtime constraints** (#1140): Expanded allowed provider names to include `gemini`, `azure-openai`, and `custom`
-- **Connector runtime constraints** (#1140): Expanded allowed connector types to include SDK-backed connectors (http/mysql/mongodb/redis/s3/etc)
-- **SDK versions bumped to v3.2.0** across all examples and docs (#1158, #1145)
-- **README**: Design Partner program CTA (#1149), Feedback Week (#1151), LLM provider scope clarification (#1159)
+- **Connector install/uninstall requires `tenant_id`** when a DB is present: Prevents silent inconsistent state; matches schema constraints
+- **`context.provider` remains preference**: Failover still default unless `strict_provider` is set
+- **LLM provider runtime constraints**: Expanded allowed provider names to include `gemini`, `azure-openai`, and `custom`
+- **Connector runtime constraints**: Expanded allowed connector types to include SDK-backed connectors (http/mysql/mongodb/redis/s3/etc)
+- **SDK versions bumped to v3.2.0** across all examples and docs
+- **README**: Design Partner program CTA, Feedback Week, LLM provider scope clarification
 
 ### Enterprise
 
 #### Added
 
-- **Enterprise runtime config bootstrap** (#1140): Ensures runtime connector/LLM config tables are created after `customers` exists
-- **Bedrock example hardening** (#1140): Enterprise Bedrock example now uses standard env aliases + enterprise JWT for policy pre-checks
+- **Enterprise runtime config bootstrap**: Ensures runtime connector/LLM config tables are created after `customers` exists
+- **Bedrock example hardening**: Enterprise Bedrock example now uses standard env aliases + enterprise JWT for policy pre-checks
 
 ## [4.0.0] - 2026-02-03
 
@@ -2753,43 +2781,43 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **Configurable System Policy Architecture** (#1121): Per-mode policy control for MCP and Gateway modes
-  - `MCP_STATIC_POLICIES_ENABLED` / `GATEWAY_STATIC_POLICIES_ENABLED`: enable/disable static policies per mode
-  - `MCP_PII_ACTION` / `GATEWAY_PII_ACTION`: override PII action per mode (block/redact/warn/log)
-  - `MCP_SQLI_ACTION` / `GATEWAY_SQLI_ACTION`: override SQLi action per mode
-  - `MCP_STATIC_POLICIES_SKIP_CATEGORIES` / `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES`: skip specific categories
-  - Env var precedence: mode-specific → global (`PII_ACTION`) → engine defaults
-- **Policy Engine Consolidation** (#1122): Single evaluation path across all modes
-  - Proxy, Gateway, and MCP all use `UnifiedPolicyEngine` as primary path (was three separate engines)
-  - Standalone `AuditManager` decoupled from `DatabasePolicyEngine`; shared engine now receives audit adapter
-  - Admin role handling via `SkipCategories` instead of engine-level role checks
-- **MCP Execute Policy Responses** (#969): `policy_info`, `redacted`, `redacted_fields` in MCP execute responses
-- **Execution Replay CLI + Embedded Execution Viewer UI** (#1120):
-  - `axonctl executions list/get/replay/export`: CLI commands for inspecting workflow executions from the terminal
-  - Browser-based execution viewer at `/ui/executions/` via Go `embed.FS`. Filterable execution list, step timeline visualization, JSON export
-  - Supports both MAP (Multi-Agent Planning) and WCP (Workflow Control Plane) executions
-- **HMAC-Signed Internal Service Tokens** (#627, #1114): HMAC-SHA256 signed tokens replace plain shared-secret for orchestrator-to-agent auth. 5-minute replay protection. Backward-compatible with deprecation warning.
-- **Singapore PII patterns documentation** (#1076, #1118): SDK feature coverage docs updated with NRIC, FIN, UEN patterns
+- **Configurable System Policy Architecture**: Per-mode policy control for MCP and Gateway modes
+ - `MCP_STATIC_POLICIES_ENABLED` / `GATEWAY_STATIC_POLICIES_ENABLED`: enable/disable static policies per mode
+ - `MCP_PII_ACTION` / `GATEWAY_PII_ACTION`: override PII action per mode (block/redact/warn/log)
+ - `MCP_SQLI_ACTION` / `GATEWAY_SQLI_ACTION`: override SQLi action per mode
+ - `MCP_STATIC_POLICIES_SKIP_CATEGORIES` / `GATEWAY_STATIC_POLICIES_SKIP_CATEGORIES`: skip specific categories
+ - Env var precedence: mode-specific → global (`PII_ACTION`) → engine defaults
+- **Policy Engine Consolidation**: Single evaluation path across all modes
+ - Proxy, Gateway, and MCP all use `UnifiedPolicyEngine` as primary path (was three separate engines)
+ - Standalone `AuditManager` decoupled from `DatabasePolicyEngine`; shared engine now receives audit adapter
+ - Admin role handling via `SkipCategories` instead of engine-level role checks
+- **MCP Execute Policy Responses**: `policy_info`, `redacted`, `redacted_fields` in MCP execute responses
+- **Execution Replay CLI + Embedded Execution Viewer UI**:
+ - `axonctl executions list/get/replay/export`: CLI commands for inspecting workflow executions from the terminal
+ - Browser-based execution viewer at `/ui/executions/` via Go `embed.FS`. Filterable execution list, step timeline visualization, JSON export
+ - Supports both MAP (Multi-Agent Planning) and WCP (Workflow Control Plane) executions
+- **HMAC-Signed Internal Service Tokens**: HMAC-SHA256 signed tokens replace plain shared-secret for orchestrator-to-agent auth. 5-minute replay protection. Backward-compatible with deprecation warning.
+- **Singapore PII patterns documentation**: SDK feature coverage docs updated with NRIC, FIN, UEN patterns
 
 #### Fixed
 
-- **Gateway pre-check ignoring `GATEWAY_STATIC_POLICIES_ENABLED=false`** (#1121): Fell through to `dbPolicyEngine` which didn't check the flag
-- **Orchestrator ignoring action overrides** (#1121): `processWithSharedEngine()` and `DetectWithSharedEngine()` now respect per-mode config
-- **Proxy mode ignoring per-mode policy config** (#1122): Now uses `UnifiedPolicyEngine` with `GATEWAY_*` env vars
-- **Shared policy engine had nil audit queue** (#1122): Policy evaluations in MCP/Gateway now log through audit infrastructure
-- **Dockerfile missing `/var/lib/axonflow/audit/`** (#1122): Audit queue fallback failed for non-root user
-- **Gateway enterprise integration tests** (#283, #1112): Fixed OAuth2 Basic auth with valid V2 license format
-- **Marketplace connector persistence tests** (#283, #1112): Fixed lazy-loaded connectors after `ReloadFromStorage`
-- **HITL examples only tested CRUD** (#1090, #1113): All 4 SDKs now test actual enforcement via `ProxyLLMCall`
+- **Gateway pre-check ignoring `GATEWAY_STATIC_POLICIES_ENABLED=false`**: Fell through to `dbPolicyEngine` which didn't check the flag
+- **Orchestrator ignoring action overrides**: `processWithSharedEngine()` and `DetectWithSharedEngine()` now respect per-mode config
+- **Proxy mode ignoring per-mode policy config**: Now uses `UnifiedPolicyEngine` with `GATEWAY_*` env vars
+- **Shared policy engine had nil audit queue**: Policy evaluations in MCP/Gateway now log through audit infrastructure
+- **Dockerfile missing `/var/lib/axonflow/audit/`**: Audit queue fallback failed for non-root user
+- **Gateway enterprise integration tests**: Fixed OAuth2 Basic auth with valid V2 license format
+- **Marketplace connector persistence tests**: Fixed lazy-loaded connectors after `ReloadFromStorage`
+- **HITL examples only tested CRUD**: All 4 SDKs now test actual enforcement via `ProxyLLMCall`
 
 #### Changed
 
 - **SDKs v3.0.0**: All four SDKs bumped to v3.0.0 (Python skips v2.0.0 for cross-SDK version consistency):
-  - **Removed `executeQuery()`** (deprecated since v2.5): Use `proxyLLMCall()` for proxy mode or MCP connector queries
-  - **TypeScript**: Removed 5 deprecated LLM interceptors, added `wasRedacted()` helper
-  - **Python**: Skipped v2.0.0 → v3.0.0 for consistency. Added `was_redacted()`, fixed internal MCP call serialization, fixed null `policies_evaluated` validation
-  - **Go**: Updated module path to `axonflow-sdk-go/v3`, added `WasRedacted()`
-  - **Java**: Removed `executeQuery()`/`executeQueryAsync()`, verified `isRedacted()`
+ - **Removed `executeQuery()`** (deprecated since v2.5): Use `proxyLLMCall()` for proxy mode or MCP connector queries
+ - **TypeScript**: Removed 5 deprecated LLM interceptors, added `wasRedacted()` helper
+ - **Python**: Skipped v2.0.0 → v3.0.0 for consistency. Added `was_redacted()`, fixed internal MCP call serialization, fixed null `policies_evaluated` validation
+ - **Go**: Updated module path to `axonflow-sdk-go/v3`, added `WasRedacted()`
+ - **Java**: Removed `executeQuery()`/`executeQueryAsync()`, verified `isRedacted()`
 - **Gateway mode examples enhanced**: PII detection (SSN, India PAN, Aadhaar) and SQLi blocking (DROP TABLE, UNION SELECT) assertions added across all 4 SDKs
 - **New examples**: `policy-configuration/` and `gateway-policy-config/` (Go, Python, TypeScript, Java)
 - **Enhanced examples**: `pii-detection/`, `sqli-detection/`, `mcp-policies/`, `map/` updated with multi-action mode and `policy_info`
@@ -2807,26 +2835,26 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Fixed
 
-- **MCP Community Auth** (#1109): MCP query/execute endpoints incorrectly required license validation in community mode, returning HTTP 401
-  - Replaced raw environment variable check with canonical `isCommunityMode()` helper
-  - Extracted duplicated license validation into shared `validateServiceLicense()` helper
-- **MAP Replay Recording** (#1108): Parallel execution path was missing replay recording. MAP executions left no trace in `execution_snapshots`
-  - Added `StartExecution`, `recordStepSnapshot`, `CompleteExecution`/`FailExecution` calls to parallel path
-- **MAP Parallel Data Race** (#1108): Input map shared across parallel goroutines without protection
-- **MAP Silent Error Swallowing** (#1108): `FailExecution` errors silently discarded in 4 call sites
-- **EU AI Act Export Data Race** (#1109): `CreateExport` returned shared pointer mutated by async goroutine, causing flaky tests under `-race`
-- **Anthropic Default Model** (#1109): Updated default from `claude-3-5-sonnet-20241022` (404) to `claude-sonnet-4-20250514`
+- **MCP Community Auth**: MCP query/execute endpoints incorrectly required license validation in community mode, returning HTTP 401
+ - Replaced raw environment variable check with canonical `isCommunityMode()` helper
+ - Extracted duplicated license validation into shared `validateServiceLicense()` helper
+- **MAP Replay Recording**: Parallel execution path was missing replay recording. MAP executions left no trace in `execution_snapshots`
+ - Added `StartExecution`, `recordStepSnapshot`, `CompleteExecution`/`FailExecution` calls to parallel path
+- **MAP Parallel Data Race**: Input map shared across parallel goroutines without protection
+- **MAP Silent Error Swallowing**: `FailExecution` errors silently discarded in 4 call sites
+- **EU AI Act Export Data Race**: `CreateExport` returned shared pointer mutated by async goroutine, causing flaky tests under `-race`
+- **Anthropic Default Model**: Updated default from `claude-3-5-sonnet-20241022` (404) to `claude-sonnet-4-20250514`
 
 #### Added
 
-- **HTTP Examples** (#1109): Added missing HTTP examples for `mcp-connectors` and `map` (completing 30/30 cross-language coverage)
+- **HTTP Examples**: Added missing HTTP examples for `mcp-connectors` and `map` (completing 30/30 cross-language coverage)
 
 ### Enterprise
 
 #### Fixed
 
-- **V1 License Error Messaging** (#1106): Renamed error code to `V1_LICENSE_NOT_SUPPORTED`, removed internal tool paths from user-facing errors
-- **DEPLOYMENT_MODE Case Handling** (#1109): Removed unnecessary case normalization in admin auth middleware
+- **V1 License Error Messaging**: Renamed error code to `V1_LICENSE_NOT_SUPPORTED`, removed internal tool paths from user-facing errors
+- **DEPLOYMENT_MODE Case Handling**: Removed unnecessary case normalization in admin auth middleware
 
 #### Security
 
@@ -2840,150 +2868,150 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 #### Added
 
-- **Unified Execution Tracking** (#1075): Consistent status tracking for MAP plans and WCP workflows
-  - New unified execution history table (`execution_history`) for both MAP and WCP executions
-  - `GET /api/v1/executions/{id}` - Get unified execution status by ID
-  - `GET /api/v1/executions` - List executions with type/status filters
-  - `ExecutionType`: `map_plan`, `wcp_workflow`
-  - `ExecutionStatusValue`: `pending`, `running`, `completed`, `failed`, `cancelled`, `aborted`, `expired`
-  - `StepStatusValue`: `pending`, `running`, `completed`, `failed`, `skipped`, `blocked`, `approval`
-  - `UnifiedStepType`: `llm_call`, `tool_call`, `connector_call`, `human_task`, `synthesis`, `action`, `gate`
-  - Unified step tracking with duration, cost, and policy decision fields
-  - SDK support in Go v2.7.0, Python v1.7.0, TypeScript v2.7.0, Java v2.7.0
+- **Unified Execution Tracking**: Consistent status tracking for MAP plans and WCP workflows
+ - New unified execution history table (`execution_history`) for both MAP and WCP executions
+ - `GET /api/v1/executions/{id}` - Get unified execution status by ID
+ - `GET /api/v1/executions` - List executions with type/status filters
+ - `ExecutionType`: `map_plan`, `wcp_workflow`
+ - `ExecutionStatusValue`: `pending`, `running`, `completed`, `failed`, `cancelled`, `aborted`, `expired`
+ - `StepStatusValue`: `pending`, `running`, `completed`, `failed`, `skipped`, `blocked`, `approval`
+ - `UnifiedStepType`: `llm_call`, `tool_call`, `connector_call`, `human_task`, `synthesis`, `action`, `gate`
+ - Unified step tracking with duration, cost, and policy decision fields
+ - SDK support in Go v2.7.0, Python v1.7.0, TypeScript v2.7.0, Java v2.7.0
 
-- **Singapore PII Detection** (#1078): MAS FEAT compliance patterns for PII detection
-  - NRIC pattern detection (S/T/M/F/G prefixes) with critical severity
-  - FIN pattern detection (F/G prefixes) for foreign identification
-  - UEN pattern detection for business entities
-  - Singapore phone numbers (+65 format)
-  - Singapore postal codes (6-digit)
-  - Examples: Go, Python, TypeScript, HTTP
+- **Singapore PII Detection**: MAS FEAT compliance patterns for PII detection
+ - NRIC pattern detection (S/T/M/F/G prefixes) with critical severity
+ - FIN pattern detection (F/G prefixes) for foreign identification
+ - UEN pattern detection for business entities
+ - Singapore phone numbers (+65 format)
+ - Singapore postal codes (6-digit)
+ - Examples: Go, Python, TypeScript, HTTP
 
-- **Compliance Policy Categories** (#1081): New policy category constants for compliance evaluation
-  - Added `CategoryComplianceEUAIAct` and `CategoryComplianceMASFEAT` constants
-  - Added `IsComplianceCategory()` and `AllComplianceCategories()` helper functions
-  - RBI, SEBI, EU AI Act, and MAS FEAT categories evaluated at gateway and MCP handlers
+- **Compliance Policy Categories**: New policy category constants for compliance evaluation
+ - Added `CategoryComplianceEUAIAct` and `CategoryComplianceMASFEAT` constants
+ - Added `IsComplianceCategory()` and `AllComplianceCategories()` helper functions
+ - RBI, SEBI, EU AI Act, and MAS FEAT categories evaluated at gateway and MCP handlers
 
-- **Redis Policy Store** (#1071): Distributed rate limiting and budget tracking for MCP policies with automatic fallback
+- **Redis Policy Store**: Distributed rate limiting and budget tracking for MCP policies with automatic fallback
 
-- **Budget Enforcement Wiring** (#1082): Budget limits now block requests when exceeded
-  - Gateway calls `CheckBudget()` before processing requests
-  - HTTP 402 returned when budget exceeded with `on_exceed=block`
-  - `X-Budget-Warning` header for `on_exceed=warn`
-  - `BudgetInfo` in response
+- **Budget Enforcement Wiring**: Budget limits now block requests when exceeded
+ - Gateway calls `CheckBudget()` before processing requests
+ - HTTP 402 returned when budget exceeded with `on_exceed=block`
+ - `X-Budget-Warning` header for `on_exceed=warn`
+ - `BudgetInfo` in response
 
-- **HITL Workflow Engine Wiring** (#1082): Human-in-the-Loop integrated with workflow execution
-  - `ExecuteWithHITL()` wired to production execution path
-  - Enterprise: Database persistence; Community: In-memory with auto-approve
+- **HITL Workflow Engine Wiring**: Human-in-the-Loop integrated with workflow execution
+ - `ExecuteWithHITL()` wired to production execution path
+ - Enterprise: Database persistence; Community: In-memory with auto-approve
 
-- **WCP to HITL Connection** (#1082): `require_approval` decisions create HITL queue entries
+- **WCP to HITL Connection**: `require_approval` decisions create HITL queue entries
 
-- **MAP Conditional Branch Execution** (#1082): Branches now execute steps, not just record intent
+- **MAP Conditional Branch Execution**: Branches now execute steps, not just record intent
 
-- **MAP Parallel Execution Tolerance** (#1082): Configurable `SoftFailureTolerance` replaces hardcoded logic
+- **MAP Parallel Execution Tolerance**: Configurable `SoftFailureTolerance` replaces hardcoded logic
 
-- **Policy Cache Refresh API** (#1082): Immediate policy availability after CRUD operations
-  - New `PolicyEngineRefresher` interface for policy engines
-  - `RefreshPolicies()` method on both `DynamicPolicyEngine` and `DatabaseDynamicPolicyEngine`
-  - `PolicyService` triggers refresh after create, update, delete, and import operations
-  - Eliminates 30-second cache delay for WCP HITL integration
+- **Policy Cache Refresh API**: Immediate policy availability after CRUD operations
+ - New `PolicyEngineRefresher` interface for policy engines
+ - `RefreshPolicies()` method on both `DynamicPolicyEngine` and `DatabaseDynamicPolicyEngine`
+ - `PolicyService` triggers refresh after create, update, delete, and import operations
+ - Eliminates 30-second cache delay for WCP HITL integration
 
-- **Dynamic Policy `require_approval` Action** (#1082): HITL trigger from dynamic policies
-  - New `require_approval` action type in dynamic policy evaluation
-  - Sets `Allowed=false` and adds `require_approval` to `RequiredActions`
-  - Supports `reason` field in action config for approval context
+- **Dynamic Policy `require_approval` Action**: HITL trigger from dynamic policies
+ - New `require_approval` action type in dynamic policy evaluation
+ - Sets `Allowed=false` and adds `require_approval` to `RequiredActions`
+ - Supports `reason` field in action config for approval context
 
-- **Nested Context Path Support** (#1082): Enhanced dynamic policy field matching
-  - `context.step_input.query` now correctly resolves to `req.Context["step_input.query"]`
-  - Supports arbitrary depth in dotted notation (e.g., `context.a.b.c`)
+- **Nested Context Path Support**: Enhanced dynamic policy field matching
+ - `context.step_input.query` now correctly resolves to `req.Context["step_input.query"]`
+ - Supports arbitrary depth in dotted notation (e.g., `context.a.b.c`)
 
 #### Fixed
 
-- **HMAC Secret Panic** (#1082): Enterprise Docker images no longer panic when HMAC secret not initialized
-  - Added `isHMACSecretInitialized()` thread-safe check using RLock
-  - `IsEnterpriseTier()` returns false gracefully instead of panicking
-  - Allows enterprise images to run in community mode without configuration changes
+- **HMAC Secret Panic**: Enterprise Docker images no longer panic when HMAC secret not initialized
+ - Added `isHMACSecretInitialized()` thread-safe check using RLock
+ - `IsEnterpriseTier()` returns false gracefully instead of panicking
+ - Allows enterprise images to run in community mode without configuration changes
 
-- **MCP Dynamic Policy Evaluation** (#1071): Fixed multiple pre-existing bugs preventing MCP dynamic policies from working
-  - Added MCP policy types to validation, fixed DATABASE_URL propagation, created interface for both in-memory and database engines
-- **Agent DB Auth** (#1071): Fixed JSON parsing for permissions from JSONB array
-- **Cassandra Connector** (#1071): Apply timeout from query config to CQL operations
+- **MCP Dynamic Policy Evaluation**: Fixed multiple pre-existing bugs preventing MCP dynamic policies from working
+ - Added MCP policy types to validation, fixed DATABASE_URL propagation, created interface for both in-memory and database engines
+- **Agent DB Auth**: Fixed JSON parsing for permissions from JSONB array
+- **Cassandra Connector**: Apply timeout from query config to CQL operations
 
-- **SDK Examples with Assertions** (#1082, #1097, #1099): Examples now have proper pass/fail testing and exit with code 1 on failure
-  - Added assertions across all 4 SDKs (Go, Python, TypeScript, Java)
-  - Community examples fixes (#1099): workflow examples, policy examples, integration examples
+- **SDK Examples with Assertions**: Examples now have proper pass/fail testing and exit with code 1 on failure
+ - Added assertions across all 4 SDKs (Go, Python, TypeScript, Java)
+ - Community examples fixes: workflow examples, policy examples, integration examples
 
-- **HITL Enforcement for Compliance Frameworks** (#1089): Fixed HITL not triggering in Proxy Mode
-  - Root cause: Database constraint missing `require_approval` action + runtime wiring gap
-  - Migration 044: Added `require_approval` to `action_request`/`action_response` constraints
-  - Added `ActionRequireApproval` action type to shared policy types
-  - Multi-strategy HITL detection: `eu_ai_act_article_14`, `requires_hitl` + compliance context, high-risk + compliance framework
-  - EU AI Act and RBI-SEBI examples now achieve 100% HITL compliance rate
+- **HITL Enforcement for Compliance Frameworks**: Fixed HITL not triggering in Proxy Mode
+ - Root cause: Database constraint missing `require_approval` action + runtime wiring gap
+ - Migration 044: Added `require_approval` to `action_request`/`action_response` constraints
+ - Added `ActionRequireApproval` action type to shared policy types
+ - Multi-strategy HITL detection: `eu_ai_act_article_14`, `requires_hitl` + compliance context, high-risk + compliance framework
+ - EU AI Act and RBI-SEBI examples now achieve 100% HITL compliance rate
 
 #### Deprecated
 
-- **API: page_size → limit** (#1099): Standardized pagination parameter name
-  - **Action Required:** Migrate from `page_size` to `limit` before v4.0.0
-  - `page_size` query parameter is deprecated and **will be removed in v4.0.0**
-  - Affected endpoints: `/api/v1/static-policies`, `/api/v1/dynamic-policies`
-  - Both parameters work during transition period; `limit` takes precedence
+- **API: page_size → limit**: Standardized pagination parameter name
+ - **Action Required:** Migrate from `page_size` to `limit` before v4.0.0
+ - `page_size` query parameter is deprecated and **will be removed in v4.0.0**
+ - Affected endpoints: `/api/v1/static-policies`, `/api/v1/dynamic-policies`
+ - Both parameters work during transition period; `limit` takes precedence
 
-- **SDK: ExecuteQuery → ProxyLLMCall** (#1052): Renamed for clearer Proxy Mode semantics
-  - **Action Required:** Migrate from `executeQuery()` to `proxyLLMCall()` before the next major release
-  - Old methods emit deprecation warnings and **will be removed in v4.0.0**
-  - New names clarify the two integration modes:
-    - **Proxy Mode:** `proxyLLMCall()` - AxonFlow proxies your LLM request
-    - **Gateway Mode:** `getPolicyApprovedContext()` + `auditLLMCall()` - You call LLM directly
-  - All SDK examples and demos updated to use new method names
-  - Applies to: Go SDK, TypeScript SDK, Python SDK, Java SDK
+- **SDK: ExecuteQuery → ProxyLLMCall**: Renamed for clearer Proxy Mode semantics
+ - **Action Required:** Migrate from `executeQuery()` to `proxyLLMCall()` before the next major release
+ - Old methods emit deprecation warnings and **will be removed in v4.0.0**
+ - New names clarify the two integration modes:
+ - **Proxy Mode:** `proxyLLMCall()` - AxonFlow proxies your LLM request
+ - **Gateway Mode:** `getPolicyApprovedContext()` + `auditLLMCall()` - You call LLM directly
+ - All SDK examples and demos updated to use new method names
+ - Applies to: Go SDK, TypeScript SDK, Python SDK, Java SDK
 
 ### Enterprise
 
 #### Added
 
 - **MAS FEAT Compliance Module**: Singapore financial services AI governance framework
-  - Implements Monetary Authority of Singapore FEAT (Fairness, Ethics, Accountability, Transparency) guidelines
-  - AI System Registry with 3-Dimensional Risk Rating (Customer Impact × Model Complexity × Human Reliance)
-  - Materiality Classification: High (sum≥12), Medium (sum≥8), Low (sum<8)
-  - FEAT Assessment lifecycle: pending → in_progress → completed → approved/rejected
-  - Four pillar scoring: Fairness, Ethics, Accountability, Transparency (with detailed sub-metrics)
-  - Kill Switch with automatic triggering based on accuracy, bias, and error rate thresholds
-  - 7-year audit retention for regulatory compliance
-  - Singapore-specific PII detection with Verhoeff checksum validation (NRIC, FIN, UEN)
+ - Implements Monetary Authority of Singapore FEAT (Fairness, Ethics, Accountability, Transparency) guidelines
+ - AI System Registry with 3-Dimensional Risk Rating (Customer Impact × Model Complexity × Human Reliance)
+ - Materiality Classification: High (sum≥12), Medium (sum≥8), Low (sum<8)
+ - FEAT Assessment lifecycle: pending → in_progress → completed → approved/rejected
+ - Four pillar scoring: Fairness, Ethics, Accountability, Transparency (with detailed sub-metrics)
+ - Kill Switch with automatic triggering based on accuracy, bias, and error rate thresholds
+ - 7-year audit retention for regulatory compliance
+ - Singapore-specific PII detection with Verhoeff checksum validation (NRIC, FIN, UEN)
 
 - **MAS FEAT Database Schema**: New tables for compliance data
-  - `ai_system_registry` - AI system registration with materiality tracking
-  - `feat_assessments` - FEAT assessment records with pillar scores
-  - `kill_switch` - Kill switch configuration and status
-  - `kill_switch_events` - Kill switch event audit log
+ - `ai_system_registry` - AI system registration with materiality tracking
+ - `feat_assessments` - FEAT assessment records with pillar scores
+ - `kill_switch` - Kill switch configuration and status
+ - `kill_switch_events` - Kill switch event audit log
 
 - **MAS FEAT API Endpoints**: Full REST API for compliance operations
-  - AI System Registry CRUD (`/api/v1/masfeat/registry/*`)
-  - FEAT Assessment lifecycle (`/api/v1/masfeat/assessments/*`)
-  - Kill Switch management (`/api/v1/masfeat/killswitch/*`)
+ - AI System Registry CRUD (`/api/v1/masfeat/registry/*`)
+ - FEAT Assessment lifecycle (`/api/v1/masfeat/assessments/*`)
+ - Kill Switch management (`/api/v1/masfeat/killswitch/*`)
 
-- **Compliance Runtime Wiring** (#1081): Enterprise compliance module initialization
-  - RBI, SEBI, EU AI Act, and MAS FEAT module initialization with health checks
-  - Compliance route registration (`/api/v1/rbi/*`, `/api/v1/sebi/*`, `/api/v1/euaiact/*`, `/api/v1/masfeat/*`)
-  - Compliance examples with strict HITL assertion validation
+- **Compliance Runtime Wiring**: Enterprise compliance module initialization
+ - RBI, SEBI, EU AI Act, and MAS FEAT module initialization with health checks
+ - Compliance route registration (`/api/v1/rbi/*`, `/api/v1/sebi/*`, `/api/v1/euaiact/*`, `/api/v1/masfeat/*`)
+ - Compliance examples with strict HITL assertion validation
 
-- **HITL Execution Store** (#1071): In-memory store with SaveExecution/GetExecutionStatus for pause/resume workflow
+- **HITL Execution Store**: In-memory store with SaveExecution/GetExecutionStatus for pause/resume workflow
 
-- **SCIM Provisioning Examples** (#1082): User, group, token management examples
+- **SCIM Provisioning Examples**: User, group, token management examples
 
-- **WCP HITL Queue Integration** (#1092): `require_approval` policy actions now create HITL queue entries
-  - Enterprise: Database persistence in `hitl_approval_queue` with `wcp_step_gate` request type
-  - Community: No-op stub with informational logging
-  - 24-hour default expiry for approval requests
-  - New E2E example at `ee/examples/workflows/wcp-hitl/go` verifying queue entry creation
+- **WCP HITL Queue Integration**: `require_approval` policy actions now create HITL queue entries
+ - Enterprise: Database persistence in `hitl_approval_queue` with `wcp_step_gate` request type
+ - Community: No-op stub with informational logging
+ - 24-hour default expiry for approval requests
+ - New E2E example at `ee/examples/workflows/wcp-hitl/go` verifying queue entry creation
 
 #### Fixed
 
-- **WCP HITL Approval Queue Insert** (#1082): Fixed INSERT query for `hitl_approval_queue` table
-  - Removed explicit `id` column from INSERT (now auto-generated by sequence)
-  - `request_id` (UUID) is the primary identifier for approval requests
+- **WCP HITL Approval Queue Insert**: Fixed INSERT query for `hitl_approval_queue` table
+ - Removed explicit `id` column from INSERT (now auto-generated by sequence)
+ - `request_id` (UUID) is the primary identifier for approval requests
 
-- **SDK Examples Fixes** (#1099): Fixed enterprise examples (eu-ai-act, rbi-sebi, healthcare, llm-providers/e2e-tests) across all 4 SDKs
+- **SDK Examples Fixes**: Fixed enterprise examples (eu-ai-act, rbi-sebi, healthcare, llm-providers/e2e-tests) across all 4 SDKs
 
 #### SDK Support
 
@@ -2998,16 +3026,16 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Added
 
-- **Workflow Policy Enforcement** (#1019, #1020, #1021): Policy evaluation at workflow transitions
-  - **MAP Policy Enforcement** (#1020): Dynamic policy evaluation before plan execution
-    - Policy check in `executePlanHandler` with allow/block decisions
-    - `PolicyInfo` field in `PlanResponse` with evaluated policies and risk score
-    - Policy results recorded in step execution snapshots for replay/audit
-  - **WCP Policy Enforcement** (#1021): Connect WCP to dynamic policy engine
-    - New `WCPPolicyAdapter` bridges workflow_control to orchestrator policy engine
-    - `policies_evaluated` and `policies_matched` fields in `StepGateResponse`
-    - Detailed policy match information (policy_id, policy_name, action, reason)
-    - Support for allow/block/require_approval decisions based on policy evaluation
+- **Workflow Policy Enforcement**: Policy evaluation at workflow transitions
+ - **MAP Policy Enforcement**: Dynamic policy evaluation before plan execution
+ - Policy check in `executePlanHandler` with allow/block decisions
+ - `PolicyInfo` field in `PlanResponse` with evaluated policies and risk score
+ - Policy results recorded in step execution snapshots for replay/audit
+ - **WCP Policy Enforcement**: Connect WCP to dynamic policy engine
+ - New `WCPPolicyAdapter` bridges workflow_control to orchestrator policy engine
+ - `policies_evaluated` and `policies_matched` fields in `StepGateResponse`
+ - Detailed policy match information (policy_id, policy_name, action, reason)
+ - Support for allow/block/require_approval decisions based on policy evaluation
 
 ### Tests
 
@@ -3027,14 +3055,14 @@ This major version also formally acknowledges a breaking change shipped in a pri
 ### Added
 
 - **Workflow Control Plane V1**: Governance gates for external orchestrators (LangChain, LangGraph, CrewAI)
-  - "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
-  - Register workflows from external orchestrators with `POST /api/v1/workflows`
-  - Step gate checks with allow/block/require_approval decisions
-  - Policy evaluation at step transitions with new `workflow` scope
-  - Workflow lifecycle tracking (in_progress/completed/aborted/failed)
-  - New database tables: `workflows`, `workflow_steps`
-  - SDK support: Go, TypeScript (Python and Java in standalone repos)
-  - Examples: HTTP, Go, Python, TypeScript, Java + LangGraph adapter
+ - "LangChain runs the workflow. AxonFlow decides when it's allowed to move forward."
+ - Register workflows from external orchestrators with `POST /api/v1/workflows`
+ - Step gate checks with allow/block/require_approval decisions
+ - Policy evaluation at step transitions with new `workflow` scope
+ - Workflow lifecycle tracking (in_progress/completed/aborted/failed)
+ - New database tables: `workflows`, `workflow_steps`
+ - SDK support: Go, TypeScript (Python and Java in standalone repos)
+ - Examples: HTTP, Go, Python, TypeScript, Java + LangGraph adapter
 
 - **Grafana Dashboard**: Security & Compliance section with PII detection, provider distribution, and policy metrics panels
 
@@ -3053,21 +3081,21 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Added
 
-- **MCP Connector Audit Logging** (#1006): Full audit trail for all MCP connector queries and commands
-  - New `mcp_query_audits` table captures all MCP operations with policy evaluation results
-  - REQUEST phase logging: SQLi detection, PII blocking, matched policies
-  - RESPONSE phase logging: PII redaction, redacted field paths (JSONPath format)
-  - EXFILTRATION logging: Row counts, volume limit violations
-  - Compliance mode (sync) for violations, performance mode (async) for success
-  - Statement privacy: SHA256 hash stored instead of raw queries
-  - `audit_id` field correlates with SDK `PolicyInfo` for traceability
+- **MCP Connector Audit Logging**: Full audit trail for all MCP connector queries and commands
+ - New `mcp_query_audits` table captures all MCP operations with policy evaluation results
+ - REQUEST phase logging: SQLi detection, PII blocking, matched policies
+ - RESPONSE phase logging: PII redaction, redacted field paths (JSONPath format)
+ - EXFILTRATION logging: Row counts, volume limit violations
+ - Compliance mode (sync) for violations, performance mode (async) for success
+ - Statement privacy: SHA256 hash stored instead of raw queries
+ - `audit_id` field correlates with SDK `PolicyInfo` for traceability
 
 - **MCP Audit Examples**: Comprehensive examples for all 4 SDKs + HTTP API
-  - `examples/mcp-audit/http/` - HTTP API examples (curl/bash)
-  - `examples/mcp-audit/go/` - Go SDK example
-  - `examples/mcp-audit/python/` - Python SDK example
-  - `examples/mcp-audit/typescript/` - TypeScript SDK example
-  - `examples/mcp-audit/java/` - Java SDK example
+ - `examples/mcp-audit/http/` - HTTP API examples (curl/bash)
+ - `examples/mcp-audit/go/` - Go SDK example
+ - `examples/mcp-audit/python/` - Python SDK example
+ - `examples/mcp-audit/typescript/` - TypeScript SDK example
+ - `examples/mcp-audit/java/` - Java SDK example
 
 ### Documentation
 
@@ -3081,28 +3109,28 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Added
 
-- **MCP Exfiltration Detection** (#966): Row and data volume limits for MCP connector queries
-  - Configurable row count limits (default: 10,000 per query)
-  - Configurable data volume limits (default: 10MB per response)
-  - Returns 403 with detailed limit information when exceeded
-  - `ExfiltrationCheck` field in `PolicyInfo` response
+- **MCP Exfiltration Detection**: Row and data volume limits for MCP connector queries
+ - Configurable row count limits (default: 10,000 per query)
+ - Configurable data volume limits (default: 10MB per response)
+ - Returns 403 with detailed limit information when exceeded
+ - `ExfiltrationCheck` field in `PolicyInfo` response
 
-- **MCP Dynamic Policy Evaluation** (#968): Real-time policy evaluation via Orchestrator
-  - Pre-query policy evaluation for rate limits, budgets, time/role access
-  - Graceful degradation when Orchestrator is unavailable
-  - `DynamicPolicyInfo` field in `PolicyInfo` response
+- **MCP Dynamic Policy Evaluation**: Real-time policy evaluation via Orchestrator
+ - Pre-query policy evaluation for rate limits, budgets, time/role access
+ - Graceful degradation when Orchestrator is unavailable
+ - `DynamicPolicyInfo` field in `PolicyInfo` response
 
 ### Fixed
 
-- Removed unused `MCP_DYNAMIC_POLICIES_ENDPOINT` environment variable (#1003)
+- Removed unused `MCP_DYNAMIC_POLICIES_ENDPOINT` environment variable
 
 ### Tests
 
-- Added integration tests for MCP exfiltration and dynamic policy features (#1002)
+- Added integration tests for MCP exfiltration and dynamic policy features
 
 ### Documentation
 
-- Updated community/enterprise feature matrix with MCP policy features (#1000)
+- Updated community/enterprise feature matrix with MCP policy features
 
 ---
 
@@ -3110,28 +3138,28 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Added
 
-- **MCP Tiered Policy Enforcement** (#963, #975): Phase-aware policy enforcement for MCP connector requests
-  - REQUEST phase: SQLi pattern blocking (DROP TABLE, UNION SELECT, OR 1=1, DELETE, TRUNCATE)
-  - REQUEST phase: Critical PII blocking (SSN, Credit Card, India PAN, Aadhaar)
-  - RESPONSE phase: PII redaction in connector data (SSN, Credit Card masked)
-  - PolicyInfo metadata in all MCP responses (`policies_evaluated`, `redactions_applied`, `processing_time_ms`)
-  - Non-critical PII (Email, Phone) allowed through with logging
+- **MCP Tiered Policy Enforcement**: Phase-aware policy enforcement for MCP connector requests
+ - REQUEST phase: SQLi pattern blocking (DROP TABLE, UNION SELECT, OR 1=1, DELETE, TRUNCATE)
+ - REQUEST phase: Critical PII blocking (SSN, Credit Card, India PAN, Aadhaar)
+ - RESPONSE phase: PII redaction in connector data (SSN, Credit Card masked)
+ - PolicyInfo metadata in all MCP responses (`policies_evaluated`, `redactions_applied`, `processing_time_ms`)
+ - Non-critical PII (Email, Phone) allowed through with logging
 
 - **MCP PII Redaction Examples**: Comprehensive examples for all 4 SDKs + HTTP API
-  - `examples/mcp-policies/pii-redaction/go/` - Go SDK example
-  - `examples/mcp-policies/pii-redaction/python/` - Python SDK example
-  - `examples/mcp-policies/pii-redaction/typescript/` - TypeScript SDK example
-  - `examples/mcp-policies/pii-redaction/java/` - Java SDK example
-  - `examples/mcp-policies/pii-redaction/http/` - HTTP API examples (curl)
+ - `examples/mcp-policies/pii-redaction/go/` - Go SDK example
+ - `examples/mcp-policies/pii-redaction/python/` - Python SDK example
+ - `examples/mcp-policies/pii-redaction/typescript/` - TypeScript SDK example
+ - `examples/mcp-policies/pii-redaction/java/` - Java SDK example
+ - `examples/mcp-policies/pii-redaction/http/` - HTTP API examples (curl)
 
 ### Enterprise
 
 - **Healthcare PHI Patterns**: Enterprise example for HIPAA-compliant PHI detection
-  - Medical Record Number (MRN) detection
-  - DEA Number detection
-  - NPI (National Provider Identifier) detection
-  - Medicare Beneficiary Identifier (MBI) detection
-  - ICD-10 code detection
+ - Medical Record Number (MRN) detection
+ - DEA Number detection
+ - NPI (National Provider Identifier) detection
+ - Medicare Beneficiary Identifier (MBI) detection
+ - ICD-10 code detection
 
 ### Fixed
 
@@ -3144,9 +3172,9 @@ This major version also formally acknowledges a breaking change shipped in a pri
 ### Fixed
 
 - **MAP GetPlanStatus API**: Fixed response fields to match SDK expectations
-  - Changed `step_count` to `total_steps` in API response
-  - Added `completed_steps` field (0 when pending, equals total_steps when completed)
-  - SDK methods `GetPlanStatus()` / `get_plan_status()` now correctly receive step tracking info
+ - Changed `step_count` to `total_steps` in API response
+ - Added `completed_steps` field (0 when pending, equals total_steps when completed)
+ - SDK methods `GetPlanStatus()` / `get_plan_status()` now correctly receive step tracking info
 
 ---
 
@@ -3154,7 +3182,7 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Fixed
 
-- **Agent proxy routes**: Fixed missing proxy routes for `/api/v1/pricing`, `/api/v1/plan`, and `/api/v1/audit` endpoints. SDK methods like `getPricing()`, `generatePlan()`, `executePlan()`, and `searchAuditLogs()` now work correctly through the Agent single entry point (ADR-024). Previously these returned 404 errors.
+- **Agent proxy routes**: Fixed missing proxy routes for `/api/v1/pricing`, `/api/v1/plan`, and `/api/v1/audit` endpoints. SDK methods like `getPricing()`, `generatePlan()`, `executePlan()`, and `searchAuditLogs()` now work correctly through the Agent single entry point. Previously these returned 404 errors.
 
 ### Changed
 
@@ -3162,7 +3190,7 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Enterprise
 
-- **OAuth2 Basic auth support**: Agent now accepts `Authorization: Basic base64(clientId:clientSecret)` for authentication (ADR-027), in addition to existing `X-License-Key` header.
+- **OAuth2 Basic auth support**: Agent now accepts `Authorization: Basic base64(clientId:clientSecret)` for authentication, in addition to existing `X-License-Key` header.
 - **Code governance: ClosePR endpoint**: Added endpoint for closing PRs without merging, useful for cleaning up test/demo PRs.
 
 ---
@@ -3172,29 +3200,29 @@ This major version also formally acknowledges a breaking change shipped in a pri
 ### Fixed
 
 - **Multi-Agent Planning (MAP) Two-Step Execution**: Fixed race condition where plan execution started before DB commit
-  - `GeneratePlan` now stores workflow plan in database with 1-hour TTL before returning
-  - `ExecutePlan` retrieves stored plan by `plan_id` and executes workflow
-  - New `migrations/core/037_plans.sql` - Plans table for deferred execution
-  - New `migrations/core/038_plans_composite_index.sql` - Composite index for cross-tenant queries
-  - New `platform/orchestrator/planning/` package (service, repository, types)
-  - Agent routes `execute-plan` requests to `/api/v1/plan/execute`
+ - `GeneratePlan` now stores workflow plan in database with 1-hour TTL before returning
+ - `ExecutePlan` retrieves stored plan by `plan_id` and executes workflow
+ - New `migrations/core/037_plans.sql` - Plans table for deferred execution
+ - New `migrations/core/038_plans_composite_index.sql` - Composite index for cross-tenant queries
+ - New `platform/orchestrator/planning/` package (service, repository, types)
+ - Agent routes `execute-plan` requests to `/api/v1/plan/execute`
 
 - **Agent Environment Variable Support for ECS/K8s**: Fixed orchestrator URL detection in containerized environments
-  - Agent now checks `ORCHESTRATOR_URL` env var first (required for ECS, Kubernetes)
-  - Priority: env var → Docker detection → localhost fallback
-  - Increased MAP timeout to 60s
+ - Agent now checks `ORCHESTRATOR_URL` env var first (required for ECS, Kubernetes)
+ - Priority: env var → Docker detection → localhost fallback
+ - Increased MAP timeout to 60s
 
 - **Support Demo Fixes**: Fixed broken support-demo in community repo
-  - Removed vendor dependency causing Docker build failures
-  - Fixed network naming (`axonflow_axonflow-network` requires `COMPOSE_PROJECT_NAME=axonflow`)
-  - Removed direct orchestrator calls (all requests go through Agent)
-  - Fixed role/region provider display for EU users
+ - Removed vendor dependency causing Docker build failures
+ - Fixed network naming (`axonflow_axonflow-network` requires `COMPOSE_PROJECT_NAME=axonflow`)
+ - Removed direct orchestrator calls (all requests go through Agent)
+ - Fixed role/region provider display for EU users
 
 - **Dynamic Policy API Path**: Fixed incorrect API path in examples
-  - Changed `/api/v1/policies/dynamic` → `/api/v1/dynamic-policies`
+ - Changed `/api/v1/policies/dynamic` → `/api/v1/dynamic-policies`
 
 - **Dynamic Policy Payload Format**: Fixed condition format in examples
-  - Changed `conditions: "{}"` → `conditions: "[]"` (array, not object)
+ - Changed `conditions: "{}"` → `conditions: "[]"` (array, not object)
 
 ### Added
 
@@ -3206,67 +3234,67 @@ This major version also formally acknowledges a breaking change shipped in a pri
 
 ### Breaking Changes
 
-- **Single Entry Point Architecture (ADR-024)**: All API routes now go through the Agent (port 8080)
-  - Agent proxies `/api/v1/dynamic-policies/*`, `/api/v1/budgets/*`, `/api/v1/usage/*`, `/api/v1/executions/*` to Orchestrator
-  - Agent proxies `/portal/*` routes to Customer Portal
-  - SDKs now use single `endpoint` parameter (default: `http://localhost:8080`)
-  - **Deprecated**: `agent_url` and `orchestrator_url` SDK parameters (use `endpoint` instead)
-  - **Deprecated**: Direct Orchestrator access on port 8081 (still works but not recommended)
+- **Single Entry Point Architecture**: All API routes now go through the Agent (port 8080)
+ - Agent proxies `/api/v1/dynamic-policies/*`, `/api/v1/budgets/*`, `/api/v1/usage/*`, `/api/v1/executions/*` to Orchestrator
+ - Agent proxies `/portal/*` routes to Customer Portal
+ - SDKs now use single `endpoint` parameter (default: `http://localhost:8080`)
+ - **Deprecated**: `agent_url` and `orchestrator_url` SDK parameters (use `endpoint` instead)
+ - **Deprecated**: Direct Orchestrator access on port 8081 (still works but not recommended)
 
-- **Detection Defaults Changed (ADR-025)**: More nuanced default actions based on detection confidence
-  - PII detection: `block` → `redact` (non-blocking, better UX)
-  - High risk score (>0.8): `block` → `warn` (composite score needs tuning)
-  - SQL injection: remains `block` (high confidence attacks)
-  - Dangerous queries (DROP/TRUNCATE): remains `block` (destructive operations)
+- **Detection Defaults Changed**: More nuanced default actions based on detection confidence
+ - PII detection: `block` → `redact` (non-blocking, better UX)
+ - High risk score (>0.8): `block` → `warn` (composite score needs tuning)
+ - SQL injection: remains `block` (high confidence attacks)
+ - Dangerous queries (DROP/TRUNCATE): remains `block` (destructive operations)
 
 - **Environment Variable Changes**:
-  - **New**: `SQLI_ACTION` (values: `block`, `warn`, `log`) - replaces `SQLI_BLOCK_MODE`
-  - **New**: `PII_ACTION` (values: `block`, `warn`, `redact`, `log`) - replaces `PII_BLOCK_CRITICAL`
-  - **New**: `SENSITIVE_DATA_ACTION` (values: `block`, `warn`, `log`) - credentials/secrets detection
-  - **New**: `HIGH_RISK_ACTION` (values: `block`, `warn`, `log`) - high risk score threshold
-  - **New**: `DANGEROUS_QUERY_ACTION` (values: `block`, `warn`, `log`) - DROP/TRUNCATE detection
-  - **Deprecated**: `SQLI_BLOCK_MODE` (use `SQLI_ACTION` instead)
-  - **Deprecated**: `PII_BLOCK_CRITICAL` (use `PII_ACTION` instead)
+ - **New**: `SQLI_ACTION` (values: `block`, `warn`, `log`) - replaces `SQLI_BLOCK_MODE`
+ - **New**: `PII_ACTION` (values: `block`, `warn`, `redact`, `log`) - replaces `PII_BLOCK_CRITICAL`
+ - **New**: `SENSITIVE_DATA_ACTION` (values: `block`, `warn`, `log`) - credentials/secrets detection
+ - **New**: `HIGH_RISK_ACTION` (values: `block`, `warn`, `log`) - high risk score threshold
+ - **New**: `DANGEROUS_QUERY_ACTION` (values: `block`, `warn`, `log`) - DROP/TRUNCATE detection
+ - **Deprecated**: `SQLI_BLOCK_MODE` (use `SQLI_ACTION` instead)
+ - **Deprecated**: `PII_BLOCK_CRITICAL` (use `PII_ACTION` instead)
 
 ### Added
 
 - **Sensitive Data Patterns in Database**: Credential and secret detection patterns now stored in `static_policies` table
-  - Password, API key, token, secret, credentials, connection string patterns
-  - Context exclusions for SQL keywords (PRIMARY KEY, FOREIGN KEY no longer false positives)
-  - Per-tenant customization via policy overrides (Enterprise)
+ - Password, API key, token, secret, credentials, connection string patterns
+ - Context exclusions for SQL keywords (PRIMARY KEY, FOREIGN KEY no longer false positives)
+ - Per-tenant customization via policy overrides (Enterprise)
 
 - **Environment Variable Precedence**: Clear hierarchy for detection configuration
-  1. Per-tenant policy override (API) - highest priority
-  2. Environment variable (docker-compose)
-  3. Per-policy DB default (migration seed) - lowest priority
+ 1. Per-tenant policy override (API) - highest priority
+ 2. Environment variable (docker-compose)
+ 3. Per-policy DB default (migration seed) - lowest priority
 
 - **PII Redaction Support in SDKs**: New `requiresRedaction` field in `PolicyApprovalResult`
-  - Returns `true` when PII was detected with `redact` action
-  - Callers should process response for redaction when this flag is set
-  - Available in all SDKs: `isRequiresRedaction()` (Java), `requires_redaction` (Python), `RequiresRedaction` (Go), `requiresRedaction` (TypeScript)
+ - Returns `true` when PII was detected with `redact` action
+ - Callers should process response for redaction when this flag is set
+ - Available in all SDKs: `isRequiresRedaction()` (Java), `requires_redaction` (Python), `RequiresRedaction` (Go), `requiresRedaction` (TypeScript)
 
-- **Strict Provider Enforcement for Dynamic Policies** (Issue #883): Compliance-aware LLM routing
-  - Policies can specify `allowed_providers` to restrict which LLM providers handle requests
-  - Requests **fail** (instead of fallback) if no compliant provider is available
-  - Multiple policies use **intersection logic** (least privilege - most restrictive wins)
-  - Enables GDPR, HIPAA, RBI compliance scenarios (e.g., EU data stays on-premise)
-  - Example: `{"allowed_providers": ["ollama"]}` ensures only local model handles sensitive data
+- **Strict Provider Enforcement for Dynamic Policies**: Compliance-aware LLM routing
+ - Policies can specify `allowed_providers` to restrict which LLM providers handle requests
+ - Requests **fail** (instead of fallback) if no compliant provider is available
+ - Multiple policies use **intersection logic** (least privilege - most restrictive wins)
+ - Enables GDPR, HIPAA, RBI compliance scenarios (e.g., EU data stays on-premise)
+ - Example: `{"allowed_providers": ["ollama"]}` ensures only local model handles sensitive data
 
 ### Fixed
 
 - **Dynamic policy condition evaluation**: `DatabaseDynamicPolicyEngine` now correctly evaluates conditions before applying actions
-  - Previously, all policy actions were applied regardless of whether conditions matched
-  - Now supports operators: `equals`, `not_equals`, `contains`, `not_contains`, `contains_any`, `regex`, `greater_than`, `less_than`, `in`, `not_in`
+ - Previously, all policy actions were applied regardless of whether conditions matched
+ - Now supports operators: `equals`, `not_equals`, `contains`, `not_contains`, `contains_any`, `regex`, `greater_than`, `less_than`, `in`, `not_in`
 
 - **Tenant extraction bug**: Fixed `Client.ID` → `Client.TenantID` in policy evaluation
 
 ### Changed
 
 - **SDK Method Signatures**: All SDKs updated for single endpoint
-  - Go: `axonflow.NewClient(axonflow.AxonFlowConfig{Endpoint: "http://localhost:8080"})`
-  - Python: `AxonFlow(endpoint="http://localhost:8080")`
-  - TypeScript: `new AxonFlow({ endpoint: "http://localhost:8080" })`
-  - Java: `AxonFlow.create(AxonFlowConfig.builder().endpoint("http://localhost:8080").build())`
+ - Go: `axonflow.NewClient(axonflow.AxonFlowConfig{Endpoint: "http://localhost:8080"})`
+ - Python: `AxonFlow(endpoint="http://localhost:8080")`
+ - TypeScript: `new AxonFlow({ endpoint: "http://localhost:8080" })`
+ - Java: `AxonFlow.create(AxonFlowConfig.builder().endpoint("http://localhost:8080").build())`
 
 ### Migration Guide
 
@@ -3274,8 +3302,8 @@ This major version also formally acknowledges a breaking change shipped in a pri
 ```python
 # Before (v2.x)
 client = AxonFlow(
-    agent_url="http://localhost:8080",
-    orchestrator_url="http://localhost:8081"
+ agent_url="http://localhost:8080",
+ orchestrator_url="http://localhost:8081"
 )
 
 # After (v3.0)
@@ -3302,22 +3330,22 @@ HIGH_RISK_ACTION: "warn"
 ### Added
 
 - **Decision & Execution Replay API**: Debug and audit workflow executions with full state capture and policy decisions
-  - `GET /api/v1/executions` - List executions with filtering (status, time range, agent/workflow)
-  - `GET /api/v1/executions/{id}` - Get execution with all step snapshots
-  - `GET /api/v1/executions/{id}/steps` - Get individual step snapshots
-  - `GET /api/v1/executions/{id}/timeline` - Timeline view for visualization
-  - `GET /api/v1/executions/{id}/export` - Export for compliance and archival
-  - `DELETE /api/v1/executions/{id}` - Delete execution records
-  - SDK examples for Go, Python, TypeScript, Java
+ - `GET /api/v1/executions` - List executions with filtering (status, time range, agent/workflow)
+ - `GET /api/v1/executions/{id}` - Get execution with all step snapshots
+ - `GET /api/v1/executions/{id}/steps` - Get individual step snapshots
+ - `GET /api/v1/executions/{id}/timeline` - Timeline view for visualization
+ - `GET /api/v1/executions/{id}/export` - Export for compliance and archival
+ - `DELETE /api/v1/executions/{id}` - Delete execution records
+ - SDK examples for Go, Python, TypeScript, Java
 
 - **Cost Controls Phase 1**: Budget management and LLM usage tracking
-  - Budget scopes: Organization, Team, Agent, Workflow, User
-  - Budget periods: Daily, Weekly, Monthly, Quarterly, Yearly
-  - Enforcement actions: Warn, Block, Downgrade on exceed
-  - Configurable alert thresholds (default 50%, 80%, 100%)
-  - Usage aggregation: Hourly, Daily, Weekly, Monthly
-  - Provider pricing for OpenAI, Anthropic, Azure, Gemini, Bedrock, Ollama
-  - SDK examples for Go, Python, TypeScript, Java
+ - Budget scopes: Organization, Team, Agent, Workflow, User
+ - Budget periods: Daily, Weekly, Monthly, Quarterly, Yearly
+ - Enforcement actions: Warn, Block, Downgrade on exceed
+ - Configurable alert thresholds (default 50%, 80%, 100%)
+ - Usage aggregation: Hourly, Daily, Weekly, Monthly
+ - Provider pricing for OpenAI, Anthropic, Azure, Gemini, Bedrock, Ollama
+ - SDK examples for Go, Python, TypeScript, Java
 
 ### Fixed
 
@@ -3325,7 +3353,7 @@ HIGH_RISK_ACTION: "warn"
 
 ### Documentation
 
-- **ADR-022**: SDK method inclusion criteria for feature parity decisions
+- **SDK method inclusion criteria for feature parity decisions
 - **SDK Feature Coverage**: Cross-SDK method availability matrix
 
 ---
@@ -3335,26 +3363,26 @@ HIGH_RISK_ACTION: "warn"
 ### Added
 
 - **Azure OpenAI Provider** (Community): Native Azure OpenAI Service integration
-  - Supports both Azure AI Foundry (`cognitiveservices.azure.com`) and Classic (`openai.azure.com`) endpoints
-  - Automatic authentication detection (Bearer token vs api-key header)
-  - Streaming support via `GenerateContentStream`
-  - Health checks and provider status endpoints
-  - Environment variables: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`
+ - Supports both Azure AI Foundry (`cognitiveservices.azure.com`) and Classic (`openai.azure.com`) endpoints
+ - Automatic authentication detection (Bearer token vs api-key header)
+ - Streaming support via `GenerateContentStream`
+ - Health checks and provider status endpoints
+ - Environment variables: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`
 
 - **Azure OpenAI Examples**: Complete example suite
-  - Hello World (Go, Python, TypeScript, Java, HTTP)
-  - PII Detection (Python)
-  - SQL Injection Scanning (TypeScript)
-  - Proxy Mode (Go)
+ - Hello World (Go, Python, TypeScript, Java, HTTP)
+ - PII Detection (Python)
+ - SQL Injection Scanning (TypeScript)
+ - Proxy Mode (Go)
 
 - **README Philosophy Section**: Added positioning section explaining AxonFlow's "secure-by-default, configurable enforcement" approach for LLM discoverability
 
 ### Changed
 
 - **Docker Compose UX**: Reorganized environment variables for better developer experience
-  - **CORE CONFIGURATION**: 10 essential variables (LLM API keys, Azure config, ports, deployment mode)
-  - **ADVANCED CONFIGURATION**: Defaults work for most users (database, internal services, routing)
-  - Added explicit security configuration toggles (`SQLI_SCANNER_MODE`, `SQLI_BLOCK_MODE`)
+ - **CORE CONFIGURATION**: 10 essential variables (LLM API keys, Azure config, ports, deployment mode)
+ - **ADVANCED CONFIGURATION**: Defaults work for most users (database, internal services, routing)
+ - Added explicit security configuration toggles (`SQLI_SCANNER_MODE`, `SQLI_BLOCK_MODE`)
 
 ### Documentation
 
@@ -3369,8 +3397,8 @@ HIGH_RISK_ACTION: "warn"
 ### Changed
 
 - **DEPLOYMENT_MODE Unification**: Single env var for auth (`community` = no auth, `enterprise` = license required)
-  - Replaces `SELF_HOSTED_MODE` with clearer naming
-  - New `isCommunityMode()` helper for consistent mode checks
+ - Replaces `SELF_HOSTED_MODE` with clearer naming
+ - New `isCommunityMode()` helper for consistent mode checks
 
 ### Added
 
@@ -3389,21 +3417,21 @@ HIGH_RISK_ACTION: "warn"
 ### Changed
 
 - **LLM Router Consolidation**: Completed migration to interface-based router architecture
-  - Removed legacy `LLMRouter` concrete implementation (~1,700 lines)
-  - All routing now through `LLMRouterInterface` abstraction introduced in v2.2.0
-  - Cleaner codebase with single routing implementation path
+ - Removed legacy `LLMRouter` concrete implementation (~1,700 lines)
+ - All routing now through `LLMRouterInterface` abstraction introduced in v2.2.0
+ - Cleaner codebase with single routing implementation path
 
 - **Docker Compose Architecture**: Simplified deployment configuration
-  - `docker-compose.yml` now serves as Community base configuration
-  - Enterprise features available via overlay pattern
+ - `docker-compose.yml` now serves as Community base configuration
+ - Enterprise features available via overlay pattern
 
 - **Default Anthropic Model**: Updated to `claude-sonnet-4-20250514` (Claude 4)
 
 ### Added
 
 - **LLM Provider E2E Tests**: Comprehensive end-to-end test suite
-  - Coverage for OpenAI, Anthropic, Google Gemini, and AWS Bedrock
-  - Multi-language test implementations (Go, Python, TypeScript, Java)
+ - Coverage for OpenAI, Anthropic, Google Gemini, and AWS Bedrock
+ - Multi-language test implementations (Go, Python, TypeScript, Java)
 
 ### Removed
 
@@ -3418,14 +3446,14 @@ HIGH_RISK_ACTION: "warn"
 ### Added
 
 - **LLM Router Interface Abstraction**: Components now depend on standard interface rather than concrete implementations
-  - `LLMRouterInterface` - Standard interface for router abstraction
-  - `UnifiedRouterWrapper` - Adapter enabling UnifiedRouter as drop-in LLMRouter replacement
-  - Type conversion utilities between legacy and new router types
+ - `LLMRouterInterface` - Standard interface for router abstraction
+ - `UnifiedRouterWrapper` - Adapter enabling UnifiedRouter as drop-in LLMRouter replacement
+ - Type conversion utilities between legacy and new router types
 
 - **LLM Provider Routing Examples**: New HTTP/curl examples for direct API access
-  - Shell script examples for all supported providers (OpenAI, Anthropic, Ollama, Gemini)
-  - Gateway mode pre-check and audit examples
-  - Java SDK example for provider routing
+ - Shell script examples for all supported providers (OpenAI, Anthropic, Ollama, Gemini)
+ - Gateway mode pre-check and audit examples
+ - Java SDK example for provider routing
 
 ### Changed
 
@@ -3439,19 +3467,19 @@ HIGH_RISK_ACTION: "warn"
 ### Added
 
 - **Human-in-the-Loop (HITL)**: New `require_approval` policy action for human oversight
-  - Enterprise: Pauses execution, creates approval request in HITL queue
-  - Community: Auto-approves (upgrade path to Enterprise)
-  - EU AI Act Article 14 and SEBI AI/ML compliance support
+ - Enterprise: Pauses execution, creates approval request in HITL queue
+ - Community: Auto-approves (upgrade path to Enterprise)
+ - EU AI Act Article 14 and SEBI AI/ML compliance support
 
 - **Code Governance**: Automatic detection and audit of LLM-generated code
-  - Identifies language, code type, potential secrets, unsafe patterns
-  - Detects eval, exec, shell injection risks
-  - Metadata logged for compliance
+ - Identifies language, code type, potential secrets, unsafe patterns
+ - Detects eval, exec, shell injection risks
+ - Metadata logged for compliance
 
 - **LLM Provider Routing**: Runtime control over provider selection
-  - Weighted routing across providers
-  - Health-based automatic failover
-  - Per-request provider preferences
+ - Weighted routing across providers
+ - Health-based automatic failover
+ - Per-request provider preferences
 
 ### Fixed
 
@@ -3486,64 +3514,64 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 ### Added
 
 - **Three-Tier Policy Hierarchy**: New policy architecture with System → Organization → Tenant inheritance
-  - **System Tier**: 63 immutable security policies (53 static + 10 dynamic)
-  - **Organization Tier**: Company-wide policies (Enterprise only)
-  - **Tenant Tier**: Team-specific policies with full CRUD
-  - Tier-aware policy resolution with caching
+ - **System Tier**: 63 immutable security policies (53 static + 10 dynamic)
+ - **Organization Tier**: Company-wide policies (Enterprise only)
+ - **Tenant Tier**: Team-specific policies with full CRUD
+ - Tier-aware policy resolution with caching
 
 - **63 System Policies**: Comprehensive security and compliance coverage out-of-the-box
-  - **Security - SQL Injection** (37): UNION, boolean-based, time-based, stacked queries, etc.
-  - **Security - Admin Access** (4): Users table, audit log, config table access
-  - **PII - Global** (7): Credit card, email, phone, IP, passport, DOB
-  - **PII - US** (2): SSN, bank accounts
-  - **PII - EU** (1): IBAN
-  - **PII - India** (2): PAN, Aadhaar
-  - **Dynamic** (10): Risk, compliance (HIPAA, GDPR), cost, access control
+ - **Security - SQL Injection** (37): UNION, boolean-based, time-based, stacked queries, etc.
+ - **Security - Admin Access** (4): Users table, audit log, config table access
+ - **PII - Global** (7): Credit card, email, phone, IP, passport, DOB
+ - **PII - US** (2): SSN, bank accounts
+ - **PII - EU** (1): IBAN
+ - **PII - India** (2): PAN, Aadhaar
+ - **Dynamic** (10): Risk, compliance (HIPAA, GDPR), cost, access control
 
 - **Policy CRUD APIs**: Full create, read, update, delete for organization and tenant policies
-  - `GET /api/v1/static-policies` - List with tier/category filtering
-  - `POST /api/v1/static-policies` - Create custom policy
-  - `PUT /api/v1/static-policies/{id}` - Update policy
-  - `DELETE /api/v1/static-policies/{id}` - Delete policy
-  - `GET /api/v1/effective-policies` - Get merged hierarchy for tenant
+ - `GET /api/v1/static-policies` - List with tier/category filtering
+ - `POST /api/v1/static-policies` - Create custom policy
+ - `PUT /api/v1/static-policies/{id}` - Update policy
+ - `DELETE /api/v1/static-policies/{id}` - Delete policy
+ - `GET /api/v1/effective-policies` - Get merged hierarchy for tenant
 
 - **Policy Overrides** (Enterprise): Customize system policy behavior
-  - Disable system policies for organization
-  - Change action (only to more restrictive)
-  - Expiration dates for temporary overrides
-  - Audit trail with reason requirement
+ - Disable system policies for organization
+ - Change action (only to more restrictive)
+ - Expiration dates for temporary overrides
+ - Audit trail with reason requirement
 
 - **SDK Policy Methods**: All 4 SDKs support policy management
-  - TypeScript: `listStaticPolicies()`, `createStaticPolicy()`, etc.
-  - Python: `list_static_policies()`, `create_static_policy()`, etc.
-  - Go: `ListStaticPolicies()`, `CreateStaticPolicy()`, etc.
-  - Java: `listStaticPolicies()`, `createStaticPolicy()`, etc.
+ - TypeScript: `listStaticPolicies()`, `createStaticPolicy()`, etc.
+ - Python: `list_static_policies()`, `create_static_policy()`, etc.
+ - Go: `ListStaticPolicies()`, `CreateStaticPolicy()`, etc.
+ - Java: `listStaticPolicies()`, `createStaticPolicy()`, etc.
 
 - **Customer Portal UI**: Visual policy management for Enterprise customers
-  - Unified policy dashboard
-  - Override management
-  - Policy testing interface
+ - Unified policy dashboard
+ - Override management
+ - Policy testing interface
 
 ### Changed
 
 - **Policy Categories**: New category naming convention
-  - `security-sqli`, `security-admin` for security policies
-  - `pii-global`, `pii-us`, `pii-eu`, `pii-india` for PII detection
-  - `dynamic-risk`, `dynamic-compliance`, `dynamic-cost`, `dynamic-access` for context-aware policies
+ - `security-sqli`, `security-admin` for security policies
+ - `pii-global`, `pii-us`, `pii-eu`, `pii-india` for PII detection
+ - `dynamic-risk`, `dynamic-compliance`, `dynamic-cost`, `dynamic-access` for context-aware policies
 
 - **Performance**: Static policy evaluation maintains < 5ms p99 latency
-  - Tier-aware caching with configurable TTL
-  - Optimized regex pattern compilation
+ - Tier-aware caching with configurable TTL
+ - Optimized regex pattern compilation
 
 ### Fixed
 
 - **PII Detection Priority**: Credit card detection now correctly takes priority over phone number detection
-  - Root cause: Policies were sorted by severity string (alphabetically "medium" > "critical")
-  - Fix: Changed to `ORDER BY priority DESC` using numeric priority field
+ - Root cause: Policies were sorted by severity string (alphabetically "medium" > "critical")
+ - Fix: Changed to `ORDER BY priority DESC` using numeric priority field
 
 - **Tenant Policy Isolation**: Tenant-specific policies now only apply to their respective tenants
-  - Root cause: `LoadPoliciesFromDB()` was loading ALL policies without tier filtering
-  - Fix: Added two-phase evaluation - system policies via fast path, tenant policies via tier-aware engine
+ - Root cause: `LoadPoliciesFromDB()` was loading ALL policies without tier filtering
+ - Fix: Added two-phase evaluation - system policies via fast path, tenant policies via tier-aware engine
 
 ### Enterprise Features
 
@@ -3559,19 +3587,19 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 ### Fixed
 
 - **Usage Recording:** Fixed postgres errors in Community mode when `usage_events` table doesn't exist ([#96](https://github.com/getaxonflow/axonflow/issues/96))
-  - Usage metering is now properly separated as an Enterprise-only feature
-  - Community builds have zero-overhead no-op implementation using build tags
-  - Thanks to [@gzak](https://github.com/gzak) for identifying and contributing the initial fix ([#97](https://github.com/getaxonflow/axonflow/pull/97))
+ - Usage metering is now properly separated as an Enterprise-only feature
+ - Community builds have zero-overhead no-op implementation using build tags
+ - Thanks to [@gzak](https://github.com/gzak) for identifying and contributing the initial fix ([#97](https://github.com/getaxonflow/axonflow/pull/97))
 
 - **OpenAI Provider:** Fixed "you must provide a model parameter" error when `OPENAI_MODEL` not explicitly set ([#100](https://github.com/getaxonflow/axonflow/pull/100))
-  - `OpenAIProvider` now reads `OPENAI_MODEL` environment variable with `gpt-4o` fallback
-  - Consistent with other providers (Anthropic, Gemini, Ollama)
+ - `OpenAIProvider` now reads `OPENAI_MODEL` environment variable with `gpt-4o` fallback
+ - Consistent with other providers (Anthropic, Gemini, Ollama)
 
 ### Changed
 
 - **Code Cleanup:** Removed 450+ lines of dead code
-  - Removed unused `AnthropicProvider` struct (superseded by `EnhancedAnthropicProvider`)
-  - Usage package refactored with build tags for clean Community/Enterprise separation
+ - Removed unused `AnthropicProvider` struct (superseded by `EnhancedAnthropicProvider`)
+ - Usage package refactored with build tags for clean Community/Enterprise separation
 
 ---
 
@@ -3580,9 +3608,9 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 ### Fixed
 
 - **LLM Router:** Use provider's configured model instead of hardcoded defaults ([#94](https://github.com/getaxonflow/axonflow/pull/94))
-  - Previously, `selectModel()` returned hardcoded model names (e.g., `gpt-3.5-turbo`, `claude-3-5-sonnet`) which caused failures when the API key didn't have access to those specific models
-  - Now respects `OPENAI_MODEL`, `ANTHROPIC_MODEL`, and other provider-specific environment variables
-  - Model specified in request context takes highest priority
+ - Previously, `selectModel()` returned hardcoded model names (e.g., `gpt-3.5-turbo`, `claude-3-5-sonnet`) which caused failures when the API key didn't have access to those specific models
+ - Now respects `OPENAI_MODEL`, `ANTHROPIC_MODEL`, and other provider-specific environment variables
+ - Model specified in request context takes highest priority
 
 ### Changed
 
@@ -3595,9 +3623,9 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 ### Fixed
 
 - **Self-hosted mode:** Fixed authentication bypass not working when `userToken` is empty or omitted ([#89](https://github.com/getaxonflow/axonflow/pull/89))
-  - Previously, self-hosted mode required a dummy `userToken`/`apiKey` even though it should accept requests without credentials
-  - Now correctly bypasses authentication when `SELF_HOSTED_MODE=true` and `SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH` are set
-  - Thanks to [@gzak](https://github.com/gzak) for the contribution
+ - Previously, self-hosted mode required a dummy `userToken`/`apiKey` even though it should accept requests without credentials
+ - Now correctly bypasses authentication when `SELF_HOSTED_MODE=true` and `SELF_HOSTED_MODE_ACKNOWLEDGED=I_UNDERSTAND_NO_AUTH` are set
+ - Thanks to [@gzak](https://github.com/gzak) for the contribution
 
 ---
 
@@ -3608,26 +3636,26 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 ### Added
 
 - **Google Gemini LLM Provider**: Native Gemini integration now available in Community edition
-  - Supports Gemini Pro and Gemini Pro Vision models
-  - Automatic failover and routing alongside OpenAI, Anthropic, Ollama
+ - Supports Gemini Pro and Gemini Pro Vision models
+ - Automatic failover and routing alongside OpenAI, Anthropic, Ollama
 
 - **SDK Feature Parity**: All four SDKs now have complete feature parity
-  - **TypeScript SDK** (v1.4.0): 85.75% test coverage
-  - **Python SDK** (v0.3.0): 71.39% test coverage
-  - **Java SDK** (v1.1.0): 81.9% test coverage
-  - **Go SDK** (v1.5.0): 82.8% test coverage
+ - **TypeScript SDK** (v1.4.0): 85.75% test coverage
+ - **Python SDK** (v0.3.0): 71.39% test coverage
+ - **Java SDK** (v1.1.0): 81.9% test coverage
+ - **Go SDK** (v1.5.0): 82.8% test coverage
 
 - **LLM Interceptors** (all SDKs): Wrapper-based governance for LLM providers
-  - OpenAI, Anthropic, Gemini, Ollama, AWS Bedrock interceptors
-  - Gateway Mode: Two-phase policy checking with `getPolicyApprovedContext()` and `auditLLMCall()`
-  - Proxy Mode: Single-call governance with `executeQuery()`
+ - OpenAI, Anthropic, Gemini, Ollama, AWS Bedrock interceptors
+ - Gateway Mode: Two-phase policy checking with `getPolicyApprovedContext()` and `auditLLMCall()`
+ - Proxy Mode: Single-call governance with `executeQuery()`
 
 ### Changed
 
 - **Terminology**: Renamed "OSS" to "Community" across the entire codebase
-  - Environment variable: `AXONFLOW_MODE=community` (previously `oss`)
-  - API responses: `"mode": "community"` (previously `"oss"`)
-  - Documentation updated throughout
+ - Environment variable: `AXONFLOW_MODE=community` (previously `oss`)
+ - API responses: `"mode": "community"` (previously `"oss"`)
+ - Documentation updated throughout
 
 ### Breaking Changes
 
@@ -3639,13 +3667,13 @@ This major release introduces enterprise-grade policy management to AxonFlow wit
 To upgrade from 1.0.x:
 
 1. Update environment variables:
-   ```bash
-   # Before
-   AXONFLOW_MODE=oss
+ ```bash
+ # Before
+ AXONFLOW_MODE=oss
 
-   # After
-   AXONFLOW_MODE=community
-   ```
+ # After
+ AXONFLOW_MODE=community
+ ```
 
 2. Update any code that checks for `mode === "oss"` to check for `mode === "community"`
 
@@ -3674,45 +3702,45 @@ This is the first public release of AxonFlow, a self-hosted governance and orche
 ### Core Platform
 
 - **Policy Enforcement Agent**: Real-time policy enforcement with single-digit millisecond overhead
-  - Static policy engine with configurable rules
-  - PII detection (SSN, credit cards, PAN, Aadhaar)
-  - SQL injection blocking in user inputs
-  - Rate limiting and request validation
+ - Static policy engine with configurable rules
+ - PII detection (SSN, credit cards, PAN, Aadhaar)
+ - SQL injection blocking in user inputs
+ - Rate limiting and request validation
 
 - **Multi-Agent Planning (MAP)**: Declarative agent orchestration
-  - YAML-based agent configuration
-  - Natural language to workflow conversion
-  - Sequential and parallel execution modes
-  - Error handling with fallbacks
+ - YAML-based agent configuration
+ - Natural language to workflow conversion
+ - Sequential and parallel execution modes
+ - Error handling with fallbacks
 
 - **MCP Connectors**: Model Context Protocol integration
-  - PostgreSQL, MySQL, MongoDB, Redis, HTTP connectors (Community)
-  - Salesforce, Slack, Snowflake, ServiceNow (Enterprise)
+ - PostgreSQL, MySQL, MongoDB, Redis, HTTP connectors (Community)
+ - Salesforce, Slack, Snowflake, ServiceNow (Enterprise)
 
 - **Gateway Mode**: Wrap existing LLM calls with governance
-  - Pre-check → your LLM call → audit trail
-  - Incremental adoption path for existing codebases
+ - Pre-check → your LLM call → audit trail
+ - Incremental adoption path for existing codebases
 
 - **Multi-Model Routing**: Intelligent LLM provider management
-  - OpenAI, Anthropic, Ollama (Community)
-  - AWS Bedrock, Google Gemini (Enterprise)
-  - Automatic failover and cost-based routing
+ - OpenAI, Anthropic, Ollama (Community)
+ - AWS Bedrock, Google Gemini (Enterprise)
+ - Automatic failover and cost-based routing
 
 ### Security & Compliance
 
 - **SQL Injection Response Scanning**: Detect SQLi payloads in MCP connector responses
-  - 37 regex patterns across 8 attack categories
-  - Monitoring mode by default (detect and log, configurable blocking)
-  - Per-connector configuration overrides
-  - Audit trail integration for compliance
-  - Basic scanner (Community), Advanced ML-based scanner (Enterprise)
+ - 37 regex patterns across 8 attack categories
+ - Monitoring mode by default (detect and log, configurable blocking)
+ - Per-connector configuration overrides
+ - Audit trail integration for compliance
+ - Basic scanner (Community), Advanced ML-based scanner (Enterprise)
 
 - **EU AI Act Compliance** (Articles 12, 13, 14, 15, 43):
-  - Decision chain tracing with full audit trails
-  - Transparency headers (X-AI-Decision-ID, X-AI-Model-Provider, etc.)
-  - Human-in-the-Loop (HITL) workflows (Enterprise)
-  - Conformity assessment endpoints (Enterprise)
-  - Emergency circuit breaker (Enterprise)
+ - Decision chain tracing with full audit trails
+ - Transparency headers (X-AI-Decision-ID, X-AI-Model-Provider, etc.)
+ - Human-in-the-Loop (HITL) workflows (Enterprise)
+ - Conformity assessment endpoints (Enterprise)
+ - Emergency circuit breaker (Enterprise)
 
 - **RBI FREE-AI Framework**: Data integrity monitoring for financial AI (India)
 

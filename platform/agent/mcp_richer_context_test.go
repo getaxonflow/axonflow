@@ -6,6 +6,8 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -25,36 +27,36 @@ func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	return db, mock
 }
 
-// TestLookupPolicyRiskOverride_HappyPath covers the common case: a matching
-// policy row returns its risk_level + allow_override.
-func TestLookupPolicyRiskOverride_HappyPath(t *testing.T) {
+// TestLookupPolicyMeta_HappyPath covers the common case: a matching
+// policy row returns its risk_level + allow_override + version.
+func TestLookupPolicyMeta_HappyPath(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-1").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override"}).
-			AddRow("high", true))
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("high", true, 7))
 
-	risk, ao, err := lookupPolicyRiskOverride(context.Background(), db, "pol-1")
+	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "pol-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if risk != "high" || !ao {
-		t.Errorf("got (%q, %v), want (high, true)", risk, ao)
+	if risk != "high" || !ao || version != 7 {
+		t.Errorf("got (%q, %v, %d), want (high, true, 7)", risk, ao, version)
 	}
 }
 
-// TestLookupPolicyRiskOverride_NotFoundReturnsEmpty asserts ErrNoRows maps
-// to ("", false, nil) — dynamic policies aren't in static_policies so the
+// TestLookupPolicyMeta_NotFoundReturnsEmpty asserts ErrNoRows maps
+// to ("", false, 0, nil) — dynamic policies aren't in static_policies so the
 // caller can fall through gracefully.
-func TestLookupPolicyRiskOverride_NotFoundReturnsEmpty(t *testing.T) {
+func TestLookupPolicyMeta_NotFoundReturnsEmpty(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-missing").
 		WillReturnError(sql.ErrNoRows)
 
-	risk, ao, err := lookupPolicyRiskOverride(context.Background(), db, "pol-missing")
-	if err != nil || risk != "" || ao {
-		t.Errorf("not-found should return (\"\", false, nil); got (%q, %v, %v)", risk, ao, err)
+	risk, ao, version, err := lookupPolicyMeta(context.Background(), db, "pol-missing")
+	if err != nil || risk != "" || ao || version != 0 {
+		t.Errorf("not-found should return (\"\", false, 0, nil); got (%q, %v, %d, %v)", risk, ao, version, err)
 	}
 }
 
@@ -96,13 +98,14 @@ func TestLookupActiveOverride_NotFound(t *testing.T) {
 // TestBuildRicherCheckInputBlock_NoOverride covers the path where a matched
 // policy is overridable but the caller hasn't created an override yet.
 // override_available must still be true (user CAN create one), but
-// override_existing_id empty.
+// override_existing_id empty. Version is propagated through to the
+// RicherPolicyMatch (#1983 / α1).
 func TestBuildRicherCheckInputBlock_NoOverride(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-1").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override"}).
-			AddRow("high", true))
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("high", true, 3))
 	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
 		WithArgs("pol-1", "dev@example.com", "tenant-x").
 		WillReturnError(sql.ErrNoRows)
@@ -113,6 +116,9 @@ func TestBuildRicherCheckInputBlock_NoOverride(t *testing.T) {
 
 	if len(m) != 1 || m[0].PolicyID != "pol-1" || !m[0].AllowOverride {
 		t.Errorf("matches not populated correctly: %+v", m)
+	}
+	if m[0].Version != 3 {
+		t.Errorf("Version = %d, want 3 (#1983: must propagate live policy version)", m[0].Version)
 	}
 	if topRisk != "high" {
 		t.Errorf("top risk = %q, want high", topRisk)
@@ -129,10 +135,10 @@ func TestBuildRicherCheckInputBlock_NoOverride(t *testing.T) {
 // override already exists, so override_existing_id is populated.
 func TestBuildRicherCheckInputBlock_ExistingOverride(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-1").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override"}).
-			AddRow("medium", true))
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("medium", true, 1))
 	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
 		WithArgs("pol-1", "dev@example.com", "tenant-x").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ov-42"))
@@ -150,10 +156,10 @@ func TestBuildRicherCheckInputBlock_ExistingOverride(t *testing.T) {
 // policies never surface as overridable, even if allow_override=true.
 func TestBuildRicherCheckInputBlock_Critical_NotOverridable(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-crit").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override"}).
-			AddRow("critical", false))
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("critical", false, 9))
 
 	matches := []sharedpolicy.PolicyMatch{{PolicyID: "pol-crit", PolicyName: "Catastrophic"}}
 	m, topRisk, overrideAvail, _ := buildRicherCheckInputBlock(
@@ -197,12 +203,15 @@ func TestApplyOverrideToCheckInputBlock_Flip(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ov-7"))
 
 	matches := []RicherPolicyMatch{
-		{PolicyID: "pol-1", PolicyName: "Bypass", RiskLevel: "medium", AllowOverride: true},
+		{PolicyID: "pol-1", PolicyName: "Bypass", RiskLevel: "medium", AllowOverride: true, Version: 4},
 	}
-	id, applied := applyOverrideToCheckInputBlock(context.Background(), db,
+	id, overridden, applied := applyOverrideToCheckInputBlock(context.Background(), db,
 		"tenant-x", "dev@example.com", matches)
 	if !applied || id != "ov-7" {
 		t.Errorf("expected applied=(true, ov-7); got (%v, %q)", applied, id)
+	}
+	if overridden == nil || overridden.PolicyID != "pol-1" || overridden.Version != 4 {
+		t.Errorf("overridden match wrong: %+v (want PolicyID=pol-1, Version=4)", overridden)
 	}
 }
 
@@ -213,10 +222,29 @@ func TestApplyOverrideToCheckInputBlock_CriticalNoFlip(t *testing.T) {
 	matches := []RicherPolicyMatch{
 		{PolicyID: "pol-crit", PolicyName: "Catastrophic", RiskLevel: "critical", AllowOverride: false},
 	}
-	_, applied := applyOverrideToCheckInputBlock(context.Background(), db,
+	_, _, applied := applyOverrideToCheckInputBlock(context.Background(), db,
 		"tenant-x", "dev@example.com", matches)
 	if applied {
 		t.Error("critical-risk match must never trigger override apply")
+	}
+}
+
+// TestApplyOverrideToCheckInputBlock_LookupError — DB error on
+// lookupActiveOverride is logged and the loop continues to the next
+// match. Returns ("", nil, false) when no match yields a usable override.
+func TestApplyOverrideToCheckInputBlock_LookupError(t *testing.T) {
+	db, mock := newMockDB(t)
+	mock.ExpectQuery("SELECT po\\.id FROM policy_overrides po").
+		WithArgs("pol-1", "dev@example.com", "tenant-x").
+		WillReturnError(fmt.Errorf("db down"))
+
+	matches := []RicherPolicyMatch{
+		{PolicyID: "pol-1", PolicyName: "Bypass", RiskLevel: "medium", AllowOverride: true, Version: 4},
+	}
+	id, overridden, applied := applyOverrideToCheckInputBlock(context.Background(), db,
+		"tenant-x", "dev@example.com", matches)
+	if applied || overridden != nil || id != "" {
+		t.Errorf("DB-error must not flip applied; got (%q, %v, %v)", id, overridden, applied)
 	}
 }
 
@@ -227,7 +255,7 @@ func TestApplyOverrideToCheckInputBlock_NoUserEmail(t *testing.T) {
 	matches := []RicherPolicyMatch{
 		{PolicyID: "pol-1", RiskLevel: "medium", AllowOverride: true},
 	}
-	_, applied := applyOverrideToCheckInputBlock(context.Background(), db,
+	_, _, applied := applyOverrideToCheckInputBlock(context.Background(), db,
 		"tenant-x", "", matches)
 	if applied {
 		t.Error("empty userEmail must not apply any override")
@@ -296,7 +324,8 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	writeOverrideUsedEvent(context.Background(), db,
-		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com")
+		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
+		"pol-1", 5)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -307,11 +336,13 @@ func TestWriteOverrideUsedEvent_Inserts(t *testing.T) {
 // without a usable override id.
 func TestWriteOverrideUsedEvent_NilDBOrEmptyOverride(t *testing.T) {
 	writeOverrideUsedEvent(context.Background(), nil,
-		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com")
+		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
+		"pol-1", 5)
 
 	db, mock := newMockDB(t)
 	writeOverrideUsedEvent(context.Background(), db,
-		"", "dec-1", "t1", "o1", "c1", "u@e.com")
+		"", "dec-1", "t1", "o1", "c1", "u@e.com",
+		"pol-1", 5)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("empty override_id should be a no-op; got: %v", err)
 	}
@@ -341,7 +372,8 @@ func TestWriteOverrideUsedEvent_FallbackPlaceholders(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	writeOverrideUsedEvent(context.Background(), db,
-		"ov-1", "dec-1", "", "", "", "")
+		"ov-1", "dec-1", "", "", "", "",
+		"", 0)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -696,13 +728,13 @@ func TestCommunitySaasAuthError_Error(t *testing.T) {
 	}
 }
 
-// TestLookupPolicyRiskOverride_DBError — error branch returns the SQL error.
-func TestLookupPolicyRiskOverride_DBError(t *testing.T) {
+// TestLookupPolicyMeta_DBError — error branch returns the SQL error.
+func TestLookupPolicyMeta_DBError(t *testing.T) {
 	db, mock := newMockDB(t)
-	mock.ExpectQuery("SELECT risk_level, allow_override FROM static_policies").
+	mock.ExpectQuery("SELECT risk_level, allow_override, version FROM static_policies").
 		WithArgs("pol-err").
 		WillReturnError(fmt.Errorf("db broken"))
-	_, _, err := lookupPolicyRiskOverride(context.Background(), db, "pol-err")
+	_, _, _, err := lookupPolicyMeta(context.Background(), db, "pol-err")
 	if err == nil || err.Error() != "db broken" {
 		t.Errorf("want 'db broken', got %v", err)
 	}
@@ -720,7 +752,7 @@ func TestLookupActiveOverride_DBError(t *testing.T) {
 	}
 }
 
-// TestBuildRicherCheckInputBlock_RiskLookupError — lookupPolicyRiskOverride
+// TestBuildRicherCheckInputBlock_RiskLookupError — lookupPolicyMeta
 // error path: stub entry is emitted instead of dropping the match.
 func TestBuildRicherCheckInputBlock_RiskLookupError(t *testing.T) {
 	db, mock := newMockDB(t)
@@ -749,8 +781,8 @@ func TestBuildRicherCheckInputBlock_ActiveLookupError(t *testing.T) {
 	db, mock := newMockDB(t)
 	mock.ExpectQuery("FROM static_policies").
 		WithArgs("pol-1").
-		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override"}).
-			AddRow("high", true))
+		WillReturnRows(sqlmock.NewRows([]string{"risk_level", "allow_override", "version"}).
+			AddRow("high", true, 2))
 	mock.ExpectQuery("FROM policy_overrides").
 		WithArgs("pol-1", "u@e.com", "t1").
 		WillReturnError(fmt.Errorf("active lookup broken"))
@@ -766,3 +798,306 @@ func TestBuildRicherCheckInputBlock_ActiveLookupError(t *testing.T) {
 		t.Errorf("overrideID should be empty on lookup error, got %q", id)
 	}
 }
+
+// jsonCaptureArg is a sqlmock matcher that captures a []byte argument
+// (typically marshaled JSON) into a target slice for later assertion.
+type jsonCaptureArg struct {
+	dst *[]byte
+}
+
+func (j jsonCaptureArg) Match(value driver.Value) bool {
+	switch v := value.(type) {
+	case []byte:
+		*j.dst = append([]byte(nil), v...)
+	case string:
+		*j.dst = []byte(v)
+	default:
+		return true // accept any shape — we just want the capture
+	}
+	return true
+}
+
+// TestCollectPolicyVersions — α1: builds { policy_id → version } map from
+// RicherPolicyMatch slice. Empty / no-version matches map to nil so JSONB
+// emits omitempty rather than "{}".
+func TestCollectPolicyVersions(t *testing.T) {
+	if got := collectPolicyVersions(nil); got != nil {
+		t.Errorf("nil matches: want nil, got %v", got)
+	}
+	if got := collectPolicyVersions([]RicherPolicyMatch{}); got != nil {
+		t.Errorf("empty matches: want nil, got %v", got)
+	}
+	if got := collectPolicyVersions([]RicherPolicyMatch{{PolicyID: "p", Version: 0}}); got != nil {
+		t.Errorf("zero-version match: want nil (omitempty), got %v", got)
+	}
+	got := collectPolicyVersions([]RicherPolicyMatch{
+		{PolicyID: "pol-a", Version: 3},
+		{PolicyID: "pol-b", Version: 5},
+		{PolicyID: "pol-c", Version: 0}, // dynamic / unknown — skipped
+		{PolicyID: "", Version: 9},      // no id — skipped
+	})
+	want := map[string]int{"pol-a": 3, "pol-b": 5}
+	if len(got) != len(want) || got["pol-a"] != 3 || got["pol-b"] != 5 {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWriteExplainableAuditLog_PolicyVersionsInJSONB — α1: when matches carry
+// a non-zero Version, the JSONB blob must include both per-match
+// "policy_version" (inline, via RicherPolicyMatch.Version) AND a top-level
+// "policy_versions" map keyed by policy_id. Forward-only — pre-α1 matches
+// with Version=0 must surface no policy_versions key (omitempty preserves
+// byte-for-byte legacy shape).
+func TestWriteExplainableAuditLog_PolicyVersionsInJSONB(t *testing.T) {
+	cases := []struct {
+		name        string
+		matches     []RicherPolicyMatch
+		wantTopMap  map[string]int // expected top-level policy_versions map
+		wantInline  map[string]int // expected inline match[i].policy_version
+	}{
+		{
+			name: "with versions",
+			matches: []RicherPolicyMatch{
+				{PolicyID: "pol-a", PolicyName: "A", Version: 3},
+				{PolicyID: "pol-b", PolicyName: "B", Version: 5},
+			},
+			wantTopMap: map[string]int{"pol-a": 3, "pol-b": 5},
+			wantInline: map[string]int{"pol-a": 3, "pol-b": 5},
+		},
+		{
+			name: "no versions (pre-α1 / dynamic-only)",
+			matches: []RicherPolicyMatch{
+				{PolicyID: "pol-a", PolicyName: "A"},
+			},
+			wantTopMap: nil,
+			wantInline: nil,
+		},
+		{
+			name: "mixed — only versioned matches surface in map",
+			matches: []RicherPolicyMatch{
+				{PolicyID: "pol-a", PolicyName: "A", Version: 7},
+				{PolicyID: "pol-b", PolicyName: "B"},
+			},
+			wantTopMap: map[string]int{"pol-a": 7},
+			wantInline: map[string]int{"pol-a": 7},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock := newMockDB(t)
+
+			var capturedJSON []byte
+			mock.ExpectExec("INSERT INTO audit_logs").
+				WithArgs(
+					sqlmock.AnyArg(), "req-1", sqlmock.AnyArg(), 0,
+					"u@e.com", "user", "c1", "t1", "o1",
+					"mcp_check_input", "SELECT 1", "h1", "deny",
+					jsonCaptureArg{dst: &capturedJSON},
+				).
+				WillReturnResult(sqlmock.NewResult(1, 1))
+
+			writeExplainableAuditLog(context.Background(), db,
+				"dec-1", "req-1",
+				"t1", "o1", "c1", "u@e.com",
+				"", "user",
+				"mcp_check_input", "SELECT 1", "h1",
+				"blocked", "high",
+				tc.matches,
+			)
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+			if len(capturedJSON) == 0 {
+				t.Fatal("policy_details JSON was not captured")
+			}
+			var details struct {
+				DecisionID     string              `json:"decision_id"`
+				PolicyVersions map[string]int      `json:"policy_versions,omitempty"`
+				PolicyMatches  []map[string]any    `json:"policy_matches"`
+			}
+			if err := json.Unmarshal(capturedJSON, &details); err != nil {
+				t.Fatalf("unmarshal policy_details JSON: %v", err)
+			}
+			if details.DecisionID != "dec-1" {
+				t.Errorf("decision_id = %q, want dec-1", details.DecisionID)
+			}
+
+			// Top-level policy_versions map.
+			if len(tc.wantTopMap) == 0 {
+				if details.PolicyVersions != nil {
+					t.Errorf("expected omitempty policy_versions, got %v", details.PolicyVersions)
+				}
+			} else {
+				if len(details.PolicyVersions) != len(tc.wantTopMap) {
+					t.Errorf("policy_versions size = %d, want %d (got %v)",
+						len(details.PolicyVersions), len(tc.wantTopMap), details.PolicyVersions)
+				}
+				for k, v := range tc.wantTopMap {
+					if details.PolicyVersions[k] != v {
+						t.Errorf("policy_versions[%q] = %d, want %d", k, details.PolicyVersions[k], v)
+					}
+				}
+			}
+
+			// Inline per-match policy_version.
+			for _, m := range details.PolicyMatches {
+				pid, _ := m["policy_id"].(string)
+				if want, ok := tc.wantInline[pid]; ok {
+					got, _ := m["policy_version"].(float64) // JSON numbers
+					if int(got) != want {
+						t.Errorf("inline policy_matches[%q].policy_version = %v, want %d",
+							pid, m["policy_version"], want)
+					}
+				} else if _, has := m["policy_version"]; has {
+					t.Errorf("policy_matches[%q] should not carry policy_version (Version=0 was omitempty), got %v",
+						pid, m["policy_version"])
+				}
+			}
+		})
+	}
+}
+
+// TestWriteOverrideUsedEvent_PolicyVersionInJSONB — α1: override_used events
+// stamp the overridden policy's id + version into the JSONB so explain can
+// surface "which version of which policy was overridden". policyID="" or
+// policyVersion=0 are simply omitted (forward-only / no error path).
+func TestWriteOverrideUsedEvent_PolicyVersionInJSONB(t *testing.T) {
+	db, mock := newMockDB(t)
+	var capturedJSON []byte
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(
+			sqlmock.AnyArg(), "dec-1", sqlmock.AnyArg(), 0,
+			"u@e.com", "user", "c1", "t1", "o1",
+			"override_used", "override applied", "none", "allow",
+			jsonCaptureArg{dst: &capturedJSON},
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	writeOverrideUsedEvent(context.Background(), db,
+		"ov-1", "dec-1", "t1", "o1", "c1", "u@e.com",
+		"pol-1", 4,
+	)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal(capturedJSON, &details); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if v, _ := details["policy_id"].(string); v != "pol-1" {
+		t.Errorf("policy_id = %v, want pol-1", details["policy_id"])
+	}
+	if v, _ := details["policy_version"].(float64); int(v) != 4 {
+		t.Errorf("policy_version = %v, want 4", details["policy_version"])
+	}
+}
+
+// TestLookupPolicyVersionsByID_HappyPath — α1: batch lookup returns map for
+// the policy_ids that exist; missing IDs simply don't appear.
+func TestLookupPolicyVersionsByID_HappyPath(t *testing.T) {
+	db, mock := newMockDB(t)
+	mock.ExpectQuery("SELECT policy_id, version FROM static_policies").
+		WillReturnRows(sqlmock.NewRows([]string{"policy_id", "version"}).
+			AddRow("pol-a", 2).
+			AddRow("pol-b", 11))
+
+	got := lookupPolicyVersionsByID(context.Background(), db,
+		[]string{"pol-a", "pol-b", "pol-missing"})
+	if len(got) != 2 || got["pol-a"] != 2 || got["pol-b"] != 11 {
+		t.Errorf("got %v, want pol-a=2 pol-b=11", got)
+	}
+	if _, ok := got["pol-missing"]; ok {
+		t.Error("missing policy must not appear in result map")
+	}
+}
+
+func TestLookupPolicyVersionsByID_NilOrEmpty(t *testing.T) {
+	if got := lookupPolicyVersionsByID(context.Background(), nil, []string{"x"}); got != nil {
+		t.Errorf("nil db: want nil, got %v", got)
+	}
+	db, _ := newMockDB(t)
+	if got := lookupPolicyVersionsByID(context.Background(), db, nil); got != nil {
+		t.Errorf("nil ids: want nil, got %v", got)
+	}
+}
+
+func TestLookupPolicyVersionsByID_DBError(t *testing.T) {
+	db, mock := newMockDB(t)
+	mock.ExpectQuery("SELECT policy_id, version FROM static_policies").
+		WillReturnError(fmt.Errorf("db down"))
+	got := lookupPolicyVersionsByID(context.Background(), db, []string{"pol-a"})
+	if got != nil {
+		t.Errorf("DB error must return nil map, got %v", got)
+	}
+}
+
+// TestLookupPolicyVersionsByID_RowScanError — α1: a malformed row
+// (e.g. NULL policy_id) is logged + skipped; surviving rows still map.
+func TestLookupPolicyVersionsByID_RowScanError(t *testing.T) {
+	db, mock := newMockDB(t)
+	// First row: scan-incompatible (string in int column simulated by
+	// returning a row with a non-numeric value). Second row: well-formed.
+	rows := sqlmock.NewRows([]string{"policy_id", "version"}).
+		AddRow("pol-a", "not-an-int"). // Scan into NullInt64 will fail.
+		AddRow("pol-b", 4)
+	mock.ExpectQuery("SELECT policy_id, version FROM static_policies").
+		WillReturnRows(rows)
+
+	got := lookupPolicyVersionsByID(context.Background(), db, []string{"pol-a", "pol-b"})
+	// pol-a's scan failed → skipped; pol-b ok.
+	if got["pol-a"] != 0 || got["pol-b"] != 4 {
+		t.Errorf("scan-error survivor map = %v, want {pol-b: 4} only", got)
+	}
+}
+
+// TestWriteExplainableAuditLog_EmptyStatementFallback — covers the
+// statement / statementHash placeholder fallback branches that fire when
+// the upstream (e.g. mcp_check_output where there's no canonical
+// statement) passes empty strings.
+func TestWriteExplainableAuditLog_EmptyStatementFallback(t *testing.T) {
+	db, mock := newMockDB(t)
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(
+			sqlmock.AnyArg(), "req-1", sqlmock.AnyArg(), 0,
+			"u@e.com", "user", "c1", "t1", "o1",
+			"mcp_check_output",
+			"(empty statement)", // statement fallback
+			"none",              // statementHash fallback
+			"deny",
+			sqlmock.AnyArg(),
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	writeExplainableAuditLog(context.Background(), db,
+		"dec-1", "req-1",
+		"t1", "o1", "c1", "u@e.com",
+		"", "user",
+		"mcp_check_output", "", "", // empty statement + hash
+		"blocked", "high",
+		[]RicherPolicyMatch{{PolicyID: "p1", PolicyName: "n", Version: 1}},
+	)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestLookupPolicyVersionsByID_AllRowsHaveNullVersion — α1: when all
+// rows return NULL version, the function returns nil (not empty map)
+// so audit consumers see omitempty.
+func TestLookupPolicyVersionsByID_AllRowsHaveNullVersion(t *testing.T) {
+	db, mock := newMockDB(t)
+	rows := sqlmock.NewRows([]string{"policy_id", "version"}).
+		AddRow("pol-a", nil)
+	mock.ExpectQuery("SELECT policy_id, version FROM static_policies").
+		WillReturnRows(rows)
+
+	got := lookupPolicyVersionsByID(context.Background(), db, []string{"pol-a"})
+	if got != nil {
+		t.Errorf("all-null versions: want nil, got %v", got)
+	}
+}
+

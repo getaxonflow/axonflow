@@ -184,14 +184,15 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 	}
 
 	// 6 pre-existing tools + 4 Plugin Batch 1 tools (explain_decision,
-	// create_override, delete_override, list_overrides) + 5 V1 Plugin
+	// create_override, delete_override, list_overrides) + 1 V1.1
+	// decision-list tool (list_recent_decisions per #1982) + 5 V1 Plugin
 	// Pro tools (axonflow_get_tenant_id, axonflow_request_approval,
 	// axonflow_create_tenant_policy, axonflow_get_cost_estimate,
-	// axonflow_list_pro_features per umbrella #1958) = 15. Community
+	// axonflow_list_pro_features per umbrella #1958) = 16. Community
 	// mode resolves to empty tier so the V1 Pro tier filter is a no-op
 	// and every tool is visible.
-	if len(tools) != 15 {
-		t.Errorf("Expected 15 tools (10 legacy + 5 V1 Plugin Pro), got %d", len(tools))
+	if len(tools) != 16 {
+		t.Errorf("Expected 16 tools (11 legacy/V1.1 + 5 V1 Plugin Pro), got %d", len(tools))
 	}
 
 	expectedNames := map[string]bool{
@@ -199,6 +200,8 @@ func TestMCPServer_ToolsList_CommunityMode(t *testing.T) {
 		"list_policies": false, "get_policy_stats": false, "search_audit_events": false,
 		"explain_decision": false, "create_override": false, "delete_override": false,
 		"list_overrides": false,
+		// V1.1 decision-list (#1982):
+		"list_recent_decisions": false,
 		// V1 Plugin Pro umbrella #1958 PR2:
 		"axonflow_get_tenant_id":       false,
 		"axonflow_request_approval":    false,
@@ -1193,6 +1196,107 @@ func TestMCPServer_ProxyToOrchestrator_NotConfigured(t *testing.T) {
 	_, err := mcpProxyToOrchestrator(session, "GET", "/test", nil)
 	if err == nil || !strings.Contains(err.Error(), "orchestrator not configured") {
 		t.Errorf("Expected 'orchestrator not configured' error, got: %v", err)
+	}
+}
+
+// TestMCPListRecentDecisions_429PreservesEnvelope is the critical Rule 1 check
+// from feedback_429_no_upgrade_hint_is_conversion_gap.md: when the platform
+// returns 429 with the V1 upgrade envelope, the MCP tool MUST pass it through
+// to the host LLM/UI as structured data — not collapse it into a generic Go
+// error string. Without this, every Free-tier cap-hit becomes a Pro-conversion
+// target lost.
+func TestMCPListRecentDecisions_429PreservesEnvelope(t *testing.T) {
+	// Stub server emits a realistic V1 envelope on 429.
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/decisions" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Axonflow-Tier-Limit", "decision_list_size")
+		w.Header().Set("X-Axonflow-Upgrade-URL", "https://getaxonflow.com/pricing/")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{
+			"error":"Free tier shows the last 5 decisions in 24h. Pro raises this to 100 decisions in the last 30 days.",
+			"limit_type":"decision_list_size",
+			"tier":"Free",
+			"limit":5,
+			"remaining":0,
+			"upgrade":{"tier":"Pro","wording":"...","compare_url":"https://getaxonflow.com/pricing/","buy_url":"https://buy.stripe.com/bJe28qbztcdVchjdkw8k800"}
+		}`))
+	}))
+	defer stub.Close()
+
+	original := orchestratorURL
+	orchestratorURL = stub.URL
+	defer func() { orchestratorURL = original }()
+
+	session := &mcpSession{tenantID: "tenant-a", clientID: "test", tier: "Free"}
+	result, err := mcpToolListRecentDecisions(session, map[string]interface{}{"limit": float64(10)})
+	if err != nil {
+		t.Fatalf("expected envelope passthrough (nil error), got: %v", err)
+	}
+	resMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map result, got %T", result)
+	}
+	if upgradeRequired, _ := resMap["upgrade_required"].(bool); !upgradeRequired {
+		t.Errorf("expected upgrade_required=true in result, got %v", resMap)
+	}
+	envelope, ok := resMap["envelope"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected envelope map, got %T", resMap["envelope"])
+	}
+	if limitType, _ := envelope["limit_type"].(string); limitType != "decision_list_size" {
+		t.Errorf("envelope.limit_type: got %q, want decision_list_size", limitType)
+	}
+	upgrade, ok := envelope["upgrade"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected envelope.upgrade map, got %T", envelope["upgrade"])
+	}
+	if url, _ := upgrade["compare_url"].(string); url != "https://getaxonflow.com/pricing/" {
+		t.Errorf("envelope.upgrade.compare_url: got %q", url)
+	}
+}
+
+// TestMCPListRecentDecisions_HappyPath verifies the 200 case passes the
+// orchestrator's response through unchanged.
+func TestMCPListRecentDecisions_HappyPath(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify filters were forwarded as query string.
+		if got := r.URL.Query().Get("decision"); got != "deny" {
+			t.Errorf("decision filter: got %q, want deny", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "3" {
+			t.Errorf("limit filter: got %q, want 3", got)
+		}
+		// Verify tier header was forwarded.
+		if got := r.Header.Get("X-Axonflow-Effective-Tier"); got != "Pro" {
+			t.Errorf("X-Axonflow-Effective-Tier header: got %q, want Pro", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decisions":[{"decision_id":"dec-1","timestamp":"2026-05-07T12:00:00Z","decision":"deny","policy_id":"pol-sqli","tool_signature":"postgres.query"}]}`))
+	}))
+	defer stub.Close()
+
+	original := orchestratorURL
+	orchestratorURL = stub.URL
+	defer func() { orchestratorURL = original }()
+
+	session := &mcpSession{tenantID: "tenant-a", clientID: "test", tier: "Pro"}
+	result, err := mcpToolListRecentDecisions(session, map[string]interface{}{
+		"decision": "deny",
+		"limit":    float64(3),
+	})
+	if err != nil {
+		t.Fatalf("happy path returned error: %v", err)
+	}
+	resMap, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map result, got %T", result)
+	}
+	decisions, ok := resMap["decisions"].([]interface{})
+	if !ok || len(decisions) != 1 {
+		t.Fatalf("expected 1 decision in result, got %v", resMap["decisions"])
 	}
 }
 

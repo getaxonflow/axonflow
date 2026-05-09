@@ -450,6 +450,47 @@ func getMCPTools() []mcpTool {
 				},
 			},
 		},
+		// V1.1 decision-list (issue #1982). Companion to explain_decision —
+		// surfaces the caller's recent decisions for "what just got blocked"
+		// UX, "appeal a block" flows, and forensic decision-history tracing.
+		// Tier-gated server-side: the platform's GET /api/v1/decisions
+		// returns 429 with the V1 upgrade envelope when the caller's tier
+		// page-cap is exceeded; this MCP tool preserves that envelope in
+		// the result so the host LLM / UI can render the upgrade prompt
+		// rather than swallowing it as a generic error.
+		{
+			Name:        "list_recent_decisions",
+			Description: "List recent governance decisions made by AxonFlow for the current user/tenant. Useful for surfacing 'what just got blocked' UX, appealing a block, or tracing a workflow's decision history. Tier-throttled per the platform's Free/Pro window+limit.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"since": map[string]interface{}{
+						"type":        "string",
+						"format":      "date-time",
+						"description": "Optional RFC3339 lower bound (e.g. 2026-05-01T00:00:00Z). Silently clamped to the tier's lookback window when reaching further back.",
+					},
+					"decision": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"allow", "deny", "require_approval"},
+						"description": "Filter to decisions of this kind.",
+					},
+					"policy_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter to decisions matching this policy_id.",
+					},
+					"tool_signature": map[string]interface{}{
+						"type":        "string",
+						"description": "Filter to decisions scoped to this tool signature.",
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"minimum":     1,
+						"maximum":     1000,
+						"description": "Max rows to return. Caller-supplied limits exceeding the tier's max page emit the V1 upgrade envelope at 429 instead of capping silently.",
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -706,6 +747,18 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 	var result interface{}
 	var toolErr error
 
+	// Populate telemetry identity container BEFORE the daily-cap
+	// check so the outer telemetry middleware records 429 events
+	// alongside successful tool calls. Same fix as the auth.go path
+	// (#2011 phase B0); the MCP tools/call site was missed in that PR
+	// and surfaced via runtime test on community-saas staging
+	// 2026-05-08. The (auth, proxy, mcp) trio of cap-check call sites
+	// must each hoist this populate step ahead of the cap-enforcement
+	// helper.
+	if session != nil && session.tenantID != "" {
+		SetTelemetryTenantID(r.Context(), session.tenantID)
+	}
+
 	// V1 Plugin Pro daily-cap enforcement (umbrella #1958 + #1976):
 	// /api/v1/mcp-server registers directly on globalRouter with no
 	// daily-cap middleware (apiAuthMiddleware / proxyAuthMiddleware
@@ -760,6 +813,8 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 		result, toolErr = mcpToolDeleteOverride(session, params.Arguments)
 	case "list_overrides":
 		result, toolErr = mcpToolListOverrides(session, params.Arguments)
+	case "list_recent_decisions":
+		result, toolErr = mcpToolListRecentDecisions(session, params.Arguments)
 	// V1 Plugin Pro tools (umbrella #1958, PR2).
 	case mcpToolNameGetTenantID:
 		result, toolErr = mcpToolGetTenantID(session)
@@ -1016,11 +1071,18 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		// ADR-044: if the caller has an active session override on any
 		// overridable matched policy, flip deny -> allow and emit an
 		// override_used event. Consistent with the HTTP path.
-		if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+		if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
 			ctx, usageDB, session.tenantID, session.userEmail, matches,
 		); applied {
+			var overriddenPolicyID string
+			var overriddenPolicyVersion int
+			if overriddenMatch != nil {
+				overriddenPolicyID = overriddenMatch.PolicyID
+				overriddenPolicyVersion = overriddenMatch.Version
+			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, "", session.clientID, session.userEmail)
+				decisionID, session.tenantID, "", session.clientID, session.userEmail,
+				overriddenPolicyID, overriddenPolicyVersion)
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
 			delete(resp, "block_reason")
@@ -1134,11 +1196,18 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 			buildRicherCheckInputBlock(ctx, usageDB, session.tenantID, session.userEmail,
 				outcome.StaticResult.MatchedPolicies)
 
-		if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+		if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
 			ctx, usageDB, session.tenantID, session.userEmail, matches,
 		); applied {
+			var overriddenPolicyID string
+			var overriddenPolicyVersion int
+			if overriddenMatch != nil {
+				overriddenPolicyID = overriddenMatch.PolicyID
+				overriddenPolicyVersion = overriddenMatch.Version
+			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, "", session.clientID, session.userEmail)
+				decisionID, session.tenantID, "", session.clientID, session.userEmail,
+				overriddenPolicyID, overriddenPolicyVersion)
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
 			delete(resp, "block_reason")
@@ -1538,6 +1607,113 @@ func mcpToolDeleteOverride(session *mcpSession, args map[string]interface{}) (in
 		return nil, fmt.Errorf("delete override failed: %w", err)
 	}
 	return resp, nil
+}
+
+// mcpToolListRecentDecisions proxies to GET /api/v1/decisions with the
+// caller's filters, preserving the V1 429 upgrade envelope as a structured
+// result so plugin hosts (Cursor / Claude / Codex / OpenClaw) can render the
+// upgrade prompt — never swallow it as a generic error per
+// feedback_429_no_upgrade_hint_is_conversion_gap.md.
+//
+// Does NOT use the shared mcpProxyToOrchestrator helper because that helper
+// collapses every non-2xx into a Go error string, which would drop the
+// envelope on the floor. This function does its own GET, branches on 429
+// to return {envelope: ..., upgrade_required: true} as the result, and
+// otherwise mirrors the orchestrator response directly.
+func mcpToolListRecentDecisions(session *mcpSession, args map[string]interface{}) (interface{}, error) {
+	if orchestratorURL == "" {
+		return nil, fmt.Errorf("orchestrator not configured")
+	}
+
+	query := url.Values{}
+	if v, ok := args["since"].(string); ok && v != "" {
+		query.Set("since", v)
+	}
+	if v, ok := args["decision"].(string); ok && v != "" {
+		query.Set("decision", v)
+	}
+	if v, ok := args["policy_id"].(string); ok && v != "" {
+		query.Set("policy_id", v)
+	}
+	if v, ok := args["tool_signature"].(string); ok && v != "" {
+		query.Set("tool_signature", v)
+	}
+	// JSON numbers decode as float64 in encoding/json default mode; cast
+	// to int for the query string. Negative / zero values are server-side
+	// rejected (400) which we forward through.
+	if v, ok := args["limit"].(float64); ok && v > 0 {
+		query.Set("limit", fmt.Sprintf("%d", int(v)))
+	}
+	target := orchestratorURL + "/api/v1/decisions"
+	if qs := query.Encode(); qs != "" {
+		target += "?" + qs
+	}
+
+	req, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", session.tenantID)
+	if session.userID != "" {
+		req.Header.Set("X-User-ID", session.userID)
+	}
+	if session.userEmail != "" {
+		req.Header.Set("X-User-Email", session.userEmail)
+	}
+	// Forward the per-tenant SaaS Plugin tier so the orchestrator-side
+	// resolveDecisionListTier picks Free/Pro/Premium correctly. The agent
+	// captured this tier at authenticate time from the X-License-Token
+	// DB lookup; mcpSession persists it across the MCP session lifetime.
+	if session.tier != "" {
+		req.Header.Set("X-Axonflow-Effective-Tier", session.tier)
+	}
+	req.SetBasicAuth(session.tenantID, "internal")
+	if proxyTokenGenerator != nil {
+		req.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
+	}
+
+	resp, err := orchestratorHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	limited := io.LimitReader(resp.Body, mcpMaxResponseBody)
+	respBody, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// 429 is the V1 cap-hit envelope path. Preserve the structured body
+	// so the host LLM/UI can render upgrade.compare_url + the wording.
+	// Wrap with `upgrade_required: true` so a host parser doesn't have
+	// to introspect the limit_type field to know this is a paywall hit.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		var envelope map[string]interface{}
+		if jsonErr := json.Unmarshal(respBody, &envelope); jsonErr != nil {
+			// Bare 429 with no envelope — pre-V1.1 deployment or a
+			// transport-layer rejection. Surface the raw body so the
+			// host gets at least the textual upgrade prompt.
+			envelope = map[string]interface{}{"error": string(respBody)}
+		}
+		return map[string]interface{}{
+			"upgrade_required": true,
+			"envelope":         envelope,
+		}, nil
+	}
+
+	if resp.StatusCode >= 400 {
+		// Non-429 4xx/5xx — forward as a structured error string. Tests
+		// covering 401/400 paths rely on this.
+		return nil, fmt.Errorf("orchestrator returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result interface{}
+	if jsonErr := json.Unmarshal(respBody, &result); jsonErr != nil {
+		return string(respBody), nil
+	}
+	return result, nil
 }
 
 // mcpToolListOverrides proxies to GET /api/v1/overrides with query params.

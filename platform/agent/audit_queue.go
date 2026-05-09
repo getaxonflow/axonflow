@@ -112,6 +112,14 @@ type MCPQueryAuditEntry struct {
 	// (GET /api/v1/decisions/:id/explain) can resolve by this id.
 	DecisionID string `json:"decision_id,omitempty"`
 
+	// #1983 / α1 — record policy_version at decision time. Map from
+	// matched static-policy id → live version at evaluation. Empty when
+	// no static-policy match is in scope (dynamic-only blocks, allow
+	// paths with no policy match). Carried through to the audit_queue
+	// Details map so it survives the fallback-file replay path; explain's
+	// α3 amendment will surface it via DecisionExplanation.
+	PolicyVersions map[string]int `json:"policy_versions,omitempty"`
+
 	// Request phase (pre-execution policy evaluation)
 	RequestBlocked          bool     `json:"request_blocked"`
 	RequestBlockReason      string   `json:"request_block_reason,omitempty"`
@@ -304,6 +312,7 @@ func (aq *AuditQueue) LogMCPQueryAudit(mcpEntry MCPQueryAuditEntry) error {
 		Details: map[string]interface{}{
 			"audit_id":                   mcpEntry.AuditID,
 			"decision_id":                mcpEntry.DecisionID,
+			"policy_versions":            mcpEntry.PolicyVersions,
 			"tenant_id":                  mcpEntry.TenantID,
 			"org_id":                     mcpEntry.OrgID,
 			"connector_name":             mcpEntry.ConnectorName,

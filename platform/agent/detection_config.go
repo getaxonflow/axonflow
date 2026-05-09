@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/shared/envcompat"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -171,35 +172,41 @@ func DetectionConfigFromEnvWithBase(base DetectionConfig) DetectionConfig {
 	// default. This preserves the active profile's posture under typo input.
 	// See v6.2.0 review finding P2 — the previous hardcoded fallback to
 	// DetectionActionBlock silently tightened behavior back to the v6.1.0 default.
-	if action := os.Getenv(EnvSQLIAction); action != "" {
-		cfg.SQLIAction = parseDetectionAction(action, "SQLI_ACTION", cfg.SQLIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
-	} else if deprecated := os.Getenv(EnvSQLIBlockModeDeprecated); deprecated != "" {
-		// Deprecated: convert old format to new
-		log.Printf("[Detection] WARNING: %s is deprecated. Use %s instead.", EnvSQLIBlockModeDeprecated, EnvSQLIAction)
-		switch strings.ToLower(deprecated) {
-		case "block":
-			cfg.SQLIAction = DetectionActionBlock
-		case "warn":
-			cfg.SQLIAction = DetectionActionWarn
-		default:
-			cfg.SQLIAction = DetectionActionBlock
+	// envcompat.Lookup centralises the primary→deprecated fallback +
+	// one-time deprecation warning. Format conversion stays here because
+	// the deprecated boolean ("block"/"warn") differs from the primary
+	// enum format and the conversion is per-env-var.
+	if value, source, ok := envcompat.Lookup(EnvSQLIAction, EnvSQLIBlockModeDeprecated); ok {
+		if source == "primary" {
+			cfg.SQLIAction = parseDetectionAction(value, "SQLI_ACTION", cfg.SQLIAction,
+				[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionLog})
+		} else {
+			// Deprecated boolean format → action enum
+			switch strings.ToLower(value) {
+			case "block":
+				cfg.SQLIAction = DetectionActionBlock
+			case "warn":
+				cfg.SQLIAction = DetectionActionWarn
+			default:
+				cfg.SQLIAction = DetectionActionBlock
+			}
 		}
 	}
 
 	// Parse PII_ACTION (new) or PII_BLOCK_CRITICAL (deprecated).
 	// Same fix as SQLI_ACTION: preserve the base config's PIIAction on invalid
 	// input instead of silently flipping back to the v6.1.0 redact default.
-	if action := os.Getenv(EnvPIIAction); action != "" {
-		cfg.PIIAction = parseDetectionAction(action, "PII_ACTION", cfg.PIIAction,
-			[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
-	} else if deprecated := os.Getenv(EnvPIIBlockCriticalDeprecated); deprecated != "" {
-		// Deprecated: convert old format to new
-		log.Printf("[Detection] WARNING: %s is deprecated. Use %s instead.", EnvPIIBlockCriticalDeprecated, EnvPIIAction)
-		if deprecated == "false" || deprecated == "0" {
-			cfg.PIIAction = DetectionActionLog // Disabled = log only
+	if value, source, ok := envcompat.Lookup(EnvPIIAction, EnvPIIBlockCriticalDeprecated); ok {
+		if source == "primary" {
+			cfg.PIIAction = parseDetectionAction(value, "PII_ACTION", cfg.PIIAction,
+				[]DetectionAction{DetectionActionBlock, DetectionActionWarn, DetectionActionRedact, DetectionActionLog})
 		} else {
-			cfg.PIIAction = DetectionActionBlock // Enabled = block
+			// Deprecated boolean format → action enum
+			if value == "false" || value == "0" {
+				cfg.PIIAction = DetectionActionLog // Disabled = log only
+			} else {
+				cfg.PIIAction = DetectionActionBlock // Enabled = block
+			}
 		}
 	}
 

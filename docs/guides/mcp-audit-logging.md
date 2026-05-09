@@ -161,7 +161,7 @@ The SDK's `ConnectorResponse` includes `PolicyInfo` that matches the audit entry
 ### Go
 
 ```go
-import "github.com/getaxonflow/axonflow-sdk-go/v7"
+import "github.com/getaxonflow/axonflow-sdk-go/v8"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     os.Getenv("AXONFLOW_ENDPOINT"),

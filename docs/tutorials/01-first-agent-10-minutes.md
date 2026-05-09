@@ -44,14 +44,14 @@ Choose your language and set up the project.
 ```bash
 mkdir my-first-agent && cd my-first-agent
 go mod init my-first-agent
-go get github.com/getaxonflow/axonflow-sdk-go/v7
+go get github.com/getaxonflow/axonflow-sdk-go/v8
 ```
 
 ### Python
 
 ```bash
 mkdir my-first-agent && cd my-first-agent
-pip3 install axonflow==7.1.0
+pip3 install axonflow==8.0.0
 ```
 
 ### TypeScript
@@ -71,7 +71,7 @@ npx tsc --init
 # <dependency>
 #     <groupId>com.getaxonflow</groupId>
 #     <artifactId>axonflow-sdk</artifactId>
-#     <version>7.1.0</version>
+#     <version>8.0.0</version>
 # </dependency>
 ```
 
@@ -105,7 +105,7 @@ import (
 	"log"
 	"os"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
 )
 
 func main() {

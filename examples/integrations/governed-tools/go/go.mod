@@ -2,4 +2,4 @@ module github.com/axonflow/examples/governed-tools
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v7 v7.1.0
+require github.com/getaxonflow/axonflow-sdk-go/v8 v8.0.0

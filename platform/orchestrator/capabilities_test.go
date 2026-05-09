@@ -8,11 +8,11 @@ import (
 )
 
 // TestSDKCompatibilityPinnedToReleaseTrain pins the orchestrator's SDK
-// version compat block to the v7.0.0 release train. This regresses on the
-// drift that left orchestrator's /health reporting last-cycle pins
-// (v6.x.x recommended, 3.0.0 floor) while the agent's /health correctly
-// reported v7.0.0 — operators hitting orchestrator /health for diagnostics
-// would see inconsistent guidance versus the agent surface.
+// version compat block to the v8.0.0 release train. This regresses on the
+// drift that left orchestrator's /health reporting last-cycle pins while
+// the agent's /health correctly reported the new train — operators hitting
+// orchestrator /health for diagnostics would see inconsistent guidance
+// versus the agent surface.
 //
 // Update both files in lockstep on the next release train; this test
 // failing is the loud reminder that they have to move together.
@@ -20,16 +20,16 @@ func TestSDKCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	c := getSDKCompatibility()
 
 	wantMin := map[string]string{
-		"python":     "7.0.0",
-		"typescript": "7.0.0",
-		"go":         "7.0.0",
-		"java":       "7.0.0",
+		"python":     "8.0.0",
+		"typescript": "8.0.0",
+		"go":         "8.0.0",
+		"java":       "8.0.0",
 	}
 	wantRecommended := map[string]string{
-		"python":     "7.1.0",
-		"typescript": "7.1.0",
-		"go":         "7.1.0",
-		"java":       "7.1.0",
+		"python":     "8.0.0",
+		"typescript": "8.0.0",
+		"go":         "8.0.0",
+		"java":       "8.0.0",
 	}
 
 	for lang, want := range wantMin {
@@ -57,16 +57,16 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	c := getPluginCompatibility()
 
 	wantMin := map[string]string{
-		"openclaw":    "2.0.0",
-		"claude-code": "1.0.0",
-		"cursor":      "1.0.0",
-		"codex":       "1.0.0",
+		"openclaw":    "2.4.0",
+		"claude-code": "1.4.0",
+		"cursor":      "1.4.0",
+		"codex":       "1.4.0",
 	}
 	wantRecommended := map[string]string{
-		"openclaw":    "2.2.0",
-		"claude-code": "1.2.0",
-		"cursor":      "1.2.0",
-		"codex":       "1.2.0",
+		"openclaw":    "2.4.0",
+		"claude-code": "1.4.0",
+		"cursor":      "1.4.0",
+		"codex":       "1.4.0",
 	}
 
 	for id, want := range wantMin {

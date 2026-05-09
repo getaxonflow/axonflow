@@ -34,9 +34,15 @@ func TestBuildExplanation_EmptyDetails(t *testing.T) {
 
 func TestBuildExplanation_StructuredMatches(t *testing.T) {
 	ts := time.Now().UTC()
+	// #1983 / α1 — input details may carry top-level "policy_versions" map and
+	// inline per-match "policy_version" int. buildExplanation today doesn't
+	// surface those (α3 will), but it MUST keep parsing existing fields
+	// correctly when the new keys are present. ADR-043 §"Versioning"
+	// guarantees additive forward-compat.
 	details := map[string]interface{}{
-		"tool_signature": "Bash",
-		"risk_level":     "high",
+		"tool_signature":  "Bash",
+		"risk_level":      "high",
+		"policy_versions": map[string]interface{}{"pol-sqli": float64(7), "pol-secret": float64(2)},
 		"policy_matches": []interface{}{
 			map[string]interface{}{
 				"policy_id":          "pol-sqli",
@@ -45,6 +51,7 @@ func TestBuildExplanation_StructuredMatches(t *testing.T) {
 				"risk_level":         "high",
 				"allow_override":     true,
 				"policy_description": "Blocks SQL injection patterns",
+				"policy_version":     float64(7),
 			},
 			map[string]interface{}{
 				"policy_id":      "pol-secret",
@@ -52,6 +59,7 @@ func TestBuildExplanation_StructuredMatches(t *testing.T) {
 				"action":         "deny",
 				"risk_level":     "critical",
 				"allow_override": false,
+				"policy_version": float64(2),
 			},
 		},
 	}
@@ -88,6 +96,119 @@ func TestBuildExplanation_StructuredMatches(t *testing.T) {
 	}
 	if m1.AllowOverride {
 		t.Error("PolicyMatches[1].AllowOverride = true, want false")
+	}
+
+	// V1.1 / α3: PolicyVersionAtDecision is anchored to the FIRST matched
+	// policy. The α1 fixture above puts pol-sqli at version 7 in the
+	// top-level policy_versions map, so the field must surface 7.
+	if exp.PolicyVersionAtDecision != 7 {
+		t.Errorf("PolicyVersionAtDecision = %d, want 7", exp.PolicyVersionAtDecision)
+	}
+}
+
+// V1.1 / α3 — explicit forensic-field tests.
+
+func TestBuildExplanation_NoVersionWhenAbsent(t *testing.T) {
+	// Pre-α1 audit rows have no `policy_versions` key. PolicyVersionAtDecision
+	// must stay at 0 so omitempty drops it from the JSON response.
+	ts := time.Now().UTC()
+	details := map[string]interface{}{
+		"policy_matches": []interface{}{
+			map[string]interface{}{
+				"policy_id": "pol-pre-alpha1",
+				"action":    "deny",
+			},
+		},
+	}
+
+	exp := buildExplanation("dec-old", ts, "deny", "blocked", details)
+
+	if exp.PolicyVersionAtDecision != 0 {
+		t.Errorf("PolicyVersionAtDecision = %d on pre-α1 audit row, want 0",
+			exp.PolicyVersionAtDecision)
+	}
+}
+
+func TestBuildExplanation_PolicyVersionAtDecisionAnchorsOnFirstMatch(t *testing.T) {
+	// Confirms the "FIRST match" anchoring rule when policy_versions has
+	// entries for multiple matches. The version that comes back must be
+	// the first match's version, not (e.g.) the highest or the last.
+	ts := time.Now().UTC()
+	details := map[string]interface{}{
+		"policy_versions": map[string]interface{}{
+			"pol-zero":   float64(99), // not the first match — must NOT be picked
+			"pol-first":  float64(3),
+			"pol-second": float64(42),
+		},
+		"policy_matches": []interface{}{
+			map[string]interface{}{"policy_id": "pol-first"},
+			map[string]interface{}{"policy_id": "pol-second"},
+		},
+	}
+
+	exp := buildExplanation("dec-anchor", ts, "deny", "blocked", details)
+
+	if exp.PolicyVersionAtDecision != 3 {
+		t.Errorf("PolicyVersionAtDecision = %d, want 3 (first-match anchor)",
+			exp.PolicyVersionAtDecision)
+	}
+}
+
+func TestQueryLatestPolicyVersion_HappyPath(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	origDB := usageDB
+	usageDB = mockDB
+	defer func() { usageDB = origDB }()
+
+	mock.ExpectQuery(`SELECT version FROM static_policy_versions`).
+		WithArgs("pol-sqli").
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(12))
+
+	got := queryLatestPolicyVersion("pol-sqli")
+	if got != 12 {
+		t.Errorf("queryLatestPolicyVersion = %d, want 12", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestQueryLatestPolicyVersion_NoRowsReturnsZero(t *testing.T) {
+	// Decision was for a dynamic policy (no entries in static_policy_versions),
+	// or static policy was hard-deleted post-decision. Surfacing 0 lets
+	// omitempty drop the field from the response — caller sees "no latest"
+	// by absence, not by special-casing 0.
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	origDB := usageDB
+	usageDB = mockDB
+	defer func() { usageDB = origDB }()
+
+	mock.ExpectQuery(`SELECT version FROM static_policy_versions`).
+		WithArgs("pol-vanished").
+		WillReturnError(sql.ErrNoRows)
+
+	got := queryLatestPolicyVersion("pol-vanished")
+	if got != 0 {
+		t.Errorf("queryLatestPolicyVersion = %d on missing row, want 0", got)
+	}
+}
+
+func TestQueryLatestPolicyVersion_EmptyPolicyIDReturnsZero(t *testing.T) {
+	// Guard: caller passes empty policy_id (no matched policies on the
+	// decision). Must short-circuit without hitting the DB.
+	got := queryLatestPolicyVersion("")
+	if got != 0 {
+		t.Errorf("queryLatestPolicyVersion(\"\") = %d, want 0", got)
 	}
 }
 

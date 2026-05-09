@@ -74,6 +74,9 @@ func TestTierBoundary_EvaluationLimitsValues(t *testing.T) {
 		{"MaxVersionsPerPlan", limits.MaxVersionsPerPlan, 25},
 		{"MaxCostEstimatesPerDay", limits.MaxCostEstimatesPerDay, 100},
 		{"MaxPendingApprovals", limits.MaxPendingApprovals, 25},
+		// V1.1 decision-list (issue #1982): self-host Evaluation = 14d / 100.
+		{"DecisionListWindowHours", limits.DecisionListWindowHours, 336},
+		{"DecisionListMaxPage", limits.DecisionListMaxPage, 100},
 	}
 
 	for _, c := range checks {
@@ -105,6 +108,9 @@ func TestTierBoundary_CommunityVsEvaluation(t *testing.T) {
 		{"MaxVersionsPerPlan", community.MaxVersionsPerPlan, evaluation.MaxVersionsPerPlan},
 		{"MaxCostEstimatesPerDay", community.MaxCostEstimatesPerDay, evaluation.MaxCostEstimatesPerDay},
 		{"MaxPendingApprovals", community.MaxPendingApprovals, evaluation.MaxPendingApprovals},
+		// V1.1 decision-list (issue #1982): Evaluation must out-grow Community.
+		{"DecisionListWindowHours", community.DecisionListWindowHours, evaluation.DecisionListWindowHours},
+		{"DecisionListMaxPage", community.DecisionListMaxPage, evaluation.DecisionListMaxPage},
 	}
 
 	for _, c := range comparisons {
@@ -136,6 +142,10 @@ func TestTierBoundary_EvaluationVsEnterprise(t *testing.T) {
 		{"MaxVersionsPerPlan", evaluation.MaxVersionsPerPlan, enterprise.MaxVersionsPerPlan},
 		{"MaxCostEstimatesPerDay", evaluation.MaxCostEstimatesPerDay, enterprise.MaxCostEstimatesPerDay},
 		{"MaxPendingApprovals", evaluation.MaxPendingApprovals, enterprise.MaxPendingApprovals},
+		// V1.1 decision-list (issue #1982): Enterprise must be unlimited
+		// (-1 sentinel) or out-grow Evaluation.
+		{"DecisionListWindowHours", evaluation.DecisionListWindowHours, enterprise.DecisionListWindowHours},
+		{"DecisionListMaxPage", evaluation.DecisionListMaxPage, enterprise.DecisionListMaxPage},
 	}
 
 	for _, c := range comparisons {

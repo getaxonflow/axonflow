@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	mathRand "math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -563,6 +564,10 @@ func Run() {
 	r.HandleFunc("/api/v1/overrides/{id}", getOverrideHandler).Methods("GET")
 	r.HandleFunc("/api/v1/overrides/{id}", revokeOverrideHandler).Methods("DELETE")
 	r.HandleFunc("/api/v1/decisions/{id}/explain", explainDecisionHandler).Methods("GET")
+	// V1.1 decision-list companion (issue #1982). Lookback window + page
+	// size are tier-gated (see decisions_list_handler.go); cap-hit returns
+	// the V1 upgrade envelope at 429.
+	r.HandleFunc("/api/v1/decisions", listDecisionsHandler).Methods("GET")
 	r.HandleFunc("/api/v1/audit/summary", auditSummaryRequestHandler).Methods("POST", "OPTIONS")
 
 	// Workflow endpoints
@@ -767,11 +772,41 @@ func Run() {
 		}
 	}
 
-	// Start server
+	// Start server. Refactored from http.ListenAndServe → net.Listen +
+	// http.Serve so the readiness signal (port-bound) precedes the
+	// startup-telemetry goroutine. Pre-#2087 the goroutine fired BEFORE
+	// the listener bound, so a process that failed to bind (port in use,
+	// privilege denied, etc.) could still emit a "deployment started"
+	// signal — false positive contradicting the locked rule "emit only
+	// once /health would 200." Now the bind happens first; only on
+	// success does the telemetry goroutine spawn.
 	port := getEnv("PORT", "8081")
 	handler := c.Handler(r)
+
+	listener, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		log.Fatalf("AxonFlow Orchestrator listen on port %s: %v", port, err)
+	}
 	log.Printf("AxonFlow Orchestrator listening on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+
+	// Anonymous platform startup telemetry (#2004 PR3). Fire-and-forget
+	// in a goroutine — runs concurrently with http.Serve below. The
+	// 5s HTTP timeout inside MaybeSendStartupTelemetry caps blocking;
+	// AXONFLOW_TELEMETRY=off short-circuits, and community_saas mode
+	// (DEPLOYMENT_MODE=community-saas) also short-circuits per the
+	// user-locked design.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		sent, err := MaybeSendStartupTelemetry(ctx)
+		if err != nil {
+			log.Printf("[startup-telemetry] error: %v", err)
+		} else if sent {
+			log.Println("[startup-telemetry] ping delivered")
+		}
+	}()
+
+	log.Fatal(http.Serve(listener, handler))
 }
 
 func initializeComponents() {
@@ -2830,6 +2865,20 @@ func mapMaxTimeoutFromEnv() time.Duration {
 func isCommunityMode() bool {
 	mode := os.Getenv("DEPLOYMENT_MODE")
 	return mode == "community" || mode == ""
+}
+
+// isCommunitySaasMode returns true when running as the shared community SaaS
+// server. Mirrors platform/agent/run.go's helper of the same name. Used by
+// the startup-telemetry path to suppress self-pings on AxonFlow-operated
+// stacks (try.getaxonflow.com) — the canonical wiring sets
+// DEPLOYMENT_MODE=community-saas via docker-compose.community-saas.yml.
+//
+// Intentionally NOT a member of isCommunityMode's true set: a csaas
+// deployment is its own mode (no license, has registration creds, rate-
+// limited differently). Treating them as the same gate would re-enable
+// feature surfaces csaas explicitly disables.
+func isCommunitySaasMode() bool {
+	return os.Getenv("DEPLOYMENT_MODE") == "community-saas"
 }
 
 // isMediaGovernanceEnabled resolves whether media governance is active for a request.

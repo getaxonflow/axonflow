@@ -1,0 +1,41 @@
+-- 084_record_policy_version.sql
+-- α1 of #1983: record policy_version at decision time.
+--
+-- Forward-only, no DDL. The change is additive in JSONB:
+--   audit_logs.policy_details now carries new keys when a static-policy
+--   match drove the decision —
+--     - top-level "policy_versions": { policy_id -> int_version }
+--     - each policy_matches[i].policy_version (inline)
+--   override_used events also carry "policy_id" + "policy_version" of the
+--   policy whose block was unblocked.
+--
+-- Reason this file is doc-only:
+--   1. policy_details is already JSONB (migration 027). New keys do not
+--      need DDL.
+--   2. The existing GIN index on audit_logs.policy_details (created in
+--      035) handles `->` / `->>` / `@>` lookups on any new key without
+--      reindex.
+--   3. omitempty on the producer side ensures pre-α1 audit rows continue
+--      to surface no policy_version key — explain MUST treat absence as
+--      "pre-α1 record" rather than synthesise a default.
+--
+-- Producers updated in this release:
+--   - platform/agent/mcp_handler.go        (check-input + check-output paths)
+--   - platform/agent/mcp_server_handler.go (MCP server tool variants)
+--   - platform/agent/mcp_richer_context.go (writeExplainableAuditLog,
+--                                           writeOverrideUsedEvent,
+--                                           lookupPolicyMeta,
+--                                           lookupPolicyVersionsByID)
+--   - platform/agent/audit_queue.go        (MCPQueryAuditEntry.PolicyVersions
+--                                           → AuditEntry.Details)
+--
+-- α3 (separate session) extracts these fields in
+-- platform/orchestrator/explain_handler.go and adds two surface fields
+-- on DecisionExplanation:
+--   - policy_version_at_decision (extracted from JSONB)
+--   - latest_policy_version (joined from static_policy_versions)
+--
+-- No backfill: pre-α1 decisions surface no version. ADR-043 §"Versioning"
+-- treats new omitempty fields as non-breaking.
+
+SELECT 'migration 084 is doc-only — no DDL. See file header.' AS note;

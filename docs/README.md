@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: May 2026** | **Platform: v7.8.0** | **SDKs: Python / Go / TypeScript / Java v7.1.0 + Rust v0.1.0 (preview)**
+**Last Updated: May 2026** | **Platform: v7.9.0** | **SDKs: Python / Go / TypeScript / Java v8.0.0 + Rust v0.1.0 (preview)**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -41,7 +41,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. SDK versio
 ### Go SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-go](https://github.com/getaxonflow/axonflow-sdk-go)
-- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v7`
+- **Install:** `go get github.com/getaxonflow/axonflow-sdk-go/v8`
 
 ### Python SDK
 
@@ -60,6 +60,12 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript. SDK versio
 - [TypeScript Quickstart](./sdk/typescript-quickstart.md) - Get started with TypeScript SDK
 - [TypeScript Architecture](./sdk/typescript-architecture.md) - SDK architecture and design
 - [TypeScript Specification](./sdk/typescript-specification.md) - Full API specification
+
+### Rust SDK (preview)
+
+- **Repository:** [github.com/getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust)
+- **Install:** `cargo add axonflow-sdk-rust`
+- Preview line at v0.1.x on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, and an OpenAI interceptor.
 
 ## Reference
 

@@ -233,7 +233,7 @@ import (
     "os"
     "time"
 
-    "github.com/getaxonflow/axonflow-sdk-go/v7"
+    "github.com/getaxonflow/axonflow-sdk-go/v8"
 )
 
 func main() {

@@ -65,7 +65,7 @@ cd python && python test_tier_limits.py
 ## Available Examples
 
 - **Python** (`python/`) - Uses `axonflow` SDK
-- **Go** (`go/`) - Uses `github.com/getaxonflow/axonflow-sdk-go/v5`
+- **Go** (`go/`) - Uses `github.com/getaxonflow/axonflow-sdk-go/v8`
 - **Java** (`java/`) - Uses `com.getaxonflow:axonflow-sdk`
 - **TypeScript** (`typescript/`) - Uses `@axonflow/sdk`
 - **HTTP** (`http/`) - Direct HTTP API calls (curl)

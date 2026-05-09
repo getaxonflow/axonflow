@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
+	axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
 )
 
 var failures []string

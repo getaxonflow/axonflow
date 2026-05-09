@@ -29,7 +29,7 @@ try:
     from axonflow.exceptions import BudgetExceededError
 except ImportError:
     print("ERROR: axonflow-sdk not installed")
-    print("Install with: pip install axonflow-sdk>=2.7.0")
+    print("Install with: pip install axonflow-sdk>=8.0.0")
     print("Or for local development: pip install -e ../../../../axonflow-sdk-python")
     sys.exit(1)
 

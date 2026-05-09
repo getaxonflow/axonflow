@@ -296,6 +296,18 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Populate telemetry identity container BEFORE the daily-cap
+		// check so the outer telemetry middleware records 429 events
+		// alongside 200/4xx events. Same fix as the auth.go path
+		// (#2011 phase B0) — the proxy auth path was missed in that PR
+		// and surfaced via runtime test on community-saas staging
+		// 2026-05-08: the agent.go fix landed but /api/v1/audit/* and
+		// other proxy routes still produced 429s that never made it to
+		// the telemetry table. The (auth, proxy, mcp) trio of cap-check
+		// call sites must each hoist this populate step ahead of the
+		// cap-enforcement helper.
+		SetTelemetryTenantID(r.Context(), auth.TenantID)
+
 		// Community-SaaS daily cap. See enforceCommunitySaasDailyCap for
 		// the per-tenant cap rationale and the ADR pointers. The block
 		// is factored out so unit tests can drive it without standing up
@@ -309,8 +321,23 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		r.Header.Set("X-Tenant-ID", auth.TenantID)
 		r.Header.Set("X-Org-ID", auth.OrgID)
 
-		// Populate telemetry identity container (set by outer telemetry middleware)
-		SetTelemetryTenantID(r.Context(), auth.TenantID)
+		// V1.1: forward the per-tenant SaaS Plugin tier to the
+		// orchestrator. The agent has already resolved Free / Pro /
+		// Premium from the X-License-Token DB lookup (auth.go); the
+		// orchestrator's tier-gated endpoints (decisions_list_handler.go,
+		// future V1.2 readers) read this header to apply the right cap.
+		// Self-hosted callers leave EffectiveTier empty — the
+		// orchestrator falls back to the deployment-wide license tier.
+		// Always strip any inbound value first so a malicious caller
+		// can't set their own tier on the bare-orchestrator entry path.
+		r.Header.Del("X-Axonflow-Effective-Tier")
+		if auth.Client != nil && auth.Client.EffectiveTier != "" {
+			r.Header.Set("X-Axonflow-Effective-Tier", auth.Client.EffectiveTier)
+		}
+
+		// (Telemetry identity is populated earlier — before the
+		// daily-cap check — so 429 responses are recorded too. See
+		// #2011 phase B0.)
 
 		next(w, r)
 	}

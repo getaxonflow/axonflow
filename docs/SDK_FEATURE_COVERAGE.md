@@ -220,10 +220,10 @@ The four established SDKs should have identical method coverage. Rust is a previ
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v7.1.0 | ~44 | ✅ |
-| Python | v7.1.0 | ~44 | ✅ |
-| TypeScript | v7.1.0 | ~45 | ✅ (+protect) |
-| Java | v7.1.0 | ~44 | ✅ |
+| Go | v8.0.0 | ~44 | ✅ |
+| Python | v8.0.0 | ~44 | ✅ |
+| TypeScript | v8.0.0 | ~45 | ✅ (+protect) |
+| Java | v8.0.0 | ~44 | ✅ |
 | Rust _(preview)_ | v0.2.0 | ~14 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP) |
 
 ### Infrastructure (v4.1.0)
