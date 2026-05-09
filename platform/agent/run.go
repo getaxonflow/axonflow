@@ -1159,9 +1159,14 @@ func Run() {
 		// No-op on community builds (build-tagged file).
 		startPluginLicenseMetricsPoller(usageDB)
 
-		// Usage telemetry middleware (DynamoDB — disabled when table name is empty)
-		telTable := getEnv("COMMUNITY_SAAS_TELEMETRY_TABLE", "")
-		tel := NewCommunitySaaSTelemetry(telTable, GetPlatformVersion())
+		// Usage telemetry middleware — sends to SQS (disabled when queue URL is empty).
+		// Post-#2010 the agent never writes DDB direct: the ingest Lambda
+		// (ee/platform/csaas-telemetry-ingest) is the SOLE writer to
+		// community-saas-telemetry-events. Local dev / CI without
+		// COMMUNITY_SAAS_TELEMETRY_SQS_URL set leaves the middleware
+		// disabled exactly as the empty-table case did before.
+		telQueueURL := getEnv("COMMUNITY_SAAS_TELEMETRY_SQS_URL", "")
+		tel := NewCommunitySaaSTelemetry(telQueueURL, GetPlatformVersion())
 		globalRouter.Use(tel.Middleware)
 	}
 
@@ -1169,6 +1174,22 @@ func Run() {
 	appReady.Store(true)
 	log.Println("✅ All initialization complete - application ready")
 	log.Printf("🚀 AxonFlow Agent fully operational on port %s", port)
+
+	// Anonymous platform startup telemetry (#2004 PR2). Fire-and-forget
+	// in a goroutine — the call has a 5s ceiling but we don't block the
+	// startup log on it, and the agent is already serving requests by
+	// this point. AXONFLOW_TELEMETRY=off short-circuits inside the call;
+	// community_saas mode also short-circuits per the user-locked design.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		sent, err := MaybeSendStartupTelemetry(ctx)
+		if err != nil {
+			log.Printf("[startup-telemetry] error: %v", err)
+		} else if sent {
+			log.Println("[startup-telemetry] ping delivered")
+		}
+	}()
 
 	// Block forever - server is running in goroutine, nothing else to do
 	select {}

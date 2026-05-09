@@ -29,9 +29,10 @@ import (
 // This implements the Flyway-style multi-location pattern for migrations.
 // Directory structure:
 //   migrations/
-//   ├── core/        (001-099) Always run
-//   ├── enterprise/  (100-199) Enterprise deployments
-//   └── industry/    (200+) Industry-specific verticals
+//   ├── core/           (001-099) Always run on every deployment
+//   ├── enterprise/     (100-199) Enterprise self-hosted deployments
+//   ├── community-saas/ (086+)    try.getaxonflow.com hosted infra ONLY
+//   └── industry/       (200+) Industry-specific verticals
 //       ├── travel/     (200-249) Travel vertical (EU AI Act)
 //       ├── healthcare/ (250-299) Healthcare vertical
 //       ├── banking/    (300-349) Banking vertical (SEBI)
@@ -41,6 +42,14 @@ import (
 // AFTER all core and enterprise migrations. Using 001-099 will cause failures
 // because dependencies (like static_policies) won't exist yet.
 //
+// IMPORTANT: community-saas/ migrations apply ONLY when DEPLOYMENT_MODE=
+// community-saas. Self-hosted community / enterprise / in-vpc-* deployments
+// must NEVER load this category — these tables (tenant registrations, the
+// A1.5 adoption bridge role, etc.) are operational infra for our hosted
+// SaaS only. Version numbers can overlap with core/ (since the schema_
+// migrations table is keyed by version+filename and the runner skips
+// already-applied migrations by version).
+//
 // DEPLOYMENT_MODE controls which paths are included:
 //   - community:         core/
 //   - saas:              core/ + enterprise/ + industry/*
@@ -48,6 +57,7 @@ import (
 //   - in-vpc-banking:    core/ + enterprise/ + industry/banking/
 //   - in-vpc-travel:     core/ + enterprise/ + industry/travel/
 //   - in-vpc-enterprise: core/ + enterprise/
+//   - community-saas:    core/ + community-saas/
 // =============================================================================
 
 // MigrationFile represents a migration file with metadata
@@ -117,8 +127,23 @@ func getMigrationPaths(basePath string) []string {
 		log.Println("📦 DEPLOYMENT_MODE=in-vpc-enterprise: Running core + enterprise migrations")
 
 	case "community-saas":
-		// Community-SaaS: core migrations only (same as community — no enterprise tables needed)
-		log.Println("📦 DEPLOYMENT_MODE=community-saas: Running core migrations only")
+		// Community-SaaS: core migrations + the dedicated community-saas/
+		// category. The community-SaaS hosted deployment (try.getaxonflow.com)
+		// has internal-only infrastructure (tenant registrations, the A1.5
+		// adoption bridge, etc.) that does NOT belong in core/ because
+		// self-hosted community + enterprise customers don't need those
+		// tables.
+		//
+		// Migrations 085 + 086 live in community-saas/ from inception
+		// (085 was added 2026-05-08, post-v7.8.0 release, so no customer
+		// self-host environment had applied it yet at relocation time —
+		// move was safe). Migrations 068 / 073 / 075 / 076 (and a few
+		// other tenant-related ones) remain in core/ for now because they
+		// shipped in releases <= v7.8.0 and customer environments have
+		// applied them; relocating them needs a drift-detection runbook
+		// that's planned as a separate refactor.
+		paths = append(paths, filepath.Join(basePath, "community-saas"))
+		log.Println("📦 DEPLOYMENT_MODE=community-saas: Running core + community-saas migrations")
 
 	default:
 		// Unknown mode - default to saas for safety

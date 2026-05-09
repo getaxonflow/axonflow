@@ -5,7 +5,7 @@ Demonstrates Gateway Mode and Proxy Mode with Mistral through AxonFlow.
 
 Prerequisites:
     docker compose up -d
-    pip install axonflow>=7.0.0
+    pip install axonflow>=8.0.0
     export AXONFLOW_CLIENT_SECRET=your-secret
 
 Usage:

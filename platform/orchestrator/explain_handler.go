@@ -31,6 +31,24 @@ type DecisionExplanation struct {
 	HistoricalHitCountSession int             `json:"historical_hit_count_session"`
 	PolicySourceLink          string          `json:"policy_source_link,omitempty"`
 	ToolSignature             string          `json:"tool_signature,omitempty"`
+
+	// V1.1 forensic fields (ADR-043 amendment 2026-05-07). Both fields
+	// are scoped to the FIRST matched policy. Both `omitempty` so pre-V1.1
+	// audit rows + decisions that fired on dynamic policies (no version
+	// surface) keep the original payload byte-shape.
+	//
+	// PolicyVersionAtDecision: the version of the matched policy that was
+	// applied when this decision was made. Read from
+	// `policy_details.policy_versions[first_match.policy_id]` which α1
+	// (commit 8aae2e1f3) populates at decision-write time. 0 = unrecorded
+	// (pre-α1 audit row OR dynamic-policy decision).
+	//
+	// LatestPolicyVersion: the current head of `static_policy_versions`
+	// for the same policy_id. Lookup happens at explain-time. Lets the
+	// caller answer "is this still the current policy, or has it been
+	// updated since?" without a second round-trip.
+	PolicyVersionAtDecision int `json:"policy_version_at_decision,omitempty"`
+	LatestPolicyVersion     int `json:"latest_policy_version,omitempty"`
 }
 
 // ExplainPolicy is a policy reference returned inside an explanation.
@@ -161,6 +179,18 @@ func explainDecisionHandler(w http.ResponseWriter, r *http.Request) {
 	// Historical hit count for same (policy_id, user_email) in rolling 24h.
 	exp.HistoricalHitCountSession = queryHistoricalHitCount(callerEmail, exp.PolicyMatches, entryTime)
 
+	// V1.1: latest_policy_version. Single-row lookup against the FIRST
+	// matched policy_id; matches the same "first match" anchoring rule
+	// buildExplanation() uses for PolicyVersionAtDecision. Lookup is
+	// deliberately separate from buildExplanation() because it touches the
+	// DB and buildExplanation() is exposed for unit tests with table-driven
+	// inputs that should NOT need a DB roundtrip. Failure is silent (logged,
+	// returns 0 → omitempty); explain still returns the recorded version
+	// even if the latest cannot be resolved.
+	if len(exp.PolicyMatches) > 0 {
+		exp.LatestPolicyVersion = queryLatestPolicyVersion(exp.PolicyMatches[0].PolicyID)
+	}
+
 	// Check for existing active override (drives override_available).
 	// Pass the decision's tool_signature so override lookup matches the same
 	// tool-scoped precedence as FindActiveOverride / ApplyOverrideToResult —
@@ -243,7 +273,58 @@ func buildExplanation(decisionID string, ts time.Time,
 		}
 	}
 
+	// V1.1: extract the first matched policy's version-at-decision-time from
+	// the top-level `policy_versions` map α1 stores in policy_details. Use
+	// the FIRST match because that's the same scope rule the rest of the
+	// payload uses (HistoricalHitCountSession, override availability, etc.
+	// all anchor on PolicyMatches[0]). For pre-α1 audit rows the key is
+	// absent and the field stays at 0 → omitempty drops it from the JSON.
+	if len(exp.PolicyMatches) > 0 {
+		firstID := exp.PolicyMatches[0].PolicyID
+		if firstID != "" {
+			if pv, ok := details["policy_versions"].(map[string]interface{}); ok {
+				if rawVer, present := pv[firstID]; present {
+					// JSON numbers unmarshal as float64 through interface{};
+					// cast and round.
+					switch v := rawVer.(type) {
+					case float64:
+						exp.PolicyVersionAtDecision = int(v)
+					case int:
+						exp.PolicyVersionAtDecision = v
+					}
+				}
+			}
+		}
+	}
+
 	return exp
+}
+
+// queryLatestPolicyVersion returns the highest version number for the given
+// policy_id in `static_policy_versions`. Returns 0 (and logs) on any error,
+// including the row-not-found case (e.g. dynamic-only policy or policy
+// deleted since the decision). 0 is omitempty in the response, so the
+// caller surfaces "no latest version available" by absence rather than a
+// zero value the consumer has to special-case.
+func queryLatestPolicyVersion(policyID string) int {
+	if policyID == "" {
+		return 0
+	}
+	var version int
+	err := usageDB.QueryRow(`
+		SELECT version FROM static_policy_versions
+		WHERE policy_id = $1
+		ORDER BY version DESC
+		LIMIT 1
+	`, policyID).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	if err != nil {
+		log.Printf("explain decision: latest_policy_version lookup failed for %q: %v", policyID, err)
+		return 0
+	}
+	return version
 }
 
 // queryHistoricalHitCount returns how many times the same (policy_id,

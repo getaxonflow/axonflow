@@ -70,25 +70,25 @@ func getCapabilities() []PlatformCapability {
 
 func getSDKCompatibility() SDKCompatInfo {
 	return SDKCompatInfo{
-		// Floor of the current major line. SDKs below 7.0.0 ran the
-		// pre-DNT-removal opt-out contract; bumping the floor signals
-		// to those callers that they should upgrade to keep their
-		// telemetry opt-out (and assorted v6.x→v7.x cleanups) honored.
-		// Kept in lockstep with platform/agent/capabilities.go so /health
-		// on agent (8080) and orchestrator (8081) report identical pins.
+		// Floor of the current major line. With the v8.0.0 release-train
+		// the SDK major bumps from v7 to v8. Callers below 8.0.0 lack the
+		// typed 429 RateLimitError upgrade-envelope handling and the
+		// list_decisions method (Session γ / #1982). Kept in lockstep
+		// with platform/agent/capabilities.go so /health on agent (8080)
+		// and orchestrator (8081) report identical pins.
 		MinSDKVersion: map[string]string{
-			"python":     "7.0.0",
-			"typescript": "7.0.0",
-			"go":         "7.0.0",
-			"java":       "7.0.0",
+			"python":     "8.0.0",
+			"typescript": "8.0.0",
+			"go":         "8.0.0",
+			"java":       "8.0.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each SDK's release-train tag.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "7.1.0",
-			"typescript": "7.1.0",
-			"go":         "7.1.0",
-			"java":       "7.1.0",
+			"python":     "8.0.0",
+			"typescript": "8.0.0",
+			"go":         "8.0.0",
+			"java":       "8.0.0",
 		},
 	}
 }
@@ -98,28 +98,33 @@ func getSDKCompatibility() SDKCompatInfo {
 // so /health on both ports surfaces the same downgrade-warning gate.
 func getPluginCompatibility() PluginCompatInfo {
 	return PluginCompatInfo{
-		// Floor of each plugin's current major line. OpenClaw graduated
-		// from the v1.x line to v2.0.0 alongside the SDK v7.0.0 cycle;
-		// the three CLI plugins (Claude / Cursor / Codex) graduated
-		// from 0.x to 1.0.0 in the same release train. Plugins below
-		// these floors ran the pre-DNT-removal contract.
+		// Floor of each plugin's current released contract. Bumped from
+		// {2.0.0, 1.0.0×3} to {2.4.0, 1.4.0×3} alongside the v7.9.0
+		// release-train: openclaw 2.0–2.3.x carried bugs we no longer
+		// support; claude-code/cursor/codex 1.0–1.3.x predate the v8
+		// list_decisions integration. Anything below this floor speaks
+		// an out-of-contract version and receives the actionable
+		// downgrade-warning header on every governed call. The plugin
+		// tags ship within ~15-30 minutes of the v7.9.0 community sync
+		// per the release-train order locked at #2047. Mirrors
+		// platform/agent/capabilities.go.
 		MinPluginVersion: map[string]string{
-			"openclaw":    "2.0.0",
-			"claude-code": "1.0.0",
-			"cursor":      "1.0.0",
-			"codex":       "1.0.0",
+			"openclaw":    "2.4.0",
+			"claude-code": "1.4.0",
+			"cursor":      "1.4.0",
+			"codex":       "1.4.0",
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
-		// with each plugin's release-train tag. Bumped alongside the V1
-		// SaaS Plugin Pro launch (claude/cursor/codex 1.2.0, openclaw
-		// 2.2.0) which carries the X-License-Token forwarding for Pro
-		// tier activation and the X-Axonflow-Client header for scope
-		// validation against the agent.
+		// with each plugin's release-train tag. Bumped to claude/cursor/codex
+		// 1.4.0 + openclaw 2.4.0 alongside the SDK v8.0.0 release-train —
+		// the new minor carries the SDK v8 list_decisions integration so the
+		// "show me the last decisions for this user" affordance lands
+		// natively in each host. Mirrors platform/agent/capabilities.go.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.2.0",
-			"claude-code": "1.2.0",
-			"cursor":      "1.2.0",
-			"codex":       "1.2.0",
+			"openclaw":    "2.4.0",
+			"claude-code": "1.4.0",
+			"cursor":      "1.4.0",
+			"codex":       "1.4.0",
 		},
 	}
 }

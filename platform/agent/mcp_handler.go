@@ -1501,11 +1501,17 @@ type MCPCheckInputResponse struct {
 // concerns — the plugin only needs policy_id, policy_name, risk_level, and
 // allow_override to surface a useful block reason and decide whether to
 // offer an override CTA.
+//
+// Version is the live static_policies.version at decision time (#1983 / α1).
+// omitempty so dynamic-only matches (where version is unknown / 0) and pre-α1
+// audit records keep byte-for-byte shape; ADR-043 §"Versioning" makes
+// additive omitempty fields non-breaking.
 type RicherPolicyMatch struct {
 	PolicyID      string `json:"policy_id"`
 	PolicyName    string `json:"policy_name,omitempty"`
 	RiskLevel     string `json:"risk_level,omitempty"`
 	AllowOverride bool   `json:"allow_override"`
+	Version       int    `json:"policy_version,omitempty"`
 }
 
 // MCPCheckOutputRequest is the request body for POST /api/v1/mcp/check-output.
@@ -1695,7 +1701,6 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 			auditEntry.RequestBlocked = true
 			auditEntry.RequestBlockReason = outcome.StaticResult.BlockReason
 			auditEntry.DurationMs = time.Since(startTime).Milliseconds()
-			logMCPQueryAudit(auditEntry)
 
 			// Plugin Batch 1: enrich the block response with decision_id,
 			// risk_level, policy_matches, override_available.
@@ -1703,16 +1708,36 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				buildRicherCheckInputBlock(ctx, usageDB, tenantID, userEmail,
 					outcome.StaticResult.MatchedPolicies)
 
+			// #1983 / α1: stamp { policy_id -> version } on the audit entry
+			// before logMCPQueryAudit so the version surfaces in the
+			// MCPQueryAuditEntry → audit_queue Details map. Built from the
+			// richer matches (one DB lookup per policy already happened in
+			// buildRicherCheckInputBlock). Empty when all matches are
+			// dynamic-only / unknown.
+			auditEntry.PolicyVersions = collectPolicyVersions(matches)
+			logMCPQueryAudit(auditEntry)
+
 			// ADR-044: if the caller has an active session override on any
 			// of the matched policies, flip deny -> allow and emit an
 			// override_used audit event. Must run before the block audit
 			// write so we don't record a denied decision that didn't
 			// actually fire.
-			if usedOverrideID, applied := applyOverrideToCheckInputBlock(
+			if usedOverrideID, overriddenMatch, applied := applyOverrideToCheckInputBlock(
 				ctx, usageDB, tenantID, userEmail, matches,
 			); applied {
+				// #1983 / α1: stamp policy_id + policy_version of the
+				// match the override unblocked into policy_details so
+				// explain can answer "which version of which policy was
+				// overridden."
+				var overriddenPolicyID string
+				var overriddenPolicyVersion int
+				if overriddenMatch != nil {
+					overriddenPolicyID = overriddenMatch.PolicyID
+					overriddenPolicyVersion = overriddenMatch.Version
+				}
 				writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-					decisionID, tenantID, orgID, auth.Client.ID, userEmail)
+					decisionID, tenantID, orgID, auth.Client.ID, userEmail,
+					overriddenPolicyID, overriddenPolicyVersion)
 				log.Printf("[MCP] Override %s applied — flipping deny to allow for decision %s",
 					usedOverrideID, decisionID)
 				// Fall through to the non-block success path below by
@@ -1721,6 +1746,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 				// allowed response directly here and return.
 				auditEntry.RequestBlocked = false
 				auditEntry.RequestBlockReason = ""
+				auditEntry.PolicyVersions = collectPolicyVersions(matches)
 				auditEntry.Success = true
 				auditEntry.DurationMs = time.Since(startTime).Milliseconds()
 				logMCPQueryAudit(auditEntry)
@@ -1897,6 +1923,16 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		auditEntry.ResponseRedacted = true
 		auditEntry.ResponseRedactionsCount = len(outcome.StaticResult.RedactedFields)
 		auditEntry.ResponseRedactedFields = sharedpolicy.GetRedactedFieldPaths(outcome.StaticResult)
+	}
+
+	// #1983 / α1: stamp policy_version for any matched static policies
+	// (block + redact branches). Single batch lookup per request — output
+	// path doesn't run buildRicherCheckInputBlock so no DB calls have
+	// happened yet for these IDs. Empty result map is safe (no static
+	// match → no version stamp; mirrors check-input semantics).
+	if outcome.StaticResult != nil && len(outcome.StaticResult.MatchedPolicies) > 0 {
+		ids := extractMatchedPolicyIDs(outcome.StaticResult.MatchedPolicies)
+		auditEntry.PolicyVersions = lookupPolicyVersionsByID(ctx, usageDB, ids)
 	}
 
 	if outcome.SQLiBlocked {

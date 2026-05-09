@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: May 2026** | **Platform: v7.8.0** | **SDKs: Python / Go / TypeScript / Java v7.1.0 + Rust v0.1.0 (preview)**
+**Last Updated: May 2026** | **Platform: v7.9.0** | **SDKs: Python / Go / TypeScript / Java v8.0.0 + Rust v0.1.0 (preview)**
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -177,7 +177,7 @@ Choose your language:
 
 **Go:**
 ```bash
-go get github.com/getaxonflow/axonflow-sdk-go/v7
+go get github.com/getaxonflow/axonflow-sdk-go/v8
 ```
 
 **Python:**
@@ -190,7 +190,7 @@ pip install axonflow-sdk
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>7.1.0</version>
+    <version>8.0.0</version>
 </dependency>
 ```
 
@@ -199,9 +199,14 @@ pip install axonflow-sdk
 npm install @axonflow/sdk
 ```
 
+**Rust (preview):**
+```bash
+cargo add axonflow-sdk-rust
+```
+
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. All four SDKs are fully supported at v7.1.0.
+Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v8.0.0. Rust is in preview at v0.1.x — covers proxy, audit, basic MAP, basic MCP, and an OpenAI interceptor.
 
 #### Go
 
@@ -216,7 +221,7 @@ import (
     "log"
     "os"
 
-    axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
+    axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
 )
 
 func main() {

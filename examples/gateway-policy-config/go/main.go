@@ -21,7 +21,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/getaxonflow/axonflow-sdk-go/v7"
+	"github.com/getaxonflow/axonflow-sdk-go/v8"
 )
 
 var failures []string

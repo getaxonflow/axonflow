@@ -5,19 +5,20 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"axonflow/platform/path_template"
 )
 
 const (
@@ -28,60 +29,80 @@ const (
 	// telemetryWorkers is the number of goroutines draining the event channel.
 	telemetryWorkers = 2
 
-	// telemetryTTLDays is the TTL for telemetry events in DynamoDB.
-	telemetryTTLDays = 30
-
-	// telemetryCanaryTimeout bounds the startup write used to verify DynamoDB
-	// + KMS permissions. Kept short so a transient AWS slowdown at startup
+	// telemetryCanaryTimeout bounds the startup write used to verify SQS
+	// permissions. Kept short so a transient AWS slowdown at startup
 	// does not delay agent readiness.
 	telemetryCanaryTimeout = 5 * time.Second
 )
 
-// telemetryWritesTotal counts DynamoDB PutItem outcomes so silent-failure
-// periods (e.g. missing kms:Decrypt on the task role) are visible in Grafana
-// and can be alerted on. The label distinguishes "success", "failure", and
-// the canary equivalents for the startup probe.
-var telemetryWritesTotal = promauto.NewCounterVec(
+// telemetrySendsTotal counts SQS SendMessage outcomes so silent-failure
+// periods (e.g. missing sqs:SendMessage on the task role) are visible
+// in Grafana and can be alerted on. The label distinguishes "success",
+// "failure", and the canary equivalents for the startup probe.
+//
+// Pre-#2010 this counter was named axonflow_community_saas_telemetry_writes_total
+// and tracked DDB PutItem outcomes. Renaming follows the cutover from
+// direct-DDB writes to SQS+ingest-Lambda; the dimension semantics stay
+// identical (success/failure plus canary_*).
+var telemetrySendsTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "axonflow_community_saas_telemetry_writes_total",
-		Help: "Total community SaaS telemetry write attempts by outcome.",
+		Name: "axonflow_community_saas_telemetry_sends_total",
+		Help: "Total community SaaS telemetry SQS-send attempts by outcome.",
 	},
 	[]string{"result"},
 )
 
-// telemetryInitFailuresTotal is incremented when the startup canary PutItem
-// fails. A nonzero value after an agent restart means the task cannot write
-// telemetry — almost always an IAM/KMS policy drift on the task role.
+// telemetryInitFailuresTotal is incremented when the startup canary
+// SendMessage fails. A nonzero value after an agent restart means the
+// task cannot enqueue telemetry — almost always an IAM policy drift on
+// the task role (missing sqs:SendMessage on the queue ARN).
 var telemetryInitFailuresTotal = promauto.NewCounter(
 	prometheus.CounterOpts{
 		Name: "axonflow_community_saas_telemetry_init_failures_total",
-		Help: "Count of community SaaS telemetry startup canary PutItem failures.",
+		Help: "Count of community SaaS telemetry startup canary SendMessage failures.",
 	},
 )
 
-// dynamodbPutter is the minimal surface of the DynamoDB client this package
-// needs. Narrowing the dependency lets tests inject a fake without pulling
-// the full SDK Client.
-type dynamodbPutter interface {
-	PutItem(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+// sqsSender is the minimal surface of the SQS client this package
+// needs. Narrowing the dependency lets tests inject a fake without
+// pulling the full SDK Client.
+type sqsSender interface {
+	SendMessage(ctx context.Context, input *sqs.SendMessageInput, opts ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
-// CommunitySaaSTelemetry records per-request usage events to DynamoDB.
-// Active only when DEPLOYMENT_MODE=community-saas AND COMMUNITY_SAAS_TELEMETRY_TABLE is set.
+// CommunitySaaSTelemetry records per-request usage events to the
+// community-SaaS telemetry SQS queue. Active only when
+// DEPLOYMENT_MODE=community-saas AND COMMUNITY_SAAS_TELEMETRY_SQS_URL
+// is set.
 //
-// Records: tenant_id, endpoint (path only), method, status_code, platform_version,
-// correlation_id (UUIDv4), source ("community-saas"), timestamp, TTL (30 days).
+// Records: tenant_id, endpoint (path only), method, status_code,
+// platform_version, correlation_id (UUIDv4), source ("community-saas"),
+// timestamp, conditional client + limit_type. The downstream
+// ingest Lambda (ee/platform/csaas-telemetry-ingest) is the SOLE
+// writer to the DDB table; it consumes from the same queue and PutItems
+// with byte-identical column shape.
 //
-// Does NOT record: request/response body, query params, IP addresses, auth headers.
+// Does NOT record: request/response body, query params, IP addresses,
+// auth headers.
 type CommunitySaaSTelemetry struct {
-	client    dynamodbPutter
-	tableName string
+	client    sqsSender
+	queueURL  string
 	version   string
 	enabled   bool
 	eventChan chan telemetryEvent
 }
 
 type telemetryEvent struct {
+	// correlationID is minted at enqueue time (not at SQS-send time) so
+	// each event has a stable identity across retries — and so the FIFO
+	// queue's content-based dedup hash includes a unique field per real
+	// event. Keeps the table HASH-key invariant intact through the SQS
+	// hop.
+	correlationID string
+	// timestamp is also minted at enqueue time so the recorded value is
+	// the request-completion moment, not the moment the SQS-send (or
+	// downstream PutItem) happens.
+	timestamp  time.Time
 	tenantID   string
 	endpoint   string
 	method     string
@@ -91,23 +112,67 @@ type telemetryEvent struct {
 	// Captured per ADR-050 §4 for per-plugin distribution analysis on the
 	// telemetry table.
 	client string
+	// limitType is the X-Axonflow-Tier-Limit response header value, set by
+	// the rate-limit envelope writer in community_saas_ratelimit_response.go
+	// when the response is a tier-cap 429. Empty for non-rate-limited
+	// responses. The aggregator emits a ratelimit:* dimension row keyed on
+	// this value (#2022 producer-side fix). One of LimitType* constants
+	// from community_saas_ratelimit_response.go.
+	limitType string
+	// traceID is the X-Amzn-Trace-Id header value (set by ALB on every
+	// inbound request). Captured for ALB-log↔A row correlation per
+	// epic #2047 sub-task 1: the prior approach (timestamp+path
+	// heuristic) is fuzzy under concurrent requests; persisting trace_id
+	// gives a tight join key. Empty when the request didn't traverse
+	// the ALB (e.g. local dev hitting the agent directly).
+	traceID string
+}
+
+// telemetryWireEvent is the JSON shape on the SQS message body. Keep
+// in lockstep with the matching struct in
+// ee/platform/csaas-telemetry-ingest/pkg/ingest/handler.go — the
+// ingest Lambda decodes this exact shape.
+//
+// SourceIP is reserved for a future agent-side IP-capture change
+// (#2057 cross-surface mirror). The ingest Lambda already accepts and
+// salt-hashes it when present; today the agent leaves it empty so
+// behavior is unchanged. Adding the field here in lockstep with the
+// ingest-side TelemetryEvent satisfies the SoX-cutover lockstep
+// contract — both sides MUST move together.
+type telemetryWireEvent struct {
+	CorrelationID   string `json:"correlation_id"`
+	Timestamp       string `json:"timestamp"`
+	TenantID        string `json:"tenant_id"`
+	Endpoint        string `json:"endpoint"`
+	Method          string `json:"method"`
+	StatusCode      int    `json:"status_code"`
+	PlatformVersion string `json:"platform_version"`
+	Client          string `json:"client,omitempty"`
+	LimitType       string `json:"limit_type,omitempty"`
+	SourceIP        string `json:"source_ip,omitempty"`
+	// TraceID is the X-Amzn-Trace-Id header value captured by the
+	// agent middleware for ALB-log↔A row correlation per epic #2047
+	// sub-task 1. omitempty so legacy agents (and local-dev requests
+	// that didn't traverse the ALB) round-trip without the field.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // NewCommunitySaaSTelemetry creates a new telemetry middleware.
-// Returns a no-op instance if tableName is empty (local dev without DynamoDB).
-// Starts a bounded worker pool for writing events to DynamoDB.
+// Returns a no-op instance if queueURL is empty (local dev without
+// SQS, or before the SoX cutover CFN has populated the env var).
+// Starts a bounded worker pool for sending events to SQS.
 //
-// On successful construction, runs a synchronous canary PutItem to verify the
-// DynamoDB + KMS permission chain end-to-end. The canary failure is logged at
-// ERROR and surfaced through the init-failures Prometheus counter, but never
-// blocks agent startup — telemetry is best-effort by design.
-func NewCommunitySaaSTelemetry(tableName, platformVersion string) *CommunitySaaSTelemetry {
-	if tableName == "" {
-		log.Println("[CSAAS-TELEMETRY] Disabled (COMMUNITY_SAAS_TELEMETRY_TABLE is empty)")
+// On successful construction, runs a synchronous canary SendMessage to
+// verify the SQS+IAM permission chain end-to-end. The canary failure
+// is logged at ERROR and surfaced through the init-failures Prometheus
+// counter, but never blocks agent startup — telemetry is best-effort
+// by design.
+func NewCommunitySaaSTelemetry(queueURL, platformVersion string) *CommunitySaaSTelemetry {
+	if queueURL == "" {
+		log.Println("[CSAAS-TELEMETRY] Disabled (COMMUNITY_SAAS_TELEMETRY_SQS_URL is empty)")
 		return &CommunitySaaSTelemetry{enabled: false}
 	}
 
-	// Load AWS config from environment (uses ECS task role credentials in production)
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
 		region = "us-east-1"
@@ -120,29 +185,28 @@ func NewCommunitySaaSTelemetry(tableName, platformVersion string) *CommunitySaaS
 		return &CommunitySaaSTelemetry{enabled: false}
 	}
 
-	client := dynamodb.NewFromConfig(cfg)
-	return newWithClient(client, tableName, platformVersion)
+	client := sqs.NewFromConfig(cfg)
+	return newWithClient(client, queueURL, platformVersion)
 }
 
 // newWithClient assembles the struct and starts workers, separated from
-// NewCommunitySaaSTelemetry so tests can inject a fake dynamodbPutter.
-func newWithClient(client dynamodbPutter, tableName, platformVersion string) *CommunitySaaSTelemetry {
+// NewCommunitySaaSTelemetry so tests can inject a fake sqsSender.
+func newWithClient(client sqsSender, queueURL, platformVersion string) *CommunitySaaSTelemetry {
 	eventChan := make(chan telemetryEvent, telemetryEventBufferSize)
 
 	t := &CommunitySaaSTelemetry{
 		client:    client,
-		tableName: tableName,
+		queueURL:  queueURL,
 		version:   platformVersion,
 		enabled:   true,
 		eventChan: eventChan,
 	}
 
-	// Start bounded worker pool
 	for i := 0; i < telemetryWorkers; i++ {
 		go t.worker()
 	}
 
-	log.Printf("[CSAAS-TELEMETRY] Enabled — writing to table %s (%d workers)", tableName, telemetryWorkers)
+	log.Printf("[CSAAS-TELEMETRY] Enabled — sending to SQS queue %s (%d workers)", queueURL, telemetryWorkers)
 
 	// Synchronous startup probe. Runs inline so the first line of CloudWatch
 	// after "[CSAAS-TELEMETRY] Enabled —" is either a success confirmation or
@@ -152,55 +216,46 @@ func newWithClient(client dynamodbPutter, tableName, platformVersion string) *Co
 	return t
 }
 
-// runStartupCanary writes a synthetic telemetry record to verify the full
-// DynamoDB + KMS + IAM chain at startup. A failure here means subsequent
-// real writes will also fail, and should trigger an oncall alert through
-// the init-failures counter.
+// runStartupCanary sends a synthetic telemetry message to verify the
+// full SQS + IAM chain at startup. A failure here means subsequent
+// real sends will also fail, and should trigger an oncall alert
+// through the init-failures counter.
 //
-// Does not block or unwind on failure: telemetry stays "enabled" so the app
-// does not crash, but the operator-visible signal (log + counter) catches
-// the misconfiguration within seconds of deploy.
+// Does not block or unwind on failure: telemetry stays "enabled" so
+// the app does not crash, but the operator-visible signal (log +
+// counter) catches the misconfiguration within seconds of deploy.
 func (t *CommunitySaaSTelemetry) runStartupCanary(ctx context.Context) {
 	canaryCtx, cancel := context.WithTimeout(ctx, telemetryCanaryTimeout)
 	defer cancel()
 
 	now := time.Now().UTC()
-	correlationID := "canary-" + uuid.NewString()
-	ttl := now.Add(telemetryTTLDays * 24 * time.Hour).Unix()
-
-	item := map[string]types.AttributeValue{
-		"correlation_id":   &types.AttributeValueMemberS{Value: correlationID},
-		"timestamp":        &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-		"tenant_id":        &types.AttributeValueMemberS{Value: "__canary__"},
-		"endpoint":         &types.AttributeValueMemberS{Value: "__startup_canary__"},
-		"method":           &types.AttributeValueMemberS{Value: "CANARY"},
-		"status_code":      &types.AttributeValueMemberN{Value: "0"},
-		"platform_version": &types.AttributeValueMemberS{Value: t.version},
-		"source":           &types.AttributeValueMemberS{Value: "community-saas"},
-		"ttl":              &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
+	wire := telemetryWireEvent{
+		CorrelationID:   "canary-" + uuid.NewString(),
+		Timestamp:       now.Format(time.RFC3339),
+		TenantID:        "__canary__",
+		Endpoint:        "__startup_canary__",
+		Method:          "CANARY",
+		StatusCode:      0,
+		PlatformVersion: t.version,
 	}
 
-	_, err := t.client.PutItem(canaryCtx, &dynamodb.PutItemInput{
-		TableName: aws.String(t.tableName),
-		Item:      item,
-	})
-	if err != nil {
-		log.Printf("[CSAAS-TELEMETRY] STARTUP CANARY FAILED — real telemetry writes will also fail. "+
-			"Check task role has kms:Decrypt + kms:GenerateDataKey on the telemetry table's KMS key. Error: %v", err)
+	if err := t.send(canaryCtx, wire); err != nil {
+		log.Printf("[CSAAS-TELEMETRY] STARTUP CANARY FAILED — real telemetry sends will also fail. "+
+			"Check task role has sqs:SendMessage on the queue ARN. Error: %v", err)
 		telemetryInitFailuresTotal.Inc()
-		telemetryWritesTotal.WithLabelValues("canary_failure").Inc()
+		telemetrySendsTotal.WithLabelValues("canary_failure").Inc()
 		return
 	}
 
-	log.Printf("[CSAAS-TELEMETRY] Startup canary OK — DynamoDB + KMS permissions verified")
-	telemetryWritesTotal.WithLabelValues("canary_success").Inc()
+	log.Printf("[CSAAS-TELEMETRY] Startup canary OK — SQS + IAM permissions verified")
+	telemetrySendsTotal.WithLabelValues("canary_success").Inc()
 }
 
-// worker drains the event channel and writes to DynamoDB.
+// worker drains the event channel and sends to SQS.
 // Runs as a long-lived goroutine (one per worker).
 func (t *CommunitySaaSTelemetry) worker() {
 	for event := range t.eventChan {
-		t.writeEvent(event)
+		t.sendEvent(event)
 	}
 }
 
@@ -227,7 +282,7 @@ func SetTelemetryTenantID(ctx context.Context, tenantID string) {
 
 // Middleware returns an http.Handler middleware that records usage events.
 // It captures the response status code after the inner handler completes,
-// then enqueues a DynamoDB write via the bounded worker pool.
+// then enqueues an SQS message via the bounded worker pool.
 //
 // This middleware runs on the global router (outer), while auth middleware runs
 // on sub-routers (inner). To bridge context across the middleware boundary, it
@@ -254,17 +309,41 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Enqueue event via bounded channel — drop if full (best-effort)
+		// Enqueue event via bounded channel — drop if full (best-effort).
+		// CorrelationID and timestamp are minted here (not at SQS-send
+		// time) so retries through SQS preserve the original event
+		// identity and the FIFO content-dedup hash includes a unique
+		// field per real event.
 		select {
 		case t.eventChan <- telemetryEvent{
-			tenantID:   id.TenantID,
-			endpoint:   r.URL.Path, // Path only — no query params (defense in depth against PII)
-			method:     r.Method,
-			statusCode: sw.statusCode,
+			correlationID: uuid.NewString(),
+			timestamp:     time.Now().UTC(),
+			tenantID:      id.TenantID,
+			// epic #2047 sub-task 2: normalize the request path to its
+			// OpenAPI template form at write time. Cuts row cardinality
+			// massively for /{id}-style paths (one-row-per-tenant-id
+			// rolled up to one-row-per-endpoint) and gives the analytics
+			// view a closed-cardinality vocabulary. Unknown paths return
+			// as-is — fail-closed by design.
+			endpoint: path_template.Normalize(r.URL.Path), // Path only — no query params (defense in depth against PII)
+			method:        r.Method,
+			statusCode:    sw.statusCode,
 			// ADR-050 §4: capture the X-Axonflow-Client identity directly
 			// from the request — no auth-middleware plumbing needed since
 			// the header is independent of the credential chain.
 			client: r.Header.Get("X-Axonflow-Client"),
+			// #2022 producer-side fix: capture the rate-limit envelope's
+			// X-Axonflow-Tier-Limit header set by writeRateLimitError /
+			// writeMCPGateError. The header is already set on the wrapped
+			// response writer by the time this middleware reads it; no new
+			// context plumbing required. Empty string for non-rate-limited
+			// responses; the wire-event emission omits the column so the
+			// ingest Lambda's PutItem keeps it absent on the row.
+			limitType: sw.Header().Get("X-Axonflow-Tier-Limit"),
+			// epic #2047 sub-task 1: ALB sets X-Amzn-Trace-Id on every
+			// inbound request. Capturing it here gives downstream
+			// analytics a tight ALB-log↔A row join key.
+			traceID: r.Header.Get("X-Amzn-Trace-Id"),
 		}:
 		default:
 			// Channel full — drop event silently (telemetry is non-critical)
@@ -272,45 +351,50 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// writeEvent writes a single usage event to DynamoDB.
+// sendEvent SQS-sends a single usage event.
 // Errors are logged but never propagated — telemetry must not affect request flow.
-// Every call bumps the writes_total counter so silent failures surface in metrics.
-func (t *CommunitySaaSTelemetry) writeEvent(event telemetryEvent) {
+// Every call bumps the sends_total counter so silent failures surface in metrics.
+func (t *CommunitySaaSTelemetry) sendEvent(event telemetryEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	now := time.Now().UTC()
-	correlationID := uuid.NewString()
-	ttl := now.Add(telemetryTTLDays * 24 * time.Hour).Unix()
-
-	item := map[string]types.AttributeValue{
-		"correlation_id":   &types.AttributeValueMemberS{Value: correlationID},
-		"timestamp":        &types.AttributeValueMemberS{Value: now.Format(time.RFC3339)},
-		"tenant_id":        &types.AttributeValueMemberS{Value: event.tenantID},
-		"endpoint":         &types.AttributeValueMemberS{Value: event.endpoint},
-		"method":           &types.AttributeValueMemberS{Value: event.method},
-		"status_code":      &types.AttributeValueMemberN{Value: strconv.Itoa(event.statusCode)},
-		"platform_version": &types.AttributeValueMemberS{Value: t.version},
-		"source":           &types.AttributeValueMemberS{Value: "community-saas"},
-		"ttl":              &types.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
-	}
-	// ADR-050 §4: per-plugin distribution analysis. Only emit the column when
-	// the request actually carried the header so absent-header rows don't
-	// pollute the dimension.
-	if event.client != "" {
-		item["client"] = &types.AttributeValueMemberS{Value: event.client}
+	wire := telemetryWireEvent{
+		CorrelationID:   event.correlationID,
+		Timestamp:       event.timestamp.Format(time.RFC3339),
+		TenantID:        event.tenantID,
+		Endpoint:        event.endpoint,
+		Method:          event.method,
+		StatusCode:      event.statusCode,
+		PlatformVersion: t.version,
+		Client:          event.client,
+		LimitType:       event.limitType,
+		TraceID:         event.traceID,
 	}
 
-	_, err := t.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(t.tableName),
-		Item:      item,
-	})
-	if err != nil {
-		log.Printf("[CSAAS-TELEMETRY] DynamoDB PutItem failed (non-fatal): %v", err)
-		telemetryWritesTotal.WithLabelValues("failure").Inc()
+	if err := t.send(ctx, wire); err != nil {
+		log.Printf("[CSAAS-TELEMETRY] SQS SendMessage failed (non-fatal): %v", err)
+		telemetrySendsTotal.WithLabelValues("failure").Inc()
 		return
 	}
-	telemetryWritesTotal.WithLabelValues("success").Inc()
+	telemetrySendsTotal.WithLabelValues("success").Inc()
+}
+
+// send marshals + SQS-sends one wire event. The MessageGroupId is
+// tenant_id so per-tenant ordering is preserved in the FIFO queue;
+// content-based dedup is enabled at the queue level and the body
+// already contains a unique correlation_id, so the dedup hash
+// distinguishes every real event.
+func (t *CommunitySaaSTelemetry) send(ctx context.Context, wire telemetryWireEvent) error {
+	body, err := json.Marshal(wire)
+	if err != nil {
+		return err
+	}
+	_, err = t.client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:       aws.String(t.queueURL),
+		MessageBody:    aws.String(string(body)),
+		MessageGroupId: aws.String(wire.TenantID),
+	})
+	return err
 }
 
 // statusWriter wraps http.ResponseWriter to capture the status code.

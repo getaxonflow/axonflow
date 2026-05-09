@@ -538,6 +538,19 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		orgID := auth.OrgID
 		clientID := auth.ClientID
 
+		// Populate the telemetry identity container BEFORE the daily-cap
+		// check. The check returns 429 + writeRateLimitError on limit hit,
+		// terminating the request without falling through to the
+		// SetTelemetryTenantID call further down. Pre-fix, 429 responses
+		// landed in CloudWatch logs but never produced a row in the
+		// telemetry table — observability was blind to the very rejections
+		// the table is supposed to count. Setting it here means the
+		// telemetry middleware (outer wrap) sees the tenant_id when it
+		// reads back the mutable container after the inner handler
+		// returns, regardless of whether the path was 200 (handler ran)
+		// or 429 (rate-limited). #2011 phase B0.
+		SetTelemetryTenantID(r.Context(), tenantID)
+
 		// Community-SaaS daily cap (per-request concern, not in Authenticate).
 		// Per ADR-049 §3 + ADR-050 §9 the cap is per-tenant: validateCommunitySaasAuth
 		// has already resolved Client.EffectiveTier (Free / Pro / Premium); we
@@ -581,8 +594,9 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ContextKeyClientID, clientID)
 		ctx = context.WithValue(ctx, ContextKeyAuthKind, auth.Kind)
 
-		// Populate telemetry identity container (set by outer telemetry middleware)
-		SetTelemetryTenantID(ctx, tenantID)
+		// (Telemetry identity is populated earlier — before the daily-cap
+		// check — so that 429 responses also land in the telemetry table.
+		// See #2011 phase B0.)
 
 		// Inject identity headers so downstream handlers (e.g. circuit breaker)
 		// can read them without context key type coupling across packages.

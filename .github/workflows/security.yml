@@ -44,6 +44,13 @@ permissions:
   security-events: write  # Required for SARIF uploads
   actions: read           # Required for CodeQL
 
+env:
+  # Disable platform startup telemetry on CI runs (#2092) — security scans run
+  # against agent + orchestrator binaries which would otherwise emit
+  # telemetry_type=platform pings polluting the external customer-adoption
+  # dataset with GH Actions Azure egress IPs.
+  AXONFLOW_TELEMETRY: 'off'
+
 jobs:
   # =============================================================================
   # Change Detection (pull_request and merge_group only)

@@ -429,7 +429,8 @@ Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-lim
 ```bash
 pip install axonflow              # Python
 npm install @axonflow/sdk         # TypeScript
-go get github.com/getaxonflow/axonflow-sdk-go/v7  # Go
+go get github.com/getaxonflow/axonflow-sdk-go/v8  # Go
+cargo add axonflow-sdk-rust       # Rust (preview, v0.1.x)
 ```
 
 ```xml
@@ -437,7 +438,7 @@ go get github.com/getaxonflow/axonflow-sdk-go/v7  # Go
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>7.1.0</version>
+    <version>8.0.0</version>
 </dependency>
 ```
 
@@ -475,7 +476,7 @@ const response = await axonflow.proxyLLMCall({
 ### Go
 
 ```go
-import axonflow "github.com/getaxonflow/axonflow-sdk-go/v7"
+import axonflow "github.com/getaxonflow/axonflow-sdk-go/v8"
 
 client := axonflow.NewClient(axonflow.AxonFlowConfig{
     Endpoint:     "http://localhost:8080",
@@ -522,6 +523,25 @@ if (approval.isApproved()) {
         .build());
 }
 ```
+
+### Rust (preview)
+
+```rust
+use axonflow_sdk_rust::{AxonFlowClient, AxonFlowConfig};
+
+let config = AxonFlowConfig::new("http://localhost:8080")
+    .with_auth("my-app", "my-secret");
+let client = AxonFlowClient::new(config)?;
+
+let response = client.proxy_llm_call(
+    "user-123",
+    "Analyze customer sentiment",
+    "chat",
+    serde_json::json!({}),
+).await?;
+```
+
+The Rust SDK is at v0.1.x preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
 
 > **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
 
