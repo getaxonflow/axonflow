@@ -4,7 +4,7 @@
 
 It operates inside the execution path between your workflow logic and model or tool calls. Gateways can help at the request boundary and observability tools can tell you what happened later. AxonFlow records why an action was allowed, blocked, paused, or resumed while the workflow is running.
 
-It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, and **Java**.
+It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, **Java**, and **Rust** (preview), plus governance plugins for **OpenClaw**, **Claude Code**, **Cursor**, and **Codex**.
 
 > **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow/security/advisories)
 
@@ -48,7 +48,7 @@ AxonFlow is not a workflow engine, observability dashboard, or prompt gateway. Y
 
 All policies are configurable. Teams typically start in observe-only mode and enable blocking once they trust the signal.
 
-> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
+> **[Full policy documentation](https://docs.getaxonflow.com/docs/policies/overview/)** · **[Community vs Enterprise](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)**
 
 **Human-in-the-Loop Approval Gates** — Require explicit approvals for high-risk workflow steps. Configurable expiry, pending limits by tier, and automatic workflow abort on expiration.
 
@@ -80,7 +80,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 
 **Gateway Mode** — Request-boundary governance for existing stacks. Pre-check → your call → audit.
 
-> **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview)**
+> **[Choosing a mode](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode/)** · **[Architecture deep-dive](https://docs.getaxonflow.com/docs/architecture/overview/)**
 
 ## Who This Is For
 
@@ -96,7 +96,7 @@ All policies are configurable. Teams typically start in observe-only mode and en
 - Prototypes where governance isn't a concern yet
 - Projects where adding a service layer is overkill
 
-**[Full Documentation](https://docs.getaxonflow.com)** · **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started)** · **[API Reference](./docs/api/)**
+**[Full Documentation](https://docs.getaxonflow.com)** · **[Getting Started Guide](https://docs.getaxonflow.com/docs/getting-started/)** · **[API Reference](./docs/api/)**
 
 **Community Quickstart Demo (Code + Terminal, 2.5 min):** Governed calls, PII block, Gateway Mode with LangChain/CrewAI, and MAP from YAML — [Watch on YouTube](https://youtu.be/BSqU1z0xxCo)
 
@@ -124,7 +124,7 @@ curl -X POST http://localhost:8080/api/policy/pre-check \
 
 Works with LangChain, CrewAI, or any framework — AxonFlow acts as a governance sidecar.
 
-> **[Choosing a mode guide](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode)** — covers Gateway Mode, Proxy Mode, and when to use each.
+> **[Choosing a mode guide](https://docs.getaxonflow.com/docs/sdk/choosing-a-mode/)** — covers Gateway Mode, Proxy Mode, and when to use each.
 
 ### Path B: Execution Control for Long-Running Workflows
 
@@ -137,7 +137,7 @@ Use the Workflow Control Plane (WCP) to manage multi-step AI workflows with step
 
 This creates a WCP workflow, runs step-level gate checks, records a step ledger, demonstrates cancellation, and shows unified execution status.
 
-> **[Execution tracking guide](https://docs.getaxonflow.com/docs/orchestration/wcp/overview)** — WCP workflow creation, step gates, SSE streaming, and unified execution status.
+> **[Execution tracking guide](https://docs.getaxonflow.com/docs/orchestration/wcp/overview/)** — WCP workflow creation, step gates, SSE streaming, and unified execution status.
 
 ---
 
@@ -206,7 +206,7 @@ This demonstrates:
 > LLM provider configuration applies to Proxy Mode and MAP, where AxonFlow routes requests to the provider.
 > In Gateway Mode and WCP, your application calls the LLM directly, including via frameworks like LangChain or CrewAI, so any provider works.
 
-> **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview)**
+> **[Provider configuration guide](https://docs.getaxonflow.com/docs/llm/overview/)**
 
 ### See Governance in Action (30 seconds)
 
@@ -250,7 +250,7 @@ AxonFlow runs inline with LLM traffic, enforcing policies and routing decisions 
 
 ### Integration Options
 
-For Go, Java, Python, and TypeScript applications, we recommend using the **[AxonFlow SDKs](https://docs.getaxonflow.com/docs/sdk/overview)**. All SDKs are thin wrappers over the same REST APIs, which remain fully supported for custom integrations.
+For Go, Java, Python, TypeScript, and Rust (preview) applications, we recommend using the **[AxonFlow SDKs](https://docs.getaxonflow.com/docs/sdk/overview/)**. All SDKs are thin wrappers over the same REST APIs, which remain fully supported for custom integrations.
 
 | Integration | Recommended For |
 |-------------|-----------------|
@@ -260,6 +260,8 @@ For Go, Java, Python, and TypeScript applications, we recommend using the **[Axo
 All features—policy enforcement, audit logging, MCP connectors, WCP workflows—are available via both SDKs and HTTP.
 
 AxonFlow ships official plugins for AI agent runtimes, coding assistants, and developer tools. All plugins enforce the same policy surface and share a single audit trail via your self-hosted AxonFlow stack.
+
+**OpenClaw** ships a source-available governance policy bundle covering shell injection, secret exfiltration, PII redaction, and tool-result risk classification. The same policy set ports across all four plugins below; the install path is the only thing that changes.
 
 | Plugin | Platform | Install | Docs | Repo |
 |--------|----------|---------|------|------|
@@ -272,7 +274,7 @@ For AI agent framework integration, see:
 - [**Anthropic Computer Use**](https://docs.getaxonflow.com/docs/integration/computer-use/) — governed desktop and tool actions
 - [**Claude Agent SDK**](https://docs.getaxonflow.com/docs/integration/claude-agent-sdk/) — MCP tool governance patterns
 
-> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)** · **[API Reference](./docs/api/)**
+> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview/)** · **[API Reference](./docs/api/)**
 
 ### vs LangChain / LangSmith
 
@@ -370,7 +372,7 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 | Policy Simulation | — | 300/day | Unlimited |
 | Evidence Export | — | 14-day window, 3/day | Unlimited |
 
-[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)
+[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
 
 ### Stay on Community if:
 - Single team prototyping AI features
@@ -405,7 +407,7 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 - Priority support with SLA
 - Customer Portal UI for runtime management
 
-See the full **[Community vs Evaluation vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise?utm_source=readme_eval)**
+See the full **[Community vs Evaluation vs Enterprise feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)**
 *(designed for security reviews, procurement, and platform evaluations)*
 
 **Enterprise:** [AWS Marketplace](https://aws.amazon.com/marketplace) or [sales@getaxonflow.com](mailto:sales@getaxonflow.com)
@@ -414,7 +416,7 @@ See the full **[Community vs Evaluation vs Enterprise feature matrix](https://do
 
 ## Try AxonFlow Online
 
-Skip local setup — try AxonFlow instantly at [**try.getaxonflow.com**](https://docs.getaxonflow.com/docs/deployment/community-saas). No Docker, no installation required.
+Skip local setup — try AxonFlow instantly at [**try.getaxonflow.com**](https://docs.getaxonflow.com/docs/deployment/community-saas/). No Docker, no installation required.
 
 ```bash
 # Register a free trial tenant (30 seconds)
@@ -430,7 +432,7 @@ Set `AXONFLOW_TRY=1` in your environment and any SDK will auto-connect. Rate-lim
 pip install axonflow              # Python
 npm install @axonflow/sdk         # TypeScript
 go get github.com/getaxonflow/axonflow-sdk-go/v8  # Go
-cargo add axonflow-sdk-rust       # Rust (preview, v0.1.x)
+cargo add axonflow-sdk-rust       # Rust (preview, v0.2.0)
 ```
 
 ```xml
@@ -541,15 +543,9 @@ let response = client.proxy_llm_call(
 ).await?;
 ```
 
-The Rust SDK is at v0.1.x preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
+The Rust SDK is at v0.2.0 preview on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Repo: [axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust).
 
-> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview)**
-
-> **Telemetry:** SDKs send anonymous usage data (SDK version, OS, architecture) on initialization, including localhost and self-hosted evaluation environments outside sandbox mode. No prompts, payloads, API keys, or tenant identifiers are collected. Opt out: `export AXONFLOW_TELEMETRY=off`.
->
-> **Scope of `AXONFLOW_TELEMETRY=off`:** disables the anonymous SDK/plugin heartbeat. On self-hosted and in-VPC deployments, that heartbeat is the only data the SDK or plugin sends to AxonFlow, so setting `=off` means we receive nothing. On Community SaaS (`try.getaxonflow.com`) the hosted service also processes operational data — registrations, audit logs, policy enforcement records, workflow state, plan data, and request-header metadata aggregated for usage analytics — as part of running the platform; that operational data flow is governed by the [Privacy Policy](https://getaxonflow.com/privacy/), not by this env var.
->
-> `DO_NOT_TRACK` is **not** honored — it is commonly inherited from host tools and developer environments, which makes it an unreliable expression of user intent. See [Telemetry Documentation](https://docs.getaxonflow.com/docs/telemetry) for full details including SDK-level config options.
+> **[SDK Documentation](https://docs.getaxonflow.com/docs/sdk/overview/)**
 
 ---
 
@@ -597,6 +593,12 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - 76% minimum test coverage required
 - Tests must be fast (<5s), deterministic
 - Security-first: validate inputs, no secrets in logs
+
+---
+
+## Telemetry
+
+AxonFlow SDKs, plugins, and platform binaries (agent + orchestrator) emit an anonymous startup heartbeat — version, OS/architecture, environment class, license tier — at most once per machine every 7 days. No prompts, payloads, API keys, or tenant identifiers. Opt out with `export AXONFLOW_TELEMETRY=off`. On Community SaaS (`try.getaxonflow.com`) the hosted service also processes operational data governed by the [Privacy Policy](https://getaxonflow.com/privacy/), not by this env var. Full schema and per-surface details: [Telemetry docs](https://docs.getaxonflow.com/docs/telemetry/).
 
 ---
 
