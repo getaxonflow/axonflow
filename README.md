@@ -372,7 +372,7 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 | Policy Simulation | — | 300/day | Unlimited |
 | Evidence Export | — | 14-day window, 3/day | Unlimited |
 
-[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
+[Get a free Evaluation license](https://getaxonflow.com/evaluation-license?utm_source=readme_eval) · [Apply for Design Partner](https://getaxonflow.com/design-partner?utm_source=readme_eval) · [Full feature matrix](https://docs.getaxonflow.com/docs/features/community-vs-enterprise/?utm_source=readme_eval)
 
 ### Stay on Community if:
 - Single team prototyping AI features
@@ -387,6 +387,15 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 - Need organization-wide policies (up to 5) and 14-day audit retention
 
 **Get your free Evaluation license:** https://getaxonflow.com/evaluation-license
+
+### Need Enterprise sooner?
+
+If you already know you need full enterprise features, a managed deployment option, or direct rollout help, apply for the [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_eval). Selected partners can choose:
+
+- 6 months of self-hosted or in-VPC Enterprise at no cost
+- or 3 months of AxonFlow-managed Enterprise SaaS with SLO-backed support, up to 50,000 write requests or 1,000,000 total requests per month
+
+Selected partners also get priority support, an architecture review, an incident-readiness review, and roadmap input.
 
 ### You need Enterprise when:
 
@@ -612,13 +621,13 @@ AxonFlow SDKs, plugins, and platform binaries (agent + orchestrator) emit an ano
 
 ---
 
-> **Evaluating AxonFlow in production?** We're opening limited Design Partner slots.
+> **Evaluating AxonFlow for a real deployment?**
 >
-> Free 30-minute architecture and incident-readiness review, priority issue triage, roadmap input, and early feature access.
+> Choose the path that fits:
+> - **Self-serve:** free 90-day [Evaluation License](https://getaxonflow.com/evaluation-license?utm_source=readme_platform_eval)
+> - **Hands-on:** [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform) with either **6 months of self-hosted / in-VPC Enterprise** at no cost or **3 months of AxonFlow-managed Enterprise SaaS** with SLO-backed support, up to **50,000 write requests / 1,000,000 total requests per month**
 >
-> [Apply here](https://getaxonflow.com/design-partner?utm_source=readme_platform) or email [design-partners@getaxonflow.com](mailto:design-partners@getaxonflow.com).
->
-> No commitment required. We reply within 48 hours.
+> Priority support, architecture review, incident-readiness review, and roadmap input are included for selected partners. We reply within 48 hours.
 
 > **Questions or feedback?**
 >
