@@ -395,6 +395,8 @@ If you already know you need full enterprise features, a managed deployment opti
 - 6 months of self-hosted or in-VPC Enterprise at no cost
 - or 3 months of AxonFlow-managed Enterprise SaaS with SLO-backed support, up to 50,000 write requests or 1,000,000 total requests per month
 
+Selected partners also get priority support, an architecture review, an incident-readiness review, and roadmap input.
+
 ### You need Enterprise when:
 
 **Identity & Organization Controls**
@@ -625,7 +627,7 @@ AxonFlow SDKs, plugins, and platform binaries (agent + orchestrator) emit an ano
 > - **Self-serve:** free 90-day [Evaluation License](https://getaxonflow.com/evaluation-license?utm_source=readme_platform_eval)
 > - **Hands-on:** [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform) with either **6 months of self-hosted / in-VPC Enterprise** at no cost or **3 months of AxonFlow-managed Enterprise SaaS** with SLO-backed support, up to **50,000 write requests / 1,000,000 total requests per month**
 >
-> Priority support, architecture review, and roadmap input are included for selected partners. We reply within 48 hours.
+> Priority support, architecture review, incident-readiness review, and roadmap input are included for selected partners. We reply within 48 hours.
 
 > **Questions or feedback?**
 >
