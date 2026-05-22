@@ -47,9 +47,18 @@ func TestProbeBootLogShimMatchesCanonicalShape(t *testing.T) {
 	repoRoot := filepath.Join(wd, "..", "..")
 	probePath := filepath.Join(repoRoot, "scripts", "e2e", "probe-boot-log.sh")
 
+	// scripts/e2e/ is excluded from the community sync filter — only specific
+	// scripts under scripts/operators/ + scripts/deployment/ ship to the
+	// community mirror. The probe-script shim test runs on a full-tree
+	// checkout (enterprise repo) where the scaffolding exists; skip cleanly
+	// when the script is absent.
+	if _, err := os.Stat(probePath); os.IsNotExist(err) {
+		t.Skipf("skipping: %s is not present in this checkout (scripts/e2e/ is excluded from community sync); the test runs on a full-tree checkout where the probe scaffolding exists", probePath)
+	}
+
 	body, err := os.ReadFile(probePath)
 	if err != nil {
-		t.Fatalf("read %s: %v (expected probe-boot-log.sh to be in tree per PR-E1)", probePath, err)
+		t.Fatalf("read %s: %v", probePath, err)
 	}
 	probeSrc := string(body)
 
@@ -117,9 +126,15 @@ func TestProductionPostureRegistryWellFormed(t *testing.T) {
 	repoRoot := filepath.Join(wd, "..", "..")
 	registryPath := filepath.Join(repoRoot, "scripts", "e2e", "production_posture_registry.txt")
 
+	// scripts/e2e/ is excluded from the community sync filter. Skip cleanly
+	// on community checkouts where this fixture file isn't present.
+	if _, err := os.Stat(registryPath); os.IsNotExist(err) {
+		t.Skipf("skipping: %s is not present in this checkout (scripts/e2e/ is excluded from community sync)", registryPath)
+	}
+
 	body, err := os.ReadFile(registryPath)
 	if err != nil {
-		t.Fatalf("read %s: %v (registry expected per PR-E1)", registryPath, err)
+		t.Fatalf("read %s: %v", registryPath, err)
 	}
 
 	allowedOutcomes := map[string]bool{
