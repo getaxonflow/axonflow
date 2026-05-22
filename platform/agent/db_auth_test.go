@@ -142,8 +142,12 @@ func TestUpdateAPIKeyLastUsed(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Expect UPDATE query
-	mock.ExpectExec("UPDATE api_keys SET").
+	// Post-PR B6: updateAPIKeyLastUsed now delegates to auth_touch_api_key
+	// SECURITY DEFINER helper (migration 108) instead of a raw UPDATE. The
+	// helper bypasses FORCE RLS on api_keys for the post-auth fire-and-forget
+	// path. The Go call site uses ExecContext, which sqlmock matches against
+	// ExpectExec.
+	mock.ExpectExec("SELECT auth_touch_api_key").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ctx := context.Background()
@@ -162,12 +166,16 @@ func TestTrackRequestUsage(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Expect INSERT with ON CONFLICT
+	// v9 Phase 8 #2384 PR-C1: WithOrgScope wraps the INSERT in BEGIN/SET-CONFIG/EXEC/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO usage_metrics").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-
+	mock.ExpectCommit()
 	ctx := context.Background()
-	err = trackRequestUsage(ctx, db, "test-customer", "test-api-key", "query", true, 45.2)
+	err = trackRequestUsage(ctx, db, "test-org", "test-customer", "test-api-key", "query", true, 45.2)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -186,12 +194,16 @@ func TestTrackRequestUsage_Failure(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Expect INSERT with ON CONFLICT
+	// Expect INSERT with ON CONFLICT inside WithOrgScope wrap
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO usage_metrics").
 		WillReturnResult(sqlmock.NewResult(1, 0)) // 0 rows affected
-
+	mock.ExpectCommit()
 	ctx := context.Background()
-	err = trackRequestUsage(ctx, db, "test-customer", "test-api-key", "query", false, 120.5)
+	err = trackRequestUsage(ctx, db, "test-org", "test-customer", "test-api-key", "query", false, 120.5)
 
 	// The function should still succeed even if 0 rows affected
 	if err != nil {
@@ -234,7 +246,7 @@ func TestValidateClientLicenseDB_ViaAPIKeys(t *testing.T) {
 		"Enterprise", "tenant-001", "active", true, 500,
 	)
 
-	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
+	mock.ExpectQuery("FROM auth_lookup_api_key").
 		WillReturnRows(rows)
 
 	ctx := context.Background()
@@ -274,7 +286,7 @@ func TestValidateClientLicenseDB_ViaOrganizations(t *testing.T) {
 	testLicenseKey := generateTestLicenseKey("test-org-new", "Professional", "20351231")
 
 	// First query (API keys) returns no rows - this triggers fallback to validateViaOrganizations
-	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
+	mock.ExpectQuery("FROM auth_lookup_api_key").
 		WillReturnError(sql.ErrNoRows)
 
 	// V2 licenses bypass the organizations database query
@@ -373,7 +385,7 @@ func TestValidateViaAPIKeys_Success(t *testing.T) {
 		"Enterprise", "tenant-002", "active", true, 500,
 	)
 
-	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
+	mock.ExpectQuery("FROM auth_lookup_api_key").
 		WillReturnRows(rows)
 
 	ctx := context.Background()
@@ -457,7 +469,7 @@ func TestValidateViaAPIKeys_RevokedKey(t *testing.T) {
 		"Enterprise", "tenant-003", "active", false, 500, // c.enabled also false
 	)
 
-	mock.ExpectQuery("SELECT (.+) FROM api_keys k JOIN customers c").
+	mock.ExpectQuery("FROM auth_lookup_api_key").
 		WillReturnRows(rows)
 
 	ctx := context.Background()
@@ -579,9 +591,10 @@ func TestCreateAPIKey_Success(t *testing.T) {
 		WithArgs("customer-create").
 		WillReturnRows(customerRows)
 
-	// Mock API key insertion
-	mock.ExpectQuery("INSERT INTO api_keys").
-		WillReturnRows(sqlmock.NewRows([]string{"api_key_id"}).AddRow("new-api-key-001"))
+	// v9 Phase 8 PR-A (mig 109): createAPIKey now routes through the
+	// auth_insert_api_key SECURITY DEFINER helper.
+	mock.ExpectQuery("SELECT auth_insert_api_key").
+		WillReturnRows(sqlmock.NewRows([]string{"auth_insert_api_key"}).AddRow("new-api-key-001"))
 
 	ctx := context.Background()
 	licenseKey, err := createAPIKey(ctx, db, "customer-create", "Production Key", 365)

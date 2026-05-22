@@ -194,7 +194,8 @@ func (t *WCPExecutionTracker) SyncWorkflowStatus(ctx context.Context, workflowID
 				}
 			}
 			if changed {
-				_ = t.GetRepo().UpdateSteps(ctx, executionID, status.Steps)
+				// v9 Phase 8 #2384 PR-C1: scope-wrap UpdateSteps via the already-fetched status.
+				_ = t.GetRepo().UpdateSteps(ctx, status.OrgID, status.TenantID, executionID, status.Steps)
 			}
 		}
 		return t.CompleteExecution(ctx, executionID, nil)
@@ -325,7 +326,8 @@ func (t *WCPExecutionTracker) SyncStepApproval(ctx context.Context, workflowID s
 	}
 
 	fresh.UpdatedAt = time.Now()
-	return t.GetRepo().UpdateSteps(ctx, exec.ExecutionID, fresh.Steps)
+	// v9 Phase 8 #2384 PR-C1: pass orgID + tenantID for RLS scoping (mig 042).
+	return t.GetRepo().UpdateSteps(ctx, fresh.OrgID, fresh.TenantID, exec.ExecutionID, fresh.Steps)
 }
 
 func (t *WCPExecutionTracker) SyncStepGate(ctx context.Context, workflowID string, step *workflow_control.WorkflowStep) error {

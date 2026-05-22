@@ -291,7 +291,15 @@ func AllComplianceCategories() []PolicyCategory {
 // EvalOptions configures policy evaluation behavior.
 type EvalOptions struct {
 	// Multi-tenancy context
+	//
+	// OrgID is the multi-tenant scope key — required by the agent's RLS-aware
+	// audit_queue persistence path under axonflow_app_role (v9 Phase 8 #2384
+	// PR-C1). When set, RecordViolation propagates it into AuditEntry.OrgID
+	// so the downstream INSERT can populate the row's org_id column and
+	// satisfy WITH CHECK. Leave empty in cross-org workers (those must run
+	// on axonflow_platform_admin / BYPASSRLS, not via WithOrgScope).
 	TenantID       string
+	OrgID          string
 	OrganizationID *string
 	UserID         string
 

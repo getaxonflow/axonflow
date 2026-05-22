@@ -251,6 +251,18 @@ func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r
 		return
 	}
 
+	// v9 Phase 8 PR-C2 (#2384): the LLM-provider storage layer wraps INSERTs
+	// in WithOrgScope using config.TenantID. The handler is the only place
+	// with the per-request identity in scope — propagate it.
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = r.Header.Get("X-Org-ID")
+	}
+	if tenantID == "" {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+		return
+	}
+
 	// Build config
 	config := &llm.ProviderConfig{
 		Name:            req.Name,
@@ -266,6 +278,7 @@ func (h *LLMProviderAPIHandler) handleCreateProviderMux(w http.ResponseWriter, r
 		RateLimit:       req.RateLimit,
 		TimeoutSeconds:  req.TimeoutSeconds,
 		Settings:        req.Settings,
+		TenantID:        tenantID,
 	}
 
 	// Register the provider
@@ -310,8 +323,21 @@ func (h *LLMProviderAPIHandler) handleGetProviderMux(w http.ResponseWriter, r *h
 }
 
 // handleUpdateProviderMux handles PUT /api/v1/llm-providers/{name}.
+//
+// v9 Phase 8 PR-C2 (#2384): require X-Tenant-ID/X-Org-ID + verify it matches
+// the in-memory cfg's TenantID — same shape as DeleteProvider per #2384's
+// cross-tenant write-authz audit. 404 on mismatch to avoid disclosure.
 func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = r.Header.Get("X-Org-ID")
+	}
+	if tenantID == "" {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+		return
+	}
 
 	if !h.registry.Has(providerName) {
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
@@ -327,6 +353,11 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 	// Get existing config
 	config, err := h.registry.GetConfig(providerName)
 	if err != nil || config == nil {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
+		return
+	}
+	if config.TenantID != tenantID {
+		// Cross-tenant access attempt — surface as 404 to avoid disclosure.
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}
@@ -382,8 +413,35 @@ func (h *LLMProviderAPIHandler) handleUpdateProviderMux(w http.ResponseWriter, r
 }
 
 // handleDeleteProviderMux handles DELETE /api/v1/llm-providers/{name}.
+//
+// v9 Phase 8 PR-C2 (#2384): require X-Tenant-ID/X-Org-ID + verify it matches
+// the in-memory cfg's TenantID before delegating to Unregister. Without this
+// check, any caller could delete any provider by name — registry.Unregister
+// pulls TenantID from the in-memory config and the RLS wrap would happily
+// scope to it, succeeding cross-tenant. Returns 404 (not 403) on mismatch
+// to avoid enumeration disclosure of which providers exist in which tenants.
 func (h *LLMProviderAPIHandler) handleDeleteProviderMux(w http.ResponseWriter, r *http.Request, providerName string) {
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = r.Header.Get("X-Org-ID")
+	}
+	if tenantID == "" {
+		h.writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "X-Tenant-ID or X-Org-ID header is required")
+		return
+	}
+
 	if !h.registry.Has(providerName) {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
+		return
+	}
+
+	cfg, getErr := h.registry.GetConfig(providerName)
+	if getErr != nil || cfg == nil {
+		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
+		return
+	}
+	if cfg.TenantID != tenantID {
+		// Cross-tenant access attempt — surface as 404 to avoid disclosure.
 		h.writeError(w, http.StatusNotFound, "NOT_FOUND", "provider not found")
 		return
 	}

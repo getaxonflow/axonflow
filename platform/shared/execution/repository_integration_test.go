@@ -44,7 +44,17 @@ func TestPostgresRepository_Create(t *testing.T) {
 		UpdatedAt:        now,
 	}
 
+	// v9 Phase 8 #2384 PR-C1: WithOrgAndTenantScope wraps Create in
+	// BEGIN/set_config×3/EXEC/COMMIT.
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("org-1").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("tenant-1").WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	t.Run("successful create", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("INSERT INTO execution_history").
 			WithArgs(
 				exec.ExecutionID, exec.ExecutionType, exec.ExecutionID, exec.Name, exec.Source,
@@ -54,6 +64,7 @@ func TestPostgresRepository_Create(t *testing.T) {
 				sqlmock.AnyArg(), sqlmock.AnyArg(), exec.CreatedAt, exec.UpdatedAt,
 			).
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 
 		err := repo.Create(ctx, exec)
 		if err != nil {
@@ -66,8 +77,10 @@ func TestPostgresRepository_Create(t *testing.T) {
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("INSERT INTO execution_history").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
 		err := repo.Create(ctx, exec)
 		if err == nil {
@@ -227,9 +240,22 @@ func TestPostgresRepository_Update(t *testing.T) {
 		Steps:            []StepStatus{},
 		Metadata:         map[string]interface{}{},
 		UpdatedAt:        now,
+		// v9 Phase 8 #2384 PR-C1: Update requires OrgID + TenantID populated
+		// so WithOrgAndTenantScope can pin app.current_{org,tenant}_id for
+		// the wrapped UPDATE.
+		OrgID:    "test-org",
+		TenantID: "test-tenant",
+	}
+
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 
 	t.Run("successful update", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs(
 				exec.ExecutionID,
@@ -245,6 +271,7 @@ func TestPostgresRepository_Update(t *testing.T) {
 				exec.UpdatedAt,
 			).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
 		err := repo.Update(ctx, exec)
 		if err != nil {
@@ -257,8 +284,10 @@ func TestPostgresRepository_Update(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectCommit()
 
 		err := repo.Update(ctx, exec)
 		if !errors.Is(err, ErrExecutionNotFound) {
@@ -267,8 +296,10 @@ func TestPostgresRepository_Update(t *testing.T) {
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
 		err := repo.Update(ctx, exec)
 		if err == nil {
@@ -460,34 +491,57 @@ func TestPostgresRepository_Delete(t *testing.T) {
 	repo := NewPostgresRepository(db)
 	ctx := context.Background()
 
+	// v9 Phase 8 #2384 PR-C1: WithOrgAndTenantScope wraps every Delete/Update*
+	// repo call in BEGIN/SET-CONFIG×3/EXEC/COMMIT. expectScopedTxn factors
+	// the BEGIN+set_config trio into one place so the per-method sub-tests
+	// stay readable.
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+			WithArgs("test-org").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").
+			WithArgs("test-tenant").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	t.Run("successful delete", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("DELETE FROM execution_history").
 			WithArgs("plan_abc123").
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.Delete(ctx, "plan_abc123")
+		err := repo.Delete(ctx, "test-org", "test-tenant", "plan_abc123")
 		if err != nil {
 			t.Errorf("Delete() error = %v", err)
 		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("DELETE FROM execution_history").
 			WithArgs("nonexistent").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectCommit()
 
-		err := repo.Delete(ctx, "nonexistent")
+		err := repo.Delete(ctx, "test-org", "test-tenant", "nonexistent")
 		if !errors.Is(err, ErrExecutionNotFound) {
 			t.Errorf("Delete() error = %v, want ErrExecutionNotFound", err)
 		}
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("DELETE FROM execution_history").
 			WithArgs("plan_abc123").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
-		err := repo.Delete(ctx, "plan_abc123")
+		err := repo.Delete(ctx, "test-org", "test-tenant", "plan_abc123")
 		if err == nil {
 			t.Error("expected error")
 		}
@@ -505,43 +559,58 @@ func TestPostgresRepository_UpdateStatus(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	t.Run("successful update", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", StatusCompleted, &now, sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateStatus(ctx, "plan_abc123", StatusCompleted, &now, "")
+		err := repo.UpdateStatus(ctx, "test-org", "test-tenant", "plan_abc123", StatusCompleted, &now, "")
 		if err != nil {
 			t.Errorf("UpdateStatus() error = %v", err)
 		}
 	})
 
 	t.Run("with error message", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", StatusFailed, &now, sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateStatus(ctx, "plan_abc123", StatusFailed, &now, "step failed")
+		err := repo.UpdateStatus(ctx, "test-org", "test-tenant", "plan_abc123", StatusFailed, &now, "step failed")
 		if err != nil {
 			t.Errorf("UpdateStatus() error = %v", err)
 		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectCommit()
 
-		err := repo.UpdateStatus(ctx, "nonexistent", StatusCompleted, &now, "")
+		err := repo.UpdateStatus(ctx, "test-org", "test-tenant", "nonexistent", StatusCompleted, &now, "")
 		if !errors.Is(err, ErrExecutionNotFound) {
 			t.Errorf("UpdateStatus() error = %v, want ErrExecutionNotFound", err)
 		}
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
-		err := repo.UpdateStatus(ctx, "plan_abc123", StatusCompleted, &now, "")
+		err := repo.UpdateStatus(ctx, "test-org", "test-tenant", "plan_abc123", StatusCompleted, &now, "")
 		if err == nil {
 			t.Error("expected error")
 		}
@@ -563,32 +632,45 @@ func TestPostgresRepository_UpdateSteps(t *testing.T) {
 		{StepID: "step-2", StepName: "Step 2", Status: StepStatusRunning},
 	}
 
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	t.Run("successful update", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", sqlmock.AnyArg(), 2, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateSteps(ctx, "plan_abc123", steps)
+		err := repo.UpdateSteps(ctx, "test-org", "test-tenant", "plan_abc123", steps)
 		if err != nil {
 			t.Errorf("UpdateSteps() error = %v", err)
 		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectCommit()
 
-		err := repo.UpdateSteps(ctx, "nonexistent", steps)
+		err := repo.UpdateSteps(ctx, "test-org", "test-tenant", "nonexistent", steps)
 		if !errors.Is(err, ErrExecutionNotFound) {
 			t.Errorf("UpdateSteps() error = %v, want ErrExecutionNotFound", err)
 		}
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
-		err := repo.UpdateSteps(ctx, "plan_abc123", steps)
+		err := repo.UpdateSteps(ctx, "test-org", "test-tenant", "plan_abc123", steps)
 		if err == nil {
 			t.Error("expected error")
 		}
@@ -608,54 +690,71 @@ func TestPostgresRepository_UpdateCost(t *testing.T) {
 	estimatedCost := 0.05
 	actualCost := 0.03
 
+	expectScopedTxn := func() {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.current_tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec("SELECT set_config\\('app.tenant_id', \\$1, true\\)").WithArgs("test-tenant").WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
 	t.Run("update both costs", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", &estimatedCost, &actualCost, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateCost(ctx, "plan_abc123", &estimatedCost, &actualCost)
+		err := repo.UpdateCost(ctx, "test-org", "test-tenant", "plan_abc123", &estimatedCost, &actualCost)
 		if err != nil {
 			t.Errorf("UpdateCost() error = %v", err)
 		}
 	})
 
 	t.Run("update estimated only", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", &estimatedCost, nil, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateCost(ctx, "plan_abc123", &estimatedCost, nil)
+		err := repo.UpdateCost(ctx, "test-org", "test-tenant", "plan_abc123", &estimatedCost, nil)
 		if err != nil {
 			t.Errorf("UpdateCost() error = %v", err)
 		}
 	})
 
 	t.Run("update actual only", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WithArgs("plan_abc123", nil, &actualCost, sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
-		err := repo.UpdateCost(ctx, "plan_abc123", nil, &actualCost)
+		err := repo.UpdateCost(ctx, "test-org", "test-tenant", "plan_abc123", nil, &actualCost)
 		if err != nil {
 			t.Errorf("UpdateCost() error = %v", err)
 		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectCommit()
 
-		err := repo.UpdateCost(ctx, "nonexistent", &estimatedCost, &actualCost)
+		err := repo.UpdateCost(ctx, "test-org", "test-tenant", "nonexistent", &estimatedCost, &actualCost)
 		if !errors.Is(err, ErrExecutionNotFound) {
 			t.Errorf("UpdateCost() error = %v, want ErrExecutionNotFound", err)
 		}
 	})
 
 	t.Run("database error", func(t *testing.T) {
+		expectScopedTxn()
 		mock.ExpectExec("UPDATE execution_history SET").
 			WillReturnError(errors.New("connection refused"))
+		mock.ExpectRollback()
 
-		err := repo.UpdateCost(ctx, "plan_abc123", &estimatedCost, &actualCost)
+		err := repo.UpdateCost(ctx, "test-org", "test-tenant", "plan_abc123", &estimatedCost, &actualCost)
 		if err == nil {
 			t.Error("expected error")
 		}

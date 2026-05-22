@@ -114,10 +114,13 @@ func TestCreateOverride(t *testing.T) {
 			wantErr: ErrOnlySystemPoliciesOverridable,
 		},
 		{
+			// v9 Phase 8 #2384 PR-C1: PolicyOverride.OrgID is required (RLS
+			// post mig 110); Create wraps INSERT in WithOrgScope.
 			name: "successful override creation",
 			override: &PolicyOverride{
 				PolicyID:       "sys-policy-1",
 				TenantID:       &tenantID,
+				OrgID:          "tenant-1",
 				ActionOverride: &actionWarn,
 				OverrideReason: "Testing in warn mode before full rollout",
 			},
@@ -145,21 +148,29 @@ func TestCreateOverride(t *testing.T) {
 						now, now, nil, nil, nil,
 					))
 
-				// Check existing override
+				// v9 Phase 8 PR-C1 R3 round-2 HIGH-2 fold: existence check runs
+				// INSIDE the WithOrgScope txn (same app.current_org_id as the
+				// INSERT) — otherwise USING masks duplicates under app_role.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM policy_overrides`).
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-
-				// Insert override
 				mock.ExpectExec(`INSERT INTO policy_overrides`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
 		{
+			// v9 Phase 8 PR-C1: PolicyOverride.OrgID is required for the
+			// WithOrgScope wrap that holds the duplicate check + INSERT.
 			name: "duplicate override rejected",
 			override: &PolicyOverride{
 				PolicyID:       "sys-policy-1",
 				TenantID:       &tenantID,
+				OrgID:          "tenant-1",
 				ActionOverride: &actionWarn,
 				OverrideReason: "Testing",
 			},
@@ -187,9 +198,15 @@ func TestCreateOverride(t *testing.T) {
 						now, now, nil, nil, nil,
 					))
 
-				// Check existing override - already exists
+				// Existence check runs inside the WithOrgScope txn and
+				// finds a duplicate; rollback follows.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`SELECT COUNT\(\*\) FROM policy_overrides`).
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+				mock.ExpectRollback()
 			},
 			wantErr: ErrOverrideAlreadyExists,
 		},
@@ -232,27 +249,34 @@ func TestDeleteOverride(t *testing.T) {
 			name:       "successful deletion",
 			overrideID: "override-1",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// GetByID first
+				// v9 Phase 8 #2384 PR-C1: GetByID also projects the new
+				// org_id column (mig 110), and Delete wraps the DELETE in
+				// WithOrgScope using that org_id.
 				mock.ExpectQuery(`SELECT .* FROM policy_overrides WHERE`).
 					WithArgs("override-1").
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "policy_type",
-						"organization_id", "tenant_id",
+						"organization_id", "tenant_id", "org_id",
 						"action_override", "enabled_override",
 						"override_reason", "expires_at",
 						"created_by", "created_at", "updated_by", "updated_at",
 					}).AddRow(
 						"override-1", "policy-1", "static",
-						nil, "tenant-1",
+						nil, "tenant-1", "tenant-1",
 						"warn", nil,
 						"Testing", nil,
 						"user1", time.Now(), "user1", time.Now(),
 					))
 
-				// Delete
+				// Wrapped DELETE.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`DELETE FROM policy_overrides WHERE id`).
 					WithArgs("override-1").
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -411,17 +435,18 @@ func TestGetOverrideByID(t *testing.T) {
 	now := time.Now()
 	expiry := now.Add(24 * time.Hour)
 
+	// v9 Phase 8 #2384 PR-C1: SELECT now projects org_id (added by mig 110).
 	mock.ExpectQuery(`SELECT .* FROM policy_overrides WHERE`).
 		WithArgs("override-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "policy_id", "policy_type",
-			"organization_id", "tenant_id",
+			"organization_id", "tenant_id", "org_id",
 			"action_override", "enabled_override",
 			"override_reason", "expires_at",
 			"created_by", "created_at", "updated_by", "updated_at",
 		}).AddRow(
 			"override-1", "policy-1", "static",
-			nil, "tenant-1",
+			nil, "tenant-1", "tenant-1",
 			"warn", true,
 			"Testing phase", expiry,
 			"user1", now, "user2", now,
@@ -517,14 +542,26 @@ func TestDeleteByPolicyID(t *testing.T) {
 		wantErr   error
 	}{
 		{
+			// v9 Phase 8 #2384 PR-C1: DeleteByPolicyID now does a
+			// staticPolicyRepo.GetByID lookup first (to resolve UUID),
+			// then wraps the DELETE in WithOrgScope using rlsOrgID.
 			name:     "delete tenant override",
 			policyID: "policy-1",
 			tenantID: &tenantID,
 			orgID:    nil,
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// GetByID lookup — returns no row, function falls back to original policyID.
+				mock.ExpectQuery(`FROM static_policies`).
+					WithArgs("policy-1").
+					WillReturnError(sql.ErrNoRows)
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`DELETE FROM policy_overrides WHERE policy_id`).
 					WithArgs("policy-1", tenantID).
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -534,9 +571,17 @@ func TestDeleteByPolicyID(t *testing.T) {
 			tenantID: &tenantID,
 			orgID:    nil,
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(`FROM static_policies`).
+					WithArgs("nonexistent").
+					WillReturnError(sql.ErrNoRows)
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`DELETE FROM policy_overrides WHERE policy_id`).
 					WithArgs("nonexistent", tenantID).
 					WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectCommit()
 			},
 			wantErr: ErrOverrideNotFound,
 		},
@@ -551,7 +596,11 @@ func TestDeleteByPolicyID(t *testing.T) {
 			tt.setupMock(mock)
 
 			repo := NewPolicyOverrideRepository(db)
-			err = repo.DeleteByPolicyID(context.Background(), tt.policyID, tt.tenantID, tt.orgID, "test-user")
+			// v9 Phase 8 #2384 PR-C1: rlsOrgID is the multi-tenant scope key
+			// (mig 110 added policy_overrides.org_id). Tests pass "tenant-1"
+			// — under sqlmock, RLS is invisible; the scope is asserted via
+			// the new mock.ExpectBegin/set_config/EXEC/Commit envelope.
+			err = repo.DeleteByPolicyID(context.Background(), "tenant-1", tt.policyID, tt.tenantID, tt.orgID, "test-user")
 
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)

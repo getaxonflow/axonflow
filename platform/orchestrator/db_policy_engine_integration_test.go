@@ -28,13 +28,30 @@ import (
 
 // setupTestDBEnv ensures DATABASE_URL is set, using testcontainers if needed.
 // Returns a cleanup function to restore the original value.
+//
+// v9 Brief 11.5 / Session 20: NewDatabaseDynamicPolicyEngine now routes
+// through agent.OpenAppRoleConnection. The testcontainer's master role
+// (test_user) is NOT axonflow_app_role, so we pin AXONFLOW_DB_USE_APP_ROLE=false
+// in this fixture to disable the helper's role assertion and let the
+// constructor connect as test_user. Tests that exercise the app-role wire
+// itself live in main_pool_app_role_test.go.
 func setupTestDBEnv(t *testing.T) func() {
 	t.Helper()
 
 	originalURL := os.Getenv("DATABASE_URL")
+	originalUseAppRole, useAppRoleWasSet := os.LookupEnv("AXONFLOW_DB_USE_APP_ROLE")
+	os.Setenv("AXONFLOW_DB_USE_APP_ROLE", "false")
+	restoreGate := func() {
+		if useAppRoleWasSet {
+			os.Setenv("AXONFLOW_DB_USE_APP_ROLE", originalUseAppRole)
+		} else {
+			os.Unsetenv("AXONFLOW_DB_USE_APP_ROLE")
+		}
+	}
+
 	if originalURL != "" {
 		// DATABASE_URL already set, nothing to do
-		return func() {}
+		return restoreGate
 	}
 
 	testutil.SkipIfNoDocker(t)
@@ -48,6 +65,7 @@ func setupTestDBEnv(t *testing.T) func() {
 		} else {
 			os.Unsetenv("DATABASE_URL")
 		}
+		restoreGate()
 	}
 }
 

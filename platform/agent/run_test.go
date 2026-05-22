@@ -2015,7 +2015,10 @@ func TestEnsureSchemaMigrationsTable(t *testing.T) {
 	}
 }
 
-// TestGetAppliedMigrations tests retrieving applied migrations
+// TestGetAppliedMigrations tests retrieving applied migrations. Post
+// migration 096_schema_migrations_dedup_composite, the runner SELECTs
+// both `version, name` and keys the applied-map by the composite
+// `version + "/" + name` produced by migrationKey().
 func TestGetAppliedMigrations(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -2026,21 +2029,25 @@ func TestGetAppliedMigrations(t *testing.T) {
 		{
 			name: "multiple migrations",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"version"}).
-					AddRow("001").
-					AddRow("006").
-					AddRow("020")
-				mock.ExpectQuery(`SELECT version FROM schema_migrations`).
+				rows := sqlmock.NewRows([]string{"version", "name"}).
+					AddRow("001", "schema_migrations_tracking_table").
+					AddRow("006", "customer_portal").
+					AddRow("020", "schema_migrations")
+				mock.ExpectQuery(`SELECT version, name FROM schema_migrations`).
 					WillReturnRows(rows)
 			},
 			wantLength: 3,
-			wantHas:    []string{"001", "006", "020"},
+			wantHas: []string{
+				migrationKey("001", "schema_migrations_tracking_table"),
+				migrationKey("006", "customer_portal"),
+				migrationKey("020", "schema_migrations"),
+			},
 		},
 		{
 			name: "no migrations",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				rows := sqlmock.NewRows([]string{"version"})
-				mock.ExpectQuery(`SELECT version FROM schema_migrations`).
+				rows := sqlmock.NewRows([]string{"version", "name"})
+				mock.ExpectQuery(`SELECT version, name FROM schema_migrations`).
 					WillReturnRows(rows)
 			},
 			wantLength: 0,
@@ -2049,7 +2056,7 @@ func TestGetAppliedMigrations(t *testing.T) {
 		{
 			name: "query error",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectQuery(`SELECT version FROM schema_migrations`).
+				mock.ExpectQuery(`SELECT version, name FROM schema_migrations`).
 					WillReturnError(sql.ErrConnDone)
 			},
 			wantLength: 0,
@@ -2072,9 +2079,9 @@ func TestGetAppliedMigrations(t *testing.T) {
 				t.Errorf("got %d migrations, want %d", len(applied), tt.wantLength)
 			}
 
-			for _, version := range tt.wantHas {
-				if !applied[version] {
-					t.Errorf("expected version %q to be applied", version)
+			for _, key := range tt.wantHas {
+				if !applied[key] {
+					t.Errorf("expected key %q to be applied", key)
 				}
 			}
 

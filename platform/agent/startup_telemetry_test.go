@@ -157,33 +157,92 @@ func TestDetectEnvironmentClass(t *testing.T) {
 	})
 }
 
-// TestStartupTelemetryEnabled covers AXONFLOW_TELEMETRY=off as the SOLE
-// opt-out. Anything else (empty, "true", "0", arbitrary garbage) leaves
-// telemetry on. Casing is normalized.
+// TestStartupTelemetryEnabled covers:
+//   - AXONFLOW_TELEMETRY=off as the SOLE USER-FACING opt-out (casing-tolerant).
+//   - AXONFLOW_TELEMETRY=on as an explicit override that wins over CI auto-suppress.
+//   - GITHUB_ACTIONS=true / CI=true as defense-in-depth CI auto-suppress
+//     when AXONFLOW_TELEMETRY is unset.
+//   - GITHUB_ACTIONS=false / CI=false treated as NOT-in-CI.
+//   - Both unset → enabled (the production-deployment default).
+//
+// Each case snapshots + clears all three env vars before applying its
+// own combination, so test isolation holds even when the host shell has
+// e.g. CI=true set (which would be common on a CI runner running the
+// test suite itself — see #2196 forensics for the bug this fixes).
 func TestStartupTelemetryEnabled(t *testing.T) {
-	saved := os.Getenv("AXONFLOW_TELEMETRY")
-	t.Cleanup(func() { os.Setenv("AXONFLOW_TELEMETRY", saved) })
+	for _, k := range []string{"AXONFLOW_TELEMETRY", "GITHUB_ACTIONS", "CI"} {
+		saved := os.Getenv(k)
+		t.Cleanup(func(k, v string) func() {
+			return func() {
+				if v == "" {
+					os.Unsetenv(k)
+				} else {
+					os.Setenv(k, v)
+				}
+			}
+		}(k, saved))
+	}
 
 	cases := []struct {
-		val     string
-		enabled bool
+		name        string
+		telemetry   string // empty means unset
+		gha         string // empty means unset
+		ci          string // empty means unset
+		wantEnabled bool
 	}{
-		{"", true},
-		{"off", false},
-		{"OFF", false},
-		{"Off", false},
-		{" off ", false}, // whitespace-tolerant
-		{"true", true},
-		{"0", true},
-		{"no", true},
-		{"yes", true},
-		{"random", true},
+		// User-facing opt-out — casing-tolerant.
+		{"telemetry=off blocks even on-host", "off", "", "", false},
+		{"telemetry=OFF blocks", "OFF", "", "", false},
+		{"telemetry=Off blocks", "Off", "", "", false},
+		{"telemetry=' off ' blocks (whitespace)", " off ", "", "", false},
+
+		// User-facing explicit opt-in overrides CI auto-suppress.
+		{"telemetry=on overrides CI auto-suppress", "on", "true", "true", true},
+		{"telemetry=ON overrides", "ON", "true", "", true},
+
+		// AXONFLOW_TELEMETRY unset + CI auto-suppress.
+		{"GITHUB_ACTIONS=true alone suppresses", "", "true", "", false},
+		{"CI=true alone suppresses", "", "", "true", false},
+		{"GITHUB_ACTIONS=1 suppresses (presence-only)", "", "1", "", false},
+		{"CI=yes suppresses (presence-only)", "", "", "yes", false},
+		{"both CI signals set suppresses", "", "true", "true", false},
+
+		// CI signals explicitly false → not in CI → enabled.
+		{"GITHUB_ACTIONS=false treated as not-CI", "", "false", "", true},
+		{"CI=false treated as not-CI", "", "", "false", true},
+		{"GITHUB_ACTIONS=False (case-insensitive)", "", "False", "", true},
+
+		// Both unset → production default (enabled).
+		{"all unset → enabled", "", "", "", true},
+
+		// AXONFLOW_TELEMETRY=<garbage> + CI unset → enabled (no opt-out, no CI signal).
+		{"garbage telemetry value + no CI → enabled", "random", "", "", true},
+		{"telemetry=true + no CI → enabled", "true", "", "", true},
+		{"telemetry=0 + no CI → enabled", "0", "", "", true},
+
+		// AXONFLOW_TELEMETRY=<garbage> + CI signal set → SUPPRESSED.
+		// Garbage falls through to CI auto-suppress because it's neither
+		// "on" nor "off". This is the dominant production case we care
+		// about: a deployment that doesn't explicitly set AXONFLOW_TELEMETRY
+		// but happens to be running in CI gets suppressed.
+		{"garbage telemetry + GITHUB_ACTIONS=true → suppressed", "garbage", "true", "", false},
+		{"garbage telemetry + CI=true → suppressed", "garbage", "", "true", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.val, func(t *testing.T) {
-			os.Setenv("AXONFLOW_TELEMETRY", tc.val)
-			if got := startupTelemetryEnabled(); got != tc.enabled {
-				t.Errorf("AXONFLOW_TELEMETRY=%q → enabled=%v, want %v", tc.val, got, tc.enabled)
+		t.Run(tc.name, func(t *testing.T) {
+			setOrUnset := func(k, v string) {
+				if v == "" {
+					os.Unsetenv(k)
+				} else {
+					os.Setenv(k, v)
+				}
+			}
+			setOrUnset("AXONFLOW_TELEMETRY", tc.telemetry)
+			setOrUnset("GITHUB_ACTIONS", tc.gha)
+			setOrUnset("CI", tc.ci)
+			if got := startupTelemetryEnabled(); got != tc.wantEnabled {
+				t.Errorf("telemetry=%q gha=%q ci=%q → enabled=%v, want %v",
+					tc.telemetry, tc.gha, tc.ci, got, tc.wantEnabled)
 			}
 		})
 	}
@@ -269,6 +328,14 @@ func TestMaybeSendStartupTelemetry_RateLimit(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY_STAMP_DIR", dir)
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	// Clear CI signals so the 2026-05-13 CI auto-suppress doesn't gate
+	// the test's expected POSTs. This test exercises the rate-limit
+	// stamp logic; CI auto-suppress is covered separately in
+	// TestStartupTelemetryEnabled. Without these, running this test
+	// under GitHub Actions (where GITHUB_ACTIONS=true is set in the
+	// runner env) would short-circuit before stamp-eval and fail.
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	// Seed stamp 1 hour ago — should NOT send.
 	stampPath := resolveStartupStampPath()
@@ -343,6 +410,9 @@ func TestMaybeSendStartupTelemetry_PayloadShape(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY_STAMP_DIR", dir)
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	// Clear CI signals — see RateLimit test for rationale.
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	// Force a synthetic env detection so the test is deterministic across
 	// host environments. Setting KUBERNETES_SERVICE_HOST puts detection in
@@ -424,6 +494,9 @@ func TestMaybeSendStartupTelemetry_DisclosureFires(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY_STAMP_DIR", dir)
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	// Clear CI signals — see RateLimit test for rationale.
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	// Capture log output (syncBuf for thread-safety — see type comment).
 	var buf syncBuf

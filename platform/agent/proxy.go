@@ -196,11 +196,17 @@ func createReverseProxy(target *url.URL, serviceName string) *httputil.ReversePr
 	// Custom error handler for logging and 502 responses
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[Proxy] Error proxying to %s: %v (path: %s)", logutil.Sanitize(serviceName), err, logutil.Sanitize(r.URL.Path))
-		// Record proxy error for circuit breaker auto-trip (#1176 Phase 2B)
+		// Record proxy error for circuit breaker auto-trip (#1176 Phase 2B).
+		// X-Client-ID is the v9 identity wire field (ADR-052); X-Tenant-ID
+		// is preserved as a compatibility alias and as a circuit-breaker
+		// fall-back when an older path hasn't yet been promoted.
 		if circuitBreakerInstance != nil {
 			orgID := r.Header.Get("X-Org-ID")
 			tenantID := r.Header.Get("X-Tenant-ID")
-			clientID := tenantID // clientId = tenantId in the unified identity model
+			clientID := r.Header.Get("X-Client-ID")
+			if clientID == "" {
+				clientID = tenantID
+			}
 			if orgID != "" && tenantID != "" {
 				if cbErr := circuitBreakerInstance.RecordError(r.Context(), orgID, tenantID, clientID); cbErr != nil {
 					log.Printf("[CircuitBreaker] RecordError (proxy) failed: %v", cbErr)
@@ -317,9 +323,16 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Set identity headers from authenticated client for downstream services
+		// Set identity headers from authenticated client for downstream services.
+		// Set (not Add) so any client-supplied X-Tenant-ID / X-Org-ID /
+		// X-Client-ID is overwritten by the auth-derived values before
+		// the request reaches the orchestrator. X-Client-ID is the v9
+		// successor of X-Tenant-ID (ADR-052 §5 / ADR-053 §Step 2);
+		// X-Tenant-ID is preserved as a deprecated alias for the v9
+		// compatibility window.
 		r.Header.Set("X-Tenant-ID", auth.TenantID)
 		r.Header.Set("X-Org-ID", auth.OrgID)
+		r.Header.Set("X-Client-ID", auth.ClientID)
 
 		// V1.1: forward the per-tenant SaaS Plugin tier to the
 		// orchestrator. The agent has already resolved Free / Pro /
@@ -338,6 +351,16 @@ func proxyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// (Telemetry identity is populated earlier — before the
 		// daily-cap check — so 429 responses are recorded too. See
 		// #2011 phase B0.)
+
+		// Stamp auth identity (TenantID/OrgID/ClientID/AuthKind) into the
+		// request context so any in-process downstream handler reached via
+		// `next(w, r)` agrees with the four-key shape apiAuthMiddleware
+		// writes (auth.go:658-661). Proxy routes forward to a separate
+		// process (orchestrator) via headers — the stamp is consistency
+		// insurance for any future in-process middleware that wraps next.
+		// Sibling of #2319. auth.Client is guaranteed non-nil on every
+		// successful Authenticate() return path (authenticator.go:114-249).
+		r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
 
 		next(w, r)
 	}

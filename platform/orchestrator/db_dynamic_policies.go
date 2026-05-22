@@ -25,6 +25,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/agent"
 )
 
 type DatabaseDynamicPolicyEngine struct {
@@ -45,8 +47,14 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 		return nil, fmt.Errorf("DATABASE_URL environment variable not set")
 	}
 
-	// Main connection pool for reads
-	db, err := sql.Open("postgres", dbURL)
+	// Main connection pool for reads.
+	// v9 Brief 11.5 / Session 20: route through agent.OpenAppRoleConnection so
+	// AXONFLOW_DB_USE_APP_ROLE=true (default in v9.0.0) actually flips the
+	// connection role to axonflow_app_role. Without this wrap, dynamic-policy
+	// queries against dynamic_policies (and future RLS-FORCEd tables) silently
+	// run as the table-owner role and bypass RLS.
+	bootCtx := context.Background()
+	db, err := agent.OpenAppRoleConnection(bootCtx, dbURL, 3)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -56,18 +64,27 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	// Test connection
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	var connectedRole string
+	if err := db.QueryRowContext(bootCtx, "SELECT current_user").Scan(&connectedRole); err != nil {
+		log.Printf("[dynamic-policy-engine] WARNING: failed to query current_user: %v (continuing)", err)
 	}
+	log.Printf("[dynamic-policy-engine] ✅ db pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+		connectedRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
-	// Separate connection for metrics to avoid blocking
-	metricsDB, err := sql.Open("postgres", dbURL)
+	// Separate connection for metrics to avoid blocking.
+	// Same OpenAppRoleConnection wrap so the metrics pool also honors the gate.
+	metricsDB, err := agent.OpenAppRoleConnection(bootCtx, dbURL, 3)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open metrics database: %w", err)
 	}
 	metricsDB.SetMaxOpenConns(5)
 	metricsDB.SetMaxIdleConns(2)
+	var metricsRole string
+	if err := metricsDB.QueryRowContext(bootCtx, "SELECT current_user").Scan(&metricsRole); err != nil {
+		log.Printf("[dynamic-policy-engine] WARNING: failed to query current_user on metricsDB: %v (continuing)", err)
+	}
+	log.Printf("[dynamic-policy-engine] ✅ metricsDB pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+		metricsRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
 	engine := &DatabaseDynamicPolicyEngine{
 		db:           db,
@@ -84,11 +101,26 @@ func NewDatabaseDynamicPolicyEngine() (*DatabaseDynamicPolicyEngine, error) {
 		log.Printf("Warning: Failed to seed default data: %v", err)
 	}
 
-	// Load initial policies
+	// Load initial policies. Two failure shapes can leave the cache
+	// empty: (a) refreshPolicies returns an error, or (b) refreshPolicies
+	// returns nil but the SELECT got zero rows because seedDefaultData
+	// silently failed (the Warning log above is the only signal). The v1
+	// fallback only handled case (a); under -race in CI the (b) case
+	// flaked TestDatabaseDynamicPolicyEngine_Initialization +
+	// _HealthCheck (IsHealthy() returns false when policyCount == 0).
+	// Fall back to default policies on BOTH paths so a fresh engine
+	// always reports healthy.
 	if err := engine.refreshPolicies(); err != nil {
 		log.Printf("Warning: Failed to load initial policies: %v", err)
-		// Continue with default policies
 		engine.loadDefaultPolicies()
+	} else {
+		engine.mu.RLock()
+		empty := len(engine.policies) == 0
+		engine.mu.RUnlock()
+		if empty {
+			log.Println("Warning: refreshPolicies returned 0 rows (seed likely failed) — falling back to default policies")
+			engine.loadDefaultPolicies()
+		}
 	}
 
 	// Start background refresh
@@ -181,19 +213,32 @@ func (e *DatabaseDynamicPolicyEngine) seedSystemMediaPolicies() error {
 		},
 	}
 
-	for _, p := range policies {
-		_, err := e.db.Exec(`
-			INSERT INTO dynamic_policies (
-				policy_id, name, description, policy_type, category, tier,
-				conditions, actions, tenant_id, priority, enabled,
-				version, created_by, updated_by, created_at, updated_at
-			) VALUES ($1, $2, $3, 'media', $4, 'system', $5::jsonb, $6::jsonb, 'global', $7, true, 1, 'system', 'system', NOW(), NOW())
-			ON CONFLICT (policy_id) DO NOTHING
-		`, p.policyID, p.name, p.description, p.category, p.conditions, p.actions, p.priority)
-
-		if err != nil {
-			return fmt.Errorf("failed to seed system media policy %s: %w", p.policyID, err)
+	// v9 Phase 8 PR-C2 (#2384): seeder writes 'global' wildcard policies that
+	// apply across orgs. dynamic_policies is mig 018 ENABLE RLS with policy
+	// `org_id = get_current_org_id()`. Wrap with WithOrgScope('global') +
+	// populate org_id='global' so the WITH CHECK GUC-vs-column match holds
+	// under axonflow_app_role. The 'global' sentinel is read-side-recognized
+	// by getApplicablePolicies which treats tenant_id='global' as
+	// matching-all-tenants — same shape for org_id here.
+	wrapErr := agent.WithOrgScope(context.Background(), e.db, "global", func(tx *sql.Tx) error {
+		for _, p := range policies {
+			// v9 compat (Epic #2230 Phase 2/4): client_id literal 'global'
+			// mirrors the tenant_id 'global' wildcard sentinel (migration 090).
+			if _, err := tx.ExecContext(context.Background(), `
+				INSERT INTO dynamic_policies (
+					policy_id, name, description, policy_type, category, tier,
+					conditions, actions, tenant_id, client_id, org_id, priority, enabled,
+					version, created_by, updated_by, created_at, updated_at
+				) VALUES ($1, $2, $3, 'media', $4, 'system', $5::jsonb, $6::jsonb, 'global', 'global', 'global', $7, true, 1, 'system', 'system', NOW(), NOW())
+				ON CONFLICT (policy_id) DO NOTHING
+			`, p.policyID, p.name, p.description, p.category, p.conditions, p.actions, p.priority); err != nil {
+				return fmt.Errorf("failed to seed system media policy %s: %w", p.policyID, err)
+			}
 		}
+		return nil
+	})
+	if wrapErr != nil {
+		return wrapErr
 	}
 
 	log.Println("System media policies seeded (5 policies, idempotent)")
@@ -273,16 +318,23 @@ func (e *DatabaseDynamicPolicyEngine) insertSamplePolicies() error {
 		conditions, _ := json.Marshal(policyMap["conditions"])
 		actions, _ := json.Marshal(policyMap["actions"])
 
-		_, err := e.db.Exec(`
-			INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, priority)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (policy_id) DO UPDATE SET
-				conditions = EXCLUDED.conditions,
-				actions = EXCLUDED.actions,
-				updated_at = CURRENT_TIMESTAMP
-		`, p.name, p.name, p.description, "test", string(conditions), string(actions), p.tenantID, p.priority)
-		if err != nil {
-			return fmt.Errorf("failed to insert policy %s: %w", p.name, err)
+		// v9 Phase 8 PR-C2 (#2384): each sample policy is scoped to its own
+		// tenantID. Wrap per iteration so the GUC matches the row's org_id
+		// (which mirrors tenant_id at this writer).
+		wrapErr := agent.WithOrgScope(context.Background(), e.db, p.tenantID, func(tx *sql.Tx) error {
+			// v9 compat (Epic #2230 Phase 2/4): client_id + org_id both mirror tenant_id ($7).
+			_, err := tx.ExecContext(context.Background(), `
+				INSERT INTO dynamic_policies (policy_id, name, description, policy_type, conditions, actions, tenant_id, client_id, org_id, priority)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $8)
+				ON CONFLICT (policy_id) DO UPDATE SET
+					conditions = EXCLUDED.conditions,
+					actions = EXCLUDED.actions,
+					updated_at = CURRENT_TIMESTAMP
+			`, p.name, p.name, p.description, "test", string(conditions), string(actions), p.tenantID, p.priority)
+			return err
+		})
+		if wrapErr != nil {
+			return fmt.Errorf("failed to insert policy %s: %w", p.name, wrapErr)
 		}
 	}
 
@@ -461,14 +513,21 @@ func (e *DatabaseDynamicPolicyEngine) reportMetrics() {
 			}
 		}
 
-		// Report to metrics table
-		_, err := e.metricsDB.Exec(`
-			INSERT INTO policy_metrics (policy_name, execution_time_ms, success, tenant_id)
-			VALUES ('system_health', $1, true, 'system')
-		`, timeSinceRefreshMs)
-
-		if err != nil {
-			log.Printf("Failed to report metrics: %v", err)
+		// v9 Phase 8 PR-C2 (#2384): policy_metrics is mig 018 ENABLE RLS with
+		// policy `org_id = get_current_org_id()`. The legacy INSERT here is a
+		// process-level health probe with no per-tenant context. Use the
+		// 'system' sentinel for both the GUC and the org_id column so the
+		// WITH CHECK matches — this is the same shape getApplicablePolicies
+		// uses to read system metrics back.
+		wrapErr := agent.WithOrgScope(context.Background(), e.metricsDB, "system", func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(context.Background(), `
+				INSERT INTO policy_metrics (policy_name, execution_time_ms, success, tenant_id, org_id)
+				VALUES ('system_health', $1, true, 'system', 'system')
+			`, timeSinceRefreshMs)
+			return err
+		})
+		if wrapErr != nil {
+			log.Printf("Failed to report metrics: %v", wrapErr)
 		}
 
 		// Log health status
@@ -816,11 +875,33 @@ func (e *DatabaseDynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Contex
 	}
 
 	// Record metrics
+	// v9 Phase 8 PR-C2 (#2384): policy_metrics RLS gates this per-eval row by
+	// org_id. tenantID is the orgID at this writer (Phase-6 schema collapse).
+	// The goroutine runs independent of the eval txn so it owns its own wrap
+	// — falling back to 'system' sentinel when tenantID is empty (no real
+	// request scope on cache-warmup path). The data column tenant_id keeps
+	// its original (possibly empty) value to preserve eval-row provenance;
+	// org_id is what RLS checks and uses the resolved orgScope.
+	//
+	// The 2-second timeout bounds the wrap tx so shutdown doesn't dangle on a
+	// stuck metric INSERT — pre-PR-C2 the bare Exec inherited the request's
+	// context-or-Background; the wrap's BeginTx now ties up a connection until
+	// timeout, hence the explicit ctx scope.
 	go func() {
-		_, err := e.metricsDB.Exec(`
-			INSERT INTO policy_metrics (policy_name, execution_time_ms, success, tenant_id)
-			VALUES ('evaluation', $1, $2, $3)
-		`, int(time.Since(startTime).Milliseconds()), result.Allowed, tenantID)
+		orgScope := tenantID
+		if orgScope == "" {
+			orgScope = "system"
+		}
+		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		wrapErr := agent.WithOrgScope(bgCtx, e.metricsDB, orgScope, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(bgCtx, `
+				INSERT INTO policy_metrics (policy_name, execution_time_ms, success, tenant_id, org_id)
+				VALUES ('evaluation', $1, $2, $3, $4)
+			`, int(time.Since(startTime).Milliseconds()), result.Allowed, tenantID, orgScope)
+			return err
+		})
+		err := wrapErr
 
 		if err != nil {
 			log.Printf("Failed to record policy metrics: %v", err)
@@ -1173,6 +1254,15 @@ func (e *DatabaseDynamicPolicyEngine) IsHealthy() bool {
 	}
 
 	return true
+}
+
+// UnsafePoolsForTests exposes the engine's two pools for integration tests
+// that need to assert the connected Postgres role under USE_APP_ROLE=true.
+// NOT for production use — the returned handles bypass the engine's
+// concurrency + policy-cache invariants. Named "Unsafe...ForTests" to
+// discourage accidental usage.
+func (e *DatabaseDynamicPolicyEngine) UnsafePoolsForTests() (db, metricsDB *sql.DB) {
+	return e.db, e.metricsDB
 }
 
 func (e *DatabaseDynamicPolicyEngine) Close() error {

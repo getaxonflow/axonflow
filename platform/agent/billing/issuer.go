@@ -269,12 +269,19 @@ func IssueLicense(ctx context.Context, db *sql.DB, req IssueRequest) (*IssueResu
 	if strings.TrimSpace(req.StripePaymentIntentID) != "" {
 		pi = sql.NullString{String: strings.TrimSpace(req.StripePaymentIntentID), Valid: true}
 	}
+	// v9 compat (Epic #2230 Phase 2/4): write client_id alongside tenant_id
+	// with the same value during the v9 compatibility window. Migration 088
+	// added the client_id column on plugin_user_licenses + a one-time
+	// backfill UPDATE; new Pro purchases need to populate it explicitly
+	// because there's no trigger or generated column. Plugin Pro stays
+	// credential-scoped per ADR-052 — client_id mirrors tenant_id (the
+	// Basic Auth registration ID), NOT the customer org_id.
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO plugin_user_licenses
-		  (tenant_id, claimed_by_email, tier, license_token_jti,
+		  (tenant_id, client_id, claimed_by_email, tier, license_token_jti,
 		   stripe_customer_id, stripe_session_id, issued_at,
 		   stripe_payment_intent_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (stripe_session_id) WHERE stripe_session_id IS NOT NULL DO NOTHING
 		RETURNING license_id::text, issued_at`,
 		req.TenantID, req.ClaimedByEmail, string(req.Tier), jti,

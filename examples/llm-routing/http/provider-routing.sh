@@ -25,6 +25,9 @@ set -e
 
 # Configuration
 AGENT_URL="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
+# user_token: validated as JWT in eval/enterprise; any string in community.
+# Read from AXONFLOW_USER_TOKEN env (setup-e2e-testing.sh writes it).
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-demo-user}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
@@ -75,7 +78,7 @@ make_request() {
 echo "1. Send request (server routes based on configured strategy):"
 make_request "   Sending query..." '{
     "query": "What is 2 + 2? Answer with just the number.",
-    "user_token": "demo-user",
+    "user_token": "${USER_TOKEN}",
     "client_id": "http-example",
     "request_type": "llm_chat"
 }'
@@ -85,7 +88,7 @@ echo "2. Multiple requests (observe provider distribution):"
 for i in 1 2 3; do
     make_request "   Request $i..." "{
         \"query\": \"Question $i: What is the capital of France?\",
-        \"user_token\": \"demo-user\",
+        \"user_token\": \"${USER_TOKEN}\",
         \"client_id\": \"http-example\",
         \"request_type\": \"llm_chat\"
     }"
@@ -106,7 +109,7 @@ precheck=$(curl -s -X POST "$AGENT_URL/api/policy/pre-check" \
     -H "Authorization: Basic $AUTH_B64" \
     -d '{
         "query": "What is artificial intelligence?",
-        "user_token": "demo-user",
+        "user_token": "${USER_TOKEN}",
         "client_id": "http-example"
     }')
 

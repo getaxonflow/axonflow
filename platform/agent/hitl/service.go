@@ -263,8 +263,8 @@ func (s *Service) ApproveRequest(ctx context.Context, requestID uuid.UUID, revie
 		return fmt.Errorf("request has expired")
 	}
 
-	// Update status
-	if err := s.repo.UpdateStatus(ctx, requestID, "approved", reviewer, comment); err != nil {
+	// Update status. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	if err := s.repo.UpdateStatus(ctx, req.OrgID, requestID, "approved", reviewer, comment); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 
@@ -305,8 +305,8 @@ func (s *Service) RejectRequest(ctx context.Context, requestID uuid.UUID, review
 		return fmt.Errorf("cannot reject request with status: %s", req.Status)
 	}
 
-	// Update status
-	if err := s.repo.UpdateStatus(ctx, requestID, "rejected", reviewer, comment); err != nil {
+	// Update status. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	if err := s.repo.UpdateStatus(ctx, req.OrgID, requestID, "rejected", reviewer, comment); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 
@@ -354,8 +354,8 @@ func (s *Service) OverrideRequest(ctx context.Context, requestID uuid.UUID, just
 		return fmt.Errorf("cannot override request with status: %s", req.Status)
 	}
 
-	// Perform override
-	if err := s.repo.Override(ctx, requestID, justification, authorizedBy.ID); err != nil {
+	// Perform override. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	if err := s.repo.Override(ctx, req.OrgID, requestID, justification, authorizedBy.ID); err != nil {
 		return fmt.Errorf("override request: %w", err)
 	}
 

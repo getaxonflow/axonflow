@@ -101,6 +101,119 @@ func getDeploymentOrgID() string {
 	return orgID
 }
 
+// getDeploymentKind returns the deployment-kind signal ("dev" or "production")
+// from the DEPLOYMENT_KIND env var. Issue #2320 — defense-in-depth for migration
+// 094's Pass-2 backfill: distinguishing dev-default (legitimate local
+// docker-compose / community-mode) from prod-forgot-ORG_ID (operator deployed
+// to a real stack without setting ORG_ID → getDeploymentOrgID() falls back to
+// 'local-dev-org' → Pass-2 would silently stamp historical empty-org_id rows
+// across 9 audit tables with the dev sentinel, forward-only + unrecoverable).
+//
+// CFN templates set DEPLOYMENT_KIND=production on agent + orchestrator task
+// defs. docker-compose.yml + docker-compose.enterprise.yml default to "dev".
+// Unset → "dev" (matches the docker-compose default; on prod a missing CFN env
+// is itself a misconfiguration and the migration 094 precondition is the
+// catcher of last resort).
+func getDeploymentKind() string {
+	kind := os.Getenv("DEPLOYMENT_KIND")
+	if kind == "" {
+		return "dev"
+	}
+	return kind
+}
+
+// setMigrationSessionVars seeds the Postgres session GUCs that downstream
+// migration SQL reads via current_setting():
+//
+//   - app.db_password: required by migration 017's dblink_exec call to
+//     create the Grafana database outside transaction context.
+//   - app.deployment_org_id: required by migration 094 Pass-2 to backfill
+//     empty-org_id audit rows from ORG_ID rather than silently stamping
+//     the 'local-dev-org' default.
+//
+// Migration 094 raises an EXCEPTION ONLY when this GUC is NULL/empty AND
+// any non-cs_* empty-org_id row exists (catches the regression where
+// run.go skips this helper entirely). When the GUC is 'local-dev-org'
+// the migration accepts it (legitimate dev/community-mode default) but
+// emits a RAISE WARNING so operators running against real deployments
+// see a paper trail. See commit ac704a5d on PR #2309 for the narrowing
+// rationale and the follow-up issue tracking proper dev/prod detection
+// via an app.deployment_kind GUC.
+//
+// Errors are logged but not fatal: the historical inline form treated
+// app.db_password as non-fatal and we preserve that behavior. The
+// migration runner's own per-migration error handling will catch a
+// downstream SQL failure if a session var matters.
+// buildAPICallClientID returns the credential identity that downstream
+// usage_events.client_id rows should carry, per ADR-052 §5 (this is
+// client.ClientID — the api_key_id for API-keyed callers post Fix 4 of
+// PR #2309 — NOT client.ID which is the legacy compat org_id).
+//
+// Extracted so the field-mapping has a single mutation-testable surface:
+// asserting on `client.ClientID` directly in a test is tautological (the
+// test reads back the value it just wrote into the struct). Routing
+// both the test AND run.go's usage.APICallEvent construction through
+// this helper means reverting the helper's return expression fails the
+// test.
+//
+// Residual: removing the helper call at the RecordAPICall site and
+// inlining client.ID directly is NOT caught by the helper test —
+// closing that would require driving the handler with a mock recorder.
+func buildAPICallClientID(client *Client) string {
+	return client.ClientID
+}
+
+// stampAuthContext is the canonical AuthResult → request-context mapping
+// for authenticated request handlers that bypass apiAuthMiddleware
+// (chiefly clientRequestHandler for the /api/request body-style endpoint).
+//
+// ADR-052 §5: ContextKeyClientID is the credential identity (api_key_id for
+// API-keyed callers post Fix 4 of PR #2309), not the org boundary — see the
+// contract docstring on auth.go:505-507. apiAuthMiddleware (auth.go:658-661)
+// stamps four keys (TenantID, OrgID, ClientID, AuthKind); this helper must
+// stamp the same four so callers that build the context directly from
+// *Client + AuthKind agree with the middleware path. Issue #2319 (preserved
+// by PR #2315's extraction) — AuthKind was missing, leaving AuthKindFromContext
+// to silently return the default AuthKindEnterprise for body-auth requests.
+//
+// Extracted (R3 finding F1-A on PR #2309's gap-closure train) so a single
+// unit test can mutation-prove the invariant without driving the full
+// HTTP handler. Also picks up telemetry tenant identity so the outer
+// telemetry middleware's per-request container is non-empty.
+func stampAuthContext(ctx context.Context, client *Client, kind AuthKind) context.Context {
+	ctx = context.WithValue(ctx, ContextKeyTenantID, client.TenantID)
+	ctx = context.WithValue(ctx, ContextKeyOrgID, client.OrgID)
+	ctx = context.WithValue(ctx, ContextKeyClientID, client.ClientID)
+	ctx = context.WithValue(ctx, ContextKeyAuthKind, kind)
+	SetTelemetryTenantID(ctx, client.TenantID)
+	return ctx
+}
+
+func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deploymentKind string) {
+	if _, err := db.Exec("SELECT set_config('app.db_password', $1, false)", dbPassword); err != nil {
+		log.Printf("⚠️  Failed to set session variable app.db_password: %v", err)
+	} else {
+		log.Println("✅ Set app.db_password session variable for dblink migrations")
+	}
+	if _, err := db.Exec("SELECT set_config('app.deployment_org_id', $1, false)", deploymentOrgID); err != nil {
+		log.Printf("⚠️  Failed to set session variable app.deployment_org_id: %v", err)
+	} else {
+		log.Printf("✅ Set app.deployment_org_id=%s session variable for migration 094 backfill", deploymentOrgID)
+	}
+	if _, err := db.Exec("SELECT set_config('app.deployment_kind', $1, false)", deploymentKind); err != nil {
+		log.Printf("⚠️  Failed to set session variable app.deployment_kind: %v", err)
+	} else {
+		log.Printf("✅ Set app.deployment_kind=%s session variable for migration 094 prod-safety precondition (#2320)", deploymentKind)
+	}
+	// Paper trail (#2320): if DEPLOYMENT_KIND was unset on the agent process,
+	// the migration runner will treat this as `dev`. That's correct for local
+	// docker-compose + community-mode, but on a real stack this means CFN
+	// drift — log a WARNING so operators see it in container logs.
+	if os.Getenv("DEPLOYMENT_KIND") == "" {
+		log.Println("⚠️  DEPLOYMENT_KIND env unset — defaulted to 'dev'. On real deployments this should be 'production' (CFN templates set it; if you see this on a non-dev stack, the task definition is drifted).")
+	}
+}
+
 // Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
 // Docker Compose services communicate via service names on the axonflow-network.
 // No configuration required - the Agent detects Docker and uses appropriate URLs.
@@ -126,13 +239,13 @@ var (
 	// silently-different signature than what the orchestrator computes
 	// from the same logical secret.
 	jwtSecret              = []byte(secretenv.Get("JWT_SECRET"))
-	orchestratorURL        = getOrchestratorURL() // Auto-discovered based on environment
-	authDB                 *sql.DB                // Database for Option 3 authentication
-	usageDB                *sql.DB // Database for usage metering
-	tierAwarePolicyEngine  *TierAwarePolicyEngine // Tier-aware policy engine for tenant-specific policies
-	meteringService           *marketplace.MeteringService // AWS Marketplace metering
-	costService               *cost.Service // Cost tracking and budget enforcement (Issue #1082)
-	circuitBreakerInstance    *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
+	orchestratorURL        = getOrchestratorURL()         // Auto-discovered based on environment
+	authDB                 *sql.DB                        // Database for Option 3 authentication
+	usageDB                *sql.DB                        // Database for usage metering
+	tierAwarePolicyEngine  *TierAwarePolicyEngine         // Tier-aware policy engine for tenant-specific policies
+	meteringService        *marketplace.MeteringService   // AWS Marketplace metering
+	costService            *cost.Service                  // Cost tracking and budget enforcement (Issue #1082)
+	circuitBreakerInstance *circuitbreaker.CircuitBreaker // Circuit breaker for auto-trip on error/violation thresholds (#1176)
 	// mcpHITLService is the long-lived HITL service the MCP-tool dispatcher
 	// reuses for `axonflow_request_approval`. Wiring it here (rather than
 	// constructing a new Service per call) means the MCP-tool path inherits
@@ -271,31 +384,31 @@ type ClientRequest struct {
 	RequestType string                 `json:"request_type"`       // "sql", "llm_chat", "rag_search"
 	SkipLLM     bool                   `json:"skip_llm,omitempty"` // Skip LLM calls for hourly tests
 	Context     map[string]interface{} `json:"context"`
-	PlanID      string                 `json:"plan_id,omitempty"`  // For execute-plan requests
-	Media       []MediaContentRequest  `json:"media,omitempty"`    // Optional media (images) for multimodal governance
+	PlanID      string                 `json:"plan_id,omitempty"` // For execute-plan requests
+	Media       []MediaContentRequest  `json:"media,omitempty"`   // Optional media (images) for multimodal governance
 }
 
 // MediaContentRequest represents a media item in the client API request.
 type MediaContentRequest struct {
-	Source     string `json:"source"`               // "base64" or "url"
+	Source     string `json:"source"`                // "base64" or "url"
 	Base64Data string `json:"base64_data,omitempty"` // Base64-encoded image data
 	URL        string `json:"url,omitempty"`         // Image URL
 	MIMEType   string `json:"mime_type"`             // e.g., "image/jpeg"
 }
 
 type ClientResponse struct {
-	Success        bool                   `json:"success"`
-	Data           interface{}            `json:"data,omitempty"`
-	Result         string                 `json:"result,omitempty"`          // For multi-agent planning - MUST match SDK type
-	PlanID         string                 `json:"plan_id,omitempty"`         // For multi-agent planning
-	Steps          []interface{}          `json:"steps,omitempty"`           // For multi-agent planning - workflow steps
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`        // For multi-agent planning - MUST match SDK type
-	Error          string                 `json:"error,omitempty"`
-	Blocked        bool                   `json:"blocked"`
-	BlockReason    string                 `json:"block_reason,omitempty"`
-	PolicyInfo     *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
-	BudgetInfo     *BudgetInfo            `json:"budget_info,omitempty"`     // Issue #1082: Budget enforcement status
-	MediaAnalysis  interface{}            `json:"media_analysis,omitempty"`  // Media governance analysis results
+	Success       bool                   `json:"success"`
+	Data          interface{}            `json:"data,omitempty"`
+	Result        string                 `json:"result,omitempty"`   // For multi-agent planning - MUST match SDK type
+	PlanID        string                 `json:"plan_id,omitempty"`  // For multi-agent planning
+	Steps         []interface{}          `json:"steps,omitempty"`    // For multi-agent planning - workflow steps
+	Metadata      map[string]interface{} `json:"metadata,omitempty"` // For multi-agent planning - MUST match SDK type
+	Error         string                 `json:"error,omitempty"`
+	Blocked       bool                   `json:"blocked"`
+	BlockReason   string                 `json:"block_reason,omitempty"`
+	PolicyInfo    *PolicyEvaluationInfo  `json:"policy_info,omitempty"`
+	BudgetInfo    *BudgetInfo            `json:"budget_info,omitempty"`    // Issue #1082: Budget enforcement status
+	MediaAnalysis interface{}            `json:"media_analysis,omitempty"` // Media governance analysis results
 }
 
 type PolicyEvaluationInfo struct {
@@ -317,7 +430,12 @@ type PolicyEvaluationInfo struct {
 	CodeArtifact *CodeArtifactMetadata `json:"code_artifact,omitempty"`
 }
 
-// User represents authenticated user information
+// User represents authenticated user information.
+//
+// v9 Phase 8 #2384 PR-C1: OrgID is the multi-tenant scope key needed by
+// RLS-aware downstream writes (policy_metrics, policy_violations,
+// agent_audit_logs). Populated alongside TenantID by the authenticate
+// middleware.
 type User struct {
 	ID          int      `json:"id"`
 	Email       string   `json:"email"`
@@ -327,6 +445,7 @@ type User struct {
 	Region      string   `json:"region"`
 	Permissions []string `json:"permissions"`
 	TenantID    string   `json:"tenant_id"`
+	OrgID       string   `json:"org_id"`
 }
 
 // recordLatency adds a latency measurement to the appropriate buckets
@@ -359,13 +478,22 @@ func (m *AgentMetrics) recordLatency(latencyMs int64, policyType string) {
 }
 
 // Client represents an authenticated client.
-// ID and TenantID come from the Basic auth clientId (tenant identity for data isolation).
-// OrgID comes from the license validation (org entitlement scope).
+//
+// v9 identity model (ADR-052):
+//   - OrgID    — customer/account organization identity (RLS boundary).
+//   - ClientID — authenticated API credential/app identity. Always equal
+//     to ID during the v9 window; carried as a separate field so the
+//     codebase can converge on the v9 name without a rename diff.
+//   - TenantID — v9 compatibility alias. For the Enterprise whitelist
+//     and DB-backed paths it carries the legacy hardcoded scope tag
+//     (e.g. "healthcare_tenant") rather than the credential identity;
+//     Phase 1/2 of Epic #2230 classifies each remaining row.
 type Client struct {
-	ID            string    `json:"id"`        // Client identifier (from Basic auth username)
+	ID            string    `json:"id"` // Client identifier (from Basic auth username)
 	Name          string    `json:"name"`
 	OrgID         string    `json:"org_id"`    // Organization ID from license (entitlement scope)
-	TenantID      string    `json:"tenant_id"` // Tenant ID for data isolation (from Basic auth clientId)
+	ClientID      string    `json:"client_id"` // v9 alias of ID; set by every auth path
+	TenantID      string    `json:"tenant_id"` // v9 compatibility alias — see struct comment
 	Permissions   []string  `json:"permissions"`
 	RateLimit     int       `json:"rate_limit"`
 	Enabled       bool      `json:"enabled"`
@@ -630,7 +758,15 @@ func Run() {
 	if dbURL != "" {
 
 		log.Println("Running database migrations...")
-		migrationsPath := "/app/migrations/"
+		// /app/migrations/ is the Docker-mount default. AXONFLOW_MIGRATIONS_PATH
+		// overrides it so runtime-e2e tests can exercise the real runner
+		// against a temp copy of migrations/ without needing /app/ on disk.
+		// Production deployments leave the env var unset and pick up the
+		// container's mount.
+		migrationsPath := os.Getenv("AXONFLOW_MIGRATIONS_PATH")
+		if migrationsPath == "" {
+			migrationsPath = "/app/migrations/"
+		}
 
 		// Multi-path migration collection (ADR-012)
 		// Collects migrations from core/, enterprise/, industry/* based on DEPLOYMENT_MODE
@@ -682,18 +818,21 @@ func Run() {
 			// Ensure schema_migrations table exists (run migration 020 first if needed)
 			ensureSchemaMigrationsTable(migrationDB)
 
-			// Set session variable for dblink usage in migrations (required for migration 017)
-			// Migration 017 uses dblink_exec to create Grafana database outside transaction context
-			// dblink requires password authentication even for localhost connections
-			// Use set_config() function which supports parameterized queries (unlike SET SESSION)
-			_, err = migrationDB.Exec("SELECT set_config('app.db_password', $1, false)", dbPassword)
-			if err != nil {
-				log.Printf("⚠️  Failed to set session variable app.db_password: %v", err)
-			} else {
-				log.Println("✅ Set app.db_password session variable for dblink migrations")
-			}
+			// Set Postgres session variables that downstream migration SQL
+			// reads via current_setting(): app.db_password (migration 017
+			// dblink_exec) + app.deployment_org_id (migration 094 Pass-2
+			// org_id backfill) + app.deployment_kind (migration 094 prod-
+			// safety precondition, #2320). Extracted to
+			// setMigrationSessionVars so the wiring is unit-testable; the
+			// inline form was untested for years and the v9 Pass-2 backfill
+			// regressed on it (Epic #2230 Follow-up A).
+			setMigrationSessionVars(migrationDB, dbPassword, getDeploymentOrgID(), getDeploymentKind())
 
-			// Get list of applied migrations
+			// Get list of applied migrations (keyed by composite version/name).
+			// See migrations/core/096_schema_migrations_dedup_composite.sql
+			// for why we cannot dedup on version alone — files like
+			// 025_decision_chain.sql + 025_hitl_oversight_queue.sql share
+			// the version prefix and must be tracked independently.
 			appliedMigrations := getAppliedMigrations(migrationDB)
 
 			successCount := 0
@@ -701,8 +840,8 @@ func Run() {
 			for _, migration := range migrations {
 				filename := filepath.Base(migration.Path)
 
-				// Skip if already applied
-				if appliedMigrations[migration.Version] {
+				// Skip if already applied (composite version/name key)
+				if appliedMigrations[migrationKey(migration.Version, migration.Name)] {
 					log.Printf("⏭️  Migration %s [%s] already applied (skipping)", filename, migration.Category)
 					skippedCount++
 					continue
@@ -755,16 +894,19 @@ func Run() {
 	// No-DB mode: engine with nil DB (community fallback) + JSONL audit.
 	if dbURL != "" {
 		var err error
-		authDB, err = sql.Open("postgres", dbURL)
+		bootCtx := context.Background()
+		authDB, err = OpenAppRoleConnection(bootCtx, dbURL, 5)
 		if err != nil {
 			log.Fatalf("Failed to connect to authentication database: %v", err)
 		}
 		defer func() { _ = authDB.Close() }()
 
-		if err := authDB.Ping(); err != nil {
-			log.Fatalf("Failed to ping authentication database: %v", err)
+		var connectedRole string
+		if err := authDB.QueryRowContext(bootCtx, "SELECT current_user").Scan(&connectedRole); err != nil {
+			log.Fatalf("Failed to query current_user on authDB: %v", err)
 		}
-		log.Println("✅ Authentication database connected (Option 3)")
+		log.Printf("✅ authDB connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+			connectedRole, UseAppRoleEnabled(), EnvAppRoleURL, os.Getenv(EnvAppRoleURL) != "")
 
 		usageDB = authDB
 		log.Println("✅ Usage metering database connected")
@@ -812,8 +954,24 @@ func Run() {
 				log.Fatal("❌ MARKETPLACE_PRODUCT_CODE required when ENABLE_MARKETPLACE_METERING=true")
 			}
 
+			// v9 Brief 11.5 R3-HIGH-3: getActiveNodeCount queries
+			// agent_heartbeats CROSS-ORG (no WHERE org_id filter — it counts
+			// every active node for the entire deployment for marketplace
+			// billing). Under FORCE RLS on agent_heartbeats (mig 107) as
+			// axonflow_app_role, this silently returns 0 → undercharging /
+			// SoX issue. Route through admin DB if available.
+			RequirePlatformAdminOrFatal("Marketplace")
+			meteringDB := authDB
+			if adminDB, adminErr := OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+				log.Printf("[Marketplace] failed to open admin connection (%v); falling back to authDB", adminErr)
+			} else if adminDB != nil {
+				log.Println("[Marketplace] using axonflow_platform_admin (BYPASSRLS) connection for cross-org node-count metering")
+				meteringDB = adminDB
+			} else {
+				log.Printf("[Marketplace] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to authDB. Under FORCE RLS as app_role, metering reports 0 nodes — undercharge / SoX risk.")
+			}
 			var mErr error
-			meteringService, mErr = marketplace.NewMeteringService(authDB, productCode)
+			meteringService, mErr = marketplace.NewMeteringService(meteringDB, productCode)
 			if mErr != nil {
 				log.Fatalf("❌ Failed to create AWS Marketplace metering service: %v", mErr)
 			}
@@ -902,10 +1060,27 @@ func Run() {
 				log.Println("✅ Heartbeat service started")
 			}
 
-			// Initialize node monitor (only if explicitly enabled)
+			// Initialize node monitor (only if explicitly enabled).
+			//
+			// v9 Phase 8 (#2305 Brief 11.5, Item 2): NodeMonitor iterates
+			// across orgs (checkAllNodeCounts uses GetActiveNodesByOrg's
+			// GROUP BY org_id). Under FORCE RLS on agent_heartbeats (mig
+			// 107) as axonflow_app_role, cross-org SELECT silently returns
+			// 0 rows. Open admin (BYPASSRLS) connection if configured;
+			// fall back to usageDB for legacy deployments.
 			if os.Getenv("ENABLE_NODE_MONITOR") == "true" {
+				RequirePlatformAdminOrFatal("NodeMonitor")
 				alerter := node_enforcement.NewMultiChannelAlerter()
-				nodeMonitor = node_enforcement.NewNodeMonitor(usageDB, alerter)
+				monitorDB := usageDB
+				if adminDB, adminErr := OpenPlatformAdminConnection(ctx, 3); adminErr != nil {
+					log.Printf("[NodeMonitor] failed to open admin connection (%v); falling back to usageDB", adminErr)
+				} else if adminDB != nil {
+					log.Println("[NodeMonitor] using axonflow_platform_admin (BYPASSRLS) connection for cross-org node counts")
+					monitorDB = adminDB
+				} else {
+					log.Println("[NodeMonitor] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to usageDB. Under FORCE RLS as app_role, NodeMonitor will not observe cross-org rows.")
+				}
+				nodeMonitor = node_enforcement.NewNodeMonitor(monitorDB, alerter)
 				nodeMonitor.Start(ctx)
 				log.Println("✅ Node monitoring started")
 			}
@@ -979,7 +1154,24 @@ func Run() {
 	// COMMUNITY_SAAS_SWEEP_ENABLED=true. Only runs in community-saas mode and
 	// only when the license tier is community — see the helper.
 	if communitySaasSweepShouldStart() {
-		StartCommunitySaasSweep(context.Background(), authDB)
+		// v9 Phase 8 (#2305 Brief 11.5, Item 2): sweep iterates ACROSS orgs
+		// (terminates idle tenants from any org). Under FORCE RLS as
+		// axonflow_app_role, cross-org queries return 0 rows. Open admin
+		// (BYPASSRLS) connection if AXONFLOW_DB_PLATFORM_ADMIN_URL is set;
+		// fall back to authDB (master role) for legacy deployments. The
+		// admin DB handle is leaked intentionally — sweep runs for the
+		// agent process lifetime; the conn closes on process exit.
+		RequirePlatformAdminOrFatal("CSAAS-SWEEP")
+		sweepDB := authDB
+		if adminDB, adminErr := OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+			log.Printf("[CSAAS-SWEEP] failed to open admin connection (%v); falling back to authDB", adminErr)
+		} else if adminDB != nil {
+			log.Printf("[CSAAS-SWEEP] using axonflow_platform_admin (BYPASSRLS) connection for cross-org sweep")
+			sweepDB = adminDB
+		} else {
+			log.Printf("[CSAAS-SWEEP] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to authDB. Under FORCE RLS as app_role, sweep will not observe cross-org rows.")
+		}
+		StartCommunitySaasSweep(context.Background(), sweepDB)
 	}
 
 	// Register all routes on the global router (server is already running with /health)
@@ -1127,7 +1319,23 @@ func Run() {
 		// /api/v1/recover/verify. Intentionally NOT behind apiAuthMiddleware —
 		// this is the recovery path for users who have lost their auth secret.
 		// Magic-link email is delivered via Resend (or Noop in dev).
-		RegisterCommunityRecoveryHandler(globalRouter, usageDB, nil)
+		// v9 Phase 8 (#2305 Brief 11.5, Item 2): recovery handler is PRE-AUTH
+		// (the whole point is to issue magic links to email addresses with no
+		// session yet). It reads community_saas_recovery_tokens for rate
+		// limits and community_saas_registrations (mig 105 FORCEd) for
+		// recovery cap checks. Under app_role + FORCE these silently return 0.
+		// Use admin connection if configured; fall back to usageDB.
+		RequirePlatformAdminOrFatal("CSAAS-RECOVERY")
+		recoveryDB := usageDB
+		if adminDB, adminErr := OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+			log.Printf("[CSAAS-RECOVERY] failed to open admin connection (%v); falling back to usageDB", adminErr)
+		} else if adminDB != nil {
+			log.Println("[CSAAS-RECOVERY] using axonflow_platform_admin (BYPASSRLS) connection for pre-auth recovery lookups")
+			recoveryDB = adminDB
+		} else {
+			log.Println("[CSAAS-RECOVERY] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to usageDB. Under FORCE RLS as app_role, recovery will fail to find tokens/registrations.")
+		}
+		RegisterCommunityRecoveryHandler(globalRouter, recoveryDB, nil)
 		log.Println("✅ Community SaaS recovery endpoints enabled: POST /api/v1/recover[/verify]")
 
 		// GDPR right-to-erasure (issue #1896): two-step email-verified deletion.
@@ -1135,7 +1343,29 @@ func Run() {
 		// single-use confirmation token sent to the email-on-file. Stripe
 		// customer archive is best-effort post-DB-commit (the operator-side
 		// erasure must complete regardless of Stripe API availability).
-		RegisterTenantDeletionHandler(globalRouter, usageDB, nil)
+		//
+		// v9 (#2397): the handler issues per-tenant SELECT/DELETE on
+		// community_saas_registrations (mig 105 FORCE-RLS) + usage_events
+		// (mig 081 ENABLE-RLS) before any session/org_id is established.
+		// Under axonflow_app_role with no app.current_org_id set, the USING
+		// predicate evaluates to NULL → rows silently filtered out:
+		// delete-request issues no token (SELECT EXISTS = false) and
+		// delete-confirm returns HTTP 200 with a tenant_deletion_log row
+		// asserting "deletion done" while the registration + usage_events
+		// rows remain on disk (silent SoX-class corruption + lying GDPR
+		// Article 17 receipt). Route on the admin pool — same pattern as
+		// CSAAS-RECOVERY above; same session-less email-validated lifecycle.
+		RequirePlatformAdminOrFatal("CSAAS-DELETE")
+		deleteDB := usageDB
+		if adminDB, adminErr := OpenPlatformAdminConnection(context.Background(), 3); adminErr != nil {
+			log.Printf("[CSAAS-DELETE] failed to open admin connection (%v); falling back to usageDB", adminErr)
+		} else if adminDB != nil {
+			log.Println("[CSAAS-DELETE] using axonflow_platform_admin (BYPASSRLS) connection for GDPR cascade DELETEs")
+			deleteDB = adminDB
+		} else {
+			log.Println("[CSAAS-DELETE] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to usageDB. Under FORCE RLS as app_role, delete-confirm will silently issue an incomplete cascade with a lying GDPR receipt and delete-request will issue no tokens.")
+		}
+		RegisterTenantDeletionHandler(globalRouter, deleteDB, nil)
 		log.Println("✅ Community SaaS tenant deletion endpoints enabled: POST /api/v1/tenant/{id}/delete-{request,confirm}")
 
 		// W4 paid Pro v1 tier: Stripe-driven license issuance. The webhook is
@@ -1251,16 +1481,8 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	validateClientTime := time.Since(validateClientStart)
 	log.Printf("[TIMING] Client validation: %v (mode: %s)", validateClientTime, auth.Kind)
 
-	// Set auth-derived identity in request context for downstream use
-	{
-		ctx := r.Context()
-		ctx = context.WithValue(ctx, ContextKeyTenantID, client.TenantID)
-		ctx = context.WithValue(ctx, ContextKeyOrgID, client.OrgID)
-		ctx = context.WithValue(ctx, ContextKeyClientID, client.ID)
-		// Populate telemetry identity container (set by outer telemetry middleware)
-		SetTelemetryTenantID(ctx, client.TenantID)
-		r = r.WithContext(ctx)
-	}
+	// Set auth-derived identity in request context for downstream use.
+	r = r.WithContext(stampAuthContext(r.Context(), client, auth.Kind))
 
 	// 2. Resolve user identity via unified ResolveUser
 	validateUserStart := time.Now()
@@ -1268,6 +1490,22 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	if userAuthErr != nil {
 		sendErrorResponse(w, userAuthErr.Message, userAuthErr.HTTPStatus, nil)
 		return
+	}
+
+	// Stamp the v9 UserID into request context now that the user is
+	// resolved. RequestIdentityFromContext (ADR-052/053 Step 2) returns
+	// an empty UserID before this point, which is the correct shape for
+	// service-to-service callers — and we preserve that shape here too:
+	// AuthKindInternalService synthesises User{ID:0,...} (no human user
+	// behind the call), and a downstream reader of UserIDFromContext that
+	// does `if uid != "" { ... }` must NOT see "0" as a real user.
+	{
+		var stamped string
+		if user.ID != 0 {
+			stamped = fmt.Sprintf("%d", user.ID)
+		}
+		ctx := context.WithValue(r.Context(), ContextKeyUserID, stamped)
+		r = r.WithContext(ctx)
 	}
 
 	validateUserTime := time.Since(validateUserStart)
@@ -1286,11 +1524,21 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[TIMING] Tenant isolation check: %v", tenantCheckTime)
 
 	// 3.5 Circuit breaker check — block if circuit is open for this client/tenant/org (#1176)
+	//
+	// ADR-052 §5 (issue #2318): the CircuitBreaker has four scopes (Client,
+	// Policy, Tenant, Global), all namespaced by OrgID. ScopeClient enables
+	// surgical per-credential tripping (one bad API key) while ScopeGlobal
+	// handles per-org/per-customer billing-abuse mitigation. ClientID is the
+	// CREDENTIAL IDENTITY here (api_key_id for API-keyed callers, Basic-auth
+	// username for legacy Basic callers), routed through `client.ClientID`
+	// per ADR-052 §5 — NOT `client.ID` which is the legacy compat field that
+	// for Basic auth still carries the org_id collapse. Same routing as
+	// usage_events.client_id (via buildAPICallClientID at line ~1966).
 	if circuitBreakerInstance != nil {
 		cbResult, cbErr := circuitBreakerInstance.Check(r.Context(), circuitbreaker.CheckInput{
 			OrgID:    client.OrgID,
 			TenantID: client.TenantID,
-			ClientID: client.ID,
+			ClientID: client.ClientID,
 		})
 		if cbErr != nil {
 			log.Printf("⚠️ Circuit breaker check error: %v", cbErr)
@@ -1325,6 +1573,7 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), req.Query, sharedpolicy.EvalOptions{
 			TenantID:        user.TenantID,
+			OrgID:           user.OrgID,
 			ConnectorName:   "proxy",
 			UserID:          fmt.Sprintf("%d", user.ID),
 			Categories:      proxyPolicyCategories,
@@ -1373,9 +1622,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Request blocked by static policy for user %s: %s", logutil.Sanitize(user.Email), logutil.Sanitize(policyResult.Reason))
 
 		// Record policy violation for auto-trip threshold tracking (#1176)
+		// ADR-052 §5 (issue #2318): clientID is the credential identity, not
+		// legacy `client.ID`. See contract block at the Check call above.
 		if circuitBreakerInstance != nil {
 			for _, policyID := range policyResult.TriggeredPolicies {
-				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ID, policyID); err != nil {
+				if err := circuitBreakerInstance.RecordPolicyViolation(r.Context(), client.OrgID, client.TenantID, client.ClientID, policyID); err != nil {
 					log.Printf("⚠️ Circuit breaker RecordPolicyViolation error: %v", err)
 				}
 			}
@@ -1571,8 +1822,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			atomic.AddInt64(&agentMetrics.failedRequests, 1)
 		}
 		// Record error for circuit breaker auto-trip (#1176 Phase 2B)
+		// ADR-052 §5 (issue #2318): clientID = credential identity.
 		if circuitBreakerInstance != nil {
-			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ID); cbErr != nil {
+			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ClientID); cbErr != nil {
 				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
 			}
 		}
@@ -1620,8 +1872,9 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 		promRequestsTotal.WithLabelValues("orchestrator_error").Inc()
 		log.Printf("[clientRequestHandler] Orchestrator returned error: %s", orchError)
 		// Record orchestrator-level error for circuit breaker auto-trip (#1176 Phase 2B)
+		// ADR-052 §5 (issue #2318): clientID = credential identity.
 		if circuitBreakerInstance != nil {
-			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ID); cbErr != nil {
+			if cbErr := circuitBreakerInstance.RecordError(r.Context(), client.OrgID, client.TenantID, client.ClientID); cbErr != nil {
 				log.Printf("[CircuitBreaker] RecordError failed: %v", cbErr)
 			}
 		}
@@ -1818,8 +2071,11 @@ func clientRequestHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			err := recorder.RecordAPICall(usage.APICallEvent{
-				OrgID:          client.OrgID,
-				ClientID:       client.ID,
+				OrgID: client.OrgID,
+				// ADR-052 §5: usage_events.client_id is the credential identity.
+				// Routed through buildAPICallClientID so the field-mapping has
+				// a single mutation-testable surface (R3-F1 on PR #2315).
+				ClientID:       buildAPICallClientID(client),
 				InstanceID:     instanceID,
 				InstanceType:   "agent",
 				HTTPMethod:     r.Method,
@@ -1860,9 +2116,14 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 			Region:      "local",
 			Permissions: []string{"query", "llm", "mcp_query", "admin"},
 			TenantID:    expectedTenantID,
+			// v9 Phase 8 #2384 PR-C1: in community mode tenantID == orgID; no
+			// separate identity layer is configured.
+			OrgID: expectedTenantID,
 		}, nil
 	} else if isCommunitySaasMode() {
-		// Community-SaaS mode: no JWT required — tenant identity comes from Basic auth
+		// Community-SaaS mode: no JWT required — tenant identity comes from Basic auth.
+		// v9 Phase 6 (mig 100) sets community_saas_registrations.org_id = tenant_id
+		// for every row, so the OrgID == TenantID invariant holds here too.
 		return &User{
 			ID:          1,
 			Email:       "evaluator@try.getaxonflow.com",
@@ -1871,6 +2132,7 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 			Region:      "us-east-1",
 			Permissions: []string{"query", "llm", "mcp_query"},
 			TenantID:    expectedTenantID,
+			OrgID:       expectedTenantID,
 		}, nil
 	} else if tokenString == "" {
 		return nil, fmt.Errorf("token required")
@@ -1897,6 +2159,13 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 	if tenantID == "" {
 		tenantID = "tenant_1" // Fallback for backward compatibility
 	}
+	// v9 Phase 8 #2384 PR-C1: org_id claim — populated by callers running v9
+	// JWTs (post-v9 stack). For legacy JWTs without an org_id claim we fall
+	// back to tenantID to preserve the OrgID == TenantID invariant of mig 100.
+	orgID := getClaimString(claims, "org_id")
+	if orgID == "" {
+		orgID = tenantID
+	}
 
 	// Extract user_id - handle both string and numeric types
 	var userID int
@@ -1917,7 +2186,8 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		Role:        getClaimString(claims, "role"),
 		Region:      getClaimString(claims, "region"),
 		Permissions: getClaimStringArray(claims, "permissions"),
-		TenantID:    tenantID, // Extract from JWT claims for multi-tenant isolation
+		TenantID:    tenantID,
+		OrgID:       orgID,
 	}, nil
 }
 
@@ -1981,7 +2251,9 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 	// X-Org-ID comes from the authenticated client's license (client.OrgID),
 	// matching the Single Entry Point proxy behavior in proxy.go. This enables
 	// multi-tenant SaaS where one deployment serves many orgs, each scoped by
-	// their own cryptographically validated license.
+	// their own cryptographically validated license. X-Client-ID is the v9
+	// successor of X-Tenant-ID (ADR-052 §5 / ADR-053 §Step 2); both are
+	// emitted during the v9 compatibility window.
 	if user != nil && user.TenantID != "" {
 		orchReq.Header.Set("X-Tenant-ID", user.TenantID)
 	}
@@ -1991,6 +2263,15 @@ func forwardToOrchestrator(req ClientRequest, user *User, client *Client) (inter
 		}
 		if (user == nil || user.TenantID == "") && client.TenantID != "" {
 			orchReq.Header.Set("X-Tenant-ID", client.TenantID)
+		}
+		// v9 ADR-052: prefer ClientID (the canonical field) and fall
+		// back to ID for the compat window where every auth path sets
+		// both to the same value. Future code that diverges the two
+		// MUST land here intentionally.
+		if v := client.ClientID; v != "" {
+			orchReq.Header.Set("X-Client-ID", v)
+		} else if client.ID != "" {
+			orchReq.Header.Set("X-Client-ID", client.ID)
 		}
 	}
 	resp, err := http.DefaultClient.Do(orchReq)
@@ -2077,6 +2358,10 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		Role:        "agent",
 		Permissions: []string{"query"},
 		TenantID:    tenantID,
+		// v9 Phase 8 #2384 PR-C1: policyTestHandler is an internal /api/v1/policies/test
+		// admin path; OrgID==TenantID is the safe default consistent with the
+		// community / community-saas auth synthesisers above.
+		OrgID: tenantID,
 	}
 
 	// Two-phase evaluation (same as proxy handler — uses shared engine as primary)
@@ -2092,6 +2377,7 @@ func policyTestHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		requestResult := sharedEngine.EvaluateRequest(r.Context(), testReq.Query, sharedpolicy.EvalOptions{
 			TenantID:        testUser.TenantID,
+			OrgID:           testUser.OrgID,
 			ConnectorName:   "proxy",
 			UserID:          fmt.Sprintf("%d", testUser.ID),
 			Categories:      proxyPolicyCategories,

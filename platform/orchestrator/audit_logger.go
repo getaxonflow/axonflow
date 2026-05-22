@@ -17,12 +17,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"axonflow/platform/agent"
 )
 
 // auditSearchCriteria is the normalized shape SearchAuditLogs matches against.
@@ -156,9 +159,16 @@ type BatchWriter struct {
 	mu          sync.Mutex
 }
 
-// NewAuditLogger creates a new audit logger
+// NewAuditLogger creates a new audit logger.
+//
+// v9 Brief 11.5 / Session 20: routes through agent.OpenAppRoleConnection so the
+// audit-logger pool honors AXONFLOW_DB_USE_APP_ROLE + AXONFLOW_DB_APP_ROLE_URL
+// the same as orchestrator's primary usageDB. Without this, audit_logs INSERTs
+// would silently land under the table-owner role and bypass any future FORCE
+// RLS on audit_logs (deferred B2 follow-up).
 func NewAuditLogger(databaseURL string) *AuditLogger {
-	db, err := sql.Open("postgres", databaseURL)
+	bootCtx := context.Background()
+	db, err := agent.OpenAppRoleConnection(bootCtx, databaseURL, 3)
 	if err != nil {
 		log.Printf("Failed to connect to audit database: %v", err)
 		// Return a no-op logger if database is unavailable
@@ -167,6 +177,12 @@ func NewAuditLogger(databaseURL string) *AuditLogger {
 			shutdownChan: make(chan struct{}),
 		}
 	}
+	var connectedRole string
+	if err := db.QueryRowContext(bootCtx, "SELECT current_user").Scan(&connectedRole); err != nil {
+		log.Printf("[orchestrator-audit] WARNING: failed to query current_user on audit DB: %v (continuing)", err)
+	}
+	log.Printf("[orchestrator-audit] ✅ pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+		connectedRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
 	// audit_logs table created by migration 059_runtime_tables_to_migrations.sql
 

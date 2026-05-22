@@ -175,10 +175,30 @@ func generateStartupInstanceID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// startupTelemetryEnabled mirrors agent semantics: AXONFLOW_TELEMETRY=off
-// is the SOLE opt-out. Casing-tolerant; no programmatic disable.
+// startupTelemetryEnabled mirrors agent semantics.
+//
+// AXONFLOW_TELEMETRY=off is the SOLE USER-FACING opt-out (same lever the
+// SDKs honor). AXONFLOW_TELEMETRY=on explicitly forces emission even in
+// CI. Otherwise, CI environment auto-suppress kicks in: GITHUB_ACTIONS=true
+// or CI=true → no emission. Defense in depth for the docker-compose env
+// propagation issue (workflow env block doesn't reach containers by default).
+// See platform/agent/startup_telemetry.go startupTelemetryEnabled doc-comment
+// for the full rationale.
 func startupTelemetryEnabled() bool {
-	return !strings.EqualFold(strings.TrimSpace(os.Getenv("AXONFLOW_TELEMETRY")), "off")
+	val := strings.TrimSpace(os.Getenv("AXONFLOW_TELEMETRY"))
+	if strings.EqualFold(val, "off") {
+		return false
+	}
+	if strings.EqualFold(val, "on") {
+		return true
+	}
+	if v := strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")); v != "" && !strings.EqualFold(v, "false") {
+		return false
+	}
+	if v := strings.TrimSpace(os.Getenv("CI")); v != "" && !strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
 }
 
 // classifyDeploymentMode — orchestrator equivalent of the agent helper.

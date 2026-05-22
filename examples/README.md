@@ -113,16 +113,27 @@ Programmatic policy CRUD operations.
 |---------|------|-------------|
 | CRUD | `policies/crud/` | Create, read, update, delete policies |
 
+### v9 Identity Forwarding
+
+Shows how `X-Org-ID`, `X-Client-ID`, and `X-Tenant-ID` flow agent → orchestrator
+under the v9 identity model (ADR-052), including the anti-spoofing overwrite
+rule applied at every auth boundary.
+
+| Example | Path | Description |
+|---------|------|-------------|
+| Go | `v9_identity/go/` | Self-contained mock agent + orchestrator demo |
+
 ## SDK Versions
 
 All examples use the latest SDK versions:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| Python | `axonflow` | >=8.0.0 |
-| TypeScript | `@axonflow/sdk` | >=8.0.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v8` | v8.0.0 |
-| Java | `com.getaxonflow:axonflow-sdk` | 8.0.0 |
+| Python | `axonflow` | >=8.1.0 |
+| TypeScript | `@axonflow/sdk` | >=8.1.0 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v8` | v8.1.0 |
+| Java | `com.getaxonflow:axonflow-sdk` | 8.1.0 |
+| Rust _(preview)_ | `axonflow-sdk-rust` | 0.3.1 |
 
 ## Environment Configuration
 

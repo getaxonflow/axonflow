@@ -19,6 +19,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	logutil "axonflow/platform/shared/logger"
 )
 
 // Registry manages LLM provider instances with lazy loading and health monitoring.
@@ -51,8 +53,9 @@ type Storage interface {
 	// GetProvider retrieves a provider configuration by name.
 	GetProvider(ctx context.Context, name string) (*ProviderConfig, error)
 
-	// DeleteProvider removes a provider configuration.
-	DeleteProvider(ctx context.Context, name string) error
+	// DeleteProvider removes a provider configuration. orgID scopes the
+	// DELETE under v9 RLS (see [PostgresStorage.DeleteProvider]).
+	DeleteProvider(ctx context.Context, orgID, name string) error
 
 	// ListProviders returns all provider names for an organization.
 	ListProviders(ctx context.Context, orgID string) ([]string, error)
@@ -373,7 +376,8 @@ func (r *Registry) Unregister(ctx context.Context, name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.configs[name]; !exists {
+	cfg, hasCfg := r.configs[name]
+	if !hasCfg {
 		if _, exists := r.providers[name]; !exists {
 			return &RegistryError{
 				ProviderName: name,
@@ -383,10 +387,19 @@ func (r *Registry) Unregister(ctx context.Context, name string) error {
 		}
 	}
 
-	// Remove from storage if available
+	// Remove from storage if available.
+	// v9 Phase 8 PR-C2 (#2384): pass the in-memory config's TenantID so
+	// Storage's DeleteProvider can wrap the DELETE in WithOrgScope. Without
+	// orgID the DELETE silently affects 0 rows under axonflow_app_role.
 	if r.storage != nil {
-		if err := r.storage.DeleteProvider(ctx, name); err != nil {
-			r.logger.Printf("Warning: failed to delete provider %s from storage: %v", name, err)
+		var orgID string
+		if cfg != nil {
+			orgID = cfg.TenantID
+		}
+		if orgID == "" {
+			r.logger.Printf("Warning: Unregister %q has no in-memory config TenantID to derive orgID — skipping storage delete to avoid cross-org wipe", logutil.Sanitize(name))
+		} else if err := r.storage.DeleteProvider(ctx, orgID, name); err != nil {
+			r.logger.Printf("Warning: failed to delete provider %s from storage: %v", logutil.Sanitize(name), err)
 			// Continue with in-memory removal
 		}
 	}

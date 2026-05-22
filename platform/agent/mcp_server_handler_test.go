@@ -1413,7 +1413,7 @@ func TestMCPServer_AuthenticateRequest_InvalidBasicAuth(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Basic !!!invalid-base64!!!")
-	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for invalid Basic auth")
 	}
@@ -1577,7 +1577,7 @@ func TestMCPServer_AuthenticateRequest_MissingHeader(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for missing Authorization header")
 	}
@@ -1592,7 +1592,7 @@ func TestMCPServer_AuthenticateRequest_WrongScheme(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("Authorization", "Bearer some-token")
-	_, _, _, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, _, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err == nil {
 		t.Error("Expected error for non-Basic auth")
 	}
@@ -1606,12 +1606,17 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	defer os.Unsetenv("DEPLOYMENT_MODE")
 
 	req := httptest.NewRequest("POST", "/test", nil)
-	tenantID, userID, userEmail, userRole, clientID, _, err := authenticateMCPServerRequest(req)
+	tenantID, orgID, userID, userEmail, userRole, clientID, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("Community mode should not require auth: %v", err)
 	}
 	if tenantID != "community" {
 		t.Errorf("Expected tenantID 'community', got '%s'", tenantID)
+	}
+	// Community mode now propagates the deployment org_id so audit
+	// rows on the MCP path carry a non-empty org_id (#2230 Phase 0).
+	if orgID == "" {
+		t.Errorf("Expected non-empty orgID from getDeploymentOrgID(), got empty")
 	}
 	// With no X-User-Email header, the handler now falls back to a
 	// client-scoped pseudo-identity rather than shared "0". For community
@@ -1624,8 +1629,13 @@ func TestMCPServer_AuthenticateRequest_CommunityMode(t *testing.T) {
 	if userID != wantPseudoEmail {
 		t.Errorf("Expected userID %q (fallback to email), got %q", wantPseudoEmail, userID)
 	}
-	if userRole != "admin" {
-		t.Errorf("Expected userRole 'admin', got '%s'", userRole)
+	// v9 Follow-up A (Epic #2230): MCP path no longer fabricates "admin"
+	// for every audit row. With no real per-user role lookup available,
+	// the handler stamps "unknown" so the audit trail is honest about
+	// not having resolved the caller's authz role. See
+	// authenticateMCPServerRequest comment.
+	if userRole != "unknown" {
+		t.Errorf("Expected userRole 'unknown' (Epic #2230 Follow-up A), got '%s'", userRole)
 	}
 	if clientID != "community" {
 		t.Errorf("Expected clientID 'community', got '%s'", clientID)
@@ -1646,7 +1656,7 @@ func TestMCPServer_AuthenticateRequest_PerUserIdentity(t *testing.T) {
 	req.Header.Set("X-User-Email", "alice@example.com")
 	req.Header.Set("X-User-ID", "user-123")
 
-	_, userID, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, userID, userEmail, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1669,7 +1679,7 @@ func TestMCPServer_AuthenticateRequest_EmailOnly(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", nil)
 	req.Header.Set("X-User-Email", "bob@example.com")
 
-	_, userID, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, userID, userEmail, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1694,7 +1704,7 @@ func TestMCPServer_AuthenticateRequest_PseudoIdentityIsolation(t *testing.T) {
 	req := httptest.NewRequest("POST", "/test", nil)
 	// No X-User-Email, no X-User-ID — legacy behavior.
 
-	_, _, userEmail, _, _, _, err := authenticateMCPServerRequest(req)
+	_, _, _, userEmail, _, _, _, _, err := authenticateMCPServerRequest(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

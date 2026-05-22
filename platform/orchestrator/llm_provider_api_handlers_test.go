@@ -305,6 +305,7 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "test-tenant")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -320,6 +321,31 @@ func TestLLMProviderAPIHandler_CreateProvider(t *testing.T) {
 
 		if resp.Provider.Name != "new-provider" {
 			t.Errorf("expected name 'new-provider', got %q", resp.Provider.Name)
+		}
+	})
+
+	t.Run("rejects missing tenant identity", func(t *testing.T) {
+		registry := llm.NewRegistry()
+		handler := NewLLMProviderAPIHandler(registry, nil)
+		router := createTestRouter(handler)
+
+		body := CreateLLMProviderRequest{
+			Name:    "new-provider-no-tenant",
+			Type:    "openai",
+			APIKey:  "test-key",
+			Enabled: true,
+		}
+		bodyBytes, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/llm-providers", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		// Intentionally omit X-Tenant-ID + X-Org-ID
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
 		}
 	})
 
@@ -466,12 +492,16 @@ func TestLLMProviderAPIHandler_DeleteProvider(t *testing.T) {
 		router := createTestRouter(handler)
 
 		config := &llm.ProviderConfig{
-			Name: "delete-test-provider",
-			Type: llm.ProviderTypeOllama,
+			Name:     "delete-test-provider",
+			TenantID: "tenant-x",
+			Type:     llm.ProviderTypeOllama,
 		}
 		registry.Register(context.Background(), config)
 
 		req := httptest.NewRequest(http.MethodDelete, "/api/v1/llm-providers/delete-test-provider", nil)
+		// v9 Phase 8 PR-C2 (#2384): handler requires X-Tenant-ID/X-Org-ID +
+		// must match the in-memory config's TenantID for cross-tenant authz.
+		req.Header.Set("X-Tenant-ID", "tenant-x")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -492,12 +522,59 @@ func TestLLMProviderAPIHandler_DeleteProvider(t *testing.T) {
 		router := createTestRouter(handler)
 
 		req := httptest.NewRequest(http.MethodDelete, "/api/v1/llm-providers/non-existent", nil)
+		req.Header.Set("X-Tenant-ID", "tenant-x")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
 
 		if w.Code != http.StatusNotFound {
 			t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)
+		}
+	})
+
+	t.Run("rejects cross-tenant delete with 404 (no disclosure)", func(t *testing.T) {
+		// v9 Phase 8 PR-C2 (#2384): caller A cannot delete caller B's provider
+		// even with knowledge of the name. The handler returns 404 (not 403) to
+		// avoid disclosing which providers exist in which tenants.
+		registry := llm.NewRegistry()
+		handler := NewLLMProviderAPIHandler(registry, nil)
+		router := createTestRouter(handler)
+
+		config := &llm.ProviderConfig{
+			Name:     "tenant-b-provider",
+			TenantID: "tenant-B",
+			Type:     llm.ProviderTypeOllama,
+		}
+		registry.Register(context.Background(), config)
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/llm-providers/tenant-b-provider", nil)
+		req.Header.Set("X-Tenant-ID", "tenant-A") // wrong tenant
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected status %d (cross-tenant masked as 404), got %d", http.StatusNotFound, w.Code)
+		}
+		// Provider must still exist in the registry — cross-tenant DELETE is a no-op.
+		if !registry.Has("tenant-b-provider") {
+			t.Error("cross-tenant DELETE should NOT have removed the provider")
+		}
+	})
+
+	t.Run("rejects missing tenant header with 400", func(t *testing.T) {
+		registry := llm.NewRegistry()
+		handler := NewLLMProviderAPIHandler(registry, nil)
+		router := createTestRouter(handler)
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/llm-providers/any-name", nil)
+		// Intentionally no X-Tenant-ID or X-Org-ID
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
 		}
 	})
 }
@@ -510,10 +587,11 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 
 		// Create initial provider
 		config := &llm.ProviderConfig{
-			Name:    "update-test-provider",
-			Type:    llm.ProviderTypeOpenAI,
-			APIKey:  "original-key",
-			Enabled: false,
+			Name:     "update-test-provider",
+			TenantID: "tenant-x",
+			Type:     llm.ProviderTypeOpenAI,
+			APIKey:   "original-key",
+			Enabled:  false,
 		}
 		registry.Register(context.Background(), config)
 		defer registry.Unregister(context.Background(), "update-test-provider")
@@ -526,6 +604,7 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPut, "/api/v1/llm-providers/update-test-provider", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "tenant-x")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -544,6 +623,35 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects cross-tenant update with 404", func(t *testing.T) {
+		registry := llm.NewRegistry()
+		handler := NewLLMProviderAPIHandler(registry, nil)
+		router := createTestRouter(handler)
+
+		config := &llm.ProviderConfig{
+			Name:     "tenant-b-provider-update",
+			TenantID: "tenant-B",
+			Type:     llm.ProviderTypeOpenAI,
+		}
+		registry.Register(context.Background(), config)
+		defer registry.Unregister(context.Background(), "tenant-b-provider-update")
+
+		enabled := true
+		body := UpdateLLMProviderRequest{Enabled: &enabled}
+		bodyBytes, _ := json.Marshal(body)
+
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/llm-providers/tenant-b-provider-update", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "tenant-A") // wrong tenant
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected status %d (cross-tenant masked as 404), got %d", http.StatusNotFound, w.Code)
+		}
+	})
+
 	t.Run("returns 404 for non-existent provider", func(t *testing.T) {
 		registry := llm.NewRegistry()
 		handler := NewLLMProviderAPIHandler(registry, nil)
@@ -557,6 +665,7 @@ func TestLLMProviderAPIHandler_UpdateProvider(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPut, "/api/v1/llm-providers/non-existent", bytes.NewReader(bodyBytes))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "tenant-x")
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)

@@ -621,6 +621,49 @@ func TestCollectMigrations_SkipDownMigrations(t *testing.T) {
 	}
 }
 
+// TestCollectMigrations_NameTiebreaksOnSameVersion locks in the
+// deterministic Name tiebreak in collectMigrations' sort.Slice. The
+// historical same-version-different-name pairs (025_decision_chain +
+// 025_hitl_oversight_queue and 3 others) rely on stable apply ordering
+// across runs — without the tiebreak, Go's sort.Slice is unstable for
+// ties and a same-version pair could apply in either order.
+//
+// Belt-and-suspenders defense behind TestCoreMigrationDir_HasNoVersionDuplicates:
+// the guard catches NEW collisions at PR time, this test protects the
+// runtime ordering of the historical pairs the guard tolerates.
+func TestCollectMigrations_NameTiebreaksOnSameVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	coreDir := filepath.Join(tmpDir, "core")
+	if err := os.MkdirAll(coreDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Two same-version files; name sort puts "alpha" before "zebra".
+	for _, f := range []string{
+		"025_zebra.sql",
+		"025_alpha.sql",
+	} {
+		if err := os.WriteFile(filepath.Join(coreDir, f), []byte("-- test"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	os.Setenv("DEPLOYMENT_MODE", "community")
+	defer os.Unsetenv("DEPLOYMENT_MODE")
+
+	migrations, err := collectMigrations(tmpDir)
+	if err != nil {
+		t.Fatalf("collectMigrations: %v", err)
+	}
+	if len(migrations) != 2 {
+		t.Fatalf("expected 2 migrations, got %d", len(migrations))
+	}
+	if migrations[0].Name != "alpha" || migrations[1].Name != "zebra" {
+		t.Errorf("Name tiebreak not applied: got %q then %q, want \"alpha\" then \"zebra\"",
+			migrations[0].Name, migrations[1].Name)
+	}
+}
+
 // TestCollectMigrations_NonexistentDirectory tests behavior with missing directories
 func TestCollectMigrations_NonexistentDirectory(t *testing.T) {
 	tmpDir := t.TempDir()

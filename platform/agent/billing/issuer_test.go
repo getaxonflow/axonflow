@@ -631,3 +631,52 @@ func TestIssueLicense_RevokeUpdate_ExcludesNewSession(t *testing.T) {
 		t.Errorf("UPDATE didn't include session_id arg or IS DISTINCT FROM clause: %v", err)
 	}
 }
+
+// TestIssueLicense_INSERTWritesClientIDColumn is the v9 A+B integration
+// guard (Epic #2230 Phase 2/4): after migration 088 added the client_id
+// column on plugin_user_licenses, the INSERT path must populate it.
+// Mirrors tenant_id during the v9 compat window per ADR-052 (Plugin Pro
+// stays credential-scoped). Without this column write, every NEW Pro
+// purchase post-merge lands with client_id=NULL.
+//
+// Mutation guard: the regex pins the EXACT column-list shape
+// `(tenant_id, client_id, claimed_by_email,...)` with $1 reused as the
+// client_id binding. Dropping client_id, reordering columns, or binding
+// client_id to a different placeholder fails the test.
+func TestIssueLicense_INSERTWritesClientIDColumn(t *testing.T) {
+	setupSigningKey(t)
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT license_id::text, tenant_id, claimed_by_email, tier`).
+		WithArgs("cs_session_v9").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(`UPDATE plugin_user_licenses`).
+		WithArgs("cs_abc_v9", "cs_session_v9").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	// Exact shape: tenant_id + client_id both present, VALUES binds $1
+	// to both columns (so they always carry the same value during v9).
+	mock.ExpectQuery(`INSERT INTO plugin_user_licenses\s+\(tenant_id, client_id, claimed_by_email, tier, license_token_jti,\s+stripe_customer_id, stripe_session_id, issued_at,\s+stripe_payment_intent_id\)\s+VALUES \(\$1, \$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"license_id", "issued_at"}).
+			AddRow("33333333-4444-5555-6666-777777777777", time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)))
+	mock.ExpectCommit()
+
+	_, err = IssueLicense(context.Background(), db, IssueRequest{
+		TenantID:         "cs_abc_v9",
+		ClaimedByEmail:   "alice@example.com",
+		StripeCustomerID: "cus_test_v9",
+		StripeSessionID:  "cs_session_v9",
+		Tier:             license.TierPro,
+	})
+	if err != nil {
+		t.Fatalf("IssueLicense: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("INSERT shape missing v9 client_id: %v", err)
+	}
+}

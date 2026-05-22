@@ -1,4 +1,4 @@
--- Migration 007 Rollback: Runtime Connector and LLM Provider Configuration
+-- Migration 021 Rollback: Runtime Connector and LLM Provider Configuration
 -- Date: 2025-11-28
 -- WARNING: This will remove all runtime configuration data!
 

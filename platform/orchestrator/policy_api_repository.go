@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"axonflow/platform/agent"
 )
 
 // PolicyRepository handles database operations for policies
@@ -67,30 +69,43 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *PolicyResource) e
 		orgID = policy.OrganizationID
 	}
 
+	// v9 compat (Epic #2230 Phase 2/4): client_id mirrors tenant_id ($9)
+	// during v9 compat window. Migration 090 added client_id to
+	// dynamic_policies. 'global' wildcard sentinel preserves verbatim.
+	//
+	// v9 Phase 8 PR-C2 (#2384): dynamic_policies is mig 018 ENABLE RLS with
+	// policy `org_id = get_current_org_id()`. The legacy INSERT omitted the
+	// `org_id` column (only set tenant_id + organization_id UUID), which left
+	// org_id NULL on inserted rows — under axonflow_app_role the WITH CHECK
+	// rejected the INSERT outright. Fix: add org_id col, populate with
+	// policy.TenantID (== orgID at this writer post-Phase-6 collapse), wrap
+	// in WithOrgScope so the GUC + INSERT col match.
 	query := `
 		INSERT INTO dynamic_policies (
 			policy_id, name, description, policy_type, category, tier,
-			conditions, actions, tenant_id, organization_id,
+			conditions, actions, tenant_id, client_id, organization_id, org_id,
 			priority, enabled, version, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $9, $11, $12, $13, $14, $15, $16, $17)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		policy.ID, policy.Name, policy.Description, string(policy.Type), policy.Category, string(tier),
-		conditionsJSON, actionsJSON, policy.TenantID, orgID,
-		policy.Priority, policy.Enabled, policy.Version, policy.CreatedBy, policy.UpdatedBy,
-		policy.CreatedAt, policy.UpdatedAt,
-	)
-
-	if err != nil {
+	if err := agent.WithOrgScope(ctx, r.db, policy.TenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			policy.ID, policy.Name, policy.Description, string(policy.Type), policy.Category, string(tier),
+			conditionsJSON, actionsJSON, policy.TenantID, orgID,
+			policy.Priority, policy.Enabled, policy.Version, policy.CreatedBy, policy.UpdatedBy,
+			policy.CreatedAt, policy.UpdatedAt,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		// policy_versions INSERT is gated by `policy_id IN (SELECT FROM dynamic_policies
+		// WHERE [implicit RLS])`. Running it inside the same wrap tx lets the
+		// subquery see the freshly-inserted parent row under app_role. Pass the
+		// full PolicyResource so the snapshot preserves Category/Tier/etc.
+		return r.createVersionEntryTx(ctx, tx, policy, policy.UpdatedBy, "create", "Policy created")
+	}); err != nil {
 		return fmt.Errorf("failed to insert policy: %w", err)
-	}
-
-	// Create version history entry
-	if err := r.createVersionEntry(ctx, policy, "create", "Policy created"); err != nil {
-		// Log but don't fail the creation
-		log.Printf("[PolicyAPI] Warning: failed to create version entry for policy %s: %v", policy.ID, err)
 	}
 
 	return nil
@@ -372,32 +387,87 @@ func (r *PolicyRepository) Update(ctx context.Context, tenantID, policyID string
 		WHERE policy_id = $%d AND tenant_id = $%d
 	`, strings.Join(updates, ", "), argIndex, argIndex+1)
 
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update policy: %w", err)
-	}
+	// v9 Phase 8 PR-C2 (#2384): wrap so both the UPDATE (gated by mig 018
+	// USING `org_id = get_current_org_id()`) and the policy_versions INSERT
+	// downstream see the same app.current_org_id GUC under app_role.
+	var rowsAffected int64
+	if wrapErr := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		result, execErr := tx.ExecContext(ctx, query, args...)
+		if execErr != nil {
+			return fmt.Errorf("failed to update policy: %w", execErr)
+		}
+		rowsAffected, _ = result.RowsAffected()
+		if rowsAffected == 0 {
+			return nil
+		}
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return nil, nil
-	}
+		// Create version history entry within the same tx so the policy_versions
+		// WITH CHECK subquery sees the just-updated dynamic_policies row.
+		// Snapshot is the full PolicyResource — start from `current` (preserves
+		// Category, Tier, OrganizationID, TenantID, ClientID, CreatedBy,
+		// CreatedAt) and patch the mutated fields.
+		snapshot := *current // shallow copy ok; slices/maps are replaced wholesale below
+		snapshot.Version = newVersion
+		snapshot.UpdatedBy = updatedBy
+		snapshot.UpdatedAt = time.Now()
+		if req.Name != nil {
+			snapshot.Name = *req.Name
+		}
+		if req.Description != nil {
+			snapshot.Description = *req.Description
+		}
+		if req.Type != nil {
+			snapshot.Type = string(*req.Type)
+		}
+		if req.Conditions != nil {
+			snapshot.Conditions = req.Conditions
+		}
+		if req.Actions != nil {
+			snapshot.Actions = req.Actions
+		}
+		if req.Priority != nil {
+			snapshot.Priority = *req.Priority
+		}
+		if req.Enabled != nil {
+			snapshot.Enabled = *req.Enabled
+		}
 
-	// Create version history entry
-	updated, _ := r.GetByID(ctx, tenantID, policyID)
-	if updated != nil {
 		changeType := "update"
 		if req.Enabled != nil && !*req.Enabled && current.Enabled {
 			changeType = "disable"
 		} else if req.Enabled != nil && *req.Enabled && !current.Enabled {
 			changeType = "enable"
 		}
-		_ = r.createVersionEntry(ctx, updated, changeType, fmt.Sprintf("Policy updated to version %d", newVersion))
+		return r.createVersionEntryTx(ctx, tx, &snapshot, updatedBy, changeType, fmt.Sprintf("Policy updated to version %d", newVersion))
+	}); wrapErr != nil {
+		return nil, wrapErr
+	}
+	if rowsAffected == 0 {
+		return nil, nil
 	}
 
+	// Re-read after the wrap commits. Note: under axonflow_app_role this
+	// SELECT runs WITHOUT the wrap's transaction-local GUC (already dropped
+	// by COMMIT) and is gated by mig 018's USING `org_id = get_current_org_id()`
+	// policy. If the caller's connection has no app.current_org_id set at
+	// session level, GetByID returns nil — the audit/version write inside the
+	// wrap still succeeded, but the response shaping degrades to "no body".
+	// Resolution lives in the broader read-path work (orchestrator handler
+	// wraps that bracket Update+GetByID together). PR-C2 keeps this read
+	// post-commit to match the v8 contract; PR-D's audit walker will not
+	// flag this site as a write.
+	updated, _ := r.GetByID(ctx, tenantID, policyID)
 	return updated, nil
 }
 
-// Delete removes a policy
+// Delete removes a policy.
+//
+// v9 Phase 8 PR-C2 (#2384): wrap so the policy_versions audit INSERT + the
+// dynamic_policies DELETE land under the same app.current_org_id GUC. The
+// DELETE USING policy `org_id = get_current_org_id()` is silent under app_role
+// without the GUC (zero rows affected, no error). The wrap also ensures
+// FK CASCADE from dynamic_policies → policy_versions sees the parent's RLS
+// context.
 func (r *PolicyRepository) Delete(ctx context.Context, tenantID, policyID string, deletedBy string) error {
 	// Get current policy for version history
 	current, err := r.GetByID(ctx, tenantID, policyID)
@@ -408,16 +478,24 @@ func (r *PolicyRepository) Delete(ctx context.Context, tenantID, policyID string
 		return nil
 	}
 
-	// Create delete version entry before deleting
-	_ = r.createVersionEntry(ctx, current, "delete", "Policy deleted")
+	return agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		// Create delete version entry inside the wrap tx (was: best-effort outside-tx
+		// call that swallowed errors). Under app_role this MUST succeed before the
+		// DELETE because once dynamic_policies row is gone the policy_versions FK
+		// subquery has nothing to anchor on.
+		// Snapshot the FULL current state (Category/Tier/OrganizationID/etc.)
+		// so the audit row reflects what was deleted, not a CreatePolicyRequest-
+		// shaped subset.
+		if vErr := r.createVersionEntryTx(ctx, tx, current, deletedBy, "delete", "Policy deleted"); vErr != nil {
+			return vErr
+		}
 
-	query := `DELETE FROM dynamic_policies WHERE policy_id = $1 AND tenant_id = $2`
-	_, err = r.db.ExecContext(ctx, query, policyID, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to delete policy: %w", err)
-	}
-
-	return nil
+		query := `DELETE FROM dynamic_policies WHERE policy_id = $1 AND tenant_id = $2`
+		if _, dErr := tx.ExecContext(ctx, query, policyID, tenantID); dErr != nil {
+			return fmt.Errorf("failed to delete policy: %w", dErr)
+		}
+		return nil
+	})
 }
 
 // GetVersions retrieves version history for a policy
@@ -457,27 +535,6 @@ func (r *PolicyRepository) GetVersions(ctx context.Context, tenantID, policyID s
 	return versions, nil
 }
 
-// createVersionEntry creates a version history entry
-func (r *PolicyRepository) createVersionEntry(ctx context.Context, policy *PolicyResource, changeType, summary string) error {
-	snapshotJSON, err := json.Marshal(policy)
-	if err != nil {
-		return fmt.Errorf("failed to marshal snapshot: %w", err)
-	}
-
-	query := `
-		INSERT INTO policy_versions (
-			id, policy_id, version, snapshot, changed_by, changed_at, change_type, change_summary
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`
-
-	_, err = r.db.ExecContext(ctx, query,
-		uuid.New().String(), policy.ID, policy.Version, snapshotJSON,
-		policy.UpdatedBy, time.Now(), changeType, summary,
-	)
-
-	return err
-}
-
 // ExportAll exports all policies for a tenant
 func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID string) ([]PolicyResource, error) {
 	params := ListPoliciesParams{PageSize: 1000, Page: 1}
@@ -485,67 +542,57 @@ func (r *PolicyRepository) ExportAll(ctx context.Context, tenantID string) ([]Po
 	return policies, err
 }
 
-// ImportBulk imports multiple policies within a transaction
+// ImportBulk imports multiple policies within a transaction.
+//
+// v9 Phase 8 PR-C2 (#2384): wraps the import tx with WithOrgScope so every
+// child INSERT into dynamic_policies + policy_versions sees the
+// app.current_org_id GUC set before WITH CHECK fires. All imported policies
+// share a single tenant scope (the caller's tenantID).
 func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, policies []CreatePolicyRequest, mode string, importedBy string) (*ImportPoliciesResponse, error) {
 	response := &ImportPoliciesResponse{}
 
-	// Start transaction for atomic import
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	// Create a transaction-aware repository for the import
-	txRepo := &PolicyRepository{db: nil} // We'll use tx directly
-
-	for _, req := range policies {
-		// Check if policy already exists by name
-		existing, checkErr := r.findByNameTx(ctx, tx, tenantID, req.Name)
-		if checkErr != nil {
-			response.Errors = append(response.Errors, fmt.Sprintf("Error checking policy %s: %v", req.Name, checkErr))
-			continue
-		}
-
-		if existing != nil {
-			switch mode {
-			case "skip":
-				response.Skipped++
-				continue
-			case "error":
-				response.Errors = append(response.Errors, fmt.Sprintf("Policy %s already exists", req.Name))
-				continue
-			case "overwrite":
-				// Update existing within transaction
-				updateErr := r.updatePolicyTx(ctx, tx, tenantID, existing.ID, &req, importedBy)
-				if updateErr != nil {
-					response.Errors = append(response.Errors, fmt.Sprintf("Error updating policy %s: %v", req.Name, updateErr))
-				} else {
-					response.Updated++
-				}
+	wrapErr := agent.WithOrgScope(ctx, r.db, tenantID, func(tx *sql.Tx) error {
+		for _, req := range policies {
+			// Check if policy already exists by name
+			existing, checkErr := r.findByNameTx(ctx, tx, tenantID, req.Name)
+			if checkErr != nil {
+				response.Errors = append(response.Errors, fmt.Sprintf("Error checking policy %s: %v", req.Name, checkErr))
 				continue
 			}
+
+			if existing != nil {
+				switch mode {
+				case "skip":
+					response.Skipped++
+					continue
+				case "error":
+					response.Errors = append(response.Errors, fmt.Sprintf("Policy %s already exists", req.Name))
+					continue
+				case "overwrite":
+					// Update existing within transaction
+					updateErr := r.updatePolicyTx(ctx, tx, tenantID, existing.ID, &req, importedBy)
+					if updateErr != nil {
+						response.Errors = append(response.Errors, fmt.Sprintf("Error updating policy %s: %v", req.Name, updateErr))
+					} else {
+						response.Updated++
+					}
+					continue
+				}
+			}
+
+			// Create new policy within transaction
+			createErr := r.createPolicyTx(ctx, tx, tenantID, &req, importedBy)
+			if createErr != nil {
+				response.Errors = append(response.Errors, fmt.Sprintf("Error creating policy %s: %v", req.Name, createErr))
+			} else {
+				response.Created++
+			}
 		}
-
-		// Create new policy within transaction
-		createErr := r.createPolicyTx(ctx, tx, tenantID, &req, importedBy)
-		if createErr != nil {
-			response.Errors = append(response.Errors, fmt.Sprintf("Error creating policy %s: %v", req.Name, createErr))
-		} else {
-			response.Created++
-		}
+		return nil
+	})
+	if wrapErr != nil {
+		return nil, fmt.Errorf("failed to commit import transaction: %w", wrapErr)
 	}
-
-	// Commit transaction if no critical errors
-	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	_ = txRepo // Suppress unused warning
 
 	log.Printf("[PolicyAPI] Import completed: created=%d, updated=%d, skipped=%d, errors=%d",
 		response.Created, response.Updated, response.Skipped, len(response.Errors))
@@ -553,7 +600,13 @@ func (r *PolicyRepository) ImportBulk(ctx context.Context, tenantID string, poli
 	return response, nil
 }
 
-// createPolicyTx creates a policy within a transaction
+// createPolicyTx creates a policy within a transaction.
+//
+// v9 Phase 8 PR-C2 (#2384): caller (ImportBulk) wraps with WithOrgScope so the
+// app.current_org_id GUC is already set; the INSERT must now populate the
+// org_id column to satisfy the mig 018 ENABLE RLS WITH CHECK
+// (`org_id = get_current_org_id()`). client_id + org_id both mirror tenant_id
+// ($7) at this writer per the historical schema collapse.
 func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenantID string, req *CreatePolicyRequest, createdBy string) error {
 	conditionsJSON, err := json.Marshal(req.Conditions)
 	if err != nil {
@@ -571,9 +624,9 @@ func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenan
 	query := `
 		INSERT INTO dynamic_policies (
 			policy_id, name, description, policy_type, conditions, actions,
-			tenant_id, priority, enabled, version, created_by, updated_by,
+			tenant_id, client_id, org_id, priority, enabled, version, created_by, updated_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $8, $9, $10, $11, $12, $13, $14)
 	`
 
 	_, err = tx.ExecContext(ctx, query,
@@ -586,10 +639,28 @@ func (r *PolicyRepository) createPolicyTx(ctx context.Context, tx *sql.Tx, tenan
 		return fmt.Errorf("failed to insert policy: %w", err)
 	}
 
-	// Create version entry within transaction
-	r.createVersionEntryTx(ctx, tx, policyID, 1, req, createdBy, "create", "Policy created via import")
-
-	return nil
+	// Create version entry within transaction. Errors abort the wrap tx — the
+	// only realistic failure under app_role is the policy_versions RLS subquery
+	// rejecting the new row, which would leave Postgres in an aborted-tx state
+	// the caller can't recover from anyway. The snapshot mirrors what was
+	// INSERTed above (CreatePolicyRequest fields plus the row's identity).
+	snapshot := &PolicyResource{
+		ID:          policyID,
+		Name:        req.Name,
+		Description: req.Description,
+		Type:        req.Type,
+		Conditions:  req.Conditions,
+		Actions:     req.Actions,
+		Priority:    req.Priority,
+		Enabled:     req.Enabled,
+		Version:     1,
+		TenantID:    tenantID,
+		CreatedBy:   createdBy,
+		UpdatedBy:   createdBy,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	return r.createVersionEntryTx(ctx, tx, snapshot, createdBy, "create", "Policy created via import")
 }
 
 // updatePolicyTx updates a policy within a transaction
@@ -663,25 +734,29 @@ func (r *PolicyRepository) findByNameTx(ctx context.Context, tx *sql.Tx, tenantI
 	return policy, nil
 }
 
-// createVersionEntryTx creates a version entry within a transaction
-func (r *PolicyRepository) createVersionEntryTx(ctx context.Context, tx *sql.Tx, policyID string, version int, req *CreatePolicyRequest, changedBy, changeType, summary string) {
-	// Create snapshot from request
-	snapshot := PolicyResource{
-		ID:          policyID,
-		Name:        req.Name,
-		Description: req.Description,
-		Type:        req.Type,
-		Conditions:  req.Conditions,
-		Actions:     req.Actions,
-		Priority:    req.Priority,
-		Enabled:     req.Enabled,
-		Version:     version,
+// createVersionEntryTx creates a version entry within a transaction.
+//
+// v9 Phase 8 PR-C2 (#2384): returns an error now (previously void with
+// warning-only logging). Under axonflow_app_role the policy_versions WITH
+// CHECK subquery references dynamic_policies, so the INSERT can fail with
+// 42501 if the caller's wrap tx hasn't `SELECT set_config('app.current_org_id', ...)`
+// before this. Callers MUST propagate the error so the wrap rolls back —
+// silently swallowing it would leave Postgres in an aborted-tx state that
+// the rest of the wrap couldn't recover from anyway.
+//
+// The snapshot argument is a fully-hydrated PolicyResource — Category, Tier,
+// OrganizationID, TenantID, CreatedBy/UpdatedBy/CreatedAt/UpdatedAt are
+// preserved verbatim so the audit row matches the dynamic_policies row at
+// the time of the change. (Pre-PR-C2 the old createVersionEntry marshalled
+// the whole *PolicyResource; the intermediate signature that took a
+// CreatePolicyRequest dropped those fields silently.)
+func (r *PolicyRepository) createVersionEntryTx(ctx context.Context, tx *sql.Tx, snapshot *PolicyResource, changedBy, changeType, summary string) error {
+	if snapshot == nil {
+		return fmt.Errorf("createVersionEntryTx: snapshot is nil")
 	}
-
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
-		log.Printf("[PolicyAPI] Warning: failed to marshal version snapshot: %v", err)
-		return
+		return fmt.Errorf("createVersionEntryTx: marshal snapshot: %w", err)
 	}
 
 	query := `
@@ -691,13 +766,14 @@ func (r *PolicyRepository) createVersionEntryTx(ctx context.Context, tx *sql.Tx,
 	`
 
 	_, err = tx.ExecContext(ctx, query,
-		uuid.New().String(), policyID, version, snapshotJSON,
+		uuid.New().String(), snapshot.ID, snapshot.Version, snapshotJSON,
 		changedBy, time.Now(), changeType, summary,
 	)
 
 	if err != nil {
-		log.Printf("[PolicyAPI] Warning: failed to create version entry: %v", err)
+		return fmt.Errorf("createVersionEntryTx: insert policy_version: %w", err)
 	}
+	return nil
 }
 
 // findByName finds a policy by name within a tenant

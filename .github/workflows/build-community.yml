@@ -1,9 +1,17 @@
 name: Build Docker Images (Community)
 
-# Community build workflow - builds and tests Docker images locally
-# Does NOT push to any registry - users build and run locally
+# Community build workflow - builds and tests Docker images locally.
+# Does NOT push to any registry - users build and run locally.
 #
-# This workflow runs in the Community repo.
+# Runs ONLY in the public `axonflow` (community-mirror) repo. In the
+# `axonflow-enterprise` repo this workflow is a no-op — every job is gated on
+# `github.repository == 'getaxonflow/axonflow'`. The community-edition images
+# this workflow produces are not deployed from `axonflow-enterprise` (build.yml
+# defaults to EDITION=enterprise; the only enterprise consumers are the ECR
+# push targets), so building them here was duplicate work. The workflow file
+# still syncs to community via `sync-community-repo.yml`, where it builds the
+# images locally for users running the mirror. Saved ~1,462 billable min/14d
+# in enterprise.
 
 on:
   push:
@@ -31,6 +39,12 @@ on:
       - main
   workflow_dispatch:
 
+# Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
+# runs use the SHA so they never share a group and never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   AXONFLOW_TELEMETRY: 'off'
 
@@ -41,7 +55,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
+    if: |
+      github.repository == 'getaxonflow/axonflow' &&
+      (github.event_name == 'merge_group' || github.event_name == 'pull_request')
     permissions:
       contents: read
       pull-requests: read
@@ -84,6 +100,7 @@ jobs:
     # Run if: NOT a PR AND (detect-changes was skipped OR succeeded with agent=true)
     # Skip if: PR, detect-changes failed, or succeeded with agent=false
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
@@ -121,6 +138,7 @@ jobs:
     # Run if: NOT a PR AND (detect-changes was skipped OR succeeded with orchestrator=true)
     # Skip if: PR, detect-changes failed, or succeeded with orchestrator=false
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       github.event_name != 'pull_request' &&
       needs.detect-changes.result != 'failure' &&
@@ -161,6 +179,7 @@ jobs:
     needs: [build-agent, build-orchestrator]
     # Skip on PRs - only run on push/merge_group when builds succeed
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       github.event_name != 'pull_request' &&
       (needs.build-agent.result == 'success' || needs.build-agent.result == 'skipped') &&

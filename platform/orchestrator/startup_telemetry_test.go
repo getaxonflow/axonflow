@@ -105,27 +105,53 @@ func TestDetectEnvironmentClass(t *testing.T) {
 	})
 }
 
-// TestStartupTelemetryEnabled mirrors the agent-side opt-out coverage.
+// TestStartupTelemetryEnabled mirrors the agent-side opt-out + CI auto-
+// suppress coverage. See platform/agent/startup_telemetry_test.go for the
+// full rationale; this is a parallel set of cases on the orchestrator.
 func TestStartupTelemetryEnabled(t *testing.T) {
-	saved := os.Getenv("AXONFLOW_TELEMETRY")
-	t.Cleanup(func() { os.Setenv("AXONFLOW_TELEMETRY", saved) })
+	for _, k := range []string{"AXONFLOW_TELEMETRY", "GITHUB_ACTIONS", "CI"} {
+		saved := os.Getenv(k)
+		t.Cleanup(func(k, v string) func() {
+			return func() {
+				if v == "" {
+					os.Unsetenv(k)
+				} else {
+					os.Setenv(k, v)
+				}
+			}
+		}(k, saved))
+	}
 
 	cases := []struct {
-		val     string
-		enabled bool
+		name        string
+		telemetry   string
+		gha         string
+		ci          string
+		wantEnabled bool
 	}{
-		{"", true},
-		{"off", false},
-		{"OFF", false},
-		{" off ", false},
-		{"true", true},
-		{"random", true},
+		{"telemetry=off blocks", "off", "", "", false},
+		{"telemetry=on overrides CI", "on", "true", "true", true},
+		{"GITHUB_ACTIONS=true suppresses", "", "true", "", false},
+		{"CI=true suppresses", "", "", "true", false},
+		{"GITHUB_ACTIONS=false treated as not-CI", "", "false", "", true},
+		{"all unset → enabled", "", "", "", true},
+		{"garbage telemetry + CI=true → suppressed", "garbage", "", "true", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.val, func(t *testing.T) {
-			os.Setenv("AXONFLOW_TELEMETRY", tc.val)
-			if got := startupTelemetryEnabled(); got != tc.enabled {
-				t.Errorf("AXONFLOW_TELEMETRY=%q → enabled=%v, want %v", tc.val, got, tc.enabled)
+		t.Run(tc.name, func(t *testing.T) {
+			setOrUnset := func(k, v string) {
+				if v == "" {
+					os.Unsetenv(k)
+				} else {
+					os.Setenv(k, v)
+				}
+			}
+			setOrUnset("AXONFLOW_TELEMETRY", tc.telemetry)
+			setOrUnset("GITHUB_ACTIONS", tc.gha)
+			setOrUnset("CI", tc.ci)
+			if got := startupTelemetryEnabled(); got != tc.wantEnabled {
+				t.Errorf("telemetry=%q gha=%q ci=%q → enabled=%v, want %v",
+					tc.telemetry, tc.gha, tc.ci, got, tc.wantEnabled)
 			}
 		})
 	}
@@ -266,6 +292,12 @@ func TestMaybeSendStartupTelemetry_RateLimit(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("DEPLOYMENT_MODE", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	// Clear CI signals — 2026-05-13 CI auto-suppress added; without
+	// this, running the test under GitHub Actions (where GITHUB_ACTIONS=true)
+	// short-circuits before stamp-eval and fails. CI auto-suppress
+	// itself is covered separately in TestStartupTelemetryEnabled.
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	if err := writeStartupStamp(stampPath, startupTelemetryStamp{
 		InstanceID: "orch-existing",
@@ -325,6 +357,8 @@ func TestMaybeSendStartupTelemetry_PayloadShape(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("DEPLOYMENT_MODE", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "")
 	t.Setenv("AWS_EXECUTION_ENV", "")
@@ -379,6 +413,8 @@ func TestMaybeSendStartupTelemetry_DisclosureFires(t *testing.T) {
 	t.Setenv("AXONFLOW_TELEMETRY", "")
 	t.Setenv("DEPLOYMENT_MODE", "")
 	t.Setenv("AXONFLOW_CHECKPOINT_URL", srv.URL+"/v1/ping")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("CI", "")
 
 	var buf syncBuf
 	prev := log.Writer()

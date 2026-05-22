@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"axonflow/platform/agent"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/connectors/config"
 	"axonflow/platform/connectors/registry"
@@ -87,7 +89,15 @@ func initializeConnectorRegistry() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL != "" {
 		var err error
-		connectorRegistry, err = registry.NewRegistryWithStorage(dbURL, registry.WithEncryptor(credentialEncryptor))
+		connectorRegistry, err = registry.NewRegistryWithStorage(
+			dbURL,
+			registry.WithEncryptor(credentialEncryptor),
+			// v9 Brief 11.5 / Session 20: inject the agent's app-role opener
+			// so the connector_registry's runtime pool authenticates as
+			// axonflow_app_role and the FORCE RLS policies on connectors +
+			// connector_configs (mig 107) gate this code path.
+			registry.WithAppRoleOpener(agent.OpenAppRoleConnection),
+		)
 		if err != nil {
 			log.Printf("Failed to initialize registry with storage: %v. Falling back to in-memory.", err)
 			connectorRegistry = registry.NewRegistry()
@@ -366,9 +376,12 @@ func upsertConnectorConfig(ctx context.Context, connectorID, connectorType, tena
 	storedURL := buildConnectionURL(connectorType, options, nil)
 
 	timeoutMs := int(config.Timeout / time.Millisecond)
+	// v9 Phase 8 B8 (#2339): mig 107 added NOT NULL org_id on connector_configs.
+	// Same value as tenant_id at this writer (the historical schema collapse).
 	query := `
 		INSERT INTO connector_configs (
 			tenant_id,
+			org_id,
 			connector_name,
 			connector_type,
 			display_name,
@@ -383,7 +396,7 @@ func upsertConnectorConfig(ctx context.Context, connectorID, connectorType, tena
 			created_by,
 			updated_by
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, 'unknown', $11, $11
+			$1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, 'unknown', $11, $11
 		)
 		ON CONFLICT (tenant_id, connector_name) DO UPDATE SET
 			connector_type = EXCLUDED.connector_type,
@@ -399,22 +412,28 @@ func upsertConnectorConfig(ctx context.Context, connectorID, connectorType, tena
 			updated_by = EXCLUDED.updated_by
 	`
 
-	_, err = usageDB.ExecContext(
-		ctx,
-		query,
-		tenantID,
-		connectorID,
-		connectorType,
-		displayName,
-		description,
-		storedURL,
-		optionsJSON,
-		credentialsJSON,
-		timeoutMs,
-		config.MaxRetries,
-		"connector_marketplace",
-	)
-	if err != nil {
+	// v9 Phase 8 PR-C2 (#2384): connector_configs is FORCE RLS (mig 107) with policy
+	// `org_id = current_setting('app.current_org_id', true)`. Under axonflow_app_role
+	// the INSERT WITH CHECK gates fail without the GUC. tenantID == orgID at this
+	// writer (historical tenant_id collapse) so we wrap the INSERT in WithOrgScope.
+	if err := agent.WithOrgScope(ctx, usageDB, tenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(
+			ctx,
+			query,
+			tenantID,
+			connectorID,
+			connectorType,
+			displayName,
+			description,
+			storedURL,
+			optionsJSON,
+			credentialsJSON,
+			timeoutMs,
+			config.MaxRetries,
+			"connector_marketplace",
+		)
+		return execErr
+	}); err != nil {
 		return fmt.Errorf("connector config upsert failed: %w", err)
 	}
 
@@ -430,17 +449,28 @@ func deleteConnectorConfig(ctx context.Context, connectorID, tenantID string) er
 		return fmt.Errorf("tenant_id required to delete connector config")
 	}
 
-	result, err := usageDB.ExecContext(
-		ctx,
-		`DELETE FROM connector_configs WHERE tenant_id = $1 AND connector_name = $2`,
-		tenantID,
-		connectorID,
-	)
-	if err != nil {
+	// v9 Phase 8 PR-C2 (#2384): connector_configs FORCE RLS DELETE policy
+	// (`USING org_id = current_setting('app.current_org_id', true)`) silently
+	// affects 0 rows under axonflow_app_role without the GUC. Wrap so the
+	// DELETE sees its tenant's row + reports rows-affected accurately.
+	var rows int64
+	if err := agent.WithOrgScope(ctx, usageDB, tenantID, func(tx *sql.Tx) error {
+		result, execErr := tx.ExecContext(
+			ctx,
+			`DELETE FROM connector_configs WHERE tenant_id = $1 AND connector_name = $2`,
+			tenantID,
+			connectorID,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	}); err != nil {
 		return fmt.Errorf("connector config delete failed: %w", err)
 	}
 
-	if rows, _ := result.RowsAffected(); rows == 0 {
+	if rows == 0 {
 		log.Printf("[Connector Marketplace] No connector config found for tenant=%s connector=%s", logutil.Sanitize(tenantID), logutil.Sanitize(connectorID))
 	}
 

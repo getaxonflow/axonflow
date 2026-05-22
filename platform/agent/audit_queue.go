@@ -51,6 +51,43 @@ func execWithRetry(db *sql.DB, query string, args ...interface{}) error {
 	return lastErr
 }
 
+// execWithRetryOrgScope is the v9 Phase 8 RLS-aware variant of execWithRetry.
+// It wraps the Exec in a WithOrgScope transaction so that app.current_org_id is
+// set before the SQL runs — required for tables under FORCE ROW LEVEL SECURITY
+// (migration 100 onward: mcp_query_audits, decision_chain, etc.). orgID must
+// be non-empty; cross-org writes belong on the platform_admin role, not here.
+//
+// Retries the full transaction (BEGIN → SET LOCAL → EXEC → COMMIT) on transient
+// failures. Each retry opens a fresh txn so any stale txn-local state is
+// discarded between attempts.
+func execWithRetryOrgScope(db *sql.DB, orgID, query string, args ...interface{}) error {
+	if orgID == "" {
+		return fmt.Errorf("execWithRetryOrgScope: orgID must be non-empty for RLS-enforced audit tables")
+	}
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := WithOrgScope(context.Background(), db, orgID, func(tx *sql.Tx) error {
+			_, exErr := tx.Exec(query, args...)
+			return exErr
+		})
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			log.Printf("Org-scoped DB write failed (attempt %d/%d), retrying in %v: %v",
+				attempt+1, maxRetries, delay, err)
+			time.Sleep(delay)
+		}
+	}
+	log.Printf("Org-scoped DB write failed after %d attempts: %v", maxRetries, lastErr)
+	return lastErr
+}
+
 // AuditMode defines how audit logs are persisted to the database.
 // The mode affects whether critical entries (like policy violations)
 // are written synchronously or asynchronously.
@@ -78,8 +115,17 @@ type AuditEntry struct {
 	Severity  string                 `json:"severity"`
 	UserID    string                 `json:"user_id"`
 	ClientID  string                 `json:"client_id"`
-	Details   map[string]interface{} `json:"details"`
-	Retries   int                    `json:"-"`
+	// OrgID is the tenant scope key (v9 Phase 8 #2384 PR-C1). Required by
+	// the RLS-aware audit_queue persistence path for policy_metrics,
+	// policy_violations, agent_audit_logs and similar tables — see
+	// writeToDBSync's per-type INSERT statements. Empty OrgID causes those
+	// INSERTs to be dropped with a loud log (audit is best-effort; the
+	// alternative — silent NULL-bucket writes — would mask the upstream
+	// OrgID-propagation gap).
+	OrgID    string                 `json:"org_id"`
+	TenantID string                 `json:"tenant_id"`
+	Details  map[string]interface{} `json:"details"`
+	Retries  int                    `json:"-"`
 }
 
 // Audit entry types
@@ -458,16 +504,30 @@ func (aq *AuditQueue) flushMetricsBatch(batch []AuditEntry) {
 				blockCount = 1
 			}
 
+			// v9 Phase 8 #2384 PR-C1: policy_metrics is ENABLE-RLS (mig 018).
+			// INSERT/ON CONFLICT UPSERT WITH CHECK fires under app_role —
+			// the predicate org_id = current_setting('app.current_org_id')
+			// rejects rows without org_id matching SET LOCAL. We include
+			// org_id in the INSERT column list and pass entry.OrgID into
+			// execWithRetryOrgScope. The ON CONFLICT (policy_id, date)
+			// conflict-target stays as-is; the UPDATE arm doesn't need to
+			// re-set org_id because the conflict-matched row already has
+			// the correct value (any cross-org collision would have been
+			// rejected at INSERT time by FORCE-RLS).
 			updateQuery := `
-				INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date)
-				VALUES ($1, 'static', 1, $2, CURRENT_DATE)
+				INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date, org_id)
+				VALUES ($1, 'static', 1, $2, CURRENT_DATE, $3)
 				ON CONFLICT (policy_id, date) DO UPDATE SET
 					hit_count = policy_metrics.hit_count + 1,
 					block_count = policy_metrics.block_count + $2
 			`
 
+			if entry.OrgID == "" {
+				log.Printf("[audit] policy_metrics flush dropped (policy_id=%s): entry.OrgID empty — RLS would deny under app_role", policyID)
+				continue
+			}
 			// Use retry for each metric update (they're independent)
-			if err := execWithRetry(aq.db, updateQuery, policyID, blockCount); err != nil {
+			if err := execWithRetryOrgScope(aq.db, entry.OrgID, updateQuery, policyID, blockCount, entry.OrgID); err != nil {
 				log.Printf("Failed to update metric for policy %s: %v", policyID, err)
 			}
 		}
@@ -486,29 +546,44 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 	// Choose appropriate table and query based on entry type
 	switch entry.Type {
 	case AuditTypeViolation:
+		// v9 Phase 8 #2384 PR-C1: policy_violations is ENABLE-RLS (mig 018).
+		// Pin app.current_org_id via execWithRetryOrgScope and include
+		// org_id in the INSERT column list so the WITH CHECK predicate
+		// matches.
+		if entry.OrgID == "" {
+			return fmt.Errorf("audit_queue: AuditTypeViolation entry missing OrgID — would fail policy_violations RLS WITH CHECK under app_role")
+		}
 		insertQuery := `
-			INSERT INTO policy_violations (violation_type, severity, client_id, user_id, description, details)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			INSERT INTO policy_violations (violation_type, severity, client_id, user_id, description, details, org_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 		`
 		detailsJSON, _ := json.Marshal(entry.Details)
-		return execWithRetry(aq.db, insertQuery,
+		return execWithRetryOrgScope(aq.db, entry.OrgID, insertQuery,
 			entry.Details["policy_name"],
 			entry.Severity,
 			entry.ClientID,
 			entry.UserID,
 			entry.Details["description"],
-			detailsJSON)
+			detailsJSON,
+			entry.OrgID)
 
 	case AuditTypeAudit:
+		// v9 Phase 8 #2384 PR-C1: agent_audit_logs is ENABLE-RLS (mig 018).
+		// Same wrap shape as AuditTypeViolation above — org_id column +
+		// execWithRetryOrgScope so SET LOCAL matches the row's value.
+		if entry.OrgID == "" {
+			return fmt.Errorf("audit_queue: AuditTypeAudit entry missing OrgID — would fail agent_audit_logs RLS WITH CHECK under app_role")
+		}
 		insertQuery := `
-			INSERT INTO agent_audit_logs (client_id, action, resource, timestamp)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO agent_audit_logs (client_id, action, resource, timestamp, org_id)
+			VALUES ($1, $2, $3, $4, $5)
 		`
-		return execWithRetry(aq.db, insertQuery,
+		return execWithRetryOrgScope(aq.db, entry.OrgID, insertQuery,
 			entry.ClientID,
 			entry.Details["action"],
 			entry.Details["resource"],
-			entry.Timestamp)
+			entry.Timestamp,
+			entry.OrgID)
 
 	case AuditTypeMetric:
 		// Metrics are always batched and handled by metricsBatcher
@@ -561,7 +636,10 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 			metadataJSON)
 
 	case AuditTypeMCPQueryAudit:
-		// MCP connector query audit storage
+		// MCP connector query audit storage.
+		// v9 Phase 8 B2 (migration 100): mcp_query_audits is FORCE ROW LEVEL
+		// SECURITY enforced. Wrap INSERT in WithOrgScope so app.current_org_id
+		// matches the row's org_id column at INSERT time (WITH CHECK).
 		insertQuery := `
 			INSERT INTO mcp_query_audits (
 				audit_id, tenant_id, org_id, client_id, user_id, connector_name, operation, statement_hash,
@@ -576,7 +654,8 @@ func (aq *AuditQueue) writeToDBSync(entry AuditEntry) error {
 		requestMatchedPolicies := toStringSlice(entry.Details["request_matched_policies"])
 		responseRedactedFields := toStringSlice(entry.Details["response_redacted_fields"])
 
-		return execWithRetry(aq.db, insertQuery,
+		orgID, _ := entry.Details["org_id"].(string)
+		return execWithRetryOrgScope(aq.db, orgID, insertQuery,
 			entry.Details["audit_id"],
 			entry.Details["tenant_id"],
 			entry.Details["org_id"],

@@ -201,7 +201,9 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 	}
 
 	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
+		// v9 Phase 8 #2384 PR-C1: OrgID propagation for RLS-aware audit writes.
 		TenantID: user.TenantID,
+		OrgID:    user.OrgID,
 		UserID:   fmt.Sprintf("%d", user.ID),
 		Categories: []sharedpolicy.PolicyCategory{
 			sharedpolicy.CategoryPIIGlobal,

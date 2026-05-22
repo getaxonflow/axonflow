@@ -75,21 +75,29 @@ type sqsSender interface {
 // DEPLOYMENT_MODE=community-saas AND COMMUNITY_SAAS_TELEMETRY_SQS_URL
 // is set.
 //
-// Records: tenant_id, endpoint (path only), method, status_code,
-// platform_version, correlation_id (UUIDv4), source ("community-saas"),
-// timestamp, conditional client + limit_type. The downstream
-// ingest Lambda (ee/platform/csaas-telemetry-ingest) is the SOLE
-// writer to the DDB table; it consumes from the same queue and PutItems
-// with byte-identical column shape.
+// Records: tenant_id, endpoint (OpenAPI-templated path), method,
+// status_code, platform_version, correlation_id (UUIDv4),
+// source ("community-saas"), timestamp, source_ip (raw — operational
+// class per ADR-051 §2.7 + §3.5; salt-hashed and persisted by the
+// ingest Lambda), conditional client + limit_type + trace_id. The
+// downstream ingest Lambda (ee/platform/csaas-telemetry-ingest) is the
+// SOLE writer to the DDB table; it consumes from the same queue and
+// PutItems with byte-identical column shape.
 //
-// Does NOT record: request/response body, query params, IP addresses,
-// auth headers.
+// Does NOT record: request/response body, query params, auth headers.
 type CommunitySaaSTelemetry struct {
 	client    sqsSender
 	queueURL  string
 	version   string
 	enabled   bool
 	eventChan chan telemetryEvent
+	// agentEnv mirrors the AXONFLOW_AGENT_ENVIRONMENT env var read at
+	// construction. Forwarded on every wire event so the ingest Lambda
+	// (and any future cross-environment-aware reader) can classify
+	// non-production traffic at write time. See issue #2172 — the
+	// defense-in-depth half of staging→prod SQS isolation. Empty when
+	// the env var is unset (legacy / prod-default behavior).
+	agentEnv string
 }
 
 type telemetryEvent struct {
@@ -126,6 +134,13 @@ type telemetryEvent struct {
 	// gives a tight join key. Empty when the request didn't traverse
 	// the ALB (e.g. local dev hitting the agent directly).
 	traceID string
+	// sourceIP is the client IP extracted via the same XFF-last-entry
+	// + RemoteAddr path used by extractClientIP elsewhere in this
+	// package. The ingest Lambda salt-hashes it before persistence
+	// (#2053 / iphash package); the agent never persists the raw
+	// value itself. Empty when both XFF and RemoteAddr are absent
+	// (e.g. tests with no socket address).
+	sourceIP string
 }
 
 // telemetryWireEvent is the JSON shape on the SQS message body. Keep
@@ -133,12 +148,14 @@ type telemetryEvent struct {
 // ee/platform/csaas-telemetry-ingest/pkg/ingest/handler.go — the
 // ingest Lambda decodes this exact shape.
 //
-// SourceIP is reserved for a future agent-side IP-capture change
-// (#2057 cross-surface mirror). The ingest Lambda already accepts and
-// salt-hashes it when present; today the agent leaves it empty so
-// behavior is unchanged. Adding the field here in lockstep with the
-// ingest-side TelemetryEvent satisfies the SoX-cutover lockstep
-// contract — both sides MUST move together.
+// SourceIP is the raw client IP captured by the middleware at request
+// time. System A (community-saas-telemetry-events) is an operational
+// store class per ADR-051 §2.7 + §3.5 — same framing as ALB access
+// logs — so the agent forwards the raw value to the ingest Lambda,
+// which is the SOLE writer to the DDB table and salt-hashes the IP
+// (#2053 / iphash package) plus enriches it via the ipapi path
+// (#2047 P2b) before PutItem. The agent never persists the raw IP
+// itself.
 type telemetryWireEvent struct {
 	CorrelationID   string `json:"correlation_id"`
 	Timestamp       string `json:"timestamp"`
@@ -155,6 +172,15 @@ type telemetryWireEvent struct {
 	// sub-task 1. omitempty so legacy agents (and local-dev requests
 	// that didn't traverse the ALB) round-trip without the field.
 	TraceID string `json:"trace_id,omitempty"`
+	// AgentEnv is the AXONFLOW_AGENT_ENVIRONMENT env var read once at
+	// telemetry construction. Empty (omitempty) for the legacy default
+	// and for prod tasks that don't set the var. The ingest Lambda's
+	// Layer 1 filter (issue #2172) treats any value other than
+	// "production" — e.g. "staging", "dev", "test" — as internal traffic
+	// and drops the row. Defense-in-depth half of the staging→prod SQS
+	// isolation; primary isolation is the staging task def's empty
+	// COMMUNITY_SAAS_TELEMETRY_SQS_URL.
+	AgentEnv string `json:"agent_env,omitempty"`
 }
 
 // NewCommunitySaaSTelemetry creates a new telemetry middleware.
@@ -200,6 +226,7 @@ func newWithClient(client sqsSender, queueURL, platformVersion string) *Communit
 		version:   platformVersion,
 		enabled:   true,
 		eventChan: eventChan,
+		agentEnv:  os.Getenv("AXONFLOW_AGENT_ENVIRONMENT"),
 	}
 
 	for i := 0; i < telemetryWorkers; i++ {
@@ -237,6 +264,7 @@ func (t *CommunitySaaSTelemetry) runStartupCanary(ctx context.Context) {
 		Method:          "CANARY",
 		StatusCode:      0,
 		PlatformVersion: t.version,
+		AgentEnv:        t.agentEnv,
 	}
 
 	if err := t.send(canaryCtx, wire); err != nil {
@@ -344,6 +372,16 @@ func (t *CommunitySaaSTelemetry) Middleware(next http.Handler) http.Handler {
 			// inbound request. Capturing it here gives downstream
 			// analytics a tight ALB-log↔A row join key.
 			traceID: r.Header.Get("X-Amzn-Trace-Id"),
+			// epic #2047 P2a: capture the client IP via the same
+			// extractClientIP path used elsewhere in this package
+			// (community_saas_register.go) — XFF-last-entry-wins
+			// under the single-hop ALB topology, RemoteAddr fallback
+			// with port stripped. canonicalizeSourceIP normalizes
+			// IPv6 forms before the value crosses the wire so P2b's
+			// ipapi/Scarf enrichment receives a parseable literal.
+			// The ingest Lambda salt-hashes the value before
+			// persistence.
+			sourceIP: canonicalizeSourceIP(extractClientIP(r)),
 		}:
 		default:
 			// Channel full — drop event silently (telemetry is non-critical)
@@ -368,7 +406,9 @@ func (t *CommunitySaaSTelemetry) sendEvent(event telemetryEvent) {
 		PlatformVersion: t.version,
 		Client:          event.client,
 		LimitType:       event.limitType,
+		SourceIP:        event.sourceIP,
 		TraceID:         event.traceID,
+		AgentEnv:        t.agentEnv,
 	}
 
 	if err := t.send(ctx, wire); err != nil {
@@ -395,6 +435,28 @@ func (t *CommunitySaaSTelemetry) send(ctx context.Context, wire telemetryWireEve
 		MessageGroupId: aws.String(wire.TenantID),
 	})
 	return err
+}
+
+// canonicalizeSourceIP strips matched brackets from IPv6 forms
+// returned by extractClientIP's RemoteAddr-fallback path.
+// extractClientIP keeps brackets on IPv6 because its port-strip uses
+// LastIndexByte rather than net.SplitHostPort — a quirk pinned by
+// TestExtractClientIP_IPv6RemoteAddr at
+// community_saas_register_test.go:324. That bracketed form ("[::1]")
+// is consistent enough for rate-limit-key uses elsewhere in this
+// package, but it is not a valid IP literal: net.ParseIP rejects it,
+// and ipapi / Scarf enrichment under #2047 P2b will need to call
+// net.ParseIP on the wire value. Normalize at the telemetry boundary
+// so the SQS contract becomes the canonical literal before the
+// downstream enrichment path is built on it.
+//
+// IPv4 inputs, plain IPv6 (already bracket-free), and the "unknown"
+// sentinel returned by extractClientIP all pass through unchanged.
+func canonicalizeSourceIP(ip string) string {
+	if len(ip) >= 2 && ip[0] == '[' && ip[len(ip)-1] == ']' {
+		return ip[1 : len(ip)-1]
+	}
+	return ip
 }
 
 // statusWriter wraps http.ResponseWriter to capture the status code.

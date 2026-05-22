@@ -38,11 +38,31 @@ var (
 )
 
 const (
-	// communitySaasOrgID is the org_id for all community-saas tenants.
-	communitySaasOrgID = "community-saas"
-
 	// communitySaasTenantPrefix distinguishes community-saas tenants in logs and DB.
 	communitySaasTenantPrefix = "cs_"
+
+	// csaasOrgTier + csaasOrgMaxNodes are the values stamped into the
+	// organizations row created for each Community-SaaS customer via
+	// register_org() (migration 062). Matching migration 094 Pass-1A-seed
+	// + migration 100's organizations seed prevents register_org's
+	// ON CONFLICT UPDATE WHERE clause from firing a silent
+	// (tier,max_nodes) downgrade on every fresh registration when the
+	// row already exists from the backfill.
+	csaasOrgTier     = "Community"
+	csaasOrgMaxNodes = 999999
+
+	// internalTenantIDPrefix marks tenant_ids minted for AxonFlow's own
+	// internal write-paths (synthetic-monitoring canary, future internal
+	// probes). VALUE is intentionally the narrow `axonflow-internal-`
+	// sub-namespace per ADR-054 — broader rotations land via the
+	// telemetryfilter.InternalOrgIDPrefix constant ("axonflow-" post-#2261)
+	// and customer-facing demos don't use this minting path. Classification
+	// at write time is ee/platform/telemetry-filter/classify.go IsInternal
+	// rule 4 (HasPrefix(TenantID, InternalOrgIDPrefix)) — the broader rule
+	// catches any axonflow-* tenant_id, of which axonflow-internal-* is a
+	// subset, so rows minted with this prefix correctly classify as
+	// source=internal at write time. See epic #2047 / PR-2.
+	internalTenantIDPrefix = "axonflow-internal-"
 
 	// bcryptCost for hashing registration secrets. Cost 12 gives ~400ms on modern hardware.
 	bcryptCost = 12
@@ -177,7 +197,81 @@ type registrationResponse struct {
 type registrationRequest struct {
 	Label string `json:"label"`
 	Email string `json:"email,omitempty"`
+
+	// InternalTenantIDPrefix overrides the default `cs_` tenant_id prefix
+	// with one of a small allowlist of internal-known prefixes (see
+	// internalTenantIDPrefixAllowlist). Used by AxonFlow's own internal
+	// callers (synthetic-monitoring canary, future internal probes) so
+	// the resulting tenant_id classifies as source=internal at write time
+	// via classify.go IsInternal rule 4 (HasPrefix(TenantID,
+	// InternalOrgIDPrefix="axonflow-") — the broadened prefix family per
+	// ADR-054 / #2261, of which axonflow-internal-* is a sub-namespace).
+	// Real customers should not set this field; if they do, only
+	// allowlisted values are accepted, otherwise 400. Allowlist abuse
+	// risk is low — the only "harm" is the abuser opts themselves out of
+	// our analytics, which they could already do via
+	// AXONFLOW_TELEMETRY=off. Epic #2047 / PR-3.
+	InternalTenantIDPrefix string `json:"internal_tenant_id_prefix,omitempty"`
 }
+
+// internalTenantIDPrefixAllowlist is the set of acceptable values for
+// registrationRequest.InternalTenantIDPrefix. Each entry MUST start with
+// internalTenantIDPrefix so the resulting tenant_id starts with
+// `axonflow-` (the broader ADR-054 / #2261 family) and classifies as
+// source=internal via classify.go IsInternal rule 4. A value not in this
+// set is rejected with 400 — we don't silently fall back to `cs_`
+// because that would hide an attempted prefix-injection from operators.
+//
+// Each value is constructed by appending a suffix to internalTenantIDPrefix
+// rather than embedding the literal — that way a future rename of the
+// constant ripples through the allowlist automatically (the test
+// TestInternalTenantIDPrefixAllowlist_Shape asserts the every-entry-
+// starts-with-internalTenantIDPrefix invariant; this construction makes
+// drift impossible by construction).
+//
+// Adding a new entry here is safe AS LONG AS the prefix is reserved
+// for AxonFlow's own internal callers (no real-customer surface should
+// ever send these values).
+var internalTenantIDPrefixAllowlist = map[string]bool{
+	internalTenantIDPrefix + "canary-":     true, // synthetic-monitoring canary (PR-3)
+	internalTenantIDPrefix + "perf-bench-": true, // perf-benchmark internal license (future PR-5)
+	internalTenantIDPrefix + "e2e-":        true, // runtime-e2e telemetry-path tests (future PR-5)
+	internalTenantIDPrefix + "smoke-":      true, // ad-hoc smoke probes
+}
+
+// resolveTenantPrefix returns the tenant_id prefix to mint for this
+// registration request, plus an error if the request opts into a
+// non-allowlisted internal prefix. Pure function — no side effects —
+// so the validation logic is unit-testable independent of the HTTP
+// handler's nil-DB / rate-limit / content-type guards.
+//
+// Contract:
+//
+//   - empty InternalTenantIDPrefix → returns communitySaasTenantPrefix, nil
+//     (default behavior, preserves backwards-compat for real-customer
+//     plugins that don't set the field)
+//   - InternalTenantIDPrefix in internalTenantIDPrefixAllowlist → returns
+//     the supplied prefix, nil
+//   - InternalTenantIDPrefix not in allowlist → returns "",
+//     ErrInvalidInternalPrefix (caller should log + 400)
+//
+// The errReason is the operator-facing string for the log line, distinct
+// from the customer-facing 400 message.
+func resolveTenantPrefix(req registrationRequest) (prefix string, err error) {
+	if req.InternalTenantIDPrefix == "" {
+		return communitySaasTenantPrefix, nil
+	}
+	if !internalTenantIDPrefixAllowlist[req.InternalTenantIDPrefix] {
+		return "", ErrInvalidInternalPrefix
+	}
+	return req.InternalTenantIDPrefix, nil
+}
+
+// ErrInvalidInternalPrefix is returned by resolveTenantPrefix when the
+// request's InternalTenantIDPrefix value is non-empty but not in the
+// allowlist. The handler converts this to HTTP 400 with a generic
+// "Unsupported internal_tenant_id_prefix value" message.
+var ErrInvalidInternalPrefix = errors.New("internal_tenant_id_prefix not in allowlist")
 
 // activityUpdateChan is a bounded channel for fire-and-forget activity updates.
 // A single worker drains it. If the channel is full, updates are dropped.
@@ -195,10 +289,12 @@ func startActivityUpdateWorker() {
 	go func() {
 		for update := range activityUpdateChan {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// v9 Phase 8 PR-A (mig 109): activity worker runs on a separate
+			// pool/conn — no GUC propagates from the auth handler. Route the
+			// UPDATE through the csaas_register_touch SECURITY DEFINER helper
+			// so it bypasses FORCE RLS (mig 105) under axonflow_app_role.
 			_, err := update.db.ExecContext(ctx,
-				`UPDATE community_saas_registrations
-				 SET last_seen_at = NOW(), request_count = request_count + 1
-				 WHERE tenant_id = $1`, update.tenantID)
+				`SELECT csaas_register_touch($1)`, update.tenantID)
 			if err != nil {
 				log.Printf("[CSAAS-AUTH] Failed to update activity for tenant %s: %v",
 					logutil.Sanitize(update.tenantID), err)
@@ -287,6 +383,19 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 		// Validate label length
 		if len(req.Label) > maxLabelLength {
 			writeJSONError(w, fmt.Sprintf("Label too long (max %d characters)", maxLabelLength), http.StatusBadRequest)
+			return
+		}
+
+		// Resolve the tenant_id prefix via the pure resolveTenantPrefix
+		// function so the validation is unit-testable independent of this
+		// handler's nil-DB / rate-limit / content-type guards. Out-of-
+		// allowlist values are rejected with 400; operator log line names
+		// the offending value + IP so abuse attempts are visible in logs.
+		tenantPrefix, prefixErr := resolveTenantPrefix(req)
+		if prefixErr != nil {
+			log.Printf("[CSAAS-REGISTER] Rejected non-allowlisted internal_tenant_id_prefix=%q from IP %s: %v",
+				logutil.Sanitize(req.InternalTenantIDPrefix), logutil.Sanitize(clientIP), prefixErr)
+			writeJSONError(w, "Unsupported internal_tenant_id_prefix value", http.StatusBadRequest)
 			return
 		}
 
@@ -384,19 +493,30 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 		var tenantID string
 		var insertErr error
 		for attempt := 0; attempt < communitySaasMaxRegistrationRetries; attempt++ {
-			tenantID = communitySaasTenantPrefix + uuidNewString()
-			if emailParam != nil {
-				_, insertErr = db.ExecContext(ctx,
-					`INSERT INTO community_saas_registrations
-					 (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at, claimed_by_email, claimed_at)
-					 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-					tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt, emailParam)
-			} else {
-				_, insertErr = db.ExecContext(ctx,
-					`INSERT INTO community_saas_registrations (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at)
-					 VALUES ($1, $2, $3, $4, $5, $6)`,
-					tenantID, string(hash), secretPrefix, communitySaasOrgID, labelParam, expiresAt)
-			}
+			tenantID = tenantPrefix + uuidNewString()
+			// v9 Phase 6 (Epic #2230): org_id MUST be the per-customer cs_<uuid>
+			// (== tenant_id == client_id) — NOT the legacy shared constant
+			// "community-saas". Pre-Phase-6 every SaaS row collapsed into a
+			// single RLS class; Phase 8 B8/B9 FORCE RLS would have leaked
+			// customer A's rows to customer B under the same app.current_org_id.
+			// See ADR-052 §"Community-SaaS" and technical-docs/
+			// v9_phase8_rls_rollout.md §"Phase 6 gating note".
+			//
+			// v9 Phase 2/4 invariant retained: tenant_id AND client_id receive
+			// the same cs_* value (migration 088 added client_id; this INSERT
+			// keeps both columns populated explicitly because no trigger /
+			// generated column is in place).
+			// v9 Phase 8 PR-A (mig 109): route the per-tenant register INSERT
+			// through the csaas_register_tenant SECURITY DEFINER helper so it
+			// bypasses FORCE RLS (mig 105). Both with-email and without-email
+			// shapes collapse onto the single helper via emailParam's nil
+			// passthrough to the function's DEFAULT NULL branch. The
+			// PK-collision retry loop still works because the helper
+			// re-RAISEs the unique violation with SQLSTATE 23505 unchanged —
+			// isUniqueViolation() at line 522 below catches it.
+			_, insertErr = db.ExecContext(ctx,
+				`SELECT csaas_register_tenant($1, $2, $3, $4, $5, $6)`,
+				tenantID, string(hash), secretPrefix, labelParam, expiresAt, emailParam)
 			if insertErr == nil {
 				break
 			}
@@ -419,7 +539,21 @@ func handleCommunityRegister(db *sql.DB) http.HandlerFunc {
 
 		// Register in the tenants table synchronously (not hot path — registration is infrequent).
 		// This ensures the tenant is visible for data partitioning before the response is sent.
-		registerTenantAndOrg(db, tenantID, communitySaasOrgID, "community", 1)
+		//
+		// v9 Phase 6: pass the per-customer cs_<uuid> as org_id so the tenants row +
+		// the org row land with the per-customer identity. register_tenant() (migration
+		// 097) writes client_id = tenant_id; register_org() upserts an organizations row
+		// keyed by this org_id. Pre-Phase-6 every SaaS tenants row pointed at the single
+		// "community-saas" org, defeating per-customer RLS.
+		//
+		// tier="Community"/max_nodes=999999 mirror migration 094 Pass-1A-seed +
+		// migration 100 seed values, so register_org's ON CONFLICT UPDATE WHERE clause
+		// (`tier != EXCLUDED.tier OR max_nodes != EXCLUDED.max_nodes`) NEVER fires on
+		// already-seeded cs_* rows. Without this alignment, every fresh-registration's
+		// register_org call would silently rewrite the row's (tier,max_nodes) to
+		// (community, 1) — operationally meaningless for SaaS customers, but visible
+		// drift between the cohort backfilled by 094 and the cohort minted post-Phase-6.
+		registerTenantAndOrg(db, tenantID, tenantID, csaasOrgTier, csaasOrgMaxNodes)
 
 		log.Printf("[CSAAS-REGISTER] New tenant registered: %s (label: %s, expires: %s)",
 			logutil.Sanitize(tenantID), logutil.Sanitize(req.Label), expiresAt.Format(time.RFC3339))
@@ -462,15 +596,45 @@ func validateCommunityRegistration(ctx context.Context, db *sql.DB, tenantID, se
 		return ErrDatabaseUnavailable
 	}
 
+	// v9 Phase 8 B9 (issue #2337): SECURITY DEFINER helper csaas_auth_lookup
+	// (migration 105) bypasses FORCE RLS on community_saas_registrations
+	// for this PRE-auth credential resolution. The whole point of the
+	// SELECT is to figure out which tenant/org the caller claims to be —
+	// there is no app.current_org_id to SET LOCAL.
+	//
+	// Falls back to a direct SELECT on the table if the helper isn't
+	// installed (legacy DB pre-mig-105, or community-only build that
+	// skipped the migration). Under non-FORCE state both code paths
+	// behave identically.
 	var secretHash string
 	var expiresAt time.Time
 	var disabledAt sql.NullTime
 	var terminatedAt sql.NullTime
+	var orgID sql.NullString // ignored at this layer; passed back to caller via context if needed
 
 	err := db.QueryRowContext(ctx,
-		`SELECT secret_hash, expires_at, disabled_at, terminated_at
-		 FROM community_saas_registrations
-		 WHERE tenant_id = $1`, tenantID).Scan(&secretHash, &expiresAt, &disabledAt, &terminatedAt)
+		`SELECT secret_hash, expires_at, disabled_at, terminated_at, org_id
+		 FROM csaas_auth_lookup($1)`, tenantID).Scan(&secretHash, &expiresAt, &disabledAt, &terminatedAt, &orgID)
+	// R3-H1 fix: only fall back when the function genuinely doesn't exist
+	// (Postgres SQLSTATE 42883 = undefined_function). All other errors —
+	// ErrNoRows (genuine not-found), permission_denied, FORCE RLS rejection,
+	// connection errors, timeouts — propagate without masking. Falling back
+	// on every error class was a security latent: it would silently bypass
+	// the helper and route through the direct FORCE-blocked SELECT, which
+	// under app_role flips to 0 rows → blanket ErrRegistrationNotFound → 401
+	// for valid credentials.
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "42883" {
+			// Helper not installed (legacy DB pre-mig-105) — fall back to
+			// the direct SELECT. Same query shape as the pre-105 code.
+			err = db.QueryRowContext(ctx,
+				`SELECT secret_hash, expires_at, disabled_at, terminated_at
+				 FROM community_saas_registrations
+				 WHERE tenant_id = $1`, tenantID).Scan(&secretHash, &expiresAt, &disabledAt, &terminatedAt)
+		}
+		// Any other error — including sql.ErrNoRows — propagates below.
+	}
 	if err == sql.ErrNoRows {
 		return ErrRegistrationNotFound
 	}

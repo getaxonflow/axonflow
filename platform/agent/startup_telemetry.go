@@ -76,15 +76,24 @@ const startupTelemetryComponent = "agent"
 // telemetry.PingRequest on the checkpoint side. omitempty mirrors the
 // server-side struct so back-compat with empty fields is byte-identical.
 type startupTelemetryPayload struct {
-	TelemetryType    string `json:"telemetry_type"`
-	SDK              string `json:"sdk"`
-	SDKVersion       string `json:"sdk_version"`
-	Component        string `json:"component"`
-	PlatformVersion  string `json:"platform_version,omitempty"`
-	OS               string `json:"os"`
-	Arch             string `json:"arch"`
-	RuntimeVersion   string `json:"runtime_version"`
-	DeploymentMode   string `json:"deployment_mode"`
+	TelemetryType   string `json:"telemetry_type"`
+	SDK             string `json:"sdk"`
+	SDKVersion      string `json:"sdk_version"`
+	Component       string `json:"component"`
+	PlatformVersion string `json:"platform_version,omitempty"`
+	OS              string `json:"os"`
+	Arch            string `json:"arch"`
+	RuntimeVersion  string `json:"runtime_version"`
+	DeploymentMode  string `json:"deployment_mode"`
+	// OrgID is the org_id baked into the binary's deployed license, read
+	// once at startup from the ORG_ID env var. Every AxonFlow-operated
+	// deployment (customer-facing demos + internal CI / canary / perf-
+	// bench) uses an org_id starting with telemetryfilter.InternalOrgIDPrefix
+	// ("axonflow-" per ADR-054 + issue #2259) so the receiver's classifier
+	// (ee/platform/telemetry-filter/classify.go IsInternal rule 6) flips
+	// the row to source=internal at write time. Empty on legacy agents
+	// + community-mode agents without a license.
+	OrgID            string `json:"org_id,omitempty"`
 	LicenseTier      string `json:"license_tier,omitempty"`
 	EnvironmentClass string `json:"environment_class,omitempty"`
 	InstanceID       string `json:"instance_id"`
@@ -219,15 +228,55 @@ func generateStartupInstanceID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// startupTelemetryEnabled determines whether to send. AXONFLOW_TELEMETRY=off
-// is the SOLE opt-out — same lever the SDKs honor. Casing-tolerant on the
-// "off" comparison so AXONFLOW_TELEMETRY=OFF / Off / oFF all work; any
-// other value (including "true", "0", "no", empty) leaves telemetry on.
+// startupTelemetryEnabled determines whether to send.
 //
-// `feedback_telemetry_single_optout_lever.md` is the operative memory:
-// no programmatic-disable, no DO_NOT_TRACK, no mode-based suppression.
+// AXONFLOW_TELEMETRY=off is the SOLE USER-FACING opt-out — same lever the
+// SDKs honor. Casing-tolerant on "off"; any other value (including "true",
+// "0", "no", empty) leaves telemetry on. No programmatic-disable, no
+// DO_NOT_TRACK, no mode-based suppression for users.
+//
+// CI-environment auto-suppress (defense in depth, added 2026-05-13):
+// when running in a Continuous Integration environment, the platform
+// binary refuses to emit even when AXONFLOW_TELEMETRY isn't explicitly
+// set. CI runs aren't real customer deployments — pings from them
+// pollute the adoption signal (300+ rows in prod-checkpoint-telemetry-
+// events from GitHub Actions Azure runners during one week of 2026-05).
+// Honored signals:
+//   - CI=true             (set by most CI systems: GitHub Actions, GitLab,
+//     CircleCI, Travis, etc.)
+//   - GITHUB_ACTIONS=true (set by GitHub Actions runner specifically)
+//
+// Either signal disables emission UNLESS the operator has explicitly set
+// AXONFLOW_TELEMETRY=on (which takes precedence — for the rare case where
+// a customer's self-hosted CI legitimately wants to emit). Plain
+// AXONFLOW_TELEMETRY=off still wins as the canonical user opt-out.
+//
+// CI=true / GITHUB_ACTIONS=true are NOT new user-facing opt-outs —
+// operators of real deployments should never set them, and standard CI
+// runners set them automatically. The check exists because Docker
+// compose / kubectl / ECS task defs commonly drop env vars on the floor;
+// CI conventions are a complementary signal the platform binary can
+// detect from inside the container without trusting the deploy pipeline.
 func startupTelemetryEnabled() bool {
-	return !strings.EqualFold(strings.TrimSpace(os.Getenv("AXONFLOW_TELEMETRY")), "off")
+	// Explicit user opt-in / opt-out wins over CI auto-detect.
+	val := strings.TrimSpace(os.Getenv("AXONFLOW_TELEMETRY"))
+	if strings.EqualFold(val, "off") {
+		return false
+	}
+	if strings.EqualFold(val, "on") {
+		return true
+	}
+	// AXONFLOW_TELEMETRY unset (or any non-on/off value) → fall through
+	// to CI auto-suppress. Presence-only check (not value-equals)
+	// because some CI systems set CI=1 / CI=yes / CI=github-actions etc.
+	// Explicit CI=false / GITHUB_ACTIONS=false is treated as "not in CI."
+	if v := strings.TrimSpace(os.Getenv("GITHUB_ACTIONS")); v != "" && !strings.EqualFold(v, "false") {
+		return false
+	}
+	if v := strings.TrimSpace(os.Getenv("CI")); v != "" && !strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
 }
 
 // classifyDeploymentMode returns the canonical deployment_mode for the
@@ -386,6 +435,7 @@ func MaybeSendStartupTelemetry(ctx context.Context) (bool, error) {
 		Arch:             runtime.GOARCH,
 		RuntimeVersion:   strings.TrimPrefix(runtime.Version(), "go"),
 		DeploymentMode:   deploymentMode,
+		OrgID:            os.Getenv("ORG_ID"),
 		LicenseTier:      normalizeStartupLicenseTier(currentLicenseTier()),
 		EnvironmentClass: detectEnvironmentClass(),
 		InstanceID:       stamp.InstanceID,

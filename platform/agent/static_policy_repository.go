@@ -175,18 +175,25 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 	}
 
 	// Insert into database
+	// v9 compat (Epic #2230 Phase 2/4): client_id mirrors tenant_id with the
+	// same value. Migration 090 added client_id to static_policies as the
+	// v9 credential-scope column; tenant_id remains the deprecated alias
+	// until v10. The 'global' wildcard sentinel (per migration 090's
+	// design intent) preserves verbatim — a row with tenant_id='global'
+	// gets client_id='global', keeping SELECT-path wildcard semantics
+	// consistent with get_dynamic_policies_for_tenant (migration 010).
 	query := `
 		INSERT INTO static_policies (
 			id, policy_id, name, category, pattern, severity,
 			description, action, tier, priority, enabled,
-			organization_id, tenant_id, org_id,
+			organization_id, tenant_id, client_id, org_id,
 			tags, metadata, version,
 			phase, action_request, action_response,
 			created_at, updated_at, created_by, updated_by
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
-			$12, $13, $14,
+			$12, $13, $13, $14,
 			$15::jsonb, $16::jsonb, $17,
 			$18, $19, $20,
 			$21, $22, $23, $24
@@ -198,14 +205,24 @@ func (r *StaticPolicyRepository) Create(ctx context.Context, policy *StaticPolic
 		metadataJSON = string(policy.Metadata)
 	}
 
-	_, err := r.db.ExecContext(ctx, query,
-		policy.ID, policy.PolicyID, policy.Name, policy.Category, policy.Pattern, policy.Severity,
-		policy.Description, policy.Action, string(policy.Tier), policy.Priority, policy.Enabled,
-		policy.OrganizationID, policy.TenantID, policy.OrgID,
-		tagsJSON, metadataJSON, policy.Version,
-		phase, actionRequest, toNullString(actionResponse),
-		policy.CreatedAt, policy.UpdatedAt, policy.CreatedBy, policy.UpdatedBy,
-	)
+	// v9 Phase 8 #2384 PR-C1: static_policies is ENABLE-RLS (mig 018) — under
+	// axonflow_app_role the INSERT WITH CHECK predicate
+	// org_id = current_setting('app.current_org_id') fires. Wrap in
+	// WithOrgScope so SET LOCAL matches the row's org_id at INSERT time.
+	if policy.OrgID == "" {
+		return fmt.Errorf("Create: policy.OrgID must be non-empty (RLS enforced by mig 018)")
+	}
+	err := WithOrgScope(ctx, r.db, policy.OrgID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(ctx, query,
+			policy.ID, policy.PolicyID, policy.Name, policy.Category, policy.Pattern, policy.Severity,
+			policy.Description, policy.Action, string(policy.Tier), policy.Priority, policy.Enabled,
+			policy.OrganizationID, policy.TenantID, policy.OrgID,
+			tagsJSON, metadataJSON, policy.Version,
+			phase, actionRequest, toNullString(actionResponse),
+			policy.CreatedAt, policy.UpdatedAt, policy.CreatedBy, policy.UpdatedBy,
+		)
+		return exErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to insert policy: %w", err)
 	}
@@ -321,16 +338,25 @@ func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, up
 
 	var updatedPolicy StaticPolicy
 	var description sql.NullString
-	var orgID sql.NullString
+	var orgIDOut sql.NullString
 
-	err = r.db.QueryRowContext(ctx, query, args...).Scan(
-		&updatedPolicy.ID, &updatedPolicy.PolicyID, &updatedPolicy.Name, &updatedPolicy.Category,
-		&updatedPolicy.Pattern, &updatedPolicy.Severity, &description, &updatedPolicy.Action,
-		&updatedPolicy.Tier, &updatedPolicy.Priority, &updatedPolicy.Enabled,
-		&updatedPolicy.OrganizationID, &updatedPolicy.TenantID, &orgID,
-		&updatedPolicy.Version, &updatedPolicy.CreatedAt, &updatedPolicy.UpdatedAt,
-		&updatedPolicy.CreatedBy, &updatedPolicy.UpdatedBy,
-	)
+	// v9 Phase 8 #2384 PR-C1: static_policies is ENABLE-RLS (mig 018) — under
+	// axonflow_app_role the UPDATE USING predicate gates the row before
+	// RETURNING runs. Wrap in WithOrgScope using policy.OrgID (fetched by
+	// the GetByID lookup above) so the UPDATE actually sees the row.
+	if policy.OrgID == "" {
+		return nil, fmt.Errorf("Update: existing policy.OrgID missing (RLS enforced by mig 018)")
+	}
+	err = WithOrgScope(ctx, r.db, policy.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, args...).Scan(
+			&updatedPolicy.ID, &updatedPolicy.PolicyID, &updatedPolicy.Name, &updatedPolicy.Category,
+			&updatedPolicy.Pattern, &updatedPolicy.Severity, &description, &updatedPolicy.Action,
+			&updatedPolicy.Tier, &updatedPolicy.Priority, &updatedPolicy.Enabled,
+			&updatedPolicy.OrganizationID, &updatedPolicy.TenantID, &orgIDOut,
+			&updatedPolicy.Version, &updatedPolicy.CreatedAt, &updatedPolicy.UpdatedAt,
+			&updatedPolicy.CreatedBy, &updatedPolicy.UpdatedBy,
+		)
+	})
 	if err == sql.ErrNoRows {
 		return nil, ErrPolicyNotFound
 	}
@@ -341,8 +367,8 @@ func (r *StaticPolicyRepository) Update(ctx context.Context, policyID string, up
 	if description.Valid {
 		updatedPolicy.Description = description.String
 	}
-	if orgID.Valid {
-		updatedPolicy.OrgID = orgID.String
+	if orgIDOut.Valid {
+		updatedPolicy.OrgID = orgIDOut.String
 	}
 
 	// Record version history (best effort - don't fail on error)
@@ -373,14 +399,26 @@ func (r *StaticPolicyRepository) Delete(ctx context.Context, policyID string, de
 		WHERE id = $3 AND deleted_at IS NULL
 	`
 
-	result, err := r.db.ExecContext(ctx, query, time.Now().UTC(), deletedBy, policy.ID)
-	if err != nil {
-		return fmt.Errorf("failed to delete policy: %w", err)
+	// v9 Phase 8 #2384 PR-C1: wrap soft-delete UPDATE in WithOrgScope so
+	// the USING predicate sees the row under app_role.
+	if policy.OrgID == "" {
+		return fmt.Errorf("Delete: existing policy.OrgID missing (RLS enforced by mig 018)")
 	}
-
-	rowsAffected, err := result.RowsAffected()
+	var rowsAffected int64
+	err = WithOrgScope(ctx, r.db, policy.OrgID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, time.Now().UTC(), deletedBy, policy.ID)
+		if exErr != nil {
+			return fmt.Errorf("failed to delete policy: %w", exErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to get affected rows: %w", raErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get affected rows: %w", err)
+		return err
 	}
 	if rowsAffected == 0 {
 		return ErrPolicyNotFound
@@ -825,14 +863,26 @@ func (r *StaticPolicyRepository) ToggleEnabled(ctx context.Context, policyID str
 		WHERE id = $4 AND deleted_at IS NULL
 	`
 
-	result, err := r.db.ExecContext(ctx, query, enabled, time.Now().UTC(), updatedBy, policy.ID)
-	if err != nil {
-		return fmt.Errorf("failed to toggle enabled: %w", err)
+	// v9 Phase 8 #2384 PR-C1: wrap ToggleEnabled UPDATE in WithOrgScope so
+	// the USING predicate sees the row under app_role.
+	if policy.OrgID == "" {
+		return fmt.Errorf("ToggleEnabled: existing policy.OrgID missing (RLS enforced by mig 018)")
 	}
-
-	rowsAffected, err := result.RowsAffected()
+	var rowsAffected int64
+	err = WithOrgScope(ctx, r.db, policy.OrgID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, enabled, time.Now().UTC(), updatedBy, policy.ID)
+		if exErr != nil {
+			return fmt.Errorf("failed to toggle enabled: %w", exErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to get affected rows: %w", raErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get affected rows: %w", err)
+		return err
 	}
 	if rowsAffected == 0 {
 		return ErrPolicyNotFound
@@ -859,6 +909,16 @@ func (r *StaticPolicyRepository) recordVersion(ctx context.Context, policy *Stat
 		return fmt.Errorf("failed to marshal policy snapshot: %w", err)
 	}
 
+	// v9 Phase 8 PR-C1 (#2384): mig 110 (landed via PR-C2) normalized
+	// static_policy_versions's RLS policy from the legacy app.tenant_id GUC
+	// to app.current_org_id — the table now requires the wrap-and-org_id-col
+	// pair under axonflow_app_role. Without it, the INSERT here would fail
+	// 42501 the moment app_role flips on (the outer Create/Update/Delete
+	// wraps COMMIT before recordVersion runs, so app.current_org_id is
+	// cleared by the time we get here — a fresh wrap is required).
+	if policy.OrgID == "" {
+		return fmt.Errorf("recordVersion: policy.OrgID must be non-empty (RLS on static_policy_versions post mig 110)")
+	}
 	query := `
 		INSERT INTO static_policy_versions (
 			id, policy_id, version, snapshot, change_type, change_summary, changed_by, changed_at
@@ -867,16 +927,19 @@ func (r *StaticPolicyRepository) recordVersion(ctx context.Context, policy *Stat
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		uuid.New().String(),
-		policy.ID,
-		policy.Version,
-		string(snapshot),
-		changeType,
-		changeSummary,
-		changedBy,
-		time.Now().UTC(),
-	)
+	err = WithOrgScope(ctx, r.db, policy.OrgID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(ctx, query,
+			uuid.New().String(),
+			policy.ID,
+			policy.Version,
+			string(snapshot),
+			changeType,
+			changeSummary,
+			changedBy,
+			time.Now().UTC(),
+		)
+		return exErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to record version: %w", err)
 	}

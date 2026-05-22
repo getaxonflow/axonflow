@@ -9,6 +9,11 @@ AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-}"
 AUTH_B64=$(printf '%s:%s' "$CLIENT_ID" "$CLIENT_SECRET" | base64)
+# user_token: validated as a JWT in eval/enterprise mode (any string accepted in
+# community mode). Reads AXONFLOW_USER_TOKEN — set by setup-e2e-testing.sh
+# evaluation/enterprise. The fallback string stays compatible with the prior
+# hardcoded behavior so community-mode runs unchanged.
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-sqli-detection-user}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,7 +39,7 @@ test_sqli() {
         -H "Authorization: Basic $AUTH_B64" \
         -d "{
             \"query\": \"$query\",
-            \"user_token\": \"sqli-detection-user\",
+            \"user_token\": \"${USER_TOKEN}\",
             \"client_id\": \"$CLIENT_ID\"
         }")
 

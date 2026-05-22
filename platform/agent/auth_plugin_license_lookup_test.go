@@ -121,3 +121,36 @@ func TestMapPluginLicenseLookupError_DBError_503(t *testing.T) {
 		t.Errorf("expected 503, got %d", authErr.StatusCode)
 	}
 }
+
+// TestLookupActivePluginLicenseTier_V9_ClientIDSameAsTenantID locks in
+// ADR-052's no-change guarantee for Plugin Pro: in the v9 compat window
+// the plugin license row's tenant_id continues to bind the credential
+// identity (== ClientID == Basic Auth username for community-saas). The
+// v9 RequestIdentity migration does NOT change the JTI binding shape;
+// that is explicitly out of scope for Phase 4. This test fails if a
+// future change accidentally re-keys plugin_user_licenses on a different
+// identity (e.g. swaps in OrgID) — which would silently break Pro
+// entitlement lookup for every Community-SaaS plugin user.
+func TestLookupActivePluginLicenseTier_V9_ClientIDSameAsTenantID(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	// During v9 compat, Community-SaaS cs_abc has:
+	//   org_id    = cs_abc (RLS boundary)
+	//   client_id = cs_abc (credential identity == Basic Auth username)
+	//   tenant_id = cs_abc (deprecated alias)
+	// The plugin license row's tenant_id stays bound to the credential
+	// identity per ADR-052; passing the ClientID value must match.
+	mock.ExpectQuery(`SELECT tier, tenant_id, revoked_at`).
+		WithArgs("jti-v9").
+		WillReturnRows(sqlmock.NewRows([]string{"tier", "tenant_id", "revoked_at"}).
+			AddRow("Pro", "cs_abc", nil))
+
+	tier, err := lookupActivePluginLicenseTier(context.Background(), db, "jti-v9", "cs_abc")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if tier != license.TierPro {
+		t.Errorf("expected TierPro, got %q", tier)
+	}
+}

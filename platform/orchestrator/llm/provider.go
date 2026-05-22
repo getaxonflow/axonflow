@@ -124,6 +124,13 @@ type ProviderConfig struct {
 
 	// Settings contains provider-specific configuration.
 	Settings map[string]any `json:"settings,omitempty"`
+
+	// TenantID is the per-org scope identifier (post-Phase-6: tenant_id == org_id).
+	// Required at SaveProvider time so the storage layer can wrap the INSERT in
+	// `SELECT set_config('app.current_org_id', tenantID, true)` and the mig 027
+	// ENABLE RLS policy (`tenant_id = current_setting('app.current_org_id', true)`)
+	// holds. Not surfaced over JSON — handlers populate it from request headers.
+	TenantID string `json:"-"`
 }
 
 // ProviderWithInfo extends Provider with info retrieval.

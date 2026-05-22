@@ -153,16 +153,20 @@ func validateClientCredentials(ctx context.Context, clientID, clientSecret strin
 		return nil, err
 	}
 
-	// Return authenticated client
+	// Return authenticated client.
+	// ClientID = Basic auth username (v9 ADR-052). TenantID is preserved
+	// as the legacy hardcoded scope tag during the v9 compat window so
+	// existing data-isolation queries keep matching.
 	return &Client{
-		ID:          clientAuth.ClientID,
-		Name:        clientAuth.Name,
-		OrgID:       validationResult.OrgID, // From license validation
-		TenantID:    clientAuth.TenantID,
-		Permissions: clientAuth.Permissions,
-		RateLimit:   clientAuth.RateLimit,
-		Enabled:     true,
-		LicenseTier: string(validationResult.Tier),
+		ID:            clientAuth.ClientID,
+		ClientID:      clientAuth.ClientID,
+		Name:          clientAuth.Name,
+		OrgID:         validationResult.OrgID, // From license validation
+		TenantID:      clientAuth.TenantID,
+		Permissions:   clientAuth.Permissions,
+		RateLimit:     clientAuth.RateLimit,
+		Enabled:       true,
+		LicenseTier:   string(validationResult.Tier),
 		LicenseExpiry: validationResult.ExpiresAt,
 	}, nil
 }
@@ -304,6 +308,31 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 	cID := extractClientID(r)
 	cSecret := extractClientSecret(r)
 	if cID == "" || cSecret == "" {
+		// Log the no-credentials 401 so that retry-storm investigations have an
+		// attribution path. Pre-#2280 this site returned 401 silently — when a
+		// misconfigured customer fires hundreds of unauthenticated requests
+		// (#2275 was 716 × 401 / 24h), there was zero record in the agent log,
+		// blocking any "which client install is doing this" forensic step.
+		//
+		// Discriminator prefix `[CSAAS-AUTH]` mirrors `[CSAAS-RL]` so daily-
+		// report tooling + CW alarms can attach to a stable selector.
+		//
+		// IP source: extractClientIP() handles AWS ALB's X-Forwarded-For
+		// convention (last entry is the real peer). Naive r.RemoteAddr would
+		// record the load-balancer's internal IP, defeating attribution.
+		// The same helper is the project convention — see
+		// `community_saas_register.go:extractClientIP` for the design notes
+		// (single-hop ALB; trust last XFF entry; fall back to RemoteAddr).
+		//
+		// What we log: path + User-Agent + client IP. All three already
+		// appear in ALB access logs — no new exfiltration surface. What we
+		// DON'T log: the Authorization header or any partial token-shaped
+		// value. Raw request strings go through logutil.Sanitize to defeat
+		// log-injection.
+		log.Printf("[CSAAS-AUTH] no_credentials path=%q user_agent=%q remote=%s",
+			logutil.Sanitize(r.URL.Path),
+			logutil.Sanitize(r.Header.Get("User-Agent")),
+			logutil.Sanitize(extractClientIP(r)))
 		return nil, &CommunitySaasAuthError{
 			StatusCode: http.StatusUnauthorized,
 			Message:    "Registration required. POST to /api/v1/register to get credentials.",
@@ -313,6 +342,15 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 	// Per-minute rate limit BEFORE bcrypt to prevent CPU exhaustion attacks
 	minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
 	if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
+		// Audit log for the per-minute 429. Pre-fix this site returned
+		// the 429 silently (no log emit) — the daily-report's agent-log
+		// grep was blind to it. `[CSAAS-RL]` prefix is the discriminator
+		// for daily-report tooling + CW alarms across limiter classes.
+		// Note: tenant_id isn't resolved yet at this point (the cap fires
+		// before bcrypt validation to prevent CPU-exhaustion attacks), so
+		// we log client_id only.
+		log.Printf("[CSAAS-RL] per_minute client_id=%s limit=%d/min",
+			logutil.Sanitize(cID), minuteLimit)
 		return nil, &CommunitySaasAuthError{
 			StatusCode: http.StatusTooManyRequests,
 			Message:    fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", minuteLimit),
@@ -423,9 +461,17 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 	}
 
 	return &Client{
-		ID:            cID,
-		Name:          "Community-SaaS",
-		OrgID:         communitySaasOrgID,
+		ID:       cID,
+		ClientID: cID, // v9 ADR-052: ClientID = credential identity (== Basic Auth username)
+		Name:     "Community-SaaS",
+		// v9 ADR-052 §"Community-SaaS": OrgID = customer/account/RLS identity =
+		// per-customer cs_<uuid> (== ClientID == Basic Auth username). Pre-Phase-6
+		// this stamped the shared constant "community-saas", which collapsed every
+		// SaaS customer into one RLS row class and made FORCE RLS on B8/B9 a
+		// cross-customer data-leak vector. Migration 094 + 100 remap the
+		// historical rows; this line stops the write-path from re-introducing
+		// the shared value on every new authenticated request.
+		OrgID:         cID,
 		TenantID:      cID,
 		Enabled:       true,
 		LicenseTier:   "Community",
@@ -446,19 +492,39 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 type authContextKey string
 
 const (
-	// ContextKeyTenantID stores the authenticated tenant ID in request context.
+	// ContextKeyTenantID stores the v9 compatibility alias of ClientID in
+	// request context.
+	//
+	// Deprecated: read ClientIDFromContext (or RequestIdentityFromContext)
+	// in new code. The key is retained for the v9 compatibility window —
+	// see ADR-052 §5 and ADR-053 §Step 2.
 	ContextKeyTenantID authContextKey = "auth_tenant_id"
-	// ContextKeyOrgID stores the authenticated org ID in request context.
+	// ContextKeyOrgID stores the authenticated customer/account org ID
+	// (RLS boundary) in request context.
 	ContextKeyOrgID authContextKey = "auth_org_id"
-	// ContextKeyClientID stores the authenticated client ID in request context.
+	// ContextKeyClientID stores the authenticated API credential/app/
+	// service identity in request context — the v9 successor of TenantID.
 	ContextKeyClientID authContextKey = "auth_client_id"
+	// ContextKeyUserID stores the authenticated human user identity in
+	// request context. Empty for service-to-service callers that did not
+	// present a user token.
+	ContextKeyUserID authContextKey = "auth_user_id"
 	// ContextKeyAuthKind stores the AuthKind in request context so handlers
 	// behind apiAuthMiddleware can call ResolveUser() with the correct kind.
 	ContextKeyAuthKind authContextKey = "auth_kind"
 )
 
-// TenantIDFromContext extracts the auth-derived tenant ID from request context.
-// Returns empty string if not set (should not happen if apiAuthMiddleware is applied).
+// TenantIDFromContext extracts the auth-derived tenant ID from request
+// context.
+//
+// Deprecated: per ADR-052 §5 / ADR-053 §Step 2, new code should call
+// ClientIDFromContext (or RequestIdentityFromContext().ClientID). The
+// value is preserved as a compatibility alias during the v9 window —
+// it is stamped from the same authenticated client identity that
+// ClientIDFromContext returns, except on the Enterprise auth path where
+// the legacy hardcoded scope tag (Client.TenantID) intentionally remains
+// distinct from Client.ID until Phase 1/2 of Epic #2230 classifies each
+// row. Returns the empty string when no auth middleware has run.
 func TenantIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ContextKeyTenantID).(string); ok {
 		return v
@@ -600,8 +666,14 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 
 		// Inject identity headers so downstream handlers (e.g. circuit breaker)
 		// can read them without context key type coupling across packages.
+		// The agent's auth path is authoritative — Set (not Add) so any
+		// client-supplied value for these headers is overwritten before
+		// the request reaches downstream handlers. The new X-Client-ID
+		// is the v9 successor of X-Tenant-ID; both are emitted during
+		// the v9 compatibility window per ADR-052 §5 / ADR-053 §Step 2.
 		r.Header.Set("X-Tenant-ID", tenantID)
 		r.Header.Set("X-Org-ID", orgID)
+		r.Header.Set("X-Client-ID", clientID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

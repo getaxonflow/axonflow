@@ -1,0 +1,205 @@
+name: Community SaaS — 401 storm alarm
+
+# Hourly scan over the previous hour's ALB access logs. When a single client IP
+# fires more than $THRESHOLD 401 responses against any single endpoint, publish
+# a structured alert to community-saas-telemetry-alerts (SoX SNS topic; email
+# subscription already confirmed for saurabh.jain@getaxonflow.com).
+#
+# Why this exists (#2275 / #2276):
+#   On 2026-05-19 a single customer's misconfigured deployment fired 716 × 401
+#   in 24 hours against /api/v1/audit/tool-call from `49.73.19.130`. The storm
+#   went undetected for a full week — we only caught it because someone happened
+#   to do a 7-day ALB log audit. The SDK + plugin fixes in the #2275 train
+#   prevent OUR layers from amplifying such storms, but new ones (different
+#   endpoint, different customer wrapper) can still appear. This workflow makes
+#   the next storm visible at next-hour granularity.
+#
+#   Companion infrastructure:
+#     - #2280 / PR #2300: agent logs `[CSAAS-AUTH] no_credentials path=...
+#       user_agent=... remote=...` so the alarm payload's IP can be correlated
+#       to a plugin install once we see the log entry.
+#     - #2281 (deferred): server-side `retryable: false` 401 envelope so
+#       well-behaved customer wrappers short-circuit.
+#
+# Cost: hourly run × ~1 minute × ubuntu-latest = ~720 minutes/month, well
+# within the free tier. The script's S3 sync uses `aws s3 cp --recursive` on
+# the previous hour's date prefix; egress is GET-bounded by request count
+# (~300 small log files per hour), not by total bytes.
+
+on:
+  schedule:
+    # Hourly at :10 — gives ALB log delivery time to flush the previous full
+    # hour's shards. AWS's documented upper bound is 5 minutes, but observed
+    # tail latency goes higher under load. The original :05 schedule was
+    # tight enough that a shard delivered at H+1:07 (within AWS's stated
+    # SLA) could miss BOTH the H+1:05 scan (window H:00→H+1:00 — too late)
+    # AND the next H+2:05 scan (window H+1:00→H+2:00 — out-of-window).
+    # The 5-minute buffer leaves a real cushion for occasional lag while
+    # the GH Actions queue-delay (~30s typical) gets us scanning by H+1:11
+    # at the earliest.
+    - cron: '10 * * * *'
+  workflow_dispatch:
+    inputs:
+      window_start:
+        description: 'Window start (UTC RFC3339, e.g. 2026-05-19T09:00:00Z). When set, lookback_hours and the default "previous full hour" logic are bypassed.'
+        required: false
+        type: string
+      window_end:
+        description: 'Window end (UTC RFC3339). Required when window_start is set.'
+        required: false
+        type: string
+      threshold:
+        description: 'Minimum 401-count-per-(ip,endpoint) to trigger the alarm. Default 50 — see body for tuning rationale.'
+        required: false
+        type: string
+        default: '50'
+      dry_run:
+        description: 'When true, computes the breach set but does NOT publish to SNS. Useful for retroactive auditing without paging anyone.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ALB_LOGS_BUCKET: axonflow-community-saas-20260502-204911-alb-access-logs
+  # The SNS topic published to is provisioned by community-saas-telemetry.yaml
+  # (TelemetryAlertsTopic). Email subscription to saurabh.jain@getaxonflow.com
+  # is already confirmed.
+  ALERTS_TOPIC_ARN: arn:aws:sns:us-east-1:686831565523:community-saas-telemetry-alerts
+  # Default threshold per the #2276 issue body:
+  #   30 401/hour was the observed retry-loop rate on 2026-05-19;
+  #   50 401/hour gives 67% headroom over the observed bad case while still
+  #   being well below any plausible non-pathological traffic.
+  DEFAULT_THRESHOLD: '50'
+
+concurrency:
+  group: community-saas-401-storm-alarm
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Scan previous hour for 401 retry storms
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_INTERNAL }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_INTERNAL }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Compute scan window
+        id: window
+        # Three modes:
+        #   1. workflow_dispatch with window_start + window_end → use as-is.
+        #   2. workflow_dispatch with window_start alone → reject (end is required).
+        #   3. schedule → previous full UTC hour. E.g. fired at 13:05 → scan 12:00–13:00.
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.window_start }}" ]; then
+            if [ -z "${{ inputs.window_end }}" ]; then
+              echo "ERROR: window_end is required when window_start is set." >&2
+              exit 1
+            fi
+            START="${{ inputs.window_start }}"
+            END="${{ inputs.window_end }}"
+            KIND=manual
+          else
+            # Previous full UTC hour. floor(now) - 1 hour.
+            NOW_S=$(date -u +%s)
+            END_S=$((NOW_S - (NOW_S % 3600)))
+            START_S=$((END_S - 3600))
+            START=$(date -u -d "@$START_S" +%Y-%m-%dT%H:%M:%SZ)
+            END=$(date -u -d "@$END_S" +%Y-%m-%dT%H:%M:%SZ)
+            KIND=hourly
+          fi
+          THRESHOLD="${{ inputs.threshold }}"
+          THRESHOLD="${THRESHOLD:-$DEFAULT_THRESHOLD}"
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "threshold=$THRESHOLD" >> "$GITHUB_OUTPUT"
+          echo "Scan window: $START -> $END (kind=$KIND, threshold=$THRESHOLD)"
+
+      - name: Run storm detector
+        id: detect
+        run: |
+          set -euo pipefail
+          chmod +x scripts/community-saas-401-storm-detect.sh
+          OUTPUT=$(scripts/community-saas-401-storm-detect.sh \
+            "${{ steps.window.outputs.start }}" \
+            "${{ steps.window.outputs.end }}" \
+            "${ALB_LOGS_BUCKET}" \
+            "${{ steps.window.outputs.threshold }}")
+          # The detector writes diagnostic lines to STDERR and a single JSON
+          # object as the LAST line of STDOUT. Extract that JSON line.
+          BREACHES_JSON=$(echo "$OUTPUT" | tail -1)
+          echo "$BREACHES_JSON" > /tmp/breaches.json
+          COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/breaches.json'))['breaches']))")
+          echo "breach_count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Detected $COUNT breach(es) in window."
+          echo "=== Raw findings ==="
+          python3 -m json.tool /tmp/breaches.json | head -100
+
+      - name: Publish SNS alert
+        if: steps.detect.outputs.breach_count != '0' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          BREACHES=$(cat /tmp/breaches.json)
+          MESSAGE=$(python3 -c "
+          import json, os
+          b = json.load(open('/tmp/breaches.json'))['breaches']
+          start = os.environ['WINDOW_START']
+          end   = os.environ['WINDOW_END']
+          thr   = os.environ['THRESHOLD']
+          lines = [
+              'AxonFlow community-saas — 401 retry storm detected.',
+              '',
+              f'Window: {start} → {end}',
+              f'Threshold: >{thr} 401 responses per (client IP, endpoint) in the window.',
+              '',
+              f'Breaches ({len(b)}):'
+          ]
+          for row in b:
+              lines.append(f'  • {row[\"client_ip\"]} → {row[\"endpoint\"]}: {row[\"count\"]} × 401 (UA={row[\"sample_user_agent\"]!r}, trace_id={row[\"sample_trace_id\"]})')
+          lines.append('')
+          lines.append('Forensic next steps:')
+          lines.append('  1. grep agent CloudWatch log group for [CSAAS-AUTH] no_credentials lines matching the IP (PR #2300 / #2280).')
+          lines.append('  2. If no [CSAAS-AUTH] lines found, the storm landed on the bcrypt-fail path — grep for [AUTH] community-saas auth failed in the same window.')
+          lines.append('  3. Cross-reference trace_id against orchestrator logs to pin a tenant.')
+          lines.append('')
+          lines.append('Filed under: getaxonflow/axonflow-enterprise#2276')
+          print('\n'.join(lines))
+          "
+          )
+          SUBJECT="AxonFlow community-saas 401 storm — ${{ steps.detect.outputs.breach_count }} breach(es) in ${{ steps.window.outputs.start }}"
+          # SNS Subject is limited to 100 chars and must be ASCII printable.
+          SUBJECT="${SUBJECT:0:99}"
+          aws sns publish \
+            --topic-arn "$ALERTS_TOPIC_ARN" \
+            --subject "$SUBJECT" \
+            --message "$MESSAGE" \
+            --output text
+          echo "SNS publish complete."
+        env:
+          WINDOW_START: ${{ steps.window.outputs.start }}
+          WINDOW_END: ${{ steps.window.outputs.end }}
+          THRESHOLD: ${{ steps.window.outputs.threshold }}
+
+      - name: Dry-run summary
+        if: steps.detect.outputs.breach_count != '0' && inputs.dry_run == true
+        run: |
+          echo "Dry-run: would have published the following SNS alert (NO actual publish):"
+          cat /tmp/breaches.json
+
+      - name: Quiet-hour summary
+        if: steps.detect.outputs.breach_count == '0'
+        run: |
+          echo "Window ${{ steps.window.outputs.start }} → ${{ steps.window.outputs.end }} is quiet — no IP exceeded ${{ steps.window.outputs.threshold }} × 401."

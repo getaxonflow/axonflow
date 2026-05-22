@@ -110,7 +110,13 @@ func TestNewDatabaseDynamicPolicyEngine(t *testing.T) {
 	}
 }
 
-// TestSeedDefaultData tests default data seeding (system media policies + sample policies)
+// TestSeedDefaultData tests default data seeding (system media policies + sample policies).
+//
+// v9 Phase 8 PR-C2 (#2384): seedSystemMediaPolicies + insertSamplePolicies now
+// wrap their INSERTs in rls.WithOrgScope. seedSystemMediaPolicies fires a
+// single wrap for all 5 system-media rows ('global' scope); insertSamplePolicies
+// fires one wrap per sample (per-tenant scope). Each wrap adds BEGIN +
+// set_config + COMMIT around the existing INSERT mock.
 func TestSeedDefaultData(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -120,34 +126,41 @@ func TestSeedDefaultData(t *testing.T) {
 		{
 			name: "Success - empty database, seeds sample policies",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Expect system media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				// seedSystemMediaPolicies: single wrap, 5 inner INSERTs
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
 				for i := 0; i < 5; i++ {
 					mock.ExpectExec("INSERT INTO dynamic_policies").
 						WillReturnResult(sqlmock.NewResult(0, 1))
 				}
+				mock.ExpectCommit()
 
 				// Count query returns 0 (empty table)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
-				// Expect sample policy inserts (3 policies)
-				mock.ExpectExec("INSERT INTO dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectExec("INSERT INTO dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(2, 1))
-				mock.ExpectExec("INSERT INTO dynamic_policies").
-					WillReturnResult(sqlmock.NewResult(3, 1))
+				// insertSamplePolicies: per-tenant wraps (healthcare, ecommerce, global)
+				for _, scope := range []string{"healthcare", "ecommerce", "global"} {
+					mock.ExpectBegin()
+					mock.ExpectExec("set_config").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
+					mock.ExpectExec("INSERT INTO dynamic_policies").
+						WillReturnResult(sqlmock.NewResult(1, 1))
+					mock.ExpectCommit()
+				}
 			},
 			expectError: false,
 		},
 		{
 			name: "Success - table already has data, no sample inserts",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// Expect system media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				// seedSystemMediaPolicies: single wrap, 5 inner INSERTs
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
 				for i := 0; i < 5; i++ {
 					mock.ExpectExec("INSERT INTO dynamic_policies").
 						WillReturnResult(sqlmock.NewResult(0, 1))
 				}
+				mock.ExpectCommit()
 
 				// Count query returns 5 (table has data)
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").
@@ -160,11 +173,14 @@ func TestSeedDefaultData(t *testing.T) {
 		{
 			name: "Error - count query fails",
 			mockSetup: func(mock sqlmock.Sqlmock) {
-				// System media policy seeds (5 INSERT ON CONFLICT DO NOTHING)
+				// seedSystemMediaPolicies wrap (succeeds, just like canonical path)
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("global").WillReturnResult(sqlmock.NewResult(0, 0))
 				for i := 0; i < 5; i++ {
 					mock.ExpectExec("INSERT INTO dynamic_policies").
 						WillReturnResult(sqlmock.NewResult(0, 1))
 				}
+				mock.ExpectCommit()
 
 				// Count query fails
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM dynamic_policies").

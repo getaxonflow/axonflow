@@ -1,0 +1,41 @@
+name: Lint Workflow Telemetry Markers
+
+# Enforces that every workflow which runs the AxonFlow agent in the
+# GH-Actions runner declares its telemetry disposition. See the lint
+# script for the marker contract.
+#
+# Without this gate, a new workflow silently emits agent heartbeats
+# from a Microsoft-Corp / Azure runner IP and pollutes the external
+# telemetry digest. Pre-PR-3 noise pattern (epic #2047 audit
+# 2026-05-13): scheduled-performance-benchmark.yml's deployed
+# Fargate agents leaked 5 heartbeats per Monday cron because no
+# marker was set.
+#
+# Triggers ALWAYS run (no path filter) so this can serve as a
+# REQUIRED status check without hitting the AWAITING_CHECKS deadlock
+# pattern on PRs that don't touch .github/workflows. The lint takes
+# ~8 seconds so the per-PR cost is negligible (one ubuntu-latest
+# checkout + one bash invocation).
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  lint-workflow-telemetry-markers:
+    name: Lint workflow telemetry markers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run lint
+        run: bash .github/scripts/check-workflow-telemetry-marker.sh
+      - name: Self-test fixture
+        run: bash .github/scripts/check-workflow-telemetry-marker_test.sh

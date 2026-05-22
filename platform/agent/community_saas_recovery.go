@@ -58,13 +58,13 @@ const (
 
 // Recovery flow errors (typed for structured logging).
 var (
-	ErrRecoveryEmailNotFound      = errors.New("no tenant bound to this email")
-	ErrRecoveryRateLimit          = errors.New("recovery request rate limit exceeded")
-	ErrRecoveryTokenNotFound      = errors.New("recovery token not found")
-	ErrRecoveryTokenExpired       = errors.New("recovery token expired")
-	ErrRecoveryTokenAlreadyUsed   = errors.New("recovery token already used")
-	ErrRecoveryEmailMismatch      = errors.New("recovery email does not match token")
-	ErrRecoveryTenantCapExceeded  = errors.New("max active tenants per email reached")
+	ErrRecoveryEmailNotFound     = errors.New("no tenant bound to this email")
+	ErrRecoveryRateLimit         = errors.New("recovery request rate limit exceeded")
+	ErrRecoveryTokenNotFound     = errors.New("recovery token not found")
+	ErrRecoveryTokenExpired      = errors.New("recovery token expired")
+	ErrRecoveryTokenAlreadyUsed  = errors.New("recovery token already used")
+	ErrRecoveryEmailMismatch     = errors.New("recovery email does not match token")
+	ErrRecoveryTenantCapExceeded = errors.New("max active tenants per email reached")
 )
 
 // recoveryRequestBody is the JSON request body for POST /api/v1/recover.
@@ -461,11 +461,21 @@ func handleRecoveryVerify(db *sql.DB) http.HandlerFunc {
 		var insertErr error
 		for attempt := 0; attempt < communitySaasMaxRegistrationRetries; attempt++ {
 			newTenantID = communitySaasTenantPrefix + uuidNewString()
+			// v9 Phase 6: org_id = per-customer cs_<uuid>; see auth.go and
+			// community_saas_register.go for rationale (ADR-052 §"Community-SaaS").
+			// Also write client_id to match the fresh-registration INSERT shape
+			// (community_saas_register.go writes both); pre-Phase-6 this path
+			// silently skipped client_id, leaving the column NULL on recovered
+			// rows — same partial-unique-index defeat that PR #2246 closed for
+			// the fresh-registration path. Phase 6 closes the recovery-side gap.
+			// v9 Phase 8 PR-A (mig 109): route through csaas_recovery_insert
+			// SECURITY DEFINER helper so the INSERT bypasses FORCE RLS (mig
+			// 105) — recovery-verify mints the tenant_id in this very tx, so
+			// there's no pre-existing GUC to set. PK-collision retry still
+			// works: the helper re-RAISEs SQLSTATE 23505 unchanged.
 			_, insertErr = tx.ExecContext(ctx,
-				`INSERT INTO community_saas_registrations
-				 (tenant_id, secret_hash, secret_prefix, org_id, label, expires_at, claimed_by_email, claimed_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-				newTenantID, string(hash), secretPrefix, communitySaasOrgID,
+				`SELECT csaas_recovery_insert($1, $2, $3, $4, $5, $6)`,
+				newTenantID, string(hash), secretPrefix,
 				"recovery for "+email, expiresAtNew, email)
 			if insertErr == nil {
 				break
@@ -503,8 +513,11 @@ func handleRecoveryVerify(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Register in tenants table synchronously (same pattern as fresh registration)
-		registerTenantAndOrg(db, newTenantID, communitySaasOrgID, "community", 1)
+		// Register in tenants table synchronously (same pattern as fresh registration).
+		// v9 Phase 6: org_id = per-customer cs_<uuid>; tier+max_nodes match the
+		// 094 backfill seed so register_org's ON CONFLICT UPDATE never fires a
+		// silent downgrade. See community_saas_register.go for rationale.
+		registerTenantAndOrg(db, newTenantID, newTenantID, csaasOrgTier, csaasOrgMaxNodes)
 
 		log.Printf("[CSAAS-RECOVERY-VERIFY] Recovered tenant %s for email %s (expires %s)",
 			logutil.Sanitize(newTenantID), logutil.Sanitize(email), expiresAtNew.Format(time.RFC3339))

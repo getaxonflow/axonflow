@@ -197,15 +197,25 @@ func TestCreateApprovalRequest_Success(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	// Mock the INSERT query
+	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	// Mock the history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := CreateApprovalInput{
 		OrgID:               "org-1",
@@ -251,15 +261,25 @@ func TestCreateApprovalRequest_DefaultSeverity(t *testing.T) {
 	svc := newEvalTierService(t, repo, ServiceConfig{})
 	ctx := context.Background()
 
-	// Mock the INSERT query
+	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	// Mock the history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := CreateApprovalInput{
 		OrgID:               "org-1",
@@ -297,15 +317,25 @@ func TestCreateApprovalRequest_ExpiryLimiting(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	// Mock the INSERT query
+	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	// Mock the history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := CreateApprovalInput{
 		OrgID:               "org-1",
@@ -521,13 +551,23 @@ func TestOverrideRequest_Success(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock Override
+	// Mock Override. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	authorizedBy := &Reviewer{
 		ID:    "admin-1",
@@ -625,13 +665,23 @@ func TestRejectRequest_Success(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock UpdateStatus
+	// Mock UpdateStatus. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	reviewer := &Reviewer{
 		ID:    "reviewer-1",
@@ -709,13 +759,23 @@ func TestApproveRequest_Success(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock UpdateStatus
+	// Mock UpdateStatus. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	reviewer := &Reviewer{
 		ID:    "reviewer-1",
@@ -1017,12 +1077,23 @@ func TestCreateApprovalRequest_EvaluationOrHigherAllowed(t *testing.T) {
 			svc := NewService(repo, ServiceConfig{DefaultExpiry: 24 * time.Hour})
 			svc.SetTierProviderForTest(func(_ context.Context) license.Tier { return tier })
 
+			// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+				WithArgs("org-1").
+				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 					AddRow(1, time.Now(), time.Now()))
+			mock.ExpectCommit()
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+				WithArgs("org-1").
+				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectQuery("INSERT INTO hitl_approval_history").
 				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 					AddRow(1, time.Now()))
+			mock.ExpectCommit()
 
 			input := CreateApprovalInput{
 				OrgID:               "org-1",
@@ -1104,12 +1175,23 @@ func TestCreateApprovalRequest_NilTierProviderFallsThrough(t *testing.T) {
 	svc := NewService(repo, ServiceConfig{DefaultExpiry: 24 * time.Hour})
 	svc.SetTierProviderForTest(nil)
 
+	// v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := CreateApprovalInput{
 		OrgID:               "org-1",

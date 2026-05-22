@@ -133,7 +133,10 @@ func (m *MockRepository) List(ctx context.Context, req ListExecutionsRequest) ([
 	return results, total, nil
 }
 
-func (m *MockRepository) Delete(ctx context.Context, executionID string) error {
+// v9 Phase 8 #2384 PR-C1: Delete/Update*/Expire signatures gained
+// orgID + tenantID for RLS scoping; the mock ignores them (in-memory store
+// doesn't enforce RLS).
+func (m *MockRepository) Delete(ctx context.Context, _, _, executionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.deleteErr != nil {
@@ -146,7 +149,7 @@ func (m *MockRepository) Delete(ctx context.Context, executionID string) error {
 	return nil
 }
 
-func (m *MockRepository) UpdateStatus(ctx context.Context, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
+func (m *MockRepository) UpdateStatus(ctx context.Context, _, _, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErr != nil {
@@ -163,7 +166,7 @@ func (m *MockRepository) UpdateStatus(ctx context.Context, executionID string, s
 	return nil
 }
 
-func (m *MockRepository) UpdateSteps(ctx context.Context, executionID string, steps []StepStatus) error {
+func (m *MockRepository) UpdateSteps(ctx context.Context, _, _, executionID string, steps []StepStatus) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErr != nil {
@@ -179,7 +182,7 @@ func (m *MockRepository) UpdateSteps(ctx context.Context, executionID string, st
 	return nil
 }
 
-func (m *MockRepository) UpdateCost(ctx context.Context, executionID string, estimatedCost, actualCost *float64) error {
+func (m *MockRepository) UpdateCost(ctx context.Context, _, _, executionID string, estimatedCost, actualCost *float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErr != nil {
@@ -212,7 +215,7 @@ func (m *MockRepository) CountActive(ctx context.Context, tenantID string) (int,
 	return count, nil
 }
 
-func (m *MockRepository) PurgeOldest(ctx context.Context, tenantID string, keepCount int) (int64, error) {
+func (m *MockRepository) PurgeOldest(ctx context.Context, orgID, tenantID string, keepCount int) (int64, error) {
 	// Simplified mock: just return 0
 	return 0, nil
 }
@@ -236,7 +239,7 @@ func (m *MockRepository) GetByMetadata(ctx context.Context, key, value string) (
 	return nil, ErrExecutionNotFound
 }
 
-func (m *MockRepository) ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error {
+func (m *MockRepository) ExpireExecution(ctx context.Context, _, _, executionID string, metadata map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]

@@ -37,6 +37,7 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 		return &ValidationResult{
 			Valid:           true,
 			Tier:            TierCommunity,
+			DeploymentID:    "community",
 			OrgID:           "community",
 			MaxNodes:        9999,
 			ExpiresAt:       time.Now().AddDate(100, 0, 0),
@@ -144,10 +145,21 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 		maxNodes = 9999
 	}
 
+	// V3 license payload (ADR-054): prefer `deployment_id` over the legacy
+	// `org_id`. Mirrors the enterprise build at platform/agent/license/
+	// validation.go and ee/platform/agent/license/validation.go so the
+	// Community-build agent (which never validates Enterprise licenses
+	// today but may still parse Evaluation-tier signed payloads) resolves
+	// the deployment identity consistently with the rest of the codebase.
+	resolvedDeploymentID := payload.DeploymentID
+	if resolvedDeploymentID == "" {
+		resolvedDeploymentID = payload.OrgID
+	}
 	result := &ValidationResult{
 		Valid:           true,
 		Tier:            tier,
-		OrgID:           payload.OrgID,
+		DeploymentID:    resolvedDeploymentID,
+		OrgID:           resolvedDeploymentID,
 		MaxNodes:        maxNodes,
 		ExpiresAt:       expiry,
 		DaysUntilExpiry: daysUntilExpiry,
@@ -244,6 +256,7 @@ func communityFallback(msg string) *ValidationResult {
 	return &ValidationResult{
 		Valid:           true,
 		Tier:            TierCommunity,
+		DeploymentID:    "community",
 		OrgID:           "community",
 		MaxNodes:        9999,
 		ExpiresAt:       time.Now().AddDate(100, 0, 0),

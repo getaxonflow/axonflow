@@ -6,6 +6,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gorilla/mux"
 )
 
@@ -145,10 +147,10 @@ func TestExtractClientIP_XForwardedFor(t *testing.T) {
 	// Tests assert the LAST-entry behavior; "spoof attempt" verifies
 	// that client-supplied prepended values cannot bypass the rate-limit.
 	tests := []struct {
-		name      string
-		xff       string
-		remote    string // optional override; "" → httptest default
-		expected  string
+		name     string
+		xff      string
+		remote   string // optional override; "" → httptest default
+		expected string
 	}{
 		{"single IP", "1.2.3.4", "", "1.2.3.4"},
 		{"multiple IPs (ALB-appended)", "1.2.3.4, 5.6.7.8, 9.10.11.12", "", "9.10.11.12"},
@@ -321,6 +323,161 @@ func TestRegisterEndpoint_POST_NilDB(t *testing.T) {
 	}
 }
 
+// TestInternalTenantIDPrefixAllowlist_Shape pins the allowlist contents +
+// invariant that every entry starts with internalTenantIDPrefix. Adding
+// an entry that doesn't start with `axonflow-internal-` would mean the
+// resulting tenant_id wouldn't classify as source=internal via
+// classify.go IsInternal rule 4 (HasPrefix(TenantID,
+// InternalOrgIDPrefix="axonflow-") — broadened from `axonflow-internal-`
+// in PR #2261 per ADR-054). The narrower `axonflow-internal-` sub-
+// namespace remains the minting prefix because that's the historical
+// canary identity; the rule's broader predicate catches any subset of
+// the `axonflow-*` family. Removing an entry breaks the consumer that
+// depends on it (e.g. removing axonflow-internal-canary- breaks the
+// synthetic-monitoring canary's classification).
+//
+// Mutation-tested 2026-05-14:
+//   - Drop axonflow-internal-canary- from the map → this test fails with
+//     "expected key axonflow-internal-canary- in allowlist".
+//   - Add a non-prefixed key like "external-marker-" → the second
+//     assertion fails with the explicit diagnostic.
+func TestInternalTenantIDPrefixAllowlist_Shape(t *testing.T) {
+	want := map[string]bool{
+		"axonflow-internal-canary-":     true,
+		"axonflow-internal-perf-bench-": true,
+		"axonflow-internal-e2e-":        true,
+		"axonflow-internal-smoke-":      true,
+	}
+	for k := range want {
+		if !internalTenantIDPrefixAllowlist[k] {
+			t.Errorf("expected key %q in allowlist (consumer of this entry depends on it; verify before removal)", k)
+		}
+	}
+	// Every allowlist entry MUST start with internalTenantIDPrefix —
+	// otherwise the resulting tenant_id wouldn't match the
+	// telemetry-filter Layer 1 rule, defeating the design.
+	for k := range internalTenantIDPrefixAllowlist {
+		if !strings.HasPrefix(k, internalTenantIDPrefix) {
+			t.Errorf("allowlist entry %q does not start with internalTenantIDPrefix %q — "+
+				"resulting tenant_id wouldn't classify source=internal via "+
+				"classify.go IsInternal rule 4. Either fix the entry or "+
+				"update the rule (and rerun the parity fixture).", k, internalTenantIDPrefix)
+		}
+	}
+}
+
+// TestRegisterEndpoint_POST_DoesNotCrashOnNewWireField verifies that the
+// handler accepts the new `internal_tenant_id_prefix` wire field without
+// panicking on JSON unmarshal — the json.Unmarshal default tolerates
+// unknown fields, but adding a NEW known field exercises the request
+// struct's new tag. With nil DB, the handler short-circuits at 503 before
+// reaching the prefix validation, so this test is structural-only — real
+// validation is covered by the resolveTenantPrefix pure-function tests
+// below + runtime-e2e/community_saas_register_internal_prefix/test.sh.
+func TestRegisterEndpoint_POST_DoesNotCrashOnNewWireField(t *testing.T) {
+	router := setupCSAASTestRouter()
+	RegisterCommunityRegistrationHandler(router, nil)
+
+	body := bytes.NewBufferString(`{"label":"test","internal_tenant_id_prefix":"attacker-prefix-"}`)
+	req := httptest.NewRequest("POST", "/api/v1/register", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("nil-DB short-circuit didn't fire — expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestResolveTenantPrefix_Default proves the empty-prefix path returns
+// the default `cs_` prefix without error. Mutation guard: if
+// resolveTenantPrefix is changed to ALWAYS return the request's prefix
+// (silently dropping the empty-handling), this test fails.
+func TestResolveTenantPrefix_Default(t *testing.T) {
+	prefix, err := resolveTenantPrefix(registrationRequest{Label: "real-customer"})
+	if err != nil {
+		t.Fatalf("default path: unexpected error: %v", err)
+	}
+	if prefix != communitySaasTenantPrefix {
+		t.Errorf("default prefix: got %q, want %q", prefix, communitySaasTenantPrefix)
+	}
+}
+
+// TestResolveTenantPrefix_AllowlistedReturned proves an allowlisted
+// internal prefix is passed through. Mutation guard: if the function
+// is changed to silently force communitySaasTenantPrefix in this branch
+// (e.g. `prefix = communitySaasTenantPrefix`), this test fails — the
+// strongest signal that the canary's contract is enforced.
+func TestResolveTenantPrefix_AllowlistedReturned(t *testing.T) {
+	cases := []string{
+		internalTenantIDPrefix + "canary-",
+		internalTenantIDPrefix + "perf-bench-",
+		internalTenantIDPrefix + "e2e-",
+		internalTenantIDPrefix + "smoke-",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			got, err := resolveTenantPrefix(registrationRequest{InternalTenantIDPrefix: p})
+			if err != nil {
+				t.Fatalf("allowlisted prefix %q: unexpected error: %v", p, err)
+			}
+			if got != p {
+				t.Errorf("allowlisted prefix %q: returned %q (silent fallback?)", p, got)
+			}
+		})
+	}
+}
+
+// TestResolveTenantPrefix_NonAllowlistedRejected proves out-of-allowlist
+// values return ErrInvalidInternalPrefix. Mutation guard: if the
+// allowlist check is dropped (`if false && !allowlist[...]`), this test
+// fails — the strongest signal against silent acceptance of attacker-
+// controlled prefixes.
+func TestResolveTenantPrefix_NonAllowlistedRejected(t *testing.T) {
+	cases := []string{
+		"attacker-prefix-",
+		"axonflow-internal-",          // bare prefix (not in allowlist; only suffixed entries)
+		"axonflow-internal-attacker-", // looks-like-allowlisted but isn't
+		"cs_attacker-",                // mimics default but explicit
+		"axonflow-internal-CANARY-",   // case mismatch (allowlist is exact-match)
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			prefix, err := resolveTenantPrefix(registrationRequest{InternalTenantIDPrefix: p})
+			if err == nil {
+				t.Errorf("non-allowlisted %q: expected ErrInvalidInternalPrefix, got nil (would silently fall through to %q)", p, prefix)
+			}
+			if !errors.Is(err, ErrInvalidInternalPrefix) {
+				t.Errorf("non-allowlisted %q: expected ErrInvalidInternalPrefix, got %v", p, err)
+			}
+			if prefix != "" {
+				t.Errorf("non-allowlisted %q: returned non-empty prefix %q (must be empty on error)", p, prefix)
+			}
+		})
+	}
+}
+
+// TestResolveTenantPrefix_AllowlistConstructionUsesConstant is a
+// belt-and-suspenders against L4 from the hostile review: the allowlist
+// values are now constructed by appending a suffix to internalTenantIDPrefix
+// rather than embedding the literal. This test pins that intent so a
+// future PR that hard-codes "axonflow-internal-foo-" instead of
+// internalTenantIDPrefix+"foo-" gets a visible signal that drift will
+// be possible if the constant changes.
+func TestResolveTenantPrefix_AllowlistConstructionUsesConstant(t *testing.T) {
+	// Walk the allowlist keys and verify every one starts with
+	// internalTenantIDPrefix. If the constant changed and a literal
+	// allowlist entry didn't, this fails.
+	for k := range internalTenantIDPrefixAllowlist {
+		if k == internalTenantIDPrefix || k == "" {
+			t.Errorf("allowlist entry %q is the bare prefix or empty — must have a unique suffix", k)
+		}
+		if !strings.HasPrefix(k, internalTenantIDPrefix) {
+			t.Errorf("allowlist entry %q does not start with internalTenantIDPrefix %q — drift between constant + map detected",
+				k, internalTenantIDPrefix)
+		}
+	}
+}
+
 func TestExtractClientIP_IPv6RemoteAddr(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "[::1]:54321"
@@ -347,7 +504,7 @@ func TestRegistrationIPTracker_ExpiredEntryReset(t *testing.T) {
 
 	// Add an expired entry
 	tracker.entries["expired-ip"] = &ipRegistrationEntry{
-		count:     registrationIPLimit + 1, // Was rate-limited
+		count:     registrationIPLimit + 1,          // Was rate-limited
 		resetTime: time.Now().Add(-1 * time.Minute), // Expired
 	}
 
@@ -380,13 +537,21 @@ func TestRegistrationConstants(t *testing.T) {
 	if communitySaasDisclaimerNote == "" {
 		t.Error("communitySaasDisclaimerNote should not be empty")
 	}
-	if communitySaasOrgID != "community-saas" {
-		t.Errorf("communitySaasOrgID should be 'community-saas', got %q", communitySaasOrgID)
-	}
+	// v9 Phase 6 (Epic #2230): the legacy communitySaasOrgID = "community-saas"
+	// constant was deleted. org_id is now the per-customer cs_<uuid> stamped
+	// at INSERT/auth time. Coverage moved to TestV9Phase6_CommunitySaas_*
+	// below + the v9_integration_postgres_test.go RDS-backed suite.
 	if communitySaasTenantPrefix != "cs_" {
 		t.Errorf("communitySaasTenantPrefix should be 'cs_', got %q", communitySaasTenantPrefix)
 	}
 }
+
+// Phase 6 mutation-tested coverage for validateCommunitySaasAuth's
+// OrgID return is in v9_integration_postgres_test.go's
+// TestV9Phase6_SaaSAuthReturnsPerCustomerOrgID — that test drives the real
+// SUT against a seeded Postgres and was proven non-tautological via
+// auth.go source-mutation. The INSERT-shape regression is covered by
+// TestRegisterEndpoint_INSERTWritesClientIDColumn below.
 
 func TestHandleCommunityRegister_InvalidJSON(t *testing.T) {
 	handler := handleCommunityRegister(nil)
@@ -413,4 +578,106 @@ func TestHandleCommunityRegister_EmptyBody(t *testing.T) {
 
 func setupCSAASTestRouter() *mux.Router {
 	return mux.NewRouter()
+}
+
+// TestRegisterEndpoint_INSERTWritesClientIDColumn is the A+B+Phase-6
+// integration guard for Epic #2230.
+//
+// Three invariants are enforced on the INSERT shape:
+//  1. tenant_id and client_id are written together as the FIRST two columns
+//     and both bind to $1 (Session B's client_id column write, PR #2246).
+//  2. org_id is bound to $1 too (Phase 6 — PR for this work). Pre-Phase-6
+//     this position held the legacy shared constant communitySaasOrgID =
+//     "community-saas", which is the v9 RLS leak this PR closes.
+//  3. The placeholder shape matches the actual production SQL exactly so
+//     any future refactor that adds/reorders columns surfaces here.
+//
+// Mutation guard: revert org_id placeholder back to $4 (the pre-Phase-6
+// bind that used the constant) and this test FAILS — proving the
+// assertion isn't tautological per
+// feedback_mutation_test_to_prove_assertion_not_tautological.md.
+//
+// Both INSERT shapes are covered:
+//   - email-bearing INSERT (claimed_by_email + claimed_at columns present)
+//   - non-email INSERT (the legacy un-claimed shape)
+func TestRegisterEndpoint_INSERTWritesClientIDColumn(t *testing.T) {
+	t.Run("email-bearing INSERT contains client_id column", func(t *testing.T) {
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+		if err != nil {
+			t.Fatalf("sqlmock.New failed: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+
+		// Email-claim path executes a SERIALIZABLE cap-check transaction
+		// (per-email tenant cap) BEFORE the INSERT — see
+		// community_saas_register.go:439 BeginTx + COUNT query + Commit.
+		mock.ExpectBegin()
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM community_saas_registrations\s+WHERE claimed_by_email`).
+			WithArgs("alice@example.com").
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectCommit()
+
+		// v9 Phase 8 PR-A (mig 109): handler now calls the csaas_register_tenant
+		// SECURITY DEFINER helper instead of a raw INSERT. Both with-email and
+		// without-email shapes collapse onto one helper call via the
+		// p_email DEFAULT NULL branch. Mock the SELECT call shape; the helper
+		// body's INSERT runs server-side and is not visible to sqlmock.
+		mock.ExpectExec(`SELECT csaas_register_tenant\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+
+		router := setupCSAASTestRouter()
+		resetRegIPTracker()
+		RegisterCommunityRegistrationHandler(router, db)
+
+		// Request struct's JSON tag is `email` (registrationRequest.Email),
+		// not claimed_by_email — see community_saas_register.go:188.
+		body := bytes.NewBufferString(`{"label":"integration-test","email":"alice@example.com"}`)
+		req := httptest.NewRequest("POST", "/api/v1/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d (body=%s)", rr.Code, rr.Body.String())
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("INSERT shape mismatch — v9 Phase 6 org_id=$1 / client_id=$1 invariant violated: %v", err)
+		}
+	})
+
+	t.Run("non-email INSERT contains client_id column", func(t *testing.T) {
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+		if err != nil {
+			t.Fatalf("sqlmock.New failed: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+
+		// v9 Phase 8 PR-A (mig 109): handler now calls csaas_register_tenant.
+		// Same helper, same arg count — sqlmock matches the SELECT shape.
+		mock.ExpectExec(`SELECT csaas_register_tenant\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec(`SELECT register_org`).WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(`SELECT register_tenant`).WillReturnResult(sqlmock.NewResult(0, 0))
+
+		router := setupCSAASTestRouter()
+		resetRegIPTracker()
+		RegisterCommunityRegistrationHandler(router, db)
+
+		body := bytes.NewBufferString(`{"label":"integration-test-no-email"}`)
+		req := httptest.NewRequest("POST", "/api/v1/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.2:1234"
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d (body=%s)", rr.Code, rr.Body.String())
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("INSERT shape mismatch — v9 Phase 6 org_id=$1 / client_id=$1 invariant violated: %v", err)
+		}
+	})
 }

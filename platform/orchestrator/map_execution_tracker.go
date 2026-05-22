@@ -138,8 +138,10 @@ func (t *MAPExecutionTracker) SyncPlanStatus(ctx context.Context, planID string,
 	case planning.PlanStatusFailed:
 		return t.FailExecution(ctx, executionID, fmt.Errorf("%s", errorMsg))
 	case planning.PlanStatusExpired:
-		// Bug D fix: expired plans get "expired" status, not "completed"
-		return t.BaseExecutionTracker.GetRepo().ExpireExecution(ctx, executionID, nil)
+		// Bug D fix: expired plans get "expired" status, not "completed".
+		// v9 Phase 8 #2384 PR-C1: ExpireExecution now requires orgID + tenantID
+		// for RLS scoping (mig 042 execution_history). exec was fetched above.
+		return t.BaseExecutionTracker.GetRepo().ExpireExecution(ctx, exec.OrgID, exec.TenantID, executionID, nil)
 	case planning.PlanStatusCancelled:
 		reason := errorMsg
 		if reason == "" {
@@ -270,14 +272,15 @@ func (t *MAPExecutionTracker) SyncStepResults(ctx context.Context, planID string
 		}
 	}
 
-	// Update steps in a single DB call
-	if err := t.BaseExecutionTracker.GetRepo().UpdateSteps(ctx, exec.ExecutionID, status.Steps); err != nil {
+	// Update steps in a single DB call.
+	// v9 Phase 8 #2384 PR-C1: orgID + tenantID required for RLS scoping (mig 042).
+	if err := t.BaseExecutionTracker.GetRepo().UpdateSteps(ctx, exec.OrgID, exec.TenantID, exec.ExecutionID, status.Steps); err != nil {
 		return fmt.Errorf("update steps for plan %s: %w", planID, err)
 	}
 
 	// Update actual cost if we calculated any
 	if totalCostUSD > 0 {
-		_ = t.BaseExecutionTracker.GetRepo().UpdateCost(ctx, exec.ExecutionID, nil, &totalCostUSD)
+		_ = t.BaseExecutionTracker.GetRepo().UpdateCost(ctx, exec.OrgID, exec.TenantID, exec.ExecutionID, nil, &totalCostUSD)
 	}
 
 	return nil

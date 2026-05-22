@@ -31,6 +31,12 @@ permissions:
   pull-requests: read
   checks: write
 
+# Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
+# runs use the SHA so they never share a group and never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Consolidated lint job to reduce CI costs
 # Reduced from 6 parallel matrix jobs to 1 sequential job (~80% reduction in billable minutes)
 

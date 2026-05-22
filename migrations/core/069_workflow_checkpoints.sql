@@ -65,8 +65,8 @@ CREATE TABLE IF NOT EXISTS workflow_checkpoints (
 
 -- Resume queries: find resumable checkpoints efficiently
 -- Note: UNIQUE(workflow_id, step_id) already provides an index on workflow_id for primary lookups.
-CREATE INDEX idx_wf_checkpoints_resumable ON workflow_checkpoints(workflow_id, is_resumable)
+CREATE INDEX IF NOT EXISTS idx_wf_checkpoints_resumable ON workflow_checkpoints(workflow_id, is_resumable)
     WHERE is_resumable = true;
 
 -- Tenant-scoped queries
-CREATE INDEX idx_wf_checkpoints_tenant ON workflow_checkpoints(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_wf_checkpoints_tenant ON workflow_checkpoints(tenant_id);

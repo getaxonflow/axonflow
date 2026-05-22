@@ -936,18 +936,25 @@ func initializeComponents() {
 		// SECURITY: Don't log DATABASE_URL contents as it may contain credentials
 		log.Printf("DATABASE_URL is set (length: %d chars)", len(dbURL))
 
-		// Initialize usage metering database connection
+		// Initialize usage metering database connection.
+		// v9 Brief 11.5 / Session 20: route through agent.OpenAppRoleConnection so
+		// AXONFLOW_DB_USE_APP_ROLE=true (default in v9.0.0) actually flips the
+		// connection role to axonflow_app_role instead of silently using the
+		// table-owner role and bypassing FORCE RLS.
 		var err error
-		usageDB, err = sql.Open("postgres", dbURL)
+		bootCtx := context.Background()
+		usageDB, err = agent.OpenAppRoleConnection(bootCtx, dbURL, 5)
 		if err != nil {
 			log.Printf("Warning: Failed to connect to usage database: %v", err)
 			log.Println("Usage metering will be disabled")
-		} else if err := usageDB.Ping(); err != nil {
-			log.Printf("Warning: Failed to ping usage database: %v", err)
-			log.Println("Usage metering will be disabled")
 			usageDB = nil
 		} else {
-			log.Println("✅ Usage metering database connected")
+			var connectedRole string
+			if err := usageDB.QueryRowContext(bootCtx, "SELECT current_user").Scan(&connectedRole); err != nil {
+				log.Printf("Warning: Failed to query current_user on usageDB: %v (continuing)", err)
+			}
+			log.Printf("✅ usageDB connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+				connectedRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 		}
 	} else {
 		log.Println("WARNING: DATABASE_URL environment variable is NOT set!")
@@ -994,10 +1001,29 @@ func initializeComponents() {
 				log.Println("✅ Heartbeat service started")
 			}
 
-			// Initialize node monitor (only if explicitly enabled)
+			// Initialize node monitor (only if explicitly enabled).
+			//
+			// Mirrors the agent's parallel site (platform/agent/run.go): the
+			// EE GetActiveNodesByOrg runs `SELECT org_id, COUNT(*) FROM
+			// agent_heartbeats ... GROUP BY org_id` — a cross-org sweep.
+			// Under FORCE RLS on agent_heartbeats (mig 107) as
+			// axonflow_app_role, that query silently returns 0 rows per org
+			// and license-limit violations never fire. Open admin
+			// (BYPASSRLS) connection if configured; fall back to usageDB
+			// with a WARNING for legacy deployments + dev compose.
 			if os.Getenv("ENABLE_NODE_MONITOR") == "true" {
+				agent.RequirePlatformAdminOrFatal("NodeMonitor")
 				alerter := node_enforcement.NewMultiChannelAlerter()
-				nodeMonitor = node_enforcement.NewNodeMonitor(usageDB, alerter)
+				monitorDB := usageDB
+				if adminDB, adminErr := agent.OpenPlatformAdminConnection(ctx, 3); adminErr != nil {
+					log.Printf("[NodeMonitor] failed to open admin connection (%v); falling back to usageDB", adminErr)
+				} else if adminDB != nil {
+					log.Println("[NodeMonitor] using axonflow_platform_admin (BYPASSRLS) connection for cross-org node counts")
+					monitorDB = adminDB
+				} else {
+					log.Println("[NodeMonitor] WARNING: AXONFLOW_DB_PLATFORM_ADMIN_URL not set; falling back to usageDB. Under FORCE RLS as app_role, NodeMonitor will not observe cross-org rows.")
+				}
+				nodeMonitor = node_enforcement.NewNodeMonitor(monitorDB, alerter)
 				nodeMonitor.Start(ctx)
 				log.Println("✅ Node monitoring started")
 			}

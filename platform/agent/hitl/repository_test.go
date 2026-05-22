@@ -31,6 +31,11 @@ func TestRepository_Create_Success(t *testing.T) {
 	requestID := uuid.New()
 	now := time.Now()
 
+	// v9 Phase 8 #2384 PR-C1: Create wraps the INSERT in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WithArgs(
 			requestID, "org-1", "tenant-1", "client-1", sql.NullString{},
@@ -43,6 +48,7 @@ func TestRepository_Create_Success(t *testing.T) {
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, now, now))
+	mock.ExpectCommit()
 
 	req := &ApprovalRequest{
 		RequestID:           requestID,
@@ -96,6 +102,10 @@ func TestRepository_Create_WithContext(t *testing.T) {
 
 	contextJSON, _ := json.Marshal(contextData)
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WithArgs(
 			requestID, "org-1", "tenant-1", "client-1", sql.NullString{},
@@ -106,6 +116,7 @@ func TestRepository_Create_WithContext(t *testing.T) {
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, now, now))
+	mock.ExpectCommit()
 
 	req := &ApprovalRequest{
 		RequestID:           requestID,
@@ -356,11 +367,17 @@ func TestRepository_UpdateStatus_Success(t *testing.T) {
 		Role:  "admin",
 	}
 
+	// v9 Phase 8 #2384 PR-C1: WithOrgScope wraps the UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WithArgs("approved", "reviewer-1", "reviewer@example.com", "admin", "Looks good", requestID).
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
-	err = repo.UpdateStatus(ctx, requestID, "approved", reviewer, "Looks good")
+	err = repo.UpdateStatus(ctx, "test-org", requestID, "approved", reviewer, "Looks good")
 	if err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
@@ -386,11 +403,16 @@ func TestRepository_UpdateStatus_NotFound(t *testing.T) {
 		Email: "reviewer@example.com",
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WithArgs("approved", "reviewer-1", "reviewer@example.com", sql.NullString{}, sql.NullString{}, requestID).
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
-	err = repo.UpdateStatus(ctx, requestID, "approved", reviewer, "")
+	err = repo.UpdateStatus(ctx, "test-org", requestID, "approved", reviewer, "")
 	if err == nil {
 		t.Error("Expected error for not found, got nil")
 	}
@@ -415,11 +437,16 @@ func TestRepository_Override_Success(t *testing.T) {
 
 	requestID := uuid.New()
 
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WithArgs("Emergency override", "admin-1", requestID).
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
-	err = repo.Override(ctx, requestID, "Emergency override", "admin-1")
+	err = repo.Override(ctx, "test-org", requestID, "Emergency override", "admin-1")
 	if err != nil {
 		t.Fatalf("Override failed: %v", err)
 	}
@@ -441,11 +468,16 @@ func TestRepository_Override_NotFound(t *testing.T) {
 
 	requestID := uuid.New()
 
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_org_id', \\$1, true\\)").
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WithArgs("Emergency override", "admin-1", requestID).
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
-	err = repo.Override(ctx, requestID, "Emergency override", "admin-1")
+	err = repo.Override(ctx, "test-org", requestID, "Emergency override", "admin-1")
 	if err == nil {
 		t.Error("Expected error for not found, got nil")
 	}
@@ -568,6 +600,11 @@ func TestRepository_AddHistory_Success(t *testing.T) {
 	requestID := uuid.New()
 	now := time.Now()
 
+	// v9 Phase 8 #2384 PR-C1: AddHistory wraps INSERT in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WithArgs(
 			requestID, "org-1", "tenant-1", "approved",
@@ -576,6 +613,7 @@ func TestRepository_AddHistory_Success(t *testing.T) {
 			"pending", "approved",
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, now))
+	mock.ExpectCommit()
 
 	entry := &ApprovalHistory{
 		RequestID:      requestID,
@@ -618,6 +656,10 @@ func TestRepository_AddHistory_WithJustification(t *testing.T) {
 	requestID := uuid.New()
 	now := time.Now()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WithArgs(
 			requestID, "org-1", "tenant-1", "overridden",
@@ -626,6 +668,7 @@ func TestRepository_AddHistory_WithJustification(t *testing.T) {
 			"pending", "overridden",
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, now))
+	mock.ExpectCommit()
 
 	entry := &ApprovalHistory{
 		RequestID:      requestID,

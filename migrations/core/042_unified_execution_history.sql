@@ -77,22 +77,22 @@ CREATE TABLE IF NOT EXISTS execution_history (
 -- ============================================================================
 
 -- Primary lookup patterns
-CREATE INDEX idx_execution_history_tenant ON execution_history(tenant_id);
-CREATE INDEX idx_execution_history_type ON execution_history(execution_type);
-CREATE INDEX idx_execution_history_status ON execution_history(status);
-CREATE INDEX idx_execution_history_external ON execution_history(external_id);
+CREATE INDEX IF NOT EXISTS idx_execution_history_tenant ON execution_history(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_execution_history_type ON execution_history(execution_type);
+CREATE INDEX IF NOT EXISTS idx_execution_history_status ON execution_history(status);
+CREATE INDEX IF NOT EXISTS idx_execution_history_external ON execution_history(external_id);
 
 -- Time-based queries (most recent first)
-CREATE INDEX idx_execution_history_created ON execution_history(created_at DESC);
-CREATE INDEX idx_execution_history_started ON execution_history(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_history_created ON execution_history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_history_started ON execution_history(started_at DESC);
 
 -- Composite indexes for common queries
-CREATE INDEX idx_execution_history_tenant_type ON execution_history(tenant_id, execution_type);
-CREATE INDEX idx_execution_history_tenant_status ON execution_history(tenant_id, status);
-CREATE INDEX idx_execution_history_type_status ON execution_history(execution_type, status);
+CREATE INDEX IF NOT EXISTS idx_execution_history_tenant_type ON execution_history(tenant_id, execution_type);
+CREATE INDEX IF NOT EXISTS idx_execution_history_tenant_status ON execution_history(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_execution_history_type_status ON execution_history(execution_type, status);
 
 -- JSONB index for step queries (GIN index)
-CREATE INDEX idx_execution_history_steps ON execution_history USING GIN (steps);
+CREATE INDEX IF NOT EXISTS idx_execution_history_steps ON execution_history USING GIN (steps);
 
 -- ============================================================================
 -- Row-Level Security
@@ -100,7 +100,12 @@ CREATE INDEX idx_execution_history_steps ON execution_history USING GIN (steps);
 
 ALTER TABLE execution_history ENABLE ROW LEVEL SECURITY;
 
--- Tenant isolation policy
+-- Tenant isolation policy. Idempotent DROP+CREATE so re-runs on
+-- bug-impacted installs (where 042_singapore_pii_patterns clobbered
+-- this migration's schema_migrations row under the v1 version-only
+-- UNIQUE) succeed instead of raising 42710. See migration
+-- 096_schema_migrations_dedup_composite.sql.
+DROP POLICY IF EXISTS execution_history_tenant_isolation ON execution_history;
 CREATE POLICY execution_history_tenant_isolation ON execution_history
     FOR ALL
     USING (
@@ -120,6 +125,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_execution_history_updated_at ON execution_history;
 CREATE TRIGGER trigger_execution_history_updated_at
     BEFORE UPDATE ON execution_history
     FOR EACH ROW

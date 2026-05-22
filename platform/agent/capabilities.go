@@ -71,14 +71,18 @@ func getCapabilities() []PlatformCapability {
 
 func getSDKCompatibility() SDKCompatInfo {
 	return SDKCompatInfo{
-		// Floor of the current major line. With the v8.0.0 release-train
-		// the SDK major bumps from v7 to v8. Callers below 8.0.0 lack the
-		// typed 429 RateLimitError upgrade-envelope handling and the
-		// list_decisions method (Session γ / #1982). Advertising the
-		// floor signals to them that they should upgrade to keep
-		// envelope-aware error handling and the new list endpoint.
-		// Note: Go's major bump also changes the import path
-		// (axonflow-sdk-go/v7 → /v8) per Go modules v2+ rules.
+		// Floor of the current major line. The SDK major bumped from
+		// v7 to v8 during the v7.9.0 release-train (#2016 pre-emptive
+		// floor bump 2026-05-08, folded into the v7.9.0 community sync
+		// at #2102 on 2026-05-09). The current v8.0.0 platform bump
+		// (#2308) did NOT change the SDK floor — it stayed at v8.0.0.
+		// Callers below 8.0.0 lack the typed 429 RateLimitError
+		// upgrade-envelope handling and the list_decisions method
+		// (Session γ / #1982). Advertising the floor signals to them
+		// that they should upgrade to keep envelope-aware error
+		// handling and the new list endpoint. Note: Go's major bump
+		// also changes the import path (axonflow-sdk-go/v7 → /v8) per
+		// Go modules v2+ rules.
 		MinSDKVersion: map[string]string{
 			"python":     "8.0.0",
 			"typescript": "8.0.0",
@@ -106,14 +110,15 @@ func getSDKCompatibility() SDKCompatInfo {
 func getPluginCompatibility() PluginCompatInfo {
 	return PluginCompatInfo{
 		// Floor of each plugin's current released contract. Bumped from
-		// {2.0.0, 1.0.0×3} to {2.4.0, 1.4.0×3} alongside the v7.9.0
-		// release-train: openclaw 2.0–2.3.x carried bugs we no longer
-		// support; claude-code/cursor/codex 1.0–1.3.x predate the v8
-		// list_decisions integration. Anything below this floor speaks
-		// an out-of-contract version and receives the actionable
-		// downgrade-warning header on every governed call. The plugin
-		// tags ship within ~15-30 minutes of the v7.9.0 community sync
-		// per the release-train order locked at #2047.
+		// {2.0.0, 1.0.0×3} to {2.4.0, 1.4.0×3} during the v7.9.0
+		// release-train prep (#2102): openclaw 2.0–2.3.x carried bugs
+		// we no longer support; claude-code/cursor/codex 1.0–1.3.x
+		// predate the v8 list_decisions integration. Anything below
+		// this floor speaks an out-of-contract version and receives
+		// the actionable downgrade-warning header on every governed
+		// call. The plugin tags shipped within ~15-30 minutes of the
+		// v7.9.0 community sync per the release-train order locked at
+		// #2047.
 		MinPluginVersion: map[string]string{
 			"openclaw":    "2.4.0",
 			"claude-code": "1.4.0",
@@ -122,15 +127,15 @@ func getPluginCompatibility() PluginCompatInfo {
 		},
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each plugin's release-train tag. Bumped to claude/cursor/codex
-		// 1.4.0 + openclaw 2.4.0 alongside the SDK v8.0.0 release-train —
-		// the new minor carries the SDK v8 list_decisions integration so the
-		// "show me the last decisions for this user" affordance lands
-		// natively in each host. Plugin tags + registry publish are held
-		// pending explicit per-version authorization per
-		// `feedback_releases_require_approval.md`; until the tags ship,
-		// the recommended-version advertises the planned version so plugins
-		// on 1.3.x / 2.3.x receive an actionable upgrade-warning header on
-		// every governed call.
+		// 1.4.0 + openclaw 2.4.0 during the v7.9.0 release-train (#2102
+		// on 2026-05-09) — the new minor carries the SDK v8 list_decisions
+		// integration so the "show me the last decisions for this user"
+		// affordance lands natively in each host. The v8.0.0 platform bump
+		// (#2308) did NOT change the plugin recommended-version. Plugin
+		// tags are live on their registries (openclaw 2.4.0 on npm,
+		// claude/cursor/codex 1.4.0 on ClawHub) — plugins on 1.3.x /
+		// 2.3.x receive an actionable upgrade-warning header on every
+		// governed call.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.4.0",
 			"claude-code": "1.4.0",

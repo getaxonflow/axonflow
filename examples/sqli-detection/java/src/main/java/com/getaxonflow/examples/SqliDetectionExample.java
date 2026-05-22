@@ -109,7 +109,7 @@ public class SqliDetectionExample {
                 result = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
                         .query(test.query)
-                        .userToken("sqli-detection-user")
+                        .userToken(getEnv("AXONFLOW_USER_TOKEN", "sqli-detection-user"))
                         .build()
                 );
             } catch (PolicyViolationException e) {
@@ -163,7 +163,7 @@ public class SqliDetectionExample {
                 configResult = client.getPolicyApprovedContext(
                     PolicyApprovalRequest.builder()
                         .query("SELECT * FROM users; DROP TABLE users;--")
-                        .userToken("sqli-config-test-user")
+                        .userToken(getEnv("AXONFLOW_USER_TOKEN", "sqli-config-test-user"))
                         .build()
                 );
             } catch (PolicyViolationException e) {

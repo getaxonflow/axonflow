@@ -12,6 +12,97 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-05-22 — v8 identity model enforcement + Row-Level Security default-on + cross-org admin routing
+
+**Major-version cut.** v8.0.0 separates three previously-conflated identifiers — customer organization, API credential, and license deployment identity — and turns on Row-Level Security as the default tenant-isolation mechanism (FORCE RLS + non-owner application role) with cross-org admin routing for sweeps, recovery, and node-monitor workers. Pre-v8.0 the agent connected to the application database as the table owner, so RLS policies were defined but inert; v8.0.0 makes them load-bearing.
+
+This is a major version because Row-Level Security enforcement changes the behaviour of direct SQL queries against the AxonFlow application database under the application role. **For customers using only the SDKs / plugins / HTTP API there is no breaking change** — JSON field names are unchanged, the `X-Tenant-ID` header is accepted as a deprecated alias, and Basic Auth credentials keep working. Existing v7.x SDKs (v8.0.0 SDK train) continue to work against v8.0.0 platform unchanged; the agent derives identity from Basic Auth when `X-Client-ID` is absent.
+
+For the full mapping see the [v8 migration guide](https://docs.getaxonflow.com/docs/deployment/v8-to-v9-migration/).
+
+### Breaking changes
+
+- **`AXONFLOW_DB_USE_APP_ROLE` env gate, default `true`.** Agent + customer-portal connect to the application database as `axonflow_app_role` (NOBYPASSRLS) unless `AXONFLOW_DB_USE_APP_ROLE=false` is set explicitly. FORCE-RLS-protected tables return zero rows from any read that hasn't first set `app.current_org_id` via `set_config('app.current_org_id', '<value>', true)`. Verify before upgrade:
+  1. `AXONFLOW_DB_APP_ROLE_URL` is set (or `DATABASE_URL` connects as the same role as master for dev / docker-compose).
+  2. `AXONFLOW_DB_PLATFORM_ADMIN_URL` is set if any background worker iterates across orgs.
+  3. All custom workers that iterate across orgs have been audited; they will silently return 0 rows under the app role.
+  4. The `axonflow_app_role` + `axonflow_platform_admin` Postgres roles exist with `NOBYPASSRLS` / `BYPASSRLS` respectively (`scripts/operators/provision-app-role.sh` is the canonical bootstrap).
+  Set `AXONFLOW_DB_USE_APP_ROLE=false` explicitly during a phased rollout to preserve v7.x semantics.
+
+- **Direct SQL against the AxonFlow application database under the application role.** RLS is now enforced. SELECTs return zero rows unless `app.current_org_id` is set first. Use the `axonflow_platform_admin` role (or master) for legitimate cross-org access.
+
+- **`middleware.RLSMiddleware` + `SetRLSContextForSession` + `ResetRLSContext` + `WithRLS` removed.** The four pool-scope GUC functions issued `SELECT set_org_id($1)` on the `*sql.DB` pool — pool-unsafe because the GUC landed on one connection and the next handler statement might run on a different one. Forks calling these directly must migrate to `withRequestOrgScope(r, h.db, fn)`. Diagnostic helpers (`GetCurrentOrgID`, `VerifyRLSActive`, `GetRLSStats`, `RLSHealthCheck`) retained.
+
+### Identity model — three distinct identifiers
+
+- **`RequestIdentity` + `ClientIDFromContext` + `X-Client-ID` header forwarding.** Agent derives identity once per request and exposes a structured accessor; `X-Client-ID` is the canonical API-credential header and is forwarded agent → orchestrator. The agent's auth middleware overwrites any caller-supplied `X-Client-ID` with its own auth-derived value before forwarding, so spoofed inbound headers have no effect. `X-Tenant-ID` accepted as deprecated alias through v8; planned removal in the next major.
+
+- **Additive `client_id` schema + idempotent `org_id` backfill.** Migrations 088–095 add `client_id` columns to credential, audit, policy, execution, and service-identity tables; backfill `client_id = tenant_id` for hot-path credential tables; composite indexes `(org_id, client_id, timestamp/created_at)` on audit tables.
+
+- **v8 compat aliases retained.** `tenant_id` columns kept as deprecated; `X-Tenant-ID` header accepted; SDK config `clientId` semantics unchanged. Slated for removal in the next major.
+
+### Row-Level Security enforcement
+
+- **`axonflow_app_role` (NOBYPASSRLS) + `axonflow_platform_admin` (BYPASSRLS) Postgres roles.** Application traffic runs as the non-owner app role; background workers that iterate across orgs use `axonflow_platform_admin`.
+
+- **`WithOrgScope` transaction-scoped GUC.** `platform/agent/rls_session.go` `WithOrgScope` sets `app.current_org_id` per request transaction via `set_config('app.current_org_id', $1, true)` (third argument `true` = txn-local), guaranteeing isolation between concurrent requests on a shared connection pool.
+
+- **`OpenPlatformAdminConnection()` helper.** New entrypoint in `platform/agent/db_connection.go` for cross-org workers to open a `*sql.DB` authenticated as `axonflow_platform_admin`. Asserts `current_user` matches on connect. Returns `nil, nil` when env unset (callers fall back to single-role behavior, with a startup-log declaration).
+
+- **Main connection pools open via `OpenAppRoleConnection`.** Agent `authDB`, orchestrator `usageDB` + dynamic-policy + metrics + audit-logger pools, customer-portal main pool, and the connector-registry runtime pool all open through the helper, which resolves the DSN from `AXONFLOW_DB_APP_ROLE_URL` when `AXONFLOW_DB_USE_APP_ROLE=true` and asserts the connected role is `axonflow_app_role` at boot. Each pool emits a `current_user=<role> (UseAppRoleEnabled=<bool>, ...)` startup log line so a misconfigured DSN that silently falls back to the master role is caught at boot instead of bypassing RLS at runtime. Customer-portal's admin (BYPASSRLS) pool routes through `OpenPlatformAdminConnection` with the same role assertion. The connector-registry storage retains a one-shot master pool only for its `initSchema()` step (axonflow_app_role lacks DDL privileges); the master pool is closed immediately after schema init and runtime traffic uses the app-role pool exclusively. Orchestrator-side handlers that touch FORCE-RLS tables wrap their access via `withRequestOrgScope` / equivalent SECURITY DEFINER helpers, matching the customer-portal contract.
+
+- **Local-dev docker-compose defaults to single-role mode.** `docker-compose.yml` + `docker-compose.enterprise.yml` pin `AXONFLOW_DB_USE_APP_ROLE=false` so the stack boots without role provisioning. Override to `true` after running `scripts/operators/provision-app-role.sh` to soak the production path locally.
+
+- **Cross-org workers route through admin role.** `StartCommunitySaasSweep`, `RegisterCommunityRecoveryHandler`, and `NewNodeMonitor` now call `OpenPlatformAdminConnection` and use the admin DB for their cross-org queries. Each emits a startup log declaring admin-vs-fallback for verification. Self-hosted deployments running `COMMUNITY_SAAS_SWEEP_ENABLED=true` or `ENABLE_NODE_MONITOR=true` (or any fork with custom cross-org workers) must set `AXONFLOW_DB_PLATFORM_ADMIN_URL` before upgrade — without it, these workers silently return 0 rows under the app role.
+
+- **Customer-portal handlers wrap FORCE-RLS table access.** `nodes.go`, `export.go`, `connectors.go`, `sso.go`, `auth/saml/service.go` now wrap reads/writes of `organizations`, `tenants`, `community_saas_registrations`, `sso_*`, and `connector_configs` in `withRequestOrgScope` / `withOrgScope`. SAML INSERTs populate `org_id` (migration 106 marks the column `NOT NULL`).
+
+- **MCP cache-miss path stamps auth context.** `resolveMCPSession`'s cache-miss branch + `handleMCPInitialize` now capture `*Client` + `AuthKind` into the cached `mcpSession`. `requireMCPAuth` stamps the four auth context keys (`TenantID` / `OrgID` / `ClientID` / `AuthKind`) on `r.Context()` so MCP `tools/call` traffic sees the authenticated identity downstream — matching the REST middleware contract that the latent gap on this path had been missing.
+
+- **FORCE RLS on audit, identity, config, and SSO tables.** Migrations 098, 099, 101, 102, 103, 106, 107 enforce row-level security on `deployment_upgrades`, `saml_configurations`, `audit_archive`, `mcp_query_audits`, `audit_retention_config`, `decision_chain`, identity tables (`custom_roles`, `role_assignments`, `service_identities`), `sso_configurations`, and additional config tables. First `FORCE ROW LEVEL SECURITY` in repo history; direct SQL against any of these tables under `axonflow_app_role` returns zero rows unless `app.current_org_id` is set first.
+
+- **SECURITY DEFINER auth-bootstrap helpers.** Migrations 104, 108, and 109 introduce SECURITY DEFINER functions that bypass the FORCE-RLS chicken-egg for the auth-bootstrap step (the application role needs to read `customer_portal_api_keys` to authenticate the request that will then set `app.current_org_id`). Migration 104 ships `auth_lookup_api_key(text)` + `auth_touch_api_key(text)` for SELECT/UPDATE on the auth path; migration 108 ships the in-VPC variant for AWS deployments routing through a Lambda-side helper; migration 109 ships five additional helpers covering pre-auth `INSERT`/`UPDATE` paths (license claim, registration, telemetry-ack, etc.). All functions hardcode `search_path = pg_catalog, public` and are owned by `axonflow_platform_admin`.
+
+- **Refuse-to-boot guard for `AXONFLOW_DB_USE_APP_ROLE=true` without `AXONFLOW_DB_PLATFORM_ADMIN_URL`.** The agent, orchestrator, and customer-portal binaries now exit on startup with a `FATAL` log line when `AXONFLOW_DB_USE_APP_ROLE=true` (the v8.0.0 default, also active when the env var is unset) and `AXONFLOW_DB_PLATFORM_ADMIN_URL` is not set. The previous behavior was a `WARNING` log followed by a silent fallback to the request-traffic pool, which under FORCE Row-Level Security caused cross-org workers (marketplace metering, community-saas sweep / recovery, node monitor, customer-portal admin handlers) to silently return zero rows. The FATAL log names both env vars so the configuration can be corrected without source diving. To preserve the legacy single-role posture, set `AXONFLOW_DB_USE_APP_ROLE=false` explicitly; the guard is a no-op under that flag.
+
+### Migrations
+
+- **`AXONFLOW_MIGRATIONS_PATH` env override.** Overrides the agent's hard-coded `/app/migrations/` Docker mount for deployments that don't use the canonical Docker layout. Leave unset for the standard Docker / `docker-compose` topology.
+
+- **Migrations 042 + 069 made idempotent.** `CREATE INDEX IF NOT EXISTS` + `DROP TRIGGER IF EXISTS; CREATE TRIGGER` patterns make migrations safe to re-attempt when their `success=true` row is absent.
+
+### Schema changes
+
+- **`custom_roles.tenant_id` and `role_assignments.tenant_id` renamed to `org_id` (migration 111).** mig 023 (Nov 2025) created these two tables with a legacy `tenant_id` column predating the v8 identity rename. The RLS policies compared the column against the canonical `app.current_org_id` GUC, so the wraps elsewhere in this release worked — but the column/GUC mismatch was transitional. Migration 111 normalizes both tables to the canonical `org_id` column, recreates the RLS policy with the canonical `*_org_id_isolation` name shape, adds an explicit `WITH CHECK` clause (mig 023 specified `USING` only), and renames the dependent unique constraint (`uq_custom_roles_tenant_name → uq_custom_roles_org_name`) and indexes (`idx_custom_roles_tenant_id → idx_custom_roles_org_id`; same for `role_assignments`). `ALTER TABLE RENAME COLUMN` is data-safe (Postgres tracks column refs by `attnum`); the migration takes a brief `AccessExclusiveLock` on each table while the metadata flip and the DROP/CREATE POLICY run inside a single transaction. The Go-side `Role.TenantID` / `RoleAssignment.TenantID` struct fields rename to `OrgID` with `json:"org_id"` tags — direct consumers of the customer-portal roles API over HTTP must update their parsers; the customer-portal UI is unaffected (it never read the field).
+
+### Administrative tooling
+
+- **`scripts/operators/provision-app-role.sh`.** Reusable preflight script that idempotently creates `axonflow_app_role` + `axonflow_platform_admin` Postgres roles, grants the role-membership chain, and asserts `NOBYPASSRLS` / `BYPASSRLS` on the respective roles. Run before bumping `AXONFLOW_DB_USE_APP_ROLE=true`.
+
+- **AWS CFN integration provisions `axonflow_app_role` automatically on stack deploys.** A new `provision-app-role` workflow runs as part of the AWS CFN deploy pipeline: it stages the role-bootstrap step against the deployment's RDS instance (deriving VPC + subnets from the RDS subnet group), gates the stack update on successful provisioning, and surfaces an `AppRoleProvisioned` CFN parameter so subsequent updates skip the step. Self-hosted AWS deployments no longer need to run the bash script by hand.
+
+### Self-hosted upgrades
+
+- **Keep `AXONFLOW_DB_USE_APP_ROLE=false` until you audit forks.** Stock v8.0.0 ships every hot-path write wrapped against FORCE RLS, but self-hosted deployments running customized or forked handlers (custom connectors, in-tree auth shims, fork divergence) must audit their write paths before flipping the env to `true`. Customized handlers that `INSERT`/`UPDATE` into Row-Level-Security-enabled tables without wrapping `WithOrgScope` or going through a SECURITY DEFINER helper will fail with `pq: new row violates row-level security policy`. The self-hosted preflight script gained a check that surfaces the env-pair requirement plus a customized-handler audit advisory; the [v8 migration guide](https://docs.getaxonflow.com/docs/deployment/v8-to-v9-migration/) gained a `Change 4` section detailing the audit recipe and the staged-rollout pattern.
+
+### Security
+
+- **Admin-API anonymous-callable fix.** Closed an admin-API endpoint that was anonymous-callable despite Basic Auth being declared in the OpenAPI spec; admin operations now require Basic Auth in all environments.
+
+### Telemetry
+
+- **`org_id` now included in SDK heartbeat payloads.** v8.1.0 SDKs (Go / Python / TypeScript / Java) + Rust v0.3.1 emit the caller's `org_id` alongside the existing instance / endpoint / deployment-mode fields. The platform's central heartbeat receiver tags incoming records with this value. `AXONFLOW_TELEMETRY=off` remains the sole opt-out and disables the heartbeat entirely. No other fields added; the previous v1 schema continues to work with v8.0.0 SDKs.
+
+### Examples
+
+- **End-to-end sweep across all five SDKs.** Every example in `platform/examples/` exercised end-to-end against a live agent with Go, Python, TypeScript, Java, and Rust SDKs. Examples that depended on stale env-var names, removed flags, or pre-v8 license shapes refreshed to match v8.0.0 platform behavior.
+
+### SDK + plugin floor (advertised by `/health`)
+
+- **Min SDK v8.0.0 (unchanged).** v8.0.0 SDK callers keep working against v8.0.0 platform — agent derives identity from Basic Auth when `X-Client-ID` is absent.
+- **Recommended SDK v8.0.0.** v8.1.0 SDKs (Go / Python / TypeScript / Java) + Rust v0.3.1 are on each SDK's `main` carrying the `X-Client-ID` outbound emission, but not yet released to registries. Recommended will bump to v8.1.0 / v0.3.1 once the SDKs tag + publish.
+- **Min plugins openclaw v2.4.0 / claude-code v1.4.0 / cursor v1.4.0 / codex v1.4.0 (unchanged).** Recommended unchanged.
+
 ## [7.9.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision
 
 **Decision-record release.** Closes the loop on programmatic decision audit:

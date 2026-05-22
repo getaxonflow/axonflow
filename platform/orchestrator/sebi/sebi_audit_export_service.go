@@ -552,7 +552,7 @@ func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, te
 	query := `
 		SELECT id, request_id, created_at, decision_type, decision,
 		       confidence, rationale, model_id, human_override, override_by, override_reason
-		FROM decision_chain_log
+		FROM decision_chain
 		WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
 		ORDER BY created_at DESC
 		LIMIT 100000
@@ -696,32 +696,42 @@ func (s *SEBIAuditExportServiceImpl) exportPIIRedactions(ctx context.Context, te
 // =============================================================================
 
 func (s *SEBIAuditExportServiceImpl) checkRetentionCompliance(ctx context.Context, tenantID string) (bool, string) {
-	// audit_retention_config table is keyed by org_id (not tenant_id)
+	// audit_retention_config table is keyed by org_id (not tenant_id).
+	// v9 Phase 8 B2 (migration 100): audit_retention_config is FORCE ROW LEVEL
+	// SECURITY enforced. Wrap the read in withOrgScope so the policy
+	// org_id = current_setting('app.current_org_id', true) evaluates to TRUE
+	// for the tenant's rows. The WHERE clause stays as a defense-in-depth.
 	query := `
 		SELECT data_type, retention_days
 		FROM audit_retention_config
 		WHERE org_id = $1 AND is_active = true
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID)
-	if err != nil {
-		if isTableNotExistsError(err) {
+	var nonCompliant []string
+	scopeErr := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, tenantID)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			var dataType string
+			var retentionDays int
+			if err := rows.Scan(&dataType, &retentionDays); err != nil {
+				continue
+			}
+			if retentionDays < 1825 {
+				nonCompliant = append(nonCompliant, fmt.Sprintf("%s (%d days)", dataType, retentionDays))
+			}
+		}
+		return rows.Err()
+	})
+	if scopeErr != nil {
+		if isTableNotExistsError(scopeErr) {
 			return true, "Using default 5-year retention"
 		}
-		return false, fmt.Sprintf("Failed to check retention config: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var nonCompliant []string
-	for rows.Next() {
-		var dataType string
-		var retentionDays int
-		if err := rows.Scan(&dataType, &retentionDays); err != nil {
-			continue
-		}
-		if retentionDays < 1825 {
-			nonCompliant = append(nonCompliant, fmt.Sprintf("%s (%d days)", dataType, retentionDays))
-		}
+		return false, fmt.Sprintf("Failed to check retention config: %v", scopeErr)
 	}
 
 	if len(nonCompliant) > 0 {
@@ -803,7 +813,7 @@ func (s *SEBIAuditExportServiceImpl) checkAuditLogging(ctx context.Context, tena
 func (s *SEBIAuditExportServiceImpl) checkDecisionChainTracing(ctx context.Context, tenantID string) (bool, string) {
 	query := `
 		SELECT COUNT(*)
-		FROM decision_chain_log
+		FROM decision_chain
 		WHERE tenant_id = $1 AND created_at >= NOW() - INTERVAL '24 hours'
 	`
 
@@ -829,18 +839,36 @@ func (s *SEBIAuditExportServiceImpl) checkDecisionChainTracing(ctx context.Conte
 func (s *SEBIAuditExportServiceImpl) getOrgName(ctx context.Context, tenantID string) (string, error) {
 	// Try org_id first (string identifier like "travel-us"), then fall back to
 	// numeric id for legacy callers that pass the integer surrogate key.
+	//
+	// v9 Phase 8 B9 (migration 103): organizations is now FORCE ROW LEVEL
+	// SECURITY. Without withOrgScope, the master/app-role connection runs
+	// these SELECTs with app.current_org_id unset → the per-org isolation
+	// policy evaluates to FALSE and the query returns 0 rows for every
+	// tenant. ExportAuditData (line 77) silently falls back to
+	// "Tenant-<id>" on error, so the failure mode under FORCE is degraded
+	// metadata on every SEBI export — quiet but operator-visible. The
+	// withOrgScope wrap sets app.current_org_id = tenantID for the
+	// transaction so the row's org_id matches the GUC.
 	var name string
-	err := s.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE org_id = $1", tenantID).Scan(&name)
-	if err == nil {
-		return name, nil
-	}
-	// Fallback: try numeric id lookup for backwards compatibility
-	err = s.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = $1", tenantID).Scan(&name)
-	return name, err
+	scopeErr := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, "SELECT name FROM organizations WHERE org_id = $1", tenantID).Scan(&name)
+		if err == nil {
+			return nil
+		}
+		// Fallback: try numeric id lookup for backwards compatibility. Still
+		// inside the same tx so app.current_org_id stays set for the FORCE
+		// RLS policy. The numeric-id branch only fires for legacy callers
+		// passing the integer surrogate key, which is a no-op for the
+		// SaaS / portal path where tenantID is always the string org_id.
+		return tx.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = $1", tenantID).Scan(&name)
+	})
+	return name, scopeErr
 }
 
 func (s *SEBIAuditExportServiceImpl) getRetentionConfig(ctx context.Context, tenantID string, dataType string) (int, time.Time, error) {
-	// audit_retention_config table is keyed by org_id (not tenant_id)
+	// audit_retention_config table is keyed by org_id (not tenant_id).
+	// v9 Phase 8 B2 (migration 100): wrap in withOrgScope so app.current_org_id
+	// matches the row's org_id under FORCE ROW LEVEL SECURITY.
 	query := `
 		SELECT retention_days, COALESCE(last_cleanup_at, '1970-01-01'::timestamp)
 		FROM audit_retention_config
@@ -849,11 +877,13 @@ func (s *SEBIAuditExportServiceImpl) getRetentionConfig(ctx context.Context, ten
 
 	var retentionDays int
 	var lastCleanup time.Time
-	err := s.db.QueryRowContext(ctx, query, tenantID, dataType).Scan(&retentionDays, &lastCleanup)
-	if err == sql.ErrNoRows {
+	scopeErr := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, tenantID, dataType).Scan(&retentionDays, &lastCleanup)
+	})
+	if scopeErr == sql.ErrNoRows {
 		return 1825, time.Time{}, nil // Default 5-year retention
 	}
-	return retentionDays, lastCleanup, err
+	return retentionDays, lastCleanup, scopeErr
 }
 
 type dataTypeStats struct {
@@ -878,7 +908,7 @@ func (s *SEBIAuditExportServiceImpl) getDataTypeStats(ctx context.Context, tenan
 	case SEBIDataTypeLLMCalls:
 		tableName = "llm_call_audits"
 	case SEBIDataTypeDecisionChain:
-		tableName = "decision_chain_log"
+		tableName = "decision_chain"
 	case SEBIDataTypeHITLOversight:
 		tableName = "hitl_queue"
 	case SEBIDataTypePIIRedactions:

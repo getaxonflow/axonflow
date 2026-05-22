@@ -216,15 +216,23 @@ func GenerateServiceLicenseKeyWithAud(
 	// ADR-050 §1; the matrix validator-loader rejects anything else at
 	// agent boot. Tokens predating the rename have empty aud and fall
 	// through via the §8 fallback in the validator.
+	//
+	// V3 license payload (ADR-052 §3 + ADR-054): mint BOTH `deployment_id`
+	// (new) and `org_id` (legacy) with the same value. V2-only readers see
+	// the legacy field and keep validating; V3 readers prefer the new
+	// field. Operators inspecting payload JSON now have an unambiguous
+	// deployment-identity field name instead of conflating with customer
+	// row org_id.
 	payload := ServiceLicensePayload{
-		Tier:        string(tier),
-		OrgID:       orgID,
-		ServiceName: serviceName,
-		ServiceType: serviceType,
-		Permissions: permissions,
-		IssuedAt:    issuedStr,
-		ExpiresAt:   expiryStr,
-		Aud:         aud,
+		Tier:         string(tier),
+		DeploymentID: orgID,
+		OrgID:        orgID,
+		ServiceName:  serviceName,
+		ServiceType:  serviceType,
+		Permissions:  permissions,
+		IssuedAt:     issuedStr,
+		ExpiresAt:    expiryStr,
+		Aud:          aud,
 	}
 
 	// Encode payload as JSON

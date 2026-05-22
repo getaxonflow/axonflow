@@ -200,24 +200,34 @@ ALTER TABLE hitl_approval_queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hitl_approval_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decision_chain ENABLE ROW LEVEL SECURITY;
 
+-- Idempotent DROP+CREATE blocks. Re-running this migration on a
+-- bug-impacted install (where 025_decision_chain claimed the v1
+-- version='025' UNIQUE slot and clobbered this file's schema_migrations
+-- row) MUST succeed instead of raising 42710 on the second CREATE.
+-- See migration 096_schema_migrations_dedup_composite.sql.
+
 -- HITL Queue: Users can only see/modify their org's requests
 -- Uses get_current_org_id() helper from migration 018 for consistency
+DROP POLICY IF EXISTS hitl_queue_tenant_isolation ON hitl_approval_queue;
 CREATE POLICY hitl_queue_tenant_isolation ON hitl_approval_queue
     FOR ALL
     USING (org_id = get_current_org_id())
     WITH CHECK (org_id = get_current_org_id());
 
 -- HITL History: Users can only see their org's history (no modifications allowed via policy)
+DROP POLICY IF EXISTS hitl_history_tenant_isolation ON hitl_approval_history;
 CREATE POLICY hitl_history_tenant_isolation ON hitl_approval_history
     FOR SELECT
     USING (org_id = get_current_org_id());
 
 -- HITL History: Insert allowed for same org
+DROP POLICY IF EXISTS hitl_history_insert ON hitl_approval_history;
 CREATE POLICY hitl_history_insert ON hitl_approval_history
     FOR INSERT
     WITH CHECK (org_id = get_current_org_id());
 
 -- Decision Chain: Users can only see their org's chains
+DROP POLICY IF EXISTS decision_chain_tenant_isolation ON decision_chain;
 CREATE POLICY decision_chain_tenant_isolation ON decision_chain
     FOR ALL
     USING (org_id = get_current_org_id())

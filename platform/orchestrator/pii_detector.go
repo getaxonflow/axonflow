@@ -965,7 +965,11 @@ func FilterByConfidence(results []PIIDetectionResult, minConfidence float64) []P
 // This is the preferred method for MCP request/response processing.
 // Falls back to EnhancedPIIDetector if shared engine is unavailable.
 // Uses GATEWAY detection config since orchestrator processes LLM responses for proxy/gateway/MAP modes.
-func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID string) (*sharedpolicy.ResponseResult, bool) {
+//
+// v9 Phase 8 #2384 PR-C1: orgID propagates into EvalOptions.OrgID so any
+// violation recorded during PII detection carries OrgID into the shared
+// AuditEntry, satisfying the RLS-aware audit_queue persistence path.
+func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID, orgID string) (*sharedpolicy.ResponseResult, bool) {
 	engine := sharedpolicy.GetGlobalEngine()
 	if engine == nil {
 		return nil, false
@@ -981,6 +985,7 @@ func DetectWithSharedEngine(ctx context.Context, content interface{}, tenantID s
 
 	result := engine.EvaluateResponse(ctx, content, sharedpolicy.EvalOptions{
 		TenantID: tenantID,
+		OrgID:    orgID,
 		Categories: []sharedpolicy.PolicyCategory{
 			sharedpolicy.CategoryPIIGlobal,
 			sharedpolicy.CategoryPIIUS,

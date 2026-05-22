@@ -109,6 +109,7 @@ func TestCreate(t *testing.T) {
 				Action:   "block",
 				Severity: "high",
 				TenantID: "tenant-1",
+				OrgID:    "tenant-1",
 				Enabled:  true,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
@@ -122,13 +123,27 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
-				// Insert policy
+				// v9 Phase 8 #2384 PR-C1: Create wraps the INSERT in
+				// WithOrgScope so app.current_org_id is pinned before the
+				// WITH CHECK predicate fires under app_role.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policies`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion also wraps its INSERT
+				// in WithOrgScope (mig 110 added FORCE RLS to
+				// static_policy_versions keyed on app.current_org_id).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -166,6 +181,7 @@ func TestCreate(t *testing.T) {
 				Action:   "block",
 				Severity: "high",
 				TenantID: "tenant-1",
+				OrgID:    "tenant-1",
 				Enabled:  true,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
@@ -174,13 +190,23 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
-				// Insert policy (no count check for Enterprise)
+				// v9 Phase 8 #2384 PR-C1: Insert wrapped in WithOrgScope.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policies`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion wrap.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -214,6 +240,7 @@ func TestCreate(t *testing.T) {
 				Action:         "block",
 				Severity:       "high",
 				TenantID:       "tenant-1",
+				OrgID:          "tenant-1",
 				OrganizationID: strPtr("org-1"),
 				Enabled:        true,
 			},
@@ -223,13 +250,23 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Plus"))
 
-				// Insert policy
+				// v9 Phase 8 #2384 PR-C1: Insert wrapped in WithOrgScope.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policies`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion wrap.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -264,6 +301,7 @@ func TestCreate(t *testing.T) {
 				Action:      "require_approval",
 				Severity:    "critical",
 				TenantID:    "tenant-1",
+				OrgID:       "tenant-1",
 				Description: "Requires human approval for credit scoring decisions",
 				Enabled:     true,
 			},
@@ -273,14 +311,25 @@ func TestCreate(t *testing.T) {
 					WithArgs("tenant-1").
 					WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
 
-				// Insert policy - verify the INSERT includes phase and action columns
+				// v9 Phase 8 #2384 PR-C1: Insert wrapped in WithOrgScope.
+				// Insert verifies phase and action columns:
 				// For require_approval: phase="request", action_request="require_approval", action_response=NULL
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policies`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion wrap.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -356,7 +405,8 @@ func TestUpdate(t *testing.T) {
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
 				now := time.Now()
-				// GetByID returns tenant tier policy
+				// GetByID returns tenant tier policy (with org_id populated so
+				// the wrapped UPDATE has a non-empty scope key).
 				mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
 					WithArgs("policy-1").
 					WillReturnRows(sqlmock.NewRows([]string{
@@ -368,12 +418,18 @@ func TestUpdate(t *testing.T) {
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						"Test description", "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						nil, "tenant-1", "tenant-1",
 						nil, nil, 1,
 						now, now, "user1", "user1", nil,
 					))
 
-				// Update query - returns the updated policy
+				// v9 Phase 8 #2384 PR-C1: Update wraps the UPDATE...RETURNING
+				// in WithOrgScope using the fetched policy.OrgID. Begin →
+				// SET LOCAL → UPDATE → Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectQuery(`UPDATE static_policies SET`).
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "policy_id", "name", "category", "pattern", "severity",
@@ -383,13 +439,20 @@ func TestUpdate(t *testing.T) {
 					}).AddRow(
 						"policy-1", "custom_test", "Updated Name", "security-sqli", `\btest\b`, "high",
 						"Updated description", "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						nil, "tenant-1", "tenant-1",
 						2, now, now, "user1", "test-user",
 					))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion wraps its INSERT in
+				// WithOrgScope using the updated policy's OrgID (tenant-1).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -494,7 +557,7 @@ func TestDelete(t *testing.T) {
 			name:     "tenant tier can be deleted",
 			policyID: "policy-1",
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// GetByID returns tenant tier policy
+				// GetByID returns tenant tier policy with org_id populated.
 				mock.ExpectQuery(`SELECT .* FROM static_policies WHERE`).
 					WithArgs("policy-1").
 					WillReturnRows(sqlmock.NewRows([]string{
@@ -506,18 +569,30 @@ func TestDelete(t *testing.T) {
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						nil, "tenant-1", "tenant-1",
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
 
-				// Soft delete
+				// v9 Phase 8 #2384 PR-C1: Soft-delete UPDATE wrapped in
+				// WithOrgScope using the fetched policy.OrgID.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`UPDATE static_policies SET deleted_at`).
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
 
-				// Record version
+				// v9 Phase 8 #2384 PR-C1: recordVersion wraps its INSERT in
+				// WithOrgScope using the fetched policy.OrgID (tenant-1).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -810,16 +885,30 @@ func TestToggleEnabled(t *testing.T) {
 					}).AddRow(
 						"policy-1", "custom_test", "Tenant Policy", "security-sqli", `\btest\b`, "high",
 						nil, "block", "tenant", 50, true,
-						nil, "tenant-1", nil,
+						nil, "tenant-1", "tenant-1",
 						nil, nil, 1,
 						time.Now(), time.Now(), nil, nil, nil,
 					))
 
+				// v9 Phase 8 #2384 PR-C1: ToggleEnabled wraps UPDATE in
+				// WithOrgScope using the fetched policy.OrgID.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`UPDATE static_policies SET enabled`).
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
 
+				// v9 Phase 8 #2384 PR-C1: recordVersion wraps its INSERT in
+				// WithOrgScope using the fetched policy.OrgID (tenant-1).
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO static_policy_versions`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: nil,
 		},
@@ -862,11 +951,21 @@ func TestVersionHistoryRecording(t *testing.T) {
 		Action:   "block",
 		Tier:     TierTenant,
 		Version:  1,
+		// v9 Phase 8 #2384 PR-C1: recordVersion now requires non-empty
+		// policy.OrgID (mig 110 keyed RLS on app.current_org_id); set it
+		// so the WithOrgScope wrap inside recordVersion succeeds.
+		OrgID: "tenant-1",
 	}
 
-	// Record version
+	// v9 Phase 8 #2384 PR-C1: recordVersion wraps its INSERT in
+	// WithOrgScope using policy.OrgID.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO static_policy_versions`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	repo := NewStaticPolicyRepository(db)
 	err = repo.recordVersion(context.Background(), policy, "create", "Policy created", "test-user")
@@ -950,17 +1049,32 @@ func BenchmarkCreate(b *testing.B) {
 		Action:   "block",
 		Severity: "high",
 		TenantID: "tenant-1",
-		Enabled:  true,
+		// v9 Phase 8 #2384 PR-C1: Create + recordVersion both require
+		// non-empty OrgID for the WithOrgScope wrap.
+		OrgID:   "tenant-1",
+		Enabled: true,
 	}
 
 	for i := 0; i < b.N; i++ {
 		mock.ExpectQuery(`SELECT license_tier FROM clients`).
 			WithArgs("tenant-1").
 			WillReturnRows(sqlmock.NewRows([]string{"license_tier"}).AddRow("Enterprise"))
+		// v9 Phase 8 #2384 PR-C1: Create wraps INSERT in WithOrgScope.
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("tenant-1").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec(`INSERT INTO static_policies`).
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+		// v9 Phase 8 #2384 PR-C1: recordVersion wraps INSERT in WithOrgScope.
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+			WithArgs("tenant-1").
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec(`INSERT INTO static_policy_versions`).
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 
 		repo := NewStaticPolicyRepository(db)
 		_ = repo.Create(context.Background(), policy, "test-user")

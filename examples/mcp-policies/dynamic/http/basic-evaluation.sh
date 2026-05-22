@@ -14,6 +14,9 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+# user_token: validated as JWT in eval/enterprise; any string in community.
+# Read from AXONFLOW_USER_TOKEN env (setup-e2e-testing.sh writes it).
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-demo-user}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 
@@ -67,7 +70,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"CREATE\",
     \"statement\": \"CREATE TABLE IF NOT EXISTS dynamic_policy_test (id SERIAL PRIMARY KEY, value VARCHAR(50))\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}-setup\"
   }" > /dev/null 2>&1 || true
 
 acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
@@ -77,7 +80,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"insert\",
     \"action\": \"INSERT\",
     \"statement\": \"INSERT INTO dynamic_policy_test (value) VALUES ('test1'), ('test2'), ('test3') ON CONFLICT DO NOTHING\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}-setup\"
   }" > /dev/null 2>&1 || true
 echo "✓ Test data ready"
 echo ""
@@ -91,7 +94,7 @@ response=$(acurl -s -X POST "${AGENT_URL}/mcp/resources/query" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
     \"statement\": \"SELECT * FROM dynamic_policy_test LIMIT 5\",
-    \"user_token\": \"analyst-user\"
+    \"user_token\": \"${USER_TOKEN}-analyst\"
   }")
 
 echo "Response:"
@@ -151,7 +154,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"DROP\",
     \"statement\": \"DROP TABLE IF EXISTS dynamic_policy_test\",
-    \"user_token\": \"test-cleanup\"
+    \"user_token\": \"${USER_TOKEN}-cleanup\"
   }" > /dev/null 2>&1 || true
 echo "✓ Deleted test data"
 

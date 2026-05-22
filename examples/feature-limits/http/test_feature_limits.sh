@@ -52,15 +52,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Clean up leftover test policies from previous runs
-EXISTING_TEST_POLICIES=$(curl -s -u "$CLIENT_ID:${CLIENT_SECRET}" "$ENDPOINT/api/v1/dynamic-policies?page_size=100" 2>/dev/null \
-    | jq -r '.policies[] | select(.name | startswith("boundary-test-policy")) | .id' 2>/dev/null || echo "")
-if [ -n "$EXISTING_TEST_POLICIES" ]; then
-    echo "Cleaning up leftover test policies from previous runs..."
-    for pid in $EXISTING_TEST_POLICIES; do
+# Clean up leftover boundary-test-* / boundary-org-* policies from previous
+# runs. The script creates two name prefixes (boundary-test-policy-* for
+# tenant, and boundary-org-policy-* for organization-tier), so the cleanup
+# must match both — but stay narrow enough that a sibling test using a
+# generic "boundary-" prefix isn't accidentally wiped.
+#
+# Pagination: the platform's actual page_size cap is 100 (see
+# orchestrator/dynamic_policy_handlers.go validation), even though earlier
+# code probed with 200. Anything above 100 silently falls back to the
+# default 20. We use page_size=100 explicitly.
+#
+# Termination guard: bounded by MAX_CLEANUP_LOOPS so a runaway concurrent
+# writer can't pin the test in an infinite loop. With page_size=100 and a
+# reasonable maximum of ~1000 stale rows this is plenty of headroom.
+echo "Cleaning up leftover boundary-test-* / boundary-org-* policies from previous runs..."
+total_deleted=0
+loops=0
+MAX_CLEANUP_LOOPS=20
+while [ "$loops" -lt "$MAX_CLEANUP_LOOPS" ]; do
+    LIST_JSON=$(curl -s -u "$CLIENT_ID:${CLIENT_SECRET}" "$ENDPOINT/api/v1/dynamic-policies?page=1&page_size=100" 2>/dev/null)
+    PAGE_IDS=$(echo "$LIST_JSON" | jq -r '.policies[]? | select(.name | startswith("boundary-test-") or startswith("boundary-org-")) | .id' 2>/dev/null || echo "")
+    if [ -z "$PAGE_IDS" ]; then
+        break
+    fi
+    for pid in $PAGE_IDS; do
+        # DELETE is not idempotent in this API (404 on missing); swallow
+        # the curl error so a race-loser doesn't break the cleanup loop.
         curl -s -X DELETE "$ENDPOINT/api/v1/dynamic-policies/$pid" \
             -u "$CLIENT_ID:${CLIENT_SECRET}" > /dev/null 2>&1 || true
+        total_deleted=$((total_deleted + 1))
     done
+    loops=$((loops + 1))
+done
+if [ "$total_deleted" -gt 0 ]; then
+    echo "  Deleted $total_deleted leftover boundary-test-/boundary-org- policies (in $loops cleanup passes)"
+fi
+if [ "$loops" -ge "$MAX_CLEANUP_LOOPS" ]; then
+    echo "  WARN: cleanup hit MAX_CLEANUP_LOOPS=$MAX_CLEANUP_LOOPS — concurrent writer may be creating boundary-* rows"
 fi
 
 # Detect tier from license key

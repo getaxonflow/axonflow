@@ -1108,18 +1108,25 @@ func TestWebhookHandler_ChargeRefunded_FullRefund_Revokes(t *testing.T) {
 	body := chargeRefundedEvent("pi_test_full_1", "ch_test_full_1", 999, 999, "succeeded")
 	header := signRequest(t, body, now, testSigningSecret)
 
-	// UPDATE plugin_user_licenses ... WHERE stripe_payment_intent_id=$1
-	//   AND revoked_at IS NULL RETURNING stripe_session_id
-	// — sqlmock treats RETURNING-bearing UPDATEs as queries.
-	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id`).
+	// v9 Phase 8 #2384 PR-C1: UPDATE now RETURNs stripe_session_id AND
+	// tenant_id so the downstream agent_audit_logs INSERT can pin
+	// app.current_org_id via WithOrgScope.
+	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id, tenant_id`).
 		WithArgs("pi_test_full_1", "full_refund").
-		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id"}).
-			AddRow("cs_test_session_1"))
+		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id", "tenant_id"}).
+			AddRow("cs_test_session_1", "tenant-1"))
 
-	// Audit row INSERT — client_id is the session_id returned by the UPDATE.
+	// Audit row INSERT — wrapped in WithOrgScope using the returned
+	// tenant_id (== org_id post mig 100 csaas remap). agent_audit_logs is
+	// ENABLE-RLS (mig 018) and the INSERT now includes org_id as $4.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO agent_audit_logs`).
-		WithArgs("cs_test_session_1", "license_revoked_full_refund", "charge=ch_test_full_1 amount_refunded=999").
+		WithArgs("cs_test_session_1", "license_revoked_full_refund", "charge=ch_test_full_1 amount_refunded=999", "tenant-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	getLog := captureLog(t)
 
@@ -1233,19 +1240,25 @@ func TestWebhookHandler_ChargeRefunded_Replay_Idempotent(t *testing.T) {
 	body := chargeRefundedEvent("pi_test_replay_1", "ch_test_replay_1", 999, 999, "succeeded")
 	header := signRequest(t, body, now, testSigningSecret)
 
-	// First delivery: full refund path → UPDATE RETURNING session_id + audit.
-	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id`).
+	// First delivery: full refund path → UPDATE RETURNING session_id +
+	// tenant_id + audit (wrapped). v9 Phase 8 #2384 PR-C1.
+	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id, tenant_id`).
 		WithArgs("pi_test_replay_1", "full_refund").
-		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id"}).
-			AddRow("cs_test_session_replay"))
+		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id", "tenant_id"}).
+			AddRow("cs_test_session_replay", "tenant-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO agent_audit_logs`).
-		WithArgs("cs_test_session_replay", "license_revoked_full_refund", "charge=ch_test_replay_1 amount_refunded=999").
+		WithArgs("cs_test_session_replay", "license_revoked_full_refund", "charge=ch_test_replay_1 amount_refunded=999", "tenant-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	// Second delivery (replay): same UPDATE returns no rows because revoked_at
 	// is now non-null. Lookup-helper SELECT recovers session_id for log/response.
 	// NO audit on this path.
-	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id`).
+	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id, tenant_id`).
 		WithArgs("pi_test_replay_1", "full_refund").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(`SELECT stripe_session_id\s+FROM plugin_user_licenses\s+WHERE stripe_payment_intent_id`).
@@ -1419,17 +1432,23 @@ func TestWebhookHandler_ChargeRefunded_Replay5xIdempotent(t *testing.T) {
 	body := chargeRefundedEvent("pi_5x", "ch_5x", 999, 999, "succeeded")
 	header := signRequest(t, body, now, testSigningSecret)
 
-	// First delivery: revoke (RETURNING session_id) + audit.
-	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id`).
+	// First delivery: revoke (RETURNING session_id + tenant_id) +
+	// audit (wrapped). v9 Phase 8 #2384 PR-C1.
+	mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id, tenant_id`).
 		WithArgs("pi_5x", "full_refund").
-		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id"}).AddRow("cs_5x"))
+		WillReturnRows(sqlmock.NewRows([]string{"stripe_session_id", "tenant_id"}).AddRow("cs_5x", "tenant-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO agent_audit_logs`).
-		WithArgs("cs_5x", "license_revoked_full_refund", "charge=ch_5x amount_refunded=999").
+		WithArgs("cs_5x", "license_revoked_full_refund", "charge=ch_5x amount_refunded=999", "tenant-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	// Subsequent 4 deliveries: UPDATE returns ErrNoRows; lookup-helper
 	// SELECT recovers the session_id; no audit.
 	for i := 0; i < 4; i++ {
-		mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id`).
+		mock.ExpectQuery(`UPDATE plugin_user_licenses[\s\S]*RETURNING stripe_session_id, tenant_id`).
 			WithArgs("pi_5x", "full_refund").
 			WillReturnError(sql.ErrNoRows)
 		mock.ExpectQuery(`SELECT stripe_session_id\s+FROM plugin_user_licenses\s+WHERE stripe_payment_intent_id`).

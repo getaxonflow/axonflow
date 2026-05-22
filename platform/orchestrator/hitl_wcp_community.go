@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"axonflow/platform/agent"
 	"axonflow/platform/agent/license"
 )
 
@@ -76,25 +77,34 @@ func (a *evalWCPHITLAdapter) CreateApproval(ctx context.Context, req *HITLApprov
 		)
 	`
 
-	_, err = a.db.ExecContext(ctx, query,
-		requestID,
-		req.OrgID,
-		req.TenantID,
-		req.ClientID,
-		req.UserID,
-		req.StepName,
-		"wcp_step_gate",
-		contextJSON,
-		req.PolicyID,
-		req.PolicyName,
-		req.TriggerReason,
-		req.Severity,
-		now,
-		expiresAt,
-	)
-	if err != nil {
-		log.Printf("❌ [WCP-HITL-Eval] Failed to create approval: %v", err)
-		return nil, fmt.Errorf("failed to create HITL approval: %w", err)
+	// v9 Phase 8 PR-C2 (#2384): hitl_approval_queue is mig 025 ENABLE RLS with
+	// policy `org_id = get_current_org_id()`. Wrap so the INSERT WITH CHECK
+	// sees the orgID under axonflow_app_role. req.OrgID is the canonical
+	// post-Phase-6 identifier; the row's org_id column also gets it.
+	if req.OrgID == "" {
+		return nil, fmt.Errorf("HITLApprovalRequest.OrgID is required under RLS")
+	}
+	if wrapErr := agent.WithOrgScope(ctx, a.db, req.OrgID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			requestID,
+			req.OrgID,
+			req.TenantID,
+			req.ClientID,
+			req.UserID,
+			req.StepName,
+			"wcp_step_gate",
+			contextJSON,
+			req.PolicyID,
+			req.PolicyName,
+			req.TriggerReason,
+			req.Severity,
+			now,
+			expiresAt,
+		)
+		return execErr
+	}); wrapErr != nil {
+		log.Printf("❌ [WCP-HITL-Eval] Failed to create approval: %v", wrapErr)
+		return nil, fmt.Errorf("failed to create HITL approval: %w", wrapErr)
 	}
 
 	log.Printf("✅ [WCP-HITL-Eval] Created approval request: %s for step %s (expires %s)", requestID, logutil.Sanitize(req.StepName), expiresAt.Format(time.RFC3339))
