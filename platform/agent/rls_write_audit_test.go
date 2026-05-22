@@ -93,6 +93,23 @@ func TestEveryWriteIntoRLSTableIsWrapped(t *testing.T) {
 		filepath.Join(repoRoot, "ee", "platform"),
 	}
 
+	// `ee/` is excluded from the community sync filter, so on a
+	// community-mirror checkout the second scan directory doesn't exist.
+	// Drop missing directories from the scan list rather than letting the
+	// walk return ENOENT — the `platform/` walk still has full coverage on
+	// community.
+	presentDirs := scanDirs[:0]
+	for _, d := range scanDirs {
+		if _, err := os.Stat(d); err == nil {
+			presentDirs = append(presentDirs, d)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", d, err)
+		} else {
+			t.Logf("scan dir %s not present in this checkout (likely community sync); skipping", d)
+		}
+	}
+	scanDirs = presentDirs
+
 	tables := rlsGatedTables()
 	wrapCallables := baseWrapVariantNames()
 	allowFiles, allowFuncs := adminPoolAllowlist()

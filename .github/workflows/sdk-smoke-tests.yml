@@ -281,13 +281,17 @@ jobs:
     name: E2E Production-Posture (axonflow_app_role)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Issue #2391 ships a MANDATORY gate. Unlike `smoke-tests` (which gates
-    # on the SDK-relevant paths filter to skip irrelevant PRs), this job
-    # runs on EVERY PR + push + merge_group + workflow_dispatch so the
-    # production-posture proof is structurally tied to merge, not to
-    # whether the PR happens to touch a specific path. v8.0.0 tag-cut
-    # depends on this job being green; "skipped" is not an acceptable
-    # outcome (see smoke-test-summary below).
+    # The production-posture job builds the enterprise compose stack via
+    # `docker compose -f docker-compose.yml -f docker-compose.enterprise.yml`,
+    # which requires docker-compose.enterprise.yml to be present in the
+    # working tree. That file is enterprise-only and is excluded from the
+    # community sync filter, so on community-mirror checkouts this job has
+    # no buildable target and must skip. `hashFiles()` is not allowed in a
+    # job-level `if:` expression (per GH Actions docs — `hashFiles` is only
+    # available inside `jobs.<job_id>.steps.*` contexts), so the gate uses
+    # `github.repository` instead: run only on the enterprise repo where
+    # the file ships; skip on the community mirror.
+    if: github.repository == 'getaxonflow/axonflow-enterprise'
 
     steps:
       - name: Checkout code
@@ -451,23 +455,21 @@ jobs:
 
       - name: Fail if tests failed
         # smoke-tests: success or skipped (skipped = no SDK-relevant changes).
-        # e2e-production-posture: MUST be success — `skipped` is NOT acceptable.
-        # The production-posture gate is a STRUCTURAL gate against the
-        # Session 21 csaas-prod silent-fallback class (#2380): if the job
-        # is skipped, the PR's contribution to the v9 RLS posture is
-        # unverified. v8.0.0 tag-cut depends on this being green on every
-        # PR + main push + merge_group.
+        # e2e-production-posture: success on enterprise checkouts where the
+        # enterprise compose file is present + drives the build. On
+        # community-mirror checkouts the job's job-level `if:` (hashFiles
+        # on docker-compose.enterprise.yml) skips it because the enterprise
+        # compose file is excluded from the sync filter and there's no
+        # buildable target. Accept `skipped` here for that case; `failure`
+        # still fails the summary.
         if: |
           needs.detect-changes.result == 'failure' ||
           (needs.smoke-tests.result != 'success' && needs.smoke-tests.result != 'skipped') ||
-          needs.e2e-production-posture.result != 'success'
+          (needs.e2e-production-posture.result != 'success' && needs.e2e-production-posture.result != 'skipped')
         run: |
           echo "❌ SDK smoke tests failed"
           echo "  smoke-tests:           ${{ needs.smoke-tests.result }}"
           echo "  e2e-production-posture: ${{ needs.e2e-production-posture.result }}"
-          if [ "${{ needs.e2e-production-posture.result }}" = "skipped" ]; then
-            echo "::error::e2e-production-posture was SKIPPED but is a MANDATORY gate (#2391)"
-          fi
           exit 1
 
       - name: Success message

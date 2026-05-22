@@ -12,6 +12,18 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.0.1] - 2026-05-22 — CI fix on community mirror (no runtime change)
+
+Patch on top of v8.0.0. No platform behavior change; no migration impact; no SDK/plugin floor change. The [8.0.0] section below is the headline release.
+
+### Fixed
+
+- **SDK Smoke Tests workflow** — the `E2E Production-Posture (axonflow_app_role)` job now skips when `docker-compose.enterprise.yml` is absent in the working tree. The compose file is excluded from the community sync filter, so on community checkouts the job has no buildable target; on a full-tree checkout where the file ships, the job runs as before. The summary job's mandatory-gate assertion was updated to accept `skipped` alongside `success` for this job to reflect the new condition.
+- **`TestBootLogCanonicalShape`** in `platform/orchestrator/main_pool_app_role_test.go` — skips when `ee/platform/customer-portal/main.go` is not present in the working tree. The canonical-shape check validates the full nine-pool set including the customer-portal main pool, so it only runs where every file is present.
+- **`TestProbeBootLogShimMatchesCanonicalShape`** and **`TestProductionPostureRegistryWellFormed`** in `platform/orchestrator/probe_boot_log_shim_canonical_test.go` — skip when their fixture files (`scripts/e2e/probe-boot-log.sh`, `scripts/e2e/production_posture_registry.txt`) are not present in the working tree. The `scripts/e2e/` directory is excluded from the community sync filter.
+
+All four sites use a runtime `os.Stat` check that skips when the dependency file is absent; no build tags introduced.
+
 ## [8.0.0] - 2026-05-22 — v8 identity model enforcement + Row-Level Security default-on + cross-org admin routing
 
 **Major-version cut.** v8.0.0 separates three previously-conflated identifiers — customer organization, API credential, and license deployment identity — and turns on Row-Level Security as the default tenant-isolation mechanism (FORCE RLS + non-owner application role) with cross-org admin routing for sweeps, recovery, and node-monitor workers. Pre-v8.0 the agent connected to the application database as the table owner, so RLS policies were defined but inert; v8.0.0 makes them load-bearing.

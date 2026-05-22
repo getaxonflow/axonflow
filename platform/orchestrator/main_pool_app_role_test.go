@@ -223,6 +223,15 @@ func TestConnectorRegistryEnvNameDriftGuard(t *testing.T) {
 // "(UseAppRoleEnabled=%v, %s=%v)" suffix — this test fails with the file +
 // the line number of the offending call.
 func TestBootLogCanonicalShape(t *testing.T) {
+	// On community-sync checkouts, ee/platform/customer-portal/main.go is
+	// excluded from the sync filter. The boot-log canonical-shape check
+	// validates the full 9-pool set including the customer-portal main pool,
+	// so it can only run on a checkout where every file is present. Skip
+	// cleanly when the customer-portal file is absent — that's the signal
+	// we're on a community checkout.
+	if _, err := os.Stat("../../ee/platform/customer-portal/main.go"); os.IsNotExist(err) {
+		t.Skip("skipping canonical-shape check: customer-portal main.go is not present in this checkout (excluded from community sync); the test runs on a full-tree checkout where all 9 pools exist")
+	}
 	// File paths relative to platform/orchestrator/ — orchestrator file
 	// paths are bare; cross-package paths use ../ prefix.
 	files := []string{
