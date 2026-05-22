@@ -93,6 +93,23 @@ func TestEveryWriteIntoRLSTableIsWrapped(t *testing.T) {
 		filepath.Join(repoRoot, "ee", "platform"),
 	}
 
+	// `ee/` is excluded from the community sync filter, so on a
+	// community-mirror checkout the second scan directory doesn't exist.
+	// Drop missing directories from the scan list rather than letting the
+	// walk return ENOENT — the `platform/` walk still has full coverage on
+	// community.
+	presentDirs := scanDirs[:0]
+	for _, d := range scanDirs {
+		if _, err := os.Stat(d); err == nil {
+			presentDirs = append(presentDirs, d)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", d, err)
+		} else {
+			t.Logf("scan dir %s not present in this checkout (likely community sync); skipping", d)
+		}
+	}
+	scanDirs = presentDirs
+
 	tables := rlsGatedTables()
 	wrapCallables := baseWrapVariantNames()
 	allowFiles, allowFuncs := adminPoolAllowlist()
@@ -824,8 +841,14 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 }
 
 // findRepoRoot ascends the working directory until it finds the
-// platform + ee/platform pair that anchors the audit. Robust against
-// `go test` being invoked from any sub-package of platform/.
+// repo root (anchored on the `platform/` directory). The walker's own
+// `scanDirs` list handles the case where `ee/platform/` is absent —
+// don't anchor on `ee/platform/` here, since that directory is
+// excluded from the community sync filter and is legitimately absent
+// on community-mirror checkouts.
+//
+// Robust against `go test` being invoked from any sub-package of
+// platform/.
 func findRepoRoot() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -833,10 +856,11 @@ func findRepoRoot() (string, error) {
 	}
 	dir := cwd
 	for {
-		// We anchor on the presence of both "platform" and "ee/platform"
-		// — the audit walker scans both, so finding only one is not
-		// enough (a future restructure could rename one).
-		if dirExists(filepath.Join(dir, "platform")) && dirExists(filepath.Join(dir, "ee", "platform")) {
+		// Anchor on the presence of `platform/` only. `ee/platform/` is
+		// excluded from the community sync filter, so anchoring on both
+		// would fail on community-mirror checkouts. The walker's own
+		// `scanDirs` filter handles missing `ee/platform/` cleanly.
+		if dirExists(filepath.Join(dir, "platform")) {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)

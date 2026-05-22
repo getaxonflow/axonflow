@@ -31,8 +31,32 @@ jobs:
       - name: Install validation tools
         run: |
           npm install -g @apidevtools/swagger-cli
-          npm install -g @stoplight/spectral-cli
           npm install -g @redocly/cli
+          # Spectral CLI 6.15.1 caret-ranges its @stoplight/spectral-core
+          # + @stoplight/spectral-rulesets deps. The most recent
+          # spectral-core 1.23.0 + spectral-rulesets 1.22.3 emit a JSON-
+          # Path expression that crashes nimma 0.2.3 with
+          # `Cannot read properties of null (reading 'enum')` on
+          # docs/api/orchestrator-api.yaml. Pin the full transitive
+          # tree via npm overrides in a local install (global `npm
+          # install -g` does not honor `overrides`). Bump once upstream
+          # ships a fix.
+          mkdir -p /tmp/spectral-ci
+          cat > /tmp/spectral-ci/package.json << 'PKGEOF'
+          {
+            "name": "spectral-ci-pinned",
+            "version": "1.0.0",
+            "dependencies": {
+              "@stoplight/spectral-cli": "6.15.1"
+            },
+            "overrides": {
+              "@stoplight/spectral-core": "1.22.0",
+              "@stoplight/spectral-rulesets": "1.22.1"
+            }
+          }
+          PKGEOF
+          (cd /tmp/spectral-ci && npm install --silent)
+          echo "/tmp/spectral-ci/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Validate OpenAPI spec syntax
         run: |

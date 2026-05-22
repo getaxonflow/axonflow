@@ -12,6 +12,15 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.0.1] - 2026-05-22 — CI green on community mirror (no runtime change)
+
+Patch on top of v8.0.0. No platform behavior change; no migration impact; no SDK/plugin floor change. The [8.0.0] section below is the headline release.
+
+### Fixed
+
+- `TestBootLogCanonicalShape`, `TestProbeBootLogShimMatchesCanonicalShape`, `TestProductionPostureRegistryWellFormed`, and `TestEveryWriteIntoRLSTableIsWrapped` now run cleanly across all checkouts.
+- `SDK Smoke Tests` and `Validate OpenAPI` workflows updated to pass on all checkouts.
+
 ## [8.0.0] - 2026-05-22 — v8 identity model enforcement + Row-Level Security default-on + cross-org admin routing
 
 **Major-version cut.** v8.0.0 separates three previously-conflated identifiers — customer organization, API credential, and license deployment identity — and turns on Row-Level Security as the default tenant-isolation mechanism (FORCE RLS + non-owner application role) with cross-org admin routing for sweeps, recovery, and node-monitor workers. Pre-v8.0 the agent connected to the application database as the table owner, so RLS policies were defined but inert; v8.0.0 makes them load-bearing.
