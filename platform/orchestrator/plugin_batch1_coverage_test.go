@@ -658,8 +658,13 @@ func TestCreateOverrideHandler_HappyPath(t *testing.T) {
 		mock.ExpectQuery("SELECT risk_level, allow_override, id::text").
 			WithArgs("pol-ok").
 			WillReturnRows(riskRows)
+		// v9 Phase 8 PR-C2 (#2384): INSERT wrapped in rls.WithOrgScope; scope
+		// is X-Org-ID if set, else X-Tenant-ID (tenant-x in this test).
+		mock.ExpectBegin()
+		mock.ExpectExec("set_config").WithArgs("tenant-x").WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO policy_overrides").
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 		mock.ExpectExec("DELETE FROM workflow_steps").
 			WithArgs("tenant-x", "dev@example.com", "pol-ok").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -704,8 +709,12 @@ func TestCreateOverrideHandler_TTLClamped(t *testing.T) {
 		mock.ExpectQuery("SELECT risk_level, allow_override, id::text").
 			WithArgs("pol-ok").
 			WillReturnRows(riskRows)
+		// v9 Phase 8 PR-C2 (#2384): wrapped INSERT.
+		mock.ExpectBegin()
+		mock.ExpectExec("set_config").WithArgs("tenant-x").WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO policy_overrides").
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 		mock.ExpectExec("DELETE FROM workflow_steps").
 			WithArgs("tenant-x", "dev@example.com", "pol-ok").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -742,8 +751,12 @@ func TestRevokeOverrideHandler_HappyPath(t *testing.T) {
 		mock.ExpectQuery("SELECT policy_id FROM policy_overrides").
 			WithArgs("ov-live", "tenant-x").
 			WillReturnRows(sqlmock.NewRows([]string{"policy_id"}).AddRow("pol-1"))
+		// v9 Phase 8 PR-C2 (#2384): UPDATE wrapped in rls.WithOrgScope.
+		mock.ExpectBegin()
+		mock.ExpectExec("set_config").WithArgs("tenant-x").WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("UPDATE policy_overrides SET revoked_at").
 			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
 
 		req := httptest.NewRequest("DELETE", "/api/v1/overrides/ov-live", nil)
 		req = mux.SetURLVars(req, map[string]string{"id": "ov-live"})

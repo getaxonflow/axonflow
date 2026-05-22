@@ -557,6 +557,16 @@ func (h *StaticPolicyAPIHandler) HandleCreateOverride(w http.ResponseWriter, r *
 		EnabledOverride: req.EnabledOverride,
 		OverrideReason:  req.OverrideReason,
 		ExpiresAt:       req.ExpiresAt,
+		// v9 Phase 8 #2384 PR-C1: OrgID is the multi-tenant RLS scope key
+		// (post mig 110). Sourced from the X-Org-ID header set by the agent
+		// auth middleware; falls back to tenant for the OrgID==TenantID
+		// invariant of mig 100 / community-saas mode.
+		OrgID: func() string {
+			if orgID != "" {
+				return orgID
+			}
+			return tenantID
+		}(),
 	}
 
 	// Set scope based on headers
@@ -613,8 +623,20 @@ func (h *StaticPolicyAPIHandler) HandleDeleteOverride(w http.ResponseWriter, r *
 		orgID = &orgIDHeader
 	}
 
-	// Delete override using repository
-	if err := h.overrideRepo.DeleteByPolicyID(ctx, policyID, tenantID, orgID, userID); err != nil {
+	// Delete override using repository.
+	// v9 Phase 8 #2384 PR-C1: rlsOrgID is the auth'd request's OrgID (mig 110
+	// requires app.current_org_id pinned for policy_overrides DELETE).
+	// orgIDHeader (set by the agent auth middleware) is the V9 scope key;
+	// fall back to tenantIDHeader for community-saas / OrgID==TenantID
+	// invariant (mig 100). This mirrors HandleCreateOverride's fallback so
+	// the Create/Delete pair behaves symmetrically — without the fallback,
+	// internal-service callers (no X-Org-ID) get 500s on Delete while
+	// Create succeeds.
+	rlsOrgID := orgIDHeader
+	if rlsOrgID == "" {
+		rlsOrgID = tenantIDHeader
+	}
+	if err := h.overrideRepo.DeleteByPolicyID(ctx, rlsOrgID, policyID, tenantID, orgID, userID); err != nil {
 		if errors.Is(err, ErrOverrideNotFound) {
 			writeJSONError(w, "Override not found", http.StatusNotFound)
 			return

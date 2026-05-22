@@ -105,8 +105,12 @@ func TestEvalWCPHITLAdapter_CreateApproval_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(
 		sqlmock.NewRows([]string{"count"}).AddRow(5),
 	)
-	// Expect INSERT
+	// v9 Phase 8 PR-C2 (#2384): INSERT now wrapped in rls.WithOrgScope using
+	// req.OrgID. BEGIN + set_config + INSERT + COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec("set_config").WithArgs("test-org").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO hitl_approval_queue").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	req := &HITLApprovalRequest{
 		TenantID:       "test-tenant",

@@ -87,15 +87,25 @@ services:
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_INTEGRATIONS: ${AXONFLOW_INTEGRATIONS:-}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-7.9.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-8.0.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. CI / dev shells should export AXONFLOW_TELEMETRY=off
       # so docker-compose passes it through to the container; production
       # deployments leave it unset so the binary emits one classification-
       # only ping per binary per 7 days.
+      #
+      # CI / GITHUB_ACTIONS propagation (2026-05-13) — defense in depth
+      # for the platform binary's CI auto-suppress path (see
+      # platform/agent/startup_telemetry.go). Even if AXONFLOW_TELEMETRY=off
+      # propagation is ever missed, CI=true / GITHUB_ACTIONS=true triggers
+      # the in-binary suppress. Pre-2026-05-13 the workflow env block at
+      # the runner level didn't reach binaries inside docker compose; ~300
+      # CI runs / week leaked into prod telemetry.
       AXONFLOW_TELEMETRY: ${AXONFLOW_TELEMETRY:-}
       AXONFLOW_TELEMETRY_STAMP_DIR: ${AXONFLOW_TELEMETRY_STAMP_DIR:-}
+      CI: ${CI:-}
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:-}
 
       # Media governance (v4.5.0+) - set to "true" to enable in Community mode
       MEDIA_GOVERNANCE_ENABLED: ${MEDIA_GOVERNANCE_ENABLED:-}
@@ -115,6 +125,20 @@ services:
       # Internal services (Orchestrator/Portal URLs auto-discovered via Docker service names)
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+
+      # v9 Brief 11.5 / Session 20: pin the app-role gate OFF for local dev.
+      # The 'axonflow' Postgres user above IS the table owner here, not the
+      # provisioned axonflow_app_role. OpenAppRoleConnection asserts the
+      # connected role matches axonflow_app_role when this gate is on, so
+      # without the explicit "false" pin local boot would fail under v9.0.0's
+      # default-true. Override to "true" with a provisioned app-role DSN for
+      # local soak-testing the production path.
+      AXONFLOW_DB_USE_APP_ROLE: ${AXONFLOW_DB_USE_APP_ROLE:-false}
+      # v9 Phase 8 / Issue #2391 production-posture passthrough. Empty by
+      # default; setup-e2e-testing.sh production-posture populates these
+      # in .env after invoking provision-app-role.sh.
+      AXONFLOW_DB_APP_ROLE_URL: ${AXONFLOW_DB_APP_ROLE_URL:-}
+      AXONFLOW_DB_PLATFORM_ADMIN_URL: ${AXONFLOW_DB_PLATFORM_ADMIN_URL:-}
 
       # Ollama (for local/air-gapped LLM deployments)
       OLLAMA_ENDPOINT: ${OLLAMA_ENDPOINT:-}
@@ -177,6 +201,12 @@ services:
 
       # Misc
       ORG_ID: ${ORG_ID:-local-dev-org}
+      # DEPLOYMENT_KIND distinguishes dev-default from prod-forgot-ORG_ID for
+      # migration 094's Pass-2 backfill precondition. Local docker-compose is
+      # intentionally `dev` — operators deploying to real stacks MUST set
+      # `production` (CFN templates already do). See #2320 + run.go's
+      # setMigrationSessionVars + migrations/core/094_v9_org_id_backfill.sql.
+      DEPLOYMENT_KIND: ${DEPLOYMENT_KIND:-dev}
       ENVIRONMENT: development
       LOG_LEVEL: debug
       GOOGLE_MODEL: ${GOOGLE_MODEL:-}
@@ -231,12 +261,15 @@ services:
       PORT: 8081
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-community}
       AXONFLOW_LICENSE_KEY: ${AXONFLOW_LICENSE_KEY:-}
-      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-7.9.0}"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-8.0.0}"
 
       # Anonymous platform startup telemetry — inherit the operator's
       # opt-out lever. See agent service above for the full rationale.
+      # CI / GITHUB_ACTIONS propagation defense in depth — see agent.
       AXONFLOW_TELEMETRY: ${AXONFLOW_TELEMETRY:-}
       AXONFLOW_TELEMETRY_STAMP_DIR: ${AXONFLOW_TELEMETRY_STAMP_DIR:-}
+      CI: ${CI:-}
+      GITHUB_ACTIONS: ${GITHUB_ACTIONS:-}
 
       # HITL mode (Evaluation+) — set to "true" to enable the HITL workflow
       # engine backing WCP /steps/{step_id}/approve|reject, MAP plan-scoped
@@ -262,6 +295,13 @@ services:
       AGENT_MCP_ENDPOINT: http://axonflow-agent:8080
       REDIS_URL: redis://redis:6379
 
+      # v9 Brief 11.5 / Session 20 — see agent service above for full rationale.
+      # Pin OFF for local dev (master role IS the app role here).
+      AXONFLOW_DB_USE_APP_ROLE: ${AXONFLOW_DB_USE_APP_ROLE:-false}
+      # v9 Phase 8 / Issue #2391 production-posture passthrough. See agent.
+      AXONFLOW_DB_APP_ROLE_URL: ${AXONFLOW_DB_APP_ROLE_URL:-}
+      AXONFLOW_DB_PLATFORM_ADMIN_URL: ${AXONFLOW_DB_PLATFORM_ADMIN_URL:-}
+
       # Internal service auth (orchestrator-to-agent HMAC token signing)
       # Must match the agent's AXONFLOW_INTERNAL_SERVICE_SECRET value.
       AXONFLOW_INTERNAL_SERVICE_SECRET: ${AXONFLOW_INTERNAL_SERVICE_SECRET:-}
@@ -284,6 +324,8 @@ services:
 
       # Misc
       ORG_ID: ${ORG_ID:-local-dev-org}
+      # DEPLOYMENT_KIND mirrored from the agent block — see #2320 rationale.
+      DEPLOYMENT_KIND: ${DEPLOYMENT_KIND:-dev}
       LOG_LEVEL: debug
     ports:
       - "8081:8081"

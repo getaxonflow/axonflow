@@ -28,13 +28,23 @@ on:
       - 'ee/platform/connectors/**'
       - 'examples/demo/**'
       - 'docker-compose.yml'
+      - 'docker-compose.enterprise.yml'
       - 'migrations/**'
+      - 'scripts/e2e/**'
+      - 'scripts/setup-e2e-testing.sh'
+      - 'scripts/operators/provision-app-role.sh'
       - '.github/workflows/sdk-smoke-tests.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: read
+
+# Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
+# runs use the SHA so they never share a group and never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   AXONFLOW_TELEMETRY: 'off'
@@ -74,7 +84,11 @@ jobs:
               - 'ee/platform/connectors/**'
               - 'examples/demo/**'
               - 'docker-compose.yml'
+              - 'docker-compose.enterprise.yml'
               - 'migrations/**'
+              - 'scripts/e2e/**'
+              - 'scripts/setup-e2e-testing.sh'
+              - 'scripts/operators/provision-app-role.sh'
               - '.github/workflows/sdk-smoke-tests.yml'
 
   smoke-tests:
@@ -248,10 +262,181 @@ jobs:
         run: |
           docker compose down -v --remove-orphans 2>/dev/null || true
 
+  # =============================================================================
+  # e2e-production-posture (issue #2391 / PR-E1)
+  # =============================================================================
+  # Mandatory production-posture E2E. Boots the enterprise stack under
+  # AXONFLOW_DB_USE_APP_ROLE=true with provisioned app-role + platform-admin
+  # DSNs, asserts every main pool actually connected AS axonflow_app_role,
+  # then runs the production-posture example suite from
+  # scripts/e2e/production_posture_registry.txt. Entries marked
+  # E2E-EXPECT-FAIL-UNTIL-PR-C1 are expected to fail with an RLS policy
+  # violation until PR-C1 lands the WithOrgScope wraps on the agent-side
+  # INSERT surface; the runner gates each entry against its expected outcome.
+  #
+  # Gating: This job is MANDATORY (the smoke-test-summary job below has it in
+  # `needs` and asserts result == 'success' or 'skipped'). v8.0.0 tag-cut is
+  # blocked on this job being green.
+  e2e-production-posture:
+    name: E2E Production-Posture (axonflow_app_role)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Issue #2391 ships a MANDATORY gate. Unlike `smoke-tests` (which gates
+    # on the SDK-relevant paths filter to skip irrelevant PRs), this job
+    # runs on EVERY PR + push + merge_group + workflow_dispatch so the
+    # production-posture proof is structurally tied to merge, not to
+    # whether the PR happens to touch a specific path. v8.0.0 tag-cut
+    # depends on this job being green; "skipped" is not an acceptable
+    # outcome (see smoke-test-summary below).
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install postgresql-client (psql)
+        run: |
+          # provision-app-role.sh needs psql on the host (not in the postgres
+          # container) — it connects to postgres via the docker-published port
+          # 5432 from the GH runner shell.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Start AxonFlow stack with USE_APP_ROLE=false (so migrations run as master)
+        run: |
+          echo "Phase 1: boot stack under master role so mig 098 can CREATE ROLE"
+          # Pre-build images (the enterprise binary build is the long pole
+          # ~6-9 min cold; folding it into `up --wait` would race the
+          # wait-timeout). Splitting build from up gives the wait phase a
+          # clean budget. The dedicated portal-e2e workflow uses the same
+          # pattern for the same reason.
+          echo "Phase 1a: build images (no wait timeout — build phase is bounded by the job timeout)"
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml build axonflow-agent axonflow-orchestrator axonflow-customer-portal || {
+            echo "::error::Docker compose build failed"
+            exit 1
+          }
+          echo "Phase 1b: up -d (no --wait — we'll poll /health manually with a long budget)"
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d || {
+            echo "::error::Docker compose up failed"
+            docker compose -f docker-compose.yml -f docker-compose.enterprise.yml logs
+            exit 1
+          }
+          echo "Phase 1c: wait for agent /health (migrations applied) — up to 240s"
+          healthy=0
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "agent /health OK on attempt $i"
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "::error::agent never became healthy after 240s"
+            docker compose -f docker-compose.yml -f docker-compose.enterprise.yml ps
+            docker logs --tail=300 axonflow-agent 2>&1 || true
+            exit 1
+          fi
+
+      - name: Phase 2 — Provision axonflow_app_role + axonflow_platform_admin
+        env:
+          APP_ROLE_PASSWORD: ci-pp-app-role-pw
+          PLATFORM_ADMIN_PASSWORD: ci-pp-admin-pw
+          DATABASE_URL: postgres://axonflow:localdev123@127.0.0.1:5432/axonflow?sslmode=disable
+        run: |
+          set -euo pipefail
+          echo "Phase 2: ALTER ROLE both roles via scripts/operators/provision-app-role.sh"
+          bash scripts/operators/provision-app-role.sh
+
+      - name: Phase 3 — Restart agent/orchestrator/customer-portal with USE_APP_ROLE=true
+        run: |
+          set -euo pipefail
+          echo "Phase 3: append app-role env vars to .env and recreate the 3 main services"
+          touch .env
+          # Strip any prior entries to keep .env clean across re-runs.
+          sed -i '/^AXONFLOW_DB_USE_APP_ROLE=/d' .env
+          sed -i '/^AXONFLOW_DB_APP_ROLE_URL=/d' .env
+          sed -i '/^AXONFLOW_DB_PLATFORM_ADMIN_URL=/d' .env
+          echo "AXONFLOW_DB_USE_APP_ROLE=true" >> .env
+          echo "AXONFLOW_DB_APP_ROLE_URL=postgres://axonflow_app_role:ci-pp-app-role-pw@postgres:5432/axonflow?sslmode=disable" >> .env
+          echo "AXONFLOW_DB_PLATFORM_ADMIN_URL=postgres://axonflow_platform_admin:ci-pp-admin-pw@postgres:5432/axonflow?sslmode=disable" >> .env
+
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d \
+            --no-deps --force-recreate \
+            axonflow-agent axonflow-orchestrator axonflow-customer-portal
+
+          echo "Waiting for /health on all 3 services post-restart..."
+          # Each service gets up to 60×2s = 120s. If any fails to come up,
+          # exit 1 — falling through silently would make the Phase-4 probe
+          # produce a misleading "service emitted zero log output" error
+          # instead of the real "container failed to restart" error.
+          for svc_port in "agent:8080" "orchestrator:8081" "customer-portal:8082"; do
+            port="${svc_port##*:}"
+            name="${svc_port%%:*}"
+            healthy=0
+            for i in $(seq 1 60); do
+              if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+                echo "$name /health OK on attempt $i"
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$healthy" -ne 1 ]; then
+              echo "::error::$name never became healthy after 60 attempts (~120s) post-restart."
+              echo "=== docker compose ps ==="
+              docker compose -f docker-compose.yml -f docker-compose.enterprise.yml ps || true
+              echo "=== last 200 lines of axonflow-$name logs ==="
+              docker logs --tail=200 "axonflow-$name" 2>&1 || true
+              exit 1
+            fi
+          done
+
+      - name: Phase 4 — Boot-log probe (MANDATORY)
+        run: |
+          set -euo pipefail
+          echo "Phase 4: assert every main pool is on axonflow_app_role"
+          bash scripts/e2e/probe-boot-log.sh
+
+      - name: Phase 5 — Run production-posture suite
+        env:
+          # SUITE_EXPECT_BOOT_RLS_EVIDENCE=0 (clean-boot regression-guard mode).
+          # Issue #2400 closed by wrapping ee/.../heartbeat.go::sendHeartbeat
+          # (the EE mirror copied over the community variant by the
+          # enterprise Dockerfile). With that wrap in place the production-
+          # posture boot is RLS-violation-free. Any new un-wrapped INSERT
+          # into an RLS-gated table surfaces here.
+          SUITE_EXPECT_BOOT_RLS_EVIDENCE: '0'
+        run: |
+          set -euo pipefail
+          echo "Phase 5: run scripts/e2e/run-production-posture-suite.sh"
+          echo "  SUITE_EXPECT_BOOT_RLS_EVIDENCE=$SUITE_EXPECT_BOOT_RLS_EVIDENCE (clean-boot regression guard)"
+          bash scripts/e2e/run-production-posture-suite.sh
+
+      - name: Dump diagnostic logs on failure
+        if: failure()
+        run: |
+          set +e
+          echo "=== docker compose ps ==="
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml ps
+          echo ""
+          for svc in axonflow-agent axonflow-orchestrator axonflow-customer-portal axonflow-postgres; do
+            echo "=== logs: $svc (last 300 lines) ==="
+            docker logs --tail=300 "$svc" 2>&1 || true
+            echo ""
+            echo "=== current_user= boot-log lines from $svc ==="
+            docker logs "$svc" 2>&1 | grep -E 'current_user=' || true
+            echo ""
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.enterprise.yml down -v --remove-orphans 2>/dev/null || true
+
   smoke-test-summary:
     name: Smoke Test Summary
     runs-on: ubuntu-latest
-    needs: [detect-changes, smoke-tests]
+    needs: [detect-changes, smoke-tests, e2e-production-posture]
     if: always()
 
     steps:
@@ -260,16 +445,29 @@ jobs:
           echo "🧪 SDK Smoke Tests Complete"
           echo ""
           echo "Results:"
-          echo "  Detect Changes: ${{ needs.detect-changes.result }}"
-          echo "  Smoke Tests: ${{ needs.smoke-tests.result }}"
+          echo "  Detect Changes:          ${{ needs.detect-changes.result }}"
+          echo "  Smoke Tests:             ${{ needs.smoke-tests.result }}"
+          echo "  E2E Production-Posture:  ${{ needs.e2e-production-posture.result }}"
 
       - name: Fail if tests failed
-        # Accept 'success' or 'skipped' (skipped = no SDK-relevant changes)
+        # smoke-tests: success or skipped (skipped = no SDK-relevant changes).
+        # e2e-production-posture: MUST be success — `skipped` is NOT acceptable.
+        # The production-posture gate is a STRUCTURAL gate against the
+        # Session 21 csaas-prod silent-fallback class (#2380): if the job
+        # is skipped, the PR's contribution to the v9 RLS posture is
+        # unverified. v8.0.0 tag-cut depends on this being green on every
+        # PR + main push + merge_group.
         if: |
           needs.detect-changes.result == 'failure' ||
-          (needs.smoke-tests.result != 'success' && needs.smoke-tests.result != 'skipped')
+          (needs.smoke-tests.result != 'success' && needs.smoke-tests.result != 'skipped') ||
+          needs.e2e-production-posture.result != 'success'
         run: |
           echo "❌ SDK smoke tests failed"
+          echo "  smoke-tests:           ${{ needs.smoke-tests.result }}"
+          echo "  e2e-production-posture: ${{ needs.e2e-production-posture.result }}"
+          if [ "${{ needs.e2e-production-posture.result }}" = "skipped" ]; then
+            echo "::error::e2e-production-posture was SKIPPED but is a MANDATORY gate (#2391)"
+          fi
           exit 1
 
       - name: Success message
@@ -282,3 +480,4 @@ jobs:
           echo "  - PII Detection (Credit Card - redact mode, requires_redaction=true)"
           echo "  - SQL Injection Blocking (approved=false)"
           echo "  - Safe Query Approval (approved=true)"
+          echo "  - Production-Posture E2E: every main pool on axonflow_app_role (#2391)"

@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	serviceauth "axonflow/platform/shared/serviceauth"
 	logutil "axonflow/platform/shared/logger"
+	serviceauth "axonflow/platform/shared/serviceauth"
 )
 
 // =============================================================================
@@ -138,7 +138,9 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 				Kind: AuthKindInternalService,
 				Client: &Client{
 					ID:          serviceauth.ClientID,
+					ClientID:    serviceauth.ClientID,
 					Name:        "Orchestrator Internal",
+					OrgID:       orgID,
 					TenantID:    tenantID,
 					Permissions: []string{"query", "execute", "mcp"},
 					Enabled:     true,
@@ -166,6 +168,7 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 			Kind: AuthKindCommunity,
 			Client: &Client{
 				ID:          clientID,
+				ClientID:    clientID, // v9 ADR-052
 				Name:        "Community",
 				OrgID:       getDeploymentOrgID(),
 				TenantID:    clientID,
@@ -200,13 +203,7 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 			}
 		}
 
-		return &AuthResult{
-			Kind:     AuthKindCommunitySaaS,
-			Client:   client,
-			TenantID: client.TenantID,
-			OrgID:    client.OrgID,
-			ClientID: client.ID,
-		}, nil
+		return buildAuthResult(AuthKindCommunitySaaS, client), nil
 	}
 
 	// 4. Enterprise mode: Basic auth with Ed25519 license key
@@ -249,13 +246,34 @@ func Authenticate(r *http.Request, hints *AuthHints) (*AuthResult, *AuthError) {
 		}
 	}
 
+	return buildAuthResult(AuthKindEnterprise, client), nil
+}
+
+// buildAuthResult is the canonical Client → AuthResult field mapping for
+// both the CommunitySaaS and Enterprise auth branches.
+//
+// ADR-052 §5: AuthResult.ClientID is the credential identity (api_key_id
+// for API-keyed callers post Fix 4 of PR #2309). For community-saas +
+// organization-license paths client.ID == client.ClientID, so this is a
+// no-op there. For the validateViaAPIKeys path the two diverge and
+// AuthResult.ClientID MUST surface client.ClientID — downstream consumers
+// (mcpSession.clientID, X-Client-ID forwarding, BasicAuth username,
+// rate-limiter buckets, audit_logs.client_id, usage_events.client_id,
+// ContextKeyClientID) all read auth.ClientID, not client.ClientID
+// directly. See feedback_client_id_propagation_through_authresult.md.
+//
+// Extracted from inline field-mapping at both auth branches so a single
+// unit test can mutation-prove the invariant for both kinds without
+// having to drive validateCommunitySaasAuth + validateViaAPIKeys
+// through DB mocks (R3 finding F1-B on PR #2309).
+func buildAuthResult(kind AuthKind, client *Client) *AuthResult {
 	return &AuthResult{
-		Kind:     AuthKindEnterprise,
+		Kind:     kind,
 		Client:   client,
 		TenantID: client.TenantID,
 		OrgID:    client.OrgID,
-		ClientID: client.ID,
-	}, nil
+		ClientID: client.ClientID,
+	}
 }
 
 // ResolveUser resolves user identity from a token or synthesizes a default user

@@ -19,8 +19,8 @@ import (
 
 	logutil "axonflow/platform/shared/logger"
 
-	"github.com/google/uuid"
 	"axonflow/platform/shared/serviceauth"
+	"github.com/google/uuid"
 
 	"github.com/gorilla/mux"
 )
@@ -50,7 +50,7 @@ const (
 	mcpProtocolHeader   = "MCP-Protocol-Version"
 	mcpSessionTTL       = 24 * time.Hour
 	mcpMaxSessions      = 1000
-	mcpMaxRequestBody   = 1 << 20 // 1 MB
+	mcpMaxRequestBody   = 1 << 20  // 1 MB
 	mcpMaxResponseBody  = 10 << 20 // 10 MB from orchestrator
 )
 
@@ -167,6 +167,12 @@ type mcpSession struct {
 	createdAt time.Time
 	lastUsed  time.Time
 	tenantID  string
+	// orgID is the v9 customer/account identity (ADR-052) captured at
+	// session-create time. Audit writers (writeExplainableAuditLog,
+	// writeOverrideUsedEvent) read this so audit_logs rows carry a
+	// non-empty org_id; passing "" here was the bug that produced empty
+	// org_id rows on the MCP path (see Epic #2230 Phase 0 callout).
+	orgID     string
 	userID    string
 	userEmail string // per-user identity from X-User-Email header; distinct from userID so Plugin Batch 1 endpoints scope by real email, not synthetic "0".
 	userRole  string
@@ -178,6 +184,14 @@ type mcpSession struct {
 	// only applies to SaaS Plugin — empty tier means tools/list returns
 	// everything and tools/call enforces no gates).
 	tier string
+
+	// v9 Brief 11.5 (#2305 Item 4): captured at session-create so cache-hit
+	// replays + cache-miss fallback can both stamp r.Context() via
+	// stampAuthContext(ctx, client, authKind) without re-authenticating.
+	// Closes the latent bug from PR #2342 R3-MEDIUM-1 where the cache-miss
+	// path was identified as not stamping.
+	client    *Client
+	authKind  AuthKind
 }
 
 var (
@@ -614,7 +628,7 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the caller has valid credentials for this session's tenant
-	_, _, _, _, clientID, _, err := authenticateMCPServerRequest(r)
+	_, _, _, _, _, clientID, _, auth, err := authenticateMCPServerRequest(r)
 	if err != nil && !isCommunityMode() {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -623,6 +637,12 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	// Stamp auth context for downstream telemetry/audit consistency (#2328 +
+	// AST audit at authenticate_caller_stamp_audit_test.go).
+	if auth != nil && auth.Client != nil {
+		r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
+	}
+	_ = r // r reassignment kept for future handlers in this scope; intentional
 
 	mcpSessionsMu.Lock()
 	delete(mcpSessions, sessionID)
@@ -634,24 +654,44 @@ func handleMCPSessionDelete(w http.ResponseWriter, r *http.Request) {
 // --- Method Handlers ---
 
 func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	tenantID, userID, userEmail, userRole, clientID, tier, err := authenticateMCPServerRequest(r)
+	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		writeJSONRPCAuthError(w, req.ID, err.Error())
 		return
 	}
+	// Stamp auth context (#2328 + AST audit). r is reassigned so any
+	// downstream code in this handler observes stamped context.
+	if auth != nil && auth.Client != nil {
+		r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
+	}
+	_ = r
 
 	now := time.Now()
 	sessionID := generateSecureSessionID()
+	// v9 Brief 11.5 (#2305 Item 4): capture *Client + AuthKind so cache-hit
+	// replays in resolveMCPSession can stamp r.Context() without
+	// re-authenticating. auth.Client may be nil for legacy internal-service
+	// auth — keep nil and let stampAuthContext's caller-side nil-guard
+	// handle.
+	var sessClient *Client
+	var sessAuthKind AuthKind
+	if auth != nil {
+		sessClient = auth.Client
+		sessAuthKind = auth.Kind
+	}
 	session := &mcpSession{
 		id:        sessionID,
 		createdAt: now,
 		lastUsed:  now,
 		tenantID:  tenantID,
+		orgID:     orgID,
 		userID:    userID,
 		userEmail: userEmail,
 		userRole:  userRole,
 		clientID:  clientID,
 		tier:      tier, // V1 Plugin Pro tier for tools/list filtering + tools/call gating
+		client:    sessClient,
+		authKind:  sessAuthKind,
 	}
 
 	mcpSessionsMu.Lock()
@@ -710,10 +750,11 @@ func handleMCPInitialize(w http.ResponseWriter, r *http.Request, req *jsonRPCReq
 // Free caller could still attempt tools/call by-name, and the dispatch
 // re-enforces the gate there.
 func handleMCPToolsList(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	session := requireMCPAuth(w, r, req)
+	session, r := requireMCPAuth(w, r, req)
 	if session == nil {
 		return
 	}
+	_ = r // r stamped by requireMCPAuth; tools/list doesn't consume r below
 	writeJSONRPCResult(w, req.ID, map[string]interface{}{
 		"tools": getMCPToolsForCaller(session.tier),
 	})
@@ -721,14 +762,15 @@ func handleMCPToolsList(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 
 // handleMCPPing requires authentication to prevent endpoint discovery.
 func handleMCPPing(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	if session := requireMCPAuth(w, r, req); session == nil {
+	session, _ := requireMCPAuth(w, r, req)
+	if session == nil {
 		return
 	}
 	writeJSONRPCResult(w, req.ID, map[string]interface{}{})
 }
 
 func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {
-	session := requireMCPAuth(w, r, req)
+	session, r := requireMCPAuth(w, r, req)
 	if session == nil {
 		return
 	}
@@ -854,15 +896,31 @@ func handleMCPToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequ
 
 // --- Auth Helpers ---
 
-// requireMCPAuth resolves a session or authenticates the request. Returns nil
-// and writes an error response if authentication fails.
-func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) *mcpSession {
+// requireMCPAuth resolves a session or authenticates the request. Returns
+// (nil, r) and writes an error response if authentication fails.
+//
+// v9 Brief 11.5 (#2305 Item 4): returns the (potentially stamped) request
+// alongside the session. The cache-miss fallback path now stamps the four
+// auth context keys (TenantID/OrgID/ClientID/AuthKind) via
+// stampAuthContext so downstream readers of AuthKindFromContext etc. see
+// the authenticated identity. Cache-hit path stamps from the cached
+// session's *Client + authKind fields (populated at session-create).
+//
+// Callers MUST use the returned *http.Request for downstream calls so the
+// stamped context propagates.
+func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) (*mcpSession, *http.Request) {
 	session := resolveMCPSession(r)
 	if session == nil {
 		writeJSONRPCAuthError(w, req.ID, "Authentication required")
-		return nil
+		return nil, r
 	}
-	return session
+	// Stamp auth context for downstream telemetry/audit consistency.
+	// session.client may be nil for legacy sessions (created pre-#2305-finish);
+	// in that case we skip stamping rather than panic.
+	if session.client != nil {
+		r = r.WithContext(stampAuthContext(r.Context(), session.client, session.authKind))
+	}
+	return session, r
 }
 
 // authenticateMCPServerRequest validates request credentials using the unified
@@ -878,11 +936,18 @@ func requireMCPAuth(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest)
 // to the orchestrator so access control and scoping work per-user. Absent —
 // legacy clients — we fall back to a client-scoped pseudo-identity rather
 // than a shared synthetic "0" to avoid cross-user aliasing on the MCP path.
-func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail, userRole, clientID, tier string, err error) {
-	auth, authErr := Authenticate(r, nil)
+// v9 issue #2328: returns *AuthResult alongside the scalar fields so callers
+// can stamp the request context via stampAuthContext(ctx, auth.Client, auth.Kind).
+// The 7 scalar returns are kept for backwards-compat with the existing 3
+// production callers + 4 test callers — the new *AuthResult is APPENDED at
+// position 8 (before err) so signature changes are additive. Callers that
+// don't need to stamp ignore via `_`.
+func authenticateMCPServerRequest(r *http.Request) (tenantID, orgID, userID, userEmail, userRole, clientID, tier string, auth *AuthResult, err error) {
+	authResult, authErr := Authenticate(r, nil)
 	if authErr != nil {
-		return "", "", "", "", "", "", fmt.Errorf("%s", authErr.Message)
+		return "", "", "", "", "", "", "", nil, fmt.Errorf("%s", authErr.Message)
 	}
+	auth = authResult
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
@@ -917,7 +982,14 @@ func authenticateMCPServerRequest(r *http.Request) (tenantID, userID, userEmail,
 		resolvedTier = auth.Client.EffectiveTier
 	}
 
-	return auth.TenantID, resolvedUserID, resolvedEmail, "admin", auth.ClientID, resolvedTier, nil
+	// MCP server protocol has no real per-user role lookup — the caller's
+	// X-User-Email/X-User-ID identifies the principal but not their authz
+	// role. Fabricating "admin" on every audit row corrupts the trail (a
+	// reader can't distinguish a real privileged action from an MCP-path
+	// default). Stamp "unknown" so the audit record is honest about not
+	// having resolved a role; downstream auditors should treat "unknown"
+	// distinct from "admin" / "viewer" / "operator".
+	return auth.TenantID, auth.OrgID, resolvedUserID, resolvedEmail, "unknown", auth.ClientID, resolvedTier, auth, nil
 }
 
 // resolveMCPSession resolves auth from session header or credentials.
@@ -956,18 +1028,34 @@ func resolveMCPSession(r *http.Request) *mcpSession {
 		}
 	}
 
-	// Fall back to direct auth
-	tenantID, userID, userEmail, userRole, clientID, tier, err := authenticateMCPServerRequest(r)
+	// Fall back to direct auth. resolveMCPSession returns *mcpSession to
+	// its caller; the *http.Request stays in the caller's scope and is
+	// what carries context to downstream code.
+	//
+	// v9 Brief 11.5 (#2305 Item 4): closes the gap PR D R3-MEDIUM-1
+	// surfaced. The cache-miss session now stashes *Client + AuthKind so
+	// requireMCPAuth's caller can stamp r.Context() via stampAuthContext
+	// before invoking downstream handlers.
+	tenantID, orgID, userID, userEmail, userRole, clientID, tier, auth, err := authenticateMCPServerRequest(r)
 	if err != nil {
 		return nil
 	}
+	var sessClient *Client
+	var sessAuthKind AuthKind
+	if auth != nil {
+		sessClient = auth.Client
+		sessAuthKind = auth.Kind
+	}
 	return &mcpSession{
 		tenantID:  tenantID,
+		orgID:     orgID,
 		userID:    userID,
 		userEmail: userEmail,
 		userRole:  userRole,
 		clientID:  clientID,
 		tier:      tier,
+		client:    sessClient,
+		authKind:  sessAuthKind,
 	}
 }
 
@@ -1006,9 +1094,11 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		params = p
 	}
 
+	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
 	outcome := evaluateInputPolicies(
 		ctx,
 		session.tenantID,
+		session.orgID,
 		session.userID,
 		session.userRole,
 		connectorType,
@@ -1081,7 +1171,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 				overriddenPolicyVersion = overriddenMatch.Version
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, "", session.clientID, session.userEmail,
+				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
 				overriddenPolicyID, overriddenPolicyVersion)
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
@@ -1093,7 +1183,7 @@ func mcpToolCheckPolicy(ctx context.Context, session *mcpSession, args map[strin
 		// Dual-write so explainDecision(id) resolves against audit_logs.
 		writeExplainableAuditLog(ctx, usageDB,
 			decisionID, uuid.New().String(),
-			session.tenantID, "", session.clientID, session.userEmail,
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
 			"mcp_check_policy", statement, computeStatementHash(statement),
 			outcome.StaticResult.BlockReason, topRisk, matches)
@@ -1206,7 +1296,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 				overriddenPolicyVersion = overriddenMatch.Version
 			}
 			writeOverrideUsedEvent(ctx, usageDB, usedOverrideID,
-				decisionID, session.tenantID, "", session.clientID, session.userEmail,
+				decisionID, session.tenantID, session.orgID, session.clientID, session.userEmail,
 				overriddenPolicyID, overriddenPolicyVersion)
 			resp["allowed"] = true
 			resp["override_existing_id"] = usedOverrideID
@@ -1223,7 +1313,7 @@ func mcpToolCheckOutput(ctx context.Context, session *mcpSession, args map[strin
 		}
 		writeExplainableAuditLog(ctx, usageDB,
 			decisionID, uuid.New().String(),
-			session.tenantID, "", session.clientID, session.userEmail,
+			session.tenantID, session.orgID, session.clientID, session.userEmail,
 			session.userID, session.userRole,
 			"mcp_check_output", query, computeStatementHash(query),
 			outcome.StaticResult.BlockReason, topRisk, matches)
@@ -1478,7 +1568,12 @@ func mcpProxyToAgent(session *mcpSession, method, url string, body interface{}) 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	// v9 identity wire (ADR-052 §5 / ADR-053 §Step 2): X-Client-ID is the
+	// canonical credential identity; X-Tenant-ID is the deprecated alias.
+	// X-Org-ID is the RLS boundary (Phase 4 + future Phase 8 RLS roll-in).
 	req.Header.Set("X-Tenant-ID", session.tenantID)
+	req.Header.Set("X-Client-ID", session.clientID)
+	req.Header.Set("X-Org-ID", session.orgID)
 	// Basic auth required by the Orchestrator's audit handler even when proxied
 	// through the Agent. In community mode any credentials work.
 	req.SetBasicAuth(session.clientID, "internal")
@@ -1520,7 +1615,11 @@ func mcpProxyToLocal(session *mcpSession, method, url string) (interface{}, erro
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	// v9 identity wire (ADR-052 §5): forward all three so local proxy
+	// callees can read either alias during compat.
 	req.Header.Set("X-Tenant-ID", session.tenantID)
+	req.Header.Set("X-Client-ID", session.clientID)
+	req.Header.Set("X-Org-ID", session.orgID)
 
 	resp, err := orchestratorHTTPClient.Do(req)
 	if err != nil {
@@ -1654,7 +1753,10 @@ func mcpToolListRecentDecisions(session *mcpSession, args map[string]interface{}
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// v9 identity wire (ADR-052 §5 / ADR-053 §Step 2).
 	req.Header.Set("X-Tenant-ID", session.tenantID)
+	req.Header.Set("X-Client-ID", session.clientID)
+	req.Header.Set("X-Org-ID", session.orgID)
 	if session.userID != "" {
 		req.Header.Set("X-User-ID", session.userID)
 	}
@@ -1668,7 +1770,10 @@ func mcpToolListRecentDecisions(session *mcpSession, args map[string]interface{}
 	if session.tier != "" {
 		req.Header.Set("X-Axonflow-Effective-Tier", session.tier)
 	}
-	req.SetBasicAuth(session.tenantID, "internal")
+	// ADR-052 §5: BasicAuth username is the credential identity (clientID),
+	// not the tenant scope. Matches sibling forwarder mcpProxyToAgent at
+	// line 1497 so all three orchestrator forwarders agree.
+	req.SetBasicAuth(session.clientID, "internal")
 	if proxyTokenGenerator != nil {
 		req.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))
 	}
@@ -1760,7 +1865,10 @@ func mcpProxyToOrchestrator(session *mcpSession, method, path string, body inter
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	// v9 identity wire (ADR-052 §5 / ADR-053 §Step 2).
 	req.Header.Set("X-Tenant-ID", session.tenantID)
+	req.Header.Set("X-Client-ID", session.clientID)
+	req.Header.Set("X-Org-ID", session.orgID)
 	// Plugin Batch 1 endpoints (/api/v1/overrides, /api/v1/decisions/*)
 	// require an authenticated user identity per ADR-044. Forward the
 	// per-user identity captured at authenticate time — userID and
@@ -1773,9 +1881,11 @@ func mcpProxyToOrchestrator(session *mcpSession, method, path string, body inter
 	if session.userEmail != "" {
 		req.Header.Set("X-User-Email", session.userEmail)
 	}
-	// Basic auth required by Orchestrator audit endpoints. Use tenantID as
-	// clientID to pass the Orchestrator's client/tenant scope validation.
-	req.SetBasicAuth(session.tenantID, "internal")
+	// Basic auth required by Orchestrator audit endpoints. ADR-052 §5: the
+	// BasicAuth username is the credential identity (clientID), not the
+	// tenant scope. Matches sibling forwarder mcpProxyToAgent (line 1497)
+	// so all three orchestrator forwarders agree.
+	req.SetBasicAuth(session.clientID, "internal")
 
 	if proxyTokenGenerator != nil {
 		req.Header.Set("X-Axonflow-Proxy-Auth", serviceauth.GetInternalServiceToken(proxyTokenGenerator))

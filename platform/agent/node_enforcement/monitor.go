@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"axonflow/platform/agent/rls"
 )
 
 // NodeMonitor monitors node counts against license limits
@@ -173,63 +175,80 @@ func (m *NodeMonitor) checkOrgNodeCount(ctx context.Context, orgID string, actua
 	return nil
 }
 
-// recordViolation records a node limit violation in the database
+// recordViolation records a node limit violation in the database.
+//
+// v9 Phase 8 #2384 PR-C1: node_violations is ENABLE-RLS (mig 018) and
+// FORCE-RLS (mig 107) — under axonflow_app_role the INSERT/UPDATE WITH
+// CHECK predicate `org_id = current_setting('app.current_org_id')` fires.
+// We wrap the existence-probe SELECT + the INSERT/UPDATE in a single
+// WithOrgScope transaction so app.current_org_id is pinned to
+// violation.OrgID for the lifetime of the read-then-write. Doing the
+// SELECT inside the wrap is required: the read is also gated by
+// USING (org_id = ...) and would silently return zero rows without it,
+// flipping the switch case into "create new" even when an active
+// violation already exists.
 func (m *NodeMonitor) recordViolation(ctx context.Context, violation *ViolationInfo) error {
-	// Check if there's already an active violation for this org
-	var existingID int
-	query := `
-		SELECT id FROM node_violations
-		WHERE org_id = $1 AND resolved = FALSE
-		LIMIT 1
-	`
-	err := m.db.QueryRowContext(ctx, query, violation.OrgID).Scan(&existingID)
-
-	switch err {
-	case sql.ErrNoRows:
-		// Create new violation
-		metadata, _ := json.Marshal(violation)
-		insertQuery := `
-			INSERT INTO node_violations (
-				org_id, license_key_hash, tier, max_nodes_allowed,
-				actual_node_count, excess_nodes, metadata
-			) VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`
-		_, err = m.db.ExecContext(ctx, insertQuery,
-			violation.OrgID,
-			violation.LicenseKeyHash,
-			violation.Tier,
-			violation.MaxNodesAllowed,
-			violation.ActualNodeCount,
-			violation.ExcessNodes,
-			metadata,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert violation: %w", err)
-		}
-		fmt.Printf("⚠️  Node violation recorded: org=%s, actual=%d, max=%d, excess=%d\n",
-			violation.OrgID, violation.ActualNodeCount, violation.MaxNodesAllowed, violation.ExcessNodes)
-	case nil:
-		// Update existing violation
-		updateQuery := `
-			UPDATE node_violations
-			SET actual_node_count = $1,
-			    excess_nodes = $2,
-			    alert_sent = TRUE
-			WHERE id = $3
-		`
-		_, err = m.db.ExecContext(ctx, updateQuery,
-			violation.ActualNodeCount,
-			violation.ExcessNodes,
-			existingID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to update violation: %w", err)
-		}
-	default:
-		return fmt.Errorf("failed to check existing violations: %w", err)
+	if violation == nil || violation.OrgID == "" {
+		return fmt.Errorf("recordViolation: violation.OrgID must be non-empty (RLS enforced by mig 018+107)")
 	}
 
-	return nil
+	return rls.WithOrgScope(ctx, m.db, violation.OrgID, func(tx *sql.Tx) error {
+		// Check if there's already an active violation for this org
+		var existingID int
+		query := `
+			SELECT id FROM node_violations
+			WHERE org_id = $1 AND resolved = FALSE
+			LIMIT 1
+		`
+		err := tx.QueryRowContext(ctx, query, violation.OrgID).Scan(&existingID)
+
+		switch err {
+		case sql.ErrNoRows:
+			// Create new violation
+			metadata, _ := json.Marshal(violation)
+			insertQuery := `
+				INSERT INTO node_violations (
+					org_id, license_key_hash, tier, max_nodes_allowed,
+					actual_node_count, excess_nodes, metadata
+				) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`
+			_, err = tx.ExecContext(ctx, insertQuery,
+				violation.OrgID,
+				violation.LicenseKeyHash,
+				violation.Tier,
+				violation.MaxNodesAllowed,
+				violation.ActualNodeCount,
+				violation.ExcessNodes,
+				metadata,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert violation: %w", err)
+			}
+			fmt.Printf("⚠️  Node violation recorded: org=%s, actual=%d, max=%d, excess=%d\n",
+				violation.OrgID, violation.ActualNodeCount, violation.MaxNodesAllowed, violation.ExcessNodes)
+		case nil:
+			// Update existing violation
+			updateQuery := `
+				UPDATE node_violations
+				SET actual_node_count = $1,
+				    excess_nodes = $2,
+				    alert_sent = TRUE
+				WHERE id = $3
+			`
+			_, err = tx.ExecContext(ctx, updateQuery,
+				violation.ActualNodeCount,
+				violation.ExcessNodes,
+				existingID,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to update violation: %w", err)
+			}
+		default:
+			return fmt.Errorf("failed to check existing violations: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // cleanupResolvedViolations marks violations as resolved if node count is back within limits
@@ -270,14 +289,24 @@ func (m *NodeMonitor) cleanupResolvedViolations(ctx context.Context) error {
 
 		// If within limits, mark as resolved
 		if currentCount <= maxNodes {
+			// v9 Phase 8 #2384 PR-C1: wrap the per-row UPDATE in WithOrgScope.
+			// node_violations is FORCE-RLS'd (mig 107) — under app_role the
+			// UPDATE WHERE id=$1 alone is gated by the USING predicate, which
+			// silently zeroes rows-affected without app.current_org_id set.
+			// We have orgID per row from the outer SELECT loop, so the wrap
+			// is mechanical even though cleanupResolvedViolations is
+			// conceptually a cross-org sweep.
 			updateQuery := `
 				UPDATE node_violations
 				SET resolved = TRUE, violation_end = NOW()
 				WHERE id = $1
 			`
-			_, err := m.db.ExecContext(ctx, updateQuery, id)
-			if err != nil {
-				fmt.Printf("Failed to resolve violation %d: %v\n", id, err)
+			updateErr := rls.WithOrgScope(ctx, m.db, orgID, func(tx *sql.Tx) error {
+				_, exErr := tx.ExecContext(ctx, updateQuery, id)
+				return exErr
+			})
+			if updateErr != nil {
+				fmt.Printf("Failed to resolve violation %d: %v\n", id, updateErr)
 			} else {
 				fmt.Printf("✅ Violation resolved: org=%s, current=%d, max=%d\n",
 					orgID, currentCount, maxNodes)

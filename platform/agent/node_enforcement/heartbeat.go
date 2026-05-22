@@ -127,6 +127,22 @@ func (s *HeartbeatService) sendHeartbeat(ctx context.Context) error {
 		return fmt.Errorf("failed to marshal host info: %w", err)
 	}
 
+	// v9 Brief 11.5 R3-MEDIUM-1: agent_heartbeats is FORCEd by mig 107.
+	// HeartbeatService is per-instance (s.orgID is known at construction),
+	// so wrap INSERT in withOrgScope so WITH CHECK + policy accept the row.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("heartbeat: begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, "SELECT set_config('app.current_org_id', $1, true)", s.orgID); err != nil {
+		return fmt.Errorf("heartbeat: set_config: %w", err)
+	}
+
 	// Upsert heartbeat (insert or update if exists)
 	query := `
 		INSERT INTO agent_heartbeats (
@@ -141,7 +157,7 @@ func (s *HeartbeatService) sendHeartbeat(ctx context.Context) error {
 			host_info = $10
 	`
 
-	_, err = s.db.ExecContext(ctx, query,
+	_, err = tx.ExecContext(ctx, query,
 		s.instanceID,
 		s.instanceType,
 		hostInfo.Hostname,
@@ -153,20 +169,37 @@ func (s *HeartbeatService) sendHeartbeat(ctx context.Context) error {
 		hostInfo.Region,
 		hostInfoJSON,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to upsert heartbeat: %w", err)
 	}
 
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("heartbeat: commit: %w", err)
+	}
 	return nil
 }
 
 // removeHeartbeat removes this instance from the heartbeats table (on shutdown)
 func (s *HeartbeatService) removeHeartbeat(ctx context.Context) error {
-	query := `DELETE FROM agent_heartbeats WHERE instance_id = $1`
-	_, err := s.db.ExecContext(ctx, query, s.instanceID)
+	// v9 Brief 11.5 R3-MEDIUM-1: wrap DELETE in withOrgScope so FORCE
+	// RLS on agent_heartbeats accepts the row visibility (USING clause).
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("removeHeartbeat: begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, "SELECT set_config('app.current_org_id', $1, true)", s.orgID); err != nil {
+		return fmt.Errorf("removeHeartbeat: set_config: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM agent_heartbeats WHERE instance_id = $1`, s.instanceID); err != nil {
 		return fmt.Errorf("failed to remove heartbeat: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("removeHeartbeat: commit: %w", err)
 	}
 	return nil
 }
@@ -267,7 +300,16 @@ func GetActiveNodesByOrg(ctx context.Context, db *sql.DB) (map[string]int, error
 	return result, nil
 }
 
-// CleanupStaleHeartbeats removes heartbeats older than 1 hour
+// CleanupStaleHeartbeats removes heartbeats older than 1 hour.
+//
+// v9 Phase 8 #2384 PR-C1 DoD D-2: cross-org sweep — admin-pool-only.
+// Caller MUST pass a *sql.DB connected to axonflow_platform_admin
+// (BYPASSRLS). Under axonflow_app_role + FORCE-RLS on agent_heartbeats
+// (mig 107) this DELETE silently zeroes rows-affected (USING masks all
+// other-org rows from view). The unwrapped shape is intentional — a
+// per-tenant wrap would still leave the other tenants' stale rows
+// untouched. No production caller wires this on usageDB today; if a
+// future caller does, route through OpenPlatformAdminConnection first.
 func CleanupStaleHeartbeats(ctx context.Context, db *sql.DB) error {
 	query := `
 		DELETE FROM agent_heartbeats

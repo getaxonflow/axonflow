@@ -72,14 +72,16 @@ func (m *MockMAPRepository) List(ctx context.Context, req execution.ListExecutio
 	return results, len(results), nil
 }
 
-func (m *MockMAPRepository) Delete(ctx context.Context, executionID string) error {
+// v9 Phase 8 #2384 PR-C1: Delete/Update*/Expire signatures gained
+// orgID + tenantID for RLS scoping; the mock ignores them.
+func (m *MockMAPRepository) Delete(ctx context.Context, _, _, executionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.executions, executionID)
 	return nil
 }
 
-func (m *MockMAPRepository) UpdateStatus(ctx context.Context, executionID string, status execution.ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
+func (m *MockMAPRepository) UpdateStatus(ctx context.Context, _, _, executionID string, status execution.ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]
@@ -92,7 +94,7 @@ func (m *MockMAPRepository) UpdateStatus(ctx context.Context, executionID string
 	return nil
 }
 
-func (m *MockMAPRepository) UpdateSteps(ctx context.Context, executionID string, steps []execution.StepStatus) error {
+func (m *MockMAPRepository) UpdateSteps(ctx context.Context, _, _, executionID string, steps []execution.StepStatus) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]
@@ -104,7 +106,7 @@ func (m *MockMAPRepository) UpdateSteps(ctx context.Context, executionID string,
 	return nil
 }
 
-func (m *MockMAPRepository) UpdateCost(ctx context.Context, executionID string, estimatedCost, actualCost *float64) error {
+func (m *MockMAPRepository) UpdateCost(ctx context.Context, _, _, executionID string, estimatedCost, actualCost *float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]
@@ -151,7 +153,7 @@ func (m *MockMAPRepository) GetByMetadata(ctx context.Context, key, value string
 	return nil, execution.ErrExecutionNotFound
 }
 
-func (m *MockMAPRepository) ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error {
+func (m *MockMAPRepository) ExpireExecution(ctx context.Context, _, _, executionID string, metadata map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]
@@ -165,7 +167,7 @@ func (m *MockMAPRepository) ExpireExecution(ctx context.Context, executionID str
 	return nil
 }
 
-func (m *MockMAPRepository) PurgeOldest(_ context.Context, _ string, _ int) (int64, error) {
+func (m *MockMAPRepository) PurgeOldest(_ context.Context, _, _ string, _ int) (int64, error) {
 	return 0, nil
 }
 

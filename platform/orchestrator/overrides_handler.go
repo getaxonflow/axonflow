@@ -16,6 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
+
+	"axonflow/platform/agent"
 )
 
 // pqArray wraps a Go string slice as a PostgreSQL text[] for parameterised
@@ -357,17 +359,27 @@ func createOverrideHandler(w http.ResponseWriter, r *http.Request) {
 		toolSig = sql.NullString{String: req.ToolSignature, Valid: true}
 	}
 
-	//nolint:gosec // values are parameterized
-	_, err = usageDB.Exec(`
-		INSERT INTO policy_overrides (
-			id, policy_id, policy_type, organization_id, tenant_id, tool_signature,
-			action_override, override_reason, expires_at, created_by, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, 'allow', $7, $8, $9, $10, $10)
-	`, overrideID, canonicalUUID, req.PolicyType,
-		nullableUUID(orgID), nullableString(tenantID), toolSig,
-		req.OverrideReason, expiresAt, userEmail, now)
-	if err != nil {
-		log.Printf("override create: insert failed: %v", err)
+	// v9 Phase 8 PR-C2 (#2384) + mig 110: policy_overrides RLS was rekeyed
+	// to `app.current_org_id` GUC + org_id column. The legacy app.tenant_id
+	// policy is gone; WithOrgScope + org_id col satisfy the new policy.
+	// orgID from the X-Org-ID header is the canonical post-Phase-6 identifier;
+	// fall back to tenantID for legacy callers (tenant_id == org_id collapse).
+	overrideOrgScope := orgID
+	if overrideOrgScope == "" {
+		overrideOrgScope = tenantID
+	}
+	if wrapErr := agent.WithOrgScope(r.Context(), usageDB, overrideOrgScope, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(r.Context(), `
+			INSERT INTO policy_overrides (
+				id, policy_id, policy_type, organization_id, tenant_id, org_id, tool_signature,
+				action_override, override_reason, expires_at, created_by, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, 'allow', $8, $9, $10, $11, $11)
+		`, overrideID, canonicalUUID, req.PolicyType,
+			nullableUUID(orgID), nullableString(tenantID), overrideOrgScope, toolSig,
+			req.OverrideReason, expiresAt, userEmail, now)
+		return execErr
+	}); wrapErr != nil {
+		log.Printf("override create: insert failed: %v", wrapErr)
 		sendErrorResponse(w, "Failed to create override", http.StatusInternalServerError)
 		return
 	}
@@ -463,12 +475,23 @@ func revokeOverrideHandler(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	// SECURITY: Tenant-scoped UPDATE guards against race where tenant changes
 	// between SELECT and UPDATE. Belt + suspenders.
-	_, err = usageDB.Exec(
-		"UPDATE policy_overrides SET revoked_at = $1, revoked_by = $2, updated_at = $1, updated_by = $2 WHERE id = $3 AND tenant_id = $4",
-		now, revokedBy, overrideID, tenantID,
-	)
-	if err != nil {
-		log.Printf("override revoke: update failed: %v", err)
+	//
+	// v9 Phase 8 PR-C2 (#2384) + mig 110: under axonflow_app_role + the
+	// mig-110-normalized RLS policy, the UPDATE USING clause
+	// `org_id = current_setting('app.current_org_id', true)` filters
+	// to zero rows without the GUC set. Wrap before the UPDATE.
+	revokeScope := orgID
+	if revokeScope == "" {
+		revokeScope = tenantID
+	}
+	if wrapErr := agent.WithOrgScope(r.Context(), usageDB, revokeScope, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(r.Context(),
+			"UPDATE policy_overrides SET revoked_at = $1, revoked_by = $2, updated_at = $1, updated_by = $2 WHERE id = $3 AND tenant_id = $4",
+			now, revokedBy, overrideID, tenantID,
+		)
+		return execErr
+	}); wrapErr != nil {
+		log.Printf("override revoke: update failed: %v", wrapErr)
 		sendErrorResponse(w, "Failed to revoke override", http.StatusInternalServerError)
 		return
 	}

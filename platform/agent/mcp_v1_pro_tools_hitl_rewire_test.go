@@ -115,12 +115,25 @@ func TestMCPToolRequestApproval_EvalTierSucceeds(t *testing.T) {
 	t.Cleanup(func() { hitlServiceForTest = prev })
 	hitlServiceForTest = func() *hitl.Service { return svc }
 
+	// v9 Phase 8 #2384 PR-C1: Repository.Create + AddHistory wrap each
+	// INSERT in WithOrgScope. session.tenantID is the OrgID (SaaS plugin:
+	// no separate org concept; tenant == org).
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("cs_test").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("cs_test").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	session := &mcpSession{tenantID: "cs_test", clientID: "client-1", userID: "user-1", tier: "Pro"}
 	args := map[string]interface{}{
@@ -172,12 +185,23 @@ func TestMCPToolRequestApproval_DefaultsTriggerReason(t *testing.T) {
 	// validation that rejects empty trigger_reason; if our default
 	// didn't fire, validation would fire instead and the test would
 	// fail with the validation message.
+	// v9 Phase 8 #2384 PR-C1: both INSERTs wrapped in WithOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("cs_test").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("cs_test").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	session := &mcpSession{tenantID: "cs_test", clientID: "client-1", tier: "Pro"}
 	args := map[string]interface{}{

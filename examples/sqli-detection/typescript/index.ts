@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     let result;
     try {
       result = await axonflow.getPolicyApprovedContext({
-        userToken: 'sqli-detection-user',
+        userToken: getEnv('AXONFLOW_USER_TOKEN', 'sqli-detection-user'),
         query: test.query,
       });
     } catch (error) {
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     let configResult;
     try {
       configResult = await axonflow.getPolicyApprovedContext({
-        userToken: 'sqli-config-test-user',
+        userToken: getEnv('AXONFLOW_USER_TOKEN', 'sqli-config-test-user'),
         query: 'SELECT * FROM users; DROP TABLE users;--',
       });
     } catch (error) {

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -226,6 +227,13 @@ func (h *Handler) CreateRequest(w http.ResponseWriter, r *http.Request) {
 			// upgrade pointer in the body.
 			h.writeError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, ErrPendingApprovalLimitExceeded):
+			// Audit log for the HITL pending-approval 429. Pre-fix this
+			// site returned 429 via h.writeError (which writes the
+			// response body but does not log) — the daily-report's
+			// agent-log grep was blind to it. `[CSAAS-RL]` prefix is
+			// the discriminator for daily-report tooling + CW alarms
+			// across limiter classes.
+			log.Printf("[CSAAS-RL] hitl_pending_limit tenant=%s err=%v", tenantID, err)
 			h.writeError(w, http.StatusTooManyRequests, err.Error())
 		default:
 			h.writeError(w, http.StatusBadRequest, err.Error())

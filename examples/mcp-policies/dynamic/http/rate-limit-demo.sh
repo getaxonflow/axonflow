@@ -14,6 +14,9 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+# user_token: validated as JWT in eval/enterprise; any string in community.
+# Read from AXONFLOW_USER_TOKEN env (setup-e2e-testing.sh writes it).
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-demo-user}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 TENANT_ID="${AXONFLOW_TENANT_ID:-community}"
 REQUEST_COUNT="${1:-5}"
@@ -73,7 +76,7 @@ for i in $(seq 1 $REQUEST_COUNT); do
       -d "{
         \"connector\": \"${CONNECTOR}\",
         \"statement\": \"SELECT 1 as test\",
-        \"user_token\": \"rate-test-user\"
+        \"user_token\": \"${USER_TOKEN}\"
       }")
 
     http_code=$(echo "$response" | tail -n1)

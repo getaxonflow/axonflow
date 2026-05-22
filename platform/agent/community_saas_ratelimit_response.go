@@ -139,6 +139,14 @@ func writeRateLimitError(w http.ResponseWriter, tenantID, tier string, limit int
 	w.Header().Set("X-Axonflow-Tier-Limit", LimitTypeDailyQuota)
 	w.Header().Set("X-Axonflow-Upgrade-URL", v1ProUpgradeCompareURL)
 	w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySecs))
+	// Audit log for the daily-quota 429. Pre-fix this site emitted the
+	// 429 silently (only logged on encode failure), which made the
+	// daily-report's agent-log grep blind to the dominant 429 source.
+	// `[CSAAS-RL]` prefix is the single string daily-report tooling +
+	// CW alarms grep for to discriminate rate-limit decisions across
+	// limiter classes (per_minute / hitl_pending_limit / daily_quota).
+	log.Printf("[CSAAS-RL] daily_quota tenant=%s tier=%s limit=%d retry_after=%ds",
+		tenantID, tier, limit, retrySecs)
 	w.WriteHeader(http.StatusTooManyRequests)
 	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		log.Printf("[V1 Pro envelope] tenant=%s daily_quota encode failed: %v", tenantID, err)

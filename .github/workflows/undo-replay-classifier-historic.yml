@@ -1,0 +1,195 @@
+name: Undo Replay Classifier Historic
+
+# One-shot undo of a prior replay-classifier-historic run, per the
+# now-current classifier. See issue #2241 for the 2026-05-19 cleanup
+# that motivated this workflow.
+#
+# Sibling of update-checkpoint-telemetry-bulk-scrub-*.yml +
+# replay-classifier-historic.yml. Same OIDC IAM role
+# (prod-checkpoint-telemetry-updater-gha), same two-phase contract
+# (discovery + apply), same R3.a fingerprint enforcement, same SoX
+# audit trail.
+#
+# Per-row logic (NOT a blunt undo):
+#
+#   For each row stamped with replay_correlation_id = target:
+#     - if replay_reason starts "cleanup-status-tagged:" → LEAVE
+#       (pass-2 row; cleanup-status-tagged-must-not-be-external invariant
+#        is still in force during epic #2230 Phase 5 transition)
+#     - if replay_reason starts "layer1:" → re-classify with current
+#       classifier:
+#         - verdict Internal → LEAVE (decision was correct under
+#           post-v1.4.0 rules; row matches another Layer 1 rule)
+#         - verdict NOT Internal → UNDO (set source=external; stamp
+#           undo_replay_* audit; remove replay_* audit)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_correlation_id:
+        description: 'The replay_correlation_id value of the cohort to undo (e.g. "replay-classifier-26071281293-1")'
+        required: true
+        type: string
+      phase:
+        description: 'discovery (read-only Scan + classify + fingerprint) | apply (UpdateItem when dry_run=false)'
+        required: true
+        type: choice
+        options:
+          - discovery
+          - apply
+      ticket:
+        description: 'Tracking ticket, e.g. "#2241"'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for run (logged to audit)'
+        required: true
+        type: string
+        default: 'undo-replay after #2242 reverted synthetic-telemetry-type rule'
+      dry_run:
+        description: 'Apply phase: plan but do not UpdateItem.'
+        required: false
+        type: boolean
+        default: true
+      expected_fingerprint:
+        description: 'SHA-256 from prior discovery. Required for live apply (R3.a).'
+        required: false
+        type: string
+        default: ''
+
+concurrency: undo-replay-classifier-historic
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TABLE_NAME: prod-checkpoint-telemetry-events
+  AWS_REGION: us-east-1
+
+jobs:
+  undo:
+    name: Undo replay (${{ inputs.phase }})
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout enterprise repo
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install boto3
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+
+      - name: Validate ticket reference shape
+        env:
+          INPUT_TICKET: ${{ inputs.ticket }}
+        run: |
+          python3 -c "
+          import os, re, sys
+          v = os.environ['INPUT_TICKET']
+          if not re.match(r'^#\d+\$', v):
+              raise SystemExit(f'ERROR: ticket must match /^#\\\\d+\$/, got {v!r}')
+          print(f'OK: ticket={v}')
+          "
+
+      - name: Validate phase + dry-run + fingerprint
+        env:
+          INPUT_PHASE: ${{ inputs.phase }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FP: ${{ inputs.expected_fingerprint }}
+        run: |
+          if [ "$INPUT_PHASE" = "apply" ] \
+              && [ "$INPUT_DRY_RUN" = "false" ] \
+              && [ -z "$INPUT_FP" ]; then
+            echo "::error::Live apply requires expected_fingerprint from prior discovery."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (telemetry-updater OIDC role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::686831565523:role/prod-checkpoint-telemetry-updater-gha
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Decision-point delay (live apply only)
+        if: ${{ inputs.phase == 'apply' && inputs.dry_run != true }}
+        run: |
+          echo "::warning::Live apply — UpdateItem will execute in 5 seconds. Cancel NOW if this is wrong."
+          sleep 5
+
+      - name: Run undo
+        id: undo
+        env:
+          INPUT_PHASE: ${{ inputs.phase }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FP: ${{ inputs.expected_fingerprint }}
+          INPUT_TARGET: ${{ inputs.target_correlation_id }}
+          INPUT_UNDO_CORR: 'undo-replay-${{ github.run_id }}-${{ github.run_attempt }}'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          FP_FLAG=""
+          if [ -n "$INPUT_FP" ]; then
+            FP_FLAG="--expected-fingerprint $INPUT_FP"
+          fi
+
+          AUDIT_PATH="${RUNNER_TEMP}/undo-audit.json"
+          python3 scripts/undo-replay-classifier-historic.py \
+            --table "${{ env.TABLE_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --target-correlation-id "$INPUT_TARGET" \
+            --phase "$INPUT_PHASE" \
+            --undo-correlation-id "$INPUT_UNDO_CORR" \
+            $DRY_RUN_FLAG \
+            $FP_FLAG \
+            --summary-json > "$AUDIT_PATH"
+
+          echo "audit_path=$AUDIT_PATH" >> "$GITHUB_OUTPUT"
+          UNDO_COUNT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('undo_count',0))" "$AUDIT_PATH")
+          FP=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('undo_set_fingerprint',''))" "$AUDIT_PATH")
+          echo "undo_count=$UNDO_COUNT" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "Audit blob:"
+          cat "$AUDIT_PATH"
+
+      - name: Job summary
+        env:
+          UNDO_COUNT: ${{ steps.undo.outputs.undo_count }}
+          FP: ${{ steps.undo.outputs.fingerprint }}
+        run: |
+          {
+            echo "## Undo Replay Classifier Historic — ${{ inputs.phase }}"
+            echo ""
+            echo "- **Ticket:** ${{ inputs.ticket }}"
+            echo "- **Target correlation id:** \`${{ inputs.target_correlation_id }}\`"
+            echo "- **Phase:** ${{ inputs.phase }}  /  **dry_run:** ${{ inputs.dry_run }}"
+            echo "- **Undo count (rows that would flip back to external):** $UNDO_COUNT"
+            echo "- **Undo-set fingerprint:** \`$FP\`"
+            echo "- **Undo correlation id (stamped on each row):** \`undo-replay-${{ github.run_id }}-${{ github.run_attempt }}\`"
+            echo ""
+            if [ "${{ inputs.phase }}" = "discovery" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "To apply: re-dispatch with phase=apply, dry_run=false, expected_fingerprint=\`$FP\`."
+            else
+              echo "Live undo completed. Verify via invariant scanner (telemetry-invariant-scan.yml): no NEW violations, external count adjusts upward by ~$UNDO_COUNT."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit blob as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: undo-replay-audit-${{ github.run_id }}
+          path: ${{ steps.undo.outputs.audit_path }}
+          retention-days: 90

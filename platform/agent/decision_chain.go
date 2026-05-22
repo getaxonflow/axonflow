@@ -261,7 +261,17 @@ func NewDecisionChainTracker(config DecisionChainTrackerConfig) (*DecisionChainT
 // queued for background persistence. Otherwise, it's written synchronously.
 //
 // The entry's AuditHash is computed automatically if not already set.
+//
+// v9 Phase 8 B2 hostile-review follow-up: OrgID validation moved from
+// recordToDB up into RecordDecision so memory-mode + async-queue paths also
+// catch empty OrgID before the entry lands in the in-memory store or async
+// channel. Otherwise an empty-OrgID entry would silently accumulate and only
+// surface as a recordErrors increment when the worker tried to commit it.
 func (t *DecisionChainTracker) RecordDecision(ctx context.Context, entry DecisionEntry) error {
+	if entry.OrgID == "" {
+		atomic.AddUint64(&t.recordErrors, 1)
+		return fmt.Errorf("RecordDecision: DecisionEntry.OrgID must be set (decision_chain is FORCE ROW LEVEL SECURITY per migration 100)")
+	}
 	if entry.ID == "" {
 		entry.ID = uuid.New().String()
 	}
@@ -368,7 +378,19 @@ func (t *DecisionChainTracker) recordToMemory(entry DecisionEntry) error {
 }
 
 // recordToDB persists an entry to the database.
+//
+// v9 Phase 8 B2 (migration 100): decision_chain is FORCE ROW LEVEL SECURITY.
+// The INSERT is wrapped in WithOrgScope so app.current_org_id matches the
+// row's org_id column at INSERT-time WITH CHECK evaluation.
+//
+// The entry already carries OrgID (populated by the caller from request auth);
+// this is the natural pivot for the per-row org scope.
 func (t *DecisionChainTracker) recordToDB(ctx context.Context, entry DecisionEntry) error {
+	if entry.OrgID == "" {
+		atomic.AddUint64(&t.recordErrors, 1)
+		return fmt.Errorf("recordToDB: DecisionEntry.OrgID must be set (RLS enforced by migration 100)")
+	}
+
 	query := `
 		INSERT INTO decision_chain (
 			id, chain_id, request_id, parent_request_id, step_number,
@@ -400,18 +422,21 @@ func (t *DecisionChainTracker) recordToDB(ctx context.Context, entry DecisionEnt
 		metadata = []byte("{}")
 	}
 
-	_, err = t.db.ExecContext(ctx, query,
-		entry.ID, entry.ChainID, entry.RequestID, entry.ParentRequestID, entry.StepNumber,
-		entry.OrgID, entry.TenantID, entry.ClientID, entry.UserID,
-		string(entry.DecisionType), string(entry.DecisionOutcome),
-		entry.SystemID, entry.ModelProvider, entry.ModelID,
-		pq.Array(entry.PoliciesEvaluated), entry.PolicyTriggered,
-		string(entry.RiskLevel), entry.RequiresHumanReview,
-		entry.ProcessingTimeMs,
-		entry.InputHash, entry.OutputHash, entry.AuditHash,
-		pq.Array(entry.DataSources), metadata,
-		entry.CreatedAt,
-	)
+	err = WithOrgScope(ctx, t.db, entry.OrgID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(ctx, query,
+			entry.ID, entry.ChainID, entry.RequestID, entry.ParentRequestID, entry.StepNumber,
+			entry.OrgID, entry.TenantID, entry.ClientID, entry.UserID,
+			string(entry.DecisionType), string(entry.DecisionOutcome),
+			entry.SystemID, entry.ModelProvider, entry.ModelID,
+			pq.Array(entry.PoliciesEvaluated), entry.PolicyTriggered,
+			string(entry.RiskLevel), entry.RequiresHumanReview,
+			entry.ProcessingTimeMs,
+			entry.InputHash, entry.OutputHash, entry.AuditHash,
+			pq.Array(entry.DataSources), metadata,
+			entry.CreatedAt,
+		)
+		return exErr
+	})
 
 	if err != nil {
 		atomic.AddUint64(&t.recordErrors, 1)

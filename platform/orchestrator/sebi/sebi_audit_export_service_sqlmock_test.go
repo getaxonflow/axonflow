@@ -37,9 +37,14 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 	endDate := now
 
 	// Mock getOrgName
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test Org"))
+	mock.ExpectCommit()
 
 	// Mock exportPolicyViolations
 	detailsJSON, _ := json.Marshal(map[string]interface{}{"pii_type": "pan"})
@@ -69,7 +74,7 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 				"allowed", int64(10), "agent-1", redactedJSON, flagsJSON))
 
 	// Mock exportDecisionChain
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type, decision, confidence, rationale, model_id, human_override, override_by, override_reason FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type, decision, confidence, rationale, model_id, human_override, override_by, override_reason FROM decision_chain")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "request_id", "created_at", "decision_type", "decision",
@@ -179,9 +184,14 @@ func TestExportAuditData_SpecificDataTypes(t *testing.T) {
 	endDate := now
 
 	// Mock getOrgName
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Acme Corp"))
+	mock.ExpectCommit()
 
 	// Only requesting LLM calls - so only that query fires
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, timestamp, provider, model")).
@@ -232,12 +242,17 @@ func TestExportAuditData_OrgNameNotFound(t *testing.T) {
 	endDate := now
 
 	// Mock getOrgName returning no rows (org_id lookup fails, then id fallback also fails)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE id = $1")).
 		WithArgs(tenantID).
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	// Request only PIIRedactions (simplest path)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, pii_type")).
@@ -277,9 +292,14 @@ func TestExportAuditData_TableNotExists_LLMCalls(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	// LLM calls table does not exist
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, timestamp, provider, model")).
@@ -316,13 +336,18 @@ func TestExportAuditData_TableNotExists_DecisionChain(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
 		WithArgs(tenantID, startDate, endDate).
-		WillReturnError(fmt.Errorf("no such table: decision_chain_log"))
+		WillReturnError(fmt.Errorf("no such table: decision_chain"))
 
 	req := &SEBIAuditExportRequest{
 		StartDate: startDate,
@@ -351,9 +376,14 @@ func TestExportAuditData_TableNotExists_HITL(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).
 		WithArgs(tenantID, startDate, endDate).
@@ -386,9 +416,14 @@ func TestExportAuditData_TableNotExists_PIIRedactions(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, pii_type")).
 		WithArgs(tenantID, startDate, endDate).
@@ -421,9 +456,14 @@ func TestExportAuditData_PolicyViolationsQueryError(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	// Non-table-not-exists error -- connection error
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, violation_type")).
@@ -459,9 +499,14 @@ func TestExportAuditData_EmptyResults(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Empty Org"))
+	mock.ExpectCommit()
 
 	// All queries return empty result sets
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, created_at, violation_type")).
@@ -528,9 +573,14 @@ func TestExportAuditData_DecisionChain_NullableFields(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	// Decision chain with all nullable fields as nil
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
@@ -576,9 +626,14 @@ func TestExportAuditData_HITL_NullableFields(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	// HITL with nullable notes and review_time_ms as nil
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).
@@ -621,9 +676,14 @@ func TestExportAuditData_PIIRedactions_NullableFields(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, pii_type")).
 		WithArgs(tenantID, startDate, endDate).
@@ -665,9 +725,14 @@ func TestExportAuditData_DataTypeAll(t *testing.T) {
 	startDate := now.Add(-24 * time.Hour)
 	endDate := now
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("Test"))
+	mock.ExpectCommit()
 
 	// Passing "all" should expand to all 5 data types
 	emptyViolationRows := sqlmock.NewRows([]string{
@@ -852,15 +917,20 @@ func TestGetRetentionStatus_AllCompliant(t *testing.T) {
 		"policy_violations", "llm_calls", "decision_chain", "hitl_oversight", "pii_redactions",
 	}
 	tableNames := []string{
-		"policy_violations", "llm_call_audits", "decision_chain_log", "hitl_queue", "pii_redaction_log",
+		"policy_violations", "llm_call_audits", "decision_chain", "hitl_queue", "pii_redaction_log",
 	}
 
 	for i, dt := range dataTypes {
-		// getRetentionConfig
+		// getRetentionConfig — v9 Phase 8 B2: wraps in withOrgScope.
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+			WithArgs(tenantID).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days, COALESCE(last_cleanup_at, '1970-01-01'::timestamp) FROM audit_retention_config")).
 			WithArgs(tenantID, dt).
 			WillReturnRows(sqlmock.NewRows([]string{"retention_days", "last_cleanup"}).
 				AddRow(1825, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+		mock.ExpectCommit()
 
 		// getDataTypeStats
 		now := time.Now().UTC()
@@ -901,11 +971,16 @@ func TestGetRetentionStatus_NonCompliant(t *testing.T) {
 	tenantID := "banking-india"
 
 	// Only check one data type
-	// getRetentionConfig returns less than 1825 days
+	// getRetentionConfig returns less than 1825 days — v9 Phase 8 B2: wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days, COALESCE(last_cleanup_at")).
 		WithArgs(tenantID, "policy_violations").
 		WillReturnRows(sqlmock.NewRows([]string{"retention_days", "last_cleanup"}).
 			AddRow(365, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	mock.ExpectCommit()
 
 	// getDataTypeStats
 	mock.ExpectQuery("SELECT").
@@ -938,10 +1013,16 @@ func TestGetRetentionStatus_RetentionConfigNotFound_DefaultsTo5Years(t *testing.
 	ctx := context.Background()
 	tenantID := "banking-india"
 
-	// getRetentionConfig returns no rows -> defaults to 1825
+	// getRetentionConfig returns no rows -> defaults to 1825.
+	// v9 Phase 8 B2: wraps in withOrgScope; ErrNoRows → tx.Rollback.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days, COALESCE(last_cleanup_at")).
 		WithArgs(tenantID, "llm_calls").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	// getDataTypeStats returns error
 	mock.ExpectQuery("SELECT").
@@ -973,11 +1054,16 @@ func TestGetRetentionStatus_StatsError(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "banking-india"
 
-	// getRetentionConfig - success
+	// getRetentionConfig - success. v9 Phase 8 B2: wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days")).
 		WithArgs(tenantID, "decision_chain").
 		WillReturnRows(sqlmock.NewRows([]string{"retention_days", "last_cleanup"}).
 			AddRow(2000, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)))
+	mock.ExpectCommit()
 
 	// getDataTypeStats - error
 	mock.ExpectQuery("SELECT").
@@ -1010,9 +1096,15 @@ func TestGetRetentionStatus_NullTimestamps(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "banking-india"
 
+	// v9 Phase 8 B2: getRetentionConfig wraps in withOrgScope; ErrNoRows → Rollback.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days")).
 		WithArgs(tenantID, "pii_redactions").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	// Stats with null timestamps (empty table)
 	mock.ExpectQuery("SELECT").
@@ -1046,13 +1138,19 @@ func TestValidateComplianceReadiness_AllPass(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "travel-us"
 
-	// checkRetentionCompliance: all data types >= 1825
+	// checkRetentionCompliance: all data types >= 1825.
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"data_type", "retention_days"}).
 			AddRow("policy_violations", 1825).
 			AddRow("llm_calls", 2000).
 			AddRow("decision_chain", 1825))
+	mock.ExpectCommit()
 
 	// checkPIIPolicies: count > 0
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM policies")).
@@ -1070,7 +1168,7 @@ func TestValidateComplianceReadiness_AllPass(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(150))
 
 	// checkDecisionChainTracing: count > 0
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(50))
 
@@ -1099,11 +1197,17 @@ func TestValidateComplianceReadiness_AllFail(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "banking-india"
 
-	// checkRetentionCompliance: non-compliant retention
+	// checkRetentionCompliance: non-compliant retention.
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"data_type", "retention_days"}).
 			AddRow("policy_violations", 365))
+	mock.ExpectCommit()
 
 	// checkPIIPolicies: no policies found
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM policies")).
@@ -1121,7 +1225,7 @@ func TestValidateComplianceReadiness_AllFail(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
 	// checkDecisionChainTracing: no recent records
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 
@@ -1154,10 +1258,17 @@ func TestValidateComplianceReadiness_TableNotExists_Retention(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "banking-india"
 
-	// checkRetentionCompliance: table does not exist -> defaults to compliant
+	// checkRetentionCompliance: table does not exist -> defaults to compliant.
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope; on Query
+	// error the helper triggers tx.Rollback().
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs(tenantID).
 		WillReturnError(fmt.Errorf("relation \"audit_retention_config\" does not exist"))
+	mock.ExpectRollback()
 
 	// checkPIIPolicies: table does not exist -> defaults to true
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM policies")).
@@ -1175,9 +1286,9 @@ func TestValidateComplianceReadiness_TableNotExists_Retention(t *testing.T) {
 		WillReturnError(fmt.Errorf("relation \"audit_logs\" does not exist"))
 
 	// checkDecisionChainTracing: table does not exist -> false
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs(tenantID).
-		WillReturnError(fmt.Errorf("relation \"decision_chain_log\" does not exist"))
+		WillReturnError(fmt.Errorf("relation \"decision_chain\" does not exist"))
 
 	resp, err := service.ValidateComplianceReadiness(ctx, tenantID)
 	require.NoError(t, err)
@@ -1206,10 +1317,17 @@ func TestValidateComplianceReadiness_DBErrors(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "banking-india"
 
-	// checkRetentionCompliance: non-table error -> fail
+	// checkRetentionCompliance: non-table error -> fail.
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope; on Query
+	// error the helper triggers tx.Rollback().
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs(tenantID).
 		WillReturnError(fmt.Errorf("permission denied"))
+	mock.ExpectRollback()
 
 	// checkPIIPolicies: non-table error -> fail
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM policies")).
@@ -1227,7 +1345,7 @@ func TestValidateComplianceReadiness_DBErrors(t *testing.T) {
 		WillReturnError(fmt.Errorf("disk full"))
 
 	// checkDecisionChainTracing: non-table error -> fail
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs(tenantID).
 		WillReturnError(fmt.Errorf("server crashed"))
 
@@ -1256,11 +1374,17 @@ func TestValidateComplianceReadiness_MixedResults(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "healthcare-us"
 
-	// checkRetentionCompliance: pass
+	// checkRetentionCompliance: pass.
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs(tenantID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"data_type", "retention_days"}).
 			AddRow("policy_violations", 2000))
+	mock.ExpectCommit()
 
 	// checkPIIPolicies: pass
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM policies")).
@@ -1278,7 +1402,7 @@ func TestValidateComplianceReadiness_MixedResults(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 
 	// checkDecisionChainTracing: pass
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs(tenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
@@ -1306,9 +1430,17 @@ func TestGetOrgName_Success(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
+	// v9 Phase 8 B9 (migration 103): getOrgName wraps in withOrgScope
+	// (BeginTx + set_config + Query + Commit). Same pattern as
+	// getRetentionConfig's v9 Phase 8 B2 wrap below.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("travel-us").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs("travel-us").
 		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("AxonFlow India"))
+	mock.ExpectCommit()
 
 	name, err := service.getOrgName(ctx, "travel-us")
 	require.NoError(t, err)
@@ -1325,12 +1457,20 @@ func TestGetOrgName_NotFound(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
+	// v9 Phase 8 B9: both queries run inside the same withOrgScope tx —
+	// first SELECT errors (no rows), fallback SELECT errors too. fn returns
+	// the error → withOrgScope rolls back.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("unknown-tenant").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE org_id = $1")).
 		WithArgs("unknown-tenant").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM organizations WHERE id = $1")).
 		WithArgs("unknown-tenant").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	name, err := service.getOrgName(ctx, "unknown-tenant")
 	assert.Error(t, err)
@@ -1348,10 +1488,17 @@ func TestGetRetentionConfig_Success(t *testing.T) {
 	ctx := context.Background()
 
 	lastCleanup := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	// v9 Phase 8 B2: getRetentionConfig wraps in withOrgScope (BeginTx +
+	// set_config + Query + Commit).
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("banking-india").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days, COALESCE(last_cleanup_at")).
 		WithArgs("banking-india", "policy_violations").
 		WillReturnRows(sqlmock.NewRows([]string{"retention_days", "last_cleanup"}).
 			AddRow(1825, lastCleanup))
+	mock.ExpectCommit()
 
 	days, cleanup, err := service.getRetentionConfig(ctx, "banking-india", "policy_violations")
 	require.NoError(t, err)
@@ -1369,9 +1516,19 @@ func TestGetRetentionConfig_NoRows(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
+	// v9 Phase 8 B2: getRetentionConfig wraps in withOrgScope. Query returns
+	// ErrNoRows → withOrgScope returns the error → caller converts to default.
+	// withOrgScope's `defer { if err != nil { tx.Rollback() } }` is what
+	// actually rolls back the tx; sqlmock matches the explicit ExpectRollback
+	// below to assert that rollback happened.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("banking-india").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days, COALESCE(last_cleanup_at")).
 		WithArgs("banking-india", "llm_calls").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
 
 	days, cleanup, err := service.getRetentionConfig(ctx, "banking-india", "llm_calls")
 	require.NoError(t, err)
@@ -1389,9 +1546,16 @@ func TestGetRetentionConfig_DBError(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
+	// v9 Phase 8 B2: withOrgScope opens tx + sets local + queries; on Query
+	// error the helper triggers tx.Rollback().
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("banking-india").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT retention_days")).
 		WithArgs("banking-india", "llm_calls").
 		WillReturnError(fmt.Errorf("connection refused"))
+	mock.ExpectRollback()
 
 	_, _, err = service.getRetentionConfig(ctx, "banking-india", "llm_calls")
 	assert.Error(t, err)
@@ -1503,12 +1667,18 @@ func TestCheckRetentionCompliance_MultipleNonCompliant(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
+	// v9 Phase 8 B2: checkRetentionCompliance wraps in withOrgScope.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WithArgs("banking-india").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT data_type, retention_days FROM audit_retention_config")).
 		WithArgs("banking-india").
 		WillReturnRows(sqlmock.NewRows([]string{"data_type", "retention_days"}).
 			AddRow("policy_violations", 365).
 			AddRow("llm_calls", 730).
 			AddRow("decision_chain", 1825)) // This one is compliant
+	mock.ExpectCommit()
 
 	ok, details := service.checkRetentionCompliance(ctx, "banking-india")
 	assert.False(t, ok)
@@ -1602,7 +1772,7 @@ func TestCheckDecisionChainTracing_NoRecentRecords(t *testing.T) {
 	service := NewSEBIAuditExportService(db, nil)
 	ctx := context.Background()
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain_log")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM decision_chain")).
 		WithArgs("banking-india").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 

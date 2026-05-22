@@ -182,7 +182,7 @@ func TestRecoveryVerify_FormBody_HappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO community_saas_registrations").
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -664,7 +664,7 @@ func TestRecoveryVerify_HappyPath_Returns200WithCredentials(t *testing.T) {
 	// Token consume — must affect exactly 1 row
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO community_saas_registrations").
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// Backfill consumed_by_tenant
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
@@ -893,7 +893,7 @@ func TestRecoveryVerify_PKCollisionRetriesThenSucceeds(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO community_saas_registrations").
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
 		WillReturnError(pqUniqueErr())
 	mock.ExpectRollback()
 
@@ -985,7 +985,7 @@ func TestRecoveryVerify_InsertError_Returns500(t *testing.T) {
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Insert fails with non-unique error → handler returns 500 immediately
-	mock.ExpectExec("INSERT INTO community_saas_registrations").WillReturnError(errFakeDB)
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).WillReturnError(errFakeDB)
 	mock.ExpectRollback()
 	req := postVerifyJSON("v")
 	w := httptest.NewRecorder()
@@ -1011,7 +1011,7 @@ func TestRecoveryVerify_UpdateTokenError_Returns500(t *testing.T) {
 	// First UPDATE (consume) succeeds
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO community_saas_registrations").
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// Second UPDATE (backfill consumed_by_tenant) fails
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
@@ -1038,7 +1038,7 @@ func TestRecoveryVerify_CommitError_Returns500(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO community_saas_registrations").
+	mock.ExpectExec(`SELECT csaas_recovery_insert\(\$1, \$2, \$3, \$4, \$5, \$6\)`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE community_saas_recovery_tokens").
 		WillReturnResult(sqlmock.NewResult(0, 1))

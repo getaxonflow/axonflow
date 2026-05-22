@@ -165,22 +165,28 @@ func NewDynamicPolicyEngine() *DynamicPolicyEngine {
 		stopCh:         make(chan struct{}),
 	}
 
-	// Try to connect to database
+	// Try to connect to database.
+	// v9 Brief 11.5 / Session 20: route through agent.OpenAppRoleConnection so
+	// even the in-memory fallback engine's optional DB pool honors
+	// AXONFLOW_DB_USE_APP_ROLE. Helper internally pings + asserts role — no
+	// separate Ping call needed, and a Ping-vs-connect failure now collapses
+	// into a single error.
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
-		db, err := sql.Open("postgres", dbURL)
+		bootCtx := context.Background()
+		db, err := agent.OpenAppRoleConnection(bootCtx, dbURL, 3)
 		if err == nil {
-			// Test connection
-			if err := db.Ping(); err == nil {
-				engine.db = db
-				engine.dbAvailable = true
-				log.Println("Dynamic policy engine connected to database")
+			engine.db = db
+			engine.dbAvailable = true
+			var connectedRole string
+			if err := db.QueryRowContext(bootCtx, "SELECT current_user").Scan(&connectedRole); err != nil {
+				log.Printf("[dynamic-policy-fallback] WARNING: failed to query current_user: %v (continuing)", err)
+			}
+			log.Printf("[dynamic-policy-fallback] ✅ db pool connected as current_user=%s (UseAppRoleEnabled=%v, %s=%v)",
+				connectedRole, agent.UseAppRoleEnabled(), agent.EnvAppRoleURL, os.Getenv(agent.EnvAppRoleURL) != "")
 
-				// Load initial policies from DB
-				if err := engine.loadPoliciesFromDB(); err != nil {
-					log.Printf("Failed to load dynamic policies from DB: %v", err)
-				}
-			} else {
-				log.Printf("Failed to ping database: %v", err)
+			// Load initial policies from DB
+			if err := engine.loadPoliciesFromDB(); err != nil {
+				log.Printf("Failed to load dynamic policies from DB: %v", err)
 			}
 		} else {
 			log.Printf("Failed to connect to database: %v", err)
@@ -266,7 +272,7 @@ func (e *DynamicPolicyEngine) EvaluateDynamicPolicies(ctx context.Context, req O
 
 			// Log policy hit to database for analytics
 			if e.dbAvailable {
-				e.logPolicyHit(policy.ID, fmt.Sprintf("%d", req.User.ID), result.Allowed)
+				e.logPolicyHit(req.User.TenantID, policy.ID, fmt.Sprintf("%d", req.User.ID), result.Allowed)
 			}
 		}
 	}
@@ -310,16 +316,29 @@ func (e *DynamicPolicyEngine) getTenantSpecificPolicies(tenantID string) []Dynam
 	return tenantPolicies
 }
 
-// logPolicyHit logs policy evaluation metrics
-func (e *DynamicPolicyEngine) logPolicyHit(policyID, userID string, allowed bool) {
+// logPolicyHit logs policy evaluation metrics.
+//
+// v9 Phase 8 PR-C2 (#2384): orgID is required so the wrap can set
+// app.current_org_id before INSERT — mig 018 ENABLE RLS gates policy_metrics
+// on `org_id = get_current_org_id()`, and the legacy INSERT col list omitted
+// the column entirely. Empty orgID (cache-warmup, system path) falls back to
+// the 'system' sentinel like the per-eval metric writer in
+// db_dynamic_policies.go::EvaluateDynamicPolicies.
+func (e *DynamicPolicyEngine) logPolicyHit(orgID, policyID, userID string, allowed bool) {
 	if !e.dbAvailable || e.db == nil {
 		return
+	}
+	_ = userID // retained in signature for future per-user dashboards
+
+	orgScope := orgID
+	if orgScope == "" {
+		orgScope = "system"
 	}
 
 	// Update metrics in database
 	updateQuery := `
-		INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date)
-		VALUES ($1, 'dynamic', 1, $2, CURRENT_DATE)
+		INSERT INTO policy_metrics (policy_id, policy_type, hit_count, block_count, date, org_id)
+		VALUES ($1, 'dynamic', 1, $2, CURRENT_DATE, $3)
 		ON CONFLICT (policy_id, date) DO UPDATE SET
 			hit_count = policy_metrics.hit_count + 1,
 			block_count = policy_metrics.block_count + $2
@@ -330,8 +349,10 @@ func (e *DynamicPolicyEngine) logPolicyHit(policyID, userID string, allowed bool
 		blockCount = 1
 	}
 
-	_, err := e.db.Exec(updateQuery, policyID, blockCount)
-	if err != nil {
+	if err := agent.WithOrgScope(context.Background(), e.db, orgScope, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(context.Background(), updateQuery, policyID, blockCount, orgScope)
+		return execErr
+	}); err != nil {
 		log.Printf("Failed to update policy metrics: %v", err)
 	}
 }
@@ -746,13 +767,28 @@ func (e *DynamicPolicyEngine) logAuditEvent(action, details string) {
 		return
 	}
 
+	// orchestrator_audit_logs schema (migration 011) has `service_id`,
+	// not `client_id`. The hardcoded literal "orchestrator" is the
+	// service identity for the orchestrator process, matching the
+	// column's intent. Pre-fix the code wrote to a non-existent
+	// `client_id` column, producing silent "Failed to log audit event:
+	// pq: column \"client_id\" of relation \"orchestrator_audit_logs\"
+	// does not exist" errors on every dynamic-policy decision and zero
+	// rows landing in the table.
+	// v9 Phase 8 PR-C2 (#2384): orchestrator_audit_logs is mig 018 ENABLE RLS
+	// with policy `org_id = get_current_org_id()`. logAuditEvent fires from
+	// process-level workers (policy refresh, etc.) with no per-request scope,
+	// so use the 'system' sentinel for both the GUC and the org_id column —
+	// same shape as system-health metric writes.
 	insertQuery := `
-		INSERT INTO orchestrator_audit_logs (client_id, action, resource, timestamp)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO orchestrator_audit_logs (service_id, action, resource, timestamp, org_id)
+		VALUES ($1, $2, $3, $4, 'system')
 	`
 
-	_, err := e.db.Exec(insertQuery, "orchestrator", action, details, time.Now())
-	if err != nil {
+	if err := agent.WithOrgScope(context.Background(), e.db, "system", func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(context.Background(), insertQuery, "orchestrator", action, details, time.Now())
+		return execErr
+	}); err != nil {
 		log.Printf("Failed to log audit event: %v", err)
 	}
 }

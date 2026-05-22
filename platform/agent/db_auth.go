@@ -45,34 +45,34 @@ type CustomerInfo struct {
 
 // APIKeyInfo represents an API key from the database
 type APIKeyInfo struct {
-	APIKeyID         string
-	CustomerID       string
-	LicenseKey       string
-	KeyName          string
-	KeyType          string
-	ExpiresAt        time.Time
-	GracePeriodDays  int
-	Permissions      []string
-	CustomRateLimit  *int // NULL = use tier default
-	Enabled          bool
-	RevokedAt        *time.Time
-	LastUsedAt       *time.Time
-	TotalRequests    int64
+	APIKeyID        string
+	CustomerID      string
+	LicenseKey      string
+	KeyName         string
+	KeyType         string
+	ExpiresAt       time.Time
+	GracePeriodDays int
+	Permissions     []string
+	CustomRateLimit *int // NULL = use tier default
+	Enabled         bool
+	RevokedAt       *time.Time
+	LastUsedAt      *time.Time
+	TotalRequests   int64
 }
 
 // PricingTierInfo represents a pricing tier from the database
 type PricingTierInfo struct {
-	Tier               string
-	DeploymentMode     string
-	MonthlyPrice       int
-	IncludedRequests   *int64 // NULL for in-vpc
-	MaxNodes           *int
-	MaxUsers           *int
-	RequestsPerMinute  int
-	OverageRatePer1K   *float64 // NULL for in-vpc
-	SupportSLAHours    int
-	Features           map[string]interface{}
-	Active             bool
+	Tier              string
+	DeploymentMode    string
+	MonthlyPrice      int
+	IncludedRequests  *int64 // NULL for in-vpc
+	MaxNodes          *int
+	MaxUsers          *int
+	RequestsPerMinute int
+	OverageRatePer1K  *float64 // NULL for in-vpc
+	SupportSLAHours   int
+	Features          map[string]interface{}
+	Active            bool
 }
 
 // validateClientCredentialsDB validates a client using database lookup.
@@ -97,45 +97,24 @@ func validateClientCredentialsDB(ctx context.Context, db *sql.DB, clientID, clie
 	return validateViaOrganizations(ctx, db, clientID, clientSecret)
 }
 
-// validateViaAPIKeys validates using api_keys + customers tables (legacy)
+// validateViaAPIKeys validates using api_keys + customers tables (legacy).
+//
+// The lookup is delegated to the auth_lookup_api_key(TEXT) SECURITY DEFINER
+// function (migration 108, Epic #2230 Phase 8 B6). The function bypasses
+// FORCE RLS on api_keys + customers + pricing_tiers, which is required
+// because this lookup runs BEFORE app.current_org_id can be established
+// (chicken-and-egg: the lookup IS what establishes the caller's org_id).
+//
+// The function's RETURN TABLE column list must match the Scan() order
+// below one-for-one — any drift surfaces as a column-mismatch error at
+// runtime. The Go-side filters (enabled=true, status='active') live
+// inside the function body; this call site no longer needs them.
 func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, clientSecret string) (*Client, error) {
 	// Hash the client secret (license key format) for lookup
 	hash := sha256.Sum256([]byte(clientSecret))
 	secretHash := hex.EncodeToString(hash[:])
 
-	// Query database for API key and customer information
-	query := `
-		SELECT
-			k.api_key_id,
-			k.customer_id,
-			k.license_key,
-			k.key_name,
-			k.key_type,
-			k.expires_at,
-			k.grace_period_days,
-			k.permissions,
-			k.custom_rate_limit,
-			k.enabled,
-			k.revoked_at,
-			k.last_used_at,
-			k.total_requests,
-			c.customer_id,
-			c.organization_name,
-			c.organization_id,
-			c.deployment_mode,
-			c.tier,
-			c.tenant_id,
-			c.status,
-			c.enabled,
-			pt.requests_per_minute
-		FROM api_keys k
-		JOIN customers c ON k.customer_id = c.customer_id
-		JOIN pricing_tiers pt ON c.tier = pt.tier AND c.deployment_mode = pt.deployment_mode
-		WHERE k.license_key_hash = $1
-		AND k.enabled = true
-		AND c.enabled = true
-		AND c.status = 'active'
-	`
+	query := `SELECT * FROM auth_lookup_api_key($1)`
 
 	var apiKey APIKeyInfo
 	var customer CustomerInfo
@@ -219,9 +198,15 @@ func validateViaAPIKeys(ctx context.Context, db *sql.DB, clientID, clientSecret 
 	// Update last_used_at asynchronously (fire and forget)
 	go updateAPIKeyLastUsed(context.Background(), db, apiKey.APIKeyID)
 
-	// Return authenticated client
+	// Return authenticated client.
+	// ADR-052 §5: ClientID is the API credential identity (the api_key_id),
+	// NOT the org_id. Collapsing them was a misreading of the ADR — every
+	// api_key for one org would share the same ClientID, which breaks any
+	// post-v10 unique-index lookup keyed on client_id. ID retains
+	// OrganizationID for the legacy compat window.
 	return &Client{
 		ID:            customer.OrganizationID,
+		ClientID:      apiKey.APIKeyID, // ADR-052 §5: credential identity, not org scope
 		Name:          customer.OrganizationName,
 		OrgID:         validationResult.OrgID, // From license validation
 		TenantID:      customer.TenantID,
@@ -292,6 +277,7 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 
 		return &Client{
 			ID:            clientID,                     // From Basic auth username (tenant identity)
+			ClientID:      clientID,                     // v9 ADR-052: API credential/app identity
 			Name:          validationResult.ServiceName, // Use service name as display name
 			OrgID:         orgID,                        // From license (org entitlement)
 			TenantID:      clientID,                     // From Basic auth username (data isolation)
@@ -310,36 +296,59 @@ func validateViaOrganizations(ctx context.Context, db *sql.DB, clientID, clientS
 	return nil, fmt.Errorf("license does not contain service identity (service_name). Use a service license generated via the license portal or keygen CLI")
 }
 
-// updateAPIKeyLastUsed updates the last_used_at timestamp for an API key
+// updateAPIKeyLastUsed updates the last_used_at timestamp for an API key.
+//
+// Delegated to the auth_touch_api_key(VARCHAR) SECURITY DEFINER helper
+// (migration 108, Epic #2230 Phase 8 B6). This call site is invoked as a
+// fire-and-forget goroutine after validateViaAPIKeys returns success, on a
+// fresh DB connection that does NOT carry the request handler's
+// transactional GUC. Without the SECURITY DEFINER wrapper, the UPDATE
+// would match zero rows under FORCE RLS once it lands on api_keys.
 func updateAPIKeyLastUsed(ctx context.Context, db *sql.DB, apiKeyID string) {
-	query := `
-		UPDATE api_keys
-		SET last_used_at = NOW(),
-		    total_requests = total_requests + 1,
-		    updated_at = NOW()
-		WHERE api_key_id = $1
-	`
-
-	_, err := db.ExecContext(ctx, query, apiKeyID)
+	_, err := db.ExecContext(ctx, "SELECT auth_touch_api_key($1)", apiKeyID)
 	if err != nil {
-		// Log error but don't fail the request
-		// In production, send to monitoring/logging system
+		// Route through the [AUTH]-prefixed agent logger so the failure
+		// lands in CloudWatch alongside the rest of db_auth.go's emit
+		// pattern. Previous fmt.Printf went to stderr only and depending
+		// on log driver config could be invisible to ops — surfaced by
+		// R3 hostile review as MEDIUM-2 (observability gap that would
+		// have masked the HIGH-1 UUID/VARCHAR cast bug for hours).
 		redactedKeyID := apiKeyID
 		if len(apiKeyID) > 8 {
 			redactedKeyID = apiKeyID[:4] + "***" + apiKeyID[len(apiKeyID)-4:]
 		}
-		fmt.Printf("Warning: Failed to update last_used_at for API key %s: %v\n", redactedKeyID, err)
+		// Route err.Error() through logutil.Sanitize to strip control chars
+		// (NUL/CR/LF/TAB/ANSI) and bound the message length — same hardening
+		// the existing [AUTH] log sites apply (lines 531/538). NOTE:
+		// Sanitize does NOT mask UUIDs; api_key_id is a DB primary key
+		// (not a secret like license_key) so its appearance in CloudWatch
+		// for diagnostic purposes is acceptable, but if that ever changes,
+		// add explicit UUID-shape redaction here.
+		log.Printf("[AUTH] auth_touch_api_key failed for %s: %s", redactedKeyID, logutil.Sanitize(err.Error()))
 	}
 }
 
 // trackRequestUsage records a request in the usage metrics
-// This should be called for every request to track usage for billing
+// This should be called for every request to track usage for billing.
+//
+// v9 Phase 8 #2384 PR-C1: usage_metrics is ENABLE-RLS (mig 018) — under
+// axonflow_app_role the INSERT/UPDATE WITH CHECK predicate
+// org_id = current_setting('app.current_org_id') fires. The signature now
+// takes an orgID so callers can pin app.current_org_id via WithOrgScope.
+// The INSERT column list grew an explicit org_id; the ON CONFLICT path
+// (customer_id, period_start, period_type) is unchanged but the UPDATE
+// arm doesn't need to re-write org_id since the conflict target already
+// constrains the matched row to the same tenant.
 //
 //nolint:unused // Used in tests
-func trackRequestUsage(ctx context.Context, db *sql.DB, customerID, apiKeyID string, requestType string, success bool, latencyMS float64) error {
+func trackRequestUsage(ctx context.Context, db *sql.DB, orgID, customerID, apiKeyID string, requestType string, success bool, latencyMS float64) error {
+	if orgID == "" {
+		return fmt.Errorf("trackRequestUsage: orgID must be non-empty (RLS on usage_metrics)")
+	}
 	// For real-time tracking, we'll use INSERT with ON CONFLICT to aggregate hourly
 	query := `
 		INSERT INTO usage_metrics (
+			org_id,
 			customer_id,
 			api_key_id,
 			period_start,
@@ -353,32 +362,34 @@ func trackRequestUsage(ctx context.Context, db *sql.DB, customerID, apiKeyID str
 			connector_requests,
 			planning_requests
 		) VALUES (
-			$1, $2,
+			$1, $2, $3,
 			date_trunc('hour', NOW()),
 			date_trunc('hour', NOW()) + INTERVAL '1 hour',
 			'hourly',
 			1,
-			CASE WHEN $3 THEN 1 ELSE 0 END,
-			CASE WHEN $3 THEN 0 ELSE 1 END,
-			CASE WHEN $4 = 'query' THEN 1 ELSE 0 END,
-			CASE WHEN $4 = 'llm' THEN 1 ELSE 0 END,
-			CASE WHEN $4 = 'connector' THEN 1 ELSE 0 END,
-			CASE WHEN $4 = 'planning' THEN 1 ELSE 0 END
+			CASE WHEN $4 THEN 1 ELSE 0 END,
+			CASE WHEN $4 THEN 0 ELSE 1 END,
+			CASE WHEN $5 = 'query' THEN 1 ELSE 0 END,
+			CASE WHEN $5 = 'llm' THEN 1 ELSE 0 END,
+			CASE WHEN $5 = 'connector' THEN 1 ELSE 0 END,
+			CASE WHEN $5 = 'planning' THEN 1 ELSE 0 END
 		)
 		ON CONFLICT (customer_id, period_start, period_type)
 		DO UPDATE SET
 			total_requests = usage_metrics.total_requests + 1,
-			successful_requests = usage_metrics.successful_requests + CASE WHEN $3 THEN 1 ELSE 0 END,
-			failed_requests = usage_metrics.failed_requests + CASE WHEN $3 THEN 0 ELSE 1 END,
-			query_requests = usage_metrics.query_requests + CASE WHEN $4 = 'query' THEN 1 ELSE 0 END,
-			llm_requests = usage_metrics.llm_requests + CASE WHEN $4 = 'llm' THEN 1 ELSE 0 END,
-			connector_requests = usage_metrics.connector_requests + CASE WHEN $4 = 'connector' THEN 1 ELSE 0 END,
-			planning_requests = usage_metrics.planning_requests + CASE WHEN $4 = 'planning' THEN 1 ELSE 0 END,
+			successful_requests = usage_metrics.successful_requests + CASE WHEN $4 THEN 1 ELSE 0 END,
+			failed_requests = usage_metrics.failed_requests + CASE WHEN $4 THEN 0 ELSE 1 END,
+			query_requests = usage_metrics.query_requests + CASE WHEN $5 = 'query' THEN 1 ELSE 0 END,
+			llm_requests = usage_metrics.llm_requests + CASE WHEN $5 = 'llm' THEN 1 ELSE 0 END,
+			connector_requests = usage_metrics.connector_requests + CASE WHEN $5 = 'connector' THEN 1 ELSE 0 END,
+			planning_requests = usage_metrics.planning_requests + CASE WHEN $5 = 'planning' THEN 1 ELSE 0 END,
 			updated_at = NOW()
 	`
 
-	_, err := db.ExecContext(ctx, query, customerID, apiKeyID, success, requestType)
-	return err
+	return WithOrgScope(ctx, db, orgID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(ctx, query, orgID, customerID, apiKeyID, success, requestType)
+		return exErr
+	})
 }
 
 // getCustomerUsageForMonth retrieves usage statistics for a customer in a given month
@@ -457,23 +468,19 @@ func createAPIKey(ctx context.Context, db *sql.DB, customerID, keyName string, e
 	hash := sha256.Sum256([]byte(licenseKey))
 	licenseKeyHash := hex.EncodeToString(hash[:])
 
-	// Insert into database
-	query := `
-		INSERT INTO api_keys (
-			customer_id,
-			license_key,
-			license_key_hash,
-			key_name,
-			key_type,
-			expires_at,
-			enabled
-		) VALUES ($1, $2, $3, $4, 'production', NOW() + INTERVAL '1 day' * $5, true)
-		RETURNING api_key_id
-	`
-
+	// v9 Phase 8 PR-A (mig 109): route through auth_insert_api_key SECURITY
+	// DEFINER helper so the INSERT bypasses FORCE RLS on api_keys (mig 108).
+	// Companion to mig 108's auth_lookup_api_key / auth_touch_api_key — closes
+	// the INSERT side of the in-VPC enterprise auth chicken-and-egg.
+	// orgID is populated from the customers lookup above; passing it so the
+	// row's org_id column is non-NULL — the column mig 108's FORCE RLS policy
+	// keys off (pre-PR-A raw INSERT omitted org_id, rows invisible to direct
+	// app_role SELECTs). Community-mode DBs lack 006_option3 schema so this
+	// call never fires there.
 	var apiKeyID string
-	err = db.QueryRowContext(ctx, query,
-		customerID, licenseKey, licenseKeyHash, keyName, expiryDays,
+	err = db.QueryRowContext(ctx,
+		`SELECT auth_insert_api_key($1, $2, $3, $4, $5, $6)`,
+		customerID, licenseKey, licenseKeyHash, keyName, expiryDays, orgID,
 	).Scan(&apiKeyID)
 
 	if err != nil {

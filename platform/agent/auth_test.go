@@ -12,9 +12,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"log"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -531,6 +537,144 @@ func TestExtractClientID(t *testing.T) {
 
 			if result != tt.expectedResult {
 				t.Errorf("extractClientID() = %q, want %q", result, tt.expectedResult)
+			}
+		})
+	}
+}
+
+// TestValidateCommunitySaasAuth_NoCredentialsEmitsLog is the regression guard
+// for issue #2280. The no-credentials early-return path used to return 401
+// without any log.Printf, leaving #2275-class storms attribution-blind.
+// The hostile-review investigation of #2275 hit this gap concretely: a
+// CloudWatch query for "auth failed" across the 24-hour storm window
+// returned 0 matches, because all 716 × 401s landed on this silent path.
+//
+// Assertion: the new `[CSAAS-AUTH] no_credentials` log line fires, and
+// includes the request path + User-Agent + remote address (all already
+// in ALB logs — no new PII surface).
+//
+// Mutation-tested: deleting the new log.Printf in auth.go makes this test
+// fail at the `[CSAAS-AUTH]` substring assertion.
+func TestValidateCommunitySaasAuth_NoCredentialsEmitsLog(t *testing.T) {
+	var buf bytes.Buffer
+	origFlags := log.Default().Flags()
+	log.Default().SetOutput(&buf)
+	log.Default().SetFlags(0)
+	t.Cleanup(func() {
+		log.Default().SetOutput(os.Stderr)
+		log.Default().SetFlags(origFlags)
+	})
+
+	cases := []struct {
+		name string
+		path string
+		ua   string
+		// remoteAddr simulates the ALB → agent TCP peer (always the LB IP
+		// under prod; only equal to the real client IP in unit tests with
+		// no XFF or in direct-internet test setups).
+		remoteAddr string
+		// xff simulates the X-Forwarded-For header ALB attaches. Empty
+		// means no XFF (e.g., direct localhost or test client without an
+		// LB in front).
+		xff string
+		// expectedRemote is what the log line's `remote=` field should
+		// contain. Under ALB-with-XFF the expectation is the LAST XFF
+		// entry; under no-XFF the expectation is the host portion of
+		// remoteAddr (port stripped by extractClientIP).
+		expectedRemote string
+		auth           string
+	}{
+		{
+			// The #2275 storm shape: ALB hands the real client IP to the
+			// agent via the LAST entry of X-Forwarded-For. r.RemoteAddr
+			// is the LB's internal IP — using it directly is the bug
+			// the post-#2280 hostile review caught.
+			name:           "ALB-fronted: XFF last entry is the real client IP",
+			path:           "/api/v1/audit/tool-call",
+			ua:             "node",
+			remoteAddr:     "10.1.2.160:54321", // ALB internal peer
+			xff:            "49.73.19.130",     // real client (the #2275 storm IP)
+			expectedRemote: "49.73.19.130",
+			auth:           "",
+		},
+		{
+			// Multi-hop XFF: still trust the LAST entry only. The first
+			// entry is what the original client claimed (can be spoofed);
+			// the last entry is what the trusted proxy (ALB) observed at
+			// its peer socket.
+			name:           "multi-hop XFF: last entry only",
+			path:           "/api/v1/mcp/check-input",
+			ua:             "curl/8.4.0",
+			remoteAddr:     "10.1.2.160:33333",
+			xff:            "spoofed-by-client, 203.0.113.7",
+			expectedRemote: "203.0.113.7",
+			auth:           "Bearer notbasic",
+		},
+		{
+			// No XFF (direct test client or local dev). Fall back to the
+			// host portion of RemoteAddr — extractClientIP strips the port.
+			name:           "no XFF — RemoteAddr host portion (port stripped)",
+			path:           "/api/v1/audit/tool-call",
+			ua:             "openclaw-plugin/2.6.0",
+			remoteAddr:     "198.51.100.42:12345",
+			xff:            "",
+			expectedRemote: "198.51.100.42",
+			auth:           "Basic " + base64.StdEncoding.EncodeToString([]byte(":secret-only")),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			req := httptest.NewRequest("POST", tc.path, nil)
+			req.Header.Set("User-Agent", tc.ua)
+			req.RemoteAddr = tc.remoteAddr
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+
+			_, authErr := validateCommunitySaasAuth(req)
+			if authErr == nil {
+				t.Fatal("expected CommunitySaasAuthError, got nil")
+			}
+			if authErr.StatusCode != http.StatusUnauthorized {
+				t.Errorf("StatusCode = %d, want 401", authErr.StatusCode)
+			}
+
+			out := buf.String()
+			if !strings.Contains(out, "[CSAAS-AUTH] no_credentials") {
+				t.Errorf("missing [CSAAS-AUTH] no_credentials prefix; got: %q", out)
+			}
+			// path is now quoted with %q in the log format.
+			if !strings.Contains(out, "path="+strconv.Quote(tc.path)) {
+				t.Errorf("missing path=%q in log; got: %q", tc.path, out)
+			}
+			if !strings.Contains(out, "user_agent="+strconv.Quote(tc.ua)) {
+				t.Errorf("missing user_agent=%q in log; got: %q", tc.ua, out)
+			}
+			// Load-bearing assertion for the #2280 attribution promise:
+			// the log records the REAL client IP, not the LB internal IP.
+			// This is what the storm-alarm forensic chain ("grep the IP
+			// in agent logs") depends on. If a future refactor drops the
+			// extractClientIP() helper and reverts to r.RemoteAddr, this
+			// assertion fails.
+			if !strings.Contains(out, "remote="+tc.expectedRemote) {
+				t.Errorf("expected remote=%q in log; got: %q", tc.expectedRemote, out)
+			}
+			// Anti-regression: the LB internal IP must NEVER appear in
+			// the log when there's an XFF (i.e., the real-prod shape).
+			if tc.xff != "" {
+				lbIP := strings.Split(tc.remoteAddr, ":")[0]
+				if strings.Contains(out, "remote="+lbIP) {
+					t.Errorf("LB internal IP %q leaked into log instead of XFF last entry; got: %q", lbIP, out)
+				}
+			}
+			// Must NOT log the Authorization header.
+			if tc.auth != "" && strings.Contains(out, tc.auth) {
+				t.Errorf("Authorization header leaked into log; got: %q", out)
 			}
 		})
 	}

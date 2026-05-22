@@ -376,6 +376,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 
 	client := &Client{
 		ID:       effectiveClientID,
+		ClientID: effectiveClientID, // v9 ADR-052: ClientID == ID during compat window
 		Name:     effectiveClientID,
 		OrgID:    orgID,
 		TenantID: tenantID,
@@ -514,6 +515,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	} else if sharedEngine != nil {
 		requestResult := sharedEngine.EvaluateRequest(ctx, req.Query, sharedpolicy.EvalOptions{
 			TenantID:      user.TenantID,
+			OrgID:         user.OrgID,
 			ConnectorName: "gateway",
 			UserID:        fmt.Sprintf("%d", user.ID),
 			Categories: []sharedpolicy.PolicyCategory{

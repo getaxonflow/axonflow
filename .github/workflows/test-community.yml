@@ -1,8 +1,14 @@
 name: Test Suite (Community)
 
-# Community test workflow - tests community edition code
+# Community test workflow - tests community edition code.
 #
-# This workflow runs in the Community repo.
+# Runs ONLY in the public `axonflow` (community-mirror) repo. In the
+# `axonflow-enterprise` repo this workflow is a no-op — every job is gated on
+# `github.repository == 'getaxonflow/axonflow'`. The same platform/ tests are
+# already covered there by `test.yml` (community-mode is the default, no
+# build-tag flag means the `enterprise`-tagged files are excluded), so running
+# this here was duplicate work (~2,591 billable min/14d). The workflow file
+# itself still syncs to the community repo via `sync-community-repo.yml`.
 
 on:
   pull_request:
@@ -20,6 +26,12 @@ on:
     branches:
       - main
 
+# Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
+# runs use the SHA so they never share a group and never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   AXONFLOW_TELEMETRY: 'off'
 
@@ -30,7 +42,9 @@ jobs:
   detect-changes:
     name: Detect Changes
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: |
+      github.repository == 'getaxonflow/axonflow' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     permissions:
       contents: read
       pull-requests: read
@@ -57,6 +71,7 @@ jobs:
     timeout-minutes: 20
     needs: [detect-changes]
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       (github.event_name == 'push' ||
        (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true'))
@@ -162,7 +177,16 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Agent Coverage: $coverage%"
 
-          threshold=76.0
+          # Raised 75.9 → 76.3 in #2384 PR-D follow-up: the prior
+          # PR-D commit lowered the floor from 76.0 to 75.9 to track
+          # the post-#2402 reality; this commit ADDS the missing tests
+          # instead (community-build coverage for auth_daily_limit /
+          # auth_plugin_license_lookup / db_connection role-asserting
+          # open helpers / community shims) and pushes the floor back
+          # UP to 76.3 with a small buffer above the previous 76.0
+          # baseline. Local measurement showed 76.6% on the new test
+          # suite.
+          threshold=76.3
           if (( $(echo "$coverage < $threshold" | bc -l) )); then
             echo "Agent coverage $coverage% is below threshold $threshold%"
             exit 1
@@ -222,6 +246,7 @@ jobs:
     timeout-minutes: 15
     needs: [detect-changes]
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       (github.event_name == 'push' ||
        (needs.detect-changes.result == 'success' && needs.detect-changes.outputs.go-code == 'true'))
@@ -254,6 +279,7 @@ jobs:
     timeout-minutes: 15
     needs: [detect-changes, unit-tests, race-detector]
     if: |
+      github.repository == 'getaxonflow/axonflow' &&
       always() &&
       needs.unit-tests.result != 'failure' &&
       needs.race-detector.result != 'failure' &&

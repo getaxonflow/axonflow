@@ -17,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
+	"axonflow/platform/agent/rls"
 )
 
 // ApprovalRequest represents a pending approval request in the HITL queue.
@@ -100,7 +102,16 @@ func NewRepository(db *sql.DB) *Repository {
 }
 
 // Create inserts a new approval request into the queue.
+//
+// v9 Phase 8 #2384 PR-C1: hitl_approval_queue is ENABLE-RLS (mig 025).
+// Under axonflow_app_role the INSERT WITH CHECK predicate
+// org_id = current_setting('app.current_org_id') fires; wrap in
+// WithOrgScope so SET LOCAL matches req.OrgID, which is also the value
+// stored in the row's org_id column.
 func (r *Repository) Create(ctx context.Context, req *ApprovalRequest) error {
+	if req.OrgID == "" {
+		return fmt.Errorf("Create: req.OrgID must be non-empty (RLS on hitl_approval_queue)")
+	}
 	query := `
 		INSERT INTO hitl_approval_queue (
 			request_id, org_id, tenant_id, client_id, user_id,
@@ -125,13 +136,15 @@ func (r *Repository) Create(ctx context.Context, req *ApprovalRequest) error {
 		}
 	}
 
-	err := r.db.QueryRowContext(ctx, query,
-		req.RequestID, req.OrgID, req.TenantID, req.ClientID, nullString(req.UserID),
-		req.OriginalQuery, req.RequestType, contextJSON,
-		req.TriggeredPolicyID, req.TriggeredPolicyName, req.TriggerReason, req.Severity,
-		nullString(req.EUAIActArticle), nullString(req.ComplianceFramework), nullString(req.RiskClassification),
-		req.Status, req.ExpiresAt,
-	).Scan(&req.ID, &req.CreatedAt, &req.UpdatedAt)
+	err := rls.WithOrgScope(ctx, r.db, req.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			req.RequestID, req.OrgID, req.TenantID, req.ClientID, nullString(req.UserID),
+			req.OriginalQuery, req.RequestType, contextJSON,
+			req.TriggeredPolicyID, req.TriggeredPolicyName, req.TriggerReason, req.Severity,
+			nullString(req.EUAIActArticle), nullString(req.ComplianceFramework), nullString(req.RiskClassification),
+			req.Status, req.ExpiresAt,
+		).Scan(&req.ID, &req.CreatedAt, &req.UpdatedAt)
+	})
 	if err != nil {
 		return fmt.Errorf("insert approval request: %w", err)
 	}
@@ -336,7 +349,15 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 }
 
 // UpdateStatus updates the status of an approval request.
-func (r *Repository) UpdateStatus(ctx context.Context, requestID uuid.UUID, status string, reviewer *Reviewer, comment string) error {
+//
+// v9 Phase 8 #2384 PR-C1: hitl_approval_queue UPDATE under app_role is gated
+// by mig 018's tenant_isolation_update USING predicate. orgID is required so
+// the wrap can pin app.current_org_id; the caller (EE service.ApproveRequest
+// / RejectRequest) reads it from the prior GetByRequestID(req).
+func (r *Repository) UpdateStatus(ctx context.Context, orgID string, requestID uuid.UUID, status string, reviewer *Reviewer, comment string) error {
+	if orgID == "" {
+		return fmt.Errorf("UpdateStatus: orgID must be non-empty (RLS on hitl_approval_queue)")
+	}
 	query := `
 		UPDATE hitl_approval_queue
 		SET status = $1,
@@ -350,14 +371,16 @@ func (r *Repository) UpdateStatus(ctx context.Context, requestID uuid.UUID, stat
 		RETURNING updated_at`
 
 	var updatedAt time.Time
-	err := r.db.QueryRowContext(ctx, query,
-		status,
-		nullString(reviewer.ID),
-		nullString(reviewer.Email),
-		nullString(reviewer.Role),
-		nullString(comment),
-		requestID,
-	).Scan(&updatedAt)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			status,
+			nullString(reviewer.ID),
+			nullString(reviewer.Email),
+			nullString(reviewer.Role),
+			nullString(comment),
+			requestID,
+		).Scan(&updatedAt)
+	})
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("approval request not found")
 	}
@@ -369,7 +392,12 @@ func (r *Repository) UpdateStatus(ctx context.Context, requestID uuid.UUID, stat
 }
 
 // Override overrides an approval request with justification.
-func (r *Repository) Override(ctx context.Context, requestID uuid.UUID, justification string, authorizedBy string) error {
+//
+// v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to UpdateStatus.
+func (r *Repository) Override(ctx context.Context, orgID string, requestID uuid.UUID, justification string, authorizedBy string) error {
+	if orgID == "" {
+		return fmt.Errorf("Override: orgID must be non-empty (RLS on hitl_approval_queue)")
+	}
 	query := `
 		UPDATE hitl_approval_queue
 		SET status = 'overridden',
@@ -380,7 +408,9 @@ func (r *Repository) Override(ctx context.Context, requestID uuid.UUID, justific
 		RETURNING updated_at`
 
 	var updatedAt time.Time
-	err := r.db.QueryRowContext(ctx, query, justification, authorizedBy, requestID).Scan(&updatedAt)
+	err := rls.WithOrgScope(ctx, r.db, orgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query, justification, authorizedBy, requestID).Scan(&updatedAt)
+	})
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("approval request not found")
 	}
@@ -436,7 +466,13 @@ func (r *Repository) ExpireStale(ctx context.Context) (int, error) {
 }
 
 // AddHistory adds an entry to the approval history.
+//
+// v9 Phase 8 #2384 PR-C1: hitl_approval_history scope-wrap rationale —
+// identical to Create on hitl_approval_queue above.
 func (r *Repository) AddHistory(ctx context.Context, entry *ApprovalHistory) error {
+	if entry.OrgID == "" {
+		return fmt.Errorf("AddHistory: entry.OrgID must be non-empty (RLS on hitl_approval_history)")
+	}
 	query := `
 		INSERT INTO hitl_approval_history (
 			request_id, org_id, tenant_id, action,
@@ -450,12 +486,14 @@ func (r *Repository) AddHistory(ctx context.Context, entry *ApprovalHistory) err
 			$11, $12
 		) RETURNING id, created_at`
 
-	err := r.db.QueryRowContext(ctx, query,
-		entry.RequestID, entry.OrgID, entry.TenantID, entry.Action,
-		nullString(entry.ActorID), nullString(entry.ActorEmail), nullString(entry.ActorRole), nullString(entry.ActorIP),
-		nullString(entry.Comment), nullString(entry.Justification),
-		nullString(entry.PreviousStatus), nullString(entry.NewStatus),
-	).Scan(&entry.ID, &entry.CreatedAt)
+	err := rls.WithOrgScope(ctx, r.db, entry.OrgID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, query,
+			entry.RequestID, entry.OrgID, entry.TenantID, entry.Action,
+			nullString(entry.ActorID), nullString(entry.ActorEmail), nullString(entry.ActorRole), nullString(entry.ActorIP),
+			nullString(entry.Comment), nullString(entry.Justification),
+			nullString(entry.PreviousStatus), nullString(entry.NewStatus),
+		).Scan(&entry.ID, &entry.CreatedAt)
+	})
 	if err != nil {
 		return fmt.Errorf("insert approval history: %w", err)
 	}

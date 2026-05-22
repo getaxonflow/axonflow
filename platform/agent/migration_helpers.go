@@ -137,11 +137,14 @@ func getMigrationPaths(basePath string) []string {
 		// Migrations 085 + 086 live in community-saas/ from inception
 		// (085 was added 2026-05-08, post-v7.8.0 release, so no customer
 		// self-host environment had applied it yet at relocation time —
-		// move was safe). Migrations 068 / 073 / 075 / 076 (and a few
-		// other tenant-related ones) remain in core/ for now because they
-		// shipped in releases <= v7.8.0 and customer environments have
-		// applied them; relocating them needs a drift-detection runbook
-		// that's planned as a separate refactor.
+		// move was safe; the leftover core/085 copy was deleted in the
+		// migration runner version-collision fix once the on-disk
+		// composite-key regression guard caught it). Migrations 068 /
+		// 073 / 075 / 076 (and a few other tenant-related ones) remain
+		// in core/ for now because they shipped in releases <= v7.8.0
+		// and customer environments have applied them; relocating them
+		// needs a drift-detection runbook that's planned as a separate
+		// refactor.
 		paths = append(paths, filepath.Join(basePath, "community-saas"))
 		log.Println("📦 DEPLOYMENT_MODE=community-saas: Running core + community-saas migrations")
 
@@ -197,9 +200,17 @@ func collectMigrations(basePath string) ([]MigrationFile, error) {
 		}
 	}
 
-	// Sort migrations by version number
+	// Sort migrations by version number, then by name for deterministic
+	// ordering when two files share a version (the same-version-different-name
+	// case the composite key tolerates — see migration 096 + the
+	// TestCoreMigrationDir_HasNoVersionDuplicates guard). Without the Name
+	// tiebreak, Go's sort.Slice is unstable for ties and a same-version pair
+	// could apply in either order across runs.
 	sort.Slice(migrations, func(i, j int) bool {
-		return migrations[i].Version < migrations[j].Version
+		if migrations[i].Version != migrations[j].Version {
+			return migrations[i].Version < migrations[j].Version
+		}
+		return migrations[i].Name < migrations[j].Name
 	})
 
 	return migrations, nil
@@ -256,6 +267,91 @@ func extractDependencies(content string) []string {
 // Migration Tracking Helpers (Principle 0: Quality Over Velocity)
 // =============================================================================
 
+// ensureCompositeUniqueConstraint idempotently retro-fits the
+// (version, name) composite UNIQUE constraint on an existing
+// schema_migrations table that may have been created under the v1
+// shape with UNIQUE(version) only.
+//
+// Must run BEFORE the migration loop because recordMigrationSuccess
+// uses ON CONFLICT (version, name); without the matching constraint,
+// every per-migration INSERT raises "there is no unique or exclusion
+// constraint matching the ON CONFLICT specification" and the runner
+// fatals.
+//
+// Idempotent: every step guards on pg_constraint state. Safe to call
+// repeatedly across reboots.
+func ensureCompositeUniqueConstraint(db *sql.DB) error {
+	// Add composite UNIQUE(version, name) if absent. The IF NOT EXISTS
+	// guard is server-side, but Postgres does NOT serialize the SELECT
+	// against a concurrent ALTER's AccessExclusiveLock on the table —
+	// two agents booting against the same RDS can both pass the guard,
+	// queue the ALTER, and the second raises 42710 (duplicate_object).
+	// Swallow 42710 with an EXCEPTION block so concurrent boots are
+	// idempotent end-to-end. SQLSTATE 42710 is the only error we
+	// expect on the race path; anything else propagates as a real
+	// failure.
+	_, err := db.Exec(`
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1
+				FROM pg_constraint con
+				JOIN pg_class rel ON rel.oid = con.conrelid
+				WHERE rel.relname = 'schema_migrations'
+				  AND con.contype = 'u'
+				  AND array_length(con.conkey, 1) = 2
+			) THEN
+				BEGIN
+					ALTER TABLE schema_migrations
+						ADD CONSTRAINT schema_migrations_version_name_uniq
+						UNIQUE (version, name);
+				EXCEPTION WHEN duplicate_object THEN
+					-- Concurrent peer agent landed the same ADD CONSTRAINT
+					-- between our IF check and our ALTER. Treat as success.
+					NULL;
+				END;
+			END IF;
+		END $$;
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Drop the legacy version-only UNIQUE if present. It conflicts with
+	// the composite (a row needs to fit both), so leaving it would
+	// re-introduce the silent-dedup bug for any pair of files sharing a
+	// version prefix. Same concurrent-boot caveat as above — wrap the
+	// DROP in an EXCEPTION block for undefined_object (42704) in case
+	// a peer agent already dropped it.
+	_, err = db.Exec(`
+		DO $$
+		DECLARE
+			legacy_name TEXT;
+		BEGIN
+			SELECT con.conname INTO legacy_name
+			FROM pg_constraint con
+			JOIN pg_class rel ON rel.oid = con.conrelid
+			WHERE rel.relname = 'schema_migrations'
+			  AND con.contype = 'u'
+			  AND array_length(con.conkey, 1) = 1
+			  AND (
+				SELECT attname FROM pg_attribute
+				WHERE attrelid = con.conrelid AND attnum = con.conkey[1]
+			  ) = 'version'
+			LIMIT 1;
+
+			IF legacy_name IS NOT NULL THEN
+				BEGIN
+					EXECUTE format('ALTER TABLE schema_migrations DROP CONSTRAINT %I', legacy_name);
+				EXCEPTION WHEN undefined_object THEN
+					NULL;
+				END;
+			END IF;
+		END $$;
+	`)
+	return err
+}
+
 // ensureSchemaMigrationsTable creates or upgrades the schema_migrations table
 // This handles migration from old schema (version, dirty) to new schema (all columns)
 func ensureSchemaMigrationsTable(db *sql.DB) {
@@ -289,14 +385,21 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 
 		if tableExists {
 			log.Println("🔄 Upgrading old schema_migrations table to new schema...")
+			// New schema lands with the v9 composite UNIQUE(version, name)
+			// from the start — the version-only UNIQUE was the migration
+			// runner dedup bug we are fixing here, and the recordMigration*
+			// helpers rely on the composite ON CONFLICT existing before any
+			// numbered migration runs. See migration 096 for the matching
+			// idempotent upgrade SQL for callers that already booted past
+			// this code path on an earlier version.
 			upgradeSQL := `
 				-- Rename old table
 				ALTER TABLE schema_migrations RENAME TO schema_migrations_old;
 
-				-- Create new table with full schema
+				-- Create new table with full schema (composite dedup key)
 				CREATE TABLE schema_migrations (
 					id SERIAL PRIMARY KEY,
-					version VARCHAR(20) NOT NULL UNIQUE,
+					version VARCHAR(20) NOT NULL,
 					name VARCHAR(255) NOT NULL,
 					applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 					execution_time_ms INTEGER,
@@ -306,7 +409,8 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 					applied_by VARCHAR(100) DEFAULT 'agent',
 					hostname VARCHAR(255),
 					git_commit VARCHAR(40),
-					created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+					created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+					CONSTRAINT schema_migrations_version_name_uniq UNIQUE (version, name)
 				);
 
 				-- Migrate data from old table (only successful migrations)
@@ -321,10 +425,6 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 
 				-- Drop old table
 				DROP TABLE schema_migrations_old;
-
-				-- Create indexes
-				CREATE INDEX IF NOT EXISTS idx_schema_migrations_version
-					ON schema_migrations(version);
 			`
 
 			_, err = db.Exec(upgradeSQL)
@@ -334,16 +434,18 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 				return
 			}
 
-			log.Println("✅ Schema migrations table upgraded successfully")
+			log.Println("✅ Schema migrations table upgraded successfully (composite dedup key)")
 			return
 		}
 	}
 
-	// Table doesn't exist or already has new schema, create with new schema
+	// Table doesn't exist or already has new schema, create with new schema.
+	// The composite UNIQUE(version, name) must exist before any numbered
+	// migration runs because recordMigrationSuccess uses ON CONFLICT on it.
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			id SERIAL PRIMARY KEY,
-			version VARCHAR(20) NOT NULL UNIQUE,
+			version VARCHAR(20) NOT NULL,
 			name VARCHAR(255) NOT NULL,
 			applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 			execution_time_ms INTEGER,
@@ -353,11 +455,9 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 			applied_by VARCHAR(100) DEFAULT 'agent',
 			hostname VARCHAR(255),
 			git_commit VARCHAR(40),
-			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			CONSTRAINT schema_migrations_version_name_uniq UNIQUE (version, name)
 		);
-
-		CREATE INDEX IF NOT EXISTS idx_schema_migrations_version
-			ON schema_migrations(version);
 	`
 
 	_, err = db.Exec(createTableSQL)
@@ -367,18 +467,39 @@ func ensureSchemaMigrationsTable(db *sql.DB) {
 		return
 	}
 
+	// For existing installs that already created the table under the v1
+	// shape (version-only UNIQUE), retro-fit the composite constraint
+	// idempotently so the in-flight migration loop can use ON CONFLICT
+	// (version, name). Migration 096 also does this — having it here
+	// prevents the chicken-and-egg failure for migrations 001-095.
+	if err := ensureCompositeUniqueConstraint(db); err != nil {
+		log.Printf("⚠️  Failed to ensure composite UNIQUE(version, name): %v (continuing anyway)", err)
+	}
+
 	log.Println("✅ Schema migrations tracking table ready")
 }
 
-// getAppliedMigrations returns a map of migration versions that have been successfully applied
+// migrationKey returns the composite dedup key for a migration. Files that
+// share a numeric prefix (e.g. 025_decision_chain.sql + 025_hitl_oversight_queue.sql)
+// must be tracked independently. See migrations/core/096_schema_migrations_dedup_composite.sql
+// for the bug context and the matching Postgres composite UNIQUE constraint.
+func migrationKey(version, name string) string {
+	return version + "/" + name
+}
+
+// getAppliedMigrations returns a map of (version, name) pairs that have
+// been successfully applied. Pre-migration-096 schema rows have a single
+// (version, name) tuple per version because the UNIQUE constraint allowed
+// only one entry per version — those tuples still satisfy the composite
+// key on read, so the upgrade is transparent for existing installs.
 func getAppliedMigrations(db *sql.DB) map[string]bool {
 	applied := make(map[string]bool)
 
 	rows, err := db.Query(`
-		SELECT version
+		SELECT version, name
 		FROM schema_migrations
 		WHERE success = true
-		ORDER BY version
+		ORDER BY version, name
 	`)
 	if err != nil {
 		log.Printf("⚠️  Failed to query schema_migrations: %v", err)
@@ -392,12 +513,12 @@ func getAppliedMigrations(db *sql.DB) map[string]bool {
 	}()
 
 	for rows.Next() {
-		var version string
-		if err := rows.Scan(&version); err != nil {
-			log.Printf("⚠️  Failed to scan migration version: %v", err)
+		var version, name string
+		if err := rows.Scan(&version, &name); err != nil {
+			log.Printf("⚠️  Failed to scan migration row: %v", err)
 			continue
 		}
-		applied[version] = true
+		applied[migrationKey(version, name)] = true
 	}
 
 	if len(applied) > 0 {
@@ -409,8 +530,9 @@ func getAppliedMigrations(db *sql.DB) map[string]bool {
 
 // extractMigrationVersion extracts the version number from a migration filename
 // Examples:
-//   "006_customer_portal.sql" -> "006"
-//   "020_schema_migrations.sql" -> "020"
+//
+//	"006_customer_portal.sql" -> "006"
+//	"020_schema_migrations.sql" -> "020"
 func extractMigrationVersion(filename string) string {
 	// Remove .sql extension
 	name := strings.TrimSuffix(filename, ".sql")
@@ -426,8 +548,9 @@ func extractMigrationVersion(filename string) string {
 
 // extractMigrationName extracts the human-readable name from a migration filename
 // Examples:
-//   "006_customer_portal.sql" -> "customer_portal"
-//   "020_schema_migrations.sql" -> "schema_migrations"
+//
+//	"006_customer_portal.sql" -> "customer_portal"
+//	"020_schema_migrations.sql" -> "schema_migrations"
 func extractMigrationName(filename string) string {
 	// Remove .sql extension
 	name := strings.TrimSuffix(filename, ".sql")
@@ -454,7 +577,10 @@ func calculateFileChecksum(filepath string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// recordMigrationSuccess records a successful migration in schema_migrations table
+// recordMigrationSuccess records a successful migration in schema_migrations
+// table. ON CONFLICT keys off (version, name) — see migration 096 for the
+// composite-key rationale. Same-version, different-name migrations get
+// independent rows; reruns of the SAME migration overwrite the prior row.
 func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeMs int) {
 	name := extractMigrationName(filename)
 	hostname, _ := os.Hostname()
@@ -466,7 +592,7 @@ func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeM
 			success, applied_by, hostname, git_commit
 		)
 		VALUES ($1, $2, NOW(), $3, true, 'agent', $4, $5)
-		ON CONFLICT (version) DO UPDATE SET
+		ON CONFLICT (version, name) DO UPDATE SET
 			applied_at = NOW(),
 			execution_time_ms = $3,
 			success = true,
@@ -479,7 +605,9 @@ func recordMigrationSuccess(db *sql.DB, version, filename string, executionTimeM
 	}
 }
 
-// recordMigrationFailure records a failed migration in schema_migrations table
+// recordMigrationFailure records a failed migration in schema_migrations
+// table. See recordMigrationSuccess for the (version, name) ON CONFLICT
+// rationale.
 func recordMigrationFailure(db *sql.DB, version, filename string, migrationErr error, executionTimeMs int) {
 	name := extractMigrationName(filename)
 	hostname, _ := os.Hostname()
@@ -491,7 +619,7 @@ func recordMigrationFailure(db *sql.DB, version, filename string, migrationErr e
 			success, error_message, applied_by, hostname, git_commit
 		)
 		VALUES ($1, $2, NOW(), $3, false, $4, 'agent', $5, $6)
-		ON CONFLICT (version) DO UPDATE SET
+		ON CONFLICT (version, name) DO UPDATE SET
 			applied_at = NOW(),
 			execution_time_ms = $3,
 			success = false,

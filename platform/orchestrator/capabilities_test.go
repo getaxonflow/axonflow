@@ -4,6 +4,8 @@
 package orchestrator
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +84,73 @@ func TestPluginCompatibilityPinnedToReleaseTrain(t *testing.T) {
 	if len(c.MinPluginVersion) != 4 || len(c.RecommendedPluginVersion) != 4 {
 		t.Errorf("expected 4 plugins, got Min=%d Recommended=%d",
 			len(c.MinPluginVersion), len(c.RecommendedPluginVersion))
+	}
+}
+
+// TestSDKFloorCommentAttribution mirrors the agent-side test. The SDK
+// major bump v7 → v8 landed during the v7.9.0 release-train (#2016 +
+// #2102), not the v8.0.0 platform bump (#2308). Keep the comment cite
+// here in lockstep with platform/agent/capabilities.go.
+func TestSDKFloorCommentAttribution(t *testing.T) {
+	src, err := os.ReadFile("capabilities.go")
+	if err != nil {
+		t.Fatalf("read capabilities.go: %v", err)
+	}
+	s := string(src)
+
+	startMarker := "func getSDKCompatibility() SDKCompatInfo {"
+	endMarker := "func getPluginCompatibility()"
+	startIdx := strings.Index(s, startMarker)
+	endIdx := strings.Index(s, endMarker)
+	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+		t.Fatalf("could not locate getSDKCompatibility() block: start=%d end=%d", startIdx, endIdx)
+	}
+	sdkBlock := s[startIdx:endIdx]
+
+	if !strings.Contains(sdkBlock, "v7.9.0 release-train") {
+		t.Errorf("getSDKCompatibility() comment must cite the v7.9.0 release-train as the location of the SDK v7→v8 floor bump (per axonflow-docs/docs/releases/v7-9-0.md and PR #2016+#2102). Got:\n%s", sdkBlock)
+	}
+	if !strings.Contains(sdkBlock, "#2016") {
+		t.Errorf("getSDKCompatibility() comment must cite #2016 (the pre-emptive SDK floor bump PR). Got:\n%s", sdkBlock)
+	}
+	if strings.Contains(sdkBlock, "With the v8.0.0 release-train") {
+		t.Errorf("getSDKCompatibility() comment must NOT say 'With the v8.0.0 release-train the SDK major bumps from v7 to v8' — that is historically false. The v8.0.0 platform bump (#2308) did NOT change the SDK floor. Got:\n%s", sdkBlock)
+	}
+}
+
+// TestPluginFloorCommentAttribution mirrors the agent-side test. Same
+// scope: catches drift in either the MinPluginVersion or
+// RecommendedPluginVersion narrative blocks of getPluginCompatibility().
+func TestPluginFloorCommentAttribution(t *testing.T) {
+	src, err := os.ReadFile("capabilities.go")
+	if err != nil {
+		t.Fatalf("read capabilities.go: %v", err)
+	}
+	s := string(src)
+
+	startMarker := "func getPluginCompatibility() PluginCompatInfo {"
+	startIdx := strings.Index(s, startMarker)
+	if startIdx == -1 {
+		t.Fatalf("could not locate getPluginCompatibility() block start")
+	}
+	endIdx := strings.Index(s[startIdx+len(startMarker):], "\nfunc ")
+	if endIdx == -1 {
+		endIdx = len(s) - startIdx
+	} else {
+		endIdx += len(startMarker)
+	}
+	pluginBlock := s[startIdx : startIdx+endIdx]
+
+	// Required PR citation: #2102 (the v7.9.0 release-train PR that
+	// landed both the plugin floor + recommended bump) must appear at
+	// least twice — once in MinPluginVersion, once in
+	// RecommendedPluginVersion.
+	prCount := strings.Count(pluginBlock, "#2102")
+	if prCount < 2 {
+		t.Errorf("getPluginCompatibility() must cite #2102 in BOTH the MinPluginVersion and RecommendedPluginVersion comment blocks (found %d, want ≥2). Got:\n%s", prCount, pluginBlock)
+	}
+
+	if strings.Contains(pluginBlock, "alongside the SDK v8.0.0 release-train") {
+		t.Errorf("getPluginCompatibility() comment must NOT say 'alongside the SDK v8.0.0 release-train' — that is historically false (plugin tags shipped at v7.9.0 release-train, #2102). Got:\n%s", pluginBlock)
 	}
 }

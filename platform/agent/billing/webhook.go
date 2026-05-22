@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"axonflow/platform/agent/license"
+	"axonflow/platform/agent/rls"
 )
 
 // Constants used for Stripe webhook signature verification. We implement
@@ -467,15 +468,23 @@ func (h *WebhookHandler) handleChargeRefunded(w http.ResponseWriter, ctx context
 	dbCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// v9 Phase 8 #2384 PR-C1: extend RETURNING to also fetch tenant_id so the
+	// downstream agent_audit_logs INSERT (RLS WITH CHECK on org_id) can scope
+	// app.current_org_id via WithOrgScope. plugin_user_licenses is NOT
+	// RLS-enabled (mig 077), so this UPDATE itself runs unwrapped. The
+	// tenant_id is the FK into community_saas_registrations; per the Phase 6
+	// remap (mig 100) tenant_id == org_id for every csaas registration, so
+	// tenant_id is the natural pivot for the audit scope.
 	var sessionID string
+	var licenseeTenantID string
 	err := h.db.QueryRowContext(dbCtx, `
 		UPDATE plugin_user_licenses
 		   SET revoked_at = NOW(),
 		       revocation_reason = $2
 		 WHERE stripe_payment_intent_id = $1
 		   AND revoked_at IS NULL
-		 RETURNING stripe_session_id`,
-		paymentIntentID, revokeReasonFullRefund).Scan(&sessionID)
+		 RETURNING stripe_session_id, tenant_id`,
+		paymentIntentID, revokeReasonFullRefund).Scan(&sessionID, &licenseeTenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Three equally-valid causes — see the original (a)/(b)/(c) taxonomy
 		// in the prior implementation. Externally indistinguishable; we
@@ -517,15 +526,28 @@ func (h *WebhookHandler) handleChargeRefunded(w http.ResponseWriter, ctx context
 	// Best-effort: a failed audit insert MUST NOT fail the webhook (the
 	// buyer's refund completes regardless and the license IS revoked at
 	// this point).
-	if _, err := h.db.ExecContext(dbCtx, `
-		INSERT INTO agent_audit_logs (client_id, action, resource, timestamp)
-		VALUES ($1, $2, $3, NOW())`,
-		sessionID,
-		"license_revoked_full_refund",
-		fmt.Sprintf("charge=%s amount_refunded=%d", ch.ID, ch.AmountRefunded),
-	); err != nil {
+	// v9 Phase 8 #2384 PR-C1: agent_audit_logs is ENABLE-RLS (mig 018) — under
+	// axonflow_app_role the INSERT WITH CHECK predicate
+	// org_id = current_setting('app.current_org_id') rejects rows whose org_id
+	// doesn't match SET LOCAL. We wrap in WithOrgScope using the licensee's
+	// tenant_id (== org_id post mig 100 csaas remap) and add the org_id
+	// column to the INSERT column list. Best-effort: a failed audit insert
+	// still MUST NOT fail the webhook.
+	auditQuery := `
+		INSERT INTO agent_audit_logs (client_id, action, resource, timestamp, org_id)
+		VALUES ($1, $2, $3, NOW(), $4)`
+	auditErr := rls.WithOrgScope(dbCtx, h.db, licenseeTenantID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(dbCtx, auditQuery,
+			sessionID,
+			"license_revoked_full_refund",
+			fmt.Sprintf("charge=%s amount_refunded=%d", ch.ID, ch.AmountRefunded),
+			licenseeTenantID,
+		)
+		return exErr
+	})
+	if auditErr != nil {
 		log.Printf("[billing.webhook] event=refund_audit_write_failed session=%s charge=%s err=%v",
-			sessionID, ch.ID, err)
+			sessionID, ch.ID, auditErr)
 	}
 
 	// Single-purpose alarm-stable token. Keep wording stable — the alarms

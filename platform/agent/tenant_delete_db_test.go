@@ -68,12 +68,13 @@ func seedRegForDelete(t *testing.T, db *sql.DB, email string) string {
 	t.Helper()
 	tenantID := communitySaasTenantPrefix + uuidNewString()
 	expiresAt := time.Now().UTC().Add(communitySaasRegistrationTTL)
+	// v9 Phase 6: org_id = per-customer cs_<uuid> (== tenant_id == client_id).
 	_, err := db.Exec(`
 		INSERT INTO community_saas_registrations
-		(tenant_id, secret_hash, secret_prefix, org_id, label, expires_at, claimed_by_email, claimed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		(tenant_id, client_id, secret_hash, secret_prefix, org_id, label, expires_at, claimed_by_email, claimed_at)
+		VALUES ($1, $1, $2, $3, $1, $4, $5, $6, NOW())`,
 		tenantID, "$2a$12$dummyhashdummyhashdummyhashdummyhashdummyhashdumm", "12345678",
-		communitySaasOrgID, "delete-test", expiresAt, email)
+		"delete-test", expiresAt, email)
 	if err != nil {
 		t.Fatalf("seedRegForDelete failed: %v", err)
 	}

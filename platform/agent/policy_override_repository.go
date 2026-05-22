@@ -97,15 +97,6 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 		return ErrOnlySystemPoliciesOverridable
 	}
 
-	// Check for existing override
-	exists, err := r.overrideExists(ctx, override.PolicyID, override.TenantID, override.OrganizationID)
-	if err != nil {
-		return fmt.Errorf("failed to check existing override: %w", err)
-	}
-	if exists {
-		return ErrOverrideAlreadyExists
-	}
-
 	// Generate ID
 	if override.ID == "" {
 		override.ID = uuid.New().String()
@@ -120,20 +111,30 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 	// Set policy type
 	override.PolicyType = TypeStatic
 
+	// v9 Phase 8 PR-C1 (#2384): mig 110 added policy_overrides.org_id NOT NULL +
+	// switched RLS from app.tenant_id to app.current_org_id. The INSERT now
+	// populates the org_id column, and the whole write is wrapped in
+	// WithOrgScope so app.current_org_id matches the row value at WITH CHECK
+	// evaluation. Empty OrgID is rejected — cross-org overrides belong on
+	// the admin pool, not on this path.
+	if override.OrgID == "" {
+		return fmt.Errorf("Create: override.OrgID must be non-empty (RLS on policy_overrides post mig 110)")
+	}
+
 	// Insert into database
 	query := `
 		INSERT INTO policy_overrides (
 			id, policy_id, policy_type,
-			organization_id, tenant_id,
+			organization_id, tenant_id, org_id,
 			action_override, enabled_override,
 			override_reason, expires_at,
 			created_by, created_at, updated_by, updated_at
 		) VALUES (
 			$1, $2, $3,
-			$4, $5,
-			$6, $7,
-			$8, $9,
-			$10, $11, $12, $13
+			$4, $5, $6,
+			$7, $8,
+			$9, $10,
+			$11, $12, $13, $14
 		)
 	`
 
@@ -143,14 +144,37 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 		actionStr = &s
 	}
 
-	_, err = r.db.ExecContext(ctx, query,
-		override.ID, override.PolicyID, string(override.PolicyType),
-		override.OrganizationID, override.TenantID,
-		actionStr, override.EnabledOverride,
-		override.OverrideReason, override.ExpiresAt,
-		override.CreatedBy, override.CreatedAt, override.UpdatedBy, override.UpdatedAt,
-	)
+	// v9 Phase 8 PR-C1 (#2384) R3 round 2 HIGH-2: the existence check MUST
+	// run inside the same WithOrgScope txn as the INSERT. Under app_role
+	// without app.current_org_id pinned, the USING predicate masks rows
+	// from other orgs to zero, so an outer-txn overrideExists() call
+	// returns false even when a duplicate exists for the SAME scope tuple
+	// (policy_id + tenant_id|organization_id) — bypassing duplicate
+	// detection and persisting two rows. Wrapping both ops in one txn
+	// pins app.current_org_id consistently for both.
+	err = WithOrgScope(ctx, r.db, override.OrgID, func(tx *sql.Tx) error {
+		exists, exErr := overrideExistsTx(ctx, tx, override.PolicyID, override.TenantID, override.OrganizationID)
+		if exErr != nil {
+			return fmt.Errorf("failed to check existing override: %w", exErr)
+		}
+		if exists {
+			return ErrOverrideAlreadyExists
+		}
+		if _, exErr = tx.ExecContext(ctx, query,
+			override.ID, override.PolicyID, string(override.PolicyType),
+			override.OrganizationID, override.TenantID, override.OrgID,
+			actionStr, override.EnabledOverride,
+			override.OverrideReason, override.ExpiresAt,
+			override.CreatedBy, override.CreatedAt, override.UpdatedBy, override.UpdatedAt,
+		); exErr != nil {
+			return exErr
+		}
+		return nil
+	})
 	if err != nil {
+		if errors.Is(err, ErrOverrideAlreadyExists) {
+			return err
+		}
 		return fmt.Errorf("failed to create override: %w", err)
 	}
 
@@ -158,11 +182,18 @@ func (r *PolicyOverrideRepository) Create(ctx context.Context, override *PolicyO
 }
 
 // Delete removes a policy override.
+//
+// v9 Phase 8 PR-C1 (#2384): GetByID first to recover override.OrgID (the
+// USING predicate gates row visibility), then wrap the DELETE in
+// WithOrgScope using that orgID. Required post mig 110.
 func (r *PolicyOverrideRepository) Delete(ctx context.Context, overrideID string, deletedBy string) error {
-	// Check if override exists
-	_, err := r.GetByID(ctx, overrideID)
+	// Check if override exists — also gives us OrgID for the scope.
+	existing, err := r.GetByID(ctx, overrideID)
 	if err != nil {
 		return err
+	}
+	if existing.OrgID == "" {
+		return fmt.Errorf("Delete: existing override.OrgID missing (RLS on policy_overrides)")
 	}
 
 	query := `
@@ -170,14 +201,21 @@ func (r *PolicyOverrideRepository) Delete(ctx context.Context, overrideID string
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query, overrideID)
+	var rowsAffected int64
+	err = WithOrgScope(ctx, r.db, existing.OrgID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, overrideID)
+		if exErr != nil {
+			return fmt.Errorf("failed to delete override: %w", exErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to get affected rows: %w", raErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to delete override: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get affected rows: %w", err)
+		return err
 	}
 	if rowsAffected == 0 {
 		return ErrOverrideNotFound
@@ -188,7 +226,17 @@ func (r *PolicyOverrideRepository) Delete(ctx context.Context, overrideID string
 
 // DeleteByPolicyID deletes the override for a specific policy and scope.
 // The policyID can be either the UUID (id column) or policy_id from static_policies table.
-func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, policyID string, tenantID *string, orgID *string, deletedBy string) error {
+//
+// v9 Phase 8 PR-C1 (#2384): rlsOrgID is the multi-tenant scope key required by
+// mig 110's policy_overrides RLS (post mig 110 the table requires
+// app.current_org_id pinned via SET LOCAL for DELETE USING to surface rows).
+// Callers must pass the auth'd request's OrgID — the `orgID *string` param
+// is the older `organization_id` column scope key (a UUID), kept for
+// scope-narrowing WHERE clauses, NOT the v9 RLS key.
+func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, rlsOrgID, policyID string, tenantID *string, orgID *string, deletedBy string) error {
+	if rlsOrgID == "" {
+		return fmt.Errorf("DeleteByPolicyID: rlsOrgID must be non-empty (RLS on policy_overrides post mig 110)")
+	}
 	// The policyID passed in is what the SDK sees (could be ID or PolicyID)
 	// The override table stores the UUID (ID field), not the human-readable PolicyID
 	resolvedPolicyID := policyID
@@ -218,14 +266,21 @@ func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, policyI
 		args = append(args, *orgID)
 	}
 
-	result, err := r.db.ExecContext(ctx, query, args...)
+	var rowsAffected int64
+	err = WithOrgScope(ctx, r.db, rlsOrgID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, args...)
+		if exErr != nil {
+			return fmt.Errorf("failed to delete override: %w", exErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to get affected rows: %w", raErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to delete override: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get affected rows: %w", err)
+		return err
 	}
 	if rowsAffected == 0 {
 		return ErrOverrideNotFound
@@ -235,11 +290,21 @@ func (r *PolicyOverrideRepository) DeleteByPolicyID(ctx context.Context, policyI
 }
 
 // GetByID retrieves an override by its ID.
+//
+// v9 Phase 8 PR-C1 (#2384): SELECT now projects org_id (added by mig 110)
+// so Delete can scope its WithOrgScope wrap against the row's stored
+// RLS key. Under master role this SELECT bypasses RLS; under app_role
+// it returns NO ROWS unless the caller has SET LOCAL app.current_org_id
+// to match — but Delete's call path opens a fresh WithOrgScope wrap so
+// the SELECT here doesn't see the row first; that's why Delete needs
+// rlsOrgID from a different source than GetByID. For now, both Delete
+// and the HTTP handler in static_policy_api_handlers.go derive
+// rlsOrgID from request headers, not from a prior GetByID.
 func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*PolicyOverride, error) {
 	query := `
 		SELECT
 			id, policy_id, policy_type,
-			organization_id, tenant_id,
+			organization_id, tenant_id, org_id,
 			action_override, enabled_override,
 			override_reason, expires_at,
 			created_by, created_at, updated_by, updated_at
@@ -252,10 +317,11 @@ func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*Pol
 	var enabledOverride sql.NullBool
 	var expiresAt sql.NullTime
 	var createdBy, updatedBy sql.NullString
+	var orgIDCol sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&override.ID, &override.PolicyID, &override.PolicyType,
-		&override.OrganizationID, &override.TenantID,
+		&override.OrganizationID, &override.TenantID, &orgIDCol,
 		&actionOverride, &enabledOverride,
 		&override.OverrideReason, &expiresAt,
 		&createdBy, &override.CreatedAt, &updatedBy, &override.UpdatedAt,
@@ -265,6 +331,9 @@ func (r *PolicyOverrideRepository) GetByID(ctx context.Context, id string) (*Pol
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get override: %w", err)
+	}
+	if orgIDCol.Valid {
+		override.OrgID = orgIDCol.String
 	}
 
 	if actionOverride.Valid {
@@ -518,6 +587,25 @@ func (r *PolicyOverrideRepository) ListOverridesForTenant(
 
 // CleanupExpiredOverrides removes overrides that have expired.
 // This can be called periodically to clean up the database.
+//
+// v9 Phase 8 PR-C1 (#2384): this is a cross-org sweep — it deletes
+// expired overrides for ALL tenants. Mig 110's RLS on policy_overrides
+// would silently zero rowsAffected under axonflow_app_role (USING
+// returns no rows without app.current_org_id set per-tenant). The
+// correct routing is the platform_admin pool (BYPASSRLS); the caller
+// (operator cron / periodic worker) is responsible for opening
+// `OpenPlatformAdminConnection` and passing that *sql.DB into a
+// dedicated `PolicyOverrideRepository` instance. Under app_role with
+// no admin pool, this method returns an explicit error so the cleanup
+// can't silently no-op (Session-21-class anti-pattern).
+//
+// No PR-C1 production wiring routes this on app_role today — it is
+// either operator-triggered (admin-pool DB handle in
+// scripts/operators) or unwired. Defense: if the caller passes an
+// app_role-backed *sql.DB by mistake, the DELETE returns rowsAffected=0,
+// not an error. We can't distinguish "nothing expired" from "RLS denied
+// all rows" without a pre-check; the cross-org caller contract is the
+// only enforcement boundary.
 func (r *PolicyOverrideRepository) CleanupExpiredOverrides(ctx context.Context) (int, error) {
 	query := `
 		DELETE FROM policy_overrides
@@ -540,7 +628,37 @@ func (r *PolicyOverrideRepository) CleanupExpiredOverrides(ctx context.Context) 
 // Helper methods
 
 // overrideExists checks if an override already exists for the given scope.
+// Pre-PR-C1 callers may still hit this entry point; new internal callers
+// should prefer overrideExistsTx which runs inside the surrounding
+// WithOrgScope txn (see Create's R3 round-2 HIGH-2 fold).
 func (r *PolicyOverrideRepository) overrideExists(ctx context.Context, policyID string, tenantID *string, orgID *string) (bool, error) {
+	query, args := buildOverrideExistsQuery(policyID, tenantID, orgID)
+	var count int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// overrideExistsTx runs the same existence check INSIDE a caller-supplied
+// transaction. Required so the check sees the same app.current_org_id
+// scope as the wrapped INSERT — without this, the duplicate-detection in
+// Create would be defeated under app_role (USING masks rows from the
+// caller's view, returning count=0 even when a duplicate exists for the
+// SAME scope tuple).
+func overrideExistsTx(ctx context.Context, tx *sql.Tx, policyID string, tenantID *string, orgID *string) (bool, error) {
+	query, args := buildOverrideExistsQuery(policyID, tenantID, orgID)
+	var count int
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// buildOverrideExistsQuery is the shared SQL+args builder for both the
+// db-level and tx-level existence checks.
+func buildOverrideExistsQuery(policyID string, tenantID *string, orgID *string) (string, []interface{}) {
 	query := `
 		SELECT COUNT(*)
 		FROM policy_overrides
@@ -556,14 +674,7 @@ func (r *PolicyOverrideRepository) overrideExists(ctx context.Context, policyID 
 		query += fmt.Sprintf(" AND organization_id = $%d AND tenant_id IS NULL", argNum)
 		args = append(args, *orgID)
 	}
-
-	var count int
-	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	return count > 0, nil
+	return query, args
 }
 
 // isEnterpriseLicense checks if the tenant has an Enterprise license.

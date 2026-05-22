@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"axonflow/platform/agent/rls"
 )
 
 // PostgresStorage implements Storage using PostgreSQL.
@@ -30,9 +32,20 @@ func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 }
 
 // SaveProvider persists a provider configuration to the database.
+//
+// v9 Phase 8 PR-C2 (#2384): llm_providers is mig 027 ENABLE RLS with policy
+// `tenant_id = current_setting('app.current_org_id', true)`. The INSERT
+// already reads the GUC in-line, so wrapping with WithOrgScope using
+// config.TenantID makes the GUC value match the tenant_id row value. Without
+// the wrap (master-role legacy path) both sides of the policy comparison
+// would be empty strings — the row would land with tenant_id='' visible to
+// nobody.
 func (s *PostgresStorage) SaveProvider(ctx context.Context, config *ProviderConfig) error {
 	if config == nil {
 		return errors.New("config cannot be nil")
+	}
+	if config.TenantID == "" {
+		return errors.New("config.TenantID must be set for RLS scoping")
 	}
 
 	settingsJSON, err := json.Marshal(config.Settings)
@@ -65,23 +78,25 @@ func (s *PostgresStorage) SaveProvider(ctx context.Context, config *ProviderConf
 			updated_at = NOW()
 	`
 
-	_, err = s.db.ExecContext(ctx, query,
-		config.Name,
-		config.Type,
-		config.APIKey,
-		config.APIKeySecretARN,
-		config.Endpoint,
-		config.Model,
-		config.Region,
-		config.Enabled,
-		config.Priority,
-		config.Weight,
-		config.RateLimit,
-		config.TimeoutSeconds,
-		settingsJSON,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to save provider: %w", err)
+	if wrapErr := rls.WithOrgScope(ctx, s.db, config.TenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			config.Name,
+			config.Type,
+			config.APIKey,
+			config.APIKeySecretARN,
+			config.Endpoint,
+			config.Model,
+			config.Region,
+			config.Enabled,
+			config.Priority,
+			config.Weight,
+			config.RateLimit,
+			config.TimeoutSeconds,
+			settingsJSON,
+		)
+		return execErr
+	}); wrapErr != nil {
+		return fmt.Errorf("failed to save provider: %w", wrapErr)
 	}
 
 	return nil
@@ -145,21 +160,31 @@ func (s *PostgresStorage) GetProvider(ctx context.Context, name string) (*Provid
 }
 
 // DeleteProvider removes a provider configuration from the database.
-func (s *PostgresStorage) DeleteProvider(ctx context.Context, name string) error {
+//
+// v9 Phase 8 PR-C2 (#2384): wraps the DELETE so the mig 027 ENABLE RLS policy
+// (`tenant_id = current_setting('app.current_org_id', true)`) sees the orgID
+// on app_role. Without the GUC the DELETE filters to 0 rows silently.
+func (s *PostgresStorage) DeleteProvider(ctx context.Context, orgID, name string) error {
 	query := `
 		DELETE FROM llm_providers
 		WHERE name = $1
 		  AND tenant_id = current_setting('app.current_org_id', true)
 	`
 
-	result, err := s.db.ExecContext(ctx, query, name)
-	if err != nil {
-		return fmt.Errorf("failed to delete provider: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check rows affected: %w", err)
+	var rowsAffected int64
+	if wrapErr := rls.WithOrgScope(ctx, s.db, orgID, func(tx *sql.Tx) error {
+		result, execErr := tx.ExecContext(ctx, query, name)
+		if execErr != nil {
+			return fmt.Errorf("failed to delete provider: %w", execErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to check rows affected: %w", raErr)
+		}
+		return nil
+	}); wrapErr != nil {
+		return wrapErr
 	}
 
 	if rowsAffected == 0 {
@@ -261,7 +286,18 @@ func (s *PostgresStorage) SaveHealth(ctx context.Context, providerName string, h
 }
 
 // RecordUsage records usage metrics for a provider.
+//
+// v9 Phase 8 PR-C2 (#2384): llm_provider_usage is mig 027 ENABLE RLS with
+// policy `tenant_id = current_setting('app.current_org_id', true)`. usage.TenantID
+// is required so the wrap can set the GUC before the INSERT — both the SELECT
+// (to resolve provider_id) and the WITH CHECK on the INSERT depend on it.
 func (s *PostgresStorage) RecordUsage(ctx context.Context, usage *ProviderUsage) error {
+	if usage == nil {
+		return errors.New("usage cannot be nil")
+	}
+	if usage.TenantID == "" {
+		return errors.New("usage.TenantID must be set for RLS scoping")
+	}
 	query := `
 		INSERT INTO llm_provider_usage (
 			tenant_id, provider_id, request_id, model,
@@ -275,20 +311,22 @@ func (s *PostgresStorage) RecordUsage(ctx context.Context, usage *ProviderUsage)
 		WHERE name = $1 AND tenant_id = current_setting('app.current_org_id', true)
 	`
 
-	_, err := s.db.ExecContext(ctx, query,
-		usage.ProviderName,
-		usage.RequestID,
-		usage.Model,
-		usage.InputTokens,
-		usage.OutputTokens,
-		usage.TotalTokens,
-		usage.EstimatedCostUSD,
-		usage.LatencyMs,
-		usage.Status,
-		usage.ErrorMessage,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to record usage: %w", err)
+	if wrapErr := rls.WithOrgScope(ctx, s.db, usage.TenantID, func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx, query,
+			usage.ProviderName,
+			usage.RequestID,
+			usage.Model,
+			usage.InputTokens,
+			usage.OutputTokens,
+			usage.TotalTokens,
+			usage.EstimatedCostUSD,
+			usage.LatencyMs,
+			usage.Status,
+			usage.ErrorMessage,
+		)
+		return execErr
+	}); wrapErr != nil {
+		return fmt.Errorf("failed to record usage: %w", wrapErr)
 	}
 
 	return nil
@@ -296,6 +334,8 @@ func (s *PostgresStorage) RecordUsage(ctx context.Context, usage *ProviderUsage)
 
 // ProviderUsage contains usage metrics for a provider request.
 type ProviderUsage struct {
+	// TenantID is the per-org RLS scope identifier. Required.
+	TenantID         string
 	ProviderName     string
 	RequestID        string
 	Model            string

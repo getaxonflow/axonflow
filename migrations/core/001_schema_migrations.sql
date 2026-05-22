@@ -33,16 +33,24 @@ BEGIN
     ) INTO old_schema_exists;
 
     IF old_schema_exists THEN
-        -- Old schema exists, need to upgrade
+        -- Old schema exists, need to upgrade.
+        -- IMPORTANT: this branch is a safety-net for the rare case where
+        -- ensureSchemaMigrationsTable in Go failed to upgrade the v0
+        -- shape. The new table must use the v9 composite UNIQUE
+        -- (version, name) because the terminal self-registration INSERT
+        -- + every subsequent migration's recordMigrationSuccess use
+        -- ON CONFLICT (version, name). A version-only UNIQUE here would
+        -- brick the deployment on this path.
         RAISE NOTICE 'Old schema_migrations table detected, upgrading...';
 
         -- Rename old table
         ALTER TABLE schema_migrations RENAME TO schema_migrations_old;
 
-        -- Create new table with full schema
+        -- Create new table with full schema (composite dedup key — see
+        -- migrations/core/096_schema_migrations_dedup_composite.sql)
         CREATE TABLE schema_migrations (
             id SERIAL PRIMARY KEY,
-            version VARCHAR(20) NOT NULL UNIQUE,
+            version VARCHAR(20) NOT NULL,
             name VARCHAR(255) NOT NULL,
             applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
             execution_time_ms INTEGER,
@@ -52,10 +60,15 @@ BEGIN
             applied_by VARCHAR(100) DEFAULT 'system',
             hostname VARCHAR(255),
             git_commit VARCHAR(40),
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            CONSTRAINT schema_migrations_version_name_uniq UNIQUE (version, name)
         );
 
-        -- Migrate data from old table (version only, mark as successful)
+        -- Migrate data from old table (version only, mark as successful).
+        -- The v0 schema had only `version` (no `name`), so the synthesized
+        -- name is unique per row by construction — but defense-in-depth
+        -- ON CONFLICT (version, name) DO NOTHING handles any data anomaly
+        -- without crashing the upgrade.
         INSERT INTO schema_migrations (version, name, applied_at, success)
         SELECT
             version::VARCHAR(20),
@@ -63,17 +76,19 @@ BEGIN
             NOW() - (version::INTEGER || ' days')::INTERVAL,  -- Estimate applied_at based on version
             true  -- Assume all existing migrations succeeded
         FROM schema_migrations_old
-        WHERE NOT dirty;  -- Only migrate successful migrations (not dirty)
+        WHERE NOT dirty  -- Only migrate successful migrations (not dirty)
+        ON CONFLICT (version, name) DO NOTHING;
 
         -- Drop old table
         DROP TABLE schema_migrations_old;
 
         RAISE NOTICE 'Schema migrations table upgraded successfully';
     ELSE
-        -- New schema already exists or table doesn't exist, create if needed
+        -- New schema already exists or table doesn't exist, create if needed.
+        -- Same composite-UNIQUE shape as the upgrade branch above.
         CREATE TABLE IF NOT EXISTS schema_migrations (
             id SERIAL PRIMARY KEY,
-            version VARCHAR(20) NOT NULL UNIQUE,
+            version VARCHAR(20) NOT NULL,
             name VARCHAR(255) NOT NULL,
             applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
             execution_time_ms INTEGER,
@@ -83,17 +98,18 @@ BEGIN
             applied_by VARCHAR(100) DEFAULT 'system',
             hostname VARCHAR(255),
             git_commit VARCHAR(40),
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            CONSTRAINT schema_migrations_version_name_uniq UNIQUE (version, name)
         );
 
         RAISE NOTICE 'Schema migrations table ready (new schema)';
     END IF;
 END $$;
 
--- Indexes for fast lookups
-CREATE INDEX IF NOT EXISTS idx_schema_migrations_version
-    ON schema_migrations(version);
-
+-- Indexes for fast lookups. The composite UNIQUE backs (version, name)
+-- via its supporting btree; an additional plain (version) index would
+-- be redundant and is no longer created here (migration 096 also drops
+-- it on existing installs).
 CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied_at
     ON schema_migrations(applied_at DESC);
 
@@ -120,7 +136,7 @@ COMMENT ON COLUMN schema_migrations.checksum IS 'SHA-256 hash of migration file 
 
 INSERT INTO schema_migrations (version, name, applied_at, success) VALUES
     ('001', 'schema_migrations_tracking_table', NOW(), true)
-ON CONFLICT (version) DO NOTHING;
+ON CONFLICT (version, name) DO NOTHING;
 
 -- NOTE: No historical backfill needed - this is a fresh deployment
 -- Migrations 002-017 will be applied sequentially after this

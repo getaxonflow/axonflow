@@ -667,9 +667,14 @@ type InputPolicyOutcome struct {
 // evaluateInputPolicies runs dynamic + request-phase static policy checks without
 // calling any connector. Shared by mcpQueryHandler, mcpExecuteHandler, and
 // mcpCheckInputHandler (Issue #1258).
+//
+// v9 Phase 8 #2384 PR-C1: orgID is plumbed through to EvalOptions.OrgID so
+// metrics.RecordViolation can stamp shared AuditEntry.OrgID, which the
+// audit_queue persistence path uses to pin app.current_org_id under
+// axonflow_app_role for the policy_metrics / policy_violations INSERTs.
 func evaluateInputPolicies(
 	ctx context.Context,
-	tenantID, userID, userRole, connectorName, operation, statement string,
+	tenantID, orgID, userID, userRole, connectorName, operation, statement string,
 	parameters map[string]interface{},
 ) InputPolicyOutcome {
 	var out InputPolicyOutcome
@@ -707,6 +712,7 @@ func evaluateInputPolicies(
 	if policyEngine != nil && mcpDetectionCfg.Enabled && mcpDetectionCfg.IsConnectorEnabled(connectorName) {
 		out.StaticResult = policyEngine.EvaluateRequest(ctx, statement, sharedpolicy.EvalOptions{
 			TenantID:      tenantID,
+			OrgID:         orgID,
 			ConnectorName: connectorName,
 			UserID:        userID,
 			Parameters:    parameters,
@@ -926,6 +932,13 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	client := auth.Client
 
+	// Stamp auth identity (TenantID/OrgID/ClientID/AuthKind) into the
+	// request context so downstream functions reached via `ctx` agree
+	// with the four-key shape apiAuthMiddleware writes (auth.go:658-661).
+	// This handler is NOT behind apiAuthMiddleware. Sibling of #2319.
+	ctx = stampAuthContext(ctx, client, auth.Kind)
+	r = r.WithContext(ctx)
+
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(ctx, auth.TenantID)
 
@@ -933,7 +946,12 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {
 		// Enterprise mode: if user token fails but Basic auth succeeded,
-		// create a service user from client identity (backwards compat)
+		// create a service user from client identity (backwards compat).
+		// Email uses client.ID (the org boundary, not the credential identity)
+		// because the synthetic user is org-scoped — ID:0 + Role:"service"
+		// already weaken the audit value, and the email is human-readable
+		// rather than load-bearing for any per-credential audit query.
+		// Do NOT change to client.ClientID without an audit-query review.
 		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:          0,
@@ -955,10 +973,13 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update audit entry with authenticated user/client info
+	// Update audit entry with authenticated user/client info.
+	// ADR-052 §5: audit_logs.client_id is the credential identity (e.g.
+	// api_key_id for API-keyed callers post-Fix 4), not the org boundary;
+	// client.OrgID is the RLS boundary.
 	auditEntry.TenantID = user.TenantID
 	auditEntry.OrgID = client.OrgID
-	auditEntry.ClientID = client.ID
+	auditEntry.ClientID = client.ClientID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
 	// 2. Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
@@ -1017,8 +1038,9 @@ func mcpQueryHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
+	// v9 Phase 8 #2384 PR-C1: orgID is on the legacy *User struct as OrgID.
 	inputOutcome := evaluateInputPolicies(ctx,
-		user.TenantID, fmt.Sprintf("%d", user.ID), user.Role,
+		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "query", statement, req.Parameters)
 
 	if inputOutcome.EvalUnavailable {
@@ -1246,12 +1268,21 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	client := auth.Client
 
+	// Stamp auth identity (TenantID/OrgID/ClientID/AuthKind) into the
+	// request context so downstream functions reached via `ctx` agree
+	// with the four-key shape apiAuthMiddleware writes (auth.go:658-661).
+	// This handler is NOT behind apiAuthMiddleware. Sibling of #2319.
+	ctx = stampAuthContext(ctx, client, auth.Kind)
+	r = r.WithContext(ctx)
+
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(ctx, auth.TenantID)
 
 	// 1b. Resolve user identity
 	user, userErr := ResolveUser(auth, req.UserToken)
 	if userErr != nil {
+		// Synthetic service-user email is org-scoped by design. See sibling
+		// fallback in handleMCPQueryAccess for the full rationale.
 		if auth.Kind == AuthKindEnterprise {
 			user = &User{
 				ID:          0,
@@ -1273,10 +1304,12 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update audit entry with authenticated user/client info
+	// Update audit entry with authenticated user/client info.
+	// ADR-052 §5: see sibling audit-entry assignment in handleMCPQueryAccess
+	// for rationale (audit_logs.client_id = credential identity, not org).
 	auditEntry.TenantID = user.TenantID
 	auditEntry.OrgID = auth.OrgID
-	auditEntry.ClientID = client.ID
+	auditEntry.ClientID = client.ClientID
 	auditEntry.UserID = fmt.Sprintf("%d", user.ID)
 
 	// Validate service license and check permissions (SERVICE IDENTITY SYSTEM)
@@ -1328,8 +1361,9 @@ func mcpExecuteHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Dynamic + request-phase static policy evaluation (Issues #968, #1081, #1258)
+	// v9 Phase 8 #2384 PR-C1: orgID plumbed through for RLS-aware audit writes.
 	inputOutcome := evaluateInputPolicies(ctx,
-		user.TenantID, fmt.Sprintf("%d", user.ID), user.Role,
+		user.TenantID, user.OrgID, fmt.Sprintf("%d", user.ID), user.Role,
 		req.Connector, "execute", req.Statement, req.Parameters)
 
 	if inputOutcome.EvalUnavailable {
@@ -1578,6 +1612,13 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stamp auth identity (TenantID/OrgID/ClientID/AuthKind) into the
+	// request context so downstream functions reached via r.Context()
+	// agree with the four-key shape apiAuthMiddleware writes
+	// (auth.go:658-661). This handler is NOT behind apiAuthMiddleware.
+	// Sibling of #2319.
+	r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
+
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)
 
@@ -1666,8 +1707,9 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		operation = "execute"
 	}
 
+	// v9 Phase 8 #2384 PR-C1: orgID plumbed through.
 	outcome := evaluateInputPolicies(ctx,
-		tenantID, userID, userRole,
+		tenantID, orgID, userID, userRole,
 		req.ConnectorType, operation, req.Statement, req.Parameters)
 
 	if outcome.EvalUnavailable {
@@ -1843,6 +1885,13 @@ func mcpCheckOutputHandler(w http.ResponseWriter, r *http.Request) {
 		sendErrorResponse(w, authErr.Message, authErr.HTTPStatus, nil)
 		return
 	}
+
+	// Stamp auth identity (TenantID/OrgID/ClientID/AuthKind) into the
+	// request context so downstream functions reached via r.Context()
+	// agree with the four-key shape apiAuthMiddleware writes
+	// (auth.go:658-661). This handler is NOT behind apiAuthMiddleware.
+	// Sibling of #2319.
+	r = r.WithContext(stampAuthContext(r.Context(), auth.Client, auth.Kind))
 
 	// Populate telemetry identity for community-saas tracking
 	SetTelemetryTenantID(r.Context(), auth.TenantID)

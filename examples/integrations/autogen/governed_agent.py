@@ -58,7 +58,7 @@ def test_proxy_mode():
         print("-" * 40)
 
         query = "What are the benefits of renewable energy?"
-        user_token = "autogen-user-123"
+        user_token = os.environ.get("AXONFLOW_USER_TOKEN", "autogen-user-123")
 
         try:
             result = client.proxy_llm_call(

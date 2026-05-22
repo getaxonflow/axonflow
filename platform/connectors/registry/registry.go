@@ -53,13 +53,26 @@ func NewRegistry() *Registry {
 type RegistryOption func(*registryOptions)
 
 type registryOptions struct {
-	encryptor *config.CredentialEncryptor
+	encryptor       *config.CredentialEncryptor
+	appRoleOpener   AppRoleOpener
 }
 
 // WithEncryptor sets a credential encryptor for the registry's storage layer.
 func WithEncryptor(enc *config.CredentialEncryptor) RegistryOption {
 	return func(o *registryOptions) {
 		o.encryptor = enc
+	}
+}
+
+// WithAppRoleOpener injects the platform/agent.OpenAppRoleConnection helper so
+// the registry's runtime storage pool authenticates as axonflow_app_role
+// under AXONFLOW_DB_USE_APP_ROLE=true. Without this option, the runtime pool
+// uses raw sql.Open and bypasses the v9 RLS gate on connectors +
+// connector_configs (both FORCE-RLS per migration 107). Production
+// orchestrator code MUST pass this option; tests + dev paths may omit it.
+func WithAppRoleOpener(opener AppRoleOpener) RegistryOption {
+	return func(o *registryOptions) {
+		o.appRoleOpener = opener
 	}
 }
 
@@ -70,7 +83,15 @@ func NewRegistryWithStorage(dbURL string, opts ...RegistryOption) (*Registry, er
 		opt(&o)
 	}
 
-	storage, err := NewPostgreSQLStorage(dbURL)
+	var (
+		storage *PostgreSQLStorage
+		err     error
+	)
+	if o.appRoleOpener != nil {
+		storage, err = NewPostgreSQLStorageWithOpener(dbURL, o.appRoleOpener)
+	} else {
+		storage, err = NewPostgreSQLStorage(dbURL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -255,12 +276,24 @@ func (r *Registry) Unregister(name string) error {
 		}
 	}
 
+	// Capture orgID from the in-memory config BEFORE deleting — Storage's
+	// DeleteConnector wraps the DELETE in a `SELECT set_config('app.current_org_id', orgID)`
+	// transaction so the connectors RLS DELETE policy (`USING org_id = get_current_org_id()`)
+	// matches under axonflow_app_role. config.TenantID carries the orgID at this writer
+	// per the historical schema collapse.
+	var orgID string
+	if cfg, ok := r.configs[name]; ok && cfg != nil {
+		orgID = cfg.TenantID
+	}
+
 	delete(r.connectors, name)
 	delete(r.configs, name)
 
 	// Delete from storage if available
 	if r.storage != nil {
-		if err := r.storage.DeleteConnector(ctx, name); err != nil {
+		if orgID == "" {
+			r.logger.Printf("Warning: Unregister %q has no in-memory config to derive orgID — skipping storage delete to avoid cross-org wipe", logutil.Sanitize(name))
+		} else if err := r.storage.DeleteConnector(ctx, orgID, name); err != nil {
 			r.logger.Printf("Warning: Failed to delete connector '%s' from storage: %v", name, err)
 			// Don't fail unregistration if storage deletion fails
 		}

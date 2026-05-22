@@ -44,6 +44,13 @@ permissions:
   security-events: write  # Required for SARIF uploads
   actions: read           # Required for CodeQL
 
+# Cancel orphaned PR runs when a new commit is pushed. Pushes to main / merge_group
+# / scheduled runs use the SHA so they never share a group and never cancel
+# each other (the daily 02:00 UTC cron is unaffected).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # Disable platform startup telemetry on CI runs (#2092) — security scans run
   # against agent + orchestrator binaries which would otherwise emit
@@ -127,7 +134,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Dependency Review
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
           deny-licenses: GPL-3.0, AGPL-3.0

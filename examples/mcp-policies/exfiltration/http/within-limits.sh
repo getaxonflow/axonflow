@@ -14,6 +14,7 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-demo-user}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 
 # Auth: include Basic auth if credentials are set
@@ -37,7 +38,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"CREATE\",
     \"statement\": \"CREATE TABLE IF NOT EXISTS exfiltration_test (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100))\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 
 # Insert test data
@@ -48,7 +49,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"insert\",
     \"action\": \"INSERT\",
     \"statement\": \"INSERT INTO exfiltration_test (name, email) SELECT 'User ' || i, 'user' || i || '@example.com' FROM generate_series(1, 100) AS i ON CONFLICT DO NOTHING\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 
 echo "✓ Test data ready"
@@ -63,7 +64,7 @@ response=$(acurl -s -X POST "${AGENT_URL}/mcp/resources/query" \
   -d "{
     \"connector\": \"${CONNECTOR}\",
     \"statement\": \"SELECT id, name, email FROM exfiltration_test LIMIT 10\",
-    \"user_token\": \"analyst-user\"
+    \"user_token\": \"${USER_TOKEN}\"
   }")
 
 echo "Response:"
@@ -107,7 +108,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"DROP\",
     \"statement\": \"DROP TABLE IF EXISTS exfiltration_test\",
-    \"user_token\": \"test-cleanup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 echo "✓ Cleanup complete"
 

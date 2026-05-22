@@ -10,12 +10,20 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"axonflow/platform/agent/rls"
 )
 
 // Common errors
 var (
 	ErrExecutionNotFound = errors.New("execution not found")
 	ErrInvalidExecution  = errors.New("invalid execution")
+	// ErrMissingOrgID is returned by writers when ExecutionStatus.OrgID is
+	// empty. Under v9 Phase 8 axonflow_app_role + ENABLE-RLS on
+	// execution_history (mig 042), an empty org_id makes the INSERT/UPDATE
+	// WITH CHECK predicate fail; surface this as a loud error rather than
+	// silently swallowing the row.
+	ErrMissingOrgID = errors.New("execution: OrgID must be non-empty (RLS on execution_history)")
 )
 
 // PostgresRepository implements ExecutionRepository for PostgreSQL.
@@ -29,9 +37,19 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 }
 
 // Create inserts a new execution record.
+//
+// v9 Phase 8 #2384 PR-C1: execution_history is ENABLE-RLS (mig 042) and
+// its USING/WITH CHECK predicate is keyed on the legacy app.current_tenant_id
+// session variable, not the v9 app.current_org_id used by mig 099+ FORCE-RLS
+// tables. We wrap the INSERT in WithOrgAndTenantScope so BOTH session
+// variables are pinned for the lifetime of the txn; under app_role this
+// is the only combination that satisfies the policy.
 func (r *PostgresRepository) Create(ctx context.Context, exec *ExecutionStatus) error {
 	if exec == nil {
 		return ErrInvalidExecution
+	}
+	if exec.OrgID == "" || exec.TenantID == "" {
+		return ErrMissingOrgID
 	}
 
 	stepsJSON, err := json.Marshal(exec.Steps)
@@ -60,13 +78,16 @@ func (r *PostgresRepository) Create(ctx context.Context, exec *ExecutionStatus) 
 		)
 	`
 
-	_, err = r.db.ExecContext(ctx, query,
-		exec.ExecutionID, exec.ExecutionType, exec.ExecutionID, exec.Name, exec.Source,
-		nullableString(exec.TenantID), nullableString(exec.OrgID), nullableString(exec.UserID), nullableString(exec.ClientID),
-		exec.Status, exec.CurrentStepIndex, exec.TotalSteps,
-		exec.StartedAt, exec.EstimatedCostUSD, exec.ActualCostUSD,
-		stepsJSON, metadataJSON, exec.CreatedAt, exec.UpdatedAt,
-	)
+	err = rls.WithOrgAndTenantScope(ctx, r.db, exec.OrgID, exec.TenantID, func(tx *sql.Tx) error {
+		_, exErr := tx.ExecContext(ctx, query,
+			exec.ExecutionID, exec.ExecutionType, exec.ExecutionID, exec.Name, exec.Source,
+			nullableString(exec.TenantID), nullableString(exec.OrgID), nullableString(exec.UserID), nullableString(exec.ClientID),
+			exec.Status, exec.CurrentStepIndex, exec.TotalSteps,
+			exec.StartedAt, exec.EstimatedCostUSD, exec.ActualCostUSD,
+			stepsJSON, metadataJSON, exec.CreatedAt, exec.UpdatedAt,
+		)
+		return exErr
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create execution: %w", err)
 	}
@@ -142,9 +163,17 @@ func (r *PostgresRepository) Get(ctx context.Context, executionID string) (*Exec
 }
 
 // Update updates an execution record.
+//
+// v9 Phase 8 #2384 PR-C1: UPDATE on execution_history is gated by mig 042's
+// tenant_isolation policy under app_role. exec carries TenantID+OrgID (set
+// by the caller at Create time and round-tripped through Get); we use
+// WithOrgAndTenantScope to pin both session variables for the UPDATE.
 func (r *PostgresRepository) Update(ctx context.Context, exec *ExecutionStatus) error {
 	if exec == nil {
 		return ErrInvalidExecution
+	}
+	if exec.OrgID == "" || exec.TenantID == "" {
+		return ErrMissingOrgID
 	}
 
 	stepsJSON, err := json.Marshal(exec.Steps)
@@ -172,24 +201,30 @@ func (r *PostgresRepository) Update(ctx context.Context, exec *ExecutionStatus) 
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		exec.ExecutionID,
-		exec.Status,
-		exec.CurrentStepIndex,
-		exec.TotalSteps,
-		exec.CompletedAt,
-		exec.EstimatedCostUSD,
-		exec.ActualCostUSD,
-		stepsJSON,
-		nullableString(exec.Error),
-		metadataJSON,
-		exec.UpdatedAt,
-	)
+	var rows int64
+	err = rls.WithOrgAndTenantScope(ctx, r.db, exec.OrgID, exec.TenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query,
+			exec.ExecutionID,
+			exec.Status,
+			exec.CurrentStepIndex,
+			exec.TotalSteps,
+			exec.CompletedAt,
+			exec.EstimatedCostUSD,
+			exec.ActualCostUSD,
+			stepsJSON,
+			nullableString(exec.Error),
+			metadataJSON,
+			exec.UpdatedAt,
+		)
+		if exErr != nil {
+			return fmt.Errorf("failed to update execution: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to update execution: %w", err)
+		return err
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -317,14 +352,30 @@ func (r *PostgresRepository) List(ctx context.Context, req ListExecutionsRequest
 }
 
 // Delete removes an execution record.
-func (r *PostgresRepository) Delete(ctx context.Context, executionID string) error {
-	query := `DELETE FROM execution_history WHERE id = $1`
-	result, err := r.db.ExecContext(ctx, query, executionID)
-	if err != nil {
-		return fmt.Errorf("failed to delete execution: %w", err)
+//
+// v9 Phase 8 #2384 PR-C1: DELETE on execution_history is gated by mig 042's
+// tenant_isolation policy under app_role. The caller MUST pass orgID and
+// tenantID — they're available on the *ExecutionStatus returned by a
+// prior Get (or stored in the caller's request context). Empty values
+// are rejected so cross-tenant deletes never accidentally route through
+// this method.
+func (r *PostgresRepository) Delete(ctx context.Context, orgID, tenantID, executionID string) error {
+	if orgID == "" || tenantID == "" {
+		return ErrMissingOrgID
 	}
-
-	rows, _ := result.RowsAffected()
+	query := `DELETE FROM execution_history WHERE id = $1`
+	var rows int64
+	err := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, executionID)
+		if exErr != nil {
+			return fmt.Errorf("failed to delete execution: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -333,7 +384,13 @@ func (r *PostgresRepository) Delete(ctx context.Context, executionID string) err
 }
 
 // UpdateStatus updates just the status fields.
-func (r *PostgresRepository) UpdateStatus(ctx context.Context, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
+//
+// v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to Update — see
+// that method's doc.
+func (r *PostgresRepository) UpdateStatus(ctx context.Context, orgID, tenantID, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error {
+	if orgID == "" || tenantID == "" {
+		return ErrMissingOrgID
+	}
 	query := `
 		UPDATE execution_history SET
 			status = $2,
@@ -343,14 +400,20 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, executionID strin
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		executionID, status, completedAt, nullableString(errorMsg), time.Now(),
-	)
+	var rows int64
+	err := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query,
+			executionID, status, completedAt, nullableString(errorMsg), time.Now(),
+		)
+		if exErr != nil {
+			return fmt.Errorf("failed to update status: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to update status: %w", err)
+		return err
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -359,7 +422,12 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, executionID strin
 }
 
 // UpdateSteps updates just the steps array.
-func (r *PostgresRepository) UpdateSteps(ctx context.Context, executionID string, steps []StepStatus) error {
+//
+// v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to Update.
+func (r *PostgresRepository) UpdateSteps(ctx context.Context, orgID, tenantID, executionID string, steps []StepStatus) error {
+	if orgID == "" || tenantID == "" {
+		return ErrMissingOrgID
+	}
 	stepsJSON, err := json.Marshal(steps)
 	if err != nil {
 		return fmt.Errorf("failed to marshal steps: %w", err)
@@ -373,14 +441,20 @@ func (r *PostgresRepository) UpdateSteps(ctx context.Context, executionID string
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		executionID, stepsJSON, len(steps), time.Now(),
-	)
+	var rows int64
+	err = rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query,
+			executionID, stepsJSON, len(steps), time.Now(),
+		)
+		if exErr != nil {
+			return fmt.Errorf("failed to update steps: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to update steps: %w", err)
+		return err
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -389,7 +463,12 @@ func (r *PostgresRepository) UpdateSteps(ctx context.Context, executionID string
 }
 
 // UpdateCost updates the cost fields.
-func (r *PostgresRepository) UpdateCost(ctx context.Context, executionID string, estimatedCost, actualCost *float64) error {
+//
+// v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to Update.
+func (r *PostgresRepository) UpdateCost(ctx context.Context, orgID, tenantID, executionID string, estimatedCost, actualCost *float64) error {
+	if orgID == "" || tenantID == "" {
+		return ErrMissingOrgID
+	}
 	query := `
 		UPDATE execution_history SET
 			estimated_cost_usd = COALESCE($2, estimated_cost_usd),
@@ -398,14 +477,20 @@ func (r *PostgresRepository) UpdateCost(ctx context.Context, executionID string,
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query,
-		executionID, estimatedCost, actualCost, time.Now(),
-	)
+	var rows int64
+	err := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query,
+			executionID, estimatedCost, actualCost, time.Now(),
+		)
+		if exErr != nil {
+			return fmt.Errorf("failed to update cost: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to update cost: %w", err)
+		return err
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -514,7 +599,12 @@ func (r *PostgresRepository) getByMetadataHardcoded(ctx context.Context, key, va
 }
 
 // ExpireExecution marks an execution as expired.
-func (r *PostgresRepository) ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error {
+//
+// v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to Update.
+func (r *PostgresRepository) ExpireExecution(ctx context.Context, orgID, tenantID, executionID string, metadata map[string]interface{}) error {
+	if orgID == "" || tenantID == "" {
+		return ErrMissingOrgID
+	}
 	now := time.Now()
 	query := `
 		UPDATE execution_history SET
@@ -524,12 +614,18 @@ func (r *PostgresRepository) ExpireExecution(ctx context.Context, executionID st
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query, executionID, now, now)
+	var rows int64
+	err := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, executionID, now, now)
+		if exErr != nil {
+			return fmt.Errorf("failed to expire execution: %w", exErr)
+		}
+		rows, _ = result.RowsAffected()
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed to expire execution: %w", err)
+		return err
 	}
-
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return ErrExecutionNotFound
 	}
@@ -549,7 +645,17 @@ func (r *PostgresRepository) CountActive(ctx context.Context, tenantID string) (
 }
 
 // PurgeOldest removes the oldest execution records beyond keepCount for a tenant.
-func (r *PostgresRepository) PurgeOldest(ctx context.Context, tenantID string, keepCount int) (int64, error) {
+//
+// v9 Phase 8 #2384 PR-C1 DoD-closure D-4: per-tenant cleanup must wrap in
+// WithOrgAndTenantScope so mig 042's app.current_tenant_id-keyed USING
+// surfaces the rows under axonflow_app_role. Without the wrap the DELETE
+// silently zeroes rows-affected (USING returns NULL → predicate fails)
+// and the retention cap is never enforced. Signature gained orgID so the
+// wrap can pin both GUCs.
+func (r *PostgresRepository) PurgeOldest(ctx context.Context, orgID, tenantID string, keepCount int) (int64, error) {
+	if orgID == "" || tenantID == "" {
+		return 0, ErrMissingOrgID
+	}
 	query := `
 		DELETE FROM execution_history
 		WHERE tenant_id = $1
@@ -559,11 +665,23 @@ func (r *PostgresRepository) PurgeOldest(ctx context.Context, tenantID string, k
 			ORDER BY created_at DESC
 			LIMIT $2
 		)`
-	result, err := r.db.ExecContext(ctx, query, tenantID, keepCount)
-	if err != nil {
-		return 0, fmt.Errorf("failed to purge oldest executions: %w", err)
+	var rowsAffected int64
+	wrapErr := rls.WithOrgAndTenantScope(ctx, r.db, orgID, tenantID, func(tx *sql.Tx) error {
+		result, exErr := tx.ExecContext(ctx, query, tenantID, keepCount)
+		if exErr != nil {
+			return fmt.Errorf("failed to purge oldest executions: %w", exErr)
+		}
+		var raErr error
+		rowsAffected, raErr = result.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("failed to get rows affected: %w", raErr)
+		}
+		return nil
+	})
+	if wrapErr != nil {
+		return 0, wrapErr
 	}
-	return result.RowsAffected()
+	return rowsAffected, nil
 }
 
 // --- Helper Functions ---

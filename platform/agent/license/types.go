@@ -22,9 +22,20 @@ import (
 // Supports both regular organization licenses and service identity licenses
 type LicenseKey struct {
 	// Core license fields
-	KeyID     string    `json:"key_id"`
-	OrgID     string    `json:"org_id"` // Organization ID (e.g., "travel-eu", "healthcare-eu")
-	Tier      Tier      `json:"tier"`   // License tier (Professional, Enterprise, Plus)
+	KeyID string `json:"key_id"`
+	// DeploymentID is the v9 name for the deployment/licensee identity that
+	// the agent validates against the ORG_ID env var at startup. Per ADR-052
+	// §3 + ADR-054 this is NOT the customer row org_id — it identifies the
+	// AxonFlow installation/license owner (e.g. "axonflow-community-saas").
+	// V3 license payloads ship `deployment_id`; V2 payloads ship `org_id`.
+	// LicenseDeploymentID() returns whichever is populated (V3 wins when
+	// both are set on the same payload).
+	DeploymentID string `json:"deployment_id,omitempty"`
+	// OrgID is the V2 license field name. Retained as backward-compat alias
+	// during the v9 window; new code should call LicenseDeploymentID()
+	// instead. Removal in v10.
+	OrgID     string    `json:"org_id"`
+	Tier      Tier      `json:"tier"` // License tier (Professional, Enterprise, Plus)
 	IssuedAt  time.Time `json:"issued_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Signature string    `json:"signature"` // Ed25519 signature for validation
@@ -38,6 +49,18 @@ type LicenseKey struct {
 	MaxNodes        int             `json:"max_nodes"`
 	DaysUntilExpiry int             `json:"days_until_expiry"`
 	Features        map[string]bool `json:"features"`
+}
+
+// LicenseDeploymentID returns the deployment/licensee identity for this
+// license key. Prefers the V3 `deployment_id` field; falls back to the V2
+// `org_id` field for legacy licenses. Per ADR-052 §3 this value is used
+// for startup validation only and MUST NOT be written into customer-data
+// rows (use the auth-derived request OrgID for that).
+func (k *LicenseKey) LicenseDeploymentID() string {
+	if k.DeploymentID != "" {
+		return k.DeploymentID
+	}
+	return k.OrgID
 }
 
 // IsServiceLicense returns true if this is a service identity license
@@ -120,19 +143,22 @@ func (k *LicenseKey) GetServiceInfo() (serviceName, serviceType string, permissi
 // String returns a human-readable representation of the license key
 // Does NOT include the actual key value for security
 func (k *LicenseKey) String() string {
+	depID := k.LicenseDeploymentID()
 	if k.IsServiceLicense() {
-		return "LicenseKey{org=" + k.OrgID + ", service=" + k.ServiceName + ", type=" + k.ServiceType + ", tier=" + string(k.Tier) + ", permissions=" + strings.Join(k.Permissions, ",") + "}"
+		return "LicenseKey{deployment_id=" + depID + ", service=" + k.ServiceName + ", type=" + k.ServiceType + ", tier=" + string(k.Tier) + ", permissions=" + strings.Join(k.Permissions, ",") + "}"
 	}
-	return "LicenseKey{org=" + k.OrgID + ", tier=" + string(k.Tier) + "}"
+	return "LicenseKey{deployment_id=" + depID + ", tier=" + string(k.Tier) + "}"
 }
 
 // ToValidationResult converts a LicenseKey to a ValidationResult
 // This is for backward compatibility with existing code that uses ValidationResult
 func (k *LicenseKey) ToValidationResult() *ValidationResult {
+	depID := k.LicenseDeploymentID()
 	return &ValidationResult{
 		Valid:           true,
 		Tier:            k.Tier,
-		OrgID:           k.OrgID,
+		DeploymentID:    depID,
+		OrgID:           depID,
 		MaxNodes:        k.MaxNodes,
 		ExpiresAt:       k.ExpiresAt,
 		DaysUntilExpiry: k.DaysUntilExpiry,

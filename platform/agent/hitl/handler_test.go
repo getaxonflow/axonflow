@@ -122,15 +122,25 @@ func TestCreateRequest_Success(t *testing.T) {
 	handler, mock, cleanup := setupTestHandler(t)
 	defer cleanup()
 
-	// Mock INSERT
+	// Mock INSERT. v9 Phase 8 #2384 PR-C1: Create + AddHistory wrap their INSERTs in WithOrgScope txn.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
 			AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := CreateRequestInput{
 		ClientID:            "client-1",
@@ -360,13 +370,23 @@ func TestApproveRequest(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock UPDATE
+	// Mock UPDATE. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := ReviewInput{
 		ReviewerID:    "reviewer-1",
@@ -415,13 +435,23 @@ func TestRejectRequest(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock UPDATE
+	// Mock UPDATE. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := ReviewInput{
 		ReviewerID:    "reviewer-1",
@@ -469,13 +499,23 @@ func TestOverrideRequest(t *testing.T) {
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
-	// Mock UPDATE
+	// Mock UPDATE. v9 Phase 8 #2384 PR-C1: WithOrgScope wraps UPDATE in BEGIN/SET-CONFIG/QUERY/COMMIT.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("UPDATE hitl_approval_queue").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	mock.ExpectCommit()
 
 	// Mock history INSERT
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("org-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO hitl_approval_history").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(1, time.Now()))
+	mock.ExpectCommit()
 
 	input := OverrideInput{
 		Justification:     "Emergency override - customer escalation",

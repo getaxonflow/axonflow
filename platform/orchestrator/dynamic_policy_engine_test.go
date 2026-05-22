@@ -961,10 +961,14 @@ func TestLoadPoliciesFromDB(t *testing.T) {
 				mock.ExpectQuery("SELECT (.+) FROM dynamic_policies WHERE enabled = true").
 					WillReturnRows(rows)
 
-				// Expect audit log insert after successful load
+				// Expect audit log insert after successful load — wrapped via
+				// rls.WithOrgScope("system") per PR-C2.
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO orchestrator_audit_logs").
 					WithArgs("orchestrator", "dynamic_policy_refresh", sqlmock.AnyArg(), sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			expectError: false,
 			expectCount: 2,
@@ -1081,7 +1085,11 @@ func TestLoadPoliciesFromDB_NilDatabase(t *testing.T) {
 	}
 }
 
-// TestLogAuditEvent tests audit event logging
+// TestLogAuditEvent tests audit event logging.
+//
+// v9 Phase 8 PR-C2 (#2384): logAuditEvent now wraps the INSERT in
+// rls.WithOrgScope with the 'system' sentinel (process-level worker has no
+// per-request scope). BEGIN + set_config + INSERT + COMMIT.
 func TestLogAuditEvent(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1091,17 +1099,23 @@ func TestLogAuditEvent(t *testing.T) {
 		{
 			name: "Successfully log audit event",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO orchestrator_audit_logs").
 					WithArgs("orchestrator", "policy_reload", "Reloaded 10 policies", sqlmock.AnyArg()).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			expectError: false,
 		},
 		{
 			name: "Database insert fails - should not panic",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO orchestrator_audit_logs").
 					WillReturnError(fmt.Errorf("insert failed"))
+				mock.ExpectRollback()
 			},
 			expectError: false, // Function logs error but doesn't return it
 		},
@@ -1261,50 +1275,86 @@ func TestGetTenantSpecificPolicies_NilDatabase(t *testing.T) {
 	}
 }
 
-// TestLogPolicyHit tests policy metrics logging
+// TestLogPolicyHit tests policy metrics logging.
+//
+// v9 Phase 8 PR-C2 (#2384): logPolicyHit gained an orgID first param + now
+// wraps the INSERT in rls.WithOrgScope (BEGIN / SELECT set_config / INSERT /
+// COMMIT). Empty orgID maps to the 'system' sentinel.
 func TestLogPolicyHit(t *testing.T) {
 	tests := []struct {
 		name        string
+		orgID       string
 		policyID    string
 		userID      string
 		allowed     bool
-		setupMock   func(sqlmock.Sqlmock)
+		setupMock   func(sqlmock.Sqlmock, string)
 		expectError bool
 	}{
 		{
 			name:     "Successfully log policy hit - allowed",
+			orgID:    "org-A",
 			policyID: "policy-001",
 			userID:   "user-123",
 			allowed:  true,
-			setupMock: func(mock sqlmock.Sqlmock) {
+			setupMock: func(mock sqlmock.Sqlmock, scope string) {
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_metrics").
-					WithArgs("policy-001", 0). // blockCount = 0 for allowed
+					WithArgs("policy-001", 0, scope).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			expectError: false,
 		},
 		{
 			name:     "Successfully log policy hit - blocked",
+			orgID:    "org-B",
 			policyID: "policy-002",
 			userID:   "user-456",
 			allowed:  false,
-			setupMock: func(mock sqlmock.Sqlmock) {
+			setupMock: func(mock sqlmock.Sqlmock, scope string) {
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_metrics").
-					WithArgs("policy-002", 1). // blockCount = 1 for blocked
+					WithArgs("policy-002", 1, scope).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			expectError: false,
 		},
 		{
 			name:     "Database insert fails - should not panic",
+			orgID:    "org-C",
 			policyID: "policy-003",
 			userID:   "user-789",
 			allowed:  true,
-			setupMock: func(mock sqlmock.Sqlmock) {
+			setupMock: func(mock sqlmock.Sqlmock, scope string) {
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs(scope).WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_metrics").
 					WillReturnError(fmt.Errorf("insert failed"))
+				mock.ExpectRollback()
 			},
 			expectError: false, // Function logs error but doesn't return it
+		},
+		{
+			name:     "Empty orgID maps to 'system' sentinel",
+			orgID:    "",
+			policyID: "policy-004",
+			userID:   "user-system",
+			allowed:  true,
+			setupMock: func(mock sqlmock.Sqlmock, scope string) {
+				if scope != "system" {
+					panic("test invariant violated: expected scope == 'system'")
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec("set_config").WithArgs("system").WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec("INSERT INTO policy_metrics").
+					WithArgs("policy-004", 0, "system").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
+			},
+			expectError: false,
 		},
 	}
 
@@ -1317,8 +1367,13 @@ func TestLogPolicyHit(t *testing.T) {
 			}
 			defer func() { _ = db.Close() }()
 
-			// Setup mock expectations
-			tt.setupMock(mock)
+			// Resolve the scope the helper would compute (matches logPolicyHit's
+			// fallback). Pass it into setupMock so the WithArgs assertion lines up.
+			scope := tt.orgID
+			if scope == "" {
+				scope = "system"
+			}
+			tt.setupMock(mock, scope)
 
 			// Create engine with mock DB
 			engine := &DynamicPolicyEngine{
@@ -1327,7 +1382,7 @@ func TestLogPolicyHit(t *testing.T) {
 			}
 
 			// Execute - should not panic even on error
-			engine.logPolicyHit(tt.policyID, tt.userID, tt.allowed)
+			engine.logPolicyHit(tt.orgID, tt.policyID, tt.userID, tt.allowed)
 
 			// Verify all mock expectations were met
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -1345,7 +1400,7 @@ func TestLogPolicyHit_NilDatabase(t *testing.T) {
 	}
 
 	// Should not panic with nil database
-	engine.logPolicyHit("policy-001", "user-123", true)
+	engine.logPolicyHit("org-x", "policy-001", "user-123", true)
 }
 
 // TestGetFieldValue_AdditionalCases tests additional field value extraction cases

@@ -18,10 +18,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let client = AxonFlowClient::new(config)?;
 
+    // First positional arg to proxy_llm_call is the user token. In enterprise
+    // mode the platform validates it as a JWT (see ee/platform/agent auth path).
+    // In community / community-saas mode any string works. Read from env to
+    // match the convention used by the Go/Python/TS/Java hello-world examples.
+    let user_token =
+        std::env::var("AXONFLOW_USER_TOKEN").unwrap_or_else(|_| "hello-world-user".to_string());
+
     println!("Sending governed query…");
     let resp = client
         .proxy_llm_call(
-            "user-123",
+            &user_token,
             "What is the capital of France?",
             "chat",
             HashMap::new(),

@@ -4,7 +4,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -505,5 +507,43 @@ func TestWriteRateLimitErrorJSONRPC_LimitPassthrough(t *testing.T) {
 func TestDailyLimitForTier_EmptyFallback(t *testing.T) {
 	if got := dailyLimitForTier(""); got <= 0 {
 		t.Errorf("dailyLimitForTier(\"\") = %d, want positive fallback", got)
+	}
+}
+
+// TestWriteRateLimitError_AuditLogEmit asserts the daily-quota 429 path
+// logs a discriminating `[CSAAS-RL] daily_quota …` line on every
+// throttle. Pre-fix this site emitted the 429 silently — only the
+// encode-failure branch logged — and the daily-report's agent-log
+// grep over the agent log group produced 0 hits while the ALB served
+// thousands of 429s. Without this regression assertion, a future edit
+// that drops or rewords the log line would re-open the same blind spot.
+//
+// `[CSAAS-RL]` is the common prefix all community-saas rate-limit
+// emit sites (per_minute, daily_quota, hitl_pending_limit) share so
+// daily-report tooling + CW alarms grep one pattern.
+func TestWriteRateLimitError_AuditLogEmit(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	rr := httptest.NewRecorder()
+	writeRateLimitError(rr, "cs_test_tenant_log_emit", "Free", 200)
+
+	got := buf.String()
+	if !strings.Contains(got, "[CSAAS-RL] daily_quota") {
+		t.Errorf("expected `[CSAAS-RL] daily_quota` prefix in log; got:\n%s", got)
+	}
+	if !strings.Contains(got, "tenant=cs_test_tenant_log_emit") {
+		t.Errorf("expected tenant=cs_test_tenant_log_emit in log; got:\n%s", got)
+	}
+	if !strings.Contains(got, "tier=Free") {
+		t.Errorf("expected tier=Free in log; got:\n%s", got)
+	}
+	if !strings.Contains(got, "limit=200") {
+		t.Errorf("expected limit=200 in log; got:\n%s", got)
+	}
+	if !strings.Contains(got, "retry_after=") {
+		t.Errorf("expected retry_after= in log; got:\n%s", got)
 	}
 }

@@ -15,6 +15,9 @@
 set -e
 
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
+# user_token: validated as JWT in eval/enterprise; any string in community.
+# Read from AXONFLOW_USER_TOKEN env (setup-e2e-testing.sh writes it).
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-demo-user}"
 CONNECTOR="${MCP_CONNECTOR:-postgres}"
 
 # Auth: include Basic auth if credentials are set
@@ -41,7 +44,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"DROP\",
     \"statement\": \"DROP TABLE IF EXISTS exfil_limit_test\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 
 # Create table
@@ -52,7 +55,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"CREATE\",
     \"statement\": \"CREATE TABLE exfil_limit_test (id SERIAL PRIMARY KEY, data VARCHAR(100))\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 
 # Insert 20 rows
@@ -63,7 +66,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"insert\",
     \"action\": \"INSERT\",
     \"statement\": \"INSERT INTO exfil_limit_test (data) SELECT 'Row ' || i FROM generate_series(1, 20) AS i\",
-    \"user_token\": \"test-setup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 
 echo "✓ Created 20 test rows"
@@ -78,7 +81,7 @@ response=$(acurl -s -w "\n%{http_code}" -X POST "${AGENT_URL}/mcp/resources/quer
   -d "{
     \"connector\": \"${CONNECTOR}\",
     \"statement\": \"SELECT * FROM exfil_limit_test\",
-    \"user_token\": \"analyst-user\"
+    \"user_token\": \"${USER_TOKEN}\"
   }")
 
 http_code=$(echo "$response" | tail -n1)
@@ -135,7 +138,7 @@ acurl -s -X POST "${AGENT_URL}/mcp/tools/execute" \
     \"operation\": \"ddl\",
     \"action\": \"DROP\",
     \"statement\": \"DROP TABLE IF EXISTS exfil_limit_test\",
-    \"user_token\": \"test-cleanup\"
+    \"user_token\": \"${USER_TOKEN}\"
   }" > /dev/null 2>&1 || true
 echo "✓ Cleanup complete"
 

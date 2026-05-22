@@ -92,7 +92,7 @@
 //   - audit_retention_config (from migration 026)
 //   - policy_violations
 //   - llm_call_audits
-//   - decision_chain_log
+//   - decision_chain
 //   - hitl_queue
 //   - pii_redaction_log
 //

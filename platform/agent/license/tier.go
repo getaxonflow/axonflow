@@ -294,8 +294,18 @@ var enterprisePublicKey = ed25519.PublicKey{
 
 // ValidationResult contains the result of license validation
 type ValidationResult struct {
-	Valid           bool
-	Tier            Tier
+	Valid bool
+	Tier  Tier
+	// DeploymentID is the v9 name for the deployment/licensee identity that
+	// the agent validates against the ORG_ID env var at startup. Per ADR-052
+	// §3 + ADR-054 this is NOT the customer row org_id. Populated from the
+	// V3 `deployment_id` payload field if present, else the legacy V2
+	// `org_id` field. Use LicenseDeploymentID() to read.
+	DeploymentID string
+	// OrgID is the V2 license field name and equals DeploymentID for
+	// backward compatibility. Removal in v10.
+	//
+	// Deprecated: use LicenseDeploymentID() instead.
 	OrgID           string
 	MaxNodes        int
 	ExpiresAt       time.Time
@@ -314,6 +324,21 @@ type ValidationResult struct {
 	LicenseID   string   `json:"license_id,omitempty"`
 }
 
+// LicenseDeploymentID returns the deployment/licensee identity for this
+// validated license. Per ADR-052 §3 + ADR-054 this is the AxonFlow
+// installation/license owner — used for startup validation against ORG_ID
+// only and MUST NOT be written into customer-data rows (use the
+// auth-derived request OrgID for that).
+//
+// Prefers the V3 `deployment_id` field; falls back to the V2 `org_id`
+// field for legacy licenses. Always non-empty for a valid result.
+func (r *ValidationResult) LicenseDeploymentID() string {
+	if r.DeploymentID != "" {
+		return r.DeploymentID
+	}
+	return r.OrgID
+}
+
 // ServiceLicensePayload represents the JSON payload in an Ed25519-signed license.
 //
 // Plugin-claim claims (TenantID, Aud, JTI, KID, Origin) are all `omitempty` so
@@ -323,17 +348,22 @@ type ValidationResult struct {
 // community and enterprise builds so HasScope() / HostingMode() (defined in
 // scope.go, no build tag) compile against a uniform shape.
 type ServiceLicensePayload struct {
-	LicenseID   string      `json:"id,omitempty"`
-	Tier        string      `json:"tier"`
-	OrgID       string      `json:"org_id"`
-	ServiceName string      `json:"service_name,omitempty"`
-	ServiceType string      `json:"service_type,omitempty"`
-	Permissions []string    `json:"permissions,omitempty"`
-	IssuedAt    string      `json:"issued_at,omitempty"` // Format: YYYYMMDD
-	ExpiresAt   string      `json:"expires_at"`          // Format: YYYYMMDD
-	Email       string      `json:"email,omitempty"`
-	Email2      string      `json:"email2,omitempty"`
-	Limits      *TierLimits `json:"limits,omitempty"`
+	LicenseID string `json:"id,omitempty"`
+	Tier      string `json:"tier"`
+	// DeploymentID is the v9 (V3 license payload) field name for the
+	// deployment/licensee identity per ADR-052 §3 + ADR-054. New licenses
+	// ship both `deployment_id` and `org_id`; V3 readers prefer the new
+	// field. Carried in both community and enterprise builds.
+	DeploymentID string      `json:"deployment_id,omitempty"`
+	OrgID        string      `json:"org_id"`
+	ServiceName  string      `json:"service_name,omitempty"`
+	ServiceType  string      `json:"service_type,omitempty"`
+	Permissions  []string    `json:"permissions,omitempty"`
+	IssuedAt     string      `json:"issued_at,omitempty"` // Format: YYYYMMDD
+	ExpiresAt    string      `json:"expires_at"`          // Format: YYYYMMDD
+	Email        string      `json:"email,omitempty"`
+	Email2       string      `json:"email2,omitempty"`
+	Limits       *TierLimits `json:"limits,omitempty"`
 
 	// Plugin-claim / SaaS-quadrant claims. Only present in tokens issued for
 	// the SaaS Plugin path; self-hosted tokens leave them empty.

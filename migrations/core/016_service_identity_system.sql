@@ -195,10 +195,17 @@ COMMENT ON COLUMN service_identities.permissions IS
 -- =============================================================================
 -- Migration Tracking
 -- =============================================================================
+-- Self-register as version '016' to match this file's numeric prefix.
+-- Pre-PR this line was ('021', ...) which produced a spurious row that
+-- did not correspond to any real migration — the runner separately
+-- recorded ('016', 'service_identity_system') via recordMigrationSuccess,
+-- so both rows now coexist under the v9 composite UNIQUE. Fixing the
+-- literal here keeps the self-register row consistent with how the
+-- runner records this file.
 
 INSERT INTO schema_migrations (version, name, applied_at, success) VALUES
-    ('021', 'service_identity_system', NOW(), true)
-ON CONFLICT (version) DO NOTHING;
+    ('016', 'service_identity_system', NOW(), true)
+ON CONFLICT (version, name) DO NOTHING;
 
 -- =============================================================================
 -- Migration Complete

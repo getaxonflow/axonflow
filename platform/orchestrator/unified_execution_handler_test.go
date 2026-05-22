@@ -96,7 +96,9 @@ func (m *mockRepo) List(_ context.Context, req execution.ListExecutionsRequest) 
 	return results[start:end], len(results), nil
 }
 
-func (m *mockRepo) Delete(_ context.Context, id string) error {
+// v9 Phase 8 #2384 PR-C1: Delete/Update*/Expire signatures gained
+// orgID + tenantID for RLS scoping; the mock ignores them.
+func (m *mockRepo) Delete(_ context.Context, _, _, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.executions[id]; !ok {
@@ -106,7 +108,7 @@ func (m *mockRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockRepo) UpdateStatus(_ context.Context, id string, status execution.ExecutionStatusValue, completedAt *time.Time, errMsg string) error {
+func (m *mockRepo) UpdateStatus(_ context.Context, _, _, id string, status execution.ExecutionStatusValue, completedAt *time.Time, errMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[id]
@@ -120,7 +122,7 @@ func (m *mockRepo) UpdateStatus(_ context.Context, id string, status execution.E
 	return nil
 }
 
-func (m *mockRepo) UpdateSteps(_ context.Context, id string, steps []execution.StepStatus) error {
+func (m *mockRepo) UpdateSteps(_ context.Context, _, _, id string, steps []execution.StepStatus) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[id]
@@ -132,7 +134,7 @@ func (m *mockRepo) UpdateSteps(_ context.Context, id string, steps []execution.S
 	return nil
 }
 
-func (m *mockRepo) UpdateCost(_ context.Context, id string, estimated, actual *float64) error {
+func (m *mockRepo) UpdateCost(_ context.Context, _, _, id string, estimated, actual *float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[id]
@@ -179,7 +181,7 @@ func (m *mockRepo) GetByMetadata(_ context.Context, key, value string) (*executi
 	return nil, execution.ErrExecutionNotFound
 }
 
-func (m *mockRepo) ExpireExecution(_ context.Context, executionID string, metadata map[string]interface{}) error {
+func (m *mockRepo) ExpireExecution(_ context.Context, _, _, executionID string, metadata map[string]interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	exec, ok := m.executions[executionID]
@@ -193,7 +195,7 @@ func (m *mockRepo) ExpireExecution(_ context.Context, executionID string, metada
 	return nil
 }
 
-func (m *mockRepo) PurgeOldest(_ context.Context, _ string, _ int) (int64, error) {
+func (m *mockRepo) PurgeOldest(_ context.Context, _, _ string, _ int) (int64, error) {
 	return 0, nil
 }
 

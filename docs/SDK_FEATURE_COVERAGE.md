@@ -216,15 +216,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.2.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP); feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.3.1 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors and the v9 `X-Client-ID` outbound header; feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v8.0.0 | ~44 | ✅ |
-| Python | v8.0.0 | ~44 | ✅ |
-| TypeScript | v8.0.0 | ~45 | ✅ (+protect) |
-| Java | v8.0.0 | ~44 | ✅ |
-| Rust _(preview)_ | v0.2.0 | ~14 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP) |
+| Go | v8.1.0 | ~44 | ✅ |
+| Python | v8.1.0 | ~44 | ✅ |
+| TypeScript | v8.1.0 | ~45 | ✅ (+protect) |
+| Java | v8.1.0 | ~44 | ✅ |
+| Rust _(preview)_ | v0.3.1 | ~16 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `X-Client-ID`) |
 
 ### Infrastructure (v4.1.0)
 
@@ -239,6 +239,7 @@ The four established SDKs should have identical method coverage. Rust is a previ
 
 | Date | Change |
 |------|--------|
+| 2026-05-21 | All four stable SDKs bumped to v8.1.0 carrying `X-Client-ID` outbound header on every request. Rust SDK bumped to v0.3.1 adding both `X-Client-ID` AND the previously-missing `X-Axonflow-Client` header. All 5 SDKs ship `runtime-e2e/x-client-id/` runner + `tests/x_client_id_header*` unit-test pair. Released to registries in lockstep with the v9.0.0 platform cut. |
 | 2026-05-04 | Added Rust SDK to the matrix as a preview (v0.2.0). Baseline covers HTTP Basic auth (with `community:` default), `proxy_llm_call`, `audit_llm_call`, basic MAP (`generate_plan`, `execute_plan`, `get_plan_status`, `cancel_plan`), basic MCP connectors, OpenAI interceptor, `X-License-Key`, `AXONFLOW_TELEMETRY=off` opt-out. Subsequent releases will add the universal surface, full interceptor lineup, governance, workflows, cost, and compliance methods to bring it to parity with the four established SDKs |
 | 2026-03-01 | Added healthCheckDetailed() and hasCapability() to all SDKs (v4.1.0); Added User-Agent headers and version mismatch warnings; Added Infrastructure section |
 | 2026-02-12 | Added failWorkflow() to all SDKs; Added HITL Queue API (listHITLQueue, getHITLRequest, approveHITLRequest, rejectHITLRequest, getHITLStats) to all SDKs; Moved HITL from exclusions to Tier 2 |

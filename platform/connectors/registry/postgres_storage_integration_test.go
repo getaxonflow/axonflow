@@ -101,7 +101,7 @@ func TestPostgreSQLStorage_Integration_SaveAndGet(t *testing.T) {
 	}
 
 	// Cleanup - delete before closing storage
-	_ = storage.DeleteConnector(ctx, connectorID)
+	_ = storage.DeleteConnector(ctx, tenantID, connectorID)
 	_ = storage.Close()
 }
 
@@ -155,7 +155,7 @@ func TestPostgreSQLStorage_Integration_Update(t *testing.T) {
 	}
 
 	// Cleanup - delete before closing storage
-	_ = storage.DeleteConnector(ctx, connectorID)
+	_ = storage.DeleteConnector(ctx, tenantID, connectorID)
 	_ = storage.Close()
 }
 
@@ -221,7 +221,7 @@ func TestPostgreSQLStorage_Integration_List(t *testing.T) {
 
 	// Cleanup - delete before closing storage
 	for _, id := range connectorIDs {
-		_ = storage.DeleteConnector(ctx, id)
+		_ = storage.DeleteConnector(ctx, tenantID, id)
 	}
 	_ = storage.Close()
 }
@@ -259,7 +259,7 @@ func TestPostgreSQLStorage_Integration_Delete(t *testing.T) {
 	}
 
 	// Delete
-	err = storage.DeleteConnector(ctx, connectorID)
+	err = storage.DeleteConnector(ctx, tenantID, connectorID)
 	if err != nil {
 		t.Fatalf("DeleteConnector failed: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestPostgreSQLStorage_Integration_UpdateHealthStatus(t *testing.T) {
 		Latency:   10 * time.Millisecond,
 		Timestamp: time.Now(),
 	}
-	err = storage.UpdateHealthStatus(ctx, connectorID, healthyStatus)
+	err = storage.UpdateHealthStatus(ctx, tenantID, connectorID, healthyStatus)
 	if err != nil {
 		t.Errorf("UpdateHealthStatus (healthy) failed: %v", err)
 	}
@@ -313,13 +313,13 @@ func TestPostgreSQLStorage_Integration_UpdateHealthStatus(t *testing.T) {
 		Error:     "connection refused",
 		Timestamp: time.Now(),
 	}
-	err = storage.UpdateHealthStatus(ctx, connectorID, unhealthyStatus)
+	err = storage.UpdateHealthStatus(ctx, tenantID, connectorID, unhealthyStatus)
 	if err != nil {
 		t.Errorf("UpdateHealthStatus (unhealthy) failed: %v", err)
 	}
 
 	// Cleanup - delete before closing storage
-	_ = storage.DeleteConnector(ctx, connectorID)
+	_ = storage.DeleteConnector(ctx, tenantID, connectorID)
 	_ = storage.Close()
 }
 
@@ -352,8 +352,10 @@ func TestPostgreSQLStorage_Integration_DeleteNonexistent(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Try to delete nonexistent connector - should error
-	err = storage.DeleteConnector(ctx, "nonexistent_connector_12345")
+	// Try to delete nonexistent connector - should error.
+	// Pass a non-empty orgID so the withOrgScopeTx wrap doesn't short-circuit;
+	// the assertion is on the rows-affected branch downstream.
+	err = storage.DeleteConnector(ctx, "test_tenant_delete_nonexistent", "nonexistent_connector_12345")
 	if err == nil {
 		t.Error("Expected error for deleting nonexistent connector")
 	}
@@ -429,7 +431,7 @@ func TestRegistry_Integration_ReloadFromStorage(t *testing.T) {
 	}
 
 	// Cleanup - delete before closing storage
-	_ = storage.DeleteConnector(ctx, connectorID)
+	_ = storage.DeleteConnector(ctx, tenantID, connectorID)
 	_ = storage.Close()
 	_ = registry.storage.Close()
 }
@@ -517,6 +519,6 @@ func TestPostgreSQLStorage_Integration_CredentialsRoundTrip(t *testing.T) {
 	}
 
 	// Cleanup - delete before closing storage
-	_ = storage.DeleteConnector(ctx, connectorID)
+	_ = storage.DeleteConnector(ctx, config.TenantID, connectorID)
 	_ = storage.Close()
 }

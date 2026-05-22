@@ -18,7 +18,12 @@ name: Regression Test Required
 on:
   pull_request:
     branches: [main]
-    types: [opened, edited, labeled, unlabeled, synchronize, reopened]
+    # Limited to events that materially change diff content or gating eligibility:
+    #   opened       — first eval
+    #   synchronize  — new commits pushed
+    #   labeled      — `bug` / `regression-test-exempt` toggles classification
+    # Dropped (no diff change): edited (title/body), unlabeled, reopened.
+    types: [opened, synchronize, labeled]
 
 permissions:
   contents: read

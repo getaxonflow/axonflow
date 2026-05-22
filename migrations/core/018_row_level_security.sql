@@ -1,4 +1,4 @@
--- Migration 017: Row-Level Security (RLS) for Multi-Tenant Data Isolation
+-- Migration 018: Row-Level Security (RLS) for Multi-Tenant Data Isolation
 -- Date: 2025-11-20
 -- Purpose: Enable RLS on all multi-tenant tables (all have org_id from CREATE TABLE)
 

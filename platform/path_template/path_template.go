@@ -4,10 +4,9 @@
 // Package path_template normalizes raw HTTP request paths to their
 // OpenAPI template form for cross-surface analytics (epic #2047 Q-C).
 //
-// The agent middleware (System A entry point at platform/agent/) and the
-// csaas-mirror Lambda (System B mirror writer at ee/platform/csaas-mirror)
-// both call Normalize at write time so the persisted endpoint column has
-// a closed-cardinality vocabulary instead of one-row-per-tenant-id
+// The agent middleware (System A entry point at platform/agent/) calls
+// Normalize at write time so the persisted endpoint column has a
+// closed-cardinality vocabulary instead of one-row-per-tenant-id
 // explosions ("/api/v1/users/cs_abc1234" rolled up to "/api/v1/users").
 //
 // Algorithm:
@@ -142,8 +141,8 @@ func NewMatcher(templates []string) *Matcher {
 }
 
 // Default returns the package-level Matcher built from Templates. Use
-// this from production code paths (agent middleware, csaas-mirror
-// Lambda handler); tests construct their own via NewMatcher.
+// this from production code paths (agent middleware); tests construct
+// their own via NewMatcher.
 func Default() *Matcher {
 	defaultOnce.Do(func() {
 		defaultMatcher = NewMatcher(Templates)

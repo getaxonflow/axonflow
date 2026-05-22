@@ -13,11 +13,22 @@ The minimum AxonFlow integration in Rust: build a client, send a governed query,
 # Community mode (no credentials needed — defaults to Basic auth with community tenant)
 cargo run
 
-# Enterprise mode
+# Evaluation / Enterprise mode (setup-e2e-testing.sh writes these into
+# /tmp/axonflow-e2e-env.sh; source it before running):
 export AXONFLOW_CLIENT_ID=your-client-id
 export AXONFLOW_CLIENT_SECRET=your-client-secret
+export AXONFLOW_USER_TOKEN=<JWT-from-setup-script>  # platform validates as JWT in eval/enterprise
 cargo run
 ```
+
+## Environment variables
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `AXONFLOW_AGENT_URL` | no | `http://localhost:8080` | The agent base URL |
+| `AXONFLOW_CLIENT_ID` | for enterprise | _none_ | Tenant credential |
+| `AXONFLOW_CLIENT_SECRET` | for enterprise | _none_ | Tenant credential |
+| `AXONFLOW_USER_TOKEN` | for enterprise | `hello-world-user` | Per-request user identity — validated as JWT in eval/enterprise, any string accepted in community |
 
 ## What it does
 

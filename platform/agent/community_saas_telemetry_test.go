@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -294,6 +295,190 @@ func TestTelemetryMiddleware_CapturesTraceID(t *testing.T) {
 	}
 }
 
+// TestTelemetryMiddleware_CapturesSourceIP_IPv4_RemoteAddr pins the P2a
+// contract: when the request arrives without an X-Forwarded-For header,
+// the middleware captures r.RemoteAddr's host into event.sourceIP via
+// the canonical extractClientIP path (port stripped).
+func TestTelemetryMiddleware_CapturesSourceIP_IPv4_RemoteAddr(t *testing.T) {
+	tel := &CommunitySaaSTelemetry{
+		enabled:   true,
+		eventChan: make(chan telemetryEvent, 1),
+		version:   "8.0.0",
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_ipv4")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := tel.Middleware(inner)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	if len(tel.eventChan) != 1 {
+		t.Fatalf("expected 1 telemetry event, got %d", len(tel.eventChan))
+	}
+	ev := <-tel.eventChan
+	if ev.sourceIP != "203.0.113.7" {
+		t.Errorf("event.sourceIP = %q, want %q (port-stripped RemoteAddr)", ev.sourceIP, "203.0.113.7")
+	}
+}
+
+// TestTelemetryMiddleware_CapturesSourceIP_IPv6_RemoteAddr asserts the
+// IPv6 wire contract: the bracketed RemoteAddr form ([2001:db8::1])
+// returned by extractClientIP must reach the wire as the bracket-free
+// literal. Without canonicalizeSourceIP, the bracketed form would
+// become the upstream contract and break ipapi / Scarf enrichment
+// under #2047 P2b (net.ParseIP rejects the bracketed string). Pinning
+// the canonical form here is what prevents that.
+func TestTelemetryMiddleware_CapturesSourceIP_IPv6_RemoteAddr(t *testing.T) {
+	tel := &CommunitySaaSTelemetry{
+		enabled:   true,
+		eventChan: make(chan telemetryEvent, 1),
+		version:   "8.0.0",
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_ipv6")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := tel.Middleware(inner)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", nil)
+	req.RemoteAddr = "[2001:db8::1]:54321"
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	if len(tel.eventChan) != 1 {
+		t.Fatalf("expected 1 telemetry event, got %d", len(tel.eventChan))
+	}
+	ev := <-tel.eventChan
+	if ev.sourceIP != "2001:db8::1" {
+		t.Errorf("event.sourceIP = %q, want %q (de-bracketed IPv6 literal)", ev.sourceIP, "2001:db8::1")
+	}
+	if net.ParseIP(ev.sourceIP) == nil {
+		t.Errorf("event.sourceIP = %q must parse via net.ParseIP — required for P2b ipapi/Scarf enrichment", ev.sourceIP)
+	}
+}
+
+// TestCanonicalizeSourceIP exercises the wire-shape contract directly.
+// extractClientIP's quirk lives at one node in this graph; pinning
+// every input class here gives a regression catch independent of
+// the middleware-level integration tests above.
+func TestCanonicalizeSourceIP(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bracketed IPv6 from RemoteAddr fallback", "[2001:db8::1]", "2001:db8::1"},
+		{"bracketed IPv6 loopback", "[::1]", "::1"},
+		{"plain IPv6 from XFF (no brackets)", "2001:db8::1", "2001:db8::1"},
+		{"IPv4 passthrough", "198.51.100.42", "198.51.100.42"},
+		{"unknown sentinel passthrough", "unknown", "unknown"},
+		{"empty passthrough", "", ""},
+		{"unmatched leading bracket left alone", "[2001:db8::1", "[2001:db8::1"},
+		{"unmatched trailing bracket left alone", "2001:db8::1]", "2001:db8::1]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canonicalizeSourceIP(tc.in); got != tc.want {
+				t.Errorf("canonicalizeSourceIP(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTelemetryMiddleware_CapturesSourceIP_XForwardedFor pins the
+// ALB-single-hop convention: when X-Forwarded-For is present, the LAST
+// entry is the trusted-peer IP (the ALB's view of the client socket),
+// not the first. Reusing extractClientIP keeps this telemetry path in
+// lockstep with /api/v1/register's IP attribution.
+func TestTelemetryMiddleware_CapturesSourceIP_XForwardedFor(t *testing.T) {
+	tel := &CommunitySaaSTelemetry{
+		enabled:   true,
+		eventChan: make(chan telemetryEvent, 1),
+		version:   "8.0.0",
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetTelemetryTenantID(r.Context(), "cs_xff")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := tel.Middleware(inner)
+	req := httptest.NewRequest("POST", "/api/v1/audit/tool-call", nil)
+	// Client-supplied (untrusted) hop, then ALB's trusted view appended last.
+	req.Header.Set("X-Forwarded-For", "10.1.2.3, 198.51.100.42")
+	req.RemoteAddr = "127.0.0.1:1" // ALB peer; should be ignored when XFF is present
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	if len(tel.eventChan) != 1 {
+		t.Fatalf("expected 1 telemetry event, got %d", len(tel.eventChan))
+	}
+	ev := <-tel.eventChan
+	if ev.sourceIP != "198.51.100.42" {
+		t.Errorf("event.sourceIP = %q, want %q (ALB single-hop: LAST XFF entry wins)", ev.sourceIP, "198.51.100.42")
+	}
+}
+
+// TestSendEvent_EmitsSourceIPWhenSet verifies the wire-shape lockstep
+// contract: when telemetryEvent carries a non-empty sourceIP, the SQS
+// message body must include source_ip so the ingest Lambda can
+// salt-hash and persist it (#2053 / #2047 P2b). This is the
+// runtime-evidence assertion called out in the P2a brief.
+func TestSendEvent_EmitsSourceIPWhenSet(t *testing.T) {
+	fake := &fakeSender{}
+	tel := &CommunitySaaSTelemetry{client: fake, queueURL: "https://sqs.us-east-1.amazonaws.com/000/test", version: "8.0.0", enabled: true, eventChan: make(chan telemetryEvent, 1)}
+	tel.sendEvent(telemetryEvent{
+		correlationID: "c-1",
+		tenantID:      "cs_x",
+		endpoint:      "/api/v1/audit/tool-call",
+		method:        "POST",
+		statusCode:    200,
+		sourceIP:      "198.51.100.42",
+	})
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(fake.calls))
+	}
+	wire := decodeBody(t, fake.calls[0])
+	if wire.SourceIP != "198.51.100.42" {
+		t.Errorf("wire.SourceIP want %q, got %q", "198.51.100.42", wire.SourceIP)
+	}
+	body := *fake.calls[0].MessageBody
+	if !strings.Contains(body, `"source_ip":"198.51.100.42"`) {
+		t.Errorf("body should include source_ip JSON field; got %q", body)
+	}
+}
+
+// TestSendEvent_OmitsSourceIPWhenEmpty is a regression guard: source_ip
+// is `omitempty` on the wire struct, so the JSON body must not contain
+// a "source_ip" key for paths that do not capture an IP (e.g. the
+// startup canary, which builds wireEvent directly).
+func TestSendEvent_OmitsSourceIPWhenEmpty(t *testing.T) {
+	fake := &fakeSender{}
+	tel := &CommunitySaaSTelemetry{client: fake, queueURL: "https://sqs.us-east-1.amazonaws.com/000/test", version: "8.0.0", enabled: true, eventChan: make(chan telemetryEvent, 1)}
+	tel.sendEvent(telemetryEvent{
+		correlationID: "c-1",
+		tenantID:      "cs_x",
+		endpoint:      "/api/v1/audit/tool-call",
+		method:        "POST",
+		statusCode:    200,
+	})
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(fake.calls))
+	}
+	body := *fake.calls[0].MessageBody
+	if strings.Contains(body, `"source_ip"`) {
+		t.Errorf("body should omit source_ip when empty; got %q", body)
+	}
+}
+
 // TestSendEvent_EmitsTraceIDWhenSet verifies the wire-shape lockstep
 // contract: when telemetryEvent carries a non-empty traceID, the SQS
 // message body must include trace_id. Empty traceID must be omitted (no
@@ -339,6 +524,70 @@ func TestSendEvent_OmitsTraceIDWhenEmpty(t *testing.T) {
 	body := *fake.calls[0].MessageBody
 	if strings.Contains(body, `"trace_id"`) {
 		t.Errorf("body should omit trace_id when empty; got %q", body)
+	}
+}
+
+// TestSendEvent_EmitsAgentEnvWhenSet verifies the wire-shape lockstep
+// contract for issue #2172: when CommunitySaaSTelemetry was constructed
+// with AXONFLOW_AGENT_ENVIRONMENT set (mirrored on the struct as
+// agentEnv), every wire event including the worker-pool sendEvent path
+// must carry the value so the ingest Lambda's Layer 1 filter can see it.
+func TestSendEvent_EmitsAgentEnvWhenSet(t *testing.T) {
+	fake := &fakeSender{}
+	tel := &CommunitySaaSTelemetry{
+		client: fake, queueURL: "https://sqs.us-east-1.amazonaws.com/000/test",
+		version: "8.0.0", enabled: true, eventChan: make(chan telemetryEvent, 1),
+		agentEnv: "staging",
+	}
+	tel.sendEvent(telemetryEvent{
+		correlationID: "c-1",
+		tenantID:      "cs_x",
+		endpoint:      "/api/v1/audit/search",
+		method:        "POST",
+		statusCode:    200,
+	})
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(fake.calls))
+	}
+	wire := decodeBody(t, fake.calls[0])
+	if wire.AgentEnv != "staging" {
+		t.Errorf("wire.AgentEnv want %q, got %q", "staging", wire.AgentEnv)
+	}
+	body := *fake.calls[0].MessageBody
+	if !strings.Contains(body, `"agent_env":"staging"`) {
+		t.Errorf("body should include agent_env JSON field; got %q", body)
+	}
+}
+
+// TestSendEvent_OmitsAgentEnvWhenEmpty is the omitempty regression guard:
+// the prod agent (legacy: no env var set) emits an empty agentEnv. The
+// SQS body MUST NOT carry an "agent_env" key in that case — otherwise
+// the ingest Lambda's Layer 1 fires on the empty value (it doesn't —
+// the matcher gates on != "" — but the JSON shape stays clean
+// regardless to avoid downstream readers misinterpreting empty as
+// "production").
+func TestSendEvent_OmitsAgentEnvWhenEmpty(t *testing.T) {
+	fake := &fakeSender{}
+	tel := &CommunitySaaSTelemetry{
+		client: fake, queueURL: "https://sqs.us-east-1.amazonaws.com/000/test",
+		version: "8.0.0", enabled: true, eventChan: make(chan telemetryEvent, 1),
+		// agentEnv intentionally unset — legacy prod agent shape
+	}
+	tel.sendEvent(telemetryEvent{
+		correlationID: "c-1",
+		tenantID:      "cs_x",
+		endpoint:      "/api/v1/audit/search",
+		method:        "POST",
+		statusCode:    200,
+	})
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(fake.calls))
+	}
+	body := *fake.calls[0].MessageBody
+	if strings.Contains(body, `"agent_env"`) {
+		t.Errorf("body should omit agent_env when empty; got %q", body)
 	}
 }
 

@@ -47,6 +47,18 @@ func getTestDB(t *testing.T) *sql.DB {
 	return pg.DB
 }
 
+// setTestOrgID has the same pool-scope GUC pattern that #2282/#2285 closed
+// for customer-portal auth (the auth path used set_config(..., false) on the
+// *sql.DB pool, so the GUC landed on one connection while subsequent statements
+// might run on a different pool connection). For this Docker-gated integration
+// test it works in practice because the test harness runs serially against a
+// containerized PG with a tiny pool, and the table under test (llm_providers)
+// has RLS enabled but not yet FORCE'd — master bypasses, so the GUC is theatre.
+//
+// Properly fixing requires refactoring PostgresStorage's storage methods to
+// accept a transaction handle (so setTestOrgID can use the same withOrgScope
+// pattern as auth.go). That is a >1-day storage refactor and intentionally
+// outside this PR's scope. Tracked for follow-up; do not fold here.
 func setTestOrgID(t *testing.T, db *sql.DB, orgID string) {
 	t.Helper()
 
@@ -82,6 +94,7 @@ func TestPostgresStorage_Integration_SaveAndGetProvider(t *testing.T) {
 
 	config := &ProviderConfig{
 		Name:           providerName,
+		TenantID:       tenantID,
 		Type:           ProviderTypeAnthropic,
 		APIKey:         "test-api-key-123",
 		Model:          "claude-sonnet-4-20250514",
@@ -164,6 +177,7 @@ func TestPostgresStorage_Integration_UpdateProvider(t *testing.T) {
 	// Initial config
 	config := &ProviderConfig{
 		Name:     providerName,
+		TenantID: tenantID,
 		Type:     ProviderTypeOpenAI,
 		APIKey:   "initial-key",
 		Model:    "gpt-4",
@@ -215,9 +229,10 @@ func TestPostgresStorage_Integration_DeleteProvider(t *testing.T) {
 	defer cleanupTestProvider(t, db, providerName)
 
 	config := &ProviderConfig{
-		Name:    providerName,
-		Type:    ProviderTypeOllama,
-		Enabled: true,
+		Name:     providerName,
+		TenantID: tenantID,
+		Type:     ProviderTypeOllama,
+		Enabled:  true,
 	}
 
 	err := storage.SaveProvider(ctx, config)
@@ -226,7 +241,7 @@ func TestPostgresStorage_Integration_DeleteProvider(t *testing.T) {
 	}
 
 	// Delete
-	err = storage.DeleteProvider(ctx, providerName)
+	err = storage.DeleteProvider(ctx, tenantID, providerName)
 	if err != nil {
 		t.Fatalf("DeleteProvider failed: %v", err)
 	}
@@ -264,9 +279,10 @@ func TestPostgresStorage_Integration_ListProviders(t *testing.T) {
 	// Create providers
 	for _, name := range providerNames {
 		config := &ProviderConfig{
-			Name:    name,
-			Type:    ProviderTypeAnthropic,
-			Enabled: true,
+			Name:     name,
+			TenantID: tenantID,
+			Type:     ProviderTypeAnthropic,
+			Enabled:  true,
 		}
 		if err := storage.SaveProvider(ctx, config); err != nil {
 			t.Fatalf("SaveProvider for %s failed: %v", name, err)
@@ -331,7 +347,7 @@ func TestPostgresStorage_Integration_DeleteNonexistent(t *testing.T) {
 
 	setTestOrgID(t, db, "test_tenant_delete_nonexistent")
 
-	err := storage.DeleteProvider(ctx, "nonexistent-provider-12345")
+	err := storage.DeleteProvider(ctx, "test_tenant_delete_nonexistent", "nonexistent-provider-12345")
 	if err == nil {
 		t.Error("Expected error for deleting nonexistent provider")
 	}
@@ -353,9 +369,10 @@ func TestPostgresStorage_Integration_SaveHealth(t *testing.T) {
 
 	// Create provider first
 	config := &ProviderConfig{
-		Name:    providerName,
-		Type:    ProviderTypeAnthropic,
-		Enabled: true,
+		Name:     providerName,
+		TenantID: tenantID,
+		Type:     ProviderTypeAnthropic,
+		Enabled:  true,
 	}
 	if err := storage.SaveProvider(ctx, config); err != nil {
 		t.Fatalf("SaveProvider failed: %v", err)
@@ -402,9 +419,10 @@ func TestPostgresStorage_Integration_RecordUsage(t *testing.T) {
 
 	// Create provider first
 	config := &ProviderConfig{
-		Name:    providerName,
-		Type:    ProviderTypeAnthropic,
-		Enabled: true,
+		Name:     providerName,
+		TenantID: tenantID,
+		Type:     ProviderTypeAnthropic,
+		Enabled:  true,
 	}
 	if err := storage.SaveProvider(ctx, config); err != nil {
 		t.Fatalf("SaveProvider failed: %v", err)
@@ -412,6 +430,7 @@ func TestPostgresStorage_Integration_RecordUsage(t *testing.T) {
 
 	// Record usage
 	usage := &ProviderUsage{
+		TenantID:         tenantID,
 		ProviderName:     providerName,
 		RequestID:        "req-" + timestamp,
 		Model:            "claude-sonnet-4-20250514",
@@ -430,6 +449,7 @@ func TestPostgresStorage_Integration_RecordUsage(t *testing.T) {
 
 	// Record error usage
 	errorUsage := &ProviderUsage{
+		TenantID:     tenantID,
 		ProviderName: providerName,
 		RequestID:    "req-error-" + timestamp,
 		Model:        "claude-sonnet-4-20250514",
@@ -470,9 +490,10 @@ func TestPostgresStorage_Integration_AllProviderTypes(t *testing.T) {
 		defer cleanupTestProvider(t, db, providerName)
 
 		config := &ProviderConfig{
-			Name:    providerName,
-			Type:    pt,
-			Enabled: true,
+			Name:     providerName,
+			TenantID: tenantID,
+			Type:     pt,
+			Enabled:  true,
 		}
 
 		err := storage.SaveProvider(ctx, config)

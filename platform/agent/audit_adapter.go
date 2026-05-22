@@ -30,6 +30,11 @@ type SharedPolicyAuditAdapter struct {
 var _ sharedpolicy.AuditQueue = (*SharedPolicyAuditAdapter)(nil)
 
 // LogViolation logs a policy violation through the agent's audit queue.
+//
+// v9 Phase 8 #2384 PR-C1: copies OrgID + TenantID from the shared entry so
+// the downstream audit_queue persistence path can pin app.current_org_id
+// via execWithRetryOrgScope. EvalOptions.OrgID at the request boundary is
+// what populates sharedpolicy.AuditEntry.OrgID in metrics.RecordViolation.
 func (a *SharedPolicyAuditAdapter) LogViolation(entry sharedpolicy.AuditEntry) error {
 	if a.queue == nil {
 		return nil
@@ -40,6 +45,8 @@ func (a *SharedPolicyAuditAdapter) LogViolation(entry sharedpolicy.AuditEntry) e
 		Severity:  entry.Severity,
 		UserID:    entry.UserID,
 		ClientID:  entry.ClientID,
+		OrgID:     entry.OrgID,
+		TenantID:  entry.TenantID,
 		Details:   entry.Details,
 	})
 }
@@ -55,6 +62,8 @@ func (a *SharedPolicyAuditAdapter) LogMetric(entry sharedpolicy.AuditEntry) erro
 		Severity:  entry.Severity,
 		UserID:    entry.UserID,
 		ClientID:  entry.ClientID,
+		OrgID:     entry.OrgID,
+		TenantID:  entry.TenantID,
 		Details:   entry.Details,
 	})
 }

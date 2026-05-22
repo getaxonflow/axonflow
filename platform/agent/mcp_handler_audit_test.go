@@ -215,13 +215,19 @@ func TestLogMCPQueryAudit_Helper(t *testing.T) {
 		auditManager = &AuditManager{queue: auditQueue}
 		defer func() { auditManager = oldAuditManager }()
 
-		// Expect the INSERT
+		// Expect the INSERT. v9 Phase 8 B2: WithOrgScope wrap requires
+		// BeginTx + set_config + INSERT + Commit.
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO mcp_query_audits").
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 
 		entry := MCPQueryAuditEntry{
 			AuditID:       "test-456",
 			TenantID:      "tenant-1",
+			OrgID:         "tenant-1",
 			ClientID:      "client-1",
 			ConnectorName: "postgres",
 			Operation:     "query",
@@ -254,6 +260,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-success",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -270,6 +277,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-sqli",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -288,6 +296,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-redaction",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -307,6 +316,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-exfil",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -325,6 +335,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-insert",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -341,6 +352,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-update",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -357,6 +369,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-delete",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -373,6 +386,7 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "scenario-error",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -399,8 +413,13 @@ func TestMCPAuditEntry_AllScenarios(t *testing.T) {
 
 			auditQueue, _ := NewAuditQueue(AuditModeCompliance, 100, 1, db, fallbackPath)
 
+			// v9 Phase 8 B2: WithOrgScope wrap requires BeginTx + set_config + INSERT + Commit.
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectExec("INSERT INTO mcp_query_audits").
 				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
 
 			err = auditQueue.LogMCPQueryAudit(sc.entry)
 			if err != nil {

@@ -27,6 +27,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-123",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -39,8 +40,15 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               50,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 B2: LogMCPQueryAudit now wraps the INSERT in
+				// WithOrgScope (txn + SET LOCAL app.current_org_id), so the
+				// mock must expect BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -49,6 +57,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-456",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -62,8 +71,15 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               10,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 B2: LogMCPQueryAudit now wraps the INSERT in
+				// WithOrgScope (txn + SET LOCAL app.current_org_id), so the
+				// mock must expect BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -72,6 +88,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-789",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -87,8 +104,15 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               100,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 B2: LogMCPQueryAudit now wraps the INSERT in
+				// WithOrgScope (txn + SET LOCAL app.current_org_id), so the
+				// mock must expect BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -97,6 +121,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-exfil",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -111,8 +136,15 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               500,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 B2: LogMCPQueryAudit now wraps the INSERT in
+				// WithOrgScope (txn + SET LOCAL app.current_org_id), so the
+				// mock must expect BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -121,6 +153,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-exec",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -133,8 +166,15 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               25,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 B2: LogMCPQueryAudit now wraps the INSERT in
+				// WithOrgScope (txn + SET LOCAL app.current_org_id), so the
+				// mock must expect BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -143,6 +183,7 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 			entry: MCPQueryAuditEntry{
 				AuditID:                  "mcp-audit-error",
 				TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 				ClientID:                 "client-1",
 				UserID:                   "user-1",
 				ConnectorName:            "postgres",
@@ -153,9 +194,14 @@ func TestLogMCPQueryAudit_ComplianceMode(t *testing.T) {
 				DurationMs:               5,
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				// Successful write of an error audit entry
+				// Successful write of an error audit entry. v9 Phase 8 B2:
+				// WithOrgScope wrap requires BeginTx + set_config + INSERT + Commit.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO mcp_query_audits").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -222,13 +268,19 @@ func TestLogMCPQueryAudit_PerformanceMode(t *testing.T) {
 		t.Fatalf("failed to create queue: %v", err)
 	}
 
-	// Expect async write
+	// Expect async write. v9 Phase 8 B2: WithOrgScope wrap requires
+	// BeginTx + set_config + INSERT + Commit.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO mcp_query_audits").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	entry := MCPQueryAuditEntry{
 		AuditID:                  "mcp-audit-async-123",
 		TenantID:                 "tenant-async",
+		OrgID:                    "tenant-async",
 		ClientID:                 "client-async",
 		UserID:                   "user-async",
 		ConnectorName:            "postgres",
@@ -265,6 +317,7 @@ func TestMCPQueryAuditEntry_Fields(t *testing.T) {
 	entry := MCPQueryAuditEntry{
 		AuditID:                  "mcp-test-123",
 		TenantID:                 "tenant-1",
+				OrgID:                    "tenant-1",
 		ClientID:                 "client-1",
 		UserID:                   "user-1",
 		ConnectorName:            "postgres",
@@ -426,7 +479,9 @@ func TestMCPQueryAudit_Recovery(t *testing.T) {
 	fallbackPath := filepath.Join(os.TempDir(), "test-mcp-audit-recovery.log")
 	defer func() { _ = os.Remove(fallbackPath) }()
 
-	// Create fallback file with MCP audit entry
+	// Create fallback file with MCP audit entry. v9 Phase 8 B2: Details
+	// must include org_id since writeToDBSync now wraps the INSERT in
+	// WithOrgScope and rejects empty orgID.
 	entry := AuditEntry{
 		Type:      AuditTypeMCPQueryAudit,
 		Timestamp: time.Now(),
@@ -434,6 +489,7 @@ func TestMCPQueryAudit_Recovery(t *testing.T) {
 		Details: map[string]interface{}{
 			"audit_id":                   "mcp-recover-123",
 			"tenant_id":                  "tenant-recover",
+			"org_id":                     "tenant-recover",
 			"client_id":                  "client-recover",
 			"user_id":                    "user-recover",
 			"connector_name":             "postgres",
@@ -456,9 +512,14 @@ func TestMCPQueryAudit_Recovery(t *testing.T) {
 	_, _ = f.WriteString(string(data) + "\n")
 	_ = f.Close()
 
-	// Expect DB write for recovery
+	// Expect DB write for recovery. v9 Phase 8 B2: WithOrgScope wrap requires
+	// BeginTx + set_config + INSERT + Commit.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO mcp_query_audits").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	aq, err := NewAuditQueue(AuditModeCompliance, 10, 1, db, fallbackPath)
 	if err != nil {
@@ -492,15 +553,21 @@ func BenchmarkLogMCPQueryAudit(b *testing.B) {
 
 	aq, _ := NewAuditQueue(AuditModePerformance, 10000, 4, db, fallbackPath)
 
-	// Setup mock for many inserts
+	// Setup mock for many inserts. v9 Phase 8 B2: each INSERT wraps in
+	// WithOrgScope (BeginTx + set_config + INSERT + Commit).
 	for i := 0; i < b.N; i++ {
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app.current_org_id'`).
+			WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectExec("INSERT INTO mcp_query_audits").
 			WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
 	}
 
 	entry := MCPQueryAuditEntry{
 		AuditID:                  "bench-mcp-audit",
 		TenantID:                 "tenant-bench",
+		OrgID:                    "tenant-bench",
 		ClientID:                 "client-bench",
 		UserID:                   "user-bench",
 		ConnectorName:            "postgres",

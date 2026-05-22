@@ -101,6 +101,11 @@ type PolicyOverride struct {
 	// Scope of the override
 	OrganizationID *string `json:"organization_id,omitempty" db:"organization_id"`
 	TenantID       *string `json:"tenant_id,omitempty" db:"tenant_id"`
+	// OrgID is the multi-tenant scope key for RLS. Mig 110 (v9 Phase 8
+	// PR-C2) added policy_overrides.org_id NOT NULL + switched the RLS
+	// policy from app.tenant_id to app.current_org_id; callers must
+	// populate this before write.
+	OrgID string `json:"org_id" db:"org_id"`
 
 	// Override values
 	ActionOverride  *OverrideAction `json:"action_override,omitempty" db:"action_override"`

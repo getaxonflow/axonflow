@@ -65,7 +65,7 @@ async def main() -> int:
         print("2. Process - Per-request provider selection (OpenAI)")
         try:
             resp = await client.proxy_llm_call(
-                user_token="test-user",
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", "test-user"),
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "openai"},
@@ -91,7 +91,7 @@ async def main() -> int:
         print("3. Process - Per-request provider selection (Anthropic)")
         try:
             resp = await client.proxy_llm_call(
-                user_token="test-user",
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", "test-user"),
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "anthropic"},
@@ -111,7 +111,7 @@ async def main() -> int:
         print("4. Process - Per-request provider selection (Gemini)")
         try:
             resp = await client.proxy_llm_call(
-                user_token="test-user",
+                user_token=os.environ.get("AXONFLOW_USER_TOKEN", "test-user"),
                 query="Say hello in 3 words",
                 request_type="chat",
                 context={"provider": "gemini"},
@@ -133,7 +133,7 @@ async def main() -> int:
         for i in range(5):
             try:
                 resp = await client.proxy_llm_call(
-                    user_token="test-user",
+                    user_token=os.environ.get("AXONFLOW_USER_TOKEN", "test-user"),
                     query="Hello",
                     request_type="chat",
                 )

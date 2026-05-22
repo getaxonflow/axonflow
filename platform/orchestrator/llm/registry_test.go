@@ -62,7 +62,8 @@ func (s *mockStorage) GetProvider(ctx context.Context, name string) (*ProviderCo
 	return &configCopy, nil
 }
 
-func (s *mockStorage) DeleteProvider(ctx context.Context, name string) error {
+func (s *mockStorage) DeleteProvider(ctx context.Context, orgID, name string) error {
+	_ = orgID // mock ignores org scope — real PostgresStorage uses it for RLS wrap
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}

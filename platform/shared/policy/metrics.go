@@ -43,6 +43,14 @@ type AuditQueue interface {
 }
 
 // AuditEntry represents a generic audit log entry.
+//
+// v9 Phase 8 #2384 PR-C1: OrgID is the multi-tenant scope key required by the
+// agent's RLS-aware audit_queue persistence path (policy_metrics,
+// policy_violations, agent_audit_logs are ENABLE-RLS'd in mig 018; INSERTs
+// run under axonflow_app_role need SET LOCAL app.current_org_id to match the
+// row's org_id column or WITH CHECK denies). Constructors should populate
+// OrgID alongside TenantID — sharedpolicy.EvalOptions carries OrgID from the
+// agent's request context for exactly this purpose.
 type AuditEntry struct {
 	Type      string
 	Timestamp time.Time
@@ -50,6 +58,7 @@ type AuditEntry struct {
 	UserID    string
 	ClientID  string
 	TenantID  string
+	OrgID     string
 	Details   map[string]interface{}
 }
 
@@ -145,6 +154,7 @@ func (m *MetricsCollector) RecordViolation(
 		Severity:  string(policy.Severity),
 		UserID:    opts.UserID,
 		TenantID:  opts.TenantID,
+		OrgID:     opts.OrgID,
 		Details: map[string]interface{}{
 			"policy_id":      policy.PolicyID,
 			"policy_name":    policy.Name,

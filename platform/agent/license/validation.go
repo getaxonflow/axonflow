@@ -209,9 +209,23 @@ func normalizeTier(raw string) Tier {
 
 // ValidationResult contains the result of license validation
 type ValidationResult struct {
-	Valid           bool
-	Tier            Tier
-	OrgID           string // Organization ID extracted from license key
+	Valid bool
+	Tier  Tier
+	// DeploymentID is the v9 name for the deployment/licensee identity that
+	// the agent validates against the ORG_ID env var at startup. Per ADR-052
+	// §3 + ADR-054 this is NOT the customer row org_id — it identifies the
+	// AxonFlow installation/license owner (e.g. "axonflow-community-saas").
+	// Populated from the V3 `deployment_id` payload field if present, else
+	// from the legacy V2 `org_id` field. Use LicenseDeploymentID() to read.
+	DeploymentID string
+	// OrgID is the V2 license field name and equals DeploymentID for
+	// backward compatibility. Retained during the v9 window so existing
+	// call sites that read validationResult.OrgID keep compiling. New code
+	// MUST call LicenseDeploymentID() to make the semantic explicit.
+	// Removal in v10.
+	//
+	// Deprecated: use LicenseDeploymentID() instead.
+	OrgID           string
 	MaxNodes        int
 	ExpiresAt       time.Time
 	DaysUntilExpiry int
@@ -227,6 +241,21 @@ type ValidationResult struct {
 	Permissions []string `json:"permissions,omitempty"`  // e.g., ["mcp:amadeus:search_flights"]
 	Email       string   `json:"email,omitempty"`
 	LicenseID   string   `json:"license_id,omitempty"`
+}
+
+// LicenseDeploymentID returns the deployment/licensee identity for this
+// validated license. Per ADR-052 §3 + ADR-054 this is the AxonFlow
+// installation/license owner — used for startup validation against ORG_ID
+// only and MUST NOT be written into customer-data rows (use the
+// auth-derived request OrgID for that).
+//
+// Prefers the V3 `deployment_id` field; falls back to the V2 `org_id`
+// field for legacy licenses. Always non-empty for a valid result.
+func (r *ValidationResult) LicenseDeploymentID() string {
+	if r.DeploymentID != "" {
+		return r.DeploymentID
+	}
+	return r.OrgID
 }
 
 // ValidateLicense validates an AxonFlow license key.
@@ -268,17 +297,24 @@ func ValidateLicense(ctx context.Context, licenseKey string) (*ValidationResult,
 // without these fields, preserving backward compatibility — existing
 // validators don't read fields they don't know about.
 type ServiceLicensePayload struct {
-	LicenseID   string      `json:"id,omitempty"` // Unique license ID
-	Tier        string      `json:"tier"`
-	OrgID       string      `json:"org_id"`
-	ServiceName string      `json:"service_name,omitempty"`
-	ServiceType string      `json:"service_type,omitempty"`
-	Permissions []string    `json:"permissions,omitempty"`
-	IssuedAt    string      `json:"issued_at,omitempty"` // Format: YYYYMMDD
-	ExpiresAt   string      `json:"expires_at"`          // Format: YYYYMMDD
-	Email       string      `json:"email,omitempty"`
-	Email2      string      `json:"email2,omitempty"`
-	Limits      *TierLimits `json:"limits,omitempty"`
+	LicenseID string `json:"id,omitempty"` // Unique license ID
+	Tier      string `json:"tier"`
+	// DeploymentID is the v9 (V3 license payload) field name for the
+	// deployment/licensee identity per ADR-052 §3 + ADR-054. New licenses
+	// minted by GenerateServiceLicenseKey* populate BOTH this field and
+	// the legacy `org_id` field (with the same value) so V2-only readers
+	// keep validating signed payloads they wrote pre-v9. When both fields
+	// are present, validateEd25519License prefers `deployment_id`.
+	DeploymentID string      `json:"deployment_id,omitempty"`
+	OrgID        string      `json:"org_id"`
+	ServiceName  string      `json:"service_name,omitempty"`
+	ServiceType  string      `json:"service_type,omitempty"`
+	Permissions  []string    `json:"permissions,omitempty"`
+	IssuedAt     string      `json:"issued_at,omitempty"` // Format: YYYYMMDD
+	ExpiresAt    string      `json:"expires_at"`          // Format: YYYYMMDD
+	Email        string      `json:"email,omitempty"`
+	Email2       string      `json:"email2,omitempty"`
+	Limits       *TierLimits `json:"limits,omitempty"`
 
 	// W4 plugin-claim claims (per ADR-049 sections 1, 9). Only present in
 	// plugin-claim tokens. Validated by agent middleware on each request.
@@ -463,10 +499,20 @@ func validateEd25519License(licenseKey string) (*ValidationResult, error) {
 	now := time.Now()
 	daysUntilExpiry := int(expiry.Sub(now).Hours() / 24)
 
+	// V3 license payload (ADR-054): prefer `deployment_id` over the legacy
+	// `org_id`. New licenses ship both fields with the same value so V2
+	// readers still see `org_id`; V3 readers prefer `deployment_id` when
+	// it's non-empty. Both ValidationResult.DeploymentID and .OrgID are
+	// populated to the resolved identity for backward-compat call sites.
+	resolvedDeploymentID := payload.DeploymentID
+	if resolvedDeploymentID == "" {
+		resolvedDeploymentID = payload.OrgID
+	}
 	result := &ValidationResult{
 		Valid:           true,
 		Tier:            tier,
-		OrgID:           payload.OrgID,
+		DeploymentID:    resolvedDeploymentID,
+		OrgID:           resolvedDeploymentID,
 		ExpiresAt:       expiry,
 		DaysUntilExpiry: daysUntilExpiry,
 		GracePeriodDays: 0,

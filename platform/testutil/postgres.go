@@ -252,6 +252,13 @@ func LLMProvidersSchema() string {
 
 // DynamicPoliciesSchema returns the schema for dynamic policies.
 // Matches the PolicyRepository expected schema (policy_api_repository.go).
+//
+// The `org_id` + `client_id` columns mirror migration 090
+// (v9_policy_tables_client_id). The orchestrator's INSERT path writes
+// both; omitting them here causes "column does not exist" failures on
+// every integration test that creates a policy via the repository.
+// Kept in sync with the production migration shape — if migration 090
+// adds a new column, mirror it here.
 func DynamicPoliciesSchema() string {
 	return `
 		CREATE TABLE IF NOT EXISTS dynamic_policies (
@@ -264,6 +271,8 @@ func DynamicPoliciesSchema() string {
 			conditions JSONB NOT NULL DEFAULT '[]',
 			actions JSONB NOT NULL DEFAULT '[]',
 			tenant_id VARCHAR(255) NOT NULL,
+			client_id VARCHAR(100),
+			org_id VARCHAR(255),
 			organization_id UUID,
 			priority INTEGER DEFAULT 100,
 			enabled BOOLEAN DEFAULT true,

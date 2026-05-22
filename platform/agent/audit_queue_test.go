@@ -126,14 +126,23 @@ func TestLogViolation_ComplianceMode(t *testing.T) {
 				Severity: "HIGH",
 				ClientID: "test-client",
 				UserID:   "user-123",
+				OrgID:    "tenant-1",
 				Details: map[string]interface{}{
 					"policy_name": "test-policy",
 					"description": "Test violation",
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
+				// v9 Phase 8 #2384 PR-C1: writeToDBSync wraps the INSERT in
+				// WithOrgScope so app.current_org_id is pinned before the
+				// INSERT WITH CHECK predicate fires under app_role.
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_violations").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
@@ -143,19 +152,23 @@ func TestLogViolation_ComplianceMode(t *testing.T) {
 				Severity: "MEDIUM",
 				ClientID: "test-client",
 				UserID:   "user-456",
+				OrgID:    "tenant-1",
 				Details: map[string]interface{}{
 					"policy_name": "test-policy-2",
 					"description": "Test violation 2",
 				},
 			},
 			setupMock: func(mock sqlmock.Sqlmock) {
-				mock.ExpectExec("INSERT INTO policy_violations").
-					WillReturnError(sql.ErrConnDone)
-				// Expect 3 retries
-				mock.ExpectExec("INSERT INTO policy_violations").
-					WillReturnError(sql.ErrConnDone)
-				mock.ExpectExec("INSERT INTO policy_violations").
-					WillReturnError(sql.ErrConnDone)
+				// Each retry opens a fresh txn (Begin → SET → Exec → Rollback).
+				for i := 0; i < 3; i++ {
+					mock.ExpectBegin()
+					mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+						WithArgs("tenant-1").
+						WillReturnResult(sqlmock.NewResult(0, 0))
+					mock.ExpectExec("INSERT INTO policy_violations").
+						WillReturnError(sql.ErrConnDone)
+					mock.ExpectRollback()
+				}
 			},
 			wantErr: true,
 		},
@@ -222,14 +235,20 @@ func TestLogViolation_PerformanceMode(t *testing.T) {
 		t.Fatalf("failed to create queue: %v", err)
 	}
 
-	// Expect async write
+	// Expect async write — wrapped in WithOrgScope (v9 Phase 8 #2384 PR-C1).
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO policy_violations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	entry := AuditEntry{
 		Severity: "HIGH",
 		ClientID: "test-client",
 		UserID:   "user-123",
+		OrgID:    "tenant-1",
 		Details: map[string]interface{}{
 			"policy_name": "test-policy",
 			"description": "Async test",
@@ -295,15 +314,23 @@ func TestLogMetric(t *testing.T) {
 				t.Fatalf("failed to create queue: %v", err)
 			}
 
-			// Expect metric inserts
+			// v9 Phase 8 #2384 PR-C1: flushMetricsBatch wraps each
+			// policy_metrics UPSERT in WithOrgScope so the WITH CHECK
+			// predicate under app_role can pin app.current_org_id.
 			for i := 0; i < tt.expectedLogs; i++ {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("tenant-1").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec("INSERT INTO policy_metrics").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			}
 
 			// Log metrics
 			for i := 0; i < tt.numMetrics; i++ {
 				entry := AuditEntry{
+					OrgID: "tenant-1",
 					Details: map[string]interface{}{
 						"policy_id": "policy-123",
 						"blocked":   i%2 == 0,
@@ -740,9 +767,15 @@ func TestAuditQueue_WorkerProcessing(t *testing.T) {
 		t.Fatalf("Failed to create audit queue: %v", err)
 	}
 
-	// Mock database insert for violation
+	// v9 Phase 8 #2384 PR-C1: writeToDBSync wraps the INSERT in
+	// WithOrgScope so app.current_org_id is pinned under app_role.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO policy_violations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	// Log a violation
 	entry := AuditEntry{
@@ -751,6 +784,7 @@ func TestAuditQueue_WorkerProcessing(t *testing.T) {
 		Severity:  "critical",
 		UserID:    "user-123",
 		ClientID:  "client-456",
+		OrgID:     "tenant-1",
 		Details: map[string]interface{}{
 			"policy_id": "test-policy",
 			"query":     "SELECT * FROM users",

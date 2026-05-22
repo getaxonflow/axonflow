@@ -129,6 +129,11 @@ ALTER TABLE decision_chain ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Users can only see decision chains for their organization
 -- Uses the get_current_org_id() helper function from 018_row_level_security.sql
+-- Idempotent DROP+CREATE so re-runs on bug-impacted installs (where the
+-- sibling 025_hitl_oversight_queue was clobbered out of schema_migrations
+-- by the v1 version-only UNIQUE) succeed instead of raising 42710.
+-- See migration 096_schema_migrations_dedup_composite.sql.
+DROP POLICY IF EXISTS decision_chain_org_isolation ON decision_chain;
 CREATE POLICY decision_chain_org_isolation ON decision_chain
     FOR ALL
     USING (org_id = get_current_org_id());

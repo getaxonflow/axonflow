@@ -11,6 +11,12 @@ set -e
 AGENT_URL="${AXONFLOW_AGENT_URL:-http://localhost:8080}"
 CLIENT_ID="${AXONFLOW_CLIENT_ID:-community}"
 CLIENT_SECRET="${AXONFLOW_CLIENT_SECRET:-demo}"
+# user_token is the JWT shipped to the agent on per-request endpoints. In
+# enterprise / evaluation mode the agent validates it as a real JWT, so the
+# example MUST forward AXONFLOW_USER_TOKEN (set by the setup script) rather
+# than recycling CLIENT_ID as the user identity. In community mode any
+# string works — falling back to CLIENT_ID keeps the legacy local-dev path.
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-${CLIENT_ID}}"
 
 # Build Basic auth header for agent calls
 AUTH_HEADER="Authorization: Basic $(echo -n "${CLIENT_ID}:${CLIENT_SECRET}" | base64)"
@@ -33,7 +39,7 @@ PLAN_RESPONSE=$(curl -s -X POST "${AGENT_URL}/api/request" \
   -H "$AUTH_HEADER" \
   -d "{
     \"query\": \"Create a greeting message for a new user\",
-    \"user_token\": \"${CLIENT_ID}\",
+    \"user_token\": \"${USER_TOKEN}\",
     \"client_id\": \"${CLIENT_ID}\",
     \"request_type\": \"multi-agent-plan\",
     \"context\": {\"domain\": \"generic\"}

@@ -51,13 +51,18 @@ type ExecutionRepository interface {
 	// List executions with filters
 	List(ctx context.Context, req ListExecutionsRequest) ([]ExecutionStatus, int, error)
 
-	// Delete an execution (for cleanup)
-	Delete(ctx context.Context, executionID string) error
+	// Delete an execution (for cleanup).
+	//
+	// v9 Phase 8 #2384 PR-C1: orgID + tenantID are required so the
+	// PostgresRepository can wrap the DELETE in WithOrgAndTenantScope —
+	// execution_history's mig 042 USING/WITH CHECK predicate is keyed on
+	// app.current_tenant_id. The caller has both from a prior Get.
+	Delete(ctx context.Context, orgID, tenantID, executionID string) error
 
-	// Update specific fields
-	UpdateStatus(ctx context.Context, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error
-	UpdateSteps(ctx context.Context, executionID string, steps []StepStatus) error
-	UpdateCost(ctx context.Context, executionID string, estimatedCost, actualCost *float64) error
+	// Update specific fields. See Delete for the orgID/tenantID rationale.
+	UpdateStatus(ctx context.Context, orgID, tenantID, executionID string, status ExecutionStatusValue, completedAt *time.Time, errorMsg string) error
+	UpdateSteps(ctx context.Context, orgID, tenantID, executionID string, steps []StepStatus) error
+	UpdateCost(ctx context.Context, orgID, tenantID, executionID string, estimatedCost, actualCost *float64) error
 
 	// GetByPlanID looks up a single execution by plan_id in metadata.
 	// Uses the expression index on metadata->>'plan_id' for efficient lookup.
@@ -67,13 +72,16 @@ type ExecutionRepository interface {
 	GetByMetadata(ctx context.Context, key, value string) (*ExecutionStatus, error)
 
 	// ExpireExecution marks an execution as expired (MAP-specific: plan expired before execution).
-	ExpireExecution(ctx context.Context, executionID string, metadata map[string]interface{}) error
+	ExpireExecution(ctx context.Context, orgID, tenantID, executionID string, metadata map[string]interface{}) error
 
 	// CountActive returns the number of executions with running/pending status for a tenant.
 	CountActive(ctx context.Context, tenantID string) (int, error)
 
 	// PurgeOldest removes the oldest execution records beyond keepCount for a tenant.
-	PurgeOldest(ctx context.Context, tenantID string, keepCount int) (int64, error)
+	// v9 Phase 8 #2384 PR-C1 DoD D-4: orgID + tenantID required so the
+	// postgres impl can wrap the DELETE in WithOrgAndTenantScope (mig 042
+	// app.current_tenant_id-keyed USING).
+	PurgeOldest(ctx context.Context, orgID, tenantID string, keepCount int) (int64, error)
 }
 
 // ErrConcurrentExecutionLimit is returned when the concurrent execution limit is reached.
@@ -242,9 +250,16 @@ func (t *BaseExecutionTracker) ListExecutions(ctx context.Context, req ListExecu
 }
 
 // CompleteExecution marks an execution as completed.
+//
+// v9 Phase 8 #2384 PR-C1: fetches orgID + tenantID via the prior Get so
+// the repo can scope the UPDATE.
 func (t *BaseExecutionTracker) CompleteExecution(ctx context.Context, executionID string, result interface{}) error {
+	exec, err := t.repo.Get(ctx, executionID)
+	if err != nil {
+		return err
+	}
 	now := t.clock.Now()
-	if err := t.repo.UpdateStatus(ctx, executionID, StatusCompleted, &now, ""); err != nil {
+	if err := t.repo.UpdateStatus(ctx, exec.OrgID, exec.TenantID, executionID, StatusCompleted, &now, ""); err != nil {
 		return err
 	}
 	t.publishEvent(ctx, EventExecutionCompleted, executionID)
@@ -253,12 +268,16 @@ func (t *BaseExecutionTracker) CompleteExecution(ctx context.Context, executionI
 
 // FailExecution marks an execution as failed.
 func (t *BaseExecutionTracker) FailExecution(ctx context.Context, executionID string, err error) error {
+	exec, getErr := t.repo.Get(ctx, executionID)
+	if getErr != nil {
+		return getErr
+	}
 	now := t.clock.Now()
 	errMsg := ""
 	if err != nil {
 		errMsg = err.Error()
 	}
-	if updateErr := t.repo.UpdateStatus(ctx, executionID, StatusFailed, &now, errMsg); updateErr != nil {
+	if updateErr := t.repo.UpdateStatus(ctx, exec.OrgID, exec.TenantID, executionID, StatusFailed, &now, errMsg); updateErr != nil {
 		return updateErr
 	}
 	t.publishEvent(ctx, EventExecutionFailed, executionID)
@@ -267,8 +286,12 @@ func (t *BaseExecutionTracker) FailExecution(ctx context.Context, executionID st
 
 // CancelExecution marks an execution as cancelled.
 func (t *BaseExecutionTracker) CancelExecution(ctx context.Context, executionID string, reason string) error {
+	exec, err := t.repo.Get(ctx, executionID)
+	if err != nil {
+		return err
+	}
 	now := t.clock.Now()
-	if err := t.repo.UpdateStatus(ctx, executionID, StatusCancelled, &now, reason); err != nil {
+	if err := t.repo.UpdateStatus(ctx, exec.OrgID, exec.TenantID, executionID, StatusCancelled, &now, reason); err != nil {
 		return err
 	}
 	t.publishEvent(ctx, EventExecutionCancelled, executionID)
@@ -289,7 +312,7 @@ func (t *BaseExecutionTracker) AddStep(ctx context.Context, executionID string, 
 	exec.TotalSteps = len(exec.Steps)
 	exec.UpdatedAt = t.clock.Now()
 
-	return t.repo.UpdateSteps(ctx, executionID, exec.Steps)
+	return t.repo.UpdateSteps(ctx, exec.OrgID, exec.TenantID, executionID, exec.Steps)
 }
 
 // StartStep marks a step as running.
@@ -355,7 +378,7 @@ func (t *BaseExecutionTracker) CompleteStep(ctx context.Context, executionID, st
 	}
 
 	exec.UpdatedAt = now
-	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+	if err := t.repo.UpdateSteps(ctx, exec.OrgID, exec.TenantID, executionID, exec.Steps); err != nil {
 		return err
 	}
 	t.publishEvent(ctx, EventStepCompleted, executionID)
@@ -386,7 +409,7 @@ func (t *BaseExecutionTracker) FailStep(ctx context.Context, executionID, stepID
 	}
 
 	exec.UpdatedAt = now
-	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+	if err := t.repo.UpdateSteps(ctx, exec.OrgID, exec.TenantID, executionID, exec.Steps); err != nil {
 		return err
 	}
 	t.publishEvent(ctx, EventStepFailed, executionID)
@@ -420,7 +443,7 @@ func (t *BaseExecutionTracker) UpdateStepDecision(ctx context.Context, execution
 	}
 
 	exec.UpdatedAt = t.clock.Now()
-	if err := t.repo.UpdateSteps(ctx, executionID, exec.Steps); err != nil {
+	if err := t.repo.UpdateSteps(ctx, exec.OrgID, exec.TenantID, executionID, exec.Steps); err != nil {
 		return err
 	}
 	t.publishEvent(ctx, EventStepDecision, executionID)
@@ -451,7 +474,11 @@ func (t *BaseExecutionTracker) RecordStepCost(ctx context.Context, executionID, 
 
 // SetEstimatedCost sets the estimated cost for the execution.
 func (t *BaseExecutionTracker) SetEstimatedCost(ctx context.Context, executionID string, costUSD float64) error {
-	return t.repo.UpdateCost(ctx, executionID, &costUSD, nil)
+	exec, err := t.repo.Get(ctx, executionID)
+	if err != nil {
+		return err
+	}
+	return t.repo.UpdateCost(ctx, exec.OrgID, exec.TenantID, executionID, &costUSD, nil)
 }
 
 // --- ID Generation ---

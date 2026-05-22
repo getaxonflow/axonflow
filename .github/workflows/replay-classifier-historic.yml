@@ -1,0 +1,215 @@
+name: Replay Classifier Historic
+
+# SoX-compliant replay of the canonical telemetry classifier against
+# historic rows in prod-checkpoint-telemetry-events. Sibling of
+# update-telemetry-records.yml + update-checkpoint-telemetry-bulk-scrub*.yml
+# — same OIDC-scoped UpdateItem-only IAM role, same audit-log pattern,
+# same two-phase discovery+apply contract.
+#
+# WHEN TO USE: when a classifier rule lands (or is reverted — see issue
+# #2240 / filters.json v1.4.0 which reverted the synthetic-telemetry-type
+# rule) and existing historic rows need to be re-classified under the new
+# rule set. Replaces the per-cohort one-shot scrub-script pattern that
+# produced three cleanup_status cohorts the readers had to remember to
+# filter. NOTE: a CLASSIFIER REVERT also needs an inverse replay — rows
+# previously flipped to source=internal that the reverted rule no longer
+# matches need flipping BACK to source=external. Operator handles inverse
+# replays manually via a one-shot UpdateItem batch — this workflow only
+# replays in the forward direction.
+#
+# WHAT IT DOES: invokes scripts/replay-classifier-historic.py which:
+#   1. Loads ee/platform/telemetry-filter/classify.py (canonical
+#      Python parity of the write-time Go classifier — same filters.json).
+#   2. Queries SourceIndex source=external + classifies each row.
+#   3. Pass 1: classifier says ConfidenceInternal → flip source.
+#      Pass 2: cleanup_status non-empty → flip source (mirror cohort).
+#   4. UpdateItem with ConditionExpression source=:external so it's
+#      idempotent (re-runs are safe).
+#   5. Stamps audit fields: replay_classifier_version, replay_at,
+#      replay_correlation_id, replay_reason.
+#
+# SAFETY CONTROLS (mirrors sibling scrub workflows):
+#   - workflow_dispatch only (no cron — replay is one-shot per classifier change)
+#   - dry_run defaults to true
+#   - phase=discovery is read-only (no UpdateItem call ever happens)
+#   - phase=apply with dry_run=false requires --expected-fingerprint
+#     from prior discovery (R3.a set-equality)
+#   - 5-second decision-point delay before live mutation
+#   - Audit blob committed to axonflow-business-docs
+#   - --max-rows cap (default 5000) aborts pre-mutation if exceeded
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'discovery (read-only Scan + classify + fingerprint) | apply (UpdateItem when dry_run=false)'
+        required: true
+        type: choice
+        options:
+          - discovery
+          - apply
+      ticket:
+        description: 'Tracking ticket, e.g. "#2237" (must match /^#\d+$/)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for run (logged to audit)'
+        required: true
+        type: string
+        default: 'replay-classifier-historic after filters.json rule change'
+      dry_run:
+        description: 'Apply phase: plan but do not UpdateItem. Ignored in discovery.'
+        required: false
+        type: boolean
+        default: true
+      expected_fingerprint:
+        description: 'SHA-256 from prior discovery. Required for live apply (R3.a).'
+        required: false
+        type: string
+        default: ''
+      max_rows:
+        description: 'Safety cap. Apply phase aborts pre-mutation if patch count exceeds this. Default 5000.'
+        required: false
+        type: string
+        default: '5000'
+
+concurrency: replay-classifier-historic
+
+permissions:
+  contents: read
+  id-token: write   # OIDC assume-role on prod-checkpoint-telemetry-updater-gha
+
+env:
+  TABLE_NAME: prod-checkpoint-telemetry-events
+  AWS_REGION: us-east-1
+
+jobs:
+  replay:
+    name: Replay classifier (${{ inputs.phase }})
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout enterprise repo
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install boto3
+        run: |
+          python -m pip install --upgrade pip
+          pip install boto3
+
+      - name: Validate ticket reference shape
+        env:
+          INPUT_TICKET: ${{ inputs.ticket }}
+        run: |
+          python3 -c "
+          import os, re, sys
+          v = os.environ['INPUT_TICKET']
+          if not re.match(r'^#\d+\$', v):
+              raise SystemExit(f'ERROR: ticket must match /^#\\\\d+\$/, got {v!r}')
+          print(f'OK: ticket={v}')
+          "
+
+      - name: Validate phase + dry-run + fingerprint
+        env:
+          INPUT_PHASE: ${{ inputs.phase }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FP: ${{ inputs.expected_fingerprint }}
+        run: |
+          if [ "$INPUT_PHASE" = "discovery" ] && [ "$INPUT_DRY_RUN" = "false" ]; then
+            echo "::warning::discovery is always read-only; dry_run=false has no effect."
+          fi
+          if [ "$INPUT_PHASE" = "apply" ] \
+              && [ "$INPUT_DRY_RUN" = "false" ] \
+              && [ -z "$INPUT_FP" ]; then
+            echo "::error::Live apply (phase=apply dry_run=false) requires expected_fingerprint from prior discovery. R3.a set-equality cannot be verified without it."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (telemetry-updater OIDC role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::686831565523:role/prod-checkpoint-telemetry-updater-gha
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Decision-point delay (live apply only)
+        if: ${{ inputs.phase == 'apply' && inputs.dry_run != true }}
+        run: |
+          echo "::warning::Live apply — UpdateItem will execute in 5 seconds. Cancel the run NOW if this is wrong."
+          sleep 5
+
+      - name: Run replay
+        id: replay
+        env:
+          INPUT_PHASE: ${{ inputs.phase }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_FP: ${{ inputs.expected_fingerprint }}
+          INPUT_MAX_ROWS: ${{ inputs.max_rows }}
+          INPUT_CORRELATION_ID: 'replay-classifier-${{ github.run_id }}-${{ github.run_attempt }}'
+        run: |
+          set -euo pipefail
+          DRY_RUN_FLAG=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          FP_FLAG=""
+          if [ -n "$INPUT_FP" ]; then
+            FP_FLAG="--expected-fingerprint $INPUT_FP"
+          fi
+
+          AUDIT_PATH="${RUNNER_TEMP}/replay-audit.json"
+          python3 scripts/replay-classifier-historic.py \
+            --table "${{ env.TABLE_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --phase "$INPUT_PHASE" \
+            --correlation-id "$INPUT_CORRELATION_ID" \
+            --max-rows "$INPUT_MAX_ROWS" \
+            $DRY_RUN_FLAG \
+            $FP_FLAG \
+            --summary-json > "$AUDIT_PATH"
+
+          echo "audit_path=$AUDIT_PATH" >> "$GITHUB_OUTPUT"
+          PATCH_COUNT=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('patch_count',0))" "$AUDIT_PATH")
+          FP=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('patch_set_fingerprint',''))" "$AUDIT_PATH")
+          echo "patch_count=$PATCH_COUNT" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "Audit blob ($AUDIT_PATH):"
+          cat "$AUDIT_PATH"
+
+      - name: Job summary
+        env:
+          PATCH_COUNT: ${{ steps.replay.outputs.patch_count }}
+          FP: ${{ steps.replay.outputs.fingerprint }}
+        run: |
+          {
+            echo "## Replay Classifier Historic — ${{ inputs.phase }}"
+            echo ""
+            echo "- **Ticket:** ${{ inputs.ticket }}"
+            echo "- **Reason:** ${{ inputs.reason }}"
+            echo "- **Phase:** ${{ inputs.phase }}"
+            echo "- **dry_run:** ${{ inputs.dry_run }}"
+            echo "- **Patch count:** $PATCH_COUNT"
+            echo "- **Patch set fingerprint:** \`$FP\`"
+            echo "- **Correlation id:** \`replay-classifier-${{ github.run_id }}-${{ github.run_attempt }}\`"
+            echo ""
+            if [ "${{ inputs.phase }}" = "discovery" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "To apply: re-dispatch with phase=apply, dry_run=false, expected_fingerprint=\`$FP\`."
+            else
+              echo "Live apply completed. Verify via the invariant scanner (PR #2235) on the next hourly cron — affected invariant counts should drop to their tolerance threshold."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit blob as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: replay-audit-${{ github.run_id }}
+          path: ${{ steps.replay.outputs.audit_path }}
+          retention-days: 90

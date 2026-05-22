@@ -317,18 +317,30 @@ func TestSendHeartbeat_Unit(t *testing.T) {
 		wantErr   bool
 	}{
 		{
+			// v9 Phase 8 #2384 PR-C1: sendHeartbeat wraps the UPSERT in a
+			// BEGIN/SET-CONFIG/EXEC/COMMIT txn for RLS scoping.
 			name: "successful upsert",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO agent_heartbeats`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
 		{
 			name: "database error",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO agent_heartbeats`).
 					WillReturnError(sql.ErrConnDone)
+				mock.ExpectRollback()
 			},
 			wantErr: true,
 		},
@@ -365,18 +377,30 @@ func TestRemoveHeartbeat_Unit(t *testing.T) {
 		wantErr   bool
 	}{
 		{
+			// v9 Phase 8 #2384 PR-C1: removeHeartbeat wraps the DELETE in a
+			// BEGIN/SET-CONFIG/EXEC/COMMIT txn for RLS scoping.
 			name: "successful delete",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`DELETE FROM agent_heartbeats WHERE instance_id`).
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
 		{
 			name: "database error",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`DELETE FROM agent_heartbeats WHERE instance_id`).
 					WillReturnError(sql.ErrConnDone)
+				mock.ExpectRollback()
 			},
 			wantErr: true,
 		},
@@ -570,18 +594,32 @@ func TestStart_Unit(t *testing.T) {
 		wantErr   bool
 	}{
 		{
+			// v9 Phase 8 #2384 PR-C1: heartbeat.go INSERTs are wrapped in a
+			// txn (BEGIN → app.current_org_id set_config → INSERT → COMMIT)
+			// so RLS WITH CHECK clears under axonflow_app_role. The mock
+			// must expect the full sequence.
 			name: "successful start",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO agent_heartbeats`).
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
 			},
 			wantErr: false,
 		},
 		{
 			name: "initial heartbeat fails",
 			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+					WithArgs("test-org").
+					WillReturnResult(sqlmock.NewResult(0, 0))
 				mock.ExpectExec(`INSERT INTO agent_heartbeats`).
 					WillReturnError(sql.ErrConnDone)
+				mock.ExpectRollback()
 			},
 			wantErr: true,
 		},
@@ -627,8 +665,15 @@ func TestStop_Unit(t *testing.T) {
 
 	svc := NewHeartbeatService(db, "agent", "test-key", "test-org")
 
+	// v9 Phase 8 #2384 PR-C1: removeHeartbeat wraps the DELETE in a txn for
+	// the same RLS reason as the INSERT path.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app.current_org_id', \$1, true\)`).
+		WithArgs("test-org").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`DELETE FROM agent_heartbeats WHERE instance_id`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	svc.Stop()
 
