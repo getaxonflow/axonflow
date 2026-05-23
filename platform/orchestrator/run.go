@@ -54,6 +54,7 @@ import (
 	"axonflow/platform/orchestrator/webhooks"
 	"axonflow/platform/orchestrator/workflow_control" // Workflow Control Plane V1 (#834)
 	"axonflow/platform/shared/execution"              // Unified execution tracking (#1075)
+	"axonflow/platform/shared/idempotency"            // HTTP Idempotency-Key dedup (#2420)
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
@@ -114,6 +115,9 @@ var (
 	// Cost Controls & Budget Management (#764)
 	costService *cost.Service // Cost tracking and budget management
 	costHandler *cost.Handler // Cost control HTTP handlers
+
+	// HTTP Idempotency-Key dedup (#2420)
+	orchIdempStore *idempotency.Store
 
 	// MAP Two-Step Execution (#925)
 	planService         *planning.Service             // Plan storage and retrieval for GeneratePlan/ExecutePlan
@@ -967,6 +971,34 @@ func initializeComponents() {
 		if err := InitPolicyRedis(redisURL); err != nil {
 			log.Printf("⚠️  Failed to initialize Redis for policy enforcement: %v", err)
 			log.Println("Falling back to in-memory policy storage")
+		}
+	}
+
+	// Wire idempotency dedup for /api/v1/audit/tool-call (#2420). Opens an
+	// admin pool for the cross-tenant background sweep; appDB is the same
+	// pool the audit handler already uses. nil-tolerant if admin open
+	// fails — sweep is a soft cap, the table is small and the TTL is
+	// 24h-bounded.
+	if usageDB != nil {
+		idempAdminDB, idempAdminErr := agent.OpenPlatformAdminConnection(context.Background(), 3)
+		if idempAdminErr != nil {
+			log.Printf("[Idempotency] admin pool unavailable, sweep disabled: %v", idempAdminErr)
+			idempAdminDB = nil
+		}
+		orchIdempStore = idempotency.NewStore(usageDB, idempAdminDB)
+		if idempAdminDB != nil {
+			go func() {
+				ticker := time.NewTicker(1 * time.Hour)
+				defer ticker.Stop()
+				for range ticker.C {
+					n, err := orchIdempStore.Sweep(context.Background())
+					if err != nil {
+						log.Printf("[Idempotency] sweep error: %v", err)
+					} else if n > 0 {
+						log.Printf("[Idempotency] swept %d expired key(s)", n)
+					}
+				}
+			}()
 		}
 	}
 
@@ -2673,6 +2705,24 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	req.TenantID = tenantID
 	req.OrgID = r.Header.Get("X-Org-ID")
 
+	// Idempotency scope key. The agent-proxy path stamps X-Org-ID from
+	// the authenticated client; SDK direct callers (the majority) do
+	// NOT — for them, tenantID IS the org scope, mirroring the tenant
+	// derivation convention this same handler uses for audit attribution
+	// (clientID==tenantID for non-proxy paths). Without this fallback the
+	// dedup would log a "lookup error: orgID empty" per retry and skip
+	// the cache, defeating #2420 for the majority of callers.
+	idempOrgID := req.OrgID
+	if idempOrgID == "" {
+		idempOrgID = tenantID
+	}
+
+	// Wrap the side-effecting LogToolCallAudit + response write in the
+	// idempotency dedup helper. Pass-through when no Idempotency-Key
+	// header is set or no store is wired. A retry within TTL returns the
+	// original audit_id byte-for-byte — no double-counted metrics, no
+	// duplicate audit row (#2420).
+	idempotency.Wrap(w, r, orchIdempStore, idempOrgID, tenantID, "audit.tool-call", func(w http.ResponseWriter, r *http.Request) {
 	auditEntry := auditLogger.LogToolCallAudit(r.Context(), &req)
 
 	auditID := ""
@@ -2694,6 +2744,7 @@ func auditToolCallHandler(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		log.Printf("Error encoding response: %v", err)
 	}
+	}) // end idempotency.Wrap closure
 }
 
 // extractBasicAuthClientID extracts the client ID from an OAuth2 Basic auth header.

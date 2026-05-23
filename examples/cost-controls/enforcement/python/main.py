@@ -28,8 +28,8 @@ try:
     from axonflow import AxonFlow, CreateBudgetRequest, BudgetScope, BudgetPeriod, BudgetOnExceed
     from axonflow.exceptions import BudgetExceededError
 except ImportError:
-    print("ERROR: axonflow-sdk not installed")
-    print("Install with: pip install axonflow-sdk>=8.0.0")
+    print("ERROR: axonflow not installed")
+    print("Install with: pip install axonflow>=8.2.0")
     print("Or for local development: pip install -e ../../../../axonflow-sdk-python")
     sys.exit(1)
 

@@ -47,6 +47,7 @@ type ApprovalRequest struct {
 	ReviewedAt          *time.Time             `json:"reviewed_at,omitempty"`
 	OverrideJustify     string                 `json:"override_justification,omitempty"`
 	OverrideAuthorizedBy string               `json:"override_authorized_by,omitempty"`
+	NotifyURL           string                 `json:"notify_url,omitempty"`
 	ExpiresAt           time.Time              `json:"expires_at"`
 	CreatedAt           time.Time              `json:"created_at"`
 	UpdatedAt           time.Time              `json:"updated_at"`
@@ -118,13 +119,13 @@ func (r *Repository) Create(ctx context.Context, req *ApprovalRequest) error {
 			original_query, request_type, request_context,
 			triggered_policy_id, triggered_policy_name, trigger_reason, severity,
 			eu_ai_act_article, compliance_framework, risk_classification,
-			status, expires_at
+			status, expires_at, notify_url
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8,
 			$9, $10, $11, $12,
 			$13, $14, $15,
-			$16, $17
+			$16, $17, $18
 		) RETURNING id, created_at, updated_at`
 
 	contextJSON := []byte("{}")
@@ -142,7 +143,7 @@ func (r *Repository) Create(ctx context.Context, req *ApprovalRequest) error {
 			req.OriginalQuery, req.RequestType, contextJSON,
 			req.TriggeredPolicyID, req.TriggeredPolicyName, req.TriggerReason, req.Severity,
 			nullString(req.EUAIActArticle), nullString(req.ComplianceFramework), nullString(req.RiskClassification),
-			req.Status, req.ExpiresAt,
+			req.Status, req.ExpiresAt, nullString(req.NotifyURL),
 		).Scan(&req.ID, &req.CreatedAt, &req.UpdatedAt)
 	})
 	if err != nil {
@@ -161,7 +162,7 @@ func (r *Repository) GetByRequestID(ctx context.Context, requestID uuid.UUID) (*
 			triggered_policy_id, triggered_policy_name, trigger_reason, severity,
 			eu_ai_act_article, compliance_framework, risk_classification,
 			status, reviewer_id, reviewer_email, reviewer_role, review_comment, reviewed_at,
-			override_justification, override_authorized_by,
+			override_justification, override_authorized_by, notify_url,
 			expires_at, created_at, updated_at
 		FROM hitl_approval_queue
 		WHERE request_id = $1`
@@ -169,7 +170,7 @@ func (r *Repository) GetByRequestID(ctx context.Context, requestID uuid.UUID) (*
 	req := &ApprovalRequest{}
 	var userID, euArticle, framework, riskClass sql.NullString
 	var reviewerID, reviewerEmail, reviewerRole, reviewComment sql.NullString
-	var overrideJustify, overrideAuth sql.NullString
+	var overrideJustify, overrideAuth, notifyURL sql.NullString
 	var reviewedAt sql.NullTime
 	var contextJSON []byte
 
@@ -179,7 +180,7 @@ func (r *Repository) GetByRequestID(ctx context.Context, requestID uuid.UUID) (*
 		&req.TriggeredPolicyID, &req.TriggeredPolicyName, &req.TriggerReason, &req.Severity,
 		&euArticle, &framework, &riskClass,
 		&req.Status, &reviewerID, &reviewerEmail, &reviewerRole, &reviewComment, &reviewedAt,
-		&overrideJustify, &overrideAuth,
+		&overrideJustify, &overrideAuth, &notifyURL,
 		&req.ExpiresAt, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -199,6 +200,7 @@ func (r *Repository) GetByRequestID(ctx context.Context, requestID uuid.UUID) (*
 	req.ReviewComment = reviewComment.String
 	req.OverrideJustify = overrideJustify.String
 	req.OverrideAuthorizedBy = overrideAuth.String
+	req.NotifyURL = notifyURL.String
 	if reviewedAt.Valid {
 		req.ReviewedAt = &reviewedAt.Time
 	}
@@ -286,7 +288,7 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 			triggered_policy_id, triggered_policy_name, trigger_reason, severity,
 			eu_ai_act_article, compliance_framework, risk_classification,
 			status, reviewer_id, reviewer_email, reviewer_role, review_comment, reviewed_at,
-			override_justification, override_authorized_by,
+			override_justification, override_authorized_by, notify_url,
 			expires_at, created_at, updated_at
 		FROM hitl_approval_queue
 		%s
@@ -305,7 +307,7 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 		req := &ApprovalRequest{}
 		var userID, euArticle, framework, riskClass sql.NullString
 		var reviewerID, reviewerEmail, reviewerRole, reviewComment sql.NullString
-		var overrideJustify, overrideAuth sql.NullString
+		var overrideJustify, overrideAuth, notifyURL sql.NullString
 		var reviewedAt sql.NullTime
 		var contextJSON []byte
 
@@ -315,7 +317,7 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 			&req.TriggeredPolicyID, &req.TriggeredPolicyName, &req.TriggerReason, &req.Severity,
 			&euArticle, &framework, &riskClass,
 			&req.Status, &reviewerID, &reviewerEmail, &reviewerRole, &reviewComment, &reviewedAt,
-			&overrideJustify, &overrideAuth,
+			&overrideJustify, &overrideAuth, &notifyURL,
 			&req.ExpiresAt, &req.CreatedAt, &req.UpdatedAt,
 		)
 		if err != nil {
@@ -332,6 +334,7 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 		req.ReviewComment = reviewComment.String
 		req.OverrideJustify = overrideJustify.String
 		req.OverrideAuthorizedBy = overrideAuth.String
+		req.NotifyURL = notifyURL.String
 		if reviewedAt.Valid {
 			req.ReviewedAt = &reviewedAt.Time
 		}
@@ -348,12 +351,25 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]*ApprovalRe
 	return requests, total, nil
 }
 
+// ErrApprovalLostRace is returned when an UPDATE/Override targets a row
+// whose status has already moved out of `pending` between the caller's
+// read + write. Callers (Service.ApproveRequest etc.) translate this into
+// a 409-shaped business error and MUST NOT fire the outbound notify_url
+// webhook on lost-race — the actual decider's webhook will/has fired.
+var ErrApprovalLostRace = fmt.Errorf("approval request is no longer pending (lost race to another reviewer)")
+
 // UpdateStatus updates the status of an approval request.
 //
 // v9 Phase 8 #2384 PR-C1: hitl_approval_queue UPDATE under app_role is gated
 // by mig 018's tenant_isolation_update USING predicate. orgID is required so
 // the wrap can pin app.current_org_id; the caller (EE service.ApproveRequest
 // / RejectRequest) reads it from the prior GetByRequestID(req).
+//
+// Concurrent-approver guard: the UPDATE WHERE clause includes
+// `status = 'pending'`. A second caller that lost the race sees
+// sql.ErrNoRows on RETURNING and gets ErrApprovalLostRace, so the
+// service-layer dispatchTerminal does NOT fire a duplicate webhook for
+// the same approval_id.
 func (r *Repository) UpdateStatus(ctx context.Context, orgID string, requestID uuid.UUID, status string, reviewer *Reviewer, comment string) error {
 	if orgID == "" {
 		return fmt.Errorf("UpdateStatus: orgID must be non-empty (RLS on hitl_approval_queue)")
@@ -367,7 +383,7 @@ func (r *Repository) UpdateStatus(ctx context.Context, orgID string, requestID u
 			review_comment = $5,
 			reviewed_at = CURRENT_TIMESTAMP,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE request_id = $6
+		WHERE request_id = $6 AND status = 'pending'
 		RETURNING updated_at`
 
 	var updatedAt time.Time
@@ -382,7 +398,14 @@ func (r *Repository) UpdateStatus(ctx context.Context, orgID string, requestID u
 		).Scan(&updatedAt)
 	})
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("approval request not found")
+		// Two cases collapse here: row truly doesn't exist (caller bug) AND
+		// row exists but is no longer pending (lost race). The service layer
+		// distinguishes via a prior GetByRequestID lookup; if that lookup
+		// returned non-nil, this ErrNoRows means lost-race. If the row
+		// genuinely vanished between the GET and the UPDATE that's a separate
+		// integrity issue and the lost-race translation is still correct
+		// (caller must not fire a duplicate webhook either way).
+		return ErrApprovalLostRace
 	}
 	if err != nil {
 		return fmt.Errorf("update approval request status: %w", err)
@@ -394,6 +417,9 @@ func (r *Repository) UpdateStatus(ctx context.Context, orgID string, requestID u
 // Override overrides an approval request with justification.
 //
 // v9 Phase 8 #2384 PR-C1: scope-wrap rationale identical to UpdateStatus.
+// Concurrent-actor guard identical too — the WHERE clause includes
+// `status = 'pending'` so a lost-race returns ErrApprovalLostRace and
+// the service layer skips the outbound webhook.
 func (r *Repository) Override(ctx context.Context, orgID string, requestID uuid.UUID, justification string, authorizedBy string) error {
 	if orgID == "" {
 		return fmt.Errorf("Override: orgID must be non-empty (RLS on hitl_approval_queue)")
@@ -404,7 +430,7 @@ func (r *Repository) Override(ctx context.Context, orgID string, requestID uuid.
 			override_justification = $1,
 			override_authorized_by = $2,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE request_id = $3
+		WHERE request_id = $3 AND status = 'pending'
 		RETURNING updated_at`
 
 	var updatedAt time.Time
@@ -412,7 +438,7 @@ func (r *Repository) Override(ctx context.Context, orgID string, requestID uuid.
 		return tx.QueryRowContext(ctx, query, justification, authorizedBy, requestID).Scan(&updatedAt)
 	})
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("approval request not found")
+		return ErrApprovalLostRace
 	}
 	if err != nil {
 		return fmt.Errorf("override approval request: %w", err)
@@ -455,7 +481,13 @@ func (r *Repository) CountPendingByTenant(ctx context.Context, tenantID string) 
 	return count, nil
 }
 
-// ExpireStale expires stale pending requests.
+// ExpireStale expires stale pending requests via the SQL function.
+//
+// CAVEAT: the SQL function expire_hitl_requests() inherits the caller's
+// role + RLS scope. Under v9 FORCE RLS as axonflow_app_role with no GUC
+// set, this UPDATEs zero rows. Production callers must invoke
+// ExpireStaleReturning with an admin pool. Kept for back-compat with
+// existing call sites (handler ExpireStale endpoint, tests).
 func (r *Repository) ExpireStale(ctx context.Context) (int, error) {
 	query := `SELECT expire_hitl_requests()`
 	var count int
@@ -463,6 +495,91 @@ func (r *Repository) ExpireStale(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("expire stale requests: %w", err)
 	}
 	return count, nil
+}
+
+// ExpireStaleReturning expires stale pending requests and returns the rows
+// affected. Uses the supplied admin pool (BYPASSRLS) so the cross-tenant
+// scan is not masked by RLS. Sister fix for the same class of bug as
+// #2400 (heartbeat): a long-lived background updater under
+// axonflow_app_role would otherwise update zero rows under FORCE RLS.
+//
+// Implementation: a single transaction selects the expiring rows FOR
+// UPDATE SKIP LOCKED, marks them expired, writes history rows, and
+// returns enough columns for the caller to dispatch terminal-state
+// webhooks for each.
+func (r *Repository) ExpireStaleReturning(ctx context.Context, adminDB *sql.DB) ([]*ApprovalRequest, error) {
+	if adminDB == nil {
+		return nil, fmt.Errorf("ExpireStaleReturning: adminDB is nil (admin pool required for cross-tenant scan under FORCE RLS)")
+	}
+
+	tx, err := adminDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	selectQuery := `
+		SELECT id, request_id, org_id, tenant_id, client_id, user_id,
+		       original_query, request_type, severity, notify_url
+		FROM hitl_approval_queue
+		WHERE status = 'pending' AND expires_at < CURRENT_TIMESTAMP
+		FOR UPDATE SKIP LOCKED
+	`
+	rows, err := tx.QueryContext(ctx, selectQuery)
+	if err != nil {
+		return nil, fmt.Errorf("select expiring rows: %w", err)
+	}
+	var expired []*ApprovalRequest
+	for rows.Next() {
+		req := &ApprovalRequest{}
+		var userID, notifyURL sql.NullString
+		if err := rows.Scan(
+			&req.ID, &req.RequestID, &req.OrgID, &req.TenantID, &req.ClientID, &userID,
+			&req.OriginalQuery, &req.RequestType, &req.Severity, &notifyURL,
+		); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan expiring row: %w", err)
+		}
+		req.UserID = userID.String
+		req.NotifyURL = notifyURL.String
+		req.Status = "expired"
+		expired = append(expired, req)
+	}
+	rows.Close()
+
+	if len(expired) == 0 {
+		return nil, tx.Commit()
+	}
+
+	updateQuery := `
+		UPDATE hitl_approval_queue
+		SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+		WHERE id = ANY($1)
+	`
+	ids := make([]int64, len(expired))
+	for i, e := range expired {
+		ids[i] = e.ID
+	}
+	if _, err := tx.ExecContext(ctx, updateQuery, pq.Array(ids)); err != nil {
+		return nil, fmt.Errorf("update expiring rows: %w", err)
+	}
+
+	histQuery := `
+		INSERT INTO hitl_approval_history (
+			request_id, org_id, tenant_id, action,
+			previous_status, new_status, created_at
+		) VALUES ($1, $2, $3, 'expired', 'pending', 'expired', CURRENT_TIMESTAMP)
+	`
+	for _, e := range expired {
+		if _, err := tx.ExecContext(ctx, histQuery, e.RequestID, e.OrgID, e.TenantID); err != nil {
+			return nil, fmt.Errorf("insert history for %s: %w", e.RequestID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit expire tx: %w", err)
+	}
+	return expired, nil
 }
 
 // AddHistory adds an entry to the approval history.

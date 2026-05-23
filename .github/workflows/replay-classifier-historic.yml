@@ -35,7 +35,7 @@ name: Replay Classifier Historic
 #   - phase=apply with dry_run=false requires --expected-fingerprint
 #     from prior discovery (R3.a set-equality)
 #   - 5-second decision-point delay before live mutation
-#   - Audit blob committed to axonflow-business-docs
+#   - Audit blob committed to axonflow-internal-docs
 #   - --max-rows cap (default 5000) aborts pre-mutation if exceeded
 
 on:

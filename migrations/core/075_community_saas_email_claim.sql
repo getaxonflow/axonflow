@@ -1,6 +1,6 @@
 -- Migration 075: Add email-claim columns to community_saas_registrations
 -- Date: 2026-05-03
--- Context: Tenant durability + claim work (PRD: axonflow-business-docs/product/PRD_TENANT_DURABILITY_AND_CLAIM.md,
+-- Context: Tenant durability + claim work (PRD: axonflow-internal-docs/prds/PRD_TENANT_DURABILITY_AND_CLAIM.md,
 --          companion ADR-049-plugin-claimed-license-tier).
 --
 -- Provides:

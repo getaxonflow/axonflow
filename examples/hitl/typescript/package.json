@@ -7,7 +7,7 @@
     "example": "npx ts-node --esm require-approval-policy.ts"
   },
   "dependencies": {
-    "@axonflow/sdk": "^8.1.0"
+    "@axonflow/sdk": "^8.2.0"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",

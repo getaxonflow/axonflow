@@ -1,6 +1,6 @@
 # AxonFlow Documentation
 
-**Last Updated: May 2026** | **Platform: v9.0.0** | **SDKs: Python / Go / TypeScript / Java v8.1.0 + Rust v0.3.1 (preview)**
+**Last Updated: May 2026** | **Platform: v9.0.0** | **SDKs: Python / Go / TypeScript / Java v8.2.0 + Rust v0.4.0 (preview)**
 
 Public documentation for AxonFlow - synced to the Community Edition repository.
 
@@ -31,7 +31,7 @@ Configuration and how-to guides for common tasks.
 
 ## SDK Documentation
 
-AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.1.0) plus Rust (preview v0.3.1).
+AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.2.0) plus Rust (preview v0.4.0).
 
 | Document | Description |
 |----------|-------------|
@@ -51,7 +51,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 ### Java SDK
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-java](https://github.com/getaxonflow/axonflow-sdk-java)
-- **Install:** Maven `com.getaxonflow:axonflow-sdk:8.1.0`
+- **Install:** Maven `com.getaxonflow:axonflow-sdk:8.2.0`
 
 ### TypeScript SDK
 
@@ -65,7 +65,7 @@ AxonFlow provides official SDKs for Go, Python, Java, and TypeScript (stable v8.
 
 - **Repository:** [github.com/getaxonflow/axonflow-sdk-rust](https://github.com/getaxonflow/axonflow-sdk-rust)
 - **Install:** `cargo add axonflow-sdk-rust`
-- Preview line at v0.3.1 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, plus the v9 `X-Client-ID` outbound header.
+- Preview line at v0.4.0 on [crates.io](https://crates.io/crates/axonflow-sdk-rust). Surface covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `list_decisions` + `explain_decision`, `create_hitl_request`, plus the v9 `X-Client-ID` outbound header.
 
 ## Reference
 

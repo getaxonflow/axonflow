@@ -176,7 +176,7 @@ These APIs are intentionally NOT in SDKs. Use HTTP/curl for these operations.
 ### HITL (Human-in-the-Loop) Legacy Decisions
 | Endpoint | Reason for Exclusion |
 |----------|---------------------|
-| `GET /api/v1/hitl/decisions` | Portal/dashboard use (legacy endpoint) |
+| `GET /api/v1/hitl/queue` | Portal/dashboard use (legacy endpoint) |
 
 > **Note:** HITL Queue API is now available in all SDKs (v3.7.0) via `/api/v1/hitl/queue` endpoints:
 > `listHITLQueue()`, `getHITLRequest()`, `approveHITLRequest()`, `rejectHITLRequest()`, `getHITLStats()`
@@ -216,15 +216,15 @@ If you need an excluded API in the SDK:
 
 ## SDK Parity
 
-The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.3.1 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors and the v9 `X-Client-ID` outbound header; feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
+The four established SDKs should have identical method coverage. Rust is a preview SDK at v0.4.0 covering the baseline (auth, proxy, audit, basic MAP, basic MCP) plus OpenAI + Anthropic interceptors, `create_hitl_request`, and the v9 `X-Client-ID` outbound header; feature parity is being filled in over subsequent releases — track progress on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues).
 
 | SDK | Current Version | Methods | Parity |
 |-----|---------|---------|--------|
-| Go | v8.1.0 | ~44 | ✅ |
-| Python | v8.1.0 | ~44 | ✅ |
-| TypeScript | v8.1.0 | ~45 | ✅ (+protect) |
-| Java | v8.1.0 | ~44 | ✅ |
-| Rust _(preview)_ | v0.3.1 | ~16 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `X-Client-ID`) |
+| Go | v8.2.0 | ~45 | ✅ |
+| Python | v8.2.0 | ~45 | ✅ |
+| TypeScript | v8.2.0 | ~46 | ✅ (+protect) |
+| Java | v8.2.0 | ~45 | ✅ |
+| Rust _(preview)_ | v0.4.0 | ~17 | 🟡 Baseline (auth + proxy + audit + basic MAP + basic MCP + OpenAI + Anthropic interceptors + `create_hitl_request` + `X-Client-ID`) |
 
 ### Infrastructure (v4.1.0)
 

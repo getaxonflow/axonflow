@@ -2545,6 +2545,21 @@ paths:
           description: Tenant identifier (must match the client ID from Basic auth credentials)
           schema:
             type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            Optional per-request dedup token. When supplied, the platform caches
+            the response for 24h and returns it byte-for-byte on subsequent
+            requests carrying the same key + same authenticated tenant. A cache
+            hit adds an `Idempotent-Replayed: true` response header. Pattern:
+            `^[A-Za-z0-9_.:\-/]+$`, max 256 chars. 5xx responses are not cached
+            so the caller's retry can hit a fresh attempt.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+            pattern: '^[A-Za-z0-9_.:\-/]+$'
       requestBody:
         required: true
         content:

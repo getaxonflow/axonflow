@@ -30,6 +30,7 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/policy"
 	"axonflow/platform/agent/sqli"
+	"axonflow/platform/shared/idempotency"
 	"axonflow/platform/connectors/amadeus"
 	"axonflow/platform/connectors/azureblob"
 	"axonflow/platform/connectors/base"
@@ -1681,6 +1682,21 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		userEmail = user.Email
 	}
 
+	// Wrap the remainder of the handler in the idempotency dedup helper.
+	// Pass-through when no Idempotency-Key header is set or no store is
+	// wired (tests, community boot). The closure captures parsed body +
+	// resolved identity so we don't reshape signatures across the file.
+	//
+	// Idempotency scope key. For internal-service auth (HMAC-signed
+	// orchestrator-→-agent callbacks) auth.OrgID is whatever the proxy
+	// header carries — sometimes empty. Mirror the orchestrator audit-
+	// tool-call shape: fall back to tenantID so dedup actually fires
+	// instead of "lookup error: orgID empty" per retry.
+	idempOrgID := orgID
+	if idempOrgID == "" {
+		idempOrgID = tenantID
+	}
+	idempotency.Wrap(w, r, mcpIdempStore, idempOrgID, tenantID, "mcp.check-input", func(w http.ResponseWriter, r *http.Request) {
 	// Generate a stable decision_id up front so it can be attached to both
 	// the audit entry and the response body. The explain endpoint
 	// (GET /api/v1/decisions/:id/explain) resolves by this id.
@@ -1851,6 +1867,7 @@ func mcpCheckInputHandler(w http.ResponseWriter, r *http.Request) {
 		// extra round-trip. The deny paths above already emit it.
 		DecisionID: decisionID,
 	})
+	}) // end idempotency.Wrap closure
 }
 
 // mcpCheckOutputHandler evaluates response-phase policies (SQLi scan, PII redaction,

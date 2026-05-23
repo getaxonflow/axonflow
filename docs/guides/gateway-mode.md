@@ -237,4 +237,4 @@ async function handlePatientQuery(userToken: string, query: string) {
 3. **Phase 3 (Planned)**: Proxy Mode enhancement with response filtering
 4. **Phase 4 (Planned)**: AuditQueue integration for resilient audit logging
 
-See `axonflow-business-docs/roadmap/GATEWAY_MODE_ROADMAP.md` for full roadmap.
+See `axonflow-internal-docs/roadmap/GATEWAY_MODE_ROADMAP.md` for full roadmap.
