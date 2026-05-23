@@ -665,6 +665,8 @@ func rlsGatedTables() map[string]bool {
 		"sso_configurations", "sso_sessions", "sso_login_attempts",
 		// 107 FORCE
 		"connector_configs",
+		// 115 (idempotency_keys — FORCE RLS, tenant_id-keyed policy)
+		"idempotency_keys",
 	}
 	out := make(map[string]bool, len(tables))
 	for _, t := range tables {
@@ -794,6 +796,20 @@ func adminPoolAllowlist() (allowFiles, allowFuncs map[string]string) {
 		// walker.
 		"platform/agent/node_enforcement/heartbeat.go::CleanupStaleHeartbeats":    "admin-pool: cross-tenant stale-heartbeat sweep on agent_heartbeats.",
 		"ee/platform/agent/node_enforcement/heartbeat.go::CleanupStaleHeartbeats": "admin-pool: cross-tenant stale-heartbeat sweep (EE mirror).",
+
+		// platform/shared/idempotency/store.go::Sweep — cross-tenant DELETE
+		// on idempotency_keys via the admin pool (BYPASSRLS). Per-tenant
+		// Lookup/Store go through WithOrgAndTenantScope and pass the audit
+		// naturally; only the cross-tenant Sweep needs the allowlist.
+		"platform/shared/idempotency/store.go::Sweep": "admin-pool: cross-tenant expired-key cleanup on idempotency_keys.",
+
+		// platform/agent/hitl/repository.go::ExpireStaleReturning — admin-pool
+		// cross-tenant scan + UPDATE on hitl_approval_queue + INSERT into
+		// hitl_approval_history. Sister fix to #2400 (heartbeat under app_role
+		// returning zero rows). Tx-receiver inside, but the BeginTx is on the
+		// admin pool by contract — the WithOrgScope wrap would mask the
+		// cross-tenant intent.
+		"platform/agent/hitl/repository.go::ExpireStaleReturning": "admin-pool: cross-tenant HITL expire sweep (sister of #2400).",
 
 		// ee/platform/agent/node_enforcement/heartbeat.go::sendHeartbeat
 		// is the EE mirror of platform/agent/node_enforcement/heartbeat.go::sendHeartbeat.
@@ -994,6 +1010,7 @@ func f() {
 			"agent_heartbeats",             // 107
 			"customers",                    // 108
 			"static_policy_versions",       // 030/110
+			"idempotency_keys",             // 115
 		}
 		tab := rlsGatedTables()
 		for _, t0 := range mustHave {

@@ -10,6 +10,7 @@ package hitl
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -52,6 +53,11 @@ type Service struct {
 	// gate reflects hot-reloaded license state (the license validator caches
 	// internally; tier flips take effect on next call).
 	currentTier tierProvider
+	// dispatcher fires outbound notify_url webhooks asynchronously on
+	// terminal state transitions. nil-safe — every dispatch site guards.
+	// Wired by SetWebhookDispatcher post-construction; defaults to nil so
+	// existing callers without webhooks are unaffected.
+	dispatcher *WebhookDispatcher
 }
 
 // ServiceConfig contains configuration for the HITL service.
@@ -91,6 +97,15 @@ func (s *Service) SetMaxPendingApprovals(limit int) {
 	s.maxPendingApprovals.Store(int64(limit))
 }
 
+// SetWebhookDispatcher wires the outbound webhook dispatcher. Callers in
+// production wire one via NewWebhookDispatcher at agent boot; tests pass
+// a dispatcher with a custom http.Client to capture POSTs. Safe to call
+// multiple times; the last setter wins. Pass nil to disable webhook
+// dispatch (existing callers that don't care about webhooks default here).
+func (s *Service) SetWebhookDispatcher(d *WebhookDispatcher) {
+	s.dispatcher = d
+}
+
 // CreateApprovalRequest validates and creates a new approval request.
 type CreateApprovalInput struct {
 	OrgID               string
@@ -108,6 +123,12 @@ type CreateApprovalInput struct {
 	ComplianceFramework string
 	RiskClassification  string
 	ExpiresIn           time.Duration
+	// NotifyURL is the optional outbound webhook callback URL. When set,
+	// the dispatcher fires a signed POST after the row reaches a terminal
+	// state. ValidateNotifyURL is run by the HTTP handler before this
+	// struct is constructed; service-internal callers (the MCP tool path)
+	// pass empty and skip the webhook flow.
+	NotifyURL string
 }
 
 // CreateApprovalRequest creates a new approval request in the queue.
@@ -203,6 +224,7 @@ func (s *Service) CreateApprovalRequest(ctx context.Context, input CreateApprova
 		RiskClassification:  input.RiskClassification,
 		Status:              "pending",
 		ExpiresAt:           time.Now().Add(expiresIn),
+		NotifyURL:           input.NotifyURL,
 	}
 
 	if err := s.repo.Create(ctx, req); err != nil {
@@ -264,7 +286,14 @@ func (s *Service) ApproveRequest(ctx context.Context, requestID uuid.UUID, revie
 	}
 
 	// Update status. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	// Concurrent-approver guard (R3 R1 HIGH #2): the repo UPDATE includes
+	// `status = 'pending'` and returns ErrApprovalLostRace on race; we MUST
+	// NOT fire dispatchTerminal in that case (the winning approver's webhook
+	// will fire / has fired for the same approval_id).
 	if err := s.repo.UpdateStatus(ctx, req.OrgID, requestID, "approved", reviewer, comment); err != nil {
+		if errors.Is(err, ErrApprovalLostRace) {
+			return fmt.Errorf("cannot approve request: %w", err)
+		}
 		return fmt.Errorf("update status: %w", err)
 	}
 
@@ -286,6 +315,7 @@ func (s *Service) ApproveRequest(ctx context.Context, requestID uuid.UUID, revie
 		fmt.Printf("[HITL] Warning: failed to add approval history: %v\n", err)
 	}
 
+	s.dispatchTerminal(req, "approved", reviewer.ID, reviewer.Email, comment, "")
 	return nil
 }
 
@@ -306,7 +336,12 @@ func (s *Service) RejectRequest(ctx context.Context, requestID uuid.UUID, review
 	}
 
 	// Update status. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	// Same concurrent-actor guard as ApproveRequest — lost-race skips
+	// dispatchTerminal so we don't fire a duplicate webhook.
 	if err := s.repo.UpdateStatus(ctx, req.OrgID, requestID, "rejected", reviewer, comment); err != nil {
+		if errors.Is(err, ErrApprovalLostRace) {
+			return fmt.Errorf("cannot reject request: %w", err)
+		}
 		return fmt.Errorf("update status: %w", err)
 	}
 
@@ -328,6 +363,7 @@ func (s *Service) RejectRequest(ctx context.Context, requestID uuid.UUID, review
 		fmt.Printf("[HITL] Warning: failed to add rejection history: %v\n", err)
 	}
 
+	s.dispatchTerminal(req, "rejected", reviewer.ID, reviewer.Email, comment, "")
 	return nil
 }
 
@@ -355,7 +391,12 @@ func (s *Service) OverrideRequest(ctx context.Context, requestID uuid.UUID, just
 	}
 
 	// Perform override. v9 Phase 8 #2384 PR-C1: req.OrgID required for RLS scope.
+	// Concurrent-actor guard (R3 R1 HIGH #2): lost-race skips
+	// dispatchTerminal so no duplicate webhook fires.
 	if err := s.repo.Override(ctx, req.OrgID, requestID, justification, authorizedBy.ID); err != nil {
+		if errors.Is(err, ErrApprovalLostRace) {
+			return fmt.Errorf("cannot override request: %w", err)
+		}
 		return fmt.Errorf("override request: %w", err)
 	}
 
@@ -377,6 +418,7 @@ func (s *Service) OverrideRequest(ctx context.Context, requestID uuid.UUID, just
 		fmt.Printf("[HITL] Warning: failed to add override history: %v\n", err)
 	}
 
+	s.dispatchTerminal(req, "overridden", authorizedBy.ID, authorizedBy.Email, "", justification)
 	return nil
 }
 
@@ -390,7 +432,70 @@ func (s *Service) GetRequestHistory(ctx context.Context, requestID uuid.UUID) ([
 	return s.repo.GetHistory(ctx, requestID)
 }
 
-// ExpireStaleRequests expires all stale pending requests.
+// ExpireStaleRequests expires all stale pending requests via the legacy
+// SQL function path. Returns the count.
+//
+// CAVEAT: under v9 FORCE RLS as axonflow_app_role this returns zero (the
+// function inherits the caller's RLS scope and no GUC is set). Production
+// callers should use ExpireStaleAcrossTenants with an admin DB so the
+// cross-tenant scan actually fires + outbound webhooks dispatch.
 func (s *Service) ExpireStaleRequests(ctx context.Context) (int, error) {
 	return s.repo.ExpireStale(ctx)
+}
+
+// ExpireStaleAcrossTenants is the FORCE-RLS-safe expiration path. Reads
+// stale pending rows via the admin pool (BYPASSRLS), marks them expired,
+// writes history, and fires notify_url webhooks for any expired row that
+// carried one. Returns the count of expired rows.
+//
+// Sister fix to #2400 (heartbeat under app_role) — same root cause: a
+// long-lived background updater under axonflow_app_role with no GUC set
+// matches zero rows under FORCE RLS.
+func (s *Service) ExpireStaleAcrossTenants(ctx context.Context, adminDB *sql.DB) (int, error) {
+	expired, err := s.repo.ExpireStaleReturning(ctx, adminDB)
+	if err != nil {
+		return 0, err
+	}
+	for _, req := range expired {
+		s.dispatchTerminal(req, "expired", "", "", "", "")
+	}
+	return len(expired), nil
+}
+
+// dispatchTerminal fires the outbound webhook for a row that has just
+// transitioned to a terminal state. nil-safe: no-op when the service
+// has no dispatcher wired (legacy callers) OR the row has no notify_url.
+//
+// The dispatcher.Enqueue contract is fire-and-forget — never blocks,
+// never returns an error to surface — so this method has no return value.
+func (s *Service) dispatchTerminal(req *ApprovalRequest, status, decidedByID, decidedByEmail, comment, justification string) {
+	if s.dispatcher == nil || req == nil || req.NotifyURL == "" {
+		return
+	}
+	decidedAt := time.Now().UTC()
+	envelope := WebhookEnvelope{
+		ApprovalID:    req.RequestID.String(),
+		Status:        status,
+		DecidedBy:     firstNonEmpty(decidedByEmail, decidedByID),
+		DecidedAt:     decidedAt,
+		OriginalQuery: req.OriginalQuery,
+		RequestType:   req.RequestType,
+		Severity:      req.Severity,
+		DecisionEnvelope: map[string]interface{}{
+			"org_id":             req.OrgID,
+			"tenant_id":          req.TenantID,
+			"client_id":          req.ClientID,
+			"triggered_policy_id": req.TriggeredPolicyID,
+			"comment":            comment,
+			"justification":      justification,
+		},
+	}
+	s.dispatcher.Enqueue(req.NotifyURL, envelope)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

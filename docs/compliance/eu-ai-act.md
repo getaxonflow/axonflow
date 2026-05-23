@@ -110,13 +110,13 @@ policy:
 
 ```bash
 # List pending HITL decisions
-curl -X GET "https://your-axonflow-host/api/v1/hitl/decisions?status=pending&org_id=org-123" \
+curl -X GET "https://your-axonflow-host/api/v1/hitl/queue?status=pending&org_id=org-123" \
   -H "X-Client-Id: your-client-id" \
   -H "X-Client-Secret: your-client-secret"
 # Alternative auth: -H "Authorization: Basic <base64(client_id:client_secret)>"
 
 # Approve a decision
-curl -X POST "https://your-axonflow-host/api/v1/hitl/decisions/{id}/approve" \
+curl -X POST "https://your-axonflow-host/api/v1/hitl/queue/{id}/approve" \
   -H "X-Client-Id: your-client-id" \
   -H "X-Client-Secret: your-client-secret" \
   -H "Content-Type: application/json" \
@@ -126,7 +126,7 @@ curl -X POST "https://your-axonflow-host/api/v1/hitl/decisions/{id}/approve" \
   }'
 
 # Reject a decision
-curl -X POST "https://your-axonflow-host/api/v1/hitl/decisions/{id}/reject" \
+curl -X POST "https://your-axonflow-host/api/v1/hitl/queue/{id}/reject" \
   -H "X-Client-Id: your-client-id" \
   -H "X-Client-Secret: your-client-secret" \
   -H "Content-Type: application/json" \

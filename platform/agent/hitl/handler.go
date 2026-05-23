@@ -60,6 +60,24 @@ type Handler struct {
 	service *Service
 }
 
+// IdempotencyWrapFn matches platform/shared/idempotency.Wrap. The agent's
+// run.go injects the real Wrap via SetIdempotencyWrap so the hitl package
+// stays free of the shared/idempotency import edge (a package boundary the
+// shared idempotency code does NOT need to know about hitl, and vice versa).
+type IdempotencyWrapFn func(w http.ResponseWriter, r *http.Request, orgID, tenantID, endpoint string, handler func(http.ResponseWriter, *http.Request))
+
+var idempotencyWrap IdempotencyWrapFn
+
+// SetIdempotencyWrap installs the Wrap implementation. Called by run.go at
+// boot. nil disables idempotency wrapping (pass-through). Safe to call
+// concurrently with handler dispatch; the function pointer swap is
+// atomic-ish at Go's memory model granularity (single-word writes are
+// not torn) and the worst case during a swap is one request running
+// against the old wrap implementation, which is harmless.
+func SetIdempotencyWrap(fn IdempotencyWrapFn) {
+	idempotencyWrap = fn
+}
+
 // NewHandler creates a new HITL handler.
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
@@ -97,6 +115,10 @@ type CreateRequestInput struct {
 	ComplianceFramework string                 `json:"compliance_framework,omitempty"`
 	RiskClassification  string                 `json:"risk_classification,omitempty"`
 	ExpiresInSeconds    int                    `json:"expires_in_seconds,omitempty"`
+	// NotifyURL is the optional outbound webhook URL fired on terminal state
+	// transition (approved/rejected/overridden/expired). Validated against the
+	// https/http allowlist before the row is created.
+	NotifyURL string `json:"notify_url,omitempty"`
 }
 
 // ReviewInput is the JSON input for approving/rejecting a request.
@@ -174,8 +196,24 @@ func (h *Handler) ListRequests(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// CreateRequest handles POST /api/v1/hitl/queue
+// CreateRequest handles POST /api/v1/hitl/queue. Wraps in idempotencyWrap
+// so an Idempotency-Key header — sent by n8n's Retry-on-Fail or the ADK
+// plugin's per-step ID — dedups the row creation. Pure pass-through when
+// no header is present or no wrap is installed.
 func (h *Handler) CreateRequest(w http.ResponseWriter, r *http.Request) {
+	orgID := r.Header.Get("X-Org-ID")
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if idempotencyWrap != nil && orgID != "" && tenantID != "" {
+		idempotencyWrap(w, r, orgID, tenantID, "hitl.queue.create", h.createRequestInner)
+		return
+	}
+	h.createRequestInner(w, r)
+}
+
+// createRequestInner is the original handler body, factored out so
+// CreateRequest can wrap it in the idempotency helper without changing
+// the per-handler flow.
+func (h *Handler) createRequestInner(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer func() {
 		hitlRequestDuration.WithLabelValues("POST", "/api/v1/hitl/queue").Observe(time.Since(start).Seconds())
@@ -197,6 +235,17 @@ func (h *Handler) CreateRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var notifyURL string
+	if input.NotifyURL != "" {
+		validated, vErr := ValidateNotifyURL(input.NotifyURL)
+		if vErr != nil {
+			hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue", "error").Inc()
+			h.writeError(w, http.StatusBadRequest, vErr.Error())
+			return
+		}
+		notifyURL = validated
+	}
+
 	createInput := CreateApprovalInput{
 		OrgID:               orgID,
 		TenantID:            tenantID,
@@ -212,6 +261,7 @@ func (h *Handler) CreateRequest(w http.ResponseWriter, r *http.Request) {
 		EUAIActArticle:      input.EUAIActArticle,
 		ComplianceFramework: input.ComplianceFramework,
 		RiskClassification:  input.RiskClassification,
+		NotifyURL:           notifyURL,
 	}
 	if input.ExpiresInSeconds > 0 {
 		createInput.ExpiresIn = time.Duration(input.ExpiresInSeconds) * time.Second
@@ -408,11 +458,16 @@ func (h *Handler) OverrideRequest(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.service.OverrideRequest(r.Context(), requestID, input.Justification, authorizedBy); err != nil {
 		hitlRequestsTotal.WithLabelValues("POST", "/api/v1/hitl/queue/{id}/override", "error").Inc()
-		if strings.Contains(err.Error(), "not found") {
+		switch {
+		case strings.Contains(err.Error(), "not found"):
 			h.writeError(w, http.StatusNotFound, err.Error())
-		} else if strings.Contains(err.Error(), "cannot override") || strings.Contains(err.Error(), "required") {
+		case errors.Is(err, ErrApprovalLostRace) || strings.Contains(err.Error(), "lost race"):
+			// Lost-race translation: another reviewer beat this caller.
+			// 409 mirrors the approve/reject paths' conflict semantics.
+			h.writeError(w, http.StatusConflict, err.Error())
+		case strings.Contains(err.Error(), "cannot override") || strings.Contains(err.Error(), "required"):
 			h.writeError(w, http.StatusBadRequest, err.Error())
-		} else {
+		default:
 			h.writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
@@ -560,6 +615,8 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 			"expiration":      true,
 			"audit_history":   true,
 			"pending_summary": true,
+			"notify_url":      true,
+			"idempotency_key": true,
 		},
 	})
 }

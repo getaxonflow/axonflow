@@ -30,7 +30,7 @@
         <dependency>
             <groupId>com.getaxonflow</groupId>
             <artifactId>axonflow-sdk</artifactId>
-            <version>8.1.0</version>
+            <version>8.2.0</version>
         </dependency>
     </dependencies>
 </project>

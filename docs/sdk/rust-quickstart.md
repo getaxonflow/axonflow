@@ -2,9 +2,9 @@
 
 **Last Updated:** May 2026
 
-**SDK Status:** Preview (v0.3.1) | **Platform Version:** v9.0.0
+**SDK Status:** Preview (v0.4.0) | **Platform Version:** v9.0.0
 
-> The Rust SDK is in **preview**. v0.3.1 covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix. Track upcoming work on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues) page.
+> The Rust SDK is in **preview**. v0.4.0 covers a subset of the surface available in the established Go / Python / TypeScript / Java SDKs — see [SDK Feature Coverage](../SDK_FEATURE_COVERAGE.md) for the full matrix. Track upcoming work on the [Rust SDK issues](https://github.com/getaxonflow/axonflow-sdk-rust/issues) page.
 
 ---
 
@@ -19,7 +19,7 @@
 ```toml
 # Cargo.toml
 [dependencies]
-axonflow-sdk-rust = "0.3"
+axonflow-sdk-rust = "0.4"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -216,9 +216,9 @@ match client.list_connectors().await {
 
 ---
 
-## What's not in v0.3.1 yet
+## What's not in v0.4.0 yet
 
-The Rust SDK is being filled out incrementally. v0.3.1 carries the v0.2.0 foundation (auth, proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors) plus the v9 `X-Client-ID` outbound header. Coming in subsequent releases:
+The Rust SDK is being filled out incrementally. v0.4.0 carries the v0.3.1 foundation (auth, proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `X-Client-ID` outbound header) plus `create_hitl_request`. Coming in subsequent releases:
 
 - **Universal surface:** `health_check`, `execute_query`, `get_policy_approved_context`, full MAP (resume / rollback / versions / update), `mcp_check_input` / `mcp_check_output`, `retry_context` / `idempotency_key` wire fields.
 - **Interceptors:** Anthropic / Gemini / Bedrock / Ollama (currently OpenAI-only).

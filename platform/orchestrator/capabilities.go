@@ -89,10 +89,10 @@ func getSDKCompatibility() SDKCompatInfo {
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each SDK's release-train tag.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "8.0.0",
-			"typescript": "8.0.0",
-			"go":         "8.0.0",
-			"java":       "8.0.0",
+			"python":     "8.2.0",
+			"typescript": "8.2.0",
+			"go":         "8.2.0",
+			"java":       "8.2.0",
 		},
 	}
 }
@@ -127,10 +127,10 @@ func getPluginCompatibility() PluginCompatInfo {
 		// (#2308) did NOT change the plugin recommended-version. Mirrors
 		// platform/agent/capabilities.go.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.4.0",
-			"claude-code": "1.4.0",
-			"cursor":      "1.4.0",
-			"codex":       "1.4.0",
+			"openclaw":    "2.6.1",
+			"claude-code": "1.5.2",
+			"cursor":      "1.5.2",
+			"codex":       "1.5.2",
 		},
 	}
 }

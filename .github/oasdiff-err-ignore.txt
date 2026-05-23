@@ -18,3 +18,17 @@
 # future breaking changes on /health still trip the gate.
 GET /health the `sdk_compatibility/min_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`
 GET /health the `sdk_compatibility/recommended_sdk_version` response's property type/format changed from `string`/`` to `object`/`` for status `200`
+
+# PR axonflow-enterprise#2422 — HITL spec path rename.
+# The handler has always been at /api/v1/hitl/queue (since v9 Phase 8);
+# the spec had drifted to /api/v1/hitl/decisions. Renaming the spec to
+# match the handler is a doc-only correction with zero customer impact:
+# no SDK consumed the decisions path (it 404'd at runtime), no plugin
+# referenced it, and the existing handler paths under /queue/* are
+# untouched. Both the path_template lockstep test and the dedicated
+# integration tests confirm /queue is what the binary serves.
+in API GET /api/v1/hitl/decisions api path removed without deprecation
+in API POST /api/v1/hitl/decisions api path removed without deprecation
+in API GET /api/v1/hitl/decisions/{id} api path removed without deprecation
+in API POST /api/v1/hitl/decisions/{id}/approve api path removed without deprecation
+in API POST /api/v1/hitl/decisions/{id}/reject api path removed without deprecation

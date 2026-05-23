@@ -23,4 +23,4 @@ The Claude Code plugin package is at [getaxonflow/axonflow-claude-plugin](https:
 ## Documentation
 
 - [Claude Code Integration Guide](https://docs.getaxonflow.com/docs/integration/claude-code/)
-- MCP Server PRD: `axonflow-business-docs/product/PRD_CLAUDE_CODE_PLUGIN.md` (separate repo)
+- MCP Server PRD: `axonflow-internal-docs/prds/PRD_CLAUDE_CODE_PLUGIN.md` (separate repo)

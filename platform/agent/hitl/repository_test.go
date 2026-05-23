@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -45,6 +46,7 @@ func TestRepository_Create_Success(t *testing.T) {
 			sql.NullString{String: "EU_AI_Act", Valid: true},
 			sql.NullString{String: "high-risk", Valid: true},
 			"pending", sqlmock.AnyArg(),
+			sql.NullString{}, // notify_url (omitted in this test)
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, now, now))
@@ -113,6 +115,7 @@ func TestRepository_Create_WithContext(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			sql.NullString{}, sql.NullString{}, sql.NullString{},
 			"pending", sqlmock.AnyArg(),
+			sql.NullString{}, // notify_url
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow(1, now, now))
@@ -166,7 +169,7 @@ func TestRepository_GetByRequestID_Found(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", "user-1",
@@ -174,7 +177,7 @@ func TestRepository_GetByRequestID_Found(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk",
 			"approved", "reviewer-1", "reviewer@example.com", "admin", "Looks good", reviewedAt,
-			nil, nil,
+			nil, nil, nil,
 			now.Add(24*time.Hour), now, now,
 		))
 
@@ -261,7 +264,7 @@ func TestRepository_List_WithFilters(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).
 			AddRow(1, requestID1, "org-1", "tenant-1", "client-1", nil,
@@ -269,14 +272,14 @@ func TestRepository_List_WithFilters(t *testing.T) {
 				"policy-1", "PII Detection", "Contains PII", "high",
 				nil, nil, nil,
 				"pending", nil, nil, nil, nil, nil,
-				nil, nil,
+				nil, nil, nil,
 				now.Add(24*time.Hour), now, now).
 			AddRow(2, requestID2, "org-1", "tenant-1", "client-2", nil,
 				"SELECT * FROM orders", "sql", nil,
 				"policy-1", "PII Detection", "Contains PII", "critical",
 				nil, nil, nil,
 				"pending", nil, nil, nil, nil, nil,
-				nil, nil,
+				nil, nil, nil,
 				now.Add(24*time.Hour), now, now))
 
 	filter := ListFilter{
@@ -326,7 +329,7 @@ func TestRepository_List_OrderByASC(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}))
 
@@ -416,7 +419,12 @@ func TestRepository_UpdateStatus_NotFound(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for not found, got nil")
 	}
-	if err.Error() != "approval request not found" {
+	// After R3 R1 HIGH #2 fix: sql.ErrNoRows from the UPDATE collapses
+	// "row missing" + "lost race to another reviewer" into the same
+	// sentinel because the WHERE-status='pending' guard returns zero
+	// rows in either case. The caller (Service.ApproveRequest) translates
+	// to "cannot approve request: ..." via the existing 409 path.
+	if !errors.Is(err, ErrApprovalLostRace) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
@@ -481,7 +489,9 @@ func TestRepository_Override_NotFound(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for not found, got nil")
 	}
-	if err.Error() != "approval request not found" {
+	// See TestRepository_UpdateStatus_NotFound — same lost-race / not-found
+	// collapse after the R3 R1 HIGH #2 fix.
+	if !errors.Is(err, ErrApprovalLostRace) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 

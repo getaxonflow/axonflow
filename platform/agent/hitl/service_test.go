@@ -382,7 +382,7 @@ func TestApproveRequest_InvalidStatus(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -390,7 +390,7 @@ func TestApproveRequest_InvalidStatus(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"approved", "reviewer-1", "reviewer@example.com", "admin", "LGTM", time.Now(),
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
@@ -430,7 +430,7 @@ func TestApproveRequest_Expired(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -438,7 +438,7 @@ func TestApproveRequest_Expired(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"pending", nil, nil, nil, nil, nil,
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(-1*time.Hour), // Expired 1 hour ago
 			time.Now().Add(-25*time.Hour), time.Now().Add(-25*time.Hour),
 		))
@@ -539,7 +539,7 @@ func TestOverrideRequest_Success(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -547,7 +547,7 @@ func TestOverrideRequest_Success(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"pending", nil, nil, nil, nil, nil,
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
@@ -605,7 +605,7 @@ func TestOverrideRequest_NonPendingStatus(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -613,7 +613,7 @@ func TestOverrideRequest_NonPendingStatus(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"approved", "reviewer-1", "reviewer@example.com", "admin", "Done", time.Now(),
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
@@ -653,7 +653,7 @@ func TestRejectRequest_Success(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -661,7 +661,7 @@ func TestRejectRequest_Success(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"pending", nil, nil, nil, nil, nil,
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
@@ -747,7 +747,7 @@ func TestApproveRequest_Success(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -755,7 +755,7 @@ func TestApproveRequest_Success(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			"14", "EU_AI_Act", "high-risk_ai_system",
 			"pending", nil, nil, nil, nil, nil,
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 
@@ -840,7 +840,7 @@ func TestGetApprovalRequest_NotFound(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}))
 
@@ -876,7 +876,7 @@ func TestListApprovalRequests(t *testing.T) {
 			"triggered_policy_id", "triggered_policy_name", "trigger_reason", "severity",
 			"eu_ai_act_article", "compliance_framework", "risk_classification",
 			"status", "reviewer_id", "reviewer_email", "reviewer_role", "review_comment", "reviewed_at",
-			"override_justification", "override_authorized_by",
+			"override_justification", "override_authorized_by", "notify_url",
 			"expires_at", "created_at", "updated_at",
 		}).AddRow(
 			1, requestID, "org-1", "tenant-1", "client-1", nil,
@@ -884,7 +884,7 @@ func TestListApprovalRequests(t *testing.T) {
 			"policy-1", "PII Detection", "Contains PII", "high",
 			nil, nil, nil,
 			"pending", nil, nil, nil, nil, nil,
-			nil, nil,
+			nil, nil, nil,
 			time.Now().Add(24*time.Hour), time.Now(), time.Now(),
 		))
 

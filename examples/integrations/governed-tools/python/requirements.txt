@@ -1,2 +1,2 @@
-axonflow>=8.1.0
+axonflow>=8.2.0
 langchain-core>=0.3.0

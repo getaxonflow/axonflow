@@ -1,0 +1,211 @@
+{
+  "name": "Governed Loan Approval (AxonFlow)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loan-request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1",
+      "name": "Loan Request (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "loan-request-axonflow-demo"
+    },
+    {
+      "parameters": {
+        "operation": "checkPolicy",
+        "idempotencyKey": "={{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}",
+        "connectorType": "n8n",
+        "statement": "=approve_loan amount={{ $json.body.amount }} customer={{ $json.body.customer_id }}",
+        "mcpOperation": "execute",
+        "parameters": "={{ JSON.stringify({ amount: $json.body.amount, customer_id: $json.body.customer_id }) }}"
+      },
+      "id": "2",
+      "name": "AxonFlow Check Policy",
+      "type": "n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "axonflow-default",
+          "name": "AxonFlow API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "3",
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "operation": "waitForApproval",
+        "idempotencyKey": "={{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}",
+        "requestType": "loan_approval",
+        "originalQuery": "=Approve loan for {{ $json.body.customer_id }} amount={{ $json.body.amount }}",
+        "triggeredPolicyId": "high-value-loan",
+        "triggeredPolicyName": "High Value Loan Approval",
+        "triggerReason": "=AxonFlow policy denied: {{ $('AxonFlow Check Policy').item.json.block_reason }}",
+        "severity": "high",
+        "limitWaitTime": 86400,
+        "requestContext": "={{ JSON.stringify($('Loan Request (Webhook)').item.json.body) }}"
+      },
+      "id": "4",
+      "name": "AxonFlow Wait for Approval",
+      "type": "n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [940, 460],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "axonflow-default",
+          "name": "AxonFlow API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {}
+      },
+      "id": "5",
+      "name": "Wait for Reviewer Webhook",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1180, 460],
+      "webhookId": "axonflow-approval-resume"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://loan-service.internal/v1/loans",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Loan Request (Webhook)').item.json.body) }}",
+        "options": {}
+      },
+      "id": "6",
+      "name": "Issue Loan (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1420, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "recordDecision",
+        "idempotencyKey": "={{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}",
+        "toolName": "issue_loan",
+        "workflowId": "={{ $workflow.id }}",
+        "stepId": "={{ $node.name }}",
+        "auditInput": "={{ JSON.stringify($('Loan Request (Webhook)').item.json.body) }}",
+        "auditOutput": "={{ JSON.stringify($json) }}",
+        "auditSuccess": true,
+        "auditErrorMessage": ""
+      },
+      "id": "7",
+      "name": "AxonFlow Record Decision",
+      "type": "n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [1660, 300],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "axonflow-default",
+          "name": "AxonFlow API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "auditLog",
+        "idempotencyKey": "={{ $execution.id }}-{{ $itemIndex }}-{{ $node.name }}",
+        "toolName": "issue_loan",
+        "workflowId": "={{ $workflow.id }}",
+        "stepId": "issue-loan-error",
+        "auditInput": "={{ JSON.stringify($('Loan Request (Webhook)').item.json.body) }}",
+        "auditOutput": "={{ JSON.stringify($json) }}",
+        "auditSuccess": false,
+        "auditErrorMessage": "=Loan issuance failed: {{ $json.error || 'unknown' }}"
+      },
+      "id": "8",
+      "name": "AxonFlow Audit Log (Error)",
+      "type": "n8n-nodes-axonflow.axonFlow",
+      "typeVersion": 1,
+      "position": [1660, 600],
+      "credentials": {
+        "axonFlowApi": {
+          "id": "axonflow-default",
+          "name": "AxonFlow API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'recorded', decision: $('AxonFlow Record Decision').item.json }) }}",
+        "options": {}
+      },
+      "id": "9",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1900, 300]
+    }
+  ],
+  "connections": {
+    "Loan Request (Webhook)": {
+      "main": [[{ "node": "AxonFlow Check Policy", "type": "main", "index": 0 }]]
+    },
+    "AxonFlow Check Policy": {
+      "main": [[{ "node": "Allowed?", "type": "main", "index": 0 }]]
+    },
+    "Allowed?": {
+      "main": [
+        [{ "node": "Issue Loan (HTTP)", "type": "main", "index": 0 }],
+        [{ "node": "AxonFlow Wait for Approval", "type": "main", "index": 0 }]
+      ]
+    },
+    "AxonFlow Wait for Approval": {
+      "main": [[{ "node": "Wait for Reviewer Webhook", "type": "main", "index": 0 }]]
+    },
+    "Wait for Reviewer Webhook": {
+      "main": [[{ "node": "Issue Loan (HTTP)", "type": "main", "index": 0 }]]
+    },
+    "Issue Loan (HTTP)": {
+      "main": [
+        [{ "node": "AxonFlow Record Decision", "type": "main", "index": 0 }],
+        [{ "node": "AxonFlow Audit Log (Error)", "type": "main", "index": 0 }]
+      ]
+    },
+    "AxonFlow Record Decision": {
+      "main": [[{ "node": "Respond", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "axonflow-demo" }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

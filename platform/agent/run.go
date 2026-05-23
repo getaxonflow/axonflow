@@ -44,6 +44,7 @@ import (
 	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/cost"
+	"axonflow/platform/shared/idempotency"
 	logutil "axonflow/platform/shared/logger"
 	sharedpolicy "axonflow/platform/shared/policy"
 	"axonflow/platform/shared/secretenv"
@@ -253,6 +254,12 @@ var (
 	// the HTTP handler path uses — single chokepoint, no parallel
 	// enforcement layers to drift.
 	mcpHITLService *hitl.Service
+	// mcpIdempStore is the long-lived idempotency Store used by handlers
+	// that authenticate inside their own body (mcp/check-input, hitl/queue
+	// via the SetIdempotencyWrap shim). Wired in run.go after the admin
+	// pool is opened. nil-safe — handlers tolerate a nil store as a
+	// pass-through. Read-only after wiring.
+	mcpIdempStore *idempotency.Store
 )
 
 // proxyPolicyCategories is the set of policy categories evaluated for proxy requests.
@@ -1212,6 +1219,57 @@ func Run() {
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
 
+	// Wire shared idempotency store (#2420). Opens an admin pool once at
+	// boot for the background sweep; nil-tolerant if it fails (sweep no-ops
+	// with a louder warning). Lookup/Store run on usageDB (axonflow_app_role)
+	// under FORCE RLS wrapped in WithOrgAndTenantScope.
+	idempAdminDB, idempAdminErr := OpenPlatformAdminConnection(context.Background(), 3)
+	if idempAdminErr != nil {
+		log.Printf("[Idempotency] WARN admin pool unavailable, sweep DISABLED — idempotency_keys table will grow unbounded under USE_APP_ROLE=true: %v", idempAdminErr)
+		idempAdminDB = nil
+	} else {
+		log.Printf("✅ [Idempotency] using axonflow_platform_admin (BYPASSRLS) connection for cross-tenant sweep")
+	}
+	idempStore := idempotency.NewStore(usageDB, idempAdminDB)
+	// Inject the wrap fn into the hitl package so the HITL CreateRequest
+	// handler can dedup on Idempotency-Key without a hard import edge.
+	hitl.SetIdempotencyWrap(func(w http.ResponseWriter, r *http.Request, orgID, tenantID, endpoint string, next func(http.ResponseWriter, *http.Request)) {
+		idempotency.Wrap(w, r, idempStore, orgID, tenantID, endpoint, next)
+	})
+	// And expose to the MCP check-input handler so the same dedup applies
+	// on the /api/v1/mcp/check-input path. Read by mcp_handler.go.
+	mcpIdempStore = idempStore
+	// Start the sweep ticker. Hourly is fine — TTL is 24h so a single
+	// missed tick doesn't bloat the table appreciably.
+	if idempAdminDB != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				n, err := idempStore.Sweep(context.Background())
+				if err != nil {
+					log.Printf("[Idempotency] sweep error: %v", err)
+				} else if n > 0 {
+					log.Printf("[Idempotency] swept %d expired key(s)", n)
+				}
+			}
+		}()
+	}
+
+	// HITL expire ticker — open admin pool once and reuse for the process
+	// lifetime. The previous shape (open + close per tick) was wasteful
+	// AND silently skipped expirations on transient DB blips. Sister fix:
+	// uses ExpireStaleAcrossTenants so the cross-tenant scan fires under
+	// FORCE RLS (the legacy ExpireStaleRequests path silently matches zero
+	// rows for axonflow_app_role with no GUC set — same bug class as #2400).
+	hitlExpireAdminDB, hitlExpireErr := OpenPlatformAdminConnection(context.Background(), 3)
+	if hitlExpireErr != nil {
+		log.Printf("[HITL] WARN expire-ticker admin pool unavailable — stale-request expiration DISABLED: %v", hitlExpireErr)
+		hitlExpireAdminDB = nil
+	} else {
+		log.Printf("✅ [HITL] expire-ticker using axonflow_platform_admin (BYPASSRLS) for cross-tenant scan")
+	}
+
 	// Register HITL (Human-in-the-Loop) API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Human oversight queue for high-risk AI decisions
 	hitlRepo := hitl.NewRepository(usageDB)
@@ -1220,6 +1278,11 @@ func Run() {
 	hitlService := hitl.NewService(hitlRepo, hitl.ServiceConfig{
 		MaxPendingApprovals: hitlLimits.MaxPendingApprovals,
 	})
+	// Wire the outbound webhook dispatcher (#2419). nil-safe — when
+	// AXONFLOW_HITL_WEBHOOK_SIGNING_KEY is unset, dispatcher.Enqueue
+	// drops the POST with a warning so an operator can spot the
+	// misconfiguration in logs without breaking the approve/reject path.
+	hitlService.SetWebhookDispatcher(hitl.NewWebhookDispatcher())
 	// Expose the HITL service to the MCP-tool dispatcher so
 	// `axonflow_request_approval` (mcp_v1_pro_tools.go) routes through the
 	// same Service the HTTP handler uses, instead of writing to the
@@ -1234,20 +1297,27 @@ func Run() {
 	hitlHandler.RegisterRoutes(hitlSub)
 	// which are set by proxyAuthMiddleware for proxied requests or directly by clients.
 
-	// Start HITL expiration background job (1-hour ticker)
-	// Enterprise: expires stale pending approval requests. Community: no-op.
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			count, err := hitlService.ExpireStaleRequests(context.Background())
-			if err != nil {
-				log.Printf("[HITL] Expiration error: %v", err)
-			} else if count > 0 {
-				log.Printf("[HITL] Expired %d stale approval requests", count)
+	// Start HITL expiration background job (1-hour ticker).
+	// Enterprise: expires stale pending approval requests + dispatches the
+	// notify_url webhook for any expired row that carried one. Community:
+	// no-op. Reuses the long-lived admin pool opened above
+	// (hitlExpireAdminDB) so the cross-tenant scan fires under FORCE RLS
+	// without per-tick churn. If the pool wasn't available at boot, the
+	// ticker is skipped entirely (the boot WARN named the failure mode).
+	if hitlExpireAdminDB != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				count, err := hitlService.ExpireStaleAcrossTenants(context.Background(), hitlExpireAdminDB)
+				if err != nil {
+					log.Printf("[HITL] Expiration error: %v", err)
+				} else if count > 0 {
+					log.Printf("[HITL] Expired %d stale approval requests", count)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Register Circuit Breaker API endpoints (EU AI Act Article 14)
 	// Enterprise feature: Emergency stop/interrupt capability for AI operations

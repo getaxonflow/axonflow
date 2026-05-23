@@ -120,6 +120,31 @@ type CreateApprovalInput struct {
 	ComplianceFramework string
 	RiskClassification  string
 	ExpiresIn           time.Duration
+	NotifyURL           string
+}
+
+// WebhookDispatcher is the community stub. No-op constructor + no-op
+// setter so agent/run.go's enterprise wiring compiles under both builds.
+type WebhookDispatcher struct{}
+
+// NewWebhookDispatcher returns a no-op dispatcher for community builds.
+func NewWebhookDispatcher() *WebhookDispatcher { return &WebhookDispatcher{} }
+
+// SetWebhookDispatcher is a no-op on community builds.
+func (s *Service) SetWebhookDispatcher(_ *WebhookDispatcher) {}
+
+// IdempotencyWrapFn matches the enterprise signature so run.go's
+// SetIdempotencyWrap call compiles under both builds.
+type IdempotencyWrapFn func(w http.ResponseWriter, r *http.Request, orgID, tenantID, endpoint string, handler func(http.ResponseWriter, *http.Request))
+
+// SetIdempotencyWrap is a no-op on community builds (HITL is enterprise-only
+// so there is no handler to wrap).
+func SetIdempotencyWrap(_ IdempotencyWrapFn) {}
+
+// ExpireStaleAcrossTenants is the FORCE-RLS-safe expire path on community
+// builds — a no-op returning zero.
+func (s *Service) ExpireStaleAcrossTenants(_ context.Context, _ *sql.DB) (int, error) {
+	return 0, nil
 }
 
 // ApprovalRequest is the return shape for Service.CreateApprovalRequest.

@@ -12,6 +12,34 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-05-23 — HITL outbound webhook callback + HTTP Idempotency-Key dedup
+
+Minor release on top of v8.0.1. Two additive features that close gaps surfaced during the Google ADK plugin + n8n community node R3 — workflow tools that pause on a webhook can now resume without a polling sidecar, and `Retry on Fail` retries no longer double-create approval rows or double-record audit entries.
+
+No breaking changes. No schema reshuffle. Existing v8.0.0 SDKs and plugins (claude/cursor/codex at v1.4.0, openclaw at v2.4.0) continue to work unchanged — both features are opt-in via headers / request fields. Self-hosted deployments running v8.0.0 can apply the two new migrations and ship.
+
+### Added
+
+- **HITL outbound webhook callback (`notify_url`).** `POST /api/v1/hitl/queue` accepts an optional `notify_url` field (https or http). When set, the platform fires a signed HTTP POST to that URL after the row reaches a terminal state — `approved`, `rejected`, `overridden`, or `expired`. The envelope carries `approval_id`, `status`, `decided_by`, `decided_at`, `original_query`, `request_type`, `severity`, and a `decision_envelope` bag with the comment / justification / triggering policy. Signature is HMAC-SHA256 over the body keyed by `AXONFLOW_HITL_WEBHOOK_SIGNING_KEY`, sent as `X-AxonFlow-Signature: sha256=<hex>`. Delivery is async (never blocks the approve/reject response), retries on non-2xx at `5s/30s/5m`, and logs `[HITL.Webhook] OK|non-2xx|transport_err|GIVE-UP` lines per attempt. Closes #2419.
+
+- **HTTP `Idempotency-Key` header dedup on the three integration endpoints.** `POST /api/v1/mcp/check-input` (agent), `POST /api/v1/audit/tool-call` (orchestrator), and `POST /api/v1/hitl/queue` (agent) now consume the `Idempotency-Key` header. A retry within 24h returns the cached response byte-for-byte plus an `Idempotent-Replayed: true` header. 2xx and 4xx responses are cached; 5xx is intentionally skipped so a caller's retry can hit a fresh attempt. Cross-tenant isolation is enforced by the row-level-security policy on the new `idempotency_keys` table (key + tenant_id + endpoint composite PK). Keys are validated against `^[A-Za-z0-9_.:\-/]+$`, max 256 chars; a malformed key produces a 400 before the handler runs. Closes #2420.
+
+- **HITL `GET /api/v1/hitl/status` feature map advertises `notify_url: true` + `idempotency_key: true`** so the ADK plugin + n8n node can feature-detect at boot.
+
+- **Schema changes.** Migration `114_hitl_notify_url.sql` adds `notify_url TEXT NULL` to `hitl_approval_queue`. Migration `115_idempotency_keys.sql` creates the `idempotency_keys` table with FORCE Row-Level Security keyed on `tenant_id = current_setting('app.current_tenant_id', true)` and a composite primary key on `(key, tenant_id, endpoint)`. Both ship a paired `_down.sql`. The dedup store is wired through `WithOrgAndTenantScope` (parity with the v9 Phase 8 wrap convention); the periodic sweep job runs hourly through the platform admin pool, deleting rows whose `expires_at` has passed.
+
+### Fixed
+
+- **HITL stale-request expiration now actually runs under FORCE Row-Level Security.** The 1-hour expiration ticker previously called `expire_hitl_requests()` against the agent's app-role pool with no `app.current_org_id` GUC set, so the cross-tenant scan silently matched zero rows — sister bug to the heartbeat path closed in v8.0.0. The ticker now routes through `OpenPlatformAdminConnection` per tick and uses the new `ExpireStaleAcrossTenants` path, which selects expiring rows with `FOR UPDATE SKIP LOCKED`, marks them `expired`, writes the history rows, and dispatches the new outbound webhook for any expired row that carried a `notify_url`. The legacy `ExpireStaleRequests` function is retained for back-compat with the `POST /api/v1/hitl/expire` HTTP path + existing tests.
+
+### Configuration
+
+- **`AXONFLOW_HITL_WEBHOOK_SIGNING_KEY`.** New env var (no default). Required to enable the outbound webhook — when unset, the dispatcher logs `[HITL.Webhook] DROP AXONFLOW_HITL_WEBHOOK_SIGNING_KEY=unset` per attempted delivery and the approve/reject response succeeds unchanged. Rotate by replacing the value and restarting; receivers should accept signatures from the prior key for the duration of their secret-sync cadence.
+
+### Testing infrastructure
+
+- **Cross-system HITL end-to-end harness.** Nine-probe script exercising the full `create → poll → approve/reject → webhook callback` lifecycle against a live platform stack. Covers both happy-path and error-class assertions (bad scheme, auth failure, missing required fields, 404 on unknown ID). CI-gated via the `Runtime E2E` workflow. Closes #2424.
+
 ## [8.0.1] - 2026-05-22 — CI green on community mirror (no runtime change)
 
 Patch on top of v8.0.0. No platform behavior change; no migration impact; no SDK/plugin floor change. The [8.0.0] section below is the headline release.

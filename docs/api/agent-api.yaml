@@ -1179,7 +1179,7 @@ paths:
   # HITL - Human-in-the-Loop (EU AI Act Article 14)
   # ==========================================================================
 
-  /api/v1/hitl/decisions:
+  /api/v1/hitl/queue:
     post:
       tags:
         - HITL
@@ -1190,6 +1190,7 @@ paths:
       operationId: createHITLDecision
       parameters:
         - $ref: '#/components/parameters/LicenseKey'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -1246,7 +1247,7 @@ paths:
                   count:
                     type: integer
 
-  /api/v1/hitl/decisions/{id}:
+  /api/v1/hitl/queue/{id}:
     get:
       tags:
         - HITL
@@ -1269,7 +1270,7 @@ paths:
         '404':
           description: Decision not found
 
-  /api/v1/hitl/decisions/{id}/approve:
+  /api/v1/hitl/queue/{id}/approve:
     post:
       tags:
         - HITL
@@ -1308,7 +1309,7 @@ paths:
         '404':
           description: Decision not found
 
-  /api/v1/hitl/decisions/{id}/reject:
+  /api/v1/hitl/queue/{id}/reject:
     post:
       tags:
         - HITL
@@ -2895,6 +2896,34 @@ components:
       schema:
         type: string
         example: "Basic bXktb3JnOkFYT04tVjIteHh4"
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Optional per-request dedup token. When supplied on POST /api/v1/mcp/check-input,
+        POST /api/v1/audit/tool-call, or POST /api/v1/hitl/queue, the platform caches
+        the original response for 24h and returns it byte-for-byte on subsequent
+        requests carrying the same key + same authenticated tenant + same endpoint.
+
+        Format: 1-256 chars, `^[A-Za-z0-9_.:\-/]+$`. Workflow IDs from n8n, ADK,
+        or generic SDKs all fall inside this set. A malformed key returns 400
+        before the handler runs.
+
+        Cache rules: 2xx + 4xx responses are cached; 5xx is NOT cached so the
+        caller's retry can hit a fresh attempt. A cache hit returns the original
+        response plus an `Idempotent-Replayed: true` response header.
+
+        Cross-tenant collisions are impossible: tenant_id participates in the
+        primary key + an RLS policy on the storage table. Two tenants using
+        the same key value get distinct rows.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+        pattern: '^[A-Za-z0-9_.:\-/]+$'
+        example: "n8n-exec-abc123-node-Approve"
 
     ClientSecret:
       name: X-Client-Secret
@@ -4686,6 +4715,56 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        notify_url:
+          type: string
+          format: uri
+          description: |
+            Optional outbound webhook URL fired asynchronously after the request
+            transitions to a terminal state (approved / rejected / overridden /
+            expired). Must use `https://` or `http://`. The platform signs the
+            envelope with HMAC-SHA256 over the body keyed by the deployment's
+            `AXONFLOW_HITL_WEBHOOK_SIGNING_KEY`, sent as
+            `X-AxonFlow-Signature: sha256=<hex>`. See the HITLWebhookEnvelope
+            schema and `docs.getaxonflow.com/docs/governance/hitl` for the full
+            shape + verification recipe.
+
+    HITLWebhookEnvelope:
+      type: object
+      description: |
+        JSON body POSTed to a HITL request's `notify_url` after a terminal-state
+        transition. Verify the `X-AxonFlow-Signature` header (HMAC-SHA256, hex,
+        constant-time compare) against the raw body before trusting fields.
+      required:
+        - approval_id
+        - status
+        - decided_at
+        - original_query
+        - request_type
+        - severity
+      properties:
+        approval_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [approved, rejected, overridden, expired]
+        decided_by:
+          type: string
+          description: Reviewer email when known; reviewer ID otherwise. Empty for `expired`.
+        decided_at:
+          type: string
+          format: date-time
+        original_query:
+          type: string
+        request_type:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        decision_envelope:
+          type: object
+          additionalProperties: true
+          description: Decision-context bag (org_id, tenant_id, client_id, triggered_policy_id, comment, justification).
 
     HITLDecision:
       type: object
