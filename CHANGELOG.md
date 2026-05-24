@@ -38,6 +38,10 @@ Additive minor release. Decision Mode brings the Policy Decision Point / Policy 
 
 - **Integration package stubs.** `examples/integrations/google-adk-plugin/` and `examples/integrations/n8n-axonflow-node/` replaced with stub READMEs pointing to their standalone repos.
 
+### Fixed
+
+- **HITL `require_approval` policies now correctly return the `require_approval` sentinel in Gateway Mode pre-check.** When a custom policy with `action=require_approval` matched, the pre-check response returned the policy description as `block_reason` instead of the `require_approval` sentinel string that SDKs and plugins check to trigger the HITL approval flow. The approval flow silently did not activate. Now `require_approval` policies return `block_reason="require_approval"` so SDK-side HITL detection works correctly.
+
 ## [8.1.0] - 2026-05-23 — HITL outbound webhook callback + HTTP Idempotency-Key dedup
 
 Minor release on top of v8.0.1. Two additive features that close gaps surfaced during the Google ADK plugin + n8n community node R3 — workflow tools that pause on a webhook can now resume without a polling sidecar, and `Retry on Fail` retries no longer double-create approval rows or double-record audit entries.
