@@ -48,6 +48,13 @@ tags:
     description: Full request interception and processing
   - name: Gateway Mode
     description: Pre-check and audit for SDK-managed LLM calls
+  - name: Decision Mode
+    description: |
+      Synchronous policy decision endpoint (ADR-056). Called by an
+      infrastructure gateway acting as a Policy Enforcement Point (PEP);
+      AxonFlow returns a verdict (`allow` / `deny` / `needs_approval`) and
+      the PEP enforces it. Same shared-policy engine as Gateway Mode
+      pre-check; difference is the caller.
   - name: MCP Connectors
     description: Model Context Protocol data connector operations
   - name: Metrics
@@ -428,6 +435,177 @@ paths:
                 error: "Invalid or expired context"
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/decide:
+    post:
+      tags:
+        - Decision Mode
+      summary: Policy decision for an infrastructure gateway (PEP)
+      description: |
+        Decision Mode endpoint (ADR-056 / epic #2426). The customer's
+        infrastructure gateway (Policy Enforcement Point) calls this
+        endpoint per request to get a verdict (`allow` / `deny` /
+        `needs_approval`) and enforces the result. AxonFlow is consulted,
+        never on the traffic path.
+
+        The shared-policy engine behind this endpoint is the same engine
+        that backs Gateway Mode's `POST /api/policy/pre-check`. The
+        difference is the caller: Gateway Mode is called by application
+        code; Decision Mode is called by an infrastructure gateway.
+
+        **M1 scope: static policies only** (PII detection, SQL injection,
+        dangerous patterns, RBI India PII, compliance categories) to keep
+        the inline RPC budget in single-digit milliseconds. Dynamic/custom
+        policy support is M2 scope per the epic.
+
+        **OTel trace correlation:** the response carries a W3C-compatible
+        32-hex `trace_id`. When the caller passes a `traceparent` header,
+        its trace-id is reused so multi-gateway-layer decisions stitch
+        into one end-to-end trace. Each decision also emits an OpenTelemetry
+        span on the `axonflow.agent.decision` tracer.
+
+        **Available at all tiers** (Community through Enterprise) — the
+        policy engine is the same one Gateway Mode uses.
+      operationId: decide
+      parameters:
+        - in: header
+          name: traceparent
+          description: |
+            W3C trace-context header. When present and valid, the trace-id
+            is reused in the response so multi-layer decisions correlate
+            into one end-to-end trace.
+          required: false
+          schema:
+            type: string
+            example: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecideRequest'
+            examples:
+              llmStage:
+                summary: LLM-stage decision (most common)
+                value:
+                  stage: "llm"
+                  caller_identity:
+                    gateway_id: "llm-gateway-01"
+                    tenant_id: "acme-prod"
+                  target:
+                    type: "llm"
+                    model: "gpt-4o"
+                    provider: "openai"
+                  query: "What is the customer's order status?"
+              toolStage:
+                summary: Tool-stage decision (MCP gateway)
+                value:
+                  stage: "tool"
+                  caller_identity:
+                    gateway_id: "mcp-gateway-01"
+                    tenant_id: "acme-prod"
+                  target:
+                    type: "tool"
+                    tool: "postgres.query"
+                  query: "SELECT name, email FROM customers LIMIT 10"
+      responses:
+        '200':
+          description: Decision verdict (allow / deny / needs_approval)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideResponse'
+              examples:
+                allow:
+                  summary: Verdict allow
+                  value:
+                    verdict: "allow"
+                    decision_id: "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+                    trace_id: "0af7651916cd43dd8448eb211c80319c"
+                    stage: "llm"
+                    reasons: []
+                    obligations: []
+                    evaluated_policies: []
+                    expires_at: "2026-05-23T10:35:00Z"
+                deny:
+                  summary: Verdict deny (SQLi triggered)
+                  value:
+                    verdict: "deny"
+                    decision_id: "a73e5b1c-2b48-4f2e-a3c4-2e8a3b9f8d1e"
+                    trace_id: "0af7651916cd43dd8448eb211c80319c"
+                    stage: "tool"
+                    reasons: ["SQL injection pattern matched"]
+                    obligations: []
+                    evaluated_policies: ["sys_sqli_union"]
+                    expires_at: "2026-05-23T10:35:00Z"
+                allowWithRedaction:
+                  summary: Verdict allow with redact obligation
+                  value:
+                    verdict: "allow"
+                    decision_id: "c4e8f1a2-9d3b-4c7e-b8f1-7a2c3d4e5f6a"
+                    trace_id: "0af7651916cd43dd8448eb211c80319c"
+                    stage: "llm"
+                    reasons: []
+                    obligations:
+                      - type: "redact_pii"
+                        detail: "SSN detected in query"
+                    evaluated_policies: ["sys_pii_ssn"]
+                    expires_at: "2026-05-23T10:35:00Z"
+        '400':
+          description: Request malformed (invalid JSON or missing required fields).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideErrorResponse'
+        '401':
+          description: |
+            Authentication failed. In non-community mode the
+            `Authorization` header is required and credentials must
+            resolve to a valid client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideErrorResponse'
+        '403':
+          description: |
+            Tenant assertion mismatch -- `caller_identity.tenant_id` or
+            `caller_identity.org_id` in the body did not match the
+            authenticated identity (non-community mode only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideErrorResponse'
+        '429':
+          description: |
+            Community SaaS tenants past the daily request cap. Only
+            emitted on the SaaS surface; self-hosted Community and
+            Enterprise deployments do not return 429.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the daily quota window resets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideErrorResponse'
+        '503':
+          description: |
+            Circuit breaker is open. The body carries
+            `verdict: "deny"` as the fail-closed default; a fail-open
+            PEP adapter should treat 5xx as "PDP degraded" and apply
+            its configured posture per ADR-056 §Failure posture.
+            A `Retry-After` header is included when the breaker has
+            a scheduled expiration.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the breaker is scheduled to close.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecideErrorResponse'
 
   /api/policies/test:
     post:
@@ -3754,6 +3932,15 @@ components:
         block_reason:
           type: string
           description: Reason if request was blocked
+        trace_id:
+          type: string
+          description: |
+            W3C OpenTelemetry trace_id (32-char lowercase hex) emitted
+            by the decision tracer. Optional: present when the tracer
+            is enabled via AXONFLOW_OTEL_ENDPOINT, omitted otherwise.
+            Policy Enforcement Points propagate this id downstream so
+            multi-gateway decisions stitch into one end-to-end trace.
+          example: "b3a1f1f3a8c6e0d791bc3e7a8c2d5f4a"
 
     RateLimitInfo:
       type: object
@@ -3768,6 +3955,206 @@ components:
           type: string
           format: date-time
           description: When the rate limit resets
+
+    DecideRequest:
+      type: object
+      required:
+        - stage
+        - query
+      properties:
+        stage:
+          type: string
+          enum: [llm, tool, agent]
+          description: |
+            Which gateway layer is calling. Maps to ADR-056's three-layer
+            reference architecture (agent / MCP / LLM).
+        caller_identity:
+          $ref: '#/components/schemas/DecisionCallerIdentity'
+        target:
+          $ref: '#/components/schemas/DecisionTarget'
+        query:
+          type: string
+          minLength: 1
+          description: The request body / prompt / statement being decided on.
+        user_token:
+          type: string
+          description: |
+            Optional end-user JWT for audit identity. PEP gateways are
+            typically services and may omit this field -- in enterprise
+            mode the platform synthesizes a service identity for the
+            audit row when no token is supplied. Supplying a token gets
+            the validated-user record on the audit row instead.
+        context:
+          type: object
+          additionalProperties: true
+          description: Arbitrary caller-supplied context for policy evaluation.
+
+    DecisionCallerIdentity:
+      type: object
+      description: |
+        Gateway-asserted caller identity. `org_id` and `tenant_id` are
+        OPTIONAL in the body -- the auth-derived identity from
+        `apiAuthMiddleware` is authoritative. In non-community mode,
+        body-supplied values MUST match the authenticated identity or
+        the request is rejected with HTTP 403.
+      properties:
+        gateway_id:
+          type: string
+          description: Identifier of the calling gateway (PEP), for audit trail.
+        org_id:
+          type: string
+          description: |
+            Org scope for the decision. In non-community mode, must match
+            the authenticated identity if supplied.
+        tenant_id:
+          type: string
+          description: |
+            Tenant scope for the decision. In non-community mode, must
+            match the authenticated identity if supplied.
+
+    DecisionTarget:
+      type: object
+      description: What the gateway is about to call.
+      properties:
+        type:
+          type: string
+          description: "Target type: llm, tool, or agent."
+        model:
+          type: string
+          description: Model identifier when type is llm.
+          example: "gpt-4o"
+        provider:
+          type: string
+          description: Provider identifier when type is llm.
+          example: "openai"
+        tool:
+          type: string
+          description: Tool/connector identifier when type is tool.
+          example: "postgres.query"
+
+    DecideResponse:
+      type: object
+      required:
+        - verdict
+        - decision_id
+        - trace_id
+        - obligations
+        - evaluated_policies
+        - expires_at
+      properties:
+        verdict:
+          type: string
+          enum: [allow, deny, needs_approval]
+          description: |
+            The PEP MUST enforce this verdict. `allow` = forward;
+            `deny` = block; `needs_approval` = hold for human review
+            (enterprise-only -- community mode auto-allows on the
+            require_approval action).
+        decision_id:
+          type: string
+          format: uuid
+          description: |
+            Fresh UUID per decision. Stable handle for audit-log
+            correlation, follow-up explain calls, and PEP-side logging.
+        trace_id:
+          type: string
+          minLength: 32
+          maxLength: 32
+          pattern: '^[0-9a-f]{32}$'
+          description: |
+            W3C trace-context trace-id (32 lowercase hex). When the
+            request carried a `traceparent` header, the trace-id is
+            reused so multi-gateway-layer decisions stitch into one
+            end-to-end trace. Otherwise a fresh trace-id is minted.
+        stage:
+          type: string
+          enum: [llm, tool, agent]
+          description: Echo of the request stage, for audit dashboards.
+        reasons:
+          type: array
+          items:
+            type: string
+          description: |
+            Human-readable reason strings backing the verdict. Empty on
+            verdict=allow with no obligations.
+        obligations:
+          type: array
+          items:
+            $ref: '#/components/schemas/DecisionObligation'
+          description: |
+            PEP-side requirements that accompany an `allow` verdict
+            (e.g. redact PII before forwarding). Always a non-nil array
+            so PEP code can iterate without a nil-check.
+        evaluated_policies:
+          type: array
+          items:
+            type: string
+          description: |
+            Policy IDs that MATCHED during evaluation (not the total
+            number of policies considered). Empty when no policy matched.
+            On `deny`, the first entry is the blocking policy; the rest
+            (if any) are non-blocking matches recorded for audit.
+            On `allow` with obligations, the entries are the policies
+            that produced the obligation. The full evaluation count
+            will be surfaced separately when the explain endpoint
+            (`/api/v1/decisions/{id}/explain`) lands.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            When the decision expires. PEPs that cache decisions MUST
+            re-call by this timestamp.
+
+    DecisionObligation:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          description: |
+            Obligation kind. Currently emitted: `redact_pii`. Future
+            obligations will be added here as needed by PEP adapters.
+          example: "redact_pii"
+        detail:
+          type: string
+          description: Human-readable detail for audit logs.
+
+    DecideErrorResponse:
+      type: object
+      required:
+        - error
+        - verdict
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+        verdict:
+          type: string
+          enum: [deny]
+          description: |
+            Always `deny` on error responses. PEP code can treat the
+            envelope as a deny verdict for fail-closed enforcement, or
+            inspect the HTTP status code to apply a different posture
+            (e.g. fail-open on 503).
+        decision_id:
+          type: string
+          format: uuid
+          description: |
+            Decision ID for the request when one was minted before the
+            error. The field is OMITTED from the envelope (not present
+            as empty) for request-format errors that were rejected
+            before a decision_id was minted.
+        trace_id:
+          type: string
+          minLength: 32
+          maxLength: 32
+          pattern: '^[0-9a-f]{32}$'
+          description: |
+            W3C trace-id for the request when one was minted before the
+            error. The field is OMITTED from the envelope (not present
+            as empty) for request-format errors that were rejected
+            before a trace_id was minted.
 
     AuditLLMCallRequest:
       type: object

@@ -27,6 +27,7 @@ import (
 
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/rbi"
+	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/connectors/base"
 	"axonflow/platform/orchestrator/cost"
 	sharedpolicy "axonflow/platform/shared/policy"
@@ -186,6 +187,12 @@ type PreCheckResponse struct {
 	BudgetInfo        *BudgetInfo            `json:"budget_info,omitempty"` // Issue #1082: Budget status
 	ExpiresAt         time.Time              `json:"expires_at"`
 	BlockReason       string                 `json:"block_reason,omitempty"`
+	// TraceID is the W3C OpenTelemetry trace_id emitted by the decision
+	// tracer (#2426 WS4). Empty when AXONFLOW_OTEL_ENDPOINT is unset
+	// (Community-tier default — OTel is opt-in). Decision-Mode PEPs
+	// propagate this id downstream so multi-gateway decisions stitch
+	// into one end-to-end trace per ADR-056 §"Trace correlation".
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // RateLimitInfo provides rate limiting status to SDK
@@ -439,6 +446,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			BlockReason: killSwitchResult.Reason,
 			ExpiresAt:   time.Now(),
 		}
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), killSwitchResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -466,6 +474,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 			BlockReason: piiResult.Reason,
 			ExpiresAt:   time.Now(),
 		}
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), piiResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
 		return
@@ -586,6 +595,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 					BudgetInfo:  budgetInfo,
 					ExpiresAt:   time.Now(),
 				}
+				response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), budgetDecision.Message, response.Policies, time.Since(startTime).Milliseconds())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
 				_ = json.NewEncoder(w).Encode(response)
@@ -686,8 +696,27 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		approvedStr = "false"
 	}
 	gatewayPreCheckRequests.WithLabelValues("success", approvedStr).Inc()
-	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v",
-		latencyMs, contextID, response.Approved)
+
+	// Emit OTel decision span (#2426 WS4 / Brief 25-C). Reference
+	// instrumentation for Session 25-A's POST /api/v1/decide handler —
+	// same shape, same attributes, same response field. noop tracer
+	// returns "" when AXONFLOW_OTEL_ENDPOINT is unset, which the SDK
+	// omits via omitempty.
+	if decisionTracerProvider != nil {
+		response.TraceID = decisionTracerProvider.Tracer.RecordDecision(ctx, telemetry.DecisionEvent{
+			DecisionID: contextID,
+			OrgID:      client.OrgID,
+			TenantID:   client.TenantID,
+			Stage:      decisionStageForPreCheck(req),
+			Verdict:    verdictFromPreCheck(response, requiresHITL),
+			PolicyIDs:  response.Policies,
+			LatencyMs:  latencyMs,
+			Reasons:    reasonsFromPreCheck(response, policyResult),
+		})
+	}
+
+	log.Printf("✅ [Pre-check] Completed in %dms - contextID=%s, approved=%v, trace_id=%q",
+		latencyMs, contextID, response.Approved, response.TraceID)
 
 	// Rate-limited outreach log on successful policy enforcement
 	// Appears once per hour to real operators, not on every request
@@ -700,6 +729,68 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("❌ [Pre-check] Failed to encode response: %v", err)
 	}
+}
+
+// recordPreCheckDecision emits the OTel decision span for an
+// early-exit deny path (RBI kill-switch / RBI PII block / budget
+// exceeded). Centralised so every short-circuit goes through the same
+// attribute mapping; the main exit calls the tracer inline for cheaper
+// stack reads. Always-on noop when AXONFLOW_OTEL_ENDPOINT is unset.
+func recordPreCheckDecision(ctx context.Context, contextID, orgID, tenantID, stage string, blockReason string, policyIDs []string, latencyMs int64) string {
+	if decisionTracerProvider == nil {
+		return ""
+	}
+	return decisionTracerProvider.Tracer.RecordDecision(ctx, telemetry.DecisionEvent{
+		DecisionID: contextID,
+		OrgID:      orgID,
+		TenantID:   tenantID,
+		Stage:      stage,
+		Verdict:    "deny",
+		PolicyIDs:  policyIDs,
+		LatencyMs:  latencyMs,
+		Reasons:    []string{blockReason},
+	})
+}
+
+// decisionStageForPreCheck infers the decision-mode stage for a Gateway
+// Mode pre-check call. Pre-check fires before the LLM/tool invocation,
+// so the stage is the one the *caller* is about to hit. A non-empty
+// data_sources list is the strongest signal a tool/connector call is
+// next; otherwise this is an LLM-mediated request. Keep this aligned
+// with Session 25-A's classification when the Decision API lands.
+func decisionStageForPreCheck(req PreCheckRequest) string {
+	if len(req.DataSources) > 0 {
+		return "tool"
+	}
+	return "llm"
+}
+
+// verdictFromPreCheck maps the PreCheckResponse + HITL flag to the
+// three-valued verdict enum the DecisionEvent expects.
+func verdictFromPreCheck(resp PreCheckResponse, requiresHITL bool) string {
+	if requiresHITL {
+		return "needs_approval"
+	}
+	if !resp.Approved {
+		return "deny"
+	}
+	return "allow"
+}
+
+// reasonsFromPreCheck collects the human-readable reasons attached to
+// a decision so they land in the OTel span's `decision.reasons`
+// attribute. Block reason is authoritative for deny/needs_approval;
+// triggered policies double as a reason hint for allowed-with-policy
+// outcomes (e.g. redaction).
+func reasonsFromPreCheck(resp PreCheckResponse, policyResult *StaticPolicyResult) []string {
+	var reasons []string
+	if resp.BlockReason != "" {
+		reasons = append(reasons, resp.BlockReason)
+	}
+	if policyResult != nil && policyResult.Reason != "" && policyResult.Reason != resp.BlockReason {
+		reasons = append(reasons, policyResult.Reason)
+	}
+	return reasons
 }
 
 // handleAuditLLMCall handles POST /api/audit/llm-call
