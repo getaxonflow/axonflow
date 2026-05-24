@@ -648,11 +648,19 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		response.Policies = append(response.Policies, "hitl_enterprise")
 	}
 
-	if policyResult.Blocked {
+	if requiresHITL {
+		// HITL takes precedence over block — the request needs human approval,
+		// not an outright deny. SDKs check for the exact "require_approval"
+		// sentinel to trigger the HITL polling flow.
+		response.BlockReason = "require_approval"
+		log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - awaiting human approval (contextID=%s)", contextID)
+	} else if policyResult.Blocked {
 		response.BlockReason = policyResult.Reason
 		log.Printf("⛔ [Pre-check] Request blocked: %s", policyResult.Reason)
+	}
 
-		// Record policy violation for auto-trip threshold tracking (#1176)
+	// Record policy violation for auto-trip threshold tracking
+	if policyResult.Blocked || requiresHITL {
 		if circuitBreakerInstance != nil {
 			for _, policyID := range policyResult.TriggeredPolicies {
 				if err := circuitBreakerInstance.RecordPolicyViolation(ctx, client.OrgID, client.TenantID, client.ID, policyID); err != nil {
@@ -660,12 +668,9 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	} else if requiresHITL {
-		// Issue #1081: HITL required (Enterprise only) - block with require_approval reason
-		// This enables EU AI Act Article 14, RBI, SEBI, and other compliance frameworks
-		response.BlockReason = "require_approval"
-		log.Printf("⏸️ [Pre-check] HITL required (Enterprise) - awaiting human approval (contextID=%s)", contextID)
-	} else if requiresRedaction {
+	}
+
+	if !policyResult.Blocked && !requiresHITL && requiresRedaction {
 		log.Printf("⚠️ [Pre-check] Request approved with redaction required: %s", policyResult.Reason)
 	} else {
 		// Fetch data from MCP connectors if data sources specified

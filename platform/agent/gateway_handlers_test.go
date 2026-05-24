@@ -3571,4 +3571,33 @@ func TestConvertSharedResultToStatic_RequireApproval(t *testing.T) {
 	}
 }
 
+// TestConvertSharedResultToStatic_RequireApprovalWithBlocked tests that
+// RequiresApproval is set correctly even when the shared engine also sets
+// Blocked=true (the shared engine sets Blocked=true for require_approval
+// policies because the request IS blocked pending human approval).
+func TestConvertSharedResultToStatic_RequireApprovalWithBlocked(t *testing.T) {
+	sharedResult := &sharedpolicy.RequestResult{
+		Blocked:           true,
+		BlockReason:       "Policy description text",
+		PoliciesEvaluated: 1,
+		MatchedPolicies: []sharedpolicy.PolicyMatch{
+			{
+				PolicyID: "custom_hitl_policy",
+				Action:   sharedpolicy.ActionRequireApproval,
+				Category: sharedpolicy.CategorySensitiveData,
+				Severity: sharedpolicy.SeverityHigh,
+			},
+		},
+	}
+
+	result := convertSharedResultToStatic(sharedResult)
+
+	if !result.RequiresApproval {
+		t.Error("Expected RequiresApproval=true even when Blocked=true")
+	}
+	if !result.Blocked {
+		t.Error("Expected Blocked=true (request is blocked pending approval)")
+	}
+}
+
 // TestIsPIICategory tests the PII category detection helper
