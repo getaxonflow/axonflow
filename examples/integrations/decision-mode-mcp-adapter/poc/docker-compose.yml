@@ -1,0 +1,91 @@
+# Decision Mode MCP Gateway PoC
+#
+# Boots three services:
+#   1. AxonFlow agent (community edition) — policy engine + Decision API
+#   2. MCP PEP adapter — intercepts MCP JSON-RPC, calls Decision API
+#   3. Mock Payments MCP server — simulates payment transaction tools
+#
+# Usage:
+#   docker compose up -d --build
+#   ./test.sh
+#   docker compose down -v
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mcp-poc-postgres
+    environment:
+      POSTGRES_USER: axonflow
+      POSTGRES_PASSWORD: localdev123
+      POSTGRES_DB: axonflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  axonflow-agent:
+    build:
+      context: ../../../..
+      dockerfile: platform/agent/Dockerfile
+      args:
+        EDITION: community
+    container_name: mcp-poc-axonflow
+    environment:
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+      AXONFLOW_EDITION: community
+      AXONFLOW_DB_USE_APP_ROLE: "false"
+      AXONFLOW_PROFILE: strict
+      SQLI_ACTION: block
+      PII_ACTION: block
+      PORT: "8080"
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  mcp-adapter:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: mcp-poc-adapter
+    environment:
+      MCP_ADAPTER_LISTEN: ":9090"
+      MCP_SERVER_URL: http://mock-mcp:9091
+      AXONFLOW_ENDPOINT: http://axonflow-agent:8080
+      MCP_GATEWAY_ID: payments-mcp-gateway
+      AXONFLOW_CLIENT_ID: mcp-adapter-poc
+      MCP_FAIL_MODE: closed
+      MCP_INTERCEPT_METHODS: "tools/call"
+    ports:
+      - "9090:9090"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  mock-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    container_name: mcp-poc-mock
+    environment:
+      MOCK_MCP_LISTEN: ":9091"
+    ports:
+      - "9091:9091"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10

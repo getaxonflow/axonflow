@@ -23,11 +23,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -42,6 +44,7 @@ import (
 	"axonflow/platform/agent/license"
 	"axonflow/platform/agent/marketplace"
 	"axonflow/platform/agent/node_enforcement"
+	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/common/usage"
 	"axonflow/platform/orchestrator/cost"
 	"axonflow/platform/shared/idempotency"
@@ -254,6 +257,12 @@ var (
 	// the HTTP handler path uses — single chokepoint, no parallel
 	// enforcement layers to drift.
 	mcpHITLService *hitl.Service
+	// decisionTracerProvider holds the OTel-backed DecisionTracer wired
+	// at boot (#2426 WS4). When AXONFLOW_OTEL_ENDPOINT is unset, the
+	// provider's Tracer is the noop impl — handlers can call
+	// RecordDecision unconditionally without nil-checks. Provider is
+	// kept around so Run() can flush spans during graceful shutdown.
+	decisionTracerProvider *telemetry.Provider
 	// mcpIdempStore is the long-lived idempotency Store used by handlers
 	// that authenticate inside their own body (mcp/check-input, hitl/queue
 	// via the SetIdempotencyWrap shim). Wired in run.go after the admin
@@ -1212,8 +1221,20 @@ func Run() {
 		RegisterConnectorRefreshHandlers(globalRouter)
 	}
 
+	// Wire the OTel decision tracer (#2426 WS4 / Brief 25-C). Empty
+	// AXONFLOW_OTEL_ENDPOINT yields the noop tracer — Community-tier
+	// safe, no required infra. Handlers call RecordDecision
+	// unconditionally; the noop impl returns "" so SDKs receive an
+	// empty trace_id field they can ignore.
+	decisionTracerProvider = telemetry.NewDecisionTracer(context.Background())
+
 	// Register Gateway Mode endpoints (pre-check and audit)
 	RegisterGatewayHandlers(globalRouter)
+
+	// Register Decision Mode endpoint (POST /api/v1/decide) -- ADR-056 / epic #2426.
+	// Same shared-policy engine as Gateway Mode pre-check; surfaced for an
+	// infrastructure-gateway caller (PEP) rather than application code.
+	RegisterDecisionHandlers(globalRouter)
 
 	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
@@ -1491,8 +1512,24 @@ func Run() {
 		}
 	}()
 
-	// Block forever - server is running in goroutine, nothing else to do
-	select {}
+	// Wait for SIGTERM/SIGINT so we can flush the OTel decision tracer
+	// before the process exits (#2426 WS4). Without a handler the
+	// process is killed before BatchSpanProcessor flushes — the
+	// telemetry Provider exposes a 5s-bounded Shutdown so this blocks
+	// at most that long. The HTTP server stays in its goroutine; this
+	// is intentionally a *flush*, not a graceful server drain.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	log.Printf("⏸️  Received %s — flushing decision tracer before exit", sig)
+	if decisionTracerProvider != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		if err := decisionTracerProvider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[telemetry] decision tracer Shutdown error: %v", err)
+		}
+		cancel()
+	}
+	log.Println("👋 Goodbye")
 }
 
 //nolint:unused // Used in tests

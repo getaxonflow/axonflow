@@ -1,0 +1,67 @@
+# AxonFlow OpenTelemetry Overlay (#2426 WS4 / Brief 25-C)
+# Local OTel collector + Jaeger UI for verifying decision tracer spans
+# emitted by the agent. Use alongside the base docker-compose.yml.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.otel.yml up -d
+#   open http://localhost:16686                # Jaeger UI
+#   curl http://localhost:8080/api/policy/pre-check ...  # emit a span
+#
+# Why this overlay exists separately:
+#   OTel is opt-in. AxonFlow runs fine without it — the agent's
+#   decision tracer falls back to the noop impl when
+#   AXONFLOW_OTEL_ENDPOINT is empty (the default in
+#   docker-compose.yml). This overlay only activates tracing for
+#   local verification and the runtime-e2e/2426_otel_tracing harness.
+#
+# Services added:
+#   - otel-collector: receives OTLP/gRPC on :4317, OTLP/HTTP on :4318
+#   - jaeger:         all-in-one binary, UI on :16686, query API on :16686/api
+
+services:
+  otel-collector:
+    # opentelemetry-collector-contrib carries the jaeger exporter and
+    # other community receivers/exporters out of the box. The "core"
+    # image strips them — use contrib for any local-dev setup that
+    # ships spans to Jaeger.
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    container_name: axonflow-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      jaeger:
+        condition: service_started
+    networks:
+      - axonflow-network
+
+  jaeger:
+    # All-in-one bundles collector + agent + query into one binary.
+    # The OTLP receivers are enabled via env so the collector forwards
+    # to it on :4317 (gRPC). Operators who want a production-grade
+    # backend should replace this with Tempo or a managed service.
+    image: jaegertracing/all-in-one:1.66.0
+    container_name: axonflow-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI + Query API
+      - "14250:14250"  # Jaeger gRPC (collector pushes here)
+    networks:
+      - axonflow-network
+
+  # Override agent: point it at the in-network collector and
+  # name it as a service in the OTel resource so dashboards key on it.
+  axonflow-agent:
+    environment:
+      AXONFLOW_OTEL_ENDPOINT: otel-collector:4317
+      AXONFLOW_OTEL_SERVICE_NAME: axonflow-agent
+      AXONFLOW_OTEL_SAMPLE_RATE: "1.0"
+    depends_on:
+      otel-collector:
+        condition: service_started

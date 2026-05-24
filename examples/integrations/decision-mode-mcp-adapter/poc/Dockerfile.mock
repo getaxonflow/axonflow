@@ -1,0 +1,13 @@
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY mock_mcp_server.go ./
+RUN go mod init mock-mcp-server && CGO_ENABLED=0 go build -o mock-mcp-server .
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates && \
+    addgroup -g 1001 -S mockserver && \
+    adduser -S -D -H -u 1001 -G mockserver mockserver
+COPY --from=builder /app/mock-mcp-server /usr/local/bin/mock-mcp-server
+USER mockserver
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:9091/health || true
+ENTRYPOINT ["mock-mcp-server"]

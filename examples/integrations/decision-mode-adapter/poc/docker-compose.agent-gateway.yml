@@ -1,0 +1,52 @@
+# Decision Mode PoC — Agent Gateway configuration.
+#
+# Same adapter, different stage: intercepts agent-routing requests
+# with stage: "agent" instead of stage: "llm".
+#
+# Topology:
+#   client → adapter (:8889) → mock-agent-backend (:9091)
+#                ↓
+#         axonflow-agent (:8080) — policy decision
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.agent-gateway.yml up -d --build
+#   ./test-agent-gateway.sh
+#   docker compose -f docker-compose.yml -f docker-compose.agent-gateway.yml down -v
+
+services:
+  mock-agent-backend:
+    build:
+      context: mock-llm
+      dockerfile: Dockerfile
+    environment:
+      LISTEN_ADDR: ":9091"
+    command: ["/usr/local/bin/mock-llm"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9091/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - poc
+
+  adapter-agent:
+    build:
+      context: ..
+      dockerfile: poc/Dockerfile.adapter
+    environment:
+      AXONFLOW_ENDPOINT: http://axonflow-agent:8080
+      DOWNSTREAM_URL: http://mock-agent-backend:9091
+      AXONFLOW_GATEWAY_ID: agent-gateway-poc
+      AXONFLOW_STAGE: agent
+      AXONFLOW_FAIL_OPEN: "false"
+      LISTEN_ADDR: ":8889"
+    ports:
+      - "8889:8889"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+      mock-agent-backend:
+        condition: service_healthy
+    networks:
+      - poc

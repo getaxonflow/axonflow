@@ -12,6 +12,32 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-05-25 — Decision Mode (PDP/PEP policy decision service) + OTel decision tracer
+
+Additive minor release. Decision Mode brings the Policy Decision Point / Policy Enforcement Point pattern (established by OPA, XACML, Cedar) to AI governance: infrastructure gateways query AxonFlow for a policy verdict before forwarding traffic. The OpenTelemetry decision tracer wires every policy decision into a standard observability pipeline. Three new ecosystem integration packages land on PyPI and npm. No breaking changes, no schema changes, no migration impact.
+
+### Added (Community)
+
+- **Decision Mode — PDP/PEP policy decision service (`POST /api/v1/decide`).** Brings the Policy Decision Point / Policy Enforcement Point pattern to AxonFlow. Infrastructure gateways (the PEP) query AxonFlow (the PDP) for a synchronous policy verdict before forwarding requests upstream. Request: `{stage, caller_identity, target, query}` where `stage` is `llm`/`tool`/`agent`. Response: `{verdict, decision_id, trace_id, reasons, obligations, evaluated_policies}`. Same shared-policy engine as Gateway Mode's `POST /api/policy/pre-check`. Available at all tiers.
+
+- **OTel decision tracer + exporter pipeline.** One decision = one OTel span (`axonflow.decision`) with eight attributes covering decision metadata and identity. W3C `trace_id` returned in pre-check and decide responses for gateway-layer trace correlation. Configurable via `AXONFLOW_OTEL_ENDPOINT` (empty = noop, no required infra), `AXONFLOW_OTEL_SERVICE_NAME`, `AXONFLOW_OTEL_SAMPLE_RATE`. `docker-compose.otel.yml` overlay provides a local Jaeger setup.
+
+- **Decision Mode reference PEP adapters.** Two reference adapters: LLM + Agent gateway (`examples/integrations/decision-mode-adapter/`, Go HTTP middleware) and MCP gateway (`examples/integrations/decision-mode-mcp-adapter/`, JSON-RPC 2.0 interceptor). Both include docker-compose PoC harnesses with test scripts.
+
+### Added (Ecosystem — standalone repos, announced here)
+
+- **axonflow-litellm** ([PyPI](https://pypi.org/project/axonflow-litellm/)). LiteLLM SDK callback integration via `CustomLogger` subclass. `pip install axonflow-litellm`. Standalone repo: [getaxonflow/axonflow-litellm](https://github.com/getaxonflow/axonflow-litellm).
+
+- **axonflow-google-adk-plugin** ([PyPI](https://pypi.org/project/axonflow-google-adk-plugin/)). Google Agent Development Kit plugin for policy checks and HITL approval within ADK agent flows. Standalone repo: [getaxonflow/axonflow-google-adk-plugin](https://github.com/getaxonflow/axonflow-google-adk-plugin).
+
+- **@axonflow/n8n-nodes-axonflow** ([npm](https://www.npmjs.com/package/@axonflow/n8n-nodes-axonflow)). n8n community node with four operations: Check Policy, Record Decision, Audit Log, Wait for Approval. Standalone repo: [getaxonflow/axonflow-n8n-node](https://github.com/getaxonflow/axonflow-n8n-node).
+
+### Changed
+
+- **Decision Mode architecture.** New integration mode using the PDP/PEP pattern alongside Gateway Mode, Proxy Mode, and WCP. Integration packages follow MIT license and `axonflow-` naming conventions.
+
+- **Integration package stubs.** `examples/integrations/google-adk-plugin/` and `examples/integrations/n8n-axonflow-node/` replaced with stub READMEs pointing to their standalone repos.
+
 ## [8.1.0] - 2026-05-23 — HITL outbound webhook callback + HTTP Idempotency-Key dedup
 
 Minor release on top of v8.0.1. Two additive features that close gaps surfaced during the Google ADK plugin + n8n community node R3 — workflow tools that pause on a webhook can now resume without a polling sidecar, and `Retry on Fail` retries no longer double-create approval rows or double-record audit entries.

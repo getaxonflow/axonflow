@@ -1,0 +1,108 @@
+# Decision Mode PoC — full round-trip demonstration.
+#
+# Topology:
+#   client → adapter (:8888) → mock-llm (:9090)
+#                ↓
+#         axonflow-agent (:8080) — policy decision
+#
+# Usage:
+#   docker compose up -d --build
+#   ./test.sh
+#   docker compose down -v
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: axonflow
+      POSTGRES_PASSWORD: localdev123
+      POSTGRES_DB: axonflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axonflow -d axonflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - poc
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - poc
+
+  axonflow-agent:
+    build:
+      context: ../../../..
+      dockerfile: platform/agent/Dockerfile
+      args:
+        EDITION: community
+    environment:
+      DATABASE_URL: postgres://axonflow:localdev123@postgres:5432/axonflow?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      PORT: "8080"
+      ORCHESTRATOR_URL: ""
+      OPENAI_API_KEY: "not-needed-for-decision-mode"
+      AXONFLOW_VERSION: "${AXONFLOW_VERSION:-8.1.0}"
+      AXONFLOW_DB_USE_APP_ROLE: "false"
+      GATEWAY_PII_ACTION: block
+      GATEWAY_SQLI_ACTION: block
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    networks:
+      - poc
+
+  mock-llm:
+    build:
+      context: mock-llm
+      dockerfile: Dockerfile
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - poc
+
+  adapter:
+    build:
+      context: ..
+      dockerfile: poc/Dockerfile.adapter
+    environment:
+      AXONFLOW_ENDPOINT: http://axonflow-agent:8080
+      DOWNSTREAM_URL: http://mock-llm:9090
+      AXONFLOW_GATEWAY_ID: llm-gateway-poc
+      AXONFLOW_FAIL_OPEN: "false"
+      LISTEN_ADDR: ":8888"
+    ports:
+      - "8888:8888"
+    depends_on:
+      axonflow-agent:
+        condition: service_healthy
+      mock-llm:
+        condition: service_healthy
+    networks:
+      - poc
+
+networks:
+  poc:
+    driver: bridge
