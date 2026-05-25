@@ -55,8 +55,8 @@ const (
 // with a humanized "in X days" relative-time string derived from resets_at.
 const (
 	wordingDailyQuota          = "Daily limit reached on Free tier (200 events). Pro raises this to 2,000/day. Resets at midnight UTC."
-	wordingActivePolicies      = "Free tier supports 2 active custom policies. Delete one to make room, or Pro removes the cap."
-	wordingHITLApprovalsWindow = "1 of 1 HITL approvals used in the last 7 days. Next available %s. Pro removes this cap."
+	wordingActivePolicies      = "Free tier supports 4 active custom policies. Delete one to make room, or upgrade to Pro for up to 50."
+	wordingHITLApprovalsWindow = "HITL approval limit reached for the last 7 days. Next available %s. Pro raises this to 20/week."
 	wordingFeatureProOnly      = "LLM cost pre-flight is a Pro feature — see what a multi-step plan will cost before it runs."
 )
 

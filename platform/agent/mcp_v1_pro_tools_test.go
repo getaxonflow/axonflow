@@ -363,8 +363,8 @@ func TestMCPToolListProFeatures(t *testing.T) {
 
 	// Tone direction quote present (locked verbatim per umbrella #1958)
 	tone, _ := m["tone"].(string)
-	if !strings.Contains(tone, "Pro removes the caps") {
-		t.Errorf("tone missing locked phrase 'Pro removes the caps': %q", tone)
+	if !strings.Contains(tone, "Pro raises the caps") {
+		t.Errorf("tone missing locked phrase 'Pro raises the caps': %q", tone)
 	}
 }
 

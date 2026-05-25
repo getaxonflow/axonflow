@@ -74,14 +74,16 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 				"allowed", int64(10), "agent-1", redactedJSON, flagsJSON))
 
 	// Mock exportDecisionChain
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type, decision, confidence, rationale, model_id, human_override, override_by, override_reason FROM decision_chain")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type, decision_outcome, risk_level, model_id, requires_human_review, policies_evaluated::text, policy_triggered, processing_time_ms FROM decision_chain")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision",
-			"confidence", "rationale", "model_id", "human_override", "override_by", "override_reason",
+			"id", "request_id", "created_at", "decision_type", "decision_outcome",
+			"risk_level", "model_id", "requires_human_review",
+			"policies_evaluated", "policy_triggered", "processing_time_ms",
 		}).
-			AddRow("dc-1", "req-1", now, "policy_eval", "allow",
-				0.95, "Low risk", "model-v2", true, "admin@test.com", "Authorized"))
+			AddRow("dc-1", "req-1", now, "policy_eval", "approved",
+				"limited", "model-v2", true,
+				"{policy-1,policy-2}", "policy-1", 150))
 
 	// Mock exportHITLOversight
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason, reviewer_id, decision, notes, review_time_ms FROM hitl_queue")).
@@ -148,8 +150,8 @@ func TestExportAuditData_AllDataTypes_Success(t *testing.T) {
 	assert.Equal(t, "agent-1", resp.Data.LLMCalls[0].AgentID)
 
 	assert.Len(t, resp.Data.DecisionChain, 1)
-	assert.True(t, resp.Data.DecisionChain[0].HumanOverride)
-	assert.Equal(t, "admin@test.com", resp.Data.DecisionChain[0].OverrideBy)
+	assert.True(t, resp.Data.DecisionChain[0].RequiresReview)
+	assert.Equal(t, "limited", resp.Data.DecisionChain[0].RiskLevel)
 
 	assert.Len(t, resp.Data.HITLOversight, 1)
 	assert.Equal(t, "Looks good", resp.Data.HITLOversight[0].Notes)
@@ -527,8 +529,9 @@ func TestExportAuditData_EmptyResults(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision",
-			"confidence", "rationale", "model_id", "human_override", "override_by", "override_reason",
+			"id", "request_id", "created_at", "decision_type", "decision_outcome",
+			"risk_level", "model_id", "requires_human_review",
+			"policies_evaluated", "policy_triggered", "processing_time_ms",
 		}))
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).
@@ -586,11 +589,12 @@ func TestExportAuditData_DecisionChain_NullableFields(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision",
-			"confidence", "rationale", "model_id", "human_override", "override_by", "override_reason",
+			"id", "request_id", "created_at", "decision_type", "decision_outcome",
+			"risk_level", "model_id", "requires_human_review",
+			"policies_evaluated", "policy_triggered", "processing_time_ms",
 		}).
-			AddRow("dc-1", "req-1", now, "policy_eval", "allow",
-				0.8, "Standard check", nil, false, nil, nil))
+			AddRow("dc-1", "req-1", now, "policy_eval", "approved",
+				nil, nil, false, nil, nil, nil))
 
 	req := &SEBIAuditExportRequest{
 		StartDate: startDate,
@@ -606,9 +610,9 @@ func TestExportAuditData_DecisionChain_NullableFields(t *testing.T) {
 	dc := resp.Data.DecisionChain[0]
 	assert.Equal(t, "dc-1", dc.ID)
 	assert.Empty(t, dc.ModelID)
-	assert.False(t, dc.HumanOverride)
-	assert.Empty(t, dc.OverrideBy)
-	assert.Empty(t, dc.OverrideReason)
+	assert.False(t, dc.RequiresReview)
+	assert.Empty(t, dc.RiskLevel)
+	assert.Empty(t, dc.PolicyTriggered)
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -754,8 +758,9 @@ func TestExportAuditData_DataTypeAll(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, decision_type")).
 		WithArgs(tenantID, startDate, endDate).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "request_id", "created_at", "decision_type", "decision",
-			"confidence", "rationale", "model_id", "human_override", "override_by", "override_reason",
+			"id", "request_id", "created_at", "decision_type", "decision_outcome",
+			"risk_level", "model_id", "requires_human_review",
+			"policies_evaluated", "policy_triggered", "processing_time_ms",
 		}))
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, request_id, created_at, trigger_reason")).

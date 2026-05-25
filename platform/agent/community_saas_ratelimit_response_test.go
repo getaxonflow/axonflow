@@ -160,7 +160,7 @@ func TestWriteFreeLimitError_ActivePolicies(t *testing.T) {
 	if env.ResetsAt != nil {
 		t.Errorf("resets_at = %v, want nil for object-count limits", env.ResetsAt)
 	}
-	if !strings.Contains(env.Upgrade.Wording, "2 active custom policies") {
+	if !strings.Contains(env.Upgrade.Wording, "4 active custom policies") {
 		t.Errorf("wording missing locked active_policies phrase; got %q", env.Upgrade.Wording)
 	}
 }
@@ -200,7 +200,7 @@ func TestWriteFreeLimitError_HITLWindow(t *testing.T) {
 	if env.ResetsAt == nil {
 		t.Fatal("resets_at is nil; want non-nil for hitl_approvals_window")
 	}
-	if !strings.Contains(env.Upgrade.Wording, "1 of 1 HITL approvals used") {
+	if !strings.Contains(env.Upgrade.Wording, "HITL approval limit reached") {
 		t.Errorf("wording missing locked HITL phrase; got %q", env.Upgrade.Wording)
 	}
 	// Wording should have the relative-time placeholder filled in (not literal "%s")
@@ -247,8 +247,8 @@ func TestRenderWording_AllLimitTypes(t *testing.T) {
 		anchor    string
 	}{
 		{LimitTypeDailyQuota, "2,000/day"},
-		{LimitTypeActivePolicies, "2 active custom policies"},
-		{LimitTypeHITLApprovalsWindow, "HITL approvals"},
+		{LimitTypeActivePolicies, "4 active custom policies"},
+		{LimitTypeHITLApprovalsWindow, "HITL approval limit reached"},
 		{LimitTypeFeatureProOnly, "Pro feature"},
 	}
 	for _, tc := range cases {

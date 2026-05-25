@@ -12,7 +12,37 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
-## [8.2.0] - 2026-05-25 — Decision Mode (PDP/PEP policy decision service) + OTel decision tracer
+## [8.2.1] - 2026-05-25 — Customer Portal bug sweep + SEBI compliance fix
+
+Bug-fix patch. Resolves all customer portal console errors on both self-hosted and managed deployments. The customer portal now renders all 16 pages with zero console errors in enterprise mode. Includes a critical SEBI compliance export fix where 6 of 11 projected columns didn't match the actual database schema.
+
+### Fixed (Enterprise)
+
+- **SEBI audit export decision chain query.** The `exportDecisionChain` SQL query projected 6 columns that don't exist in the `decision_chain` table: `decision` (real: `decision_outcome`), `confidence` (real: `risk_level`), `rationale` (removed), `human_override` (real: `requires_human_review`), `override_by` (removed), `override_reason` (removed). Added missing columns: `policies_evaluated`, `policy_triggered`, `processing_time_ms`. Every SEBI compliance export that included decision chain data would fail with a Postgres column-not-found error.
+
+- **Customer portal docker-compose routing.** The portal-ui proxy was pointing at the agent instead of the customer-portal backend. All session-authenticated requests returned 401. The proxy now routes to the customer-portal, which handles session auth natively and proxies governance calls internally.
+
+- **LLM Provider create form.** The portal UI sent `name` but the backend expects `provider_name`. Every Add Provider form submission failed with "provider_name is required".
+
+- **Policy Override dialog unusable.** The Override System Policy modal had a z-index bug where the backdrop overlay intercepted all clicks. Fixed with proper z-index layering and added Escape key handler. Same fix applied to all other modal dialogs (Add Provider, Add Connector, Create API Key).
+
+- **Raw JSON errors shown to users.** API error responses were displayed verbatim. Added error formatting that maps HTTP status codes to user-friendly messages.
+
+- **SCIM endpoint URLs showing localhost.** The SCIM configuration page showed incorrect URLs in docker-compose. Fixed by wiring the base URL as a build-time configuration.
+
+- **SCIM tokens page crash.** The SCIM page crashed when the tokens endpoint returned `null` instead of an empty array. Added null-safety guards.
+
+- **Dashboard empty fields.** Welcome message, Organization ID, and license tier showed empty or raw values. Added fallbacks for all empty-state fields.
+
+- **Subtitle text empty on 3 pages.** LLM Providers, Connectors, and Export pages showed empty subtitle text. Added "your organization" fallback.
+
+### Changed (Community SaaS — Plugin Tiers)
+
+- **Per-minute burst rate limits.** Tier-aware enforcement: Free tier 25 requests/minute, Pro tier 200 requests/minute. Applied consistently across API auth, proxy, and MCP session paths.
+
+- **Plugin tier limit adjustments.** Free tier active custom policies increased from 2 to 4. Free tier HITL approvals per week increased from 1 to 2. Pro tier caps added: 50 active policies, 20 HITL approvals per week.
+
+## [8.2.0] - 2026-05-24 — Decision Mode (PDP/PEP policy decision service) + OTel decision tracer
 
 Additive minor release. Decision Mode brings the Policy Decision Point / Policy Enforcement Point pattern (established by OPA, XACML, Cedar) to AI governance: infrastructure gateways query AxonFlow for a policy verdict before forwarding traffic. The OpenTelemetry decision tracer wires every policy decision into a standard observability pipeline. Three new ecosystem integration packages land on PyPI and npm. No breaking changes, no schema changes, no migration impact.
 

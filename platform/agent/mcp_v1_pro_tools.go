@@ -87,13 +87,13 @@ func v1ProMCPTools() []mcpTool {
 			RequiredTier: "",
 			FreeUsageLimit: &FreeUsageLimit{
 				WindowSeconds: 7 * 24 * 3600, // 7d rolling window
-				MaxInWindow:   1,
+				MaxInWindow:   2,
 				LimitType:     LimitTypeHITLApprovalsWindow,
 			},
 		},
 		{
 			Name:        mcpToolNameCreateTenantPolicy,
-			Description: "Create a custom tenant-scoped governance policy. Free tier supports 2 active policies (delete one to make room); Pro removes the cap. Useful for rules like 'block writes to ~/.ssh/' or 'require approval for any rm -rf'.",
+			Description: "Create a custom tenant-scoped governance policy. Free tier supports 4 active policies (delete one to make room); Pro raises the cap to 50. Useful for rules like 'block writes to ~/.ssh/' or 'require approval for any rm -rf'.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -123,7 +123,7 @@ func v1ProMCPTools() []mcpTool {
 			},
 			RequiredTier: "",
 			FreeUsageLimit: &FreeUsageLimit{
-				MaxCount:  2,
+				MaxCount:  4,
 				LimitType: LimitTypeActivePolicies,
 			},
 		},
@@ -233,24 +233,32 @@ func enforceMCPToolGate(ctx context.Context, w http.ResponseWriter, req *jsonRPC
 		}
 	}
 
-	// Gate 2: FreeUsageLimit (graduated cap; only applies to Free tier)
-	if tool.FreeUsageLimit != nil && session.tier == string(license.TierFree) {
+	// Gate 2: Graduated usage caps. Resolve limits from the caller's
+	// tier (Free=4 policies/2 HITL, Pro=50/20, Enterprise=-1 unlimited).
+	// Self-hosted tiers (Community/Evaluation/Enterprise) have -1 for
+	// SaaS-specific fields and skip this gate.
+	if tool.FreeUsageLimit != nil {
+		tierLimits := license.GetTierLimits(license.Tier(session.tier))
 		switch tool.FreeUsageLimit.LimitType {
 		case LimitTypeActivePolicies:
-			count := countActiveTenantPolicies(ctx, db, session.tenantID)
-			if count >= tool.FreeUsageLimit.MaxCount {
-				writeMCPGateError(w, req, LimitTypeActivePolicies, session.tier, tool.FreeUsageLimit.MaxCount, 0, "", nil)
-				return true
+			cap := tierLimits.MaxActiveCustomPolicies
+			if cap >= 0 {
+				count := countActiveTenantPolicies(ctx, db, session.tenantID)
+				if count >= cap {
+					writeMCPGateError(w, req, LimitTypeActivePolicies, session.tier, cap, 0, "", nil)
+					return true
+				}
 			}
 		case LimitTypeHITLApprovalsWindow:
-			count, oldestInWindow := countHITLApprovalsInWindow(ctx, db, session.tenantID, time.Duration(tool.FreeUsageLimit.WindowSeconds)*time.Second)
-			if count >= tool.FreeUsageLimit.MaxInWindow {
-				// resets_at = oldest_in_window + window duration (when that
-				// row falls out of the rolling window the user gets one back)
-				resetsAt := oldestInWindow.Add(time.Duration(tool.FreeUsageLimit.WindowSeconds) * time.Second)
-				writeMCPGateError(w, req, LimitTypeHITLApprovalsWindow, session.tier,
-					tool.FreeUsageLimit.MaxInWindow, 0, "rolling_7d", &resetsAt)
-				return true
+			cap := tierLimits.MaxHITLApprovalsPerWeek
+			if cap >= 0 {
+				count, oldestInWindow := countHITLApprovalsInWindow(ctx, db, session.tenantID, time.Duration(tool.FreeUsageLimit.WindowSeconds)*time.Second)
+				if count >= cap {
+					resetsAt := oldestInWindow.Add(time.Duration(tool.FreeUsageLimit.WindowSeconds) * time.Second)
+					writeMCPGateError(w, req, LimitTypeHITLApprovalsWindow, session.tier,
+						cap, 0, "rolling_7d", &resetsAt)
+					return true
+				}
 			}
 		}
 	}
@@ -781,14 +789,14 @@ func mcpToolListProFeatures(session *mcpSession) (interface{}, error) {
 			{
 				"id":          "active_policies",
 				"capability":  "Custom tenant policies",
-				"free":        "2 active max",
-				"pro":         "Unlimited",
+				"free":        "4 active max",
+				"pro":         "Up to 50",
 			},
 			{
 				"id":          "hitl_approvals",
 				"capability":  "HITL approval gating",
-				"free":        "1 per rolling 7 days",
-				"pro":         "Unlimited",
+				"free":        "2 per rolling 7 days",
+				"pro":         "Up to 20/week",
 			},
 			{
 				"id":          "cost_preflight",
@@ -799,6 +807,6 @@ func mcpToolListProFeatures(session *mcpSession) (interface{}, error) {
 		},
 		"upgrade_url":   v1ProUpgradeCompareURL,
 		"buy_url":       v1ProUpgradeBuyURL,
-		"tone":          "Free validates the workflow. Pro removes the caps when AxonFlow becomes part of your real workflow.",
+		"tone":          "Free validates the workflow. Pro raises the caps when AxonFlow becomes part of your real workflow.",
 	}, nil
 }

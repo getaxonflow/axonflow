@@ -551,22 +551,23 @@ func TestSEBILLMCallRecord_JSONRoundTrip(t *testing.T) {
 }
 
 func TestSEBIDecisionChainRecord_JSONRoundTrip(t *testing.T) {
+	ptMs := 150
 	original := SEBIDecisionChainRecord{
-		ID:           "dc_123",
-		RequestID:    "req_abc",
-		Timestamp:    time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC),
-		DecisionType: "policy_evaluation",
-		Decision:     "block",
-		Confidence:   0.95,
-		Rationale:    "High-risk financial query detected",
+		ID:                "dc_123",
+		RequestID:         "req_abc",
+		Timestamp:         time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC),
+		DecisionType:      "policy_enforcement",
+		DecisionOutcome:   "blocked",
+		RiskLevel:         "high",
+		ModelID:           "model_v2",
+		RequiresReview:    true,
+		PoliciesEvaluated: "{policy-1,policy-2}",
+		PolicyTriggered:   "policy-1",
+		ProcessingTimeMs:  &ptMs,
 		InputFactors: []DecisionFactor{
 			{Name: "query_risk", Value: "high", Weight: 0.4},
 			{Name: "user_role", Value: "external", Weight: 0.3},
 		},
-		ModelID:        "model_v2",
-		HumanOverride:  true,
-		OverrideBy:     "admin@company.com",
-		OverrideReason: "Authorized financial analysis",
 	}
 
 	data, err := json.Marshal(original)
@@ -579,14 +580,14 @@ func TestSEBIDecisionChainRecord_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
 
-	if decoded.Confidence != original.Confidence {
-		t.Errorf("Confidence mismatch: got %f, want %f", decoded.Confidence, original.Confidence)
+	if decoded.RiskLevel != original.RiskLevel {
+		t.Errorf("RiskLevel mismatch: got %s, want %s", decoded.RiskLevel, original.RiskLevel)
 	}
 	if len(decoded.InputFactors) != len(original.InputFactors) {
 		t.Errorf("InputFactors count mismatch: got %d, want %d", len(decoded.InputFactors), len(original.InputFactors))
 	}
-	if decoded.HumanOverride != original.HumanOverride {
-		t.Errorf("HumanOverride mismatch: got %v, want %v", decoded.HumanOverride, original.HumanOverride)
+	if decoded.RequiresReview != original.RequiresReview {
+		t.Errorf("RequiresReview mismatch: got %v, want %v", decoded.RequiresReview, original.RequiresReview)
 	}
 }
 

@@ -364,43 +364,21 @@ type SEBILLMCallRecord struct {
 	ComplianceFlags []string `json:"compliance_flags,omitempty"`
 }
 
-// SEBIDecisionChainRecord represents a decision chain for SEBI export
+// SEBIDecisionChainRecord represents a decision chain for SEBI export.
+// Column mapping matches migrations/core/025_decision_chain.sql.
 type SEBIDecisionChainRecord struct {
-	// ID is the unique chain ID
-	ID string `json:"id"`
-
-	// RequestID is the associated request ID
-	RequestID string `json:"request_id"`
-
-	// Timestamp is when the decision was made
-	Timestamp time.Time `json:"timestamp"`
-
-	// DecisionType is the type of decision
-	DecisionType string `json:"decision_type"`
-
-	// Decision is the decision made
-	Decision string `json:"decision"`
-
-	// Confidence is the confidence score (0-1)
-	Confidence float64 `json:"confidence"`
-
-	// Rationale is the explanation for the decision
-	Rationale string `json:"rationale"`
-
-	// InputFactors are the factors considered in the decision
-	InputFactors []DecisionFactor `json:"input_factors,omitempty"`
-
-	// ModelID is the model that made the decision
-	ModelID string `json:"model_id,omitempty"`
-
-	// HumanOverride indicates if a human overrode this decision
-	HumanOverride bool `json:"human_override"`
-
-	// OverrideBy is the user who overrode the decision
-	OverrideBy string `json:"override_by,omitempty"`
-
-	// OverrideReason is the reason for the override
-	OverrideReason string `json:"override_reason,omitempty"`
+	ID               string    `json:"id"`
+	RequestID        string    `json:"request_id"`
+	Timestamp        time.Time `json:"timestamp"`
+	DecisionType     string    `json:"decision_type"`
+	DecisionOutcome  string    `json:"decision_outcome"`
+	RiskLevel        string    `json:"risk_level"`
+	ModelID          string    `json:"model_id,omitempty"`
+	RequiresReview   bool      `json:"requires_human_review"`
+	PoliciesEvaluated string  `json:"policies_evaluated,omitempty"`
+	PolicyTriggered  string    `json:"policy_triggered,omitempty"`
+	ProcessingTimeMs *int      `json:"processing_time_ms,omitempty"`
+	InputFactors     []DecisionFactor `json:"input_factors,omitempty"`
 }
 
 // DecisionFactor represents a factor in a decision
