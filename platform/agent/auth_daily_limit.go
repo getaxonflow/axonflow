@@ -47,3 +47,24 @@ func dailyLimitForTier(tier string) int {
 	}
 	return getEnvInt("COMMUNITY_SAAS_DAILY_LIMIT", envFallbackDefault)
 }
+
+// minuteLimitForTenant returns the per-minute burst rate limit for a
+// community-SaaS tenant. Free=25/min, Pro=200/min, Premium=200/min.
+// The pre-bcrypt rate limiter in auth.go runs at the Pro ceiling
+// (200/min) to prevent CPU exhaustion; this function supplies the
+// tier-specific threshold enforced post-auth.
+func minuteLimitForTenant(client *Client) int {
+	if client != nil && client.EffectiveTier != "" {
+		return minuteLimitForTier(client.EffectiveTier)
+	}
+	return minuteLimitForTier("")
+}
+
+func minuteLimitForTier(tier string) int {
+	switch license.Tier(tier) {
+	case license.TierPro, license.TierPremium:
+		return getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT_PRO", 200)
+	default:
+		return getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT_FREE", 25)
+	}
+}

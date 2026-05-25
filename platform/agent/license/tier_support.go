@@ -200,12 +200,12 @@ var (
 		MediaGovernanceEnabled: false,
 		DailyEventQuota:        200,
 		// V1 Plugin Pro graduated-freemium teasers (umbrella #1958):
-		// Free tier gets a TASTE of Pro capabilities — 2 active custom
-		// policies and 1 HITL approval per rolling 7-day window. Hitting
+		// Free tier gets a TASTE of Pro capabilities — 4 active custom
+		// policies and 2 HITL approvals per rolling 7-day window. Hitting
 		// either limit returns the structured upgrade envelope per
 		// PRD_TENANT_DURABILITY_AND_CLAIM §"Customer-facing copy".
-		MaxActiveCustomPolicies:  2,
-		MaxHITLApprovalsPerWeek:  1,
+		MaxActiveCustomPolicies:  4,
+		MaxHITLApprovalsPerWeek:  2,
 		// V1.1 decision-list: 24h / 5 per page (Free tier — same as
 		// self-host Community per locked V1.1 tier matrix).
 		DecisionListWindowHours:  24,
@@ -226,9 +226,10 @@ var (
 	// 2,000 events/day daily quota (bumped from 1,000 in #1958 — gives
 	// 10x headroom over Free's 200, validated against the heaviest
 	// observed Free-tier daily volume of ~780 events/day on prod).
-	// Custom-policy + HITL caps removed (-1 = unlimited). Other
-	// tenant-scoped capability gates (LLM cost pre-flight, evidence
-	// export) are gated at the MCP-tool dispatch layer per PR2.
+	// Custom-policy + HITL caps raised to generous-but-finite ceilings
+	// (50 policies, 20 HITL/week). Other tenant-scoped capability gates
+	// (LLM cost pre-flight, evidence export) are gated at the MCP-tool
+	// dispatch layer per PR2.
 	ProLimits = TierLimits{
 		TenantPolicies:           20,
 		OrgPolicies:              0,
@@ -244,9 +245,8 @@ var (
 		MaxPendingApprovals:      5,
 		MediaGovernanceEnabled:   false,
 		DailyEventQuota:          2000,
-		// V1 Plugin Pro fields: -1 = unlimited (Pro removes Free caps).
-		MaxActiveCustomPolicies:  -1,
-		MaxHITLApprovalsPerWeek:  -1,
+		MaxActiveCustomPolicies:  50,
+		MaxHITLApprovalsPerWeek:  20,
 		// V1.1 decision-list: 30d (720h) / 100 per page.
 		DecisionListWindowHours:  720,
 		DecisionListMaxPage:      100,

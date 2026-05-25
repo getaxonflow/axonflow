@@ -98,6 +98,34 @@ func checkRateLimitRedis(ctx context.Context, customerID string, limitPerMinute 
 	return nil
 }
 
+// rateLimitCount returns the current request count in the sliding window
+// WITHOUT incrementing. Used for post-auth tier-specific enforcement
+// where the pre-bcrypt path has already incremented the counter.
+func rateLimitCount(customerID string) int {
+	if redisClient == nil {
+		rateLimitMu.RLock()
+		defer rateLimitMu.RUnlock()
+		entry, exists := rateLimitMap[customerID]
+		if !exists {
+			return 0
+		}
+		if time.Since(entry.ResetTime) > 0 {
+			return 0
+		}
+		return entry.Count
+	}
+
+	ctx := context.Background()
+	key := fmt.Sprintf("ratelimit:%s", customerID)
+	now := time.Now()
+	minScore := now.Add(-time.Minute).Unix()
+	count, err := redisClient.ZCount(ctx, key, fmt.Sprintf("%d", minScore), "+inf").Result()
+	if err != nil {
+		return 0
+	}
+	return int(count)
+}
+
 // getRateLimitStatusRedis returns current rate limit status from Redis
 //
 //nolint:unused // Used in tests

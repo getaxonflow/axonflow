@@ -14,6 +14,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -67,23 +68,29 @@ func enforceCommunitySaasDailyCap(w http.ResponseWriter, auth *AuthResult) bool 
 	if auth == nil || auth.Kind != AuthKindCommunitySaaS {
 		return false
 	}
+
+	perMinute := minuteLimitForTenant(auth.Client)
+	if count := rateLimitCount(auth.TenantID); count > perMinute {
+		tier := "Free"
+		if auth.Client != nil && auth.Client.EffectiveTier != "" {
+			tier = auth.Client.EffectiveTier
+		}
+		log.Printf("[CSAAS-RL] per_minute_tier tenant=%s tier=%s count=%d limit=%d/min",
+			logutil.Sanitize(auth.TenantID), tier, count, perMinute)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		errBody, _ := json.Marshal(map[string]string{
+			"error": fmt.Sprintf("Rate limit exceeded (%d req/min). Try again shortly.", perMinute),
+		})
+		_, _ = w.Write(errBody)
+		return true
+	}
+
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
 	dailyLimit := dailyLimitForTenant(auth.Client)
 	if err := proxyDailyLimitChecker(dailyCtx, auth.TenantID, dailyLimit, authDB); err != nil {
-		// Emit the V1 Plugin Pro structured upgrade envelope (locked
-		// shape per umbrella #1958). Replaces the prior bare
-		// `{"error": "..."}` body so plugin-side parsers see the same
-		// envelope shape on the proxy path as on the auth.go path —
-		// the two paths used to drift (auth.go went through
-		// writeJSONError producing a wrapped shape; this site wrote
-		// flat JSON inline). The new helper unifies them.
-		//
-		// Defensive tier fallback to "Free" when auth.Client is nil:
-		// the AuthKindCommunitySaaS guard at the top of the function
-		// should already have produced a non-nil Client, but the
-		// helper accepts any string anyway and "Free" is the only
-		// SaaS Plugin tier that would actually hit a daily cap.
 		tier := "Free"
 		if auth.Client != nil && auth.Client.EffectiveTier != "" {
 			tier = auth.Client.EffectiveTier
@@ -114,6 +121,19 @@ func enforceMCPSessionDailyCap(w http.ResponseWriter, req *jsonRPCRequest, sessi
 	if session == nil || session.tier == "" {
 		return false
 	}
+
+	// Per-minute burst with INCREMENT. Cached MCP sessions skip
+	// Authenticate() so the pre-bcrypt checkRateLimitRedis never
+	// fires for tools/call traffic. This call both increments the
+	// counter AND checks the tier-specific threshold.
+	perMinute := minuteLimitForTier(session.tier)
+	if err := checkRateLimitRedis(context.Background(), session.tenantID, perMinute); err != nil {
+		log.Printf("[CSAAS-RL] per_minute_tier tenant=%s tier=%s limit=%d/min",
+			logutil.Sanitize(session.tenantID), session.tier, perMinute)
+		writeRateLimitErrorJSONRPC(w, req.ID, session.tenantID, session.tier, perMinute)
+		return true
+	}
+
 	dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer dailyCancel()
 	dailyLimit := dailyLimitForTier(session.tier)

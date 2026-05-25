@@ -550,8 +550,9 @@ func (s *SEBIAuditExportServiceImpl) exportLLMCalls(ctx context.Context, tenantI
 
 func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, tenantID string, req *SEBIAuditExportRequest) ([]SEBIDecisionChainRecord, int, error) {
 	query := `
-		SELECT id, request_id, created_at, decision_type, decision,
-		       confidence, rationale, model_id, human_override, override_by, override_reason
+		SELECT id, request_id, created_at, decision_type, decision_outcome,
+		       risk_level, model_id, requires_human_review,
+		       policies_evaluated::text, policy_triggered, processing_time_ms
 		FROM decision_chain
 		WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
 		ORDER BY created_at DESC
@@ -570,11 +571,13 @@ func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, te
 	var chains []SEBIDecisionChainRecord
 	for rows.Next() {
 		var c SEBIDecisionChainRecord
-		var modelID, overrideBy, overrideReason sql.NullString
+		var modelID, riskLevel, policiesEvaluated, policyTriggered sql.NullString
+		var processingTimeMs sql.NullInt64
 
 		err := rows.Scan(
-			&c.ID, &c.RequestID, &c.Timestamp, &c.DecisionType, &c.Decision,
-			&c.Confidence, &c.Rationale, &modelID, &c.HumanOverride, &overrideBy, &overrideReason,
+			&c.ID, &c.RequestID, &c.Timestamp, &c.DecisionType, &c.DecisionOutcome,
+			&riskLevel, &modelID, &c.RequiresReview,
+			&policiesEvaluated, &policyTriggered, &processingTimeMs,
 		)
 		if err != nil {
 			log.Printf("[SEBIAudit] Error scanning decision chain: %v", err)
@@ -584,11 +587,18 @@ func (s *SEBIAuditExportServiceImpl) exportDecisionChain(ctx context.Context, te
 		if modelID.Valid {
 			c.ModelID = modelID.String
 		}
-		if overrideBy.Valid {
-			c.OverrideBy = overrideBy.String
+		if riskLevel.Valid {
+			c.RiskLevel = riskLevel.String
 		}
-		if overrideReason.Valid {
-			c.OverrideReason = overrideReason.String
+		if policiesEvaluated.Valid {
+			c.PoliciesEvaluated = policiesEvaluated.String
+		}
+		if policyTriggered.Valid {
+			c.PolicyTriggered = policyTriggered.String
+		}
+		if processingTimeMs.Valid {
+			v := int(processingTimeMs.Int64)
+			c.ProcessingTimeMs = &v
 		}
 
 		chains = append(chains, c)

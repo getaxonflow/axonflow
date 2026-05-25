@@ -339,8 +339,11 @@ func validateCommunitySaasAuth(r *http.Request) (*Client, *CommunitySaasAuthErro
 		}
 	}
 
-	// Per-minute rate limit BEFORE bcrypt to prevent CPU exhaustion attacks
-	minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 20)
+	// Per-minute rate limit BEFORE bcrypt to prevent CPU exhaustion attacks.
+	// The ceiling here is the Pro-tier maximum (200/min); tier-specific
+	// enforcement (Free=25/min) runs post-auth in enforceCommunitySaasLimits
+	// once the tenant's EffectiveTier is resolved.
+	minuteLimit := getEnvInt("COMMUNITY_SAAS_MINUTE_LIMIT", 200)
 	if err := checkRateLimitRedis(r.Context(), cID, minuteLimit); err != nil {
 		// Audit log for the per-minute 429. Pre-fix this site returned
 		// the 429 silently (no log emit) — the daily-report's agent-log
@@ -628,18 +631,12 @@ func apiAuthMiddleware(next http.Handler) http.Handler {
 		// stacks can override without rebuilding (e.g. the perf-testing
 		// rig). On limit hit we emit the V1 Plugin Pro structured
 		// upgrade envelope (locked shape per umbrella #1958).
-		if auth.Kind == AuthKindCommunitySaaS {
-			dailyCtx, dailyCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer dailyCancel()
-			dailyLimit := dailyLimitForTenant(auth.Client)
-			if err := checkCommunityDailyLimit(dailyCtx, tenantID, dailyLimit, authDB); err != nil {
-				tier := "Free"
-				if auth.Client != nil && auth.Client.EffectiveTier != "" {
-					tier = auth.Client.EffectiveTier
-				}
-				writeRateLimitError(w, tenantID, tier, dailyLimit)
-				return
-			}
+		// Per-minute burst + daily cap enforcement for community-SaaS
+		// tenants. enforceCommunitySaasDailyCap handles both checks:
+		// tier-specific per-minute (Free=25, Pro=200) and daily quota
+		// (Free=200, Pro=2000). Same function used by proxyAuthMiddleware.
+		if enforceCommunitySaasDailyCap(w, auth) {
+			return
 		}
 
 		// X-Tenant-ID header is deprecated — tenant is derived from auth credentials.
