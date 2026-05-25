@@ -393,12 +393,15 @@ AxonFlow offers three tiers. Community is free with no license key. Evaluation i
 
 ### Need Enterprise sooner?
 
-If you already know you need full enterprise features, a managed deployment option, or direct rollout help, apply for the [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_eval). Selected partners can choose:
+If you already know you need full enterprise features, a managed deployment option, or direct rollout help, apply for the [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_eval). Selected partners get:
 
-- 6 months of self-hosted or in-VPC Enterprise at no cost
-- or 3 months of AxonFlow-managed Enterprise SaaS with SLO-backed support, up to 50,000 write requests or 1,000,000 total requests per month
+- Enterprise access for the scoped design-partner engagement, covering PoC through initial rollout
+- Founder-led architecture and rollout support
+- Direct access to the founding team
+- Priority influence on roadmap during the engagement
+- Preferential pricing after successful rollout — a meaningful preferred rate, locked for an initial term
 
-Selected partners also get priority support, an architecture review, an incident-readiness review, and roadmap input.
+Plus priority support, architecture review, incident-readiness review, and roadmap input.
 
 ### You need Enterprise when:
 
@@ -628,7 +631,7 @@ AxonFlow SDKs, plugins, and platform binaries (agent + orchestrator) emit an ano
 >
 > Choose the path that fits:
 > - **Self-serve:** free 90-day [Evaluation License](https://getaxonflow.com/evaluation-license?utm_source=readme_platform_eval)
-> - **Hands-on:** [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform) with either **6 months of self-hosted / in-VPC Enterprise** at no cost or **3 months of AxonFlow-managed Enterprise SaaS** with SLO-backed support, up to **50,000 write requests / 1,000,000 total requests per month**
+> - **Hands-on:** [Design Partner Program](https://getaxonflow.com/design-partner?utm_source=readme_platform) — Enterprise access for the scoped engagement, founder-led architecture and rollout support, and preferential pricing after successful rollout
 >
 > Priority support, architecture review, incident-readiness review, and roadmap input are included for selected partners. We reply within 48 hours.
 
