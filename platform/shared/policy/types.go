@@ -137,7 +137,8 @@ const (
 	CategoryPIIUS        PolicyCategory = "pii-us"
 	CategoryPIIIndia     PolicyCategory = "pii-india"
 	CategoryPIIEU        PolicyCategory = "pii-eu"
-	CategoryPIISingapore PolicyCategory = "pii-singapore" // Issue #1076 - MAS FEAT Community
+	CategoryPIISingapore  PolicyCategory = "pii-singapore" // Issue #1076 - MAS FEAT Community
+	CategoryPIIIndonesia PolicyCategory = "pii-indonesia" // OJK/BI/UU PDP compliance
 
 	// Data governance categories
 	CategoryDataExfiltration PolicyCategory = "data-exfiltration"
@@ -249,7 +250,7 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 // isPIIPolicyCategory returns true if the category is a PII-related category.
 func isPIIPolicyCategory(cat PolicyCategory) bool {
 	switch cat {
-	case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore:
+	case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore, CategoryPIIIndonesia:
 		return true
 	}
 	return false

@@ -26,6 +26,7 @@ import (
 	logutil "axonflow/platform/shared/logger"
 
 	"axonflow/platform/agent/circuitbreaker"
+	"axonflow/platform/agent/indonesia"
 	"axonflow/platform/agent/rbi"
 	"axonflow/platform/agent/telemetry"
 	"axonflow/platform/connectors/base"
@@ -162,6 +163,7 @@ func registerGatewayMetrics() {
 		_ = prometheus.Register(gatewayAuditQueuedTotal)
 		_ = prometheus.Register(gatewayAuditFallbackTotal)
 		_ = prometheus.Register(gatewayRBIPIIDetected)
+		_ = prometheus.Register(gatewayIndonesiaPIIDetected)
 	})
 }
 
@@ -294,6 +296,13 @@ var (
 		},
 		[]string{"pii_type", "blocked"},
 	)
+	gatewayIndonesiaPIIDetected = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "axonflow_gateway_indonesia_pii_detected_total",
+			Help: "Total Indonesia PII detections in gateway pre-check",
+		},
+		[]string{"pii_type", "blocked"},
+	)
 )
 
 // rbiPIIDetector is the India-specific PII detector for RBI compliance.
@@ -328,6 +337,29 @@ func checkRBIPII(query string, blockOnCritical bool) *rbi.RBIPIICheckResult {
 	// Block on critical PII (Aadhaar, PAN, UPI, Bank Account) per RBI FREE-AI guidelines
 	// unless PII_ACTION=redact is configured
 	return rbi.CheckRequestForPII(detector, query, blockOnCritical)
+}
+
+var (
+	indonesiaPIIDetector     *indonesia.IndonesiaPIIDetector
+	indonesiaPIIDetectorOnce sync.Once
+)
+
+func getIndonesiaPIIDetector() *indonesia.IndonesiaPIIDetector {
+	indonesiaPIIDetectorOnce.Do(func() {
+		if indonesia.IsEnabled() {
+			config := indonesia.DefaultIndonesiaPIIDetectorConfig()
+			indonesiaPIIDetector = indonesia.NewIndonesiaPIIDetector(config)
+			log.Printf("🇮🇩 [OJK] Indonesia PII detector initialized")
+		} else {
+			log.Printf("🇮🇩 [OJK] Indonesia PII detection disabled (Community mode)")
+		}
+	})
+	return indonesiaPIIDetector
+}
+
+func checkIndonesiaPII(query string, blockOnCritical bool) *indonesia.IndonesiaPIICheckResult {
+	detector := getIndonesiaPIIDetector()
+	return indonesia.CheckRequestForPII(detector, query, blockOnCritical)
 }
 
 // getGatewayAuditQueue returns the audit queue for Gateway Mode handlers.
@@ -452,18 +484,49 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBI FREE-AI Compliance: Check for India-specific PII before policy evaluation
-	// This runs in both Community (no-op) and Enterprise (full detection) modes
 	// Issue #891: Respect PII_ACTION setting - block only if PII_ACTION=block
 	gwDetectionCfg := GetGatewayDetectionConfig()
 	rbiPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
-	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
 
+	// OJK/UU PDP Compliance: Check Indonesia-specific PII FIRST (NIK, NPWP, +62, bank accounts).
+	// Indonesia detector runs before RBI to prevent the generic RBI bank-account pattern
+	// from shadowing Indonesia-specific bank account detection (BCA/Mandiri/BRI/BNI).
+	indonesiaPIIResult := checkIndonesiaPII(req.Query, blockOnCriticalPII)
+	if indonesiaPIIResult.BlockRecommended {
+		log.Printf("🛑 [Pre-check] Request blocked by Indonesia PII detection: %s", indonesiaPIIResult.Reason)
+		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
+		for _, piiType := range indonesiaPIIResult.DetectedTypes {
+			gatewayIndonesiaPIIDetected.WithLabelValues(string(piiType), "true").Inc()
+		}
+		response := PreCheckResponse{
+			ContextID:   uuid.New().String(),
+			Approved:    false,
+			Policies:    []string{"indonesia_pii_protection"},
+			BlockReason: indonesiaPIIResult.Reason,
+			ExpiresAt:   time.Now(),
+		}
+		response.TraceID = recordPreCheckDecision(ctx, response.ContextID, client.OrgID, client.TenantID, decisionStageForPreCheck(req), indonesiaPIIResult.Reason, response.Policies, time.Since(startTime).Milliseconds())
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+	if indonesiaPIIResult.HasPII {
+		for _, piiType := range indonesiaPIIResult.DetectedTypes {
+			gatewayIndonesiaPIIDetected.WithLabelValues(string(piiType), "false").Inc()
+		}
+		if gwDetectionCfg.Enabled && indonesiaPIIResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
+			log.Printf("🇮🇩 [Pre-check] Critical Indonesia PII detected - flagged for redaction: %v", indonesiaPIIResult.DetectedTypes)
+		} else {
+			log.Printf("⚠️ [Pre-check] Indonesia PII detected (non-critical): %v", indonesiaPIIResult.DetectedTypes)
+		}
+	}
+
+	// RBI FREE-AI Compliance: Check for India-specific PII (Aadhaar, PAN, IFSC, bank accounts)
+	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Pre-check] Request blocked by RBI PII detection: %s", piiResult.Reason)
 		gatewayPreCheckRequests.WithLabelValues("success", "false").Inc()
-		// Record metrics for each detected PII type
 		for _, piiType := range piiResult.DetectedTypes {
 			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "true").Inc()
 		}
@@ -479,12 +542,10 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(response)
 		return
 	}
-	// Record PII detection metrics even for non-blocking detections
 	if piiResult.HasPII {
 		for _, piiType := range piiResult.DetectedTypes {
 			gatewayRBIPIIDetected.WithLabelValues(string(piiType), "false").Inc()
 		}
-		// Issue #891: If critical India PII detected but PII_ACTION=redact, flag for redaction
 		if gwDetectionCfg.Enabled && piiResult.CriticalPII && gwDetectionCfg.PIIAction == DetectionActionRedact {
 			log.Printf("🇮🇳 [Pre-check] Critical India PII detected - flagged for redaction (action=redact): %v", piiResult.DetectedTypes)
 			rbiPIIRequiresRedaction = true
@@ -537,6 +598,7 @@ func handlePolicyPreCheck(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
 				sharedpolicy.CategoryPIISingapore,
+				sharedpolicy.CategoryPIIIndonesia,
 				// HITL/Compliance categories (Issue #1081)
 				sharedpolicy.CategorySensitiveData, // For dynamically created HITL policies
 				sharedpolicy.CategoryComplianceRBI,

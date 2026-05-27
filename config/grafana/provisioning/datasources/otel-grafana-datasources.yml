@@ -1,0 +1,22 @@
+# Grafana datasource provisioning for OTel observability overlay
+#
+# Adds Tempo as a trace backend. Prometheus is already provisioned by
+# the base datasources.yaml with uid: prometheus — do NOT re-declare it
+# here or Grafana will error on duplicate defaults.
+
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToMetrics:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: ""

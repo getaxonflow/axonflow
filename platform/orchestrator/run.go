@@ -45,6 +45,7 @@ import (
 	"axonflow/platform/orchestrator/euaiact"      // EU AI Act compliance - Community stub or EE impl
 	"axonflow/platform/orchestrator/llm"
 	"axonflow/platform/orchestrator/masfeat"  // MAS FEAT module - Community stub or EE impl
+	"axonflow/platform/orchestrator/ojk"      // OJK module - Community stub or EE impl
 	"axonflow/platform/orchestrator/media"    // Media governance analysis pipeline
 	"axonflow/platform/orchestrator/planning" // MAP two-step execution (#927)
 	"axonflow/platform/orchestrator/rbi"      // RBI FREE-AI module - Community stub or EE impl
@@ -107,6 +108,7 @@ var (
 	rbiModule     *rbi.RBIModule   // RBI FREE-AI Framework compliance (India Banking)
 	euaiactModule *euaiact.Module  // EU AI Act compliance (Europe)
 	masfeatModule *masfeat.Module  // MAS FEAT compliance (Singapore)
+	ojkModule     *ojk.OJKModule  // OJK AI Governance compliance (Indonesia)
 
 	// Execution Replay/Debug Mode (#763)
 	replayService *replay.Service // Execution replay service
@@ -689,6 +691,16 @@ func Run() {
 			log.Println("MAS FEAT Compliance API routes registered (/api/v1/masfeat/...)")
 		} else {
 			log.Println("MAS FEAT Compliance Module loaded (routes inactive — Enterprise build required)")
+		}
+	}
+
+	// OJK Compliance Module (Enterprise - Indonesia OJK/BI/UU PDP)
+	if ojkModule != nil {
+		ojkModule.RegisterRoutesWithMux(r)
+		if ojkModule.IsHealthy() {
+			log.Println("OJK Compliance API routes registered (/api/v1/ojk/...)")
+		} else {
+			log.Println("OJK Compliance Module loaded (routes inactive — Enterprise build required)")
 		}
 	}
 
@@ -1612,6 +1624,22 @@ func initializeComponents() {
 		} else {
 			log.Println("⚠️  MAS FEAT Module initialized but not healthy - database may be required")
 		}
+
+		// Initialize OJK Compliance Module (Enterprise - Indonesia)
+		log.Println("Initializing OJK Compliance Module...")
+		ojkConfig := ojk.OJKModuleConfig{
+			DB:             usageDB,
+			StorageBackend: auditStorageBackend,
+		}
+		var ojkErr error
+		ojkModule, ojkErr = ojk.NewOJKModule(ojkConfig)
+		if ojkErr != nil {
+			log.Printf("⚠️  OJK Module initialization error: %v", ojkErr)
+		} else if ojkModule.IsHealthy() {
+			log.Println("OJK Compliance Module initialized ✅")
+		} else {
+			log.Println("⚠️  OJK Module initialized but not healthy - database may be required")
+		}
 	} else {
 		log.Println("⚠️  Policy CRUD API not initialized - database connection required")
 		log.Println("⚠️  Policy Templates API not initialized - database connection required")
@@ -1619,6 +1647,7 @@ func initializeComponents() {
 		log.Println("⚠️  RBI FREE-AI Compliance Module not initialized - database connection required")
 		log.Println("⚠️  EU AI Act Compliance Module not initialized - database connection required")
 		log.Println("⚠️  MAS FEAT Compliance Module not initialized - database connection required")
+		log.Println("⚠️  OJK Compliance Module not initialized - database connection required")
 	}
 
 	// Initialize proxy auth validator — verifies requests came through the Agent gateway.
