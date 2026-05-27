@@ -343,14 +343,32 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// when recording violations against the circuit breaker.
 	var blockingPolicyID string
 
-	// RBI India PII pre-check (Aadhaar / PAN / UPI / bank-account validators).
-	// Runs BEFORE the shared engine so validator-backed detection that
-	// would otherwise be missed by the regex-only India category in the
-	// shared engine still trips Decision Mode. Mirrors gateway_handlers.go
-	// lines 447-485. PII_ACTION=block produces deny; PII_ACTION=redact
-	// produces an allow + redact_pii obligation.
+	// Indonesia PII pre-check runs FIRST so Indonesia-specific bank account
+	// patterns (BCA/Mandiri/BRI/BNI) are attributed to indonesia_pii_protection
+	// instead of being shadowed by the generic RBI bank-account detector.
 	rbiPIIRequiresRedaction := false
 	blockOnCriticalPII := gwDetectionCfg.Enabled && gwDetectionCfg.PIIAction == DetectionActionBlock
+
+	// OJK/UU PDP Indonesia PII pre-check (NIK / NPWP / +62 / bank accounts).
+	indonesiaPIIResult := checkIndonesiaPII(req.Query, blockOnCriticalPII)
+	if indonesiaPIIResult.BlockRecommended {
+		log.Printf("🛑 [Decide] Request blocked by Indonesia PII detection: %s", indonesiaPIIResult.Reason)
+		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"indonesia_pii_protection"}, time.Since(startTime).Milliseconds(), []string{indonesiaPIIResult.Reason}, traceID)
+		writeDecideResponse(w, http.StatusOK, DecideResponse{
+			Verdict:           VerdictDeny,
+			DecisionID:        decisionID,
+			TraceID:           traceID,
+			Stage:             stage,
+			Reasons:           []string{indonesiaPIIResult.Reason},
+			Obligations:       []DecisionObligation{},
+			EvaluatedPolicies: []string{"indonesia_pii_protection"},
+			ExpiresAt:         time.Now().Add(decisionExpiresAfter()),
+		})
+		recordDecideMetrics(VerdictDeny, stage, startTime)
+		return
+	}
+
+	// RBI India PII pre-check (Aadhaar / PAN / UPI / bank-account validators).
 	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by RBI PII detection: %s", piiResult.Reason)
@@ -397,6 +415,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 				sharedpolicy.CategoryPIIIndia,
 				sharedpolicy.CategoryPIIEU,
 				sharedpolicy.CategoryPIISingapore,
+				sharedpolicy.CategoryPIIIndonesia,
 				sharedpolicy.CategorySensitiveData,
 				sharedpolicy.CategoryComplianceRBI,
 				sharedpolicy.CategoryComplianceSEBI,

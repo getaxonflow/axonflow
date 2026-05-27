@@ -45,7 +45,7 @@ const WebhookAllowPrivateEnv = "AXONFLOW_HITL_WEBHOOK_ALLOW_PRIVATE"
 // WebhookUserAgent is sent on every outbound POST so receivers can filter
 // AxonFlow traffic from other webhook sources. Version is the AxonFlow
 // platform release tag; bumped in lockstep with platform/version.go.
-const WebhookUserAgent = "axonflow-hitl/8.2.1"
+const WebhookUserAgent = "axonflow-hitl/8.3.0"
 
 // MinSigningKeyLength is the HMAC-SHA256 recommended floor. Shorter keys
 // still produce a signature, but at less than 32 bytes the key is in brute-

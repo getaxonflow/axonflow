@@ -12,6 +12,30 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.3.0] - 2026-05-27 — Indonesia compliance + OTel exporters
+
+Minor release. Adds Indonesia regulatory compliance coverage: PII detection patterns for Indonesian identifiers, OJK (Otoritas Jasa Keuangan) AI governance module for financial services, and UU PDP (Law No. 27/2022) breach notification support. SDKs updated to v8.3.0 (Rust v0.5.0) with Indonesia category support and audit fields.
+
+### Added (Community)
+
+- **Indonesia PII detection (`pii-indonesia` category).** Eight context-anchored patterns: NIK (national ID, province-code validated), NPWP legacy 15-digit, NPWP new 16-digit, +62 phone numbers, and four major bank account formats (BCA, Mandiri, BRI, BNI). All bank and NPWP patterns are context-anchored to minimize false positives against credit card numbers, UUIDs, and timestamps.
+
+- **OTel observability exporter configurations.** Pre-built OTel Collector configs for Datadog (`docker-compose.otel-datadog.yml`) and Grafana + Tempo + Prometheus (`docker-compose.otel-grafana.yml`). The spanmetrics connector generates `calls_total` and `duration_milliseconds` Prometheus metrics from decision spans. A 9-panel Grafana dashboard (`grafana/dashboards/decision-mode-overview.json`) provides verdict distribution, latency percentiles, policy trigger rates, and per-tenant breakdown out of the box.
+
+### Added (Enterprise)
+
+- **OJK compliance module.** Six API endpoints under `/api/v1/ojk/`: audit export (list + by-ID), audit retention configuration, audit readiness check, breach notification, and compliance dashboard. Supports `AXONFLOW_COMPLIANCE_REGION=ID` with enforced 1825-day (5-year) minimum retention floor per OJK AI governance requirements.
+
+- **UU PDP breach notification.** Article 46 compliant breach notification with required fields, 72-hour SLA calculation, and MOCDA (Ministry of Communication and Digital Affairs) as default authority. Integrates with the OJK audit export pipeline.
+
+- **Cross-border transfer audit fields.** New columns on audit tables for logging cross-border data transfer metadata required by Indonesian financial regulators.
+
+- **Four industry migrations.** OJK compliance tables, OJK policy templates, audit cross-border fields, and breach notification tables (migrations 500–503 under `industry/banking/`).
+
+### Changed
+
+- **SDK version recommendations.** Platform `/health` now advertises SDK v8.3.0 (Go, Python, TypeScript, Java) and Rust SDK v0.5.0 as recommended versions. Minimum SDK floor remains v8.0.0.
+
 ## [8.2.1] - 2026-05-25 — Customer Portal bug sweep + SEBI compliance fix
 
 Bug-fix patch. Resolves all customer portal console errors on both self-hosted and managed deployments. The customer portal now renders all 16 pages with zero console errors in enterprise mode. Includes a critical SEBI compliance export fix where 6 of 11 projected columns didn't match the actual database schema.

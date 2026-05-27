@@ -18,6 +18,7 @@ func TestStaticPolicyCategories(t *testing.T) {
 		CategoryPIIEU,
 		CategoryPIIIndia,
 		CategoryPIISingapore, // Added for Issue #1076 - MAS FEAT Community
+		CategoryPIIIndonesia, // OJK/BI/UU PDP compliance
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,

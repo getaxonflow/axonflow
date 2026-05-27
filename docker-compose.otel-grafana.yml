@@ -1,0 +1,95 @@
+# AxonFlow OpenTelemetry Overlay — Grafana + Tempo + Prometheus
+#
+# Full observability stack: decision spans flow from the agent through
+# the OTel Collector to Tempo (traces) and Prometheus (RED metrics via
+# the spanmetrics connector). Grafana provides dashboards for both.
+#
+# Usage:
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.otel-grafana.yml up -d
+#
+#   Grafana UI:    http://localhost:3000  (admin/admin)
+#   Tempo API:     http://localhost:3200
+#   Prometheus:    http://localhost:9090
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    container_name: axonflow-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./config/otel-collector-grafana.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      tempo:
+        condition: service_started
+    networks:
+      - axonflow-network
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: axonflow-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./config/tempo-local.yaml:/etc/tempo/tempo.yaml:ro
+    ports:
+      - "3200:3200"
+    networks:
+      - axonflow-network
+
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    container_name: axonflow-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1h"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./config/prometheus-otel-grafana.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - axonflow-network
+
+  grafana:
+    # 11.6.0 required for dashboard schemaVersion 39 (heatmap + piechart panels)
+    image: grafana/grafana:11.6.0
+    container_name: axonflow-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./config/grafana/provisioning/datasources/otel-grafana-datasources.yml:/etc/grafana/provisioning/datasources/otel-grafana-datasources.yml:ro
+      - ./config/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+      tempo:
+        condition: service_started
+    networks:
+      - axonflow-network
+
+  axonflow-agent:
+    environment:
+      AXONFLOW_OTEL_ENDPOINT: otel-collector:4317
+      AXONFLOW_OTEL_SERVICE_NAME: axonflow-agent
+      AXONFLOW_OTEL_SAMPLE_RATE: "1.0"
+      AXONFLOW_TELEMETRY: "off"
+    depends_on:
+      otel-collector:
+        condition: service_started
