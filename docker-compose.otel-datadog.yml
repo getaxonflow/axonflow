@@ -1,0 +1,37 @@
+# AxonFlow OpenTelemetry Overlay — Datadog APM
+#
+# Routes decision spans to Datadog APM via the OTel Collector's
+# Datadog exporter. Requires DD_API_KEY and DD_SITE env vars.
+#
+# Usage:
+#   export DD_API_KEY=<your-datadog-api-key>
+#   export DD_SITE=datadoghq.com          # or datadoghq.eu, etc.
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.otel-datadog.yml up -d
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    container_name: axonflow-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./config/otel-collector-datadog.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      DD_API_KEY: ${DD_API_KEY:?Set DD_API_KEY to your Datadog API key}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - axonflow-network
+
+  axonflow-agent:
+    environment:
+      AXONFLOW_OTEL_ENDPOINT: otel-collector:4317
+      AXONFLOW_OTEL_SERVICE_NAME: axonflow-agent
+      AXONFLOW_OTEL_SAMPLE_RATE: "1.0"
+      AXONFLOW_TELEMETRY: "off"
+    depends_on:
+      otel-collector:
+        condition: service_started

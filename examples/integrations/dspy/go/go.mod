@@ -2,4 +2,4 @@ module dspy-axonflow-example
 
 go 1.21
 
-require github.com/getaxonflow/axonflow-sdk-go/v8 v8.2.0
+require github.com/getaxonflow/axonflow-sdk-go/v8 v8.3.0

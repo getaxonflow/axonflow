@@ -34,6 +34,11 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/agent/rbi/* ./agent/rbi/ && \
         echo "  Copied enterprise RBI module"; \
       fi && \
+      if [ -d "/src/ee/platform/agent/indonesia" ]; then \
+        mkdir -p ./agent/indonesia && \
+        cp -r /src/ee/platform/agent/indonesia/* ./agent/indonesia/ && \
+        echo "  Copied enterprise Indonesia PII module (OJK/BI/UU PDP)"; \
+      fi && \
       if [ -d "/src/ee/platform/agent/hitl" ]; then \
         mkdir -p ./agent/hitl && \
         cp -r /src/ee/platform/agent/hitl/* ./agent/hitl/ && \
@@ -125,7 +130,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
-ARG AXONFLOW_VERSION=8.2.1
+ARG AXONFLOW_VERSION=8.3.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata

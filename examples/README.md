@@ -129,11 +129,11 @@ All examples use the latest SDK versions:
 
 | SDK | Package | Version |
 |-----|---------|---------|
-| Python | `axonflow` | >=8.2.0 |
-| TypeScript | `@axonflow/sdk` | >=8.2.0 |
-| Go | `github.com/getaxonflow/axonflow-sdk-go/v8` | v8.2.0 |
-| Java | `com.getaxonflow:axonflow-sdk` | 8.2.0 |
-| Rust _(preview)_ | `axonflow-sdk-rust` | 0.4.0 |
+| Python | `axonflow` | >=8.3.0 |
+| TypeScript | `@axonflow/sdk` | >=8.3.0 |
+| Go | `github.com/getaxonflow/axonflow-sdk-go/v8` | v8.3.0 |
+| Java | `com.getaxonflow:axonflow-sdk` | 8.3.0 |
+| Rust _(preview)_ | `axonflow-sdk-rust` | 0.5.0 |
 
 ## Environment Configuration
 

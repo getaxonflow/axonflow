@@ -1,0 +1,31 @@
+# Grafana datasource provisioning for OTel observability overlay
+#
+# Provisions Prometheus (spanmetrics) and Tempo (traces) datasources.
+# Loaded automatically when Grafana starts with the otel-grafana overlay.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: false
+    jsonData:
+      httpMethod: POST
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToMetrics:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: ""
