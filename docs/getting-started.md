@@ -1,6 +1,6 @@
 # Getting Started with AxonFlow
 
-**Last Updated: May 2026** | **Platform: v9.0.0** | **SDKs: Python / Go / TypeScript / Java v8.2.0 + Rust v0.4.0 (preview)**
+**Last Updated: May 2026** | **Platform: v9.0.0** | **SDKs: Python / Go / TypeScript / Java v8.3.0 + Rust v0.5.0 (preview)**
 
 **Get AxonFlow running locally in about 10 minutes.**
 
@@ -190,7 +190,7 @@ pip install axonflow-sdk
 <dependency>
     <groupId>com.getaxonflow</groupId>
     <artifactId>axonflow-sdk</artifactId>
-    <version>8.2.0</version>
+    <version>8.3.0</version>
 </dependency>
 ```
 
@@ -206,7 +206,7 @@ cargo add axonflow-sdk-rust
 
 ### Step 3: Write Your First Agent (3 minutes)
 
-Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v8.2.0. Rust is in preview at v0.4.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, plus the v9 `X-Client-ID` outbound header.
+Choose your language below. The four stable SDKs (Go / Python / TypeScript / Java) are fully supported at v8.3.0. Rust is in preview at v0.5.0 — covers proxy, audit, basic MAP, basic MCP, OpenAI + Anthropic interceptors, `create_hitl_request`, Indonesia PII category, plus the v9 `X-Client-ID` outbound header.
 
 #### Go
 

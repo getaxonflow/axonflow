@@ -256,6 +256,122 @@ func TestGatewayPreCheckIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("Pre-check blocks Indonesia NIK when PII_ACTION=block", func(t *testing.T) {
+		t.Setenv("PII_ACTION", "block")
+		ResetDetectionConfigCache()
+
+		reqBody := PreCheckRequest{
+			ClientID: "test-client-nik",
+			Query:    "Customer NIK is 3174042506780001",
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-License-Key", "test-key")
+
+		rr := httptest.NewRecorder()
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if resp.Approved {
+			t.Error("Expected approved=false for NIK-containing query with PII_ACTION=block")
+		}
+		if resp.BlockReason == "" {
+			t.Error("Expected non-empty block_reason for NIK detection")
+		}
+		t.Logf("NIK blocked: reason=%s policies=%v", resp.BlockReason, resp.Policies)
+	})
+
+	t.Run("Pre-check detects Indonesia NIK as warn (default PII_ACTION)", func(t *testing.T) {
+		t.Setenv("PII_ACTION", "warn")
+		ResetDetectionConfigCache()
+
+		reqBody := PreCheckRequest{
+			ClientID: "test-client-nik-warn",
+			Query:    "Customer NIK is 3174042506780001",
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-License-Key", "test-key")
+
+		rr := httptest.NewRecorder()
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
+
+		var resp PreCheckResponse
+		json.NewDecoder(rr.Body).Decode(&resp)
+
+		// With PII_ACTION=warn, PII is detected but not blocked
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", rr.Code)
+		}
+		t.Logf("NIK warn mode: approved=%v", resp.Approved)
+	})
+
+	t.Run("Pre-check allows clean Indonesian query", func(t *testing.T) {
+		reqBody := PreCheckRequest{
+			ClientID: "test-client-clean-id",
+			Query:    "What is the capital of Indonesia?",
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-License-Key", "test-key")
+
+		rr := httptest.NewRecorder()
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		var resp PreCheckResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if !resp.Approved {
+			t.Errorf("Expected approved=true for clean query, got block_reason=%s", resp.BlockReason)
+		}
+	})
+
+	t.Run("Pre-check blocks Indonesia NPWP legacy when PII_ACTION=block", func(t *testing.T) {
+		t.Setenv("PII_ACTION", "block")
+		ResetDetectionConfigCache()
+
+		reqBody := PreCheckRequest{
+			ClientID: "test-client-npwp",
+			Query:    "Tax ID NPWP: 01.234.567.8-901.234",
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest("POST", "/api/policy/pre-check", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-License-Key", "test-key")
+
+		rr := httptest.NewRecorder()
+		apiAuthMiddleware(http.HandlerFunc(handlePolicyPreCheck)).ServeHTTP(rr, req)
+
+		var resp PreCheckResponse
+		json.NewDecoder(rr.Body).Decode(&resp)
+
+		if resp.Approved {
+			t.Error("Expected approved=false for NPWP-containing query with PII_ACTION=block")
+		}
+		t.Logf("NPWP blocked: reason=%s", resp.BlockReason)
+	})
+
 	// Cleanup test data
 	t.Cleanup(func() {
 		db.Exec(`DELETE FROM llm_call_audits WHERE client_id LIKE 'test-client%'`)

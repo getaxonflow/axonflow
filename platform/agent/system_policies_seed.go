@@ -667,6 +667,10 @@ func getPIIPatterns() []SystemPolicySeed {
 	singaporePatterns := getSingaporePIIPatterns()
 	patterns = append(patterns, singaporePatterns...)
 
+	// Append Indonesia PII patterns
+	indonesiaPatterns := getIndonesiaPIIPatterns()
+	patterns = append(patterns, indonesiaPatterns...)
+
 	return patterns
 }
 
@@ -752,6 +756,134 @@ func getSingaporePIIPatterns() []SystemPolicySeed {
 			Severity: SeverityLow,
 			Action:   "warn",
 			Priority: 30,
+		},
+	}
+}
+
+// getIndonesiaPIIPatterns returns Indonesia-specific PII detection patterns.
+// These patterns support OJK AI Governance, BI payment system, and UU PDP compliance.
+//
+// Patterns include:
+// - NIK: Nomor Induk Kependudukan (16-digit national ID, province-code validated)
+// - NPWP Legacy: Nomor Pokok Wajib Pajak (15-digit dotted format, pre-2024)
+// - NPWP New: 16-digit format (context-anchored to avoid credit card false positives)
+// - Phone: Indonesian mobile numbers (+62 / 08xx format)
+// - Bank accounts: BCA (10-digit), Mandiri (13-digit), BRI (15-digit), BNI (10-digit) — all context-anchored
+func getIndonesiaPIIPatterns() []SystemPolicySeed {
+	return []SystemPolicySeed{
+		// ====================================================================
+		// pii-indonesia (8 patterns)
+		// ====================================================================
+		{
+			ID:   "sys_pii_indonesia_nik",
+			Name: "Indonesian NIK Detection",
+			Description: "Indonesian Nomor Induk Kependudukan (national ID) detected — " +
+				"automatic blocking required under UU PDP Art. 4 and OJK POJK 11/2022",
+			Category: CategoryPIIIndonesia,
+			// NIK format: PPRRSSDDMMYYNNNN (16 digits)
+			// PP = province code (11-94 with gaps: valid provinces listed below)
+			// RRSS = regency/city + sub-district
+			// DD = day of birth (01-31 male, 41-71 female with +40 offset)
+			// MM = month (01-12), YY = year, NNNN = sequence
+			// Province codes: 11-21, 31-36, 51-53, 61-65, 71-76, 81-82, 91-94
+			Pattern: `\b(?:` +
+				`1[1-9]|21|` + // Aceh(11)-Riau Islands(21)
+				`3[1-6]|` + // DKI Jakarta(31)-Banten(36)
+				`5[1-3]|` + // Bali(51)-NTT(53)
+				`6[1-5]|` + // West Kalimantan(61)-North Kalimantan(65)
+				`7[1-6]|` + // North Sulawesi(71)-West Sulawesi(76)
+				`8[12]|` + // Maluku(81)-North Maluku(82)
+				`9[1-4]` + // West Papua(91)-Papua(94; includes new provinces)
+				`)` +
+				`\d{4}` + // RRSS: regency/sub-district
+				`(?:0[1-9]|[12]\d|3[01]|4[1-9]|[56]\d|7[01])` + // DD: 01-31 male or 41-71 female
+				`(?:0[1-9]|1[0-2])` + // MM: month
+				`\d{2}` + // YY: year
+				`\d{4}\b`, // NNNN: sequence
+			Severity: SeverityCritical,
+			Action:   "block",
+			Priority: 100,
+		},
+		{
+			ID:          "sys_pii_indonesia_npwp_legacy",
+			Name:        "Indonesian NPWP Legacy Detection",
+			Description: "Indonesian Nomor Pokok Wajib Pajak (tax ID, legacy 15-digit format) detected — redaction required under UU PDP",
+			Category:    CategoryPIIIndonesia,
+			// Legacy NPWP format: XX.XXX.XXX.X-XXX.XXX (15 digits with dots and dash)
+			Pattern:  `\b\d{2}\.\d{3}\.\d{3}\.\d{1}-\d{3}\.\d{3}\b`,
+			Severity: SeverityCritical,
+			Action:   "block",
+			Priority: 100,
+		},
+		{
+			ID:          "sys_pii_indonesia_npwp_new",
+			Name:        "Indonesian NPWP New Format Detection",
+			Description: "Indonesian tax ID (new 16-digit format, post-2024) detected — context-anchored to reduce false positives",
+			Category:    CategoryPIIIndonesia,
+			// New NPWP is 16 digits (same as NIK for individuals, different prefix for corporates)
+			// Context-anchored: requires keyword prefix to avoid matching credit cards/timestamps
+			Pattern:  `(?i)(?:NPWP|npwp|tax[\s_-]*(?:id|number|no)|nomor[\s_-]*pokok)[:\s]+\d{16}\b`,
+			Severity: SeverityCritical,
+			Action:   "block",
+			Priority: 100,
+		},
+		{
+			ID:          "sys_pii_indonesia_phone",
+			Name:        "Indonesian Phone Detection",
+			Description: "Indonesian phone number detected — redaction recommended for privacy under UU PDP",
+			Category:    CategoryPIIIndonesia,
+			// Indonesian mobile: +62 or 08xx, followed by 8-11 digits
+			// Carriers: Telkomsel (0811-0813,0821-0823,0852-0853,0851),
+			//   Indosat (0814-0816,0855-0858), XL (0817-0819,0859,0877-0878),
+			//   Tri (0895-0899,0896-0897), Smartfren (0881-0889)
+			Pattern:  `\b(?:\+?62|0)8[1-9]\d{6,10}\b`,
+			Severity: SeverityMedium,
+			Action:   "redact",
+			Priority: 70,
+		},
+		{
+			ID:          "sys_pii_indonesia_bca",
+			Name:        "Indonesian BCA Bank Account Detection",
+			Description: "BCA bank account number detected — context-anchored for OJK compliance",
+			Category:    CategoryPIIIndonesia,
+			// BCA accounts: 10 digits, context-anchored to avoid timestamp false positives
+			Pattern:  `(?i)(?:BCA|bank[\s_-]*central[\s_-]*asia|rek(?:ening)?)[:\s]+\d{10}\b`,
+			Severity: SeverityHigh,
+			Action:   "redact",
+			Priority: 90,
+		},
+		{
+			ID:          "sys_pii_indonesia_mandiri",
+			Name:        "Indonesian Mandiri Bank Account Detection",
+			Description: "Mandiri bank account number detected — context-anchored for OJK compliance",
+			Category:    CategoryPIIIndonesia,
+			// Mandiri accounts: 13 digits, context-anchored
+			Pattern:  `(?i)(?:mandiri|bank[\s_-]*mandiri|rek(?:ening)?[\s_-]*mandiri)[:\s]+\d{13}\b`,
+			Severity: SeverityHigh,
+			Action:   "redact",
+			Priority: 90,
+		},
+		{
+			ID:          "sys_pii_indonesia_bri",
+			Name:        "Indonesian BRI Bank Account Detection",
+			Description: "BRI bank account number detected — context-anchored for OJK compliance",
+			Category:    CategoryPIIIndonesia,
+			// BRI accounts: 15 digits, context-anchored
+			Pattern:  `(?i)(?:BRI|bank[\s_-]*rakyat[\s_-]*indonesia|rek(?:ening)?[\s_-]*BRI)[:\s]+\d{15}\b`,
+			Severity: SeverityHigh,
+			Action:   "redact",
+			Priority: 90,
+		},
+		{
+			ID:          "sys_pii_indonesia_bni",
+			Name:        "Indonesian BNI Bank Account Detection",
+			Description: "BNI bank account number detected — context-anchored for OJK compliance",
+			Category:    CategoryPIIIndonesia,
+			// BNI accounts: 10 digits, context-anchored
+			Pattern:  `(?i)(?:BNI|bank[\s_-]*negara[\s_-]*indonesia|rek(?:ening)?[\s_-]*BNI)[:\s]+\d{10}\b`,
+			Severity: SeverityHigh,
+			Action:   "redact",
+			Priority: 90,
 		},
 	}
 }

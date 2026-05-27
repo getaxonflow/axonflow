@@ -38,6 +38,9 @@ const (
 	// Includes: NRIC, FIN, UEN, phone, postal code.
 	// Added for MAS FEAT Community compliance (Issue #1076).
 	CategoryPIISingapore PolicyCategory = "pii-singapore"
+	// CategoryPIIIndonesia covers Indonesia-specific PII patterns.
+	// Includes: NIK, NPWP (legacy 15-digit + new 16-digit), +62 phone, bank accounts (BCA/Mandiri/BRI/BNI).
+	CategoryPIIIndonesia PolicyCategory = "pii-indonesia"
 
 	// Static policy categories - Code Governance (Issue #761)
 	// These categories enable governed code generation by detecting secrets,
@@ -90,6 +93,7 @@ func StaticPolicyCategories() []PolicyCategory {
 		CategoryPIIEU,
 		CategoryPIIIndia,
 		CategoryPIISingapore, // Issue #1076 - MAS FEAT Community
+		CategoryPIIIndonesia, // OJK/BI/UU PDP compliance
 		CategoryCodeSecrets,
 		CategoryCodeUnsafe,
 		CategoryCodeCompliance,

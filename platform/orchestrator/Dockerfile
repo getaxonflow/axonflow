@@ -66,6 +66,11 @@ RUN --mount=type=bind,source=.,target=/src \
         cp -r /src/ee/platform/orchestrator/masfeat/* ./orchestrator/masfeat/ && \
         echo "MAS FEAT compliance module copied"; \
       fi && \
+      if [ -d "/src/ee/platform/orchestrator/ojk" ]; then \
+        mkdir -p ./orchestrator/ojk/ && \
+        cp -r /src/ee/platform/orchestrator/ojk/* ./orchestrator/ojk/ && \
+        echo "OJK compliance module copied (Indonesia)"; \
+      fi && \
       if [ -d "/src/ee/platform/orchestrator/llmadapters" ]; then \
         mkdir -p ./orchestrator/llmadapters/ && \
         cp -r /src/ee/platform/orchestrator/llmadapters/* ./orchestrator/llmadapters/ && \
@@ -136,7 +141,7 @@ RUN set -e && \
 # Final stage - minimal runtime image
 FROM alpine:3.23
 
-ARG AXONFLOW_VERSION=8.2.1
+ARG AXONFLOW_VERSION=8.3.0
 ENV AXONFLOW_VERSION=${AXONFLOW_VERSION}
 
 # AWS Marketplace metadata
