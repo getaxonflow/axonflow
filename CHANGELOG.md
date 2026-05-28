@@ -12,6 +12,46 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.4.0] - 2026-05-28 — Self-hosted deployment alignment + OpenAI-compatible gateway endpoint
+
+### Added (Self-hosted)
+
+- **`docker-compose.enterprise.yml` aligned with production CFN templates.** Closes the hand-authoring drift class (#2498). Self-hosted operators upgrading from prior versions must set `AXONFLOW_INTERNAL_SERVICE_SECRET` (32+ chars, e.g. `openssl rand -hex 32`) on the agent, orchestrator, and customer-portal env blocks — without it, the customer-portal can't authenticate calls to the agent and the unified-policies UI silently shows 0 system policies. AWS CFN-deployed stacks are unaffected (the secret was always injected from `InternalServiceSecret`). Also added: `audit-data` named volume for audit-fallback persistence across restarts, resource limits mirroring CFN sizing, and `curl -f` healthchecks matching the CFN-defined commands.
+
+- **`DEPLOYMENT_KIND` overlay default kept at `dev`.** Self-hosted operators flipping `DEPLOYMENT_KIND=production` must also set a real `ORG_ID` (not the `local-dev-org` sentinel) at the same time — migration 094's prod-safety guardrail aborts boot on the (`production` + `local-dev-org`) combo to prevent silent dev-sentinel stamping of audit rows.
+
+- **`axonflow-install` bundled stack** with OpenTelemetry collector + Tempo + a Decision Mode Traces Grafana dashboard (at `http://localhost:3001/d/decision-mode-traces`) out of the box for self-hosted deployments on non-AWS (e.g. GCP). One-command deploy via `./install.sh`. Closes #2496.
+
+Milestone 1 of the OpenAI-compatible gateway. Existing OpenAI SDK users can route calls through AxonFlow for policy enforcement and audit by changing a single line (`baseURL`). No new SDK to learn, no request format changes — the endpoint accepts and returns standard OpenAI Chat Completions wire format. Verified end-to-end with the Python and TypeScript OpenAI SDKs against real OpenAI API.
+
+### Added (Community)
+
+- **OpenAI-compatible gateway endpoint (`POST /v1/chat/completions`).** Drop-in governance for OpenAI SDK users. The agent accepts a standard [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create) request, evaluates AxonFlow policies (PII detection, SQL injection blocking, dangerous query prevention, compliance rules), and either blocks the request with an OpenAI-compatible error or forwards it to the upstream provider and returns the response unchanged. Verified with Python `openai` v2.38.0 and TypeScript `openai` latest.
+
+  **Quick start (Python):**
+  ```python
+  from openai import OpenAI
+  client = OpenAI(
+      base_url="http://localhost:8080/v1",
+      default_headers={"X-Provider-Key": OPENAI_API_KEY}
+  )
+  response = client.chat.completions.create(model="gpt-4o-mini", messages=[...])
+  ```
+
+  **Key behaviors:**
+  - Policy denials return HTTP 400 with `{"error": {"type": "policy_violation", "code": "policy_denied"}}` — the OpenAI SDK parses this as `BadRequestError`, so existing error handling works unchanged.
+  - Every request is audited: model, provider, prompt/completion token counts, estimated cost, latency, and policy decision (`allow` or `deny`).
+  - Response headers `X-AxonFlow-Decision-Id` (UUID) and `X-AxonFlow-Trace-Id` (W3C 32-hex) enable audit correlation and OTel tracing.
+  - Provider API key supplied via `X-Provider-Key` header (not stored by AxonFlow).
+  - `stream: true` returns a clear HTTP 400 error — streaming support is planned for a future release.
+  - Same authentication as all AxonFlow endpoints (community mode: no auth; enterprise: Basic Auth).
+
+  **Documentation:** [OpenAI-Compatible Gateway](https://docs.getaxonflow.com/docs/sdk/openai-compatible-gateway/)
+
+### Changed
+
+- **SDK version recommendations.** Platform `/health` now advertises SDK v8.4.0 as recommended version. Minimum SDK floor remains v8.0.0.
+
 ## [8.3.0] - 2026-05-27 — Indonesia compliance + OTel exporters
 
 Minor release. Adds Indonesia regulatory compliance coverage: PII detection patterns for Indonesian identifiers, OJK (Otoritas Jasa Keuangan) AI governance module for financial services, and UU PDP (Law No. 27/2022) breach notification support. SDKs updated to v8.3.0 (Rust v0.5.0) with Indonesia category support and audit fields.
