@@ -79,6 +79,12 @@ tags:
     description: |
       EU AI Act compliance data export and reporting.
       Export compliance data in EU regulatory format.
+  - name: OpenAI Compatible
+    description: |
+      OpenAI-compatible gateway endpoint (Issue #2351). Accepts standard
+      OpenAI Chat Completions requests, runs AxonFlow policy checks, forwards
+      to the upstream provider, records audit, and returns an OpenAI-compatible
+      response. Customers change only `baseURL` in their OpenAI SDK setup.
   - name: Static Policies
     description: |
       Static policy management (ADR-018).
@@ -606,6 +612,113 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DecideErrorResponse'
+
+  /v1/chat/completions:
+    post:
+      tags:
+        - OpenAI Compatible
+      summary: OpenAI-compatible chat completions with policy enforcement
+      description: |
+        Accepts a standard OpenAI Chat Completions request, runs AxonFlow
+        policy checks via the shared policy engine, forwards to the upstream
+        provider, records audit (tokens, cost, latency, policy decision),
+        and returns an OpenAI-compatible response.
+
+        The caller passes their upstream provider API key via the
+        `X-Provider-Key` header. AxonFlow auth (Basic Auth or community
+        mode) is handled by the same `apiAuthMiddleware` as all other
+        agent endpoints.
+
+        Streaming (`stream: true`) is not supported in this release and
+        returns HTTP 400 with a clear error.
+      operationId: chatCompletionsOpenAICompat
+      parameters:
+        - name: X-Provider-Key
+          in: header
+          required: true
+          description: Upstream LLM provider API key (e.g. OpenAI API key)
+          schema:
+            type: string
+        - name: traceparent
+          in: header
+          required: false
+          description: W3C traceparent header for trace correlation
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            example:
+              model: "gpt-4o"
+              messages:
+                - role: "user"
+                  content: "What is 2+2?"
+              temperature: 0.7
+              max_tokens: 100
+      responses:
+        '200':
+          description: Successful completion
+          headers:
+            X-AxonFlow-Decision-Id:
+              description: UUID correlating this request in audit logs
+              schema:
+                type: string
+                format: uuid
+            X-AxonFlow-Trace-Id:
+              description: W3C-compatible 32-hex trace ID for OTel correlation
+              schema:
+                type: string
+                pattern: '^[0-9a-f]{32}$'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+        '400':
+          description: |
+            Request validation error or policy denial. Policy denials
+            use `type: "policy_violation"` and `code: "policy_denied"`.
+            The OpenAI SDK parses this as `openai.BadRequestError`.
+          headers:
+            X-AxonFlow-Decision-Id:
+              description: UUID correlating this request in audit logs
+              schema:
+                type: string
+                format: uuid
+            X-AxonFlow-Trace-Id:
+              description: W3C-compatible 32-hex trace ID
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIErrorResponse'
+              examples:
+                policy_denied:
+                  summary: Policy violation (PII detected)
+                  value:
+                    error:
+                      message: "Request blocked by policy: PII detected"
+                      type: "policy_violation"
+                      code: "policy_denied"
+                stream_not_supported:
+                  summary: Streaming not supported
+                  value:
+                    error:
+                      message: "Streaming is not supported in this release. Remove stream: true."
+                      type: "invalid_request_error"
+                      code: "stream_not_supported"
+                missing_provider_key:
+                  summary: Missing provider key
+                  value:
+                    error:
+                      message: "X-Provider-Key header is required."
+                      type: "invalid_request_error"
+                      code: "missing_provider_key"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /api/policies/test:
     post:
@@ -4155,6 +4268,159 @@ components:
             error. The field is OMITTED from the envelope (not present
             as empty) for request-format errors that were rejected
             before a trace_id was minted.
+
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: ID of the model to use (e.g. gpt-4o, gpt-4o-mini).
+          example: "gpt-4o"
+        messages:
+          type: array
+          items:
+            type: object
+            required:
+              - role
+              - content
+            properties:
+              role:
+                type: string
+                enum: [system, user, assistant, tool]
+              content:
+                description: Message content (string or array for multimodal).
+              name:
+                type: string
+              tool_calls:
+                type: array
+                items:
+                  type: object
+              tool_call_id:
+                type: string
+          minItems: 1
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+        max_tokens:
+          type: integer
+        max_completion_tokens:
+          type: integer
+        stream:
+          type: boolean
+          description: |
+            Must be false or omitted. Streaming is not supported in this
+            release; setting stream=true returns HTTP 400.
+        stop:
+          description: Up to 4 stop sequences.
+        presence_penalty:
+          type: number
+        frequency_penalty:
+          type: number
+        user:
+          type: string
+        response_format:
+          type: object
+        seed:
+          type: integer
+        tools:
+          type: array
+          items:
+            type: object
+        tool_choice:
+          description: Tool choice configuration.
+
+    ChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the completion.
+          example: "chatcmpl-abc123"
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+          description: Unix timestamp of creation.
+        model:
+          type: string
+          description: Model used for the completion.
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  content:
+                    type: string
+                    nullable: true
+                  tool_calls:
+                    type: array
+                    items:
+                      type: object
+              finish_reason:
+                type: string
+                nullable: true
+                enum: [stop, length, tool_calls, content_filter, null]
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+        system_fingerprint:
+          type: string
+
+    OpenAIErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - type
+          properties:
+            message:
+              type: string
+              description: Human-readable error message.
+            type:
+              type: string
+              description: Error type (policy_violation, invalid_request_error, etc.).
+              enum:
+                - policy_violation
+                - invalid_request_error
+                - authentication_error
+                - server_error
+            param:
+              type: string
+              nullable: true
+            code:
+              type: string
+              description: Machine-readable error code.
+              example: "policy_denied"
 
     AuditLLMCallRequest:
       type: object
