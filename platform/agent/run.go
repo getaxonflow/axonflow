@@ -1236,6 +1236,11 @@ func Run() {
 	// infrastructure-gateway caller (PEP) rather than application code.
 	RegisterDecisionHandlers(globalRouter)
 
+	// Register OpenAI-compatible gateway endpoint (Issue #2351 / Epic #2360).
+	// POST /v1/chat/completions accepts standard OpenAI SDK requests, runs
+	// the shared policy engine, forwards to upstream, records audit.
+	RegisterOpenAICompatHandlers(globalRouter)
+
 	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
