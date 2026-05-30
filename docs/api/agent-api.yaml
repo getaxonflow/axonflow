@@ -4100,7 +4100,25 @@ components:
         context:
           type: object
           additionalProperties: true
-          description: Arbitrary caller-supplied context for policy evaluation.
+          description: |
+            Optional caller-supplied context (string values) that AxonFlow
+            propagates end-to-end into the decision audit record + the OTel
+            decision span, so a SIEM can correlate the decision with upstream
+            logs (e.g. by session_id). Intended for infrastructure-gateway
+            audit headers such as `X-AI-Agent`, `X-Session-ID`,
+            `X-Leader-Identity`, and the `x-bukuwarung-*` family.
+
+            Only keys matching the server's allowlist
+            (`AXONFLOW_DECISION_CONTEXT_ALLOWLIST`; default
+            `x-ai-agent,x-session-id,x-leader-identity,x-bukuwarung-*`, where a
+            trailing `*` is a prefix match) are persisted; all other keys are
+            silently dropped. Surviving keys are canonicalized to
+            lower_snake_case (`X-AI-Agent` → `x_ai_agent`) so joins are
+            deterministic regardless of header casing. Non-string values are
+            dropped; values are capped at 256 bytes and the map at 10 keys
+            (surplus dropped, flagged `context_truncated`). The persisted map
+            is returned (full) by `GET /api/v1/decisions/{id}/explain` and
+            (truncated to 5 keys) by `GET /api/v1/decisions`.
 
     DecisionCallerIdentity:
       type: object

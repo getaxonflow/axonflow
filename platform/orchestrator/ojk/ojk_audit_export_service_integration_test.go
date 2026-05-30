@@ -198,7 +198,7 @@ func TestOJKAuditExportService_Integration_SubmitBreachNotification(t *testing.T
 		resp.ID,
 	).Scan(&dbID)
 	if err != nil {
-		t.Logf("Note: breach notifications table may not exist in test DB (migration 503 not applied) — %v", err)
+		t.Logf("Note: breach notifications table may not exist in test DB (migration 130 not applied) — %v", err)
 	} else if dbID != resp.ID {
 		t.Errorf("Persisted ID mismatch: expected %s, got %s", resp.ID, dbID)
 	}
@@ -243,5 +243,67 @@ func TestOJKAuditExportService_Integration_GetExportStatus(t *testing.T) {
 
 	if resp.ExportID != "test-export-123" {
 		t.Errorf("Expected export_id=test-export-123, got %s", resp.ExportID)
+	}
+}
+
+// TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip seeds an
+// orchestrator_audit_logs row tagged with the explicit UU PDP Pasal 56(b)
+// value (transfer_basis = "pasal_56b_dpa") and asserts it round-trips
+// unchanged through the cross_border_transfers export — no auto-translation to
+// the generic "safeguards" label. Requires migration 129 (transfer_basis
+// column) applied to the test DB.
+func TestOJKAuditExportService_Integration_CrossBorderPasal56bRoundTrip(t *testing.T) {
+	db := getOJKTestDB(t)
+	defer db.Close()
+
+	t.Setenv("AXONFLOW_COMPLIANCE_REGION", "ID")
+
+	createOJKTestOrg(t, db, "cross-border-pasal56b")
+	tenantID := "org-ojk-cross-border-pasal56b"
+
+	ctx := context.Background()
+	rowTS := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO orchestrator_audit_logs (org_id, service_id, action, resource, timestamp, data_residency, transfer_basis)
+		 VALUES ($1, 'orchestrator', 'llm_route', 'openai/gpt-4o', $2, 'US', 'pasal_56b_dpa')`,
+		tenantID, rowTS,
+	)
+	if err != nil {
+		t.Skipf("Skipping — could not seed orchestrator_audit_logs (migration 129 may not be applied): %v", err)
+	}
+	defer db.ExecContext(ctx, `DELETE FROM orchestrator_audit_logs WHERE org_id = $1`, tenantID)
+
+	service := NewOJKAuditExportService(db, nil)
+	resp, err := service.ExportAuditData(ctx, tenantID, &OJKAuditExportRequest{
+		StartDate: "2026-01-01",
+		EndDate:   "2026-12-31",
+		DataTypes: []OJKAuditDataType{OJKDataTypeCrossBorder},
+		Framework: OJKFrameworkUUPDP,
+	})
+	if err != nil {
+		t.Fatalf("ExportAuditData failed: %v", err)
+	}
+	if resp.Data == nil || len(resp.Data.CrossBorder) == 0 {
+		t.Fatalf("expected at least one cross-border record, got %+v", resp.Data)
+	}
+
+	var found bool
+	for _, rec := range resp.Data.CrossBorder {
+		if rec.TransferBasis == "pasal_56b_dpa" {
+			found = true
+			if rec.DataResidency != "US" {
+				t.Errorf("data_residency = %q, want US", rec.DataResidency)
+			}
+			if rec.DestinationCountry != "US" {
+				t.Errorf("destination_country = %q, want US", rec.DestinationCountry)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("pasal_56b_dpa transfer_basis did not round-trip through export: %+v", resp.Data.CrossBorder)
+	}
+	if resp.Summary.RecordsByType["cross_border_transfers"] < 1 {
+		t.Errorf("summary records_by_type[cross_border_transfers] = %d, want >= 1", resp.Summary.RecordsByType["cross_border_transfers"])
 	}
 }

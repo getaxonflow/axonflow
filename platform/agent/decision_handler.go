@@ -36,13 +36,18 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"axonflow/platform/agent/circuitbreaker"
 	"axonflow/platform/agent/telemetry"
@@ -65,7 +70,37 @@ const (
 	// want a shorter cache window than the default 5min.
 	decisionResponseDefaultTTL = 5 * time.Minute
 	envDecisionExpiresAfter    = "AXONFLOW_DECISION_EXPIRES_AFTER"
+
+	// envDecisionContextAllowlist names the comma-separated allowlist of
+	// request-context keys the Decision API persists + traces. Customer-
+	// supplied DecideRequest.context may carry arbitrary keys (secrets,
+	// PII, oversized values); only keys matching this allowlist survive
+	// into the OTel span + audit JSONB. Entries are matched case- and
+	// separator-insensitively (X-AI-Agent == x-ai-agent == x_ai_agent);
+	// a trailing "*" makes the entry a prefix match (x-bukuwarung-*).
+	// Empty / unset falls back to defaultDecisionContextAllowlist.
+	envDecisionContextAllowlist = "AXONFLOW_DECISION_CONTEXT_ALLOWLIST"
+
+	// Per-key / per-value / key-count caps applied during canonicalization.
+	// The value cap (256 bytes, rune-safe) keeps each emitted span attribute
+	// well under the 32 KiB collector ceiling; the key cap (32 chars) keeps
+	// attribute names bounded; the count cap (10) bounds the per-span
+	// attribute count and trips the truncated flag when exceeded.
+	maxContextKeyLen   = 32
+	maxContextValueLen = 256
+	maxContextKeys     = 10
 )
+
+// defaultDecisionContextAllowlist is the v8.4.1 default for
+// AXONFLOW_DECISION_CONTEXT_ALLOWLIST. Covers BukuWarung's Layer-2 audit
+// headers plus the tenant-scoped x-bukuwarung-* family (prefix match).
+// Entries are stored in hyphen form; matching normalizes both sides.
+var defaultDecisionContextAllowlist = []string{
+	"x-ai-agent",
+	"x-session-id",
+	"x-leader-identity",
+	"x-bukuwarung-*",
+}
 
 // Stage values accepted by the Decision API. Mirrors the three gateway layers
 // in the ADR-056 reference architecture (agent / MCP / LLM).
@@ -283,6 +318,27 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 
 	decisionID := uuid.New().String()
 
+	// Canonicalize + sanitize the customer-supplied request context once.
+	// The kept map (canonical keys -> sanitized values) is threaded into
+	// every verdict's OTel span attributes + audit row; contextTruncated
+	// flags that the key-count cap dropped surplus keys. BukuWarung Layer-2
+	// headers (X-AI-Agent / X-Session-ID / X-Leader-Identity, x-bukuwarung-*)
+	// land here so the SIEM can join AxonFlow's decision record to BigQuery
+	// Cloud Audit Logs by session_id (#2509 / epic #2508).
+	reqContext, contextTruncated := canonicalizeRequestContext(req.Context, decisionContextAllowlist())
+
+	// Static identity for the audit_logs row, built once. Each verdict path
+	// below passes &decisionAudit so its decision (including the deny early
+	// returns) is listable via GET /api/v1/decisions and explainable.
+	decisionAudit := &decisionAuditInput{
+		clientID:  effectiveClientID,
+		requestID: decisionID,
+		userEmail: user.Email,
+		userRole:  user.Role,
+		userID:    user.ID,
+		query:     req.Query,
+	}
+
 	// Circuit breaker -- transient deny shape. Returns HTTP 503 so the PEP
 	// adapter can apply its configured fail-open / fail-closed posture.
 	// ADR-056 §Components calls this out explicitly. A 5xx-class status
@@ -304,7 +360,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 			if retryAfter := circuitBreakerRetryAfter(cbResult.ExpiresAt); retryAfter != "" {
 				w.Header().Set("Retry-After", retryAfter)
 			}
-			traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, nil, time.Since(startTime).Milliseconds(), []string{string(cbResult.Reason)}, traceID)
+			traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, nil, time.Since(startTime).Milliseconds(), []string{string(cbResult.Reason)}, traceID, reqContext, contextTruncated, decisionAudit)
 			sendDecideError(w, fmt.Sprintf("Service temporarily unavailable: circuit breaker active (reason: %s)", cbResult.Reason), http.StatusServiceUnavailable, decisionID, traceID)
 			recordDecideMetrics("circuit_breaker", stage, startTime)
 			return
@@ -317,7 +373,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	killSwitchResult := checkRBIKillSwitch(ctx, client.OrgID, "")
 	if killSwitchResult.IsBlocked {
 		log.Printf("🛑 [Decide] Request blocked by RBI kill switch: %s", killSwitchResult.Reason)
-		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"rbi_kill_switch"}, time.Since(startTime).Milliseconds(), []string{killSwitchResult.Reason}, traceID)
+		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"rbi_kill_switch"}, time.Since(startTime).Milliseconds(), []string{killSwitchResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
 		writeDecideResponse(w, http.StatusOK, DecideResponse{
 			Verdict:           VerdictDeny,
 			DecisionID:        decisionID,
@@ -353,7 +409,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	indonesiaPIIResult := checkIndonesiaPII(req.Query, blockOnCriticalPII)
 	if indonesiaPIIResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by Indonesia PII detection: %s", indonesiaPIIResult.Reason)
-		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"indonesia_pii_protection"}, time.Since(startTime).Milliseconds(), []string{indonesiaPIIResult.Reason}, traceID)
+		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"indonesia_pii_protection"}, time.Since(startTime).Milliseconds(), []string{indonesiaPIIResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
 		writeDecideResponse(w, http.StatusOK, DecideResponse{
 			Verdict:           VerdictDeny,
 			DecisionID:        decisionID,
@@ -372,7 +428,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	piiResult := checkRBIPII(req.Query, blockOnCriticalPII)
 	if piiResult.BlockRecommended {
 		log.Printf("🛑 [Decide] Request blocked by RBI PII detection: %s", piiResult.Reason)
-		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"rbi_pii_protection"}, time.Since(startTime).Milliseconds(), []string{piiResult.Reason}, traceID)
+		traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, VerdictDeny, []string{"rbi_pii_protection"}, time.Since(startTime).Milliseconds(), []string{piiResult.Reason}, traceID, reqContext, contextTruncated, decisionAudit)
 		writeDecideResponse(w, http.StatusOK, DecideResponse{
 			Verdict:           VerdictDeny,
 			DecisionID:        decisionID,
@@ -501,7 +557,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		evaluatedPolicies = []string{}
 	}
 
-	traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, verdict, evaluatedPolicies, time.Since(startTime).Milliseconds(), reasons, traceID)
+	traceID = recordDecideDecision(ctx, decisionID, client.OrgID, client.TenantID, stage, verdict, evaluatedPolicies, time.Since(startTime).Milliseconds(), reasons, traceID, reqContext, contextTruncated, decisionAudit)
 
 	writeDecideResponse(w, http.StatusOK, DecideResponse{
 		Verdict:           verdict,
@@ -698,30 +754,329 @@ func recordDecideMetrics(verdict, stage string, startTime time.Time) {
 	decideRequests.WithLabelValues(verdict, stage).Inc()
 }
 
+// decisionContextAllowlist returns the active request-context key allowlist.
+// AXONFLOW_DECISION_CONTEXT_ALLOWLIST (comma-separated) overrides the
+// default; blank entries are dropped and a fully-empty override falls back
+// to the default so a typo can't silently disable context capture entirely
+// without an operator noticing the env var had no effect.
+func decisionContextAllowlist() []string {
+	raw := strings.TrimSpace(getEnv(envDecisionContextAllowlist, ""))
+	if raw == "" {
+		return defaultDecisionContextAllowlist
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return defaultDecisionContextAllowlist
+	}
+	return out
+}
+
+// canonicalizeRequestContext filters a raw DecideRequest.context map against
+// the allowlist, canonicalizes surviving keys to lower_snake_case, sanitizes
+// + length-caps values, and caps the total key count. It is a pure function
+// (no I/O, no globals) so the full edge-case matrix is unit-testable.
+//
+// Returns the kept map (canonical key -> sanitized value) and whether the
+// key-count cap dropped any keys (the caller surfaces this as the
+// request.context.truncated span attribute + a JSONB marker).
+//
+// Behavior:
+//   - non-string values are dropped silently (the audit pipeline persists
+//     strings only — a nested object or number is not a header value)
+//   - keys not matching the allowlist are dropped
+//   - keys are canonicalized: lowercased, every non-alphanumeric run becomes
+//     a single underscore, capped to maxContextKeyLen (X-AI-Agent -> x_ai_agent)
+//   - values have control / unprintable runes stripped and are capped to
+//     maxContextValueLen bytes on a rune boundary
+//   - if more than maxContextKeys survive, keys are sorted and the first
+//     maxContextKeys kept (deterministic); truncated=true
+func canonicalizeRequestContext(raw map[string]interface{}, allowlist []string) (map[string]string, bool) {
+	kept := map[string]string{}
+	if len(raw) == 0 {
+		return kept, false
+	}
+	// Iterate raw keys in sorted order so the result is deterministic even
+	// when two distinct raw keys canonicalize to the same key (e.g. after the
+	// 32-char cap clips a shared prefix): first sorted raw key wins rather than
+	// a random map-iteration winner.
+	rawKeys := make([]string, 0, len(raw))
+	for k := range raw {
+		rawKeys = append(rawKeys, k)
+	}
+	sort.Strings(rawKeys)
+	for _, k := range rawKeys {
+		s, ok := raw[k].(string)
+		if !ok {
+			continue // strings only
+		}
+		if !matchContextAllowlist(k, allowlist) {
+			continue
+		}
+		ck := canonicalContextKey(k)
+		if ck == "" {
+			continue
+		}
+		if _, exists := kept[ck]; exists {
+			continue // canonical-key collision: keep the first sorted raw key
+		}
+		kept[ck] = sanitizeContextValue(s)
+	}
+	if len(kept) <= maxContextKeys {
+		return kept, false
+	}
+	// Deterministic count cap: sort canonical keys, keep the first N.
+	keys := make([]string, 0, len(kept))
+	for k := range kept {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	capped := make(map[string]string, maxContextKeys)
+	for _, k := range keys[:maxContextKeys] {
+		capped[k] = kept[k]
+	}
+	return capped, true
+}
+
+// matchContextAllowlist reports whether key matches any allowlist entry.
+// Matching is case- and separator-insensitive: both sides are lowercased and
+// '_' is folded to '-' so X-AI-Agent, x-ai-agent and x_ai_agent all match the
+// "x-ai-agent" entry. A trailing "*" on an entry makes it a prefix match.
+func matchContextAllowlist(key string, allowlist []string) bool {
+	nk := normalizeContextKeyForMatch(key)
+	if nk == "" {
+		return false
+	}
+	for _, entry := range allowlist {
+		ne := normalizeContextKeyForMatch(entry)
+		if ne == "" {
+			continue
+		}
+		if strings.HasSuffix(ne, "*") {
+			if strings.HasPrefix(nk, strings.TrimSuffix(ne, "*")) {
+				return true
+			}
+			continue
+		}
+		if nk == ne {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeContextKeyForMatch lowercases, trims, and folds '_' to '-' so
+// allowlist comparison is insensitive to case and separator style. The
+// trailing '*' (prefix marker) is preserved.
+func normalizeContextKeyForMatch(s string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "_", "-")
+}
+
+// canonicalContextKey converts a header-style key to the canonical
+// lower_snake_case form persisted in the JSONB + emitted as a span
+// attribute suffix. Non-alphanumeric runs collapse to a single underscore;
+// leading/trailing underscores are trimmed; the result is capped to
+// maxContextKeyLen. Returns "" if nothing alphanumeric survives.
+func canonicalContextKey(k string) string {
+	var b strings.Builder
+	lastUnderscore := true // suppress a leading underscore
+	for _, r := range strings.ToLower(strings.TrimSpace(k)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+		} else if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+		if b.Len() >= maxContextKeyLen {
+			break
+		}
+	}
+	out := strings.TrimRight(b.String(), "_")
+	if len(out) > maxContextKeyLen {
+		out = out[:maxContextKeyLen]
+	}
+	return strings.TrimRight(out, "_")
+}
+
+// sanitizeContextValue strips control / unprintable runes and caps the value
+// to maxContextValueLen bytes without cutting a multi-byte rune. Customer
+// values can carry arbitrary bytes; the audit + trace pipelines require valid,
+// bounded UTF-8.
+func sanitizeContextValue(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			continue // drops control chars, zero-width, unprintable
+		}
+		if b.Len()+utf8.RuneLen(r) > maxContextValueLen {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// decisionAuditInput carries the static, per-request identity fields the
+// audit_logs row needs that recordDecideDecision doesn't otherwise receive.
+// Built once in handleDecide and passed to every recordDecideDecision call so
+// each verdict (including the circuit-breaker / kill-switch / PII early
+// returns) produces a complete, explainable audit row.
+type decisionAuditInput struct {
+	clientID  string
+	requestID string
+	userEmail string
+	userRole  string
+	userID    int
+	query     string
+}
+
 // recordDecideDecision emits the OTel decision span via the
-// decisionTracerProvider from #2437. Returns the OTel-assigned trace_id
-// if the provider is wired, or falls back to the caller-supplied
-// fallbackTraceID (which is either the inbound traceparent's trace-id
-// or a freshly minted W3C ID). The fallback keeps trace_id populated
-// even when AXONFLOW_OTEL_ENDPOINT is unset (noop tracer returns "").
-func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stage, verdict string, policyIDs []string, latencyMs int64, reasons []string, fallbackTraceID string) string {
+// decisionTracerProvider from #2437 AND, when audit != nil, persists a
+// durable audit_logs row so GET /api/v1/decisions and the explain endpoint
+// can surface this decision (including the sanitized request context).
+//
+// Returns the OTel-assigned trace_id if the provider is wired, or falls back
+// to the caller-supplied fallbackTraceID (the inbound traceparent's trace-id
+// or a freshly minted W3C ID). The fallback keeps trace_id populated even
+// when AXONFLOW_OTEL_ENDPOINT is unset (noop tracer returns "").
+//
+// reqContext is the canonicalized request-context map (canonical keys ->
+// sanitized values); contextTruncated flags that the key-count cap dropped
+// keys. Both are threaded into the span attributes and the audit JSONB.
+//
+// audit == nil means "OTel only" — the OpenAI-compat caller records its own
+// llm_call_audits row and must not double-write audit_logs.
+func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stage, verdict string, policyIDs []string, latencyMs int64, reasons []string, fallbackTraceID string, reqContext map[string]string, contextTruncated bool, audit *decisionAuditInput) string {
+	// Durable audit first so the decision is recoverable even if the OTel
+	// collector is down. Best-effort: a DB hiccup never changes the verdict
+	// the PEP already holds (the write logs and returns on error).
+	if audit != nil {
+		writeDecisionAuditLog(ctx, usageDB, decisionID, orgID, tenantID, stage, verdict, policyIDs, reasons, reqContext, contextTruncated, *audit)
+	}
+
 	if decisionTracerProvider == nil {
 		return fallbackTraceID
 	}
 	otelTraceID := decisionTracerProvider.Tracer.RecordDecision(ctx, telemetry.DecisionEvent{
-		DecisionID: decisionID,
-		OrgID:      orgID,
-		TenantID:   tenantID,
-		Stage:      stage,
-		Verdict:    verdict,
-		PolicyIDs:  policyIDs,
-		LatencyMs:  latencyMs,
-		Reasons:    reasons,
+		DecisionID:       decisionID,
+		OrgID:            orgID,
+		TenantID:         tenantID,
+		Stage:            stage,
+		Verdict:          verdict,
+		PolicyIDs:        policyIDs,
+		LatencyMs:        latencyMs,
+		Reasons:          reasons,
+		Context:          reqContext,
+		ContextTruncated: contextTruncated,
 	})
 	if otelTraceID != "" {
 		return otelTraceID
 	}
 	return fallbackTraceID
+}
+
+// writeDecisionAuditLog persists a Decision Mode verdict to audit_logs so the
+// orchestrator's GET /api/v1/decisions list + per-id explain endpoints can
+// resolve it (both read policy_details->>'decision_id' against audit_logs).
+// Mirrors the established agent-side writer writeExplainableAuditLog: a direct
+// INSERT (audit_logs is not FORCE-RLS — migration 101 deliberately left it so
+// for the cross-org cleanup worker), best-effort, with NOT-NULL-column
+// fallbacks. The sanitized request context lands at policy_details->'context'
+// (canonical snake_case keys, string values); truncation is flagged at
+// policy_details->'context_truncated'.
+func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, tenantID, stage, verdict string, policyIDs, reasons []string, reqContext map[string]string, contextTruncated bool, audit decisionAuditInput) {
+	if db == nil || decisionID == "" {
+		return
+	}
+	if policyIDs == nil {
+		policyIDs = []string{}
+	}
+	if reasons == nil {
+		reasons = []string{}
+	}
+
+	details := map[string]interface{}{
+		"decision_id": decisionID,
+		"source":      "decision_mode",
+		"stage":       stage,
+		"policy_ids":  policyIDs,
+		"reasons":     reasons,
+	}
+	if len(reasons) > 0 {
+		// explain_handler.go reads policy_details->>'reason' (scalar).
+		details["reason"] = strings.Join(reasons, "; ")
+	}
+	if len(reqContext) > 0 {
+		details["context"] = reqContext
+	}
+	if contextTruncated {
+		details["context_truncated"] = true
+	}
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		log.Printf("⚠️ [Decide] audit log marshal failed (non-fatal): %v", err)
+		return
+	}
+
+	// audit_logs NOT-NULL columns: fall back to placeholders rather than
+	// fail the insert (mirrors writeExplainableAuditLog).
+	userEmail := audit.userEmail
+	if userEmail == "" {
+		userEmail = "unknown@axonflow.local"
+	}
+	userRole := audit.userRole
+	if userRole == "" {
+		userRole = "service"
+	}
+	clientID := audit.clientID
+	if clientID == "" {
+		clientID = "unknown"
+	}
+	if tenantID == "" {
+		tenantID = "unknown"
+	}
+	query := audit.query
+	if query == "" {
+		query = "(empty)"
+	}
+	requestID := audit.requestID
+	if requestID == "" {
+		requestID = decisionID
+	}
+	sum := sha256.Sum256([]byte(query))
+	queryHash := hex.EncodeToString(sum[:])
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO audit_logs (
+			id, request_id, timestamp, user_id, user_email, user_role,
+			client_id, tenant_id, org_id, request_type, query, query_hash,
+			policy_decision, policy_details
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`,
+		"decide_"+decisionID, // id (PK; one row per decision)
+		requestID,            // request_id
+		time.Now().UTC(),     // timestamp
+		audit.userID,         // user_id
+		userEmail,            // user_email
+		userRole,             // user_role
+		clientID,             // client_id
+		tenantID,             // tenant_id
+		orgID,                // org_id (nullable)
+		"decision_"+stage,    // request_type — bounded: decision_llm|tool|agent
+		query,                // query
+		queryHash,            // query_hash
+		verdict,              // policy_decision — allow|deny|needs_approval
+		detailsJSON,          // policy_details (JSONB)
+	)
+	if err != nil {
+		log.Printf("⚠️ [Decide] audit log insert failed (non-fatal): %v", err)
+	}
 }
 
 // RegisterDecisionHandlers registers the Decision Mode endpoint.

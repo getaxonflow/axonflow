@@ -1,0 +1,6 @@
+# Test/dev dependencies (unit tests + coverage + the stdio e2e harness).
+# Installed on top of requirements.txt. Pinned (no floating ranges).
+-r requirements.txt
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0

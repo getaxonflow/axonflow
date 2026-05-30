@@ -1,0 +1,5 @@
+# Runtime dependencies for the AxonFlow MCP Decision Mode example.
+# Pinned (no floating ranges) so the example is reproducible.
+mcp==1.27.1
+httpx==0.28.1
+python-dotenv==1.2.2

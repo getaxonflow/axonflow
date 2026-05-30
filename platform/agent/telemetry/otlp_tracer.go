@@ -13,6 +13,7 @@ package telemetry
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -47,7 +48,39 @@ func (t *otlpTracer) RecordDecision(ctx context.Context, evt DecisionEvent) stri
 		attribute.String("tenant.id", evt.TenantID),
 	)
 
+	setContextAttributes(span, evt)
+
 	return span.SpanContext().TraceID().String()
+}
+
+// setContextAttributes emits the sanitized request context as
+// request.context.<key> span attributes. Keys are canonical
+// lower_snake_case already; we sort them so the kept subset is
+// deterministic when the count cap fires, then emit at most
+// maxContextSpanAttrs of them. request.context.truncated is set whenever
+// the caller flagged truncation OR the tracer-level cap dropped keys —
+// either way the auditor learns the context map on the span is partial.
+func setContextAttributes(span trace.Span, evt DecisionEvent) {
+	truncated := evt.ContextTruncated
+	if len(evt.Context) > 0 {
+		keys := make([]string, 0, len(evt.Context))
+		for k := range evt.Context {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) > maxContextSpanAttrs {
+			keys = keys[:maxContextSpanAttrs]
+			truncated = true
+		}
+		attrs := make([]attribute.KeyValue, 0, len(keys))
+		for _, k := range keys {
+			attrs = append(attrs, attribute.String("request.context."+k, evt.Context[k]))
+		}
+		span.SetAttributes(attrs...)
+	}
+	if truncated {
+		span.SetAttributes(attribute.Bool("request.context.truncated", true))
+	}
 }
 
 // truncateJoined joins reasons with "; " and truncates to maxLen so the

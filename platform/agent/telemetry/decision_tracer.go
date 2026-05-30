@@ -67,6 +67,22 @@ type DecisionEvent struct {
 	// Attribute: decision.reasons (joined as a string-slice attribute,
 	// truncated to keep attribute size under OTel limits)
 	Reasons []string
+
+	// Context carries the sanitized, allowlist-filtered request context
+	// the PEP attached to the decision (BukuWarung Layer 2: X-AI-Agent /
+	// X-Session-ID / X-Leader-Identity, plus the x-bukuwarung-* family).
+	// Keys are already canonicalized to lower_snake_case by the caller
+	// (canonicalizeRequestContext). Each entry is emitted as a span
+	// attribute under the request.context.<key> namespace so SIEM joins
+	// against BigQuery Cloud Audit Logs are deterministic. Nil/empty is
+	// the common case (most callers attach no context) and emits nothing.
+	Context map[string]string
+
+	// ContextTruncated is set by the caller when the request carried more
+	// context keys than the cap allows and the surplus was dropped. Surfaced
+	// as the request.context.truncated boolean span attribute so an auditor
+	// can tell a partial context map from a complete one.
+	ContextTruncated bool
 }
 
 // DecisionTracer records a decision event and returns the W3C
@@ -88,3 +104,13 @@ type DecisionTracer interface {
 // KiB per attribute. We stay well below that to keep traces searchable
 // without losing the head of the reason list.
 const reasonsMaxAttrLen = 4096
+
+// maxContextSpanAttrs caps how many request.context.<key> attributes a
+// single decision span carries. The caller (canonicalizeRequestContext)
+// already enforces the same key cap, but the tracer re-asserts it as a
+// defensive boundary: any DecisionEvent that reaches the span layer with
+// more keys (e.g. a future caller that bypasses canonicalization) has the
+// surplus dropped and request.context.truncated set rather than blowing
+// past collector attribute-count limits. Keys are emitted in sorted order
+// so the kept subset is deterministic when the cap fires.
+const maxContextSpanAttrs = 10

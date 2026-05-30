@@ -12,6 +12,41 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.5.0] - 2026-05-30 — Decision Mode context propagation + Pasal 56(b) attestation + multi-arch images
+
+Minor release. Decision Mode gains request-context propagation and durable audit persistence, OJK compliance gains an explicit UU PDP Pasal 56(b) transfer-basis tag plus a wired cross-border-transfers export, and all six platform images now ship for both `linux/amd64` and `linux/arm64`. Indonesia compliance migrations (OJK + UU PDP + BI) relocated from `industry/banking/` to `enterprise/` so they load in every in-vpc-enterprise deployment by default. No breaking changes. SDKs are also updated in this release train — Go / Python / TypeScript / Java to **v8.4.0** and Rust to **v0.6.0** — adding the typed `context` field on `DecisionSummary` / `DecisionExplanation` and the `pasal_56b_dpa` transfer-basis value; see each SDK's own release notes for details.
+
+### Added (Community)
+
+- **Decision Mode request-context propagation (`request.context`).** `POST /api/v1/decide` accepts an optional top-level `context` object — arbitrary caller-supplied key/value metadata (e.g. `tenant_tier`, `region`, `feature_flag`) that rides alongside the decision for audit and correlation. Keys are filtered against an allowlist, canonicalized, capped at 256 bytes per value and 10 keys per request, and a `request.context.truncated` flag is set when either cap trims the payload. Allowed keys land as OTel span attributes under `request.context.<key>` for trace-side filtering. The allowlist is configurable via `AXONFLOW_DECISION_CONTEXT_ALLOWLIST` (comma-separated); the default ships the BukuWarung-aligned key set. Closes #2509.
+
+- **Decision Mode decisions now persist to `audit_logs`.** Previously `POST /api/v1/decide` emitted only an OTel span, so `GET /api/v1/decisions` returned empty for Decision Mode callers who had not wired an OTel backend. Each decision now also writes a best-effort row to `audit_logs` (mirroring `writeExplainableAuditLog`), with the propagated context stored under `policy_details->'context'`. `GET /api/v1/decisions` surfaces a 5-key truncated view of the context; the explain endpoint returns the full context plus a `context_truncated` flag. OpenAI-compatible callers continue to use `llm_call_audits` unchanged. (BUKU-A scope expansion on #2509.)
+
+- **`examples/mcp-decision-mode/` reference adapter.** A runnable Python MCP server demonstrating the PEP/PDP pattern: the MCP server (PEP) calls AxonFlow `POST /api/v1/decide` (PDP) before exposing tool results, with Indonesia PII detection and a fail-closed default. Includes a stdio end-to-end harness and unit tests. Closes #2510.
+
+### Added (Enterprise)
+
+- **UU PDP Pasal 56(b) transfer-basis tag (`transfer_basis = "pasal_56b_dpa"`).** Cross-border transfer records can now carry an explicit Pasal 56(b) Data Protection Agreement basis alongside the existing `safeguards` field. The tag is backward-compatible and never auto-translated from other bases. New `TransferBasisCanonicalForms()` and `TransferBasisValid()` helpers validate the accepted set. Closes #2511.
+
+- **OJK cross-border transfers audit export wired.** `OJKDataTypeCrossBorder` was a declared export data type whose switch arm fell through, returning empty. This release ships the missing `queryCrossBorderTransfers` query (org-scoped and parameterized), so `POST /api/v1/ojk/audit/export` with `data_type=cross_border_transfers` returns the logged cross-border transfer records. (BUKU-C scope expansion on #2511.)
+
+### Fixed
+
+- **Grafana Prometheus datasource 404 in the bundled stack.** The bundled `axonflow-grafana` image generated a Prometheus datasource URL with no path, but `axonflow-prometheus` runs with `--web.external-url=/prometheus`. Datasource provisioning now references `http://prometheus:9090/prometheus`, so Grafana panels query Prometheus successfully out of the box. Closes #2507.
+
+### Changed (Self-hosted)
+
+- **Multi-architecture platform images.** All six platform images (agent, orchestrator, customer-portal, customer-portal-ui, and the bundled prometheus/grafana) now build and publish for both `linux/amd64` and `linux/arm64`. Apple Silicon Macs, AWS Graviton, and Ampere ARM Linux hosts run AxonFlow natively — no Rosetta/QEMU emulation and no `platform: linux/amd64` pin required in `docker-compose`. Closes #2506.
+
+- **Indonesia compliance migrations relocated** from `migrations/industry/banking/` to `migrations/enterprise/` (versions 127–130). `in-vpc-enterprise` deployments now load the OJK + UU PDP + BI compliance tables and the cross-border `transfer_basis` / `data_residency` audit columns by default, so `POST /api/v1/ojk/audit/export` works in `in-vpc-enterprise` mode (previously returned HTTP 500 because these migrations only loaded under `saas` / `in-vpc-banking`). No customer action required for existing `saas` / `in-vpc-banking` deployments — the migrations are idempotent and re-apply cleanly under their new version numbers. Closes #2516.
+
+### Notes for self-hosted operators
+
+- **OTel collector attribute namespace.** Decision Mode now emits span attributes under the `request.context.*` namespace (one attribute per allowlisted context key). If you filter or index decision spans by attribute, add `request.context.*` to your collector's keep/allow rules so the new attributes are retained.
+- **`audit_logs` now receives Decision Mode rows.** Any consumer that tails `audit_logs` (SIEM forwarders, retention sweepers, dashboards) will begin seeing rows originating from `POST /api/v1/decide` in addition to the existing Proxy/Gateway sources. The new rows carry the decision context under `policy_details->'context'`. No schema migration is required — the column already existed.
+- **Platform-pin removal.** If you added `platform: linux/amd64` to your `docker-compose` services as a v8.4.0 workaround on ARM hosts, you can remove it in v8.5.0 — the images now resolve a native `linux/arm64` manifest.
+- **Indonesia compliance migration relocation** (above) — if you query `schema_migrations` directly, expect to see versions 127–130 register on next boot for `saas` and `in-vpc-banking` deployments (they re-apply the previously-applied SQL under the new version numbers; the SQL is idempotent so the operations are no-ops).
+
 ## [8.4.0] - 2026-05-28 — Self-hosted deployment alignment + OpenAI-compatible gateway endpoint
 
 ### Added (Self-hosted)

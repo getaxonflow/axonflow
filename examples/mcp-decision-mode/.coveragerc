@@ -1,0 +1,9 @@
+[run]
+source = .
+# The stdio e2e harness and the test files themselves are exercised by
+# test_e2e.sh against a live stack, not by the unit suite — measuring them
+# here would understate coverage of the three core modules.
+omit =
+    e2e_harness.py
+    *_test.py
+    .venv/*

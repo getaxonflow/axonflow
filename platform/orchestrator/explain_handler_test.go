@@ -32,6 +32,60 @@ func TestBuildExplanation_EmptyDetails(t *testing.T) {
 	}
 }
 
+// TestBuildExplanation_SurfacesFullContext verifies the explain endpoint
+// returns the COMPLETE persisted request context (#2509) — unlike the LIST
+// endpoint, which truncates to 5 keys. context_truncated is mirrored too.
+func TestBuildExplanation_SurfacesFullContext(t *testing.T) {
+	ts := time.Now().UTC()
+	details := map[string]interface{}{
+		"decision_id": "dec-ctx",
+		"reason":      "blocked",
+		"context": map[string]interface{}{
+			"x_ai_agent":            "claude-code",
+			"x_session_id":          "sess-abc123",
+			"x_leader_identity":     "leader@example.com",
+			"x_bukuwarung_merchant": "m-42",
+			"x_dropped_nonstring":   42, // non-string → dropped defensively
+		},
+		"context_truncated": true,
+	}
+
+	exp := buildExplanation("dec-ctx", ts, "deny", "blocked", details)
+
+	if exp.Context["x_ai_agent"] != "claude-code" {
+		t.Errorf("context[x_ai_agent] = %q, want claude-code", exp.Context["x_ai_agent"])
+	}
+	if exp.Context["x_session_id"] != "sess-abc123" {
+		t.Errorf("context[x_session_id] = %q, want sess-abc123", exp.Context["x_session_id"])
+	}
+	if exp.Context["x_bukuwarung_merchant"] != "m-42" {
+		t.Errorf("context[x_bukuwarung_merchant] = %q, want m-42", exp.Context["x_bukuwarung_merchant"])
+	}
+	// Explain returns the full set (4 string keys; the non-string is dropped).
+	if len(exp.Context) != 4 {
+		t.Errorf("explain must surface ALL persisted string keys: got %d, want 4 (%v)", len(exp.Context), exp.Context)
+	}
+	if _, present := exp.Context["x_dropped_nonstring"]; present {
+		t.Error("non-string context value must be dropped")
+	}
+	if !exp.ContextTruncated {
+		t.Error("ContextTruncated must mirror policy_details.context_truncated=true")
+	}
+}
+
+// TestBuildExplanation_NoContextIsOmitted confirms decisions without context
+// (or pre-#2509 rows) keep the original byte-shape (Context nil, omitempty).
+func TestBuildExplanation_NoContextIsOmitted(t *testing.T) {
+	ts := time.Now().UTC()
+	exp := buildExplanation("dec-nc", ts, "allow", "", map[string]interface{}{"decision_id": "dec-nc"})
+	if exp.Context != nil {
+		t.Errorf("Context must be nil when absent, got %v", exp.Context)
+	}
+	if exp.ContextTruncated {
+		t.Error("ContextTruncated must be false when absent")
+	}
+}
+
 func TestBuildExplanation_StructuredMatches(t *testing.T) {
 	ts := time.Now().UTC()
 	// #1983 / α1 — input details may carry top-level "policy_versions" map and

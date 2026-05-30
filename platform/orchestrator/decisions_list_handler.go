@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,7 +51,23 @@ type DecisionListItem struct {
 	Decision      string    `json:"decision"` // "allow"|"deny"|"require_approval"
 	PolicyID      string    `json:"policy_id,omitempty"`
 	ToolSignature string    `json:"tool_signature,omitempty"`
+
+	// Context is the sanitized request context the PEP attached to the
+	// decision (BukuWarung Layer-2 audit headers — canonical snake_case
+	// keys, string values; written by the agent at policy_details->'context').
+	// The list summary truncates to decisionListContextMaxKeys keys (sorted)
+	// to keep the row small; the full map is available via the per-id explain
+	// endpoint. omitempty so pre-#2509 rows + decisions with no context keep
+	// the original byte-shape. (#2509 / epic #2508)
+	Context map[string]string `json:"context,omitempty"`
 }
+
+// decisionListContextMaxKeys bounds how many request-context keys the LIST
+// summary returns per decision. The agent already caps the persisted map at
+// 10 keys; the list view trims further to the 5 most commonly-correlated keys
+// so the summary stays compact. Full context (up to the persisted cap) is
+// retrievable via GET /api/v1/decisions/:id/explain.
+const decisionListContextMaxKeys = 5
 
 // DecisionListResponse is the wire shape returned on success.
 type DecisionListResponse struct {
@@ -241,7 +258,8 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 				policy_details->>'policy_id',
 				(policy_details->'policy_ids'->>0)
 			)                                                      AS policy_id,
-			COALESCE(policy_details->>'tool_signature', '')        AS tool_signature
+			COALESCE(policy_details->>'tool_signature', '')        AS tool_signature,
+			policy_details->'context'                              AS context
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2
@@ -278,8 +296,9 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 			item        DecisionListItem
 			policyIDCol sql.NullString
 			toolSigCol  sql.NullString
+			contextCol  sql.NullString // policy_details->'context' (JSONB or NULL)
 		)
-		if err := rows.Scan(&item.DecisionID, &item.Timestamp, &item.Decision, &policyIDCol, &toolSigCol); err != nil {
+		if err := rows.Scan(&item.DecisionID, &item.Timestamp, &item.Decision, &policyIDCol, &toolSigCol, &contextCol); err != nil {
 			return nil, err
 		}
 		if policyIDCol.Valid {
@@ -287,6 +306,17 @@ func queryDecisionList(tenantID string, since time.Time, decisionFilter, policyI
 		}
 		if toolSigCol.Valid {
 			item.ToolSignature = toolSigCol.String
+		}
+		// Decode the context JSONB and truncate to the list cap. A malformed
+		// or non-object value is dropped (logged) rather than failing the
+		// whole list — the explain endpoint surfaces the raw record if needed.
+		if contextCol.Valid && contextCol.String != "" && contextCol.String != "null" {
+			var ctxMap map[string]string
+			if err := json.Unmarshal([]byte(contextCol.String), &ctxMap); err != nil {
+				log.Printf("list decisions: context decode failed (decision=%q): %v", item.DecisionID, err)
+			} else if len(ctxMap) > 0 {
+				item.Context = truncateContextMap(ctxMap, decisionListContextMaxKeys)
+			}
 		}
 		out = append(out, item)
 	}
@@ -322,4 +352,29 @@ func writeDecisionListLimitError(w http.ResponseWriter, tier string, limit int) 
 	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		log.Printf("[V1.1 decision-list envelope] tier=%s encode failed: %v", tier, err)
 	}
+}
+
+// truncateContextMap returns a copy of m with at most n entries, choosing the
+// keys in sorted order so the kept subset is deterministic across requests
+// (map iteration order in Go is randomized). n <= 0 returns nil. When len(m)
+// <= n the original map is returned unchanged. Used by the LIST endpoint to
+// keep the per-decision summary compact; the explain endpoint returns the
+// full map.
+func truncateContextMap(m map[string]string, n int) map[string]string {
+	if len(m) == 0 || n <= 0 {
+		return nil
+	}
+	if len(m) <= n {
+		return m
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make(map[string]string, n)
+	for _, k := range keys[:n] {
+		out[k] = m[k]
+	}
+	return out
 }

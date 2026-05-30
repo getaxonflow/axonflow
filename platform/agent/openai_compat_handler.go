@@ -50,22 +50,22 @@ const (
 // modification.
 
 type chatCompletionRequest struct {
-	Model            string                  `json:"model"`
-	Messages         []chatCompletionMessage `json:"messages"`
-	Temperature      *float64                `json:"temperature,omitempty"`
-	TopP             *float64                `json:"top_p,omitempty"`
-	N                *int                    `json:"n,omitempty"`
-	Stream           *bool                   `json:"stream,omitempty"`
-	Stop             interface{}             `json:"stop,omitempty"`
-	MaxTokens        *int                    `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"`
-	PresencePenalty  *float64                `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64                `json:"frequency_penalty,omitempty"`
-	User             string                  `json:"user,omitempty"`
-	ResponseFormat   interface{}             `json:"response_format,omitempty"`
-	Seed             *int                    `json:"seed,omitempty"`
-	Tools            interface{}             `json:"tools,omitempty"`
-	ToolChoice       interface{}             `json:"tool_choice,omitempty"`
+	Model               string                  `json:"model"`
+	Messages            []chatCompletionMessage `json:"messages"`
+	Temperature         *float64                `json:"temperature,omitempty"`
+	TopP                *float64                `json:"top_p,omitempty"`
+	N                   *int                    `json:"n,omitempty"`
+	Stream              *bool                   `json:"stream,omitempty"`
+	Stop                interface{}             `json:"stop,omitempty"`
+	MaxTokens           *int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                    `json:"max_completion_tokens,omitempty"`
+	PresencePenalty     *float64                `json:"presence_penalty,omitempty"`
+	FrequencyPenalty    *float64                `json:"frequency_penalty,omitempty"`
+	User                string                  `json:"user,omitempty"`
+	ResponseFormat      interface{}             `json:"response_format,omitempty"`
+	Seed                *int                    `json:"seed,omitempty"`
+	Tools               interface{}             `json:"tools,omitempty"`
+	ToolChoice          interface{}             `json:"tool_choice,omitempty"`
 }
 
 type chatCompletionMessage struct {
@@ -77,19 +77,19 @@ type chatCompletionMessage struct {
 }
 
 type chatCompletionResponse struct {
-	ID                string                   `json:"id"`
-	Object            string                   `json:"object"`
-	Created           int64                    `json:"created"`
-	Model             string                   `json:"model"`
-	Choices           []chatCompletionChoice   `json:"choices"`
-	Usage             *chatCompletionUsage     `json:"usage,omitempty"`
-	SystemFingerprint string                   `json:"system_fingerprint,omitempty"`
+	ID                string                 `json:"id"`
+	Object            string                 `json:"object"`
+	Created           int64                  `json:"created"`
+	Model             string                 `json:"model"`
+	Choices           []chatCompletionChoice `json:"choices"`
+	Usage             *chatCompletionUsage   `json:"usage,omitempty"`
+	SystemFingerprint string                 `json:"system_fingerprint,omitempty"`
 }
 
 type chatCompletionChoice struct {
-	Index        int                          `json:"index"`
-	Message      chatCompletionChoiceMessage  `json:"message"`
-	FinishReason *string                      `json:"finish_reason"`
+	Index        int                         `json:"index"`
+	Message      chatCompletionChoiceMessage `json:"message"`
+	FinishReason *string                     `json:"finish_reason"`
 }
 
 type chatCompletionChoiceMessage struct {
@@ -149,11 +149,11 @@ func init() {
 // providerEndpoints maps model prefixes to upstream provider base URLs.
 // M1 routes to OpenAI only; M3 adds Anthropic/Gemini/Bedrock.
 var providerEndpoints = map[string]string{
-	"gpt-":       "https://api.openai.com",
-	"o1":         "https://api.openai.com",
-	"o3":         "https://api.openai.com",
-	"o4":         "https://api.openai.com",
-	"chatgpt-":   "https://api.openai.com",
+	"gpt-":     "https://api.openai.com",
+	"o1":       "https://api.openai.com",
+	"o3":       "https://api.openai.com",
+	"o4":       "https://api.openai.com",
+	"chatgpt-": "https://api.openai.com",
 }
 
 // resolveProviderBaseURL determines the upstream provider from the model name.
@@ -358,7 +358,10 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 			reasons = append(reasons, policyResult.Reason)
 		}
 
-		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID)
+		// OpenAI-compat records its own llm_call_audits row (recordOpenAICompatAudit
+		// below) and does not set DecideRequest.context, so it passes a nil context
+		// + nil audit input: OTel-span-only, no audit_logs double-write.
+		traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictDeny, policyIDs, time.Since(startTime).Milliseconds(), reasons, traceID, nil, false, nil)
 		w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
 		// Record audit for the denied request.
@@ -406,7 +409,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatRequests.WithLabelValues("error").Inc()
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
-		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID)
+		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
 		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		log.Printf("[OpenAI-Compat] upstream request error: %v", err)
@@ -429,7 +432,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatRequests.WithLabelValues("upstream_error").Inc()
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
-		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID)
+		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
 		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -445,7 +448,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 		openaiCompatRequests.WithLabelValues("success").Inc()
 		openaiCompatDuration.Observe(float64(time.Since(startTime).Milliseconds()))
 
-		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID)
+		_ = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, policyResult.TriggeredPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
 		recordOpenAICompatAudit(decisionID, clientID, orgID, tenantID, providerName, req.Model, 0, 0, 0, 0, providerLatencyMs, VerdictAllow, "")
 
 		w.Header().Set("Content-Type", "application/json")
@@ -474,7 +477,7 @@ func handleOpenAICompat(w http.ResponseWriter, r *http.Request) {
 	if evaluatedPolicies == nil {
 		evaluatedPolicies = []string{}
 	}
-	traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, evaluatedPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID)
+	traceID = recordDecideDecision(ctx, decisionID, orgID, tenantID, DecisionStageLLM, VerdictAllow, evaluatedPolicies, time.Since(startTime).Milliseconds(), []string{}, traceID, nil, false, nil)
 	w.Header().Set("X-AxonFlow-Trace-Id", traceID)
 
 	// Record audit.
