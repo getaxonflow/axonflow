@@ -13,6 +13,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -69,9 +70,10 @@ func TestNewNoopTracer_DirectConstructor(t *testing.T) {
 
 // TestOTLPTracer_EmitsW3CTraceID stands up a local in-process OTLP/gRPC
 // receiver, points the tracer at it, and verifies:
-//   (a) RecordDecision returns a non-empty W3C trace_id (32 hex chars)
-//   (b) the receiver actually received a span with the expected 7
-//       attributes — proving the wire-format export path works
+//
+//	(a) RecordDecision returns a non-empty W3C trace_id (32 hex chars)
+//	(b) the receiver actually received a span with the expected 7
+//	    attributes — proving the wire-format export path works
 //
 // This is a real OTel pipeline (SDK → BatchSpanProcessor → OTLP/gRPC
 // → in-process collector stub). Not a mock — the brief explicitly
@@ -144,6 +146,107 @@ func TestOTLPTracer_EmitsW3CTraceID(t *testing.T) {
 	}
 	if got["decision.policy_ids"] != "[p_pii_us,p_pii_global]" {
 		t.Errorf("span attr decision.policy_ids = %q, want %q", got["decision.policy_ids"], "[p_pii_us,p_pii_global]")
+	}
+}
+
+// TestOTLPTracer_EmitsContextAttributes verifies the #2509 request-context
+// propagation: a DecisionEvent carrying a sanitized Context map emits one
+// request.context.<key> span attribute per entry. Real OTLP pipeline (no
+// mocks), same in-process collector as the trace-id test.
+func TestOTLPTracer_EmitsContextAttributes(t *testing.T) {
+	server, addr, recv := startInProcessCollector(t)
+	defer server.Stop()
+
+	t.Setenv("AXONFLOW_OTEL_ENDPOINT", addr)
+	t.Setenv("AXONFLOW_OTEL_SAMPLE_RATE", "1.0")
+
+	ctx := context.Background()
+	provider := NewDecisionTracer(ctx)
+
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID: "decision-ctx-1",
+		Stage:      "llm",
+		Verdict:    "allow",
+		Context: map[string]string{
+			"x_ai_agent":        "claude-code",
+			"x_session_id":      "sess-abc123",
+			"x_leader_identity": "leader@example.com",
+		},
+	})
+
+	if err := provider.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	spans := recv.spans(t, 2*time.Second)
+	if len(spans) == 0 {
+		t.Fatal("collector received zero spans")
+	}
+	got := attrsByKey(spans[0])
+
+	want := map[string]string{
+		"request.context.x_ai_agent":        "claude-code",
+		"request.context.x_session_id":      "sess-abc123",
+		"request.context.x_leader_identity": "leader@example.com",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("span attr %q = %q, want %q", k, got[k], v)
+		}
+	}
+	// A non-truncated event must NOT carry the truncated marker.
+	if _, present := got["request.context.truncated"]; present {
+		t.Errorf("request.context.truncated must be absent when ContextTruncated=false")
+	}
+}
+
+// TestOTLPTracer_ContextTruncatedFlag verifies that an over-cap context map
+// sets request.context.truncated=true and that the tracer-level cap bounds
+// the emitted attribute count even when the caller did not pre-flag it.
+func TestOTLPTracer_ContextTruncatedFlag(t *testing.T) {
+	server, addr, recv := startInProcessCollector(t)
+	defer server.Stop()
+
+	t.Setenv("AXONFLOW_OTEL_ENDPOINT", addr)
+	t.Setenv("AXONFLOW_OTEL_SAMPLE_RATE", "1.0")
+
+	ctx := context.Background()
+	provider := NewDecisionTracer(ctx)
+
+	// 12 keys > maxContextSpanAttrs (10): the tracer drops the surplus and
+	// flags truncation even though the caller passed ContextTruncated=false.
+	bigCtx := make(map[string]string, 12)
+	for i := 0; i < 12; i++ {
+		bigCtx[fmt.Sprintf("x_bukuwarung_k%02d", i)] = fmt.Sprintf("v%02d", i)
+	}
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID:       "decision-ctx-2",
+		Stage:            "llm",
+		Verdict:          "allow",
+		Context:          bigCtx,
+		ContextTruncated: false,
+	})
+
+	if err := provider.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	spans := recv.spans(t, 2*time.Second)
+	if len(spans) == 0 {
+		t.Fatal("collector received zero spans")
+	}
+	got := attrsByKey(spans[0])
+
+	if got["request.context.truncated"] != "true" {
+		t.Errorf("request.context.truncated = %q, want true", got["request.context.truncated"])
+	}
+	ctxAttrs := 0
+	for k := range got {
+		if strings.HasPrefix(k, "request.context.") && k != "request.context.truncated" {
+			ctxAttrs++
+		}
+	}
+	if ctxAttrs != maxContextSpanAttrs {
+		t.Errorf("emitted %d request.context.* attrs, want %d (tracer-level cap)", ctxAttrs, maxContextSpanAttrs)
 	}
 }
 
@@ -257,8 +360,8 @@ func TestTruncateJoined_PreservesUTF8(t *testing.T) {
 // Implements the OTLP TraceService server contract.
 type inProcessCollector struct {
 	collectortrace.UnimplementedTraceServiceServer
-	mu    sync.Mutex
-	rcv   []*tracepb.ResourceSpans
+	mu     sync.Mutex
+	rcv    []*tracepb.ResourceSpans
 	pinged chan struct{}
 }
 
@@ -323,6 +426,11 @@ func anyValueString(v *commonpb.AnyValue) string {
 	switch x := v.Value.(type) {
 	case *commonpb.AnyValue_StringValue:
 		return x.StringValue
+	case *commonpb.AnyValue_BoolValue:
+		if x.BoolValue {
+			return "true"
+		}
+		return "false"
 	case *commonpb.AnyValue_IntValue:
 		return intToString(x.IntValue)
 	case *commonpb.AnyValue_ArrayValue:

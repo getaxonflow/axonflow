@@ -159,10 +159,56 @@ type CrossBorderTransferRecord struct {
 	ID               string    `json:"id"`
 	Timestamp        time.Time `json:"timestamp"`
 	DataResidency    string    `json:"data_residency"`
-	TransferBasis    string    `json:"transfer_basis"` // adequacy | safeguards | consent
+	// TransferBasis is the legal basis for cross-border data transfer per
+	// UU PDP Pasal 56:
+	//   - "adequacy"      → Pasal 56(a): country with equivalent protection
+	//   - "safeguards"    → Pasal 56(b): binding legal instrument (DPA);
+	//                       semantic equivalent of "pasal_56b_dpa"
+	//   - "pasal_56b_dpa" → Pasal 56(b) explicit tag (preferred form for
+	//                       Indonesia-deployment auditor surfacing)
+	//   - "consent"       → Pasal 56(c): explicit data subject consent
+	//
+	// "safeguards" and "pasal_56b_dpa" are semantic equivalents; both are
+	// accepted on input and surfaced verbatim on export (never auto-translated)
+	// so an auditor sees exactly the value recorded at decision time.
+	TransferBasis    string    `json:"transfer_basis"`
 	DestinationCountry string  `json:"destination_country"`
 	DataCategories   []string  `json:"data_categories,omitempty"`
 	ApprovalStatus   string    `json:"approval_status,omitempty"`
+}
+
+// Cross-border transfer-basis values recognized under UU PDP Pasal 56.
+const (
+	TransferBasisAdequacy    = "adequacy"      // Pasal 56(a): adequacy determination
+	TransferBasisSafeguards  = "safeguards"    // Pasal 56(b): binding legal instrument (generic label)
+	TransferBasisPasal56bDPA = "pasal_56b_dpa" // Pasal 56(b): binding legal instrument (explicit DPA tag)
+	TransferBasisConsent     = "consent"       // Pasal 56(c): explicit data-subject consent
+)
+
+// TransferBasisCanonicalForms returns the set of accepted transfer_basis
+// values for cross-border data transfers under UU PDP Pasal 56. Order is
+// stable (adequacy, safeguards, pasal_56b_dpa, consent) for deterministic
+// iteration in validators and tests.
+func TransferBasisCanonicalForms() []string {
+	return []string{
+		TransferBasisAdequacy,
+		TransferBasisSafeguards,
+		TransferBasisPasal56bDPA,
+		TransferBasisConsent,
+	}
+}
+
+// TransferBasisValid reports whether value is one of the recognized UU PDP
+// Pasal 56 transfer-basis forms. Matching is case-sensitive: the canonical
+// forms are lowercase, so "PASAL_56B_DPA" is rejected. Empty and unknown
+// values return false.
+func TransferBasisValid(value string) bool {
+	for _, v := range TransferBasisCanonicalForms() {
+		if value == v {
+			return true
+		}
+	}
+	return false
 }
 
 // OJKExportMetadata contains metadata about the export.

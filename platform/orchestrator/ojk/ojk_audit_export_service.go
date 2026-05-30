@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,20 @@ func (s *ojkAuditExportServiceImpl) ExportAuditData(ctx context.Context, tenantI
 				}
 				data.DecisionChains = chains
 				recordsByType["decision_chain"] = count
+				totalRecords += count
+			}
+			if dt != OJKDataTypeAll {
+				continue
+			}
+			fallthrough
+		case OJKDataTypeCrossBorder:
+			if dt == OJKDataTypeCrossBorder || dt == OJKDataTypeAll {
+				transfers, count, qErr := s.queryCrossBorderTransfers(ctx, tenantID, startDate, endDate)
+				if qErr != nil {
+					return nil, fmt.Errorf("querying cross-border transfers: %w", qErr)
+				}
+				data.CrossBorder = transfers
+				recordsByType["cross_border_transfers"] = count
 				totalRecords += count
 			}
 			if dt != OJKDataTypeAll {
@@ -306,6 +321,63 @@ func (s *ojkAuditExportServiceImpl) queryLLMCalls(ctx context.Context, tenantID 
 
 func (s *ojkAuditExportServiceImpl) queryDecisionChains(ctx context.Context, tenantID string, start, end time.Time) ([]OJKDecisionChainRecord, int, error) {
 	return []OJKDecisionChainRecord{}, 0, nil
+}
+
+// queryCrossBorderTransfers returns cross-border data-transfer records for
+// UU PDP Pasal 56 surfacing. A transfer record is any orchestrator audit row
+// that carries a non-empty transfer_basis (set when a request routed personal
+// data to a foreign destination — see migration 129). The stored transfer_basis
+// is surfaced verbatim: both "safeguards" and "pasal_56b_dpa" flow through
+// unchanged so an auditor sees exactly the Pasal 56(b) value recorded at
+// decision time (no auto-translation).
+//
+// Rows are scoped by org_id explicitly (orchestrator_audit_logs does not yet
+// carry FORCE RLS — migration 101 deferred it pending org_id plumbing on the
+// audit INSERT path), so tenant isolation does not rely on the RLS policy
+// alone. withOrgScope additionally sets app.current_org_id for defense in depth.
+func (s *ojkAuditExportServiceImpl) queryCrossBorderTransfers(ctx context.Context, tenantID string, start, end time.Time) ([]CrossBorderTransferRecord, int, error) {
+	records := []CrossBorderTransferRecord{}
+	err := withOrgScope(ctx, s.db, tenantID, func(tx *sql.Tx) error {
+		rows, qErr := tx.QueryContext(ctx,
+			`SELECT id, timestamp, COALESCE(data_residency, ''), COALESCE(transfer_basis, '')
+			   FROM orchestrator_audit_logs
+			  WHERE org_id = $1
+			    AND transfer_basis IS NOT NULL
+			    AND transfer_basis <> ''
+			    AND timestamp >= $2
+			    AND timestamp <= $3
+			  ORDER BY timestamp DESC`,
+			tenantID, start, end,
+		)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				id            int64
+				ts            time.Time
+				dataResidency string
+				transferBasis string
+			)
+			if scanErr := rows.Scan(&id, &ts, &dataResidency, &transferBasis); scanErr != nil {
+				return scanErr
+			}
+			records = append(records, CrossBorderTransferRecord{
+				ID:                 strconv.FormatInt(id, 10),
+				Timestamp:          ts,
+				DataResidency:      dataResidency,
+				TransferBasis:      transferBasis, // surfaced as-written, never translated
+				DestinationCountry: dataResidency, // data_residency is the ISO destination code (migration 129)
+			})
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return records, len(records), nil
 }
 
 func (s *ojkAuditExportServiceImpl) getEffectiveRetentionDays() int {

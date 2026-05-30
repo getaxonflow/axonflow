@@ -113,6 +113,15 @@ Programmatic policy CRUD operations.
 |---------|------|-------------|
 | CRUD | `policies/crud/` | Create, read, update, delete policies |
 
+### MCP Server Decision Mode (PEP / PDP pattern)
+
+A runnable Python MCP server that uses AxonFlow Decision Mode as its Policy
+Decision Point — the recognizable starting point for governing an MCP server.
+
+| Example | Path | Description |
+|---------|------|-------------|
+| mcp-decision-mode | `mcp-decision-mode/` | Python MCP server with AxonFlow Decision Mode integration (PEP / PDP pattern; Indonesia PII handling) |
+
 ### v9 Identity Forwarding
 
 Shows how `X-Org-ID`, `X-Client-ID`, and `X-Tenant-ID` flow agent → orchestrator

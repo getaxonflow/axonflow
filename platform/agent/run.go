@@ -1234,6 +1234,15 @@ func Run() {
 	// Register Decision Mode endpoint (POST /api/v1/decide) -- ADR-056 / epic #2426.
 	// Same shared-policy engine as Gateway Mode pre-check; surfaced for an
 	// infrastructure-gateway caller (PEP) rather than application code.
+	//
+	// Decision Mode env vars (read at request time, no restart needed for the
+	// allowlist since decisionContextAllowlist() reads os env per call):
+	//   AXONFLOW_DECISION_EXPIRES_AFTER     — PEP-cache TTL (Go duration; default 5m)
+	//   AXONFLOW_DECISION_CONTEXT_ALLOWLIST — comma-separated request-context keys
+	//       persisted to the audit JSONB + emitted as request.context.<key> OTel
+	//       span attributes. Matching is case/separator-insensitive; a trailing
+	//       "*" is a prefix match. Default:
+	//       "x-ai-agent,x-session-id,x-leader-identity,x-bukuwarung-*" (#2509).
 	RegisterDecisionHandlers(globalRouter)
 
 	// Register OpenAI-compatible gateway endpoint (Issue #2351 / Epic #2360).

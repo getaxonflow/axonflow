@@ -77,7 +77,7 @@ func TestListDecisions_TenantFilterIsInWhereClause(t *testing.T) {
 			5,                // tier-default limit (Community)
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
 		))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
@@ -242,11 +242,12 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	rows := sqlmock.NewRows([]string{
-		"decision_id", "timestamp", "decision", "policy_id", "tool_signature",
+		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context",
 	}).
-		AddRow("dec-3", now.Add(-1*time.Hour), "deny", "pol-sqli", "postgres.query").
-		AddRow("dec-2", now.Add(-2*time.Hour), "require_approval", "pol-pii", "slack.send_message").
-		AddRow("dec-1", now.Add(-3*time.Hour), "allow", "pol-default", "")
+		AddRow("dec-3", now.Add(-1*time.Hour), "deny", "pol-sqli", "postgres.query",
+			`{"x_ai_agent":"claude-code","x_session_id":"sess-abc123"}`).
+		AddRow("dec-2", now.Add(-2*time.Hour), "require_approval", "pol-pii", "slack.send_message", nil).
+		AddRow("dec-1", now.Add(-3*time.Hour), "allow", "pol-default", "", nil)
 
 	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
 		WithArgs(
@@ -298,6 +299,17 @@ func TestListDecisions_HappyPathIntegration(t *testing.T) {
 		t.Errorf("decisions[2].tool_signature should be empty, got %q",
 			body.Decisions[2].ToolSignature)
 	}
+	// Request context surfaces on the row that carried it (#2509).
+	if got := body.Decisions[0].Context["x_ai_agent"]; got != "claude-code" {
+		t.Errorf("decisions[0].context[x_ai_agent]: got %q, want claude-code", got)
+	}
+	if got := body.Decisions[0].Context["x_session_id"]; got != "sess-abc123" {
+		t.Errorf("decisions[0].context[x_session_id]: got %q, want sess-abc123", got)
+	}
+	// Rows with a NULL context JSONB omit the field entirely.
+	if body.Decisions[1].Context != nil {
+		t.Errorf("decisions[1].context should be nil (NULL column), got %v", body.Decisions[1].Context)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
@@ -323,13 +335,13 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 		WithArgs(
 			"tenant-a",
 			sqlmock.AnyArg(),
-			"deny",          // decision filter
-			"pol-sqli",      // policy_id filter
+			"deny",           // decision filter
+			"pol-sqli",       // policy_id filter
 			"postgres.query", // tool_signature filter
 			3,
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
 		))
 
 	url := "/api/v1/decisions?limit=3&decision=deny&policy_id=pol-sqli&tool_signature=postgres.query"
@@ -343,6 +355,80 @@ func TestListDecisions_FiltersForwardedToSQL(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// =============================================================================
+// Context surfacing + truncation-to-5 on the LIST endpoint (#2509).
+// =============================================================================
+
+func TestListDecisions_ContextTruncatedToFiveKeys(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	origDB := usageDB
+	usageDB = mockDB
+	defer func() { usageDB = origDB }()
+
+	// 8 context keys persisted; the list summary must return exactly 5,
+	// chosen deterministically (sorted): k0..k4 kept, k5..k7 dropped.
+	ctxJSON := `{"k0":"v0","k1":"v1","k2":"v2","k3":"v3","k4":"v4","k5":"v5","k6":"v6","k7":"v7"}`
+	rows := sqlmock.NewRows([]string{
+		"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context",
+	}).AddRow("dec-ctx", time.Now().UTC(), "allow", "pol-default", "", ctxJSON)
+
+	mock.ExpectQuery(`FROM audit_logs[\s\S]*?WHERE tenant_id = \$1`).
+		WithArgs("tenant-a", sqlmock.AnyArg(), "", "", "", 5).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/decisions", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	listDecisionsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body DecisionListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Decisions) != 1 {
+		t.Fatalf("decisions len: got %d, want 1", len(body.Decisions))
+	}
+	ctx := body.Decisions[0].Context
+	if len(ctx) != decisionListContextMaxKeys {
+		t.Fatalf("list context keys: got %d, want %d (%v)", len(ctx), decisionListContextMaxKeys, ctx)
+	}
+	// Deterministic sorted subset: k0..k4 kept, k5+ dropped.
+	for _, k := range []string{"k0", "k1", "k2", "k3", "k4"} {
+		if _, ok := ctx[k]; !ok {
+			t.Errorf("expected kept key %q in truncated list context", k)
+		}
+	}
+	for _, k := range []string{"k5", "k6", "k7"} {
+		if _, ok := ctx[k]; ok {
+			t.Errorf("key %q should have been truncated from list context", k)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestTruncateContextMap(t *testing.T) {
+	if got := truncateContextMap(nil, 5); got != nil {
+		t.Errorf("nil map → nil, got %v", got)
+	}
+	if got := truncateContextMap(map[string]string{"a": "1"}, 0); got != nil {
+		t.Errorf("n<=0 → nil, got %v", got)
+	}
+	full := map[string]string{"a": "1", "b": "2"}
+	if got := truncateContextMap(full, 5); len(got) != 2 {
+		t.Errorf("len(m)<=n returns all: got %d, want 2", len(got))
 	}
 }
 
@@ -395,7 +481,7 @@ func TestListDecisions_SinceClampedToTierWindow(t *testing.T) {
 			5,
 		).
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature"},
+			[]string{"decision_id", "timestamp", "decision", "policy_id", "tool_signature", "context"},
 		))
 
 	thirtyDaysAgo := time.Now().UTC().Add(-30 * 24 * time.Hour).Format(time.RFC3339)
@@ -412,4 +498,3 @@ func TestListDecisions_SinceClampedToTierWindow(t *testing.T) {
 		t.Errorf("sqlmock expectations: %v", err)
 	}
 }
-

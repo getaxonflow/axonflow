@@ -49,6 +49,18 @@ type DecisionExplanation struct {
 	// updated since?" without a second round-trip.
 	PolicyVersionAtDecision int `json:"policy_version_at_decision,omitempty"`
 	LatestPolicyVersion     int `json:"latest_policy_version,omitempty"`
+
+	// Context is the FULL sanitized request context the PEP attached to the
+	// decision (canonical snake_case keys, string values), read from
+	// policy_details->'context'. Unlike the LIST endpoint (which truncates to
+	// 5 keys), the explain endpoint returns every persisted key (up to the
+	// agent's 10-key cap) so an auditor gets the complete correlation set
+	// (X-AI-Agent / X-Session-ID / X-Leader-Identity, x-bukuwarung-*).
+	// ContextTruncated reflects whether the agent dropped surplus keys at
+	// write time. Both omitempty so pre-#2509 rows keep their byte-shape.
+	// (#2509 / epic #2508)
+	Context          map[string]string `json:"context,omitempty"`
+	ContextTruncated bool              `json:"context_truncated,omitempty"`
 }
 
 // ExplainPolicy is a policy reference returned inside an explanation.
@@ -227,6 +239,25 @@ func buildExplanation(decisionID string, ts time.Time,
 	}
 	if risk, ok := details["risk_level"].(string); ok {
 		exp.RiskLevel = risk
+	}
+
+	// Surface the FULL persisted request context (#2509). policy_details
+	// JSON unmarshals string values as interface{}; coerce each to string
+	// and drop non-string entries defensively (the agent only ever writes
+	// strings, but explain must not panic on a hand-edited row).
+	if rawCtx, ok := details["context"].(map[string]interface{}); ok && len(rawCtx) > 0 {
+		ctx := make(map[string]string, len(rawCtx))
+		for k, v := range rawCtx {
+			if s, ok := v.(string); ok {
+				ctx[k] = s
+			}
+		}
+		if len(ctx) > 0 {
+			exp.Context = ctx
+		}
+	}
+	if truncated, ok := details["context_truncated"].(bool); ok {
+		exp.ContextTruncated = truncated
 	}
 
 	// Extract policy_matches if present.
