@@ -12,12 +12,17 @@ set -euo pipefail
 # - migration_helpers.go: needs full mode string for migration path selection
 # - admin_auth.go: needs full mode string for auth matrix (saas, in-vpc-*, community)
 # - deployment.go: needs full mode string for deployment config (invpc, saas, default)
+# - dev_token_handler.go: the fail-closed dev-token gate (#2541) MUST check the
+#   EXPLICIT raw value (== "community"), because the canonical isCommunityMode()
+#   helper is fail-OPEN on unset (returns true when DEPLOYMENT_MODE==""), which
+#   would expose the token minter on a stack that forgot to set the mode.
 ALLOWED_FILES=(
   "platform/agent/run.go"
   "platform/orchestrator/run.go"
   "platform/shared/policy/dynamic_evaluator.go"
   "platform/shared/execution/event_hub.go"
   "platform/agent/migration_helpers.go"
+  "platform/agent/dev_token_handler.go"  # #2541 fail-closed gate needs explicit raw value, NOT fail-open isCommunityMode()
   "platform/orchestrator/llm/bootstrap.go"  # community-saas Ollama-only guard (#1500)
   "ee/platform/customer-portal/middleware/admin_auth.go"
   "ee/platform/customer-portal/config/deployment.go"

@@ -157,6 +157,97 @@ response = await axonflow.execute_query(
 
 ---
 
+## The Five Runtime Modes
+
+AxonFlow is a **policy plane** for AI execution: at the point where an agent, model, or workflow is about to do something consequential, it **decides, enforces, redacts, and records** that action against your policies. There are five ways to wire that in. They differ only in *who calls AxonFlow* and *where AxonFlow sits relative to the traffic* — the governed-call lifecycle (decide → allow/deny/redact → audit, fail-closed) is identical across all five.
+
+The split that makes this work is **PEP / PDP**: AxonFlow is the **Policy Decision Point** (it returns a verdict), and the integration is the **Policy Enforcement Point** (it acts on the verdict).
+
+| Mode | Who calls AxonFlow | Traffic path | Endpoint(s) | When to use |
+|---|---|---|---|---|
+| **Decision Mode** | Your infra **gateway** | Client → gateway → target (verdict checked inline) | `POST /api/v1/decide` | Gateway-level enforcement with **no app-code changes** |
+| **Gateway** | Your **app code** (SDK) | App → LLM (direct) | `POST /api/policy/pre-check`, `POST /api/audit/llm-call` | Adding governance to an existing app/framework, least invasive |
+| **Proxy** | Your **app code** (one call) | App → AxonFlow → LLM | `POST /api/request` | New apps wanting AxonFlow to own routing + the LLM call |
+| **MAP** (Multi-Agent Planning) | Your **app code** | App → AxonFlow plans + executes | Orchestrator planning API | Decomposing a request into a governed multi-step plan |
+| **WCP** (Workflow Control Plane) | Your **external orchestrator** | Orchestrator → AxonFlow gates each step | `workflow_control/` step gate + complete | Step-level gates beside LangGraph / n8n / Temporal |
+
+> The public, user-facing version of this model — with a per-integration coverage matrix — lives at [docs.getaxonflow.com/docs/architecture/governance-coverage](https://docs.getaxonflow.com/docs/architecture/governance-coverage). This section is the engineering source that page derives from.
+
+### Decision Mode — gateway-level governance, no app changes
+
+Your infrastructure gateway (LLM gateway, MCP gateway, agent router) asks AxonFlow for a verdict on each request and enforces it locally. AxonFlow is **never on the traffic path** — it is consulted for decisions only. This is the lowest-touch way to govern many apps at once: application code is unchanged; the gateway does the enforcing.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant GW as Infra gateway (PEP)
+    participant AX as AxonFlow (PDP)
+    participant T as Target (LLM / tool / agent)
+    C->>GW: request
+    GW->>AX: POST /api/v1/decide
+    alt deny / needs_approval
+        AX-->>GW: deny
+        GW-->>C: blocked (reason)
+    else allow
+        AX-->>GW: allow (+ obligations)
+        GW->>T: forward
+        T-->>GW: response
+        GW-->>C: response (obligations applied)
+    end
+    GW->>AX: audit (decision_id · trace_id)
+```
+
+**Endpoint:** `POST /api/v1/decide` (`stage` = llm / tool / agent). Reference PEP adapters ship for **LLM**, **MCP** (`tools/call`), and **agent** gateways. **Code:** `platform/agent/decision_handler.go`. **See:** [ADR-056 — Decision Mode](../technical-docs/architecture-decisions/ADR-056-decision-mode.md).
+
+### MAP — Multi-Agent Planning
+
+AxonFlow decomposes a natural-language request into a multi-step plan, then executes the steps with a policy decision **at each step**, with replay/resume and optional approval gates.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant AX as AxonFlow (planner)
+    participant S as Step executor
+    App->>AX: request (multi-agent-plan)
+    AX-->>App: plan (steps)
+    loop each step
+        AX->>AX: policy decision for step
+        AX->>S: execute (governed)
+        S-->>AX: result
+    end
+    AX-->>App: workflow result + per-step audit
+```
+
+**Code:** `platform/orchestrator/planning_engine.go` (plan generation), with per-step decisions recorded to the decision chain (`platform/agent/decision_chain.go`).
+
+### WCP — Workflow Control Plane
+
+Your external orchestrator (LangGraph, n8n, Temporal, Airflow) keeps running the workflow; AxonFlow adds a **gate before each step** and a **completion record after**, plus checkpoints and approvals — without replacing the orchestration engine.
+
+```mermaid
+sequenceDiagram
+    participant O as External orchestrator (PEP)
+    participant AX as AxonFlow
+    participant N as Step / node
+    O->>AX: gate(step)
+    alt block / needs_approval
+        AX-->>O: block
+    else allow
+        AX-->>O: allow
+        O->>N: run step
+        N-->>O: result
+        O->>AX: complete(step) — state + audit
+    end
+```
+
+**Code:** `platform/orchestrator/workflow_control/` (step gates + completion + checkpoints). **See:** [ADR-028 — Workflow Control Plane](../technical-docs/architecture-decisions/ADR-028-workflow-control-plane.md).
+
+### Gateway & Proxy
+
+**Gateway Mode** and **Proxy Mode** are covered in detail above ([Gateway Mode](#gateway-mode-recommended-for-existing-stacks), [Proxy Mode](#proxy-mode-full-control)); their combined request/audit sequence is in [Execution Model → Policies Before and After Steps](#policies-before-and-after-steps). The LLM-architecture rationale for the Gateway-default / optional-full-Proxy split is in [ADR-004 — LLM Architecture](../technical-docs/architecture-decisions/ADR-004-llm-architecture-governance.md).
+
+---
+
 ## Control Plane vs Orchestration
 
 | Aspect | Orchestration (LangChain) | Control Plane (AxonFlow) |

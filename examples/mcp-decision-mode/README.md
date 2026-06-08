@@ -45,14 +45,14 @@ through the PEP, which asks the PDP first.
 
 ## Audit-layer mapping
 
-BukuWarung's Risk Committee defines a four-layer audit framework. This example
+A design partner's Risk Committee defines a four-layer audit framework. This example
 produces the first two layers and is the join point for the other two:
 
 | Layer | What it is | Produced by |
 |-------|-----------|-------------|
 | **Layer 1** | MCP server logging (`timestamp, session_id, leader_email, tool_name, parameters_hash, response_record_count, duration_ms`) | `audit_log.py` → `audit_log.jsonl` |
 | **Layer 2** | `X-AI-Agent` / `X-Session-ID` / `X-Leader-Identity` propagation | `mcp_server.py` forwards them in the `decide()` `context` map; values land in the Layer 1 row (`ai_agent`, `session_id`, `leader_email`) |
-| **Layer 3** | Decision record → SIEM, correlated to BigQuery Cloud Audit Logs by `session_id` | AxonFlow decision record (`decision_id` + `trace_id`) exported via OpenTelemetry; correlate on `session_id` (BukuWarung GCP-side config) |
+| **Layer 3** | Decision record → SIEM, correlated to BigQuery Cloud Audit Logs by `session_id` | AxonFlow decision record (`decision_id` + `trace_id`) exported via OpenTelemetry; correlate on `session_id` (the design partner's GCP-side config) |
 | **Layer 4** | Anomaly alerts (volume, off-hours, bulk retrieval) | SIEM's job once Layer 1 + Layer 3 feeds are joined |
 
 ## Quickstart

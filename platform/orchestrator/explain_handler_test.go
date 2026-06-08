@@ -41,11 +41,11 @@ func TestBuildExplanation_SurfacesFullContext(t *testing.T) {
 		"decision_id": "dec-ctx",
 		"reason":      "blocked",
 		"context": map[string]interface{}{
-			"x_ai_agent":            "claude-code",
-			"x_session_id":          "sess-abc123",
-			"x_leader_identity":     "leader@example.com",
-			"x_bukuwarung_merchant": "m-42",
-			"x_dropped_nonstring":   42, // non-string → dropped defensively
+			"x_ai_agent":          "claude-code",
+			"x_session_id":        "sess-abc123",
+			"x_leader_identity":   "leader@example.com",
+			"x_tenant_merchant":   "m-42",
+			"x_dropped_nonstring": 42, // non-string → dropped defensively
 		},
 		"context_truncated": true,
 	}
@@ -58,8 +58,8 @@ func TestBuildExplanation_SurfacesFullContext(t *testing.T) {
 	if exp.Context["x_session_id"] != "sess-abc123" {
 		t.Errorf("context[x_session_id] = %q, want sess-abc123", exp.Context["x_session_id"])
 	}
-	if exp.Context["x_bukuwarung_merchant"] != "m-42" {
-		t.Errorf("context[x_bukuwarung_merchant] = %q, want m-42", exp.Context["x_bukuwarung_merchant"])
+	if exp.Context["x_tenant_merchant"] != "m-42" {
+		t.Errorf("context[x_tenant_merchant] = %q, want m-42", exp.Context["x_tenant_merchant"])
 	}
 	// Explain returns the full set (4 string keys; the non-string is dropped).
 	if len(exp.Context) != 4 {

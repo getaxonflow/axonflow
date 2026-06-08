@@ -53,7 +53,7 @@ type DecisionListItem struct {
 	ToolSignature string    `json:"tool_signature,omitempty"`
 
 	// Context is the sanitized request context the PEP attached to the
-	// decision (BukuWarung Layer-2 audit headers — canonical snake_case
+	// decision (a design partner's Layer-2 audit headers — canonical snake_case
 	// keys, string values; written by the agent at policy_details->'context').
 	// The list summary truncates to decisionListContextMaxKeys keys (sorted)
 	// to keep the row small; the full map is available via the per-id explain

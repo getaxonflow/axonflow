@@ -2,7 +2,7 @@
 
 Each governed MCP tool invocation writes exactly one JSON line to an append
 -only ``audit_log.jsonl``. This is the PEP-side audit record that satisfies
-**Layer 1** of BukuWarung's four-layer audit framework (MCP server logging).
+**Layer 1** of a design partner's four-layer audit framework (MCP server logging).
 It is produced locally by the MCP server, independent of whether AxonFlow
 persists the forwarded context, so the example works end-to-end today.
 
@@ -15,8 +15,8 @@ The four layers, and where each is produced:
                                           (session_id, leader_email, ai_agent)
   Layer 3  BigQuery Cloud Audit Logs → SIEM   AxonFlow decision record
                                           (decision_id) lands in the SIEM and
-                                          correlates by session_id (BukuWarung
-                                          GCP-side config)
+                                          correlates by session_id (the design
+                                          partner's GCP-side config)
   Layer 4  Anomaly alerts ............... SIEM's job once both feeds are in
 
 Layer 1 schema (the Risk Committee's named field set) — every row carries,

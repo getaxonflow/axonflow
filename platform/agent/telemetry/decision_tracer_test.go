@@ -217,7 +217,7 @@ func TestOTLPTracer_ContextTruncatedFlag(t *testing.T) {
 	// flags truncation even though the caller passed ContextTruncated=false.
 	bigCtx := make(map[string]string, 12)
 	for i := 0; i < 12; i++ {
-		bigCtx[fmt.Sprintf("x_bukuwarung_k%02d", i)] = fmt.Sprintf("v%02d", i)
+		bigCtx[fmt.Sprintf("x_tenant_k%02d", i)] = fmt.Sprintf("v%02d", i)
 	}
 	provider.Tracer.RecordDecision(ctx, DecisionEvent{
 		DecisionID:       "decision-ctx-2",
@@ -466,4 +466,46 @@ func intToString(n int64) string {
 		buf[pos] = '-'
 	}
 	return string(buf[pos:])
+}
+
+// TestOTLPTracer_EmitsGatewayID verifies the #2520 Claude Desktop origin:
+// a DecisionEvent carrying GatewayID emits a decision.gateway_id span
+// attribute; an event with no GatewayID omits it (so trace search on the key
+// stays meaningful). Real OTLP pipeline, same in-process collector.
+func TestOTLPTracer_EmitsGatewayID(t *testing.T) {
+	server, addr, recv := startInProcessCollector(t)
+	defer server.Stop()
+
+	t.Setenv("AXONFLOW_OTEL_ENDPOINT", addr)
+	t.Setenv("AXONFLOW_OTEL_SAMPLE_RATE", "1.0")
+
+	ctx := context.Background()
+	provider := NewDecisionTracer(ctx)
+
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID: "dec-gw", Stage: "tool", Verdict: "allow",
+		GatewayID: "claude_desktop.fleet-mac",
+	})
+	provider.Tracer.RecordDecision(ctx, DecisionEvent{
+		DecisionID: "dec-nogw", Stage: "tool", Verdict: "allow",
+	})
+	if err := provider.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	spans := recv.spans(t, 2*time.Second)
+	if len(spans) < 2 {
+		t.Fatalf("expected >=2 spans, got %d", len(spans))
+	}
+	byDecision := map[string]map[string]string{}
+	for _, s := range spans {
+		a := attrsByKey(s)
+		byDecision[a["decision.id"]] = a
+	}
+	if got := byDecision["dec-gw"]["decision.gateway_id"]; got != "claude_desktop.fleet-mac" {
+		t.Errorf("gateway span attr = %q, want claude_desktop.fleet-mac", got)
+	}
+	if _, present := byDecision["dec-nogw"]["decision.gateway_id"]; present {
+		t.Errorf("decision.gateway_id must be absent when GatewayID is empty")
+	}
 }

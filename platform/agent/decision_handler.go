@@ -77,7 +77,7 @@ const (
 	// PII, oversized values); only keys matching this allowlist survive
 	// into the OTel span + audit JSONB. Entries are matched case- and
 	// separator-insensitively (X-AI-Agent == x-ai-agent == x_ai_agent);
-	// a trailing "*" makes the entry a prefix match (x-bukuwarung-*).
+	// a trailing "*" makes the entry a prefix match (x-tenant-*).
 	// Empty / unset falls back to defaultDecisionContextAllowlist.
 	envDecisionContextAllowlist = "AXONFLOW_DECISION_CONTEXT_ALLOWLIST"
 
@@ -91,15 +91,15 @@ const (
 	maxContextKeys     = 10
 )
 
-// defaultDecisionContextAllowlist is the v8.4.1 default for
-// AXONFLOW_DECISION_CONTEXT_ALLOWLIST. Covers BukuWarung's Layer-2 audit
-// headers plus the tenant-scoped x-bukuwarung-* family (prefix match).
-// Entries are stored in hyphen form; matching normalizes both sides.
+// defaultDecisionContextAllowlist is the default for
+// AXONFLOW_DECISION_CONTEXT_ALLOWLIST: the common agent / session / leader
+// identity headers. Deployments that capture additional headers (e.g. a
+// tenant-scoped family) set AXONFLOW_DECISION_CONTEXT_ALLOWLIST explicitly — a
+// trailing "*" is a prefix match. Entries are hyphen form; matching normalizes both sides.
 var defaultDecisionContextAllowlist = []string{
 	"x-ai-agent",
 	"x-session-id",
 	"x-leader-identity",
-	"x-bukuwarung-*",
 }
 
 // Stage values accepted by the Decision API. Mirrors the three gateway layers
@@ -321,8 +321,8 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 	// Canonicalize + sanitize the customer-supplied request context once.
 	// The kept map (canonical keys -> sanitized values) is threaded into
 	// every verdict's OTel span attributes + audit row; contextTruncated
-	// flags that the key-count cap dropped surplus keys. BukuWarung Layer-2
-	// headers (X-AI-Agent / X-Session-ID / X-Leader-Identity, x-bukuwarung-*)
+	// flags that the key-count cap dropped surplus keys. A design partner's
+	// Layer-2 headers (X-AI-Agent / X-Session-ID / X-Leader-Identity)
 	// land here so the SIEM can join AxonFlow's decision record to BigQuery
 	// Cloud Audit Logs by session_id (#2509 / epic #2508).
 	reqContext, contextTruncated := canonicalizeRequestContext(req.Context, decisionContextAllowlist())
@@ -337,6 +337,7 @@ func handleDecide(w http.ResponseWriter, r *http.Request) {
 		userRole:  user.Role,
 		userID:    user.ID,
 		query:     req.Query,
+		gatewayID: sanitizeGatewayID(req.CallerIdentity.GatewayID),
 	}
 
 	// Circuit breaker -- transient deny shape. Returns HTTP 503 so the PEP
@@ -934,6 +935,40 @@ type decisionAuditInput struct {
 	userRole  string
 	userID    int
 	query     string
+	// gatewayID is the gateway-asserted origin (caller_identity.gateway_id),
+	// e.g. "claude_desktop.<host>" for the Claude Desktop governance proxy
+	// (#2520). Recorded at policy_details->>'gateway_id' so Desktop traffic is
+	// distinguishable from other PEP layers in the audit trail, and mirrored
+	// onto the decision span's decision.gateway_id attribute. Empty for callers
+	// that don't assert one.
+	gatewayID string
+}
+
+// maxGatewayIDLen bounds a recorded gateway_id. Gateway ids are short origin
+// tags (claude_desktop.<host>); the cap keeps a hostile/oversized value from
+// bloating the audit JSONB or a span attribute.
+const maxGatewayIDLen = 128
+
+// sanitizeGatewayID trims, strips control/unprintable runes, and length-caps a
+// caller-supplied gateway_id so the recorded value is bounded valid UTF-8.
+// Returns "" for an empty/whitespace input (the common case for callers that
+// don't assert an origin).
+func sanitizeGatewayID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			continue
+		}
+		if b.Len()+utf8.RuneLen(r) > maxGatewayIDLen {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // recordDecideDecision emits the OTel decision span via the
@@ -963,10 +998,17 @@ func recordDecideDecision(ctx context.Context, decisionID, orgID, tenantID, stag
 	if decisionTracerProvider == nil {
 		return fallbackTraceID
 	}
+	// gateway_id rides on the span when the caller asserted one (audit may be
+	// nil for the OpenAI-compat OTel-only path).
+	gatewayID := ""
+	if audit != nil {
+		gatewayID = audit.gatewayID
+	}
 	otelTraceID := decisionTracerProvider.Tracer.RecordDecision(ctx, telemetry.DecisionEvent{
 		DecisionID:       decisionID,
 		OrgID:            orgID,
 		TenantID:         tenantID,
+		GatewayID:        gatewayID,
 		Stage:            stage,
 		Verdict:          verdict,
 		PolicyIDs:        policyIDs,
@@ -1007,6 +1049,11 @@ func writeDecisionAuditLog(ctx context.Context, db *sql.DB, decisionID, orgID, t
 		"stage":       stage,
 		"policy_ids":  policyIDs,
 		"reasons":     reasons,
+	}
+	// gateway_id distinguishes the PEP origin (e.g. claude_desktop.<host>) so a
+	// query over Desktop traffic is a single JSONB filter. Omitted when unset.
+	if audit.gatewayID != "" {
+		details["gateway_id"] = audit.gatewayID
 	}
 	if len(reasons) > 0 {
 		// explain_handler.go reads policy_details->>'reason' (scalar).

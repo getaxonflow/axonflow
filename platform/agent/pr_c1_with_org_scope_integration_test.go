@@ -50,8 +50,8 @@ import (
 	"testing"
 	"time"
 
-	"axonflow/platform/agent/node_enforcement"
 	"axonflow/platform/agent/hitl"
+	"axonflow/platform/agent/node_enforcement"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -88,10 +88,12 @@ func prC1TestSetup(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("set app.deployment_org_id: %v", err)
 	}
 
-	// Run mig 1-113 (covers PR-A helpers + PR-C2 mig 110 + PR-C3 follow-up
+	// Run mig 1-114 (covers PR-A helpers + PR-C2 mig 110 + PR-C3 follow-up
 	// mig 111 + #2399 column-comment scrub mig 112 + #2399 function-comment
-	// rename mig 113).
-	runMigrationsRange(t, db, 1, 113)
+	// rename mig 113 + mig 114 hitl_notify_url — the Create-under-wrap
+	// subtest inserts into hitl_approval_queue.notify_url, which mig 114
+	// adds; the range was left at 113 when 114 landed).
+	runMigrationsRange(t, db, 1, 114)
 
 	// v9 Phase 8 #2384 PR-C1 DoD: apply the enterprise schema slice that
 	// creates node_violations + usage_metrics + plugin_user_licenses +

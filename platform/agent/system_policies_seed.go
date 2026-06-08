@@ -41,8 +41,10 @@ type DynamicPolicySeed struct {
 // - pii-singapore: Singapore-specific PII patterns (5 patterns) - Issue #1076
 // - code-secrets: Secret detection in generated code (8 patterns) - Issue #761
 // - code-unsafe: Unsafe code pattern detection (7 patterns) - Issue #761
+// - pii-indonesia: Indonesia PII incl. KTP (9 patterns) - OJK/BI/UU PDP, #2522
+// - security-dangerous: Indirect prompt-injection (4 patterns) - #2522
 //
-// Total: 73 static system policies
+// Total: 86 static system policies
 func GetStaticSystemPolicies() []SystemPolicySeed {
 	policies := []SystemPolicySeed{}
 
@@ -69,6 +71,13 @@ func GetStaticSystemPolicies() []SystemPolicySeed {
 	// ========================================================================
 	codePatterns := getCodeGovernancePatterns()
 	policies = append(policies, codePatterns...)
+
+	// ========================================================================
+	// Dangerous-Instruction Patterns (security-dangerous) - 4 patterns (#2522)
+	// Indirect prompt-injection protection (R&C §5.1, R03, OWASP LLM01).
+	// ========================================================================
+	dangerousPatterns := getDangerousInstructionPatterns()
+	policies = append(policies, dangerousPatterns...)
 
 	return policies
 }
@@ -597,10 +606,10 @@ func getPIIPatterns() []SystemPolicySeed {
 			// keyword (SELECT, INSERT, DELETE, UPDATE, CREATE) — and fired on
 			// every benign query, polluting audit logs and inflating
 			// "PII detected" counts in compliance reports.
-			Pattern:     `(?i)\b(?:booking|reservation|reference|ref|pnr|conf(?:irmation)?)\b\s*[:#]?\s*\b([A-Z0-9]{6})\b`,
-			Severity:    SeverityLow,
-			Action:      "log",
-			Priority:    10,
+			Pattern:  `(?i)\b(?:booking|reservation|reference|ref|pnr|conf(?:irmation)?)\b\s*[:#]?\s*\b([A-Z0-9]{6})\b`,
+			Severity: SeverityLow,
+			Action:   "log",
+			Priority: 10,
 		},
 		// ====================================================================
 		// pii-us (2 patterns)
@@ -805,6 +814,24 @@ func getIndonesiaPIIPatterns() []SystemPolicySeed {
 			Priority: 100,
 		},
 		{
+			ID:   "sys_pii_indonesia_ktp",
+			Name: "Indonesian KTP Detection",
+			Description: "Indonesian KTP (Kartu Tanda Penduduk / national ID card) number detected — " +
+				"the 16-digit KTP number IS the NIK; this keyword-anchored pattern also catches " +
+				"separator-formatted (dotted/dashed/spaced) KTP numbers and connector words between " +
+				"the label and the number (\"KTP number is 3201-…\"). Blocked under UU PDP Art. 4 " +
+				"and OJK POJK 11/2022 (a design partner's R&C §4.1 KYC identity, #2522)",
+			Category: CategoryPIIIndonesia,
+			// KTP keyword anchor + optional connector words + 16 digits allowing
+			// dot/dash/space separators. Byte-identical to the runtime Enterprise
+			// detector pattern (ee/.../indonesia), which additionally validates the
+			// digit-normalized core as a real NIK before blocking.
+			Pattern:  `(?i)(?:no[\s._-]*ktp|nomor[\s_-]*ktp|kartu[\s_-]*tanda[\s_-]*penduduk|ktp)(?:[\s:#=]+(?:no\.?|nomor|number|num|adalah|is))*[\s:#=]*[0-9][0-9.\s-]{14,22}[0-9]`,
+			Severity: SeverityCritical,
+			Action:   "block",
+			Priority: 100,
+		},
+		{
 			ID:          "sys_pii_indonesia_npwp_legacy",
 			Name:        "Indonesian NPWP Legacy Detection",
 			Description: "Indonesian Nomor Pokok Wajib Pajak (tax ID, legacy 15-digit format) detected — redaction required under UU PDP",
@@ -884,6 +911,73 @@ func getIndonesiaPIIPatterns() []SystemPolicySeed {
 			Severity: SeverityHigh,
 			Action:   "redact",
 			Priority: 90,
+		},
+	}
+}
+
+// getDangerousInstructionPatterns returns indirect-prompt-injection detection
+// patterns (security-dangerous). These guard merchant-controlled free-text fields
+// that flow into Claude's context, per a design partner's R&C §5.1 ("strip or escape
+// bracket patterns and common injection phrases") and risk R03 (OWASP LLM01).
+//
+// They are evaluated by the shared policy engine alongside security-sqli in
+// Gateway Mode pre-check, so a merchant note containing an injection attempt is
+// blocked before it reaches the model. Patterns are RE2-safe (no backreferences
+// or lookarounds) and scoped to instruction-like language to limit false
+// positives on ordinary merchant text.
+func getDangerousInstructionPatterns() []SystemPolicySeed {
+	return []SystemPolicySeed{
+		{
+			ID:          "sys_dangerous_injection_override",
+			Name:        "Prompt Injection — Instruction Override",
+			Description: "Detects attempts to ignore/override prior instructions, prompts, or guardrails in free-text",
+			Category:    CategorySecurityDangerous,
+			// Two branches: (a) a "previous/prior/system/…" qualifier before any
+			// instruction-class object (incl. the FP-prone "rules"); or (b) no
+			// qualifier but an explicit instruction/prompt/directive/guardrail
+			// object (catches the classic "ignore all instructions" while keeping
+			// benign "ignore the discount rules" / "forget the previous context
+			// note" out, because bare "rules" only matches via branch (a)).
+			Pattern:  `(?i)\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+|the\s+|your\s+|these\s+|those\s+)*(?:(?:previous|prior|above|earlier|preceding|initial|system|original)\s+(?:instruction|instructions|prompt|prompts|directive|directives|rule|rules|guardrail|guardrails)|(?:instruction|instructions|prompt|prompts|directive|directives|guardrail|guardrails))\b`,
+			Severity: SeverityHigh,
+			Action:   "block",
+			Priority: 95,
+		},
+		{
+			ID:          "sys_dangerous_injection_role_override",
+			Name:        "Prompt Injection — Role Reassignment",
+			Description: "Detects attempts to reassign the assistant's role to a privileged/jailbreak persona",
+			Category:    CategorySecurityDangerous,
+			// Requires a privileged/jailbreak target (admin/root/unrestricted/DAN/
+			// developer-mode/…) so benign role talk ("act as a developer",
+			// "pretend you are happy") does not match; the open "from now on you
+			// are/will/must" branch is a strong standalone signal.
+			Pattern:  `(?i)(?:\b(?:you\s+are\s+now|act\s+as|pretend\s+(?:to\s+be|you\s+are)|roleplay\s+as)\s+(?:an?\s+|the\s+)?(?:admin|administrator|root|superuser|system\s+administrator|unrestricted|jailbroken|jailbreak|dan\s+mode|developer\s+mode|do\s+anything\s+now|a\s+different\s+(?:ai|model|assistant))\b|\bfrom\s+now\s+on,?\s+you\s+(?:are|will|must)\b)`,
+			Severity: SeverityHigh,
+			Action:   "block",
+			Priority: 95,
+		},
+		{
+			ID:          "sys_dangerous_injection_system_exfil",
+			Name:        "Prompt Injection — System Prompt Exfiltration",
+			Description: "Detects attempts to reveal/print/repeat the system prompt or hidden instructions",
+			Category:    CategorySecurityDangerous,
+			Pattern:     `(?i)\b(?:reveal|show|print|repeat|display|output|leak|expose)\b[^.\n]{0,30}\b(?:system\s+prompt|your\s+(?:instructions|prompt|rules|system)|initial\s+(?:prompt|instructions)|the\s+prompt\s+above)\b`,
+			Severity:    SeverityHigh,
+			Action:      "block",
+			Priority:    95,
+		},
+		{
+			ID:          "sys_dangerous_injection_bracket_marker",
+			Name:        "Prompt Injection — Template/Bracket Marker",
+			Description: "Detects injected chat-template or role-delimiter markers ([system], <im_start>, ### system)",
+			Category:    CategorySecurityDangerous,
+			// Note: the angle-bracket branch is limited to im_start/im_end/system to
+			// avoid matching ordinary HTML like <s>/</s> (strikethrough) in merchant text.
+			Pattern:  `(?i)(?:\[\s*(?:system|assistant|inst|/inst|user)\s*\]|<\s*(?:system|im_start|im_end)\s*>|###\s*(?:system|instruction)\b|<\|(?:im_start|im_end|system)\|>)`,
+			Severity: SeverityHigh,
+			Action:   "block",
+			Priority: 95,
 		},
 	}
 }

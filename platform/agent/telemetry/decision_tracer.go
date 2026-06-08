@@ -47,6 +47,14 @@ type DecisionEvent struct {
 	// TenantID is the AxonFlow tenant identifier. Attribute: tenant.id
 	TenantID string
 
+	// GatewayID is the gateway-asserted origin of the decision
+	// (caller_identity.gateway_id), e.g. "claude_desktop.<host>" for the
+	// Claude Desktop governance proxy (#2520). Emitted as the
+	// decision.gateway_id span attribute when non-empty so Desktop traffic is
+	// distinguishable from other PEP layers in trace search. Empty for callers
+	// that don't assert a gateway id.
+	GatewayID string
+
 	// Stage names the decision plane: "llm" | "tool" | "agent".
 	// Attribute: decision.stage
 	Stage string
@@ -69,8 +77,8 @@ type DecisionEvent struct {
 	Reasons []string
 
 	// Context carries the sanitized, allowlist-filtered request context
-	// the PEP attached to the decision (BukuWarung Layer 2: X-AI-Agent /
-	// X-Session-ID / X-Leader-Identity, plus the x-bukuwarung-* family).
+	// the PEP attached to the decision (a design partner's Layer 2: X-AI-Agent /
+	// X-Session-ID / X-Leader-Identity, plus the x-tenant-* family).
 	// Keys are already canonicalized to lower_snake_case by the caller
 	// (canonicalizeRequestContext). Each entry is emitted as a span
 	// attribute under the request.context.<key> namespace so SIEM joins

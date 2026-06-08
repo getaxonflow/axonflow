@@ -32,7 +32,7 @@ import (
 )
 
 func TestCanonicalizeRequestContext(t *testing.T) {
-	// The BukuWarung Layer-2 default allowlist (#2509).
+	// The default decision-context allowlist.
 	allow := defaultDecisionContextAllowlist
 
 	cases := []struct {
@@ -78,19 +78,6 @@ func TestCanonicalizeRequestContext(t *testing.T) {
 			wantTruncated: false,
 		},
 		{
-			name: "x-bukuwarung-* prefix family is allowed",
-			raw: map[string]interface{}{
-				"X-BukuWarung-Merchant": "m-42",
-				"x-bukuwarung-region":   "jakarta",
-				"x-buku-other":          "drop-me",
-			},
-			wantKept: map[string]string{
-				"x_bukuwarung_merchant": "m-42",
-				"x_bukuwarung_region":   "jakarta",
-			},
-			wantTruncated: false,
-		},
-		{
 			name: "separator-insensitive allowlist match (underscore form)",
 			raw: map[string]interface{}{
 				"x_ai_agent":   "claude-code",
@@ -129,6 +116,25 @@ func TestCanonicalizeRequestContext(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeRequestContext_PrefixAllowlist(t *testing.T) {
+	// A configured prefix entry (trailing "*") is matched end-to-end through
+	// canonicalizeRequestContext — case- and separator-insensitively — and
+	// non-matching keys are dropped.
+	allow := []string{"x-tenant-*"}
+	kept, truncated := canonicalizeRequestContext(map[string]interface{}{
+		"X-Tenant-Merchant": "m-42",
+		"x-tenant-region":   "jakarta",
+		"x-other":           "drop-me",
+	}, allow)
+	if truncated {
+		t.Errorf("truncated: got true want false")
+	}
+	want := map[string]string{"x_tenant_merchant": "m-42", "x_tenant_region": "jakarta"}
+	if !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept:\n got  %#v\n want %#v", kept, want)
+	}
+}
+
 func TestCanonicalizeRequestContext_ValueLengthCap(t *testing.T) {
 	long := strings.Repeat("a", 400) // > maxContextValueLen (256)
 	kept, truncated := canonicalizeRequestContext(
@@ -160,12 +166,13 @@ func TestCanonicalizeRequestContext_StripsUnprintable(t *testing.T) {
 }
 
 func TestCanonicalizeRequestContext_KeyCountCap(t *testing.T) {
-	// 12 distinct allowlisted keys (x-bukuwarung-k00..k11) > maxContextKeys (10).
+	// 12 distinct allowlisted keys (x-tenant-k00..k11) > maxContextKeys (10).
+	allow := []string{"x-tenant-*"}
 	raw := make(map[string]interface{}, 12)
 	for i := 0; i < 12; i++ {
-		raw[fmt.Sprintf("x-bukuwarung-k%02d", i)] = fmt.Sprintf("v%02d", i)
+		raw[fmt.Sprintf("x-tenant-k%02d", i)] = fmt.Sprintf("v%02d", i)
 	}
-	kept, truncated := canonicalizeRequestContext(raw, defaultDecisionContextAllowlist)
+	kept, truncated := canonicalizeRequestContext(raw, allow)
 	if !truncated {
 		t.Fatal("expected truncated=true when key count exceeds the cap")
 	}
@@ -173,20 +180,21 @@ func TestCanonicalizeRequestContext_KeyCountCap(t *testing.T) {
 		t.Fatalf("kept %d keys, want exactly %d", len(kept), maxContextKeys)
 	}
 	// Deterministic: sorted keys keep k00..k09, drop k10/k11.
-	if _, ok := kept["x_bukuwarung_k00"]; !ok {
-		t.Error("sorted cap must keep x_bukuwarung_k00")
+	if _, ok := kept["x_tenant_k00"]; !ok {
+		t.Error("sorted cap must keep x_tenant_k00")
 	}
-	if _, ok := kept["x_bukuwarung_k11"]; ok {
-		t.Error("sorted cap must drop x_bukuwarung_k11")
+	if _, ok := kept["x_tenant_k11"]; ok {
+		t.Error("sorted cap must drop x_tenant_k11")
 	}
 }
 
 func TestCanonicalizeRequestContext_ExactlyCapNotTruncated(t *testing.T) {
+	allow := []string{"x-tenant-*"}
 	raw := make(map[string]interface{}, maxContextKeys)
 	for i := 0; i < maxContextKeys; i++ {
-		raw[fmt.Sprintf("x-bukuwarung-k%02d", i)] = fmt.Sprintf("v%02d", i)
+		raw[fmt.Sprintf("x-tenant-k%02d", i)] = fmt.Sprintf("v%02d", i)
 	}
-	kept, truncated := canonicalizeRequestContext(raw, defaultDecisionContextAllowlist)
+	kept, truncated := canonicalizeRequestContext(raw, allow)
 	if truncated {
 		t.Errorf("exactly maxContextKeys must NOT be flagged truncated")
 	}
@@ -198,16 +206,17 @@ func TestCanonicalizeRequestContext_ExactlyCapNotTruncated(t *testing.T) {
 func TestCanonicalizeRequestContext_CollisionIsDeterministic(t *testing.T) {
 	// Two allowlisted raw keys whose 32-char canonical forms collide. The
 	// result must be deterministic (first sorted raw key wins), not a random
-	// map-iteration winner. Both start with the x-bukuwarung- prefix and share
-	// the first 32 canonical chars.
-	allow := []string{"x-bukuwarung-*"}
+	// map-iteration winner. Both share the first 32 canonical chars; the
+	// distinguishing AAA/BBB suffix sits past the 32-char canonical cap (the
+	// stem is intentionally long enough to keep that true).
+	allow := []string{"x-tenant-*"}
 	raw := map[string]interface{}{
-		"x-bukuwarung-merchant-region-alpha-AAA": "first",
-		"x-bukuwarung-merchant-region-alpha-BBB": "second",
+		"x-tenant-merchant-region-alpha-zone-AAA": "first",
+		"x-tenant-merchant-region-alpha-zone-BBB": "second",
 	}
-	ck := canonicalContextKey("x-bukuwarung-merchant-region-alpha-AAA")
+	ck := canonicalContextKey("x-tenant-merchant-region-alpha-zone-AAA")
 	// Sanity: confirm the two raw keys actually collide post-canonicalization.
-	if ck != canonicalContextKey("x-bukuwarung-merchant-region-alpha-BBB") {
+	if ck != canonicalContextKey("x-tenant-merchant-region-alpha-zone-BBB") {
 		t.Skip("test inputs no longer collide; adjust fixture")
 	}
 	for i := 0; i < 50; i++ {
@@ -223,14 +232,14 @@ func TestCanonicalizeRequestContext_CollisionIsDeterministic(t *testing.T) {
 
 func TestCanonicalContextKey(t *testing.T) {
 	cases := map[string]string{
-		"X-AI-Agent":             "x_ai_agent",
-		"x-session-id":           "x_session_id",
-		"X_Leader_Identity":      "x_leader_identity",
-		"  X-BukuWarung-Region ": "x_bukuwarung_region",
-		"---":                    "",                                    // nothing alphanumeric
-		"":                       "",                                    // empty
-		"A!!!B":                  "a_b",                                 // collapse non-alnum run
-		strings.Repeat("a", 50):  strings.Repeat("a", maxContextKeyLen), // length cap
+		"X-AI-Agent":            "x_ai_agent",
+		"x-session-id":          "x_session_id",
+		"X_Leader_Identity":     "x_leader_identity",
+		"  X-Tenant-Region ":    "x_tenant_region",
+		"---":                   "",                                    // nothing alphanumeric
+		"":                      "",                                    // empty
+		"A!!!B":                 "a_b",                                 // collapse non-alnum run
+		strings.Repeat("a", 50): strings.Repeat("a", maxContextKeyLen), // length cap
 	}
 	for in, want := range cases {
 		if got := canonicalContextKey(in); got != want {
@@ -240,9 +249,9 @@ func TestCanonicalContextKey(t *testing.T) {
 }
 
 func TestMatchContextAllowlist(t *testing.T) {
-	allow := []string{"x-ai-agent", "x-session-id", "x-bukuwarung-*"}
-	yes := []string{"X-AI-Agent", "x-ai-agent", "x_ai_agent", "X-Session-ID", "x-bukuwarung-merchant", "X-BukuWarung-Anything"}
-	no := []string{"authorization", "x-disallowed", "x-buku", "", "bukuwarung-x"}
+	allow := []string{"x-ai-agent", "x-session-id", "x-tenant-*"}
+	yes := []string{"X-AI-Agent", "x-ai-agent", "x_ai_agent", "X-Session-ID", "x-tenant-merchant", "X-Tenant-Anything"}
+	no := []string{"authorization", "x-disallowed", "x-ten", "", "tenant-x"}
 	for _, k := range yes {
 		if !matchContextAllowlist(k, allow) {
 			t.Errorf("matchContextAllowlist(%q) = false, want true", k)
@@ -505,5 +514,94 @@ func TestWriteDecisionAuditLog_InsertErrorIsNonFatal(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// policyDetailsHasGatewayID is a sqlmock matcher asserting the audit row's
+// policy_details JSONB carries gateway_id (#2520 Claude Desktop origin).
+type policyDetailsHasGatewayID struct {
+	wantGatewayID string
+}
+
+func (m policyDetailsHasGatewayID) Match(v driver.Value) bool {
+	var raw []byte
+	switch x := v.(type) {
+	case []byte:
+		raw = x
+	case string:
+		raw = []byte(x)
+	default:
+		return false
+	}
+	var details map[string]interface{}
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return false
+	}
+	return details["gateway_id"] == m.wantGatewayID
+}
+
+// TestWriteDecisionAuditLog_PersistsGatewayID proves a claude_desktop.* origin
+// lands at policy_details->>'gateway_id' so Desktop traffic is distinguishable
+// in the audit trail (#2520).
+func TestWriteDecisionAuditLog_PersistsGatewayID(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer mockDB.Close()
+
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs(
+			"decide_dec-gw", "dec-gw", sqlmock.AnyArg(), 7,
+			"svc@axonflow.local", "service", "client-x", "tenant-rocket",
+			"org-acme", "decision_tool", "list merchants", sqlmock.AnyArg(),
+			"allow",
+			policyDetailsHasGatewayID{wantGatewayID: "claude_desktop.fleet-mac"},
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	writeDecisionAuditLog(context.Background(), mockDB,
+		"dec-gw", "org-acme", "tenant-rocket", "tool", "allow",
+		[]string{"p_clean"}, []string{"clean"}, nil, false,
+		decisionAuditInput{
+			clientID:  "client-x",
+			requestID: "dec-gw",
+			userEmail: "svc@axonflow.local",
+			userRole:  "service",
+			userID:    7,
+			query:     "list merchants",
+			gatewayID: "claude_desktop.fleet-mac",
+		},
+	)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestSanitizeGatewayID(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"plain", "claude_desktop.host-x", "claude_desktop.host-x"},
+		{"trims", "  claude_desktop.h  ", "claude_desktop.h"},
+		{"empty", "", ""},
+		{"whitespace only", "   ", ""},
+		{"strips control", "claude_desktop.\x00\x07host", "claude_desktop.host"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sanitizeGatewayID(c.in); got != c.want {
+				t.Fatalf("sanitizeGatewayID(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+	// Length cap: a 200-char id is capped to maxGatewayIDLen.
+	long := ""
+	for i := 0; i < 200; i++ {
+		long += "a"
+	}
+	if got := sanitizeGatewayID(long); len(got) != maxGatewayIDLen {
+		t.Fatalf("oversize gateway_id not capped: len=%d want=%d", len(got), maxGatewayIDLen)
 	}
 }

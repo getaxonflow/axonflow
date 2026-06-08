@@ -55,7 +55,7 @@ type DecisionExplanation struct {
 	// policy_details->'context'. Unlike the LIST endpoint (which truncates to
 	// 5 keys), the explain endpoint returns every persisted key (up to the
 	// agent's 10-key cap) so an auditor gets the complete correlation set
-	// (X-AI-Agent / X-Session-ID / X-Leader-Identity, x-bukuwarung-*).
+	// (X-AI-Agent / X-Session-ID / X-Leader-Identity, x-tenant-*).
 	// ContextTruncated reflects whether the agent dropped surplus keys at
 	// write time. Both omitempty so pre-#2509 rows keep their byte-shape.
 	// (#2509 / epic #2508)

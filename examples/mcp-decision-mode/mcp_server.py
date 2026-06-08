@@ -19,7 +19,7 @@ the verdict on its side:
                              audit_log.jsonl  (Risk Committee Layer 1)
 
 Phase 1 boundary: both tools return AGGREGATED counts only — no individual
-merchant records, no KYC, no contact data — matching BukuWarung's controlled
+merchant records, no KYC, no contact data — matching a design partner's controlled
 -pilot data restriction.
 
 Run it:  python mcp_server.py     (speaks MCP over stdio)

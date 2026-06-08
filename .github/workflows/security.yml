@@ -144,6 +144,14 @@ jobs:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
     needs: [detect-changes]
+    # Trivy's Java analyzer resolves remote parent POMs by default. On
+    # ee/examples/compliance/rbi-sebi/java/pom.xml that network call cancels
+    # ("semaphore acquire: context canceled") and FATAL-aborts the WHOLE fs
+    # scan -> no SARIF -> Security Scan Summary red on every PR. Offline scan
+    # disables remote dependency resolution (the crash class); skip-dirs below
+    # also excludes example projects, which are not shipped artifacts.
+    env:
+      TRIVY_OFFLINE_SCAN: 'true'
     # Run if: push/schedule/workflow_dispatch OR (PR/merge_group with security-relevant changes)
     if: |
       always() &&
@@ -164,6 +172,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM'
+          skip-dirs: 'ee/examples'
 
       - name: Upload Trivy results to Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -180,6 +189,7 @@ jobs:
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
+          skip-dirs: 'ee/examples'
 
   # Trivy Configuration Scan
   trivy-config-scan:

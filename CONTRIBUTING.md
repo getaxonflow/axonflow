@@ -32,6 +32,10 @@ git rebase --signoff origin/main
 
 A DCO check runs automatically on every PR opened in the `getaxonflow` org. **PRs with any unsigned commit will be blocked from merging until the missing sign-offs are added.** No exceptions, including for maintainers.
 
+## No partner/customer names in community source
+
+Partner-driven features are named for the **capability** (e.g. `Indonesia`, `KTP`, `OJK`), never for the partner. Partner-specific artifacts (policy bundles, eval configs, partner runbooks) live **gated or internal** (`ee/`, `technical-docs/`, `docs/protected/`) — never in community source. A CI denylist (`.github/partner-name-denylist.txt`, enforced by the Partner Name Denylist workflow and as a fail-closed gate in the community sync) blocks any denylisted name from appearing in synced paths (`platform/`, `migrations/`, `config/seed-data/`, `docs/`, `examples/`, `infra/`) or public docs.
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
