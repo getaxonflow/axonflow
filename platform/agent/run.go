@@ -620,6 +620,19 @@ var (
 func initServerImmediately(port string) {
 	globalRouter = mux.NewRouter()
 
+	// JSON-only error responses for unmatched routes / wrong methods. gorilla/
+	// mux's default 404/405 emit Go's plaintext "404 page not found" /
+	// "Method Not Allowed". Some MCP clients (Claude Code), after a 401 on the
+	// MCP endpoint, probe an open-ended set of OAuth-discovery URLs and parse
+	// each non-2xx body as an OAuth error JSON — a plaintext body makes them
+	// crash with "HTTP 404: Invalid OAuth error response ... Raw body: 404
+	// page not found" and mark the server failed. Returning a parseable,
+	// RFC 6749 §5.2-shaped JSON body everywhere makes those probes degrade
+	// gracefully instead. (The /.well-known/oauth-* routes registered with the
+	// MCP handler return a more specific advisory naming AXONFLOW_AUTH.)
+	globalRouter.NotFoundHandler = http.HandlerFunc(jsonNotFoundHandler)
+	globalRouter.MethodNotAllowedHandler = http.HandlerFunc(jsonMethodNotAllowedHandler)
+
 	// CORS middleware - configured once, used for all requests
 	globalCORS = cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"}, // Configure for production
@@ -643,6 +656,29 @@ func initServerImmediately(port string) {
 	// Small delay to ensure server is ready to accept connections
 	time.Sleep(50 * time.Millisecond)
 	log.Println("✅ Health endpoint ready - initialization can proceed safely")
+}
+
+// jsonNotFoundHandler / jsonMethodNotAllowedHandler replace gorilla/mux's
+// plaintext defaults so every unmatched route / wrong method returns a
+// parseable, RFC 6749 §5.2-shaped JSON body. This keeps MCP-client OAuth
+// discovery probes (which parse non-2xx bodies as OAuth errors) from crashing
+// on plaintext — see initServerImmediately for the full rationale.
+func jsonNotFoundHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             "not_found",
+		"error_description": "No such endpoint on the AxonFlow agent. If you are an MCP client doing OAuth discovery: this server uses HTTP Basic auth (base64(org_id:license_key)) via AXONFLOW_AUTH, not OAuth.",
+	})
+}
+
+func jsonMethodNotAllowedHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusMethodNotAllowed)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             "method_not_allowed",
+		"error_description": "HTTP method not allowed on this AxonFlow endpoint.",
+	})
 }
 
 // readinessAwareHealthHandler returns health status based on initialization state
