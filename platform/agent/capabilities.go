@@ -131,15 +131,20 @@ func getPluginCompatibility() PluginCompatInfo {
 		// on 2026-05-09) — the new minor carries the SDK v8 list_decisions
 		// integration so the "show me the last decisions for this user"
 		// affordance lands natively in each host. The v8.0.0 platform bump
-		// (#2308) did NOT change the plugin recommended-version. Plugin
-		// tags are live on their registries (openclaw 2.4.0 on npm,
-		// claude/cursor/codex 1.4.0 on ClawHub) — plugins on 1.3.x /
-		// 2.3.x receive an actionable upgrade-warning header on every
-		// governed call.
+		// (#2308) did NOT change the plugin recommended-version. Bumped
+		// claude-code + cursor to 1.5.3 during the v8.5.2 release-train —
+		// 1.5.3 ships the headersHelper ${CLAUDE_PLUGIN_ROOT} fix so the
+		// plugins send Basic auth correctly against self-hosted/Enterprise.
+		// codex stays 1.5.2 (its v8.5.2 fix was documentation-only; no codex
+		// 1.5.3 was cut); openclaw stays 2.6.1. Plugin tags are live on their
+		// registries (openclaw 2.6.1 on npm, claude/cursor 1.5.3 + codex
+		// 1.5.2 on ClawHub) — plugins below the recommended version receive
+		// an actionable upgrade-warning header on every governed call; the
+		// MinPluginVersion floor stays 1.4.0 / 2.4.0.
 		RecommendedPluginVersion: map[string]string{
 			"openclaw":    "2.6.1",
-			"claude-code": "1.5.2",
-			"cursor":      "1.5.2",
+			"claude-code": "1.5.3",
+			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
 		},
 	}

@@ -118,6 +118,73 @@ func TestAuditSummaryHandler_HandleSummary_ValidRequest(t *testing.T) {
 	}
 }
 
+// Regression: the agent's check_policy path (the one the Claude Code / Cursor
+// / Codex plugin PreToolUse hooks call) records a denied tool call with
+// policy_decision="deny", NOT "blocked". The summary must count "deny" as
+// blocked — otherwise a real block (e.g. an SSN caught by sys_pii_ssn) shows
+// as 0 blocked / 100% compliance, masking a real block during evaluation.
+func TestAuditSummaryHandler_HandleSummary_CountsDenyAsBlocked(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	handler := NewAuditSummaryHandler(db)
+
+	// 3 allowed + 1 "deny" (plugin-hook vocabulary) + 1 "denied" variant.
+	actionRows := sqlmock.NewRows([]string{"request_type", "policy_decision", "cnt"}).
+		AddRow("mcp_check_policy", "allowed", 3).
+		AddRow("mcp_check_policy", "deny", 1).
+		AddRow("tool_call", "denied", 1)
+	mock.ExpectQuery("SELECT request_type, policy_decision, COUNT").
+		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(actionRows)
+
+	latencyRows := sqlmock.NewRows([]string{"avg"}).AddRow(0.0)
+	mock.ExpectQuery("SELECT COALESCE\\(AVG\\(response_time_ms\\)").
+		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(latencyRows)
+
+	policyRows := sqlmock.NewRows([]string{"policy_name", "trigger_count", "block_count"}).
+		AddRow("SSN Detection", 1, 1)
+	mock.ExpectQuery("SELECT").
+		WithArgs("tenant-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(policyRows)
+
+	body := `{"start_time":"2026-01-01T00:00:00Z","end_time":"2026-04-01T00:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/audit/summary", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-1")
+	rr := httptest.NewRecorder()
+
+	handler.HandleSummary(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var summary ComplianceSummary
+	if err := json.NewDecoder(rr.Body).Decode(&summary); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// 2 of 5 are denials → blocked must be 2, allowed 3, severity critical 2.
+	if summary.BlockedRequests != 2 {
+		t.Errorf("expected blocked_requests=2 (deny+denied counted as blocked), got %d", summary.BlockedRequests)
+	}
+	if summary.AllowedRequests != 3 {
+		t.Errorf("expected allowed_requests=3, got %d", summary.AllowedRequests)
+	}
+	if summary.BySeverity["critical"] != 2 {
+		t.Errorf("expected 2 critical events, got %d", summary.BySeverity["critical"])
+	}
+	if summary.BlockRatePercent != 40.0 {
+		t.Errorf("expected block_rate_percent=40.0, got %f", summary.BlockRatePercent)
+	}
+	// A block happened — compliance must NOT read as a perfect 100%.
+	if summary.ComplianceScore == 100.0 {
+		t.Errorf("compliance score should not be 100%% when 2/5 requests were blocked, got %f", summary.ComplianceScore)
+	}
+}
+
 func TestAuditSummaryHandler_HandleSummary_InvalidBody(t *testing.T) {
 	handler := NewAuditSummaryHandler(nil)
 

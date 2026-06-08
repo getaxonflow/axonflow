@@ -181,15 +181,21 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 			summary.ByAction[requestType] += cnt
 		}
 		// Triage for the card view. Two explicit blocking categories
-		// (`blocked`, `redacted=modified`); everything else rolls into
+		// (`blocked`/`deny`, `redacted=modified`); everything else rolls into
 		// "allowed" so Total = Allowed + Blocked + Modified always closes.
-		// `pending_approval` (emitted when workflow_step_gate fires
+		// NOTE: the write paths are not consistent about the deny vocabulary —
+		// the agent's check_policy path (the one the Claude Code / Cursor /
+		// Codex plugin PreToolUse hooks call) records a denied tool call as
+		// policy_decision="deny", while gateway-mode records "blocked". BOTH
+		// must count as blocked here, or a real block (e.g. an SSN caught by
+		// sys_pii_ssn) is silently bucketed as "allowed" and the card view
+		// reports 0 blocked / 100% compliance right after blocking critical
+		// PII. `pending_approval` (emitted when workflow_step_gate fires
 		// require_approval) and `error` are "not blocked" outcomes — the
 		// HITL decision that follows writes its own workflow_step_approved /
-		// workflow_step_rejected row. Unknown values also fall through to
-		// allowed; we err on the side of not inflating the blocked count.
+		// workflow_step_rejected row. Unknown values fall through to allowed.
 		switch policyDecision {
-		case "blocked":
+		case "blocked", "deny", "denied":
 			blockedCount += cnt
 			summary.BySeverity["critical"] += cnt
 		case "redacted":
@@ -245,7 +251,7 @@ func (h *AuditSummaryHandler) queryAuditSummary(tenantID string, startTime, endT
 		SELECT
 			COALESCE(policy_details->>'policy_name', 'unknown') as policy_name,
 			COUNT(*) as trigger_count,
-			COUNT(*) FILTER (WHERE policy_decision = 'blocked') as block_count
+			COUNT(*) FILTER (WHERE policy_decision IN ('blocked', 'deny', 'denied')) as block_count
 		FROM audit_logs
 		WHERE tenant_id = $1
 		  AND timestamp >= $2

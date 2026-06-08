@@ -12,6 +12,45 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.5.2] - 2026-06-08 — Portal works over HTTP self-host + MCP plugin auth connects on self-hosted/Enterprise + audit stats count denials correctly
+
+**Community + Enterprise.** The portal fixes are enterprise-only (`ee/platform/customer-portal[-ui]` plus an additive helper migration). The MCP-auth and audit-summary fixes below are in the **community** `platform/agent` and `platform/orchestrator` binaries, so — unlike the original `8.5.2` plan — this release **does** ship to the community mirror (community sync is **not** skipped).
+
+### Fixed (Community)
+
+- **Agent returns parseable JSON, not plaintext, on OAuth-discovery probes.** The MCP server authenticates with HTTP Basic (`base64(org_id:license_key)`) and sends `WWW-Authenticate: Basic` on its `401`, but some MCP clients (e.g. Claude Code) respond to the `401` by probing an open-ended set of OAuth-discovery URLs (`/.well-known/oauth-protected-resource[/<resource-path>]`, `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/register`, …) and parse each non-2xx body as an OAuth error JSON. gorilla/mux's default `404`/`405` emit Go's plaintext `404 page not found` / `Method Not Allowed`, so the client crashed with `HTTP 404: Invalid OAuth error response … Raw body: 404 page not found` and marked the server failed — even though the real problem was just a missing credential. The agent router now returns RFC 6749 §5.2-shaped JSON for every unmatched route / wrong method (global `NotFoundHandler` + `MethodNotAllowedHandler`), and serves `/.well-known/oauth-protected-resource` / `/.well-known/oauth-authorization-server` (covering the resource-path-suffixed forms) with a specific advisory naming `AXONFLOW_AUTH` / `AXONFLOW_ENDPOINT` and advertising **no** authorization server — so the client renders a clear message instead of crashing, and never starts an OAuth flow this server can't complete.
+- **Audit summary counts policy denials as blocked.** `get_policy_stats` and the portal compliance card under-reported blocks: a denied tool call (e.g. an SSN caught by `sys_pii_ssn` via a plugin's `PreToolUse` hook calling `check_policy`) is recorded in `audit_logs` with `policy_decision="deny"`, but the summary aggregation only bucketed `"blocked"` — so `"deny"` fell through to the "allowed" branch and a real block showed as `0 blocked / 100% compliance / all-info severity`. The write-path vocabulary is split (agent `check_policy` → `"deny"`; gateway-mode → `"blocked"`); the summary now counts `blocked`/`deny`/`denied` as blocked in both the action-triage and the top-policies block-count queries. This is server-side, so it corrects the stats for **every** plugin (Claude Code, Cursor, Codex, openclaw) — they all route blocks through the agent's `check_policy` path.
+
+### Changed (Community)
+
+- **Recommended host-CLI plugin version bumped to 1.5.3** for Claude Code and Cursor. The agent and orchestrator capability response (surfaced at `/health`) now advertises `1.5.3` as the recommended version for those two; plugins below it receive an actionable upgrade-warning header on every governed call. 1.5.3 carries the plugin-side fix that sends HTTP Basic auth correctly against self-hosted / Enterprise endpoints (the `${CLAUDE_PLUGIN_ROOT}` headers-helper expansion), which pairs with the agent OAuth-discovery fix above. Codex stays at `1.5.2` (its v8.5.2 fix was documentation-only). The minimum-supported floor is unchanged (`1.4.0`; openclaw `2.4.0`), and openclaw's recommended version stays `2.6.1`.
+
+### Tests (Community)
+
+- Agent: `mcp_oauth_discovery_test.go` pins the JSON 404/405 responses and the well-known advisory (no `authorization_servers`, names `AXONFLOW_AUTH`). Orchestrator: `TestAuditSummaryHandler_HandleSummary_CountsDenyAsBlocked` asserts `deny`/`denied` count as blocked. Both verified end-to-end through the real `claude` binary against a self-hosted in-vpc-enterprise bundle with a real license.
+
+---
+
+**Enterprise (customer-portal) — original `8.5.2` scope, unchanged below.** Every portal change is under `ee/platform/customer-portal[-ui]` plus an additive helper migration and version/compose bumps.
+
+Patch release closing out self-hosted portal access. Two complementary halves of the same symptom: the deployment org now gets a login credential provisioned at boot, and the session cookie is no longer dropped when the portal is served over plain HTTP (the install bundle / evaluation deployments). Together a fresh HTTP install is loginable and the login sticks — previously a fresh install had no portal password, and even once one was set every authenticated request returned `401`. Also stops the dashboard from masking a fetch failure with a fabricated license. HTTPS/production deployments are unaffected and stay secure by default. No breaking changes; additive migration only.
+
+### Added (Enterprise)
+
+- **Portal login credential auto-provisioned at boot.** In `enterprise` / `in-vpc-*` deployments the deployment organization (`ORG_ID`) is the portal login identity, but the agent's license-tier promotion created that organization row without a `password_hash` — so a fresh install had a portal no one could log into until someone ran manual SQL. The portal now bootstraps the deployment org's password from `AXONFLOW_PORTAL_ADMIN_PASSWORD` at startup: fail-closed (it refuses to boot in those modes if the password is unset, rather than coming up un-loginable), no-clobber (an operator-set password is never overwritten on restart), and create-if-missing. A `reset-portal-credential.sh` operator script is included for recovery. (#2552)
+
+### Fixed (Enterprise)
+
+- **Session cookie `Secure` attribute is now conditional.** The `axonflow_session` cookie was set with a hardcoded `Secure` attribute at all three session-cookie sites (login, logout, SAML callback). When the portal is served over plain HTTP, the browser silently drops a `Secure` cookie, so every authenticated request reached the auth middleware with no cookie and returned `401 Unauthorized` ("no session") before any database query — and the dashboard then rendered a placeholder license. The attribute is now gated on `AXONFLOW_PORTAL_COOKIE_SECURE`, which defaults to `true` so HTTPS/production keeps the `Secure` attribute with no configuration change; operators set it to `false` for an HTTP self-host or evaluation deployment on a trusted internal network. The logout (cookie-clearing) attributes match the set cookie so logout reliably clears the cookie. The bundled `docker-compose.enterprise.yml` defaults the override to `false` for the local/eval HTTP flow.
+
+- **The dashboard no longer fabricates a license on a fetch failure.** When the license-status call failed (e.g. the `401` above), the dashboard previously substituted a hardcoded `Community / DEVELOPER` placeholder, which read as a real downgraded license and masked the true Enterprise entitlement. It now captures the error, leaves the license unset, and renders an explicit "License status unavailable" state. This is display-only and does not change any entitlement.
+
+- **Portal session lookup is now RLS-safe under the application role.** The portal auth middleware reads `user_sessions` by session id before any organization context is established (the lookup is what discovers the session's org), so it could not use the request-scoped tenant GUC. Under the NOBYPASSRLS application role with `FORCE ROW LEVEL SECURITY`, that direct read returned zero rows and would have rejected every portal session. The lookup now goes through a new `SECURITY DEFINER` helper (additive migration) that resolves the session without exposing the underlying table, falling back to the direct read on databases that predate the migration. No effect on current deployments (which connect as a role that bypasses RLS); this hardens the path for the application-role posture.
+
+### Tests
+
+- Added a runtime end-to-end test (`runtime-e2e/portal_cookie_secure_http`) that drives the real agent + portal binaries over HTTP: it asserts the cookie keeps `Secure` by default, drops it under `AXONFLOW_PORTAL_COOKIE_SECURE=false`, and that an HTTP login then returns `200` with the correct licensed tier from `GET /api/v1/license/status`. Plus a unit test pinning the `AXONFLOW_PORTAL_COOKIE_SECURE` parsing (default-true, case-insensitive `false`).
+
 ## [8.5.1] - 2026-06-08 — Licensed tier reported correctly in the portal/database + dev-mode token endpoint
 
 Patch release. Fixes a tier-reporting divergence where the licensed tier was held only in agent memory and never written to the `organizations` table, so the portal and other database consumers could lag behind `/health`. Also adds a non-production developer convenience for minting user tokens. Additive migration only; no breaking changes.

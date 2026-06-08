@@ -524,6 +524,48 @@ func getMCPToolsForCaller(callerTier string) []mcpTool {
 func RegisterMCPServerHandler(r *mux.Router) {
 	r.HandleFunc("/api/v1/mcp-server", mcpServerHandler).Methods("POST", "GET", "DELETE", "OPTIONS")
 	log.Println("[MCP-Server] Registered MCP server protocol endpoint at /api/v1/mcp-server")
+
+	// OAuth-discovery well-known endpoints. The MCP server authenticates with
+	// HTTP Basic (base64(org_id:license_key)) — see writeJSONRPCAuthError's
+	// WWW-Authenticate: Basic challenge — NOT OAuth. But some MCP clients
+	// (e.g. Claude Code) respond to a 401 by probing RFC 9728 / RFC 8414
+	// discovery endpoints regardless of the WWW-Authenticate scheme. Without
+	// these routes those probes hit the router's default handler, which
+	// returns Go's plaintext "404 page not found"; the client then tries to
+	// parse that as an OAuth error JSON and surfaces the inscrutable
+	// "HTTP 404: Invalid OAuth error response ... Raw body: 404 page not
+	// found" (and marks the server failed). We instead return a PARSEABLE
+	// OAuth-error-shaped JSON (404) that names the real auth mechanism, and we
+	// deliberately advertise no authorization server, so the client surfaces a
+	// clear "use Basic auth" message instead of crashing — and never starts an
+	// OAuth flow this server can't complete.
+	// PathPrefix (not exact): RFC 9728 clients request BOTH the bare
+	// `/.well-known/oauth-protected-resource` AND the resource-path-suffixed
+	// `/.well-known/oauth-protected-resource/api/v1/mcp-server`. Claude Code
+	// uses the suffixed form, so an exact route would still leak the plaintext
+	// 404. PathPrefix covers every variant under both well-known roots.
+	r.PathPrefix("/.well-known/oauth-protected-resource").HandlerFunc(mcpOAuthDiscoveryHandler).Methods("GET")
+	r.PathPrefix("/.well-known/oauth-authorization-server").HandlerFunc(mcpOAuthDiscoveryHandler).Methods("GET")
+	log.Println("[MCP-Server] Registered OAuth-discovery well-known endpoints (Basic-auth advisory)")
+}
+
+// mcpOAuthDiscoveryHandler answers OAuth-discovery probes with a parseable,
+// machine-readable advisory instead of a plaintext 404. The MCP server is
+// Basic-auth, not OAuth.
+func mcpOAuthDiscoveryHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	// 404: the resource genuinely has no OAuth metadata. The body is JSON so a
+	// client that parses 401/404 bodies as OAuth errors does not choke; the
+	// shape (error/error_description) matches RFC 6749 §5.2 so it renders
+	// cleanly. No authorization_servers are advertised → no OAuth flow.
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "oauth_not_supported",
+		"error_description": "AxonFlow's MCP server uses HTTP Basic authentication " +
+			"(base64(org_id:license_key)), not OAuth. Set AXONFLOW_ENDPOINT and " +
+			"AXONFLOW_AUTH in the environment that launches your MCP client. See " +
+			"https://docs.getaxonflow.com/docs/integration/claude-code#self-hosted--enterprise-authentication",
+	})
 }
 
 // --- Main Handler ---

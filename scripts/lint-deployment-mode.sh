@@ -16,6 +16,9 @@ set -euo pipefail
 #   EXPLICIT raw value (== "community"), because the canonical isCommunityMode()
 #   helper is fail-OPEN on unset (returns true when DEPLOYMENT_MODE==""), which
 #   would expose the token minter on a stack that forgot to set the mode.
+# - customer-portal/main.go: the portal-credential bootstrap gate (#2552) needs
+#   the EXPLICIT mode (enterprise / in-vpc-*) for a fail-closed ENABLE allow-list;
+#   fail-open isCommunityMode() would wrongly classify modes.
 ALLOWED_FILES=(
   "platform/agent/run.go"
   "platform/orchestrator/run.go"
@@ -26,6 +29,7 @@ ALLOWED_FILES=(
   "platform/orchestrator/llm/bootstrap.go"  # community-saas Ollama-only guard (#1500)
   "ee/platform/customer-portal/middleware/admin_auth.go"
   "ee/platform/customer-portal/config/deployment.go"
+  "ee/platform/customer-portal/main.go"  # #2552 portal-credential bootstrap gate needs the EXPLICIT mode (enterprise / in-vpc-*) for a fail-closed allow-list, NOT fail-open isCommunityMode()
 )
 
 # Build grep -v exclusion pattern for allowed files.
