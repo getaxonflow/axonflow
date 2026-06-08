@@ -13,6 +13,7 @@ func TestStaticPolicyCategories(t *testing.T) {
 	expected := []PolicyCategory{
 		CategorySecuritySQLi,
 		CategorySecurityAdmin,
+		CategorySecurityDangerous, // #2522 - indirect prompt-injection protection
 		CategoryPIIGlobal,
 		CategoryPIIUS,
 		CategoryPIIEU,

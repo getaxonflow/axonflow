@@ -12,13 +12,30 @@ community mirror, **Enterprise** changes are EE-only.
 
 ## [Unreleased]
 
+## [8.5.1] - 2026-06-08 — Licensed tier reported correctly in the portal/database + dev-mode token endpoint
+
+Patch release. Fixes a tier-reporting divergence where the licensed tier was held only in agent memory and never written to the `organizations` table, so the portal and other database consumers could lag behind `/health`. Also adds a non-production developer convenience for minting user tokens. Additive migration only; no breaking changes.
+
+### Added (Community)
+
+- **Dev-mode token endpoint (`POST /api/v1/dev/token`).** In an explicitly non-production deployment, mints a short-lived HS256 `user_token` from the authenticated Basic-auth credential, so local and CI integrations don't have to hand-run a JWT signing script. Fail-closed: the endpoint is **only registered** when an explicitly non-production `ENVIRONMENT` / `DEPLOYMENT_MODE` / `DEPLOYMENT_KIND` is set — otherwise the route returns `404`; and when registered but `JWT_SECRET` is not configured it returns `503` rather than minting. The token's tenant is inherited from the Basic-auth username, and the signing algorithm is pinned to HS256. Never reachable in production.
+
+### Fixed (Community)
+
+- **The agent now writes the licensed tier into the database at boot.** After validating the deployment license, the agent upserts the deployment organization's `tier` and `max_nodes` to the licensed values, using a new RLS-safe `SECURITY DEFINER` migration so the write clears `FORCE ROW LEVEL SECURITY` without giving the request path elevated privileges. Previously the licensed tier lived only in agent memory (surfaced at `/health`) while `organizations.tier` stayed at the seeded `Community` default — so the portal UI, node-limit enforcement, and compliance-evidence paths could report `Community` on a valid Enterprise license. The promotion runs at boot and is idempotent: it writes only when the tier or node limit actually differs.
+- **Tests:** added a runtime end-to-end test that boots a freshly-installed Enterprise deployment and asserts the database reports `Enterprise` with no prior request traffic, plus a migration-level unit test for the promotion helper.
+
+### Documentation
+
+- Expanded architecture documentation: a "Five Runtime Modes" overview with Decision / MAP / WCP sequence diagrams describing how governance is enforced in each runtime mode.
+
 ## [8.5.0] - 2026-05-30 — Decision Mode context propagation + Pasal 56(b) attestation + multi-arch images
 
 Minor release. Decision Mode gains request-context propagation and durable audit persistence, OJK compliance gains an explicit UU PDP Pasal 56(b) transfer-basis tag plus a wired cross-border-transfers export, and all six platform images now ship for both `linux/amd64` and `linux/arm64`. Indonesia compliance migrations (OJK + UU PDP + BI) relocated from `industry/banking/` to `enterprise/` so they load in every in-vpc-enterprise deployment by default. No breaking changes. SDKs are also updated in this release train — Go / Python / TypeScript / Java to **v8.4.0** and Rust to **v0.6.0** — adding the typed `context` field on `DecisionSummary` / `DecisionExplanation` and the `pasal_56b_dpa` transfer-basis value; see each SDK's own release notes for details.
 
 ### Added (Community)
 
-- **Decision Mode request-context propagation (`request.context`).** `POST /api/v1/decide` accepts an optional top-level `context` object — arbitrary caller-supplied key/value metadata (e.g. `tenant_tier`, `region`, `feature_flag`) that rides alongside the decision for audit and correlation. Keys are filtered against an allowlist, canonicalized, capped at 256 bytes per value and 10 keys per request, and a `request.context.truncated` flag is set when either cap trims the payload. Allowed keys land as OTel span attributes under `request.context.<key>` for trace-side filtering. The allowlist is configurable via `AXONFLOW_DECISION_CONTEXT_ALLOWLIST` (comma-separated); the default ships the BukuWarung-aligned key set. Closes #2509.
+- **Decision Mode request-context propagation (`request.context`).** `POST /api/v1/decide` accepts an optional top-level `context` object — arbitrary caller-supplied key/value metadata (e.g. `tenant_tier`, `region`, `feature_flag`) that rides alongside the decision for audit and correlation. Keys are filtered against an allowlist, canonicalized, capped at 256 bytes per value and 10 keys per request, and a `request.context.truncated` flag is set when either cap trims the payload. Allowed keys land as OTel span attributes under `request.context.<key>` for trace-side filtering. The allowlist is configurable via `AXONFLOW_DECISION_CONTEXT_ALLOWLIST` (comma-separated); the default ships a curated set of agent/session/leader identity headers plus a tenant-scoped header family. Closes #2509.
 
 - **Decision Mode decisions now persist to `audit_logs`.** Previously `POST /api/v1/decide` emitted only an OTel span, so `GET /api/v1/decisions` returned empty for Decision Mode callers who had not wired an OTel backend. Each decision now also writes a best-effort row to `audit_logs` (mirroring `writeExplainableAuditLog`), with the propagated context stored under `policy_details->'context'`. `GET /api/v1/decisions` surfaces a 5-key truncated view of the context; the explain endpoint returns the full context plus a `context_truncated` flag. OpenAI-compatible callers continue to use `llm_call_audits` unchanged. (BUKU-A scope expansion on #2509.)
 

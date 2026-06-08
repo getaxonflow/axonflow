@@ -4106,12 +4106,13 @@ components:
             decision span, so a SIEM can correlate the decision with upstream
             logs (e.g. by session_id). Intended for infrastructure-gateway
             audit headers such as `X-AI-Agent`, `X-Session-ID`,
-            `X-Leader-Identity`, and the `x-bukuwarung-*` family.
+            `X-Leader-Identity`, and a tenant-scoped header family.
 
             Only keys matching the server's allowlist
-            (`AXONFLOW_DECISION_CONTEXT_ALLOWLIST`; default
-            `x-ai-agent,x-session-id,x-leader-identity,x-bukuwarung-*`, where a
-            trailing `*` is a prefix match) are persisted; all other keys are
+            (`AXONFLOW_DECISION_CONTEXT_ALLOWLIST`; the default covers common
+            agent / session / leader identity headers plus a tenant-scoped
+            header family, where a trailing `*` is a prefix match) are
+            persisted; all other keys are
             silently dropped. Surviving keys are canonicalized to
             lower_snake_case (`X-AI-Agent` → `x_ai_agent`) so joins are
             deterministic regardless of header casing. Non-string values are

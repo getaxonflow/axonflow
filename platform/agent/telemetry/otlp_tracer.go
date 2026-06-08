@@ -48,6 +48,13 @@ func (t *otlpTracer) RecordDecision(ctx context.Context, evt DecisionEvent) stri
 		attribute.String("tenant.id", evt.TenantID),
 	)
 
+	// gateway_id is emitted only when the caller asserted one (most callers
+	// don't) so the attribute stays absent rather than empty for non-gateway
+	// decisions, keeping trace search on decision.gateway_id meaningful.
+	if evt.GatewayID != "" {
+		span.SetAttributes(attribute.String("decision.gateway_id", evt.GatewayID))
+	}
+
 	setContextAttributes(span, evt)
 
 	return span.SpanContext().TraceID().String()

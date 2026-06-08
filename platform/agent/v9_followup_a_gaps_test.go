@@ -510,21 +510,21 @@ func TestMigration094Precondition_RealPostgres(t *testing.T) {
 	//
 	// Tautology guard: assertion uses both the EXCEPTION error path AND
 	// the post-call SELECT to confirm the row was NOT stamped — both must
-	// fire for "EXCEPTION blocked stamp" to hold. The error message
-	// substring is also pinned to '#2320' so a future refactor that loses
-	// the prod-safety branch but keeps a generic EXCEPTION trips this.
+	// fire for "EXCEPTION blocked stamp" to hold. The error message is
+	// pinned to the durable 'prod-safety abort' phrase (NOT the issue
+	// number — migration messages were scrubbed of bare '#NNNN' refs in
+	// #2399, see prefer-durable-migration-descriptions discipline) so a
+	// future refactor that loses the prod-safety branch but keeps a
+	// generic EXCEPTION trips this.
 	t.Run("D_GUC_local_dev_org_with_prod_kind_fires_EXCEPTION", func(t *testing.T) {
 		db := prepFreshSchema(t)
 		defer db.Close()
 		err, _ := runMigration094(t, db, true, "local-dev-org", true, "production")
 		if err == nil {
-			t.Fatalf("expected #2320 prod-safety EXCEPTION but migration 094 succeeded (the prod-forgot-ORG_ID branch is gone or unreachable)")
-		}
-		if !strings.Contains(err.Error(), "#2320") {
-			t.Errorf("EXCEPTION message: got %q, want substring '#2320' (prod-safety branch reference)", err.Error())
+			t.Fatalf("expected prod-safety EXCEPTION but migration 094 succeeded (the prod-forgot-ORG_ID branch is gone or unreachable)")
 		}
 		if !strings.Contains(err.Error(), "prod-safety abort") {
-			t.Errorf("EXCEPTION message: got %q, want substring 'prod-safety abort'", err.Error())
+			t.Errorf("EXCEPTION message: got %q, want substring 'prod-safety abort' (prod-safety branch reference)", err.Error())
 		}
 		// Seed row must remain unstamped — the EXCEPTION rolls back the
 		// surrounding DO block, and migration 094 aborts before Pass-2.
@@ -602,10 +602,10 @@ func TestMigration094Precondition_RealPostgres(t *testing.T) {
 
 		err, _ := runMigration094(t, db, true, "local-dev-org", true, "production")
 		if err == nil {
-			t.Fatalf("expected #2320 prod-safety EXCEPTION on fresh-install + prod-forgot, got nil (R3 conjunct-drop fix regressed)")
+			t.Fatalf("expected prod-safety EXCEPTION on fresh-install + prod-forgot, got nil (R3 conjunct-drop fix regressed)")
 		}
-		if !strings.Contains(err.Error(), "#2320") {
-			t.Errorf("EXCEPTION message: got %q, want substring '#2320'", err.Error())
+		if !strings.Contains(err.Error(), "prod-safety abort") {
+			t.Errorf("EXCEPTION message: got %q, want substring 'prod-safety abort'", err.Error())
 		}
 		// Confirm Pass-1 PREP never executed — organizations should have
 		// no row keyed on 'local-dev-org'. The EXCEPTION must roll back
@@ -652,10 +652,10 @@ func TestMigration094Precondition_RealPostgres(t *testing.T) {
 		// to simulate setMigrationSessionVars-skipped regression.
 		err, _ := runMigration094(t, db, false /* org GUC unset */, "", true, "production")
 		if err == nil {
-			t.Fatalf("expected #2320 prod-safety EXCEPTION on helper-skipped + prod + fresh, got nil (R3 round 2 fix regressed)")
+			t.Fatalf("expected prod-safety EXCEPTION on helper-skipped + prod + fresh, got nil (R3 round 2 fix regressed)")
 		}
-		if !strings.Contains(err.Error(), "#2320") {
-			t.Errorf("EXCEPTION message: got %q, want substring '#2320'", err.Error())
+		if !strings.Contains(err.Error(), "prod-safety abort") {
+			t.Errorf("EXCEPTION message: got %q, want substring 'prod-safety abort'", err.Error())
 		}
 		// Same Pass-1-PREP rollback check as E.
 		var localDevRows int

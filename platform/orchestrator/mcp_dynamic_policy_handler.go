@@ -81,12 +81,12 @@ type MCPPolicyEvaluationRequest struct {
 
 // MCPPolicyEvaluationResponse matches the DynamicPolicyResponse from shared/policy.
 type MCPPolicyEvaluationResponse struct {
-	Allowed           bool                       `json:"allowed"`
-	BlockReason       string                     `json:"block_reason,omitempty"`
-	PoliciesEvaluated int                        `json:"policies_evaluated"`
-	MatchedPolicies   []MCPDynamicPolicyMatch    `json:"matched_policies,omitempty"`
-	ProcessingTimeMs  int64                      `json:"processing_time_ms"`
-	Metadata          map[string]interface{}     `json:"metadata,omitempty"`
+	Allowed           bool                    `json:"allowed"`
+	BlockReason       string                  `json:"block_reason,omitempty"`
+	PoliciesEvaluated int                     `json:"policies_evaluated"`
+	MatchedPolicies   []MCPDynamicPolicyMatch `json:"matched_policies,omitempty"`
+	ProcessingTimeMs  int64                   `json:"processing_time_ms"`
+	Metadata          map[string]interface{}  `json:"metadata,omitempty"`
 }
 
 // MCPDynamicPolicyMatch represents a matched dynamic policy.
@@ -196,7 +196,8 @@ func (h *MCPDynamicPolicyHandler) getPoliciesForMCP(req MCPPolicyEvaluationReque
 		}
 		// Only include policies with MCP-related types
 		if p.Type == "mcp" || p.Type == "connector" || p.Type == "rate-limit" ||
-			p.Type == "budget" || p.Type == "time-access" || p.Type == "role-access" {
+			p.Type == "budget" || p.Type == "time-access" || p.Type == "role-access" ||
+			p.Type == "anomaly" {
 			filtered = append(filtered, p)
 		}
 	}
@@ -217,6 +218,8 @@ func (h *MCPDynamicPolicyHandler) evaluatePolicy(policy DynamicPolicy, req MCPPo
 		return h.evaluateTimeAccess(policy, req)
 	case "role-access":
 		return h.evaluateRoleAccess(policy, req)
+	case "anomaly":
+		return h.evaluateAnomaly(policy, req)
 	case "mcp", "connector":
 		return h.evaluateConditions(policy, req)
 	default:
@@ -368,8 +371,8 @@ func (h *MCPDynamicPolicyHandler) evaluateRateLimit(policy DynamicPolicy, req MC
 func (h *MCPDynamicPolicyHandler) evaluateBudget(policy DynamicPolicy, req MCPPolicyEvaluationRequest) (bool, bool, string) {
 	// Extract budget config from policy conditions
 	var maxBudget float64
-	periodDays := 30          // Default monthly period
-	costPerRequest := 0.001   // Default cost estimate per MCP query
+	periodDays := 30        // Default monthly period
+	costPerRequest := 0.001 // Default cost estimate per MCP query
 
 	for _, cond := range policy.Conditions {
 		switch cond.Field {
@@ -437,10 +440,36 @@ func (h *MCPDynamicPolicyHandler) evaluateBudget(policy DynamicPolicy, req MCPPo
 }
 
 // evaluateTimeAccess checks time-based access policies.
+//
+// Two forms are supported:
+//
+//   - Timezone-anchored business-hours window (#2522): when the policy declares a
+//     `timezone` + `business_hours_start`/`business_hours_end` band, the request
+//     time is interpreted in that timezone and a request outside the band matches.
+//     The disposition follows the policy action (block / require_approval hold the
+//     request; alert / warn / log surface it for the SIEM) — this is a design
+//     partner's R&C §6.2 "off-hours API access (outside 07:00–22:00 WIB)" Layer-4 control.
+//   - Legacy UTC hour/day comparison (backward compatible): retained verbatim for
+//     existing `hour`/`day` policies.
+//
+// The request's own RequestTime is honored when supplied (so the PEP can stamp
+// the originating instant) and falls back to now.
 func (h *MCPDynamicPolicyHandler) evaluateTimeAccess(policy DynamicPolicy, req MCPPolicyEvaluationRequest) (bool, bool, string) {
 	now := time.Now()
 	if req.RequestTime.IsZero() {
 		req.RequestTime = now
+	}
+
+	// Timezone-anchored business-hours window takes precedence when declared.
+	if window, ok := parseBusinessHoursWindow(policy); ok {
+		if outsideBusinessHours(window, req.RequestTime) {
+			reason := businessHoursReason(window)
+			if r := actionReason(policy); r != "" {
+				reason = r
+			}
+			return true, !actionDenies(firstActionType(policy)), reason
+		}
+		return false, true, ""
 	}
 
 	// Check conditions for time-based policies

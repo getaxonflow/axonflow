@@ -218,6 +218,46 @@ func setMigrationSessionVars(db *sql.DB, dbPassword, deploymentOrgID, deployment
 	}
 }
 
+// promoteDeploymentOrgTier upserts the deployment org's organizations row to
+// the licensed tier / max_nodes / expires_at via the mig-117 SECURITY DEFINER
+// helper promote_deployment_org_license (#2535). This is the durable fix for
+// the agent storing the parsed license tier in-memory only: the portal,
+// node-limit enforcement, and compliance-evidence paths read organizations.tier
+// from the DB, which migration 094 seeds 'Community' (ON CONFLICT DO NOTHING)
+// and nothing else promotes.
+//
+// The write is issued as `SELECT promote_deployment_org_license(...)` so it
+// executes as the function's OWNER — the migration/table-owning role, which
+// bypasses FORCE RLS on organizations (mig 103). This is the same RLS-safe
+// posture register_org (mig 104) relies on, and it means a raw INSERT/UPDATE
+// here under AXONFLOW_DB_USE_APP_ROLE (axonflow_app_role is NOBYPASSRLS, so mig
+// 103 would reject it) is avoided. The helper's ON CONFLICT DO UPDATE ... WHERE
+// (tier|max_nodes|expires_at) IS DISTINCT FROM EXCLUDED guard makes a re-boot
+// with the same license a no-op (no error, no flapping).
+//
+// Failures are logged, NOT fatal: the agent's in-memory tier (and /health) are
+// already correct, so a transient DB hiccup here must not crash the agent — the
+// next boot re-attempts the sync.
+func promoteDeploymentOrgTier(db *sql.DB, orgID, tier string, maxNodes int, expiresAt time.Time) {
+	// A zero ExpiresAt (no-expiry / perpetual license) is passed as SQL NULL so
+	// it matches organizations.expires_at's nullable column and the portal's
+	// "NULL expires_at = unbounded" status logic (license.go).
+	var expiresArg interface{}
+	if !expiresAt.IsZero() {
+		expiresArg = expiresAt.UTC()
+	}
+	if _, err := db.Exec(
+		"SELECT promote_deployment_org_license($1, $2, $3, $4)",
+		orgID, tier, maxNodes, expiresArg,
+	); err != nil {
+		log.Printf("⚠️  Failed to sync licensed tier into organizations row for org=%s: %v "+
+			"(agent /health tier is correct in-memory; portal + other DB consumers may show a "+
+			"stale tier until the next successful boot)", orgID, err)
+		return
+	}
+	log.Printf("✅ Synced licensed tier into organizations.tier: org=%s tier=%s max_nodes=%d (#2535)", orgID, tier, maxNodes)
+}
+
 // Internal service URLs - auto-discovered based on environment (ADR-026: Single Entry Point)
 // Docker Compose services communicate via service names on the axonflow-network.
 // No configuration required - the Agent detects Docker and uses appropriate URLs.
@@ -672,6 +712,20 @@ func Run() {
 	// This validation is only needed for customer-deployed agents
 	licenseKey := os.Getenv("AXONFLOW_LICENSE_KEY")
 
+	// Capture the validated license tier/limits so the post-migration step can
+	// sync them into the deployment org's organizations.tier row (#2535). The
+	// agent surfaces the tier in-memory at /health, but the portal, node-limit
+	// enforcement, and compliance-evidence paths all read organizations.tier
+	// from the DB — which migration 094 seeds 'Community' and never promotes.
+	// licenseValidated stays false in community / community-saas / central-
+	// agent (no key) modes, which skip the DB promotion below.
+	var (
+		licenseValidated  bool
+		licensedTier      string
+		licensedMaxNodes  int
+		licensedExpiresAt time.Time
+	)
+
 	if isCommunityMode() {
 		log.Println("🏠 Community mode - skipping license validation")
 		log.Println("   Perfect for Community contributors and local development")
@@ -714,6 +768,12 @@ func Run() {
 		log.Printf("   Org: %s", deploymentOrgID)
 		log.Printf("   Max Nodes: %d", result.MaxNodes)
 		log.Printf("   Expires: %s", result.ExpiresAt.Format("2006-01-02"))
+
+		// Hand the licensed tier/limits to the post-migration DB sync (#2535).
+		licensedTier = string(result.Tier)
+		licensedMaxNodes = result.MaxNodes
+		licensedExpiresAt = result.ExpiresAt
+		licenseValidated = true
 
 		if result.DaysUntilExpiry <= 3 && result.DaysUntilExpiry > 0 {
 			log.Printf("   ⚠️  LICENSE EXPIRING IN %d DAYS — renew at https://getaxonflow.com/evaluation-license", result.DaysUntilExpiry)
@@ -902,6 +962,21 @@ func Run() {
 			}
 
 			log.Printf("✅ Database migrations completed: %d applied, %d skipped, %d total", successCount, skippedCount, len(migrations))
+
+			// #2535: sync the validated license tier into the deployment org's
+			// organizations.tier row. Runs here — after migrations, on the
+			// migrationDB connection on which the mig-117 helper was just
+			// defined. The org_id is passed to the helper explicitly (it does
+			// NOT read app.deployment_org_id), so this does not depend on which
+			// pooled connection set_config landed on. The promotion goes through
+			// the SECURITY DEFINER helper promote_deployment_org_license (a
+			// SELECT, executed as the function owner) so the write is RLS-safe
+			// under AXONFLOW_DB_USE_APP_ROLE rather than a raw INSERT/UPDATE that
+			// FORCE RLS on organizations (mig 103) would reject. No-op in
+			// community / central-agent modes (licenseValidated == false).
+			if licenseValidated {
+				promoteDeploymentOrgTier(migrationDB, getDeploymentOrgID(), licensedTier, licensedMaxNodes, licensedExpiresAt)
+			}
 		}
 	}
 
@@ -1242,7 +1317,7 @@ func Run() {
 	//       persisted to the audit JSONB + emitted as request.context.<key> OTel
 	//       span attributes. Matching is case/separator-insensitive; a trailing
 	//       "*" is a prefix match. Default:
-	//       "x-ai-agent,x-session-id,x-leader-identity,x-bukuwarung-*" (#2509).
+	//       "x-ai-agent,x-session-id,x-leader-identity,x-tenant-*" (#2509).
 	RegisterDecisionHandlers(globalRouter)
 
 	// Register OpenAI-compatible gateway endpoint (Issue #2351 / Epic #2360).
@@ -1253,6 +1328,13 @@ func Run() {
 	// Register Static Policy API endpoints (ADR-018: Unified Policy Management)
 	// This enables the Customer Portal to list static policies from the Agent
 	RegisterStaticPolicyHandlers(globalRouter, usageDB)
+
+	// Register the dev-mode token endpoint (#2541, design §2/§4). FAIL-CLOSED:
+	// RegisterDevTokenHandler registers POST /api/v1/dev/token ONLY on an
+	// explicit non-production environment; otherwise it leaves the route
+	// unregistered (→ 404) and logs the production stance. The minter must
+	// never be reachable in production.
+	RegisterDevTokenHandler(globalRouter)
 
 	// Wire shared idempotency store (#2420). Opens an admin pool once at
 	// boot for the background sweep; nil-tolerant if it fails (sweep no-ops
@@ -2259,11 +2341,32 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 		return nil, fmt.Errorf("token required")
 	}
 
-	// Validate JWT token using the configured secret
-	// Generate tokens using: scripts/generate-jwt.sh
+	// Fail closed on an unconfigured secret (#2541 hardening). Reaching here
+	// means a non-community deployment that REQUIRES a user_token. If
+	// JWT_SECRET is empty, HMAC-validating against the empty key would accept
+	// any token forged with that same empty key — so reject every token
+	// instead of silently validating forgeries. (Community / Community-SaaS
+	// modes returned above and are unaffected.)
+	if len(jwtSecret) == 0 {
+		return nil, fmt.Errorf("JWT_SECRET not configured; refusing to validate user_token")
+	}
+
+	// Validate JWT token using the configured secret.
+	// Generate tokens using: scripts/generate-jwt.sh, or the dev-mode endpoint
+	// POST /api/v1/dev/token (non-prod only, #2541).
+	//
+	// Algorithm pinning (#2541 §5.4): the keyfunc asserts the token's signing
+	// method is HMAC before returning the symmetric secret, and
+	// WithValidMethods pins the accepted algorithm to HS256. Returning the
+	// shared secret without checking the method is the classic
+	// algorithm-confusion shape; both guards reject alg:none and any
+	// non-HS256 (e.g. RS256/ES256) token.
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %q (only HS256 accepted)", token.Header["alg"])
+		}
 		return jwtSecret, nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token: %v", err)
@@ -2278,7 +2381,19 @@ func validateUserToken(tokenString string, expectedTenantID string) (*User, erro
 	// In production, you might need to fetch additional details from database
 	tenantID := getClaimString(claims, "tenant_id")
 	if tenantID == "" {
-		tenantID = "tenant_1" // Fallback for backward compatibility
+		// Tenant-inherit (#2541 §2): when the token omits the tenant_id claim,
+		// default to the authenticated credential's tenant (the Basic-auth
+		// username, passed as expectedTenantID) rather than the legacy
+		// "tenant_1" sentinel. This way a token minted without an explicit
+		// tenant_id still satisfies the tenant_id == username binding enforced
+		// at gateway_handlers.go:443 / decision_handler.go:304, instead of
+		// being rejected as a mismatch. The explicit (claim-present) path is
+		// unchanged.
+		if expectedTenantID != "" {
+			tenantID = expectedTenantID
+		} else {
+			tenantID = "tenant_1" // last-resort legacy fallback (no credential tenant available)
+		}
 	}
 	// v9 Phase 8 #2384 PR-C1: org_id claim — populated by callers running v9
 	// JWTs (post-v9 stack). For legacy JWTs without an org_id claim we fall

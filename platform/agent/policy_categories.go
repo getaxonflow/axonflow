@@ -18,6 +18,13 @@ const (
 	CategorySecuritySQLi PolicyCategory = "security-sqli"
 	// CategorySecurityAdmin covers admin access control patterns.
 	CategorySecurityAdmin PolicyCategory = "security-admin"
+	// CategorySecurityDangerous covers dangerous-instruction patterns: indirect
+	// prompt injection (bracket/template markers, instruction-override and
+	// role-reassignment phrases, system-prompt exfiltration). Evaluated by the
+	// shared policy engine alongside security-sqli in Gateway Mode pre-check.
+	// Mirrors shared/policy.CategorySecurityDangerous. Added for a design partner's
+	// R&C §5.1 indirect-prompt-injection protection (R03 / OWASP LLM01) (#2522).
+	CategorySecurityDangerous PolicyCategory = "security-dangerous"
 
 	// Static policy categories - PII Detection
 
@@ -88,6 +95,7 @@ func StaticPolicyCategories() []PolicyCategory {
 	return []PolicyCategory{
 		CategorySecuritySQLi,
 		CategorySecurityAdmin,
+		CategorySecurityDangerous, // #2522 - indirect prompt-injection protection
 		CategoryPIIGlobal,
 		CategoryPIIUS,
 		CategoryPIIEU,
