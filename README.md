@@ -4,7 +4,7 @@
 
 It operates inside the execution path between your workflow logic and model or tool calls. Gateways can help at the request boundary and observability tools can tell you what happened later. AxonFlow records why an action was allowed, blocked, paused, or resumed while the workflow is running.
 
-It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, **Java**, and **Rust** (preview), plus governance plugins for **OpenClaw**, **Claude Code**, **Cursor**, **Codex**, **Google ADK**, **n8n**, and **LiteLLM**.
+It runs self-hosted (Docker or Kubernetes), with SDKs for **Python**, **TypeScript**, **Go**, **Java**, and **Rust** (preview), plus governance plugins for **OpenClaw**, **Claude Code**, **Claude Desktop**, **Cursor**, **Codex**, **Google ADK**, **n8n**, and **LiteLLM**.
 
 > **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow/security/advisories)
 
@@ -261,7 +261,7 @@ All features—policy enforcement, audit logging, MCP connectors, WCP workflows�
 
 AxonFlow ships official plugins for AI agent runtimes, coding assistants, and developer tools. All plugins enforce the same policy surface and share a single audit trail via your self-hosted AxonFlow stack.
 
-**OpenClaw** ships a source-available governance policy bundle covering shell injection, secret exfiltration, PII redaction, and tool-result risk classification. The same policy set ports across all four plugins below; the install path is the only thing that changes.
+**OpenClaw** ships a source-available governance policy bundle covering shell injection, secret exfiltration, PII redaction, and tool-result risk classification. The same policy set ports across all four hook plugins below (OpenClaw, Claude Code, Cursor, Codex); the install path is the only thing that changes. Claude Desktop has no hooks, so it applies the same policies at the MCP-proxy layer (a different interception point — see its row below).
 
 | Plugin | Platform | Install | Docs | Repo |
 |--------|----------|---------|------|------|
@@ -269,6 +269,7 @@ AxonFlow ships official plugins for AI agent runtimes, coding assistants, and de
 | **Claude Code** | Claude Code CLI | Marketplace or manual hooks | [Docs](https://docs.getaxonflow.com/docs/integration/claude-code/) | [GitHub](https://github.com/getaxonflow/axonflow-claude-plugin) |
 | **Cursor** | Cursor IDE | Pre-/post-tool hooks | [Docs](https://docs.getaxonflow.com/docs/integration/cursor/) | [GitHub](https://github.com/getaxonflow/axonflow-cursor-plugin) |
 | **Codex** | OpenAI Codex CLI | Bash hooks and advisory skills | [Docs](https://docs.getaxonflow.com/docs/integration/codex/) | [GitHub](https://github.com/getaxonflow/axonflow-codex-plugin) |
+| **Claude Desktop** | Claude Desktop app (Chat/Cowork/Code) | One-click `.mcpb` Desktop Extension (MCP governance proxy — no hooks) | [Docs](https://docs.getaxonflow.com/docs/integration/claude-desktop/) | [GitHub](https://github.com/getaxonflow/axonflow-claude-desktop-plugin) |
 | **Google ADK** | Google Agent Development Kit | `pip install axonflow-google-adk-plugin` | [Docs](https://docs.getaxonflow.com/docs/integration/google-adk/) | [GitHub](https://github.com/getaxonflow/axonflow-google-adk-plugin) |
 | **n8n** | n8n workflow automation | `npm install @axonflow/n8n-nodes-axonflow` | [Docs](https://docs.getaxonflow.com/docs/integration/n8n/) | [GitHub](https://github.com/getaxonflow/axonflow-n8n-node) |
 | **LiteLLM** | LiteLLM Python SDK | `pip install axonflow-litellm` | [Docs](https://docs.getaxonflow.com/docs/integration/litellm/) | [GitHub](https://github.com/getaxonflow/axonflow-litellm) |

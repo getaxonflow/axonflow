@@ -89,10 +89,10 @@ func getSDKCompatibility() SDKCompatInfo {
 		// Latest tag this platform was tested against. Kept in lockstep
 		// with each SDK's release-train tag.
 		RecommendedSDKVersion: map[string]string{
-			"python":     "8.4.0",
-			"typescript": "8.4.0",
-			"go":         "8.4.0",
-			"java":       "8.4.0",
+			"python":     "8.5.0",
+			"typescript": "8.5.0",
+			"go":         "8.5.0",
+			"java":       "8.5.0",
 		},
 	}
 }
@@ -127,11 +127,13 @@ func getPluginCompatibility() PluginCompatInfo {
 		// (#2308) did NOT change the plugin recommended-version. Bumped
 		// claude-code + cursor to 1.5.3 during the v8.5.2 release-train
 		// (headersHelper ${CLAUDE_PLUGIN_ROOT} Basic-auth fix); codex stays
-		// 1.5.2 (v8.5.2 fix was docs-only, no codex 1.5.3); openclaw stays
-		// 2.6.1; MinPluginVersion floor stays 1.4.0 / 2.4.0. Mirrors
+		// 1.5.2 (v8.5.2 fix was docs-only, no codex 1.5.3); openclaw bumped
+		// 2.6.1 -> 2.6.5 to track its latest published release (prior value
+		// lagged the registry; openclaw 2.6.5 is live on npm).
+		// MinPluginVersion floor stays 1.4.0 / 2.4.0. Mirrors
 		// platform/agent/capabilities.go.
 		RecommendedPluginVersion: map[string]string{
-			"openclaw":    "2.6.1",
+			"openclaw":    "2.6.5",
 			"claude-code": "1.5.3",
 			"cursor":      "1.5.3",
 			"codex":       "1.5.2",
