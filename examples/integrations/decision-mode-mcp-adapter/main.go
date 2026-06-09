@@ -83,8 +83,45 @@ type DecideResponse struct {
 }
 
 type DecisionObligation struct {
-	Type   string `json:"type"`
-	Detail string `json:"detail,omitempty"`
+	Type        string                 `json:"type"`
+	Detail      string                 `json:"detail,omitempty"`
+	Fulfillment *ObligationFulfillment `json:"fulfillment,omitempty"`
+}
+
+// ObligationFulfillment names the AxonFlow engine call that discharges an
+// obligation (ADR-056 / #2563). This adapter redacts tool arguments by POSTing
+// them to the named endpoint and forwarding what the engine returns — it never
+// hand-rolls redaction. ContentTypes advertises the mime-types the endpoint can
+// redact (text only today); an argument of an unsupported type fails closed.
+type ObligationFulfillment struct {
+	Endpoint     string   `json:"endpoint"`
+	Method       string   `json:"method"`
+	Phase        string   `json:"phase"`
+	ContentTypes []string `json:"content_types,omitempty"`
+}
+
+const (
+	obligationRedactPII    = "redact_pii"
+	obligationPhaseRequest = "request"
+	contentTypeText        = "text/plain"
+	requestRedactionPath   = "/api/v1/mcp/check-input"
+)
+
+// checkInputRequest / checkInputResponse mirror the platform's request-redaction
+// endpoint contract.
+type checkInputRequest struct {
+	ConnectorType string `json:"connector_type"`
+	Statement     string `json:"statement"`
+	ContentType   string `json:"content_type,omitempty"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	Operation     string `json:"operation,omitempty"`
+}
+
+type checkInputResponse struct {
+	Allowed            bool   `json:"allowed"`
+	Redacted           bool   `json:"redacted,omitempty"`
+	RedactedStatement  string `json:"redacted_statement,omitempty"`
+	RedactionEvaluated bool   `json:"redaction_evaluated,omitempty"`
 }
 
 type AdapterConfig struct {
@@ -295,7 +332,25 @@ func (a *mcpAdapter) handleInterceptedCall(w http.ResponseWriter, r *http.Reques
 	switch decideResp.Verdict {
 	case "allow":
 		log.Printf("ALLOW tool=%s decision_id=%s trace_id=%s", params.Name, decideResp.DecisionID, decideResp.TraceID)
-		a.forwardToMCPWithTrace(w, r, rawBody, decideResp.TraceID)
+		// Discharge any request-phase redact_pii obligation THROUGH THE ENGINE
+		// before forwarding the tool call (ADR-056 / #2563). We redact each
+		// string-valued tool argument by POSTing it to the engine endpoint the
+		// obligation names — never with local patterns — and forward the
+		// rewritten params. On any fulfillment failure we fail closed (deny the
+		// tool call) rather than forward unredacted arguments.
+		outBody := rawBody
+		if hasRequestRedaction(decideResp.Obligations) {
+			newBody, ferr := a.fulfillToolArgumentRedaction(r.Context(), rpcReq, params, decideResp.Obligations, r.Header.Get("Traceparent"))
+			if ferr != nil {
+				log.Printf("DENY (fulfillment failed) tool=%s decision_id=%s: %v", params.Name, decideResp.DecisionID, ferr)
+				writeJSONRPCErrorWithData(w, rpcReq.ID, -32003,
+					"tool arguments could not be redacted via the policy engine (fail-closed)",
+					map[string]interface{}{"trace_id": decideResp.TraceID}, http.StatusOK)
+				return
+			}
+			outBody = newBody
+		}
+		a.forwardToMCPWithTrace(w, r, outBody, decideResp.TraceID)
 	case "deny":
 		reason := "request blocked by policy"
 		if len(decideResp.Reasons) > 0 {
@@ -323,6 +378,146 @@ func (a *mcpAdapter) handleInterceptedCall(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// hasRequestRedaction reports whether any obligation requires request-phase
+// redaction.
+func hasRequestRedaction(obs []DecisionObligation) bool {
+	for _, o := range obs {
+		if o.Type == obligationRedactPII && o.Fulfillment != nil && o.Fulfillment.Phase == obligationPhaseRequest {
+			return true
+		}
+	}
+	return false
+}
+
+// fulfillToolArgumentRedaction redacts each string-valued tool argument by
+// calling the engine endpoint named in the obligation, then re-marshals the
+// JSON-RPC request with the rewritten params. It performs NO local redaction.
+// Non-string arguments are left untouched (the engine endpoint redacts text;
+// structured/media leaves are a server-side detector concern). Any obligation
+// that names no request-phase endpoint, an endpoint this adapter refuses to
+// call, or a content type the endpoint cannot redact, is a hard error so the
+// caller fails closed.
+func (a *mcpAdapter) fulfillToolArgumentRedaction(ctx context.Context, rpcReq *JSONRPCRequest, params ToolCallParams, obs []DecisionObligation, traceparent string) ([]byte, error) {
+	for _, o := range obs {
+		if o.Type != obligationRedactPII {
+			continue
+		}
+		f := o.Fulfillment
+		if f == nil || f.Phase != obligationPhaseRequest {
+			return nil, fmt.Errorf("redact_pii obligation has no request-phase fulfillment endpoint")
+		}
+		if !endpointMatches(f.Endpoint, requestRedactionPath) {
+			return nil, fmt.Errorf("refusing to call non-redaction endpoint %q", f.Endpoint)
+		}
+		if len(f.ContentTypes) > 0 && !contains(f.ContentTypes, contentTypeText) {
+			return nil, fmt.Errorf("endpoint does not advertise a %s detector", contentTypeText)
+		}
+	}
+
+	// Redact each string argument via the engine.
+	redactedArgs := make(map[string]interface{}, len(params.Arguments))
+	for k, v := range params.Arguments {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			redactedArgs[k] = v
+			continue
+		}
+		masked, err := a.callRedactionEndpoint(ctx, s, traceparent)
+		if err != nil {
+			return nil, err
+		}
+		redactedArgs[k] = masked
+	}
+
+	newParams, err := json.Marshal(ToolCallParams{Name: params.Name, Arguments: redactedArgs})
+	if err != nil {
+		return nil, fmt.Errorf("marshal redacted params: %w", err)
+	}
+	rebuilt := JSONRPCRequest{JSONRPC: rpcReq.JSONRPC, ID: rpcReq.ID, Method: rpcReq.Method, Params: newParams}
+	out, err := json.Marshal(rebuilt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal redacted request: %w", err)
+	}
+	return out, nil
+}
+
+// callRedactionEndpoint POSTs a single text value to the request-redaction
+// engine endpoint and returns the engine-masked value.
+func (a *mcpAdapter) callRedactionEndpoint(ctx context.Context, statement, traceparent string) (string, error) {
+	reqBody, err := json.Marshal(checkInputRequest{
+		ConnectorType: "gateway",
+		Statement:     statement,
+		ContentType:   contentTypeText,
+		TenantID:      a.cfg.TenantID,
+		Operation:     "execute",
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal redaction request: %w", err)
+	}
+	url := strings.TrimRight(a.cfg.AxonFlowEndpoint, "/") + requestRedactionPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("create redaction request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if a.cfg.ClientSecret != "" {
+		httpReq.SetBasicAuth(a.cfg.ClientID, a.cfg.ClientSecret)
+	}
+	if traceparent != "" {
+		httpReq.Header.Set("Traceparent", traceparent)
+	}
+	resp, err := a.client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("redaction endpoint call failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("redaction endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var cir checkInputResponse
+	if err := json.Unmarshal(respBody, &cir); err != nil {
+		return "", fmt.Errorf("decode redaction response: %w", err)
+	}
+	// Fail closed if the redactor did not actually run (#2563 B1).
+	if !cir.RedactionEvaluated {
+		return "", fmt.Errorf("engine redactor did not run (redaction disabled) — failing closed")
+	}
+	if cir.Redacted && cir.RedactedStatement != "" {
+		return cir.RedactedStatement, nil
+	}
+	return statement, nil
+}
+
+// endpointMatches reports whether endpoint resolves to the expected engine path
+// (accepting an absolute URL whose path matches).
+func endpointMatches(endpoint, expected string) bool {
+	e := strings.TrimSpace(endpoint)
+	if e == expected {
+		return true
+	}
+	if i := strings.Index(e, "://"); i >= 0 {
+		rest := e[i+3:]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			path := rest[slash:]
+			if q := strings.IndexByte(path, '?'); q >= 0 {
+				path = path[:q]
+			}
+			return path == expected
+		}
+	}
+	return false
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 func buildQuery(params ToolCallParams) string {
 	if params.Arguments == nil {
 		return fmt.Sprintf("tool_call: %s", params.Name)
@@ -346,9 +541,12 @@ func (a *mcpAdapter) callDecisionAPI(ctx context.Context, req DecideRequest, tra
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Client-Id", a.cfg.ClientID)
+	// Decision Mode auth is HTTP Basic (org/client-id : license/secret). The
+	// enterprise PDP ignores X-Client-* headers and would 401 on every call, so
+	// we MUST use Basic auth here (#2563 audit finding). Community-mode PDPs
+	// need no credentials; send Basic only when a secret is configured.
 	if a.cfg.ClientSecret != "" {
-		httpReq.Header.Set("X-Client-Secret", a.cfg.ClientSecret)
+		httpReq.SetBasicAuth(a.cfg.ClientID, a.cfg.ClientSecret)
 	}
 	if traceparent != "" {
 		httpReq.Header.Set("Traceparent", traceparent)

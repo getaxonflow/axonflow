@@ -213,14 +213,18 @@ func (l *PolicyLoader) compilePolicy(row policyRow) (*CompiledPolicy, error) {
 }
 
 // getValidatorForPolicy returns the appropriate validator for a policy.
+//
+// Selection is by PII-type token within the policy ID (so "sys_pii_email" → the
+// email validator), falling back to the category default only when no token
+// matches. The previous exact-match GetValidatorByType(policyID) never matched a
+// "sys_pii_*" ID against the bare type-keyed registry, so EVERY pii-global policy
+// fell back to the category default (the credit-card validator) and email/phone/ip
+// detection was inert on every DB-loaded path. See ValidatorForPolicyID for the
+// full per-policy resolution change (incl. PAN and the two locale phone policies).
 func (l *PolicyLoader) getValidatorForPolicy(policyID string, category PolicyCategory) ValidatorFunc {
-	// Try to get validator by type in policy ID
-	validator := GetValidatorByType(policyID)
-	if validator != nil {
+	if validator := ValidatorForPolicyID(policyID); validator != nil {
 		return validator
 	}
-
-	// Fallback to category
 	return GetValidatorForCategory(category)
 }
 

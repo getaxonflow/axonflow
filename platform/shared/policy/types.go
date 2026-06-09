@@ -2,6 +2,7 @@ package policy
 
 import (
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -137,7 +138,7 @@ const (
 	CategoryPIIUS        PolicyCategory = "pii-us"
 	CategoryPIIIndia     PolicyCategory = "pii-india"
 	CategoryPIIEU        PolicyCategory = "pii-eu"
-	CategoryPIISingapore  PolicyCategory = "pii-singapore" // Issue #1076 - MAS FEAT Community
+	CategoryPIISingapore PolicyCategory = "pii-singapore" // Issue #1076 - MAS FEAT Community
 	CategoryPIIIndonesia PolicyCategory = "pii-indonesia" // OJK/BI/UU PDP compliance
 
 	// Data governance categories
@@ -248,12 +249,18 @@ func (p *CompiledPolicy) GetActionForPhase(phase Phase) Action {
 }
 
 // isPIIPolicyCategory returns true if the category is a PII-related category.
+// isPIIPolicyCategory reports whether a category is a TEXT PII category, by
+// CONVENTION rather than an enumerated list: any "pii-*" category
+// (pii-global/us/india/eu/singapore/indonesia). This is the single source of
+// truth for "policy-derived" PII coverage in the agent's text engine — so a
+// newly-seeded pii-* category (e.g. pii-indonesia) is auto-included with no
+// list to forget (the exact bug that left pii-indonesia out of the response
+// phase). NOTE: "media-pii" is intentionally EXCLUDED — its detector is the
+// orchestrator's media/OCR subsystem (Rekognition/Vision), not this text
+// engine; including it here would no-op on text and falsely imply agent-side
+// media coverage.
 func isPIIPolicyCategory(cat PolicyCategory) bool {
-	switch cat {
-	case CategoryPIIGlobal, CategoryPIIUS, CategoryPIIIndia, CategoryPIIEU, CategoryPIISingapore, CategoryPIIIndonesia:
-		return true
-	}
-	return false
+	return strings.HasPrefix(string(cat), "pii-")
 }
 
 // isSecurityPolicyCategory returns true if the category is a security category.

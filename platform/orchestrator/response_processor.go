@@ -19,9 +19,11 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"axonflow/platform/agent"
+	"axonflow/platform/agent/indonesia"
 	sharedpolicy "axonflow/platform/shared/policy"
 )
 
@@ -168,6 +170,14 @@ func (p *ResponseProcessor) ProcessResponse(ctx context.Context, user UserContex
 		processedData, redactionInfo = p.applyRedactions(user, responseData, detectedPII)
 	}
 
+	// Indonesia (OJK/UU PDP) checksum-validated NIK/NPWP governance. Neither the
+	// shared engine's PII validators nor the EnhancedPIIDetector carry a NIK
+	// checksum detector, so without this NIK/NPWP leak on the orchestrator/LLM-
+	// gateway response path (#2566 — mirrors the agent check-output fix #2565).
+	// Runs on the post-engine content; the skipRedaction revert below gives
+	// warn/log detect-don't-modify for free (block/redact keep the masked content).
+	processedData, redactionInfo = p.applyIndonesiaResponseGovernance(processedData, redactionInfo)
+
 	// warn/log: detection ran (redactionInfo populated for audit) but return original data
 	if skipRedaction {
 		processedData = responseData
@@ -200,18 +210,23 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		return data, &RedactionInfo{}
 	}
 
+	// Policy-derived PII categories: evaluate every enabled PII-category system
+	// policy for this tenant rather than a hardcoded literal (which had silently
+	// omitted pii-indonesia). nil = no enabled PII policies → nothing to redact;
+	// must NOT fall through to EvaluateResponse with empty Categories (that would
+	// evaluate ALL policies — the whitelist footgun).
+	piiCats := p.sharedPolicyEngine.EnabledPIICategories(ctx, user.TenantID, nil, sharedpolicy.PhaseResponse)
+	if len(piiCats) == 0 {
+		log.Printf("[ResponseProcessor] No enabled PII-category policies, skipping shared engine")
+		return data, &RedactionInfo{}
+	}
+
 	result := p.sharedPolicyEngine.EvaluateResponse(ctx, data, sharedpolicy.EvalOptions{
 		// v9 Phase 8 #2384 PR-C1: OrgID propagation for RLS-aware audit writes.
-		TenantID: user.TenantID,
-		OrgID:    user.OrgID,
-		UserID:   fmt.Sprintf("%d", user.ID),
-		Categories: []sharedpolicy.PolicyCategory{
-			sharedpolicy.CategoryPIIGlobal,
-			sharedpolicy.CategoryPIIUS,
-			sharedpolicy.CategoryPIIIndia,
-			sharedpolicy.CategoryPIIEU,
-			sharedpolicy.CategoryPIISingapore,
-		},
+		TenantID:        user.TenantID,
+		OrgID:           user.OrgID,
+		UserID:          fmt.Sprintf("%d", user.ID),
+		Categories:      piiCats,
 		SkipCategories:  gwCfg.SkipCategories,
 		ActionOverrides: gwCfg.BuildActionOverrides(),
 		MaxRedactions:   100, // Reasonable limit for LLM responses
@@ -231,6 +246,102 @@ func (p *ResponseProcessor) processWithSharedEngine(ctx context.Context, user Us
 		result.PoliciesEvaluated, result.ProcessingTimeMs, len(result.RedactedFields))
 
 	return result.Content, redactionInfo
+}
+
+var (
+	orchestratorIndonesiaDetector     *indonesia.IndonesiaPIIDetector
+	orchestratorIndonesiaDetectorOnce sync.Once
+)
+
+// getOrchestratorIndonesiaDetector lazily builds the Indonesia PII detector
+// (NIK/NPWP/+62/bank). Same detector the agent uses. Returns nil only when
+// Indonesia detection is disabled (indonesia.IsEnabled() == false); note both
+// the enterprise and community builds currently enable it (the enterprise build
+// adds checksum/province validation strictness — community is pattern-based).
+func getOrchestratorIndonesiaDetector() *indonesia.IndonesiaPIIDetector {
+	orchestratorIndonesiaDetectorOnce.Do(func() {
+		if indonesia.IsEnabled() {
+			orchestratorIndonesiaDetector = indonesia.NewIndonesiaPIIDetector(indonesia.DefaultIndonesiaPIIDetectorConfig())
+			log.Printf("🇮🇩 [OJK] Orchestrator Indonesia PII response detector initialized")
+		}
+	})
+	return orchestratorIndonesiaDetector
+}
+
+// applyIndonesiaResponseGovernance masks checksum-validated Indonesia PII in an
+// LLM response (any JSON shape — string, object, array) and folds the detected
+// types into redactionInfo. Detect-don't-modify under warn/log is handled by the
+// caller's skipRedaction revert (this always masks; the revert discards it for
+// warn/log). Returns the input unchanged when the detector is disabled or finds
+// nothing.
+func (p *ResponseProcessor) applyIndonesiaResponseGovernance(data interface{}, info *RedactionInfo) (interface{}, *RedactionInfo) {
+	detector := getOrchestratorIndonesiaDetector()
+	if detector == nil {
+		return data, info
+	}
+	masked, types := maskIndonesiaPIIDeep(detector, data)
+	if len(types) == 0 {
+		return data, info
+	}
+	if info == nil {
+		info = &RedactionInfo{}
+	}
+	info.HasRedactions = true
+	info.RedactionCount += len(types)
+	info.RedactedFields = append(info.RedactedFields, types...)
+	return masked, info
+}
+
+// maskIndonesiaPIIDeep walks an arbitrary decoded-JSON value and returns a copy
+// with every Indonesia PII occurrence in string leaves replaced by its
+// per-detection MaskedValue, plus the distinct-per-leaf detected type names.
+//
+// It is SIDE-EFFECT-FREE: maps/slices are rebuilt into fresh containers rather
+// than mutated in place. This is load-bearing for the warn/log "detect-don't-
+// modify" contract: on the shared-engine path the input often aliases the
+// caller's original responseData (the engine returns content unchanged when no
+// redaction plans fire), so an in-place mutation here would also mutate the
+// "original" that ProcessResponse's skipRedaction revert restores — silently
+// masking NIK under warn/log for JSON-object/array responses.
+func maskIndonesiaPIIDeep(d *indonesia.IndonesiaPIIDetector, v interface{}) (interface{}, []string) {
+	switch t := v.(type) {
+	case string:
+		out := t
+		var types []string
+		for _, det := range d.DetectAll(t) {
+			if det.Value != "" && det.MaskedValue != "" && det.MaskedValue != det.Value {
+				out = strings.ReplaceAll(out, det.Value, det.MaskedValue)
+				types = append(types, string(det.Type))
+			}
+		}
+		return out, types
+	case map[string]interface{}:
+		cp := make(map[string]interface{}, len(t))
+		var types []string
+		for k, val := range t {
+			nv, ts := maskIndonesiaPIIDeep(d, val)
+			cp[k] = nv
+			types = append(types, ts...)
+		}
+		return cp, types
+	case []interface{}:
+		cp := make([]interface{}, len(t))
+		var types []string
+		for i, val := range t {
+			nv, ts := maskIndonesiaPIIDeep(d, val)
+			cp[i] = nv
+			types = append(types, ts...)
+		}
+		return cp, types
+	default:
+		// Primitives (numbers, bools, nil) pass through unchanged. NOTE: this
+		// covers the json.Unmarshal-derived shapes ProcessResponse actually
+		// feeds (objects → map[string]interface{}, arrays → []interface{}); a
+		// []map[string]interface{} "rows" value would fall here unwalked, but
+		// that type is never produced on the response path (the shared-engine
+		// redactor never converts type).
+		return v, nil
+	}
 }
 
 // detectPII detects PII in the response data
@@ -285,7 +396,7 @@ func (p *ResponseProcessor) deepScanForPII(data map[string]interface{}, detected
 		if contains([]string{"ssn", "social_security", "email", "phone", "credit_card", "account_number"}, lowerKey) {
 			detected["field_name_pii"] = append(detected["field_name_pii"], key)
 		}
-		
+
 		// Recursively check nested structures
 		switch v := value.(type) {
 		case map[string]interface{}:
@@ -314,39 +425,39 @@ func (p *ResponseProcessor) applyRedactions(user UserContext, data interface{}, 
 		RedactedFields: []string{},
 		RedactionCount: 0,
 	}
-	
+
 	// Check user permissions
 	allowedPII := p.getAllowedPIITypes(user)
-	
+
 	// Apply redactions
 	redactedData := p.redactData(data, detectedPII, allowedPII, redactionInfo)
-	
+
 	return redactedData, redactionInfo
 }
 
 // getAllowedPIITypes returns PII types the user is allowed to see
 func (p *ResponseProcessor) getAllowedPIITypes(user UserContext) []string {
 	allowed := []string{}
-	
+
 	// Map permissions to PII types
 	permissionMap := map[string][]string{
-		"view_full_pii": {"ssn", "credit_card", "bank_account", "email", "phone", "address"},
+		"view_full_pii":  {"ssn", "credit_card", "bank_account", "email", "phone", "address"},
 		"view_basic_pii": {"email", "phone"},
 		"view_financial": {"credit_card", "bank_account"},
-		"view_medical": {"medical_record", "diagnosis"},
+		"view_medical":   {"medical_record", "diagnosis"},
 	}
-	
+
 	for _, permission := range user.Permissions {
 		if piiTypes, exists := permissionMap[permission]; exists {
 			allowed = append(allowed, piiTypes...)
 		}
 	}
-	
+
 	// Admins can see everything
 	if user.Role == "admin" {
 		return []string{"*"}
 	}
-	
+
 	return allowed
 }
 
@@ -368,7 +479,7 @@ func (p *ResponseProcessor) redactData(data interface{}, detectedPII map[string]
 // redactString redacts PII from a string
 func (p *ResponseProcessor) redactString(s string, detectedPII map[string][]string, allowedPII []string, info *RedactionInfo) string {
 	redacted := s
-	
+
 	for piiType, values := range detectedPII {
 		if !p.isAllowed(piiType, allowedPII) {
 			strategy := p.redactor.getStrategy(piiType)
@@ -384,14 +495,14 @@ func (p *ResponseProcessor) redactString(s string, detectedPII map[string][]stri
 			}
 		}
 	}
-	
+
 	return redacted
 }
 
 // redactMap redacts PII from a map
 func (p *ResponseProcessor) redactMap(m map[string]interface{}, detectedPII map[string][]string, allowedPII []string, info *RedactionInfo) map[string]interface{} {
 	redacted := make(map[string]interface{})
-	
+
 	for key, value := range m {
 		// Check if the key itself suggests PII
 		if p.shouldRedactField(key, allowedPII) {
@@ -403,18 +514,18 @@ func (p *ResponseProcessor) redactMap(m map[string]interface{}, detectedPII map[
 			redacted[key] = p.redactData(value, detectedPII, allowedPII, info)
 		}
 	}
-	
+
 	return redacted
 }
 
 // redactSlice redacts PII from a slice
 func (p *ResponseProcessor) redactSlice(s []interface{}, detectedPII map[string][]string, allowedPII []string, info *RedactionInfo) []interface{} {
 	redacted := make([]interface{}, len(s))
-	
+
 	for i, item := range s {
 		redacted[i] = p.redactData(item, detectedPII, allowedPII, info)
 	}
-	
+
 	return redacted
 }
 
@@ -429,23 +540,23 @@ func (p *ResponseProcessor) isAllowed(piiType string, allowedPII []string) bool 
 // shouldRedactField checks if a field name suggests PII that should be redacted
 func (p *ResponseProcessor) shouldRedactField(fieldName string, allowedPII []string) bool {
 	sensitiveFields := map[string]string{
-		"ssn":              "ssn",
-		"social_security":  "ssn",
-		"credit_card":      "credit_card",
-		"card_number":      "credit_card",
-		"account_number":   "bank_account",
-		"routing_number":   "bank_account",
-		"medical_record":   "medical_record",
-		"diagnosis":        "diagnosis",
+		"ssn":             "ssn",
+		"social_security": "ssn",
+		"credit_card":     "credit_card",
+		"card_number":     "credit_card",
+		"account_number":  "bank_account",
+		"routing_number":  "bank_account",
+		"medical_record":  "medical_record",
+		"diagnosis":       "diagnosis",
 	}
-	
+
 	lowerField := strings.ToLower(fieldName)
 	for field, piiType := range sensitiveFields {
 		if strings.Contains(lowerField, field) && !p.isAllowed(piiType, allowedPII) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -462,14 +573,14 @@ func (p *ResponseProcessor) validateResponse(data interface{}) error {
 // enrichResponse adds metadata to the response
 func (p *ResponseProcessor) enrichResponse(ctx context.Context, data interface{}) interface{} {
 	enrichments := make(map[string]interface{})
-	
+
 	for _, rule := range p.enricher.enrichmentRules {
 		metadata := rule.Enricher(ctx, data)
 		for k, v := range metadata {
 			enrichments[k] = v
 		}
 	}
-	
+
 	// Wrap response with enrichments
 	return map[string]interface{}{
 		"data":     data,

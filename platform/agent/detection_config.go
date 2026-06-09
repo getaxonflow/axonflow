@@ -484,6 +484,13 @@ func (c *ModeDetectionConfig) BuildActionOverrides() map[sharedpolicy.PolicyCate
 	overrides[sharedpolicy.CategoryPIIIndia] = piiAction
 	overrides[sharedpolicy.CategoryPIIEU] = piiAction
 	overrides[sharedpolicy.CategoryPIISingapore] = piiAction
+	// pii-indonesia (NIK/OJK/UU PDP) was omitted here, so even once it's
+	// evaluated it wouldn't honor PII_ACTION (it would keep its DB
+	// action_response — redact — instead of blocking under PII_ACTION=block).
+	// Map it to the PII_ACTION lever like every other text PII category.
+	// (media-pii is intentionally NOT here — it's the orchestrator's OCR
+	// subsystem, with no agent text-engine match to apply an override to.)
+	overrides[sharedpolicy.CategoryPIIIndonesia] = piiAction
 
 	sqliAction := c.SQLIAction.ToPolicyAction()
 	overrides[sharedpolicy.CategorySecuritySQLi] = sqliAction
