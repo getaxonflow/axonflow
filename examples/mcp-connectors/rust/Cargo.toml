@@ -9,6 +9,6 @@ name = "axonflow-mcp-connectors-rust"
 path = "main.rs"
 
 [dependencies]
-axonflow-sdk-rust = "0.5"
+axonflow-sdk-rust = "0.7.0"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
